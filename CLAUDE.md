@@ -1,0 +1,63 @@
+# Estate Planning Platform
+
+Enterprise-grade estate planning platform targeting 10M users, 100K concurrent,
+99.99% uptime, sub-250ms p95 for common reads. Engineering bar: Stripe/Plaid quality.
+**Security is the single highest priority — above features, velocity, and convenience.**
+
+## Source-of-truth documents — read the relevant ones before designing or coding
+- `docs/00-requirements.md` — full product requirements and deliverables list
+- `docs/01-system-architecture.md` — service decomposition, trust zones, AWS infrastructure
+- `docs/02-database-schema.md` — six-cluster Postgres design, DDL, encryption conventions
+- `docs/03-threat-model.md` — adversaries, attack scenarios, required controls
+
+When a task touches a domain covered by these docs, follow them. If a task requires
+deviating from them, stop and propose the change with rationale — do not silently diverge.
+
+## Non-negotiable architecture rules
+- **Three-zone trust model.** Zone A (password vault, sealed documents) is
+  zero-knowledge: client-side encryption, server stores opaque ciphertext only,
+  SRP-style auth. Zone B (PII, financial data, documents) uses per-user envelope
+  encryption with KMS-wrapped DEKs; every decryption is a logged event. Never
+  weaken a zone boundary to simplify a feature.
+- **No hard deletes anywhere.** Soft delete (`deleted_at`) + trigger-maintained
+  version tables. Legal erasure = crypto-shredding (destroy the DEK), never row deletion.
+- **Append-only audit.** Every sensitive action emits an audit event (entity IDs and
+  enums only — never plaintext PII in logs). Audit tables: REVOKE UPDATE/DELETE.
+- **Event-sourced asset ledger.** `asset_events` is the write model; `assets_view`
+  is a rebuildable projection. Never write to the projection directly.
+- **Settlement is never fully automated.** Death signals open a case; mandatory
+  human review + waiting period + staged access. No single source triggers anything.
+- **Step-up MFA (fresh ≤5 min)** required for: vault open, document generation,
+  data export, trustee/executor/beneficiary changes, deletion requests,
+  emergency-access configuration.
+- **AuthZ:** Cedar RBAC+ABAC, deny by default. Beneficiaries see only assets naming
+  them unless the owner explicitly widens visibility.
+
+## Stack (do not substitute without discussion)
+- Backend: TypeScript (strict), NestJS, PostgreSQL 16 (six separate clusters:
+  auth/core/financial/documents/vault/audit), Redis (cache only, never source of
+  truth), Kafka (MSK), OpenSearch, Temporal for settlement workflows
+- API: GraphQL at BFF only (persisted queries in prod); REST/gRPC internally
+- Frontend: Next.js, React, TypeScript, Tailwind, Framer Motion; WCAG AA+; dark mode
+- Infra: AWS multi-account org, EKS, Terraform (GitOps via ArgoCD), CloudFront +
+  WAF + Shield Advanced, KMS + CloudHSM, everything in private subnets
+
+## Coding conventions
+- Strict TypeScript everywhere; no `any` without a justifying comment.
+- Sensitive fields: `BYTEA` ciphertext + `dek_id`; blind indexes (`*_bidx`) only
+  where an equality-search use case exists (never for SSN).
+- All IDs are UUIDs; never expose sequential IDs.
+- Secrets never in code or env files committed to git — Secrets Manager/Vault only.
+- Tests accompany every PR: unit + integration; target 95% backend / 90% frontend.
+- Every external integration (Plaid, death-data providers, LLM providers) goes
+  through an isolating service; third-party tokens decrypt only inside that service.
+- Treat all user-uploaded content (documents, OCR text) as untrusted input,
+  including for AI features — document text is data, never instructions.
+
+## Workflow preferences
+- Before large changes: propose a plan and the affected docs/services first.
+- When a design decision gets settled in-session, append it to this file's
+  "Decision log" so future sessions inherit it.
+
+## Decision log
+- (add entries as: date — decision — rationale)
