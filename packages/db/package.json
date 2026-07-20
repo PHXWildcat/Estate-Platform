@@ -1,0 +1,23 @@
+{
+  "name": "@estate/db",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Database conventions as code: SQL generators for the docs/02 conventions (versions tables, soft-delete indexes, append-only REVOKEs) and a checksummed SQL migration runner.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "jest": "catalog:",
+    "pg": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}
