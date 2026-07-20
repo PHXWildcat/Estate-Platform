@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.next/
+coverage/
+.turbo/
+pnpm-lock.yaml
+
+# Prose docs keep their authored wrapping; Prettier formats code only.
+*.md

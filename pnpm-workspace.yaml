@@ -1,0 +1,44 @@
+# Workspace layout: apps are deployables, packages are shared internals.
+# Version policy: all shared dependency versions live in the catalog below so
+# every package resolves identical versions (supply-chain review surface of one).
+packages:
+  - apps/*
+  - apps/services/*
+  - packages/*
+
+catalog:
+  # language / build
+  typescript: ^5.8.3
+  turbo: ^2.5.4
+  '@types/node': ^22.15.21
+  # test
+  jest: ^29.7.0
+  ts-jest: ^29.3.4
+  '@types/jest': ^29.5.14
+  # lint / format
+  eslint: ^9.27.0
+  '@eslint/js': ^9.27.0
+  typescript-eslint: ^8.32.1
+  prettier: ^3.5.3
+  # runtime
+  zod: ^3.25.28
+  pg: ^8.16.0
+  '@types/pg': ^8.15.2
+  # services
+  '@nestjs/common': ^11.1.0
+  '@nestjs/core': ^11.1.0
+  '@nestjs/platform-express': ^11.1.0
+  '@nestjs/testing': ^11.1.0
+  reflect-metadata: ^0.2.2
+  rxjs: ^7.8.1
+  '@node-rs/argon2': ^2.0.2
+  '@simplewebauthn/server': ^13.1.1
+  otpauth: ^9.4.0
+  kafkajs: ^2.2.4
+  supertest: ^7.1.0
+  '@types/supertest': ^6.0.3
+
+# Supply-chain control (threat model TB5): dependency lifecycle scripts are
+# blocked by default in pnpm 10. Add a package here ONLY after reviewing why it
+# needs a build script; keep this list as close to empty as possible.
+onlyBuiltDependencies: []

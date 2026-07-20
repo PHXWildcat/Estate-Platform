@@ -1,0 +1,70 @@
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  {
+    ignores: ['**/dist/**', '**/.next/**', '**/node_modules/**', '**/coverage/**', '**/.turbo/**'],
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      // CLAUDE.md: no `any` without a justifying comment. An eslint-disable
+      // with `-- reason` is the sanctioned escape hatch.
+      '@typescript-eslint/no-explicit-any': 'error',
+      // Sensitive data must never reach stdout; use the structured logger.
+      'no-console': 'error',
+      '@typescript-eslint/explicit-module-boundary-types': 'error',
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
+    },
+  },
+  {
+    files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
+    ...tseslint.configs.disableTypeChecked,
+  },
+  {
+    // CommonJS tooling files (jest configs, presets).
+    files: ['**/jest.config.js', 'packages/config/jest.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { require: 'readonly', module: 'writable', __dirname: 'readonly' },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
+    // Zone boundary: frontend code must never import server-side key handling
+    // or database internals. (threat model TB6 / architecture zone rules)
+    files: ['apps/web/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@estate/crypto',
+              message:
+                'Server-side crypto never ships to the client. Use @estate/vault-crypto for Zone A.',
+            },
+            {
+              name: '@estate/db',
+              message: 'Database access happens in services, never in the frontend.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+);

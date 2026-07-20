@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.next/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# env files never committed; use .env.example as the template
+.env
+.env.*
+!.env.example
+
+# OS noise
+.DS_Store
+Thumbs.db

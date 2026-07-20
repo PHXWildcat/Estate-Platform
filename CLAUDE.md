@@ -61,3 +61,15 @@ deviating from them, stop and propose the change with rationale — do not silen
 
 ## Decision log
 - (add entries as: date — decision — rationale)
+- 2026-07-20 — Monorepo tooling: pnpm workspaces + Turborepo (over Nx) — less framework
+  lock-in, remote-cacheable task graph, pnpm catalogs give one shared dependency-version
+  surface, and pnpm 10 blocks dependency build scripts by default (supply-chain control).
+- 2026-07-20 — Infrastructure (Terraform/Helm/ArgoCD) lives in the monorepo — one review
+  surface and atomic app+infra changes; revisit extracting a deploy-config repo only if
+  ArgoCD hygiene demands it.
+- 2026-07-20 — Milestone 1 approved: "secure walking skeleton" — foundation packages plus
+  identity + audit services end to end. Full structure and milestone plan:
+  `docs/04-monorepo-and-milestones.md`.
+- 2026-07-20 — Backend compiles to CommonJS; Jest + ts-jest; internal packages are consumed
+  via their built `dist` with Turborepo ordering (no path aliases) — NestJS ecosystem
+  alignment and deterministic type resolution over ESM friction.
