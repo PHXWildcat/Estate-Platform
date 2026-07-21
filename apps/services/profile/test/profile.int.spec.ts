@@ -42,6 +42,13 @@ describeIfPg('profile & contacts service end to end', () => {
     admin = new Client({ connectionString: pgUrl });
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${schema}`);
+    // Put the scratch schema on the admin connection's search_path too: the
+    // convention versions triggers run `INSERT INTO <table>_versions`
+    // UNQUALIFIED, so a raw admin UPDATE that fires a trigger (e.g. setting
+    // linked_user_id below) must resolve those names against the scratch schema.
+    // (In production each cluster is its own DB with tables in `public`, so the
+    // app pool's search_path already covers this — only this raw client needs it.)
+    await admin.query(`SET search_path TO ${schema}, public`);
 
     const migrClient = new Client({
       connectionString: pgUrl,
