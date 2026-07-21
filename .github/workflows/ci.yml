@@ -46,14 +46,17 @@ jobs:
       - name: Format check
         run: pnpm format
 
+      # Build must precede lint: internal packages resolve types from their
+      # built dist, and the type-aware lint rules report unresolved types as
+      # unsafe-any errors when dist is missing.
+      - name: Build
+        run: pnpm build
+
       - name: Lint
         run: pnpm lint
 
       - name: Typecheck
         run: pnpm typecheck
-
-      - name: Build
-        run: pnpm build
 
       - name: Test
         run: pnpm test
