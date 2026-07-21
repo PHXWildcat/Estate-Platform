@@ -319,6 +319,9 @@ importers:
 
   apps/services/identity:
     dependencies:
+      '@aws-sdk/client-kms':
+        specifier: 'catalog:'
+        version: 3.1091.0
       '@estate/audit-emitter':
         specifier: workspace:*
         version: link:../../../packages/audit-emitter
@@ -331,6 +334,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kms-aws':
+        specifier: workspace:*
+        version: link:../../../packages/kms-aws
       '@nestjs/common':
         specifier: 'catalog:'
         version: 11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)

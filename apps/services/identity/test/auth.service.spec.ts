@@ -84,7 +84,7 @@ const config: IdentityConfig = {
   nodeEnv: 'test',
   port: 3001,
   databaseUrl: 'postgres://unused',
-  kmsMasterKey: Buffer.alloc(32, 7),
+  kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
   emailIndexKey: Buffer.alloc(32, 9),
   kafkaBrokers: null,
   kekAlias: 'test/kek',

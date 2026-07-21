@@ -152,10 +152,10 @@ export class WebAuthnService {
       nickname: null,
       isHardwareKey,
     });
-    // Audit lands in the append-only local auth_events ledger. A dedicated
-    // Kafka AuditAction (e.g. auth.webauthn.registered) needs a new enum value
-    // in @estate/contracts — out of this milestone's scope; see README gap.
+    // Append-only local ledger AND the Kafka audit stream (the latter feeds
+    // insider-anomaly detection, docs/03 §5.3).
     await this.authEvents.insert({ userId, kind: 'webauthn.registered' });
+    await this.events.webauthnRegistered(userId);
     return { verified: true };
   }
 
@@ -236,6 +236,7 @@ export class WebAuthnService {
         kind: 'webauthn.clone_detected',
         decision: 'counter_regression',
       });
+      await this.events.webauthnCloneDetected(userId, sessionId);
       throw authenticationFailed();
     }
     const now = this.clock();

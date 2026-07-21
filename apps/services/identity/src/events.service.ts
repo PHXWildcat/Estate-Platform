@@ -148,6 +148,31 @@ export class EventsService {
     });
   }
 
+  async webauthnRegistered(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.webauthn.registered',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'webauthn_credential',
+      resourceId: userId,
+      sessionId: null,
+    });
+  }
+
+  /** A non-incrementing signature counter — the credential may be cloned. */
+  async webauthnCloneDetected(userId: string, sessionId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.webauthn.clone_detected',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'webauthn_credential',
+      resourceId: userId,
+      sessionId,
+    });
+  }
+
   async sessionRevoked(
     userId: string,
     sessionId: string,

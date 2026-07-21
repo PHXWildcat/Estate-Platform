@@ -12,6 +12,8 @@ export const AUDIT_ACTIONS = [
   'auth.login.failed',
   'auth.stepup.granted',
   'auth.session.revoked',
+  'auth.webauthn.registered',
+  'auth.webauthn.clone_detected',
   'crypto.field.decrypted',
   'crypto.dek.destroyed',
 ] as const;

@@ -18,9 +18,17 @@ const EnvSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().max(65535).default(3001),
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+    // Dev/test only: drives LocalKmsProvider. Required OUTSIDE production;
+    // production uses AWS KMS instead (see AWS_KMS_KEY_ID) so a real
+    // deployment never depends on an in-process master key.
     KMS_MASTER_KEY_HEX: z
       .string()
-      .regex(HEX_32_BYTES, 'KMS_MASTER_KEY_HEX must be 32 bytes of hex (64 chars)'),
+      .regex(HEX_32_BYTES, 'KMS_MASTER_KEY_HEX must be 32 bytes of hex (64 chars)')
+      .optional(),
+    // Production KMS: the KMS key id/alias/ARN that wraps this domain's DEKs,
+    // plus its region. Required IN production; ignored otherwise.
+    AWS_KMS_KEY_ID: z.string().min(1).optional(),
+    AWS_REGION: z.string().min(1).optional(),
     EMAIL_INDEX_KEY_HEX: z
       .string()
       .regex(HEX_32_BYTES, 'EMAIL_INDEX_KEY_HEX must be 32 bytes of hex (64 chars)'),
@@ -47,6 +55,25 @@ const EnvSchema = z
       });
     }
     if (env.NODE_ENV === 'production') {
+      // Production must use AWS KMS (CloudHSM-rooted KEKs). The in-process
+      // LocalKmsProvider is never permitted outside dev/test.
+      for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required in production (LocalKmsProvider is dev/test only)`,
+          });
+        }
+      }
+    } else if (!env.KMS_MASTER_KEY_HEX) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['KMS_MASTER_KEY_HEX'],
+        message: 'KMS_MASTER_KEY_HEX is required outside production (drives LocalKmsProvider)',
+      });
+    }
+    if (env.NODE_ENV === 'production') {
       for (const key of ['RP_ID', 'RP_ORIGIN', 'RP_NAME'] as const) {
         if (!env[key]) {
           ctx.addIssue({
@@ -59,12 +86,20 @@ const EnvSchema = z
     }
   });
 
+/**
+ * Which KMS backs envelope encryption. `local` (dev/test) wraps DEKs with an
+ * in-process master key; `aws` (production) delegates to AWS KMS / CloudHSM.
+ */
+export type KmsConfig =
+  | { readonly mode: 'local'; readonly masterKey: Buffer }
+  | { readonly mode: 'aws'; readonly keyId: string; readonly region: string };
+
 export interface IdentityConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
   readonly databaseUrl: string;
-  /** 32-byte master key for LocalKmsProvider (dev/test only — see above). */
-  readonly kmsMasterKey: Buffer;
+  /** Selected KMS backend (LocalKmsProvider in dev/test, AWS KMS in prod). */
+  readonly kms: KmsConfig;
   /** 32-byte HMAC key for email blind indexes. */
   readonly emailIndexKey: Buffer;
   /** Parsed broker list; null means "no Kafka" (never allowed in production). */
@@ -103,11 +138,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
   if (e.NODE_ENV === 'production' && brokers.length === 0) {
     throw new ConfigError(['KAFKA_BROKERS: must list at least one broker in production']);
   }
+  // The superRefine above guarantees the required fields per environment, so
+  // these non-null assertions are sound.
+  const kms: KmsConfig =
+    e.NODE_ENV === 'production'
+      ? { mode: 'aws', keyId: e.AWS_KMS_KEY_ID!, region: e.AWS_REGION! }
+      : { mode: 'local', masterKey: Buffer.from(e.KMS_MASTER_KEY_HEX!, 'hex') };
   return {
     nodeEnv: e.NODE_ENV,
     port: e.PORT,
     databaseUrl: e.DATABASE_URL,
-    kmsMasterKey: Buffer.from(e.KMS_MASTER_KEY_HEX, 'hex'),
+    kms,
     emailIndexKey: Buffer.from(e.EMAIL_INDEX_KEY_HEX, 'hex'),
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     kekAlias: 'local/auth-kek',

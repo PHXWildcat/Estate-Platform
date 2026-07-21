@@ -50,7 +50,11 @@ function makeFakes(): {
   };
   sessions: { grantStepUp: jest.Mock };
   authEvents: { insert: jest.Mock };
-  events: { stepUpGranted: jest.Mock };
+  events: {
+    stepUpGranted: jest.Mock;
+    webauthnRegistered: jest.Mock;
+    webauthnCloneDetected: jest.Mock;
+  };
 } {
   return {
     repo: {
@@ -63,7 +67,11 @@ function makeFakes(): {
     },
     sessions: { grantStepUp: jest.fn() },
     authEvents: { insert: jest.fn() },
-    events: { stepUpGranted: jest.fn() },
+    events: {
+      stepUpGranted: jest.fn(),
+      webauthnRegistered: jest.fn(),
+      webauthnCloneDetected: jest.fn(),
+    },
   };
 }
 
@@ -71,7 +79,7 @@ const config: IdentityConfig = {
   nodeEnv: 'test',
   port: 3001,
   databaseUrl: 'postgres://unused',
-  kmsMasterKey: Buffer.alloc(32, 7),
+  kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
   emailIndexKey: Buffer.alloc(32, 9),
   kafkaBrokers: null,
   kekAlias: 'test/kek',
