@@ -2,11 +2,13 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   HttpCode,
   Post,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import type { MfaLevel } from '@estate/contracts';
 import { z } from 'zod';
 import { AuthService, type IssuedTokens, type StepUpResult } from './auth.service';
 import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
@@ -76,6 +78,25 @@ export class AuthController {
   async refresh(@Body() body: unknown): Promise<IssuedTokens> {
     const { refreshToken } = parseBody(RefreshSchema, body);
     return this.auth.refresh(refreshToken);
+  }
+
+  /** Session introspection for the BFF: context of the presented token only. */
+  @Get('session')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  session(@Req() request: AuthedRequest): {
+    userId: string;
+    sessionId: string;
+    mfaLevel: MfaLevel;
+    stepupExpiresAt: string | null;
+  } {
+    const auth = requireAuth(request);
+    return {
+      userId: auth.userId,
+      sessionId: auth.sessionId,
+      mfaLevel: auth.mfaLevel,
+      stepupExpiresAt: auth.stepupExpiresAt?.toISOString() ?? null,
+    };
   }
 
   @Post('totp/enroll')
