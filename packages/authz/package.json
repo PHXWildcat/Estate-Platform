@@ -1,0 +1,24 @@
+{
+  "name": "@estate/authz",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cedar policy engine wrapper: the central PDP with deny-by-default semantics (docs/01 §5). Services embed this as their PEP; policies are versioned in-repo and reviewed like code.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@cedar-policy/cedar-wasm": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

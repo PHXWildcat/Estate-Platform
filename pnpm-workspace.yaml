@@ -37,6 +37,9 @@ catalog:
   kafkajs: ^2.2.4
   supertest: ^7.1.0
   '@types/supertest': ^6.0.3
+  # authz / kms
+  '@cedar-policy/cedar-wasm': ^4.4.0
+  '@aws-sdk/client-kms': ^3.821.0
   # bff
   graphql: ^16.11.0
   graphql-yoga: ^5.13.0

@@ -1,0 +1,25 @@
+{
+  "name": "@estate/kms-aws",
+  "version": "0.0.1",
+  "private": true,
+  "description": "AWS KMS implementation of @estate/crypto's KmsKeyProvider (production replacement for the dev-only LocalKmsProvider). CloudHSM-backed KEKs; per-service IAM grants are the insider-threat chokepoint (docs/03 §5.3).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "catalog:",
+    "@estate/crypto": "workspace:*"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}
