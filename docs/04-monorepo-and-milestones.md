@@ -95,6 +95,17 @@ handling, session/step-up guards, refresh rotation-reuse, all parameterized SQL 
 identifier-validating generators, the migrator, Kafka-message deserialization + PII
 firewall, and the BFF cookie/CSRF/persisted-operations model.
 
+### M2 — Security hardening + profile/contacts (in progress)
+Shipped so far on `claude/m2-security-hardening`: `@estate/kms-aws` (production
+AWS KMS provider, wired into identity — prod uses AWS KMS, dev LocalKmsProvider,
+fail-fast); `@estate/authz` (Cedar PDP, deny-by-default, owner/beneficiary
+policies); WebAuthn passkey register/authenticate in identity (passkey as a
+step-up factor) with its audit actions added to `@estate/contracts` and emitted
+to Kafka; per-package **coverage gates** (jest thresholds set just below current
+coverage, ratcheting toward 95/90 — CI runs `pnpm test --coverage`). Remaining:
+profile & contacts service (core cluster) with Cedar wired into a real PEP —
+beneficiary ABAC's first product use.
+
 ### Later milestones (rough order, one per bounded context)
 M2 profile & contacts (role assignments, permission grants, Cedar policies) ·
 M3 asset ledger (event-sourced `asset_events` → `assets_view`, then Plaid isolate) ·
