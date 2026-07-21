@@ -1,0 +1,115 @@
+# Local development infrastructure.
+#
+# Six SEPARATE Postgres containers — one per cluster, mirroring the production
+# isolation in docs/02. Deliberately not one container with six databases:
+# no code may ever assume clusters are co-located.
+#
+# Ports: auth 5433 · core 5434 · financial 5435 · documents 5436 · vault 5437 · audit 5438
+
+x-postgres-base: &pg
+  image: postgres:16-alpine
+  environment: &pg-env
+    POSTGRES_USER: estate
+    POSTGRES_PASSWORD: estate_dev # dev only; real credentials live in Secrets Manager
+  healthcheck:
+    test: ['CMD-SHELL', 'pg_isready -U estate']
+    interval: 5s
+    timeout: 5s
+    retries: 10
+
+services:
+  pg-auth:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: auth
+    ports:
+      - '5433:5432'
+    volumes:
+      - pg-auth-data:/var/lib/postgresql/data
+
+  pg-core:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: core
+    ports:
+      - '5434:5432'
+    volumes:
+      - pg-core-data:/var/lib/postgresql/data
+
+  pg-financial:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: financial
+    ports:
+      - '5435:5432'
+    volumes:
+      - pg-financial-data:/var/lib/postgresql/data
+
+  pg-documents:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: documents
+    ports:
+      - '5436:5432'
+    volumes:
+      - pg-documents-data:/var/lib/postgresql/data
+
+  pg-vault:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: vault
+    ports:
+      - '5437:5432'
+    volumes:
+      - pg-vault-data:/var/lib/postgresql/data
+
+  pg-audit:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: audit
+    ports:
+      - '5438:5432'
+    volumes:
+      - pg-audit-data:/var/lib/postgresql/data
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.7
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - '9092:9092'
+    healthcheck:
+      test: ['CMD-SHELL', 'rpk cluster health --exit-when-healthy || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: kms,s3
+    ports:
+      - '4566:4566'
+
+volumes:
+  pg-auth-data:
+  pg-core-data:
+  pg-financial-data:
+  pg-documents-data:
+  pg-vault-data:
+  pg-audit-data:

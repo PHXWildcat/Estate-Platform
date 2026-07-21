@@ -1,0 +1,10 @@
+{
+  "087cbfc519ac0be38f84ca4f0a20bfd32496a26acd907d938ed61851d9b575d6": "mutation StepUp($code: String!) {\n  stepUp(code: $code) {\n    ok\n  }\n}",
+  "21ee35418327ada55f05094459da2dca9b1fb5fa7c2b3c5f064d377c28f15159": "mutation TotpEnroll {\n  totpEnroll {\n    otpauthUri\n  }\n}",
+  "5943e68a7ecc0f3612a9ae42f28f169ba3061313fda521ffa7ebee3e2fd3b412": "mutation ExportDemo {\n  exportDemo {\n    ok\n  }\n}",
+  "5ab0c4f83ba5bf94211ab831555f3d0e2f9b1015fc754a30b4a6ae9a3ed866a5": "mutation Register($email: String!, $password: String!) {\n  register(email: $email, password: $password) {\n    ok\n  }\n}",
+  "5e139b4000a68556e4dcddb85fbaa7b9fc168289bd3bb19d5ed040c2ce7d5990": "mutation Login($email: String!, $password: String!) {\n  login(email: $email, password: $password) {\n    ok\n  }\n}",
+  "8ae2dd3186f2d884fd555317119c4cb2fc2f7f926e7f8062c019973acbd55046": "query Session {\n  session {\n    userId\n    mfaLevel\n    stepUpFresh\n  }\n}",
+  "99bc9b8490e7a2a7447be76ee7a6b1a18d2a5509174f1da9e7332c01c33ea6db": "mutation TotpVerify($code: String!) {\n  totpVerify(code: $code) {\n    ok\n  }\n}",
+  "bf587a0b16a7d47d7bb3ee1c2b588b4d53a79bbce34b39a3f0c5ce599af45468": "mutation Refresh {\n  refresh {\n    ok\n  }\n}"
+}

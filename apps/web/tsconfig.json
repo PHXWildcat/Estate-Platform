@@ -1,0 +1,26 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "noEmit": true,
+    "allowJs": true,
+    "incremental": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "experimentalDecorators": false,
+    "emitDecoratorMetadata": false,
+    "plugins": [{ "name": "next" }]
+  },
+  "include": [
+    "next-env.d.ts",
+    "next.config.ts",
+    "jest.setup.ts",
+    "src/**/*",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

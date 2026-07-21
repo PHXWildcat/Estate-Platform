@@ -1,0 +1,10 @@
+{
+  "name": "@estate/config",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Shared TypeScript and Jest configuration for the estate platform workspace.",
+  "files": [
+    "tsconfig.base.json",
+    "jest.js"
+  ]
+}

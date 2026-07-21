@@ -1,0 +1,34 @@
+{
+  "name": "@estate/service-audit",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Audit service: consumes domain/audit events from Kafka into the append-only, hash-chained audit_events store; chain verification job (docs/01 §2.11, docs/02 §6).",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand",
+    "dev": "node dist/main.js"
+  },
+  "dependencies": {
+    "@estate/contracts": "workspace:*",
+    "@estate/db": "workspace:*",
+    "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
+    "kafkajs": "catalog:",
+    "pg": "catalog:",
+    "reflect-metadata": "catalog:",
+    "rxjs": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@nestjs/testing": "catalog:",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

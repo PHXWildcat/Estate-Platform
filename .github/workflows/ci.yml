@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+# Skip the branch-push run when a PR run for the same commit exists.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: estate
+          POSTGRES_PASSWORD: estate_ci
+          POSTGRES_DB: estate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U estate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version comes from packageManager in package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format
+
+      # Build must precede lint: internal packages resolve types from their
+      # built dist, and the type-aware lint rules report unresolved types as
+      # unsafe-any errors when dist is missing.
+      - name: Build
+        run: pnpm build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # --coverage makes the per-package coverage tables visible in CI logs;
+      # thresholds (95 backend / 90 frontend target) get enabled once real
+      # CI-measured numbers exist — integration suites only run here, so local
+      # coverage figures understate reality.
+      - name: Test
+        run: pnpm test -- --coverage
+        env:
+          PG_TEST_URL: postgres://estate:estate_ci@localhost:5432/estate_test

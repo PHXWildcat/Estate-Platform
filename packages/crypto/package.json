@@ -1,0 +1,21 @@
+{
+  "name": "@estate/crypto",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Server-side field encryption: AES-256-GCM envelope encryption with KMS-wrapped per-user DEKs, blind indexes. Zone B primitives per docs/01 §4. Never import from client code.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

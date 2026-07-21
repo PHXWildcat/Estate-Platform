@@ -1,0 +1,24 @@
+{
+  "name": "@estate/audit-emitter",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Typed audit-event producer. Every event is validated against the contracts schema before send — the runtime PII firewall for the append-only audit store.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@estate/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}
