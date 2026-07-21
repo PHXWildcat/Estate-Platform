@@ -13,6 +13,7 @@ export {
   AuditEmitFailedError,
   CryptoError,
   DecryptionFailedError,
+  DekConflictError,
   DekDestroyedError,
   DekNotFoundError,
 } from './errors';

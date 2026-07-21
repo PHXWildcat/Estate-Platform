@@ -19,6 +19,16 @@ export {
   type MfaLevel,
 } from './auth-events';
 export {
+  ASSET_CATEGORIES,
+  ASSET_EVENT_TYPES,
+  AssetCategorySchema,
+  AssetEventTypeSchema,
+  AssetLedgerAppendedEvent,
+  type AssetCategory,
+  type AssetEventType,
+  type AssetLedgerAppended,
+} from './asset-events';
+export {
   ActorTypeSchema,
   defineEvent,
   EventEnvelopeSchema,

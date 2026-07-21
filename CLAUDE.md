@@ -73,3 +73,23 @@ deviating from them, stop and propose the change with rationale — do not silen
 - 2026-07-20 — Backend compiles to CommonJS; Jest + ts-jest; internal packages are consumed
   via their built `dist` with Turborepo ordering (no path aliases) — NestJS ecosystem
   alignment and deterministic type resolution over ESM friction.
+- 2026-07-21 — M3 scope: manual-asset ledger first (backend only); Plaid isolate is a
+  separate second PR, and `plaid_items`/`accounts` DDL ships with it — no dormant schema
+  under migration drift detection.
+- 2026-07-21 — Asset ledger mechanics: append + projection in ONE transaction via a pure
+  reducer (only write path to `assets_view`/`asset_beneficiaries`; rebuild CLI proves
+  replay equivalence); optimistic concurrency via `version` = latest per-asset seq +
+  `If-Match`; idempotency via client `eventId` + unique index (retries are no-ops).
+  Event payloads encrypted with AAD field `asset_event.payload.<event_id>` so ciphertext
+  binds to user AND event and rebuild can re-derive the AAD from the row.
+- 2026-07-21 — Step-up for beneficiary changes is asserted via the gateway-injected
+  `x-estate-stepup-verified` header (StepUpGuard), the same M2 trust level as
+  `x-estate-user-id`; both headers upgrade together when real cross-service session
+  verification lands. Chosen over silently skipping the docs/01 §5 requirement.
+- 2026-07-21 — Domain topic `estate.asset.events.v1` carries IDs/enums only
+  (`asset.ledger.appended`), mirroring the audit PII firewall — Zone B Kafka payload
+  crypto (`packages/kafka`) becomes a prerequisite only when a consumer needs values.
+- 2026-07-21 — DEK-race fix: `deks(user_id) WHERE destroyed_at IS NULL` UNIQUE index on
+  the financial cluster from day one + `DekConflictError` adopt-the-winner handling in
+  `@estate/crypto` `getOrCreateDek`; auth/core clusters get backfill migrations (with
+  pre-flight dedupe) as a follow-up.

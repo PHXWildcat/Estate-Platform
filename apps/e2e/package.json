@@ -11,6 +11,7 @@
     "@estate/config": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/db": "workspace:*",
+    "@estate/service-assets": "workspace:*",
     "@estate/service-audit": "workspace:*",
     "@estate/service-identity": "workspace:*",
     "@nestjs/testing": "catalog:",

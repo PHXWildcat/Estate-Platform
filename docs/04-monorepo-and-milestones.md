@@ -134,9 +134,51 @@ finding, **fixed in-branch**:
   in both option generators, `requireUserVerification: true` at both verify calls,
   and the step-up elevation now gated on `authenticationInfo.userVerified`.
 
+### M3 — Asset ledger (first half shipped 2026-07-21; Plaid isolate is the second half)
+Scope agreed: manual-asset ledger first (backend only), Plaid isolating service as a
+separate second PR — `plaid_items`/`accounts` DDL deliberately deferred with it so no
+dormant schema gets frozen by migration drift detection.
+
+**Shipped:** `apps/services/assets` (financial cluster) — event-sourced write model
+per docs/02 §3: `asset_events` (append-only, encrypted payloads AAD-bound to
+`user_id`+`event_id`) → `assets_view` + `asset_beneficiaries` projected in the SAME
+transaction through a pure reducer (`projection.ts`); projection rebuild CLI
+(`rebuild-cli.js`, report/`--repair`) as the docs/02 §8 DR integrity check, decrypting
+as actorType `system`/purpose `projection_rebuild`; optimistic concurrency
+(`version` = latest seq, `If-Match`) + per-command idempotency (client `eventId`,
+unique index); as-of temporal queries (`?asOf=` on list/net-worth) by ledger replay;
+beneficiary designations with share-sum ≤ 100 enforced app-side (422) AND by a DB
+constraint trigger; step-up gating on beneficiary changes via `StepUpGuard`;
+Cedar PEP (`AssetsAuthz`, owner-only, deny-by-default); audit actions `asset.*` +
+domain topic `estate.asset.events.v1` (`asset.ledger.appended`, IDs/enums only);
+`withTransaction` sets the `app.actor_id` GUC so `_versions` rows carry attribution
+(first service to do so). Also landed: the M2 **cross-request DEK race fix** —
+`@estate/crypto` `DekConflictError` + adopt-the-winner in `getOrCreateDek`, with a
+partial unique index `ux_deks_user_active` on the financial cluster from day one.
+
+**Explicit deviations (surfaced, not silent):** step-up asserted via
+gateway-injected `x-estate-stepup-verified` at the same M2 trust level as
+`x-estate-user-id` (real session/step-up verification remains the upgrade for
+both); additive DDL vs docs/02 §3 (event-id unique index, `(user_id, occurred_at)`
+index, beneficiary live-row unique index, deks unique index — propose folding into
+docs/02 v1.1); share-sum trigger enforces ≤ 100 rather than the docs' "sum to 100"
+(strict equality is unenforceable during incremental designation; the API reports
+`designationComplete`); `assets_view` exempt from business-table conventions (no
+`_versions` — its history IS the ledger; verified by custom int-test assertions);
+domain topic carries IDs/enums only, so docs/01 §4 Zone B Kafka payload crypto is
+not yet exercised (prerequisite for any value-bearing consumer).
+
+**M3 follow-ups:** Plaid isolating service (+ `plaid_items`/`accounts` DDL);
+deks unique-index backfill migrations for auth+core clusters (pre-flight dedupe of
+any doubled DEKs + 23505→`DekConflictError` translation in identity/profile
+repositories); local contact-link projection from core domain events →
+`namedBeneficiaries` beneficiary ABAC + contact existence validation; transactional
+outbox for post-commit audit/domain emits; `DocumentAttached` event + photos (M4);
+as-of replay snapshotting at scale; category is immutable in M3 (recategorize =
+retire + recreate).
+
 ### Later milestones (rough order, one per bounded context)
-M2 profile & contacts (role assignments, permission grants, Cedar policies) ·
-M3 asset ledger (event-sourced `asset_events` → `assets_view`, then Plaid isolate) ·
+M3 second half: Plaid isolate ·
 M4 documents (template matrix, generation pipeline, S3 doc vault) ·
 M5 Terraform/EKS to a real dev environment ·
 M6 vault (Zone A) ·
