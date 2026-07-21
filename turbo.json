@@ -10,7 +10,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "env": ["PG_TEST_URL"]
+      "env": ["PG_TEST_URL", "CI"]
     },
     "dev": {
       "cache": false,
