@@ -79,6 +79,22 @@ thresholds (CI now prints coverage; gate at 95/90 once CI-measured numbers exist
 monthly audit partitions + S3 Object Lock anchoring, identity logout/revocation
 endpoint, BFF depth/complexity limits.
 
+**M1 security review (2026-07-21).** A focused review of the shipped code found no
+exploitable vulnerability in the committed (dev) configuration. One production-conditions
+finding is tracked here for M2:
+- *Registration account-enumeration timing channel (Medium).* `register()` equalizes
+  response body/status and the Argon2 cost, but the new-email path awaits extra KMS + DB
+  + Kafka work; under production wiring an existing email returns measurably faster,
+  giving a membership oracle. Not exploitable today (dev uses in-process KMS/audit
+  doubles). Fix direction: an email-verification flow returning a fixed-shape, fixed-time
+  response regardless of address existence. Decoy work (risks orphaned DEKs) and
+  fire-and-forget publishing (breaks the audit-before-completion invariant) are both
+  rejected as fixes. Docstring on `auth.service.ts register()` no longer overclaims.
+Verified clean in review: AEAD/AAD binding, blind-index domain separation, opaque-token
+handling, session/step-up guards, refresh rotation-reuse, all parameterized SQL and the
+identifier-validating generators, the migrator, Kafka-message deserialization + PII
+firewall, and the BFF cookie/CSRF/persisted-operations model.
+
 ### Later milestones (rough order, one per bounded context)
 M2 profile & contacts (role assignments, permission grants, Cedar policies) ·
 M3 asset ledger (event-sourced `asset_events` → `assets_view`, then Plaid isolate) ·

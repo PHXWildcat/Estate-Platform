@@ -54,9 +54,19 @@ export class AuthService {
   ) {}
 
   /**
-   * Registration. The response upstream is IDENTICAL for new and existing
-   * emails (no account enumeration); the password is hashed on every path so
-   * the duplicate case is also time-shaped like a success.
+   * Registration. The response body/status upstream is IDENTICAL for new and
+   * existing emails, and both paths pay the Argon2 cost.
+   *
+   * KNOWN LIMITATION (tracked for M2, docs/04): this does NOT fully close the
+   * account-enumeration *timing* channel. The new-email path additionally
+   * awaits KMS + DB inserts + Kafka publishes on the critical path, so under
+   * production wiring (real MSK/KMS — not the in-process dev doubles) an
+   * existing email returns measurably faster. Argon2 is a shared additive
+   * constant and does not equalize that post-branch asymmetry. The correct fix
+   * is an email-verification flow that returns a fixed-shape, fixed-time
+   * response regardless of whether the address exists (unlike login(), decoy
+   * work here would risk orphaned DEKs / side effects, and deferring the
+   * publishes would break the audit-before-completion invariant).
    */
   async register(email: string, password: string): Promise<void> {
     const normalized = normalizeEmail(email);
