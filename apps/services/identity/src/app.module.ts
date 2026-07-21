@@ -1,7 +1,14 @@
 import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
+import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
-import { FieldCrypto, LocalKmsProvider, type DekRepository } from '@estate/crypto';
+import {
+  FieldCrypto,
+  LocalKmsProvider,
+  type DekRepository,
+  type KmsKeyProvider,
+} from '@estate/crypto';
+import { AwsKmsProvider } from '@estate/kms-aws';
 import type { PoolConfig } from 'pg';
 import { AuthController } from './auth.controller';
 import { AuthEventsRepo } from './auth-events.repo';
@@ -26,6 +33,23 @@ import { SessionGuard } from './session.guard';
 import { SessionsRepo } from './sessions.repo';
 import { StepUpGuard } from './stepup.guard';
 import { UsersRepo } from './users.repo';
+import { WebAuthnRepo } from './webauthn.repo';
+import { WebAuthnService } from './webauthn.service';
+
+/**
+ * Select the KMS backend. Production uses AWS KMS (CloudHSM-rooted KEKs, the
+ * insider-threat chokepoint per docs/03 §5.3); dev/test uses the in-process
+ * LocalKmsProvider. config.ts already fails fast if the required settings for
+ * the active mode are missing, so this switch is total.
+ */
+function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
+  if (config.kms.mode === 'aws') {
+    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
+      keyId: config.kms.keyId,
+    });
+  }
+  return new LocalKmsProvider(config.kms.masterKey);
+}
 
 @Module({
   controllers: [AuthController],
@@ -68,9 +92,7 @@ import { UsersRepo } from './users.repo';
         events: EventsService,
       ): FieldCrypto =>
         new FieldCrypto(
-          // LocalKmsProvider is DEV/TEST ONLY — replaced by the AWS KMS
-          // adapter (CloudHSM-rooted KEKs) before any real deployment.
-          new LocalKmsProvider(config.kmsMasterKey),
+          kmsProviderFor(config),
           deks,
           async (event): Promise<void> => {
             // Every field decryption is a logged event (docs/01 Zone B rule).
@@ -93,7 +115,9 @@ import { UsersRepo } from './users.repo';
     SessionsRepo,
     MfaRepo,
     AuthEventsRepo,
+    WebAuthnRepo,
     AuthService,
+    WebAuthnService,
     SessionGuard,
     StepUpGuard,
     { provide: APP_FILTER, useClass: HttpErrorFilter },

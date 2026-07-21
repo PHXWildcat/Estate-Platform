@@ -120,14 +120,19 @@ export class EventsService {
     });
   }
 
-  async stepUpGranted(userId: string, sessionId: string, expiresAt: Date): Promise<void> {
+  async stepUpGranted(
+    userId: string,
+    sessionId: string,
+    expiresAt: Date,
+    method: 'totp' | 'webauthn' = 'totp',
+  ): Promise<void> {
     await this.publish(
       StepUpGrantedEvent,
       {
         type: 'auth.stepup.granted',
         version: 1,
         actor: { id: userId, type: 'user' },
-        payload: { userId, sessionId, method: 'totp', expiresAt: expiresAt.toISOString() },
+        payload: { userId, sessionId, method, expiresAt: expiresAt.toISOString() },
       },
       userId,
     );
@@ -139,7 +144,32 @@ export class EventsService {
       resourceType: 'session',
       resourceId: sessionId,
       sessionId,
-      detail: { method: 'totp' },
+      detail: { method },
+    });
+  }
+
+  async webauthnRegistered(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.webauthn.registered',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'webauthn_credential',
+      resourceId: userId,
+      sessionId: null,
+    });
+  }
+
+  /** A non-incrementing signature counter — the credential may be cloned. */
+  async webauthnCloneDetected(userId: string, sessionId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.webauthn.clone_detected',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'webauthn_credential',
+      resourceId: userId,
+      sessionId,
     });
   }
 

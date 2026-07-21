@@ -11,10 +11,12 @@
     "dev": "node dist/main.js"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "catalog:",
     "@estate/audit-emitter": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/crypto": "workspace:*",
     "@estate/db": "workspace:*",
+    "@estate/kms-aws": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",

@@ -17,7 +17,10 @@ describe('config validation', () => {
     const config = loadConfig(validEnv());
     expect(config.nodeEnv).toBe('development');
     expect(config.port).toBe(3001);
-    expect(config.kmsMasterKey).toHaveLength(32);
+    expect(config.kms.mode).toBe('local');
+    if (config.kms.mode === 'local') {
+      expect(config.kms.masterKey).toHaveLength(32);
+    }
     expect(config.emailIndexKey).toHaveLength(32);
     expect(config.kafkaBrokers).toBeNull();
   });
@@ -49,9 +52,47 @@ describe('config validation', () => {
     );
   });
 
-  it('production with brokers is accepted', () => {
-    const config = loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092' }));
+  const PROD_EXTRAS = {
+    RP_ID: 'estate.example.com',
+    RP_ORIGIN: 'https://estate.example.com',
+    RP_NAME: 'Estate Platform',
+    AWS_KMS_KEY_ID: 'alias/estate-auth-kek',
+    AWS_REGION: 'us-east-1',
+  };
+
+  it('production REQUIRES the WebAuthn RP identity (never a localhost default)', () => {
+    // Kafka + AWS KMS present but RP vars missing ⇒ still rejected.
+    const { RP_ID: _r, RP_ORIGIN: _o, RP_NAME: _n, ...kmsOnly } = PROD_EXTRAS;
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...kmsOnly })),
+    ).toThrow(ConfigError);
+  });
+
+  it('production REQUIRES AWS KMS (LocalKmsProvider is dev/test only)', () => {
+    const { AWS_KMS_KEY_ID: _k, AWS_REGION: _reg, ...rpOnly } = PROD_EXTRAS;
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...rpOnly })),
+    ).toThrow(ConfigError);
+  });
+
+  it('production with brokers, RP identity, and AWS KMS is accepted', () => {
+    const config = loadConfig(
+      validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...PROD_EXTRAS }),
+    );
     expect(config.kafkaBrokers).toEqual(['k1:9092']);
+    expect(config.rpId).toBe('estate.example.com');
+    expect(config.kms).toEqual({
+      mode: 'aws',
+      keyId: 'alias/estate-auth-kek',
+      region: 'us-east-1',
+    });
+  });
+
+  it('dev falls back to localhost RP defaults', () => {
+    const config = loadConfig(validEnv());
+    expect(config.rpId).toBe('localhost');
+    expect(config.rpOrigin).toBe('http://localhost:3000');
+    expect(config.rpName).toBe('Estate Platform');
   });
 
   it('error messages carry issue paths, never env values', () => {
