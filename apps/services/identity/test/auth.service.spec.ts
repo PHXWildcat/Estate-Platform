@@ -88,6 +88,9 @@ const config: IdentityConfig = {
   emailIndexKey: Buffer.alloc(32, 9),
   kafkaBrokers: null,
   kekAlias: 'test/kek',
+  rpId: 'localhost',
+  rpOrigin: 'http://localhost:3000',
+  rpName: 'Estate Platform',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {

@@ -26,6 +26,8 @@ import { SessionGuard } from './session.guard';
 import { SessionsRepo } from './sessions.repo';
 import { StepUpGuard } from './stepup.guard';
 import { UsersRepo } from './users.repo';
+import { WebAuthnRepo } from './webauthn.repo';
+import { WebAuthnService } from './webauthn.service';
 
 @Module({
   controllers: [AuthController],
@@ -93,7 +95,9 @@ import { UsersRepo } from './users.repo';
     SessionsRepo,
     MfaRepo,
     AuthEventsRepo,
+    WebAuthnRepo,
     AuthService,
+    WebAuthnService,
     SessionGuard,
     StepUpGuard,
     { provide: APP_FILTER, useClass: HttpErrorFilter },

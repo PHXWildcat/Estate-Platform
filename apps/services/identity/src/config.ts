@@ -29,6 +29,14 @@ const EnvSchema = z
     // a hard dependency of every sensitive action, so production without
     // Kafka must fail fast at startup rather than silently drop audit events.
     KAFKA_BROKERS: z.string().optional(),
+    // WebAuthn Relying Party identity. Optional in dev/test (localhost defaults
+    // applied in loadConfig); REQUIRED in production — a wrong RP ID/origin
+    // silently breaks every passkey ceremony and, worse, weakens the origin
+    // binding that anchors WebAuthn's phishing resistance, so production must
+    // fail fast rather than fall back to a localhost default.
+    RP_ID: z.string().min(1).optional(),
+    RP_ORIGIN: z.string().url().optional(),
+    RP_NAME: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -37,6 +45,17 @@ const EnvSchema = z
         path: ['KAFKA_BROKERS'],
         message: 'KAFKA_BROKERS is required in production (audit emission must not be a no-op)',
       });
+    }
+    if (env.NODE_ENV === 'production') {
+      for (const key of ['RP_ID', 'RP_ORIGIN', 'RP_NAME'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required in production (WebAuthn must bind to the real RP, never a localhost default)`,
+          });
+        }
+      }
     }
   });
 
@@ -52,6 +71,12 @@ export interface IdentityConfig {
   readonly kafkaBrokers: string[] | null;
   /** KEK alias used when wrapping per-user DEKs. */
   readonly kekAlias: string;
+  /** WebAuthn RP ID (registrable domain, no scheme/port). Prod must set this. */
+  readonly rpId: string;
+  /** WebAuthn expected origin (scheme + host + port). Prod must set this. */
+  readonly rpOrigin: string;
+  /** User-visible RP name shown by the authenticator during ceremonies. */
+  readonly rpName: string;
 }
 
 export class ConfigError extends Error {
@@ -86,5 +111,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     emailIndexKey: Buffer.from(e.EMAIL_INDEX_KEY_HEX, 'hex'),
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     kekAlias: 'local/auth-kek',
+    // Dev/test localhost fallbacks; production is guaranteed non-default by the
+    // superRefine guard above (which fails fast when these are unset in prod).
+    rpId: e.RP_ID ?? 'localhost',
+    rpOrigin: e.RP_ORIGIN ?? 'http://localhost:3000',
+    rpName: e.RP_NAME ?? 'Estate Platform',
   };
 }

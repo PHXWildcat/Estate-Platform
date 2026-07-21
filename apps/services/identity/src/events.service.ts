@@ -120,14 +120,19 @@ export class EventsService {
     });
   }
 
-  async stepUpGranted(userId: string, sessionId: string, expiresAt: Date): Promise<void> {
+  async stepUpGranted(
+    userId: string,
+    sessionId: string,
+    expiresAt: Date,
+    method: 'totp' | 'webauthn' = 'totp',
+  ): Promise<void> {
     await this.publish(
       StepUpGrantedEvent,
       {
         type: 'auth.stepup.granted',
         version: 1,
         actor: { id: userId, type: 'user' },
-        payload: { userId, sessionId, method: 'totp', expiresAt: expiresAt.toISOString() },
+        payload: { userId, sessionId, method, expiresAt: expiresAt.toISOString() },
       },
       userId,
     );
@@ -139,7 +144,7 @@ export class EventsService {
       resourceType: 'session',
       resourceId: sessionId,
       sessionId,
-      detail: { method: 'totp' },
+      detail: { method },
     });
   }
 

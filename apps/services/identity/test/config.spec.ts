@@ -49,9 +49,33 @@ describe('config validation', () => {
     );
   });
 
-  it('production with brokers is accepted', () => {
-    const config = loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092' }));
+  const PROD_WEBAUTHN = {
+    RP_ID: 'estate.example.com',
+    RP_ORIGIN: 'https://estate.example.com',
+    RP_NAME: 'Estate Platform',
+  };
+
+  it('production REQUIRES the WebAuthn RP identity (never a localhost default)', () => {
+    // Kafka present but RP vars missing ⇒ still rejected.
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092' })),
+    ).toThrow(ConfigError);
+  });
+
+  it('production with brokers and RP identity is accepted', () => {
+    const config = loadConfig(
+      validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...PROD_WEBAUTHN }),
+    );
     expect(config.kafkaBrokers).toEqual(['k1:9092']);
+    expect(config.rpId).toBe('estate.example.com');
+    expect(config.rpOrigin).toBe('https://estate.example.com');
+  });
+
+  it('dev falls back to localhost RP defaults', () => {
+    const config = loadConfig(validEnv());
+    expect(config.rpId).toBe('localhost');
+    expect(config.rpOrigin).toBe('http://localhost:3000');
+    expect(config.rpName).toBe('Estate Platform');
   });
 
   it('error messages carry issue paths, never env values', () => {
