@@ -2,7 +2,7 @@ name: Security
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/**']
   pull_request:
   schedule:
     - cron: '0 6 * * *' # daily sweep so new advisories surface without a push

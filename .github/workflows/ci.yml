@@ -2,11 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/**']
   pull_request:
 
 permissions:
   contents: read
+
+# Skip the branch-push run when a PR run for the same commit exists.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
