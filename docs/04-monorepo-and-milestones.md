@@ -53,7 +53,7 @@ docs/                   00–04 + docs/adr/ going forward
 
 ## Milestones
 
-### M1 — Secure walking skeleton (in progress)
+### M1 — Secure walking skeleton (shipped 2026-07-21; open items below)
 Foundation packages (`config`, `contracts`, `crypto`, `db`, `audit-emitter`,
 `auth-guard`) + **identity service** (auth-cluster DDL per docs/02 §1, registration with
 encrypted email + blind index, Argon2id, passkeys, TOTP, sessions with refresh rotation,
@@ -63,6 +63,21 @@ flows. **Acceptance:** E2E register → login → step-up → gated action → a
 verified in chain; automated schema-convention checker passes (soft delete, `_versions`
 tables, REVOKEs); no plaintext PII in logs under integration inspection; coverage gates
 95/90.
+
+**M1 status.** Shipped: foundation packages; identity service (WebAuthn schema in
+place, endpoints deferred); audit service; GraphQL BFF (persisted operations enforced
+in production, httpOnly-cookie sessions, CSRF header, masked errors); Next.js auth
+flows (register/login/TOTP/step-up, design tokens, dark mode, AA+); walking-skeleton
+E2E (`apps/e2e`, PG-gated) proving identity's exact produced bytes ingest into a
+verified audit hash chain; schema-convention checker (`@estate/db checkConventions`)
+run against both migrated schemas; CI guard failing the build if integration suites
+would silently skip. **Open items rolling into M2:** Cedar PDP integration (guards
+are deny-by-default but policy engine not wired), WebAuthn endpoints, Kafka
+broker-hop E2E (needs Redpanda locally/in CI — current E2E bridges producer bytes to
+the ingestor in-process), AWS KMS adapter (LocalKmsProvider is dev-only), coverage
+thresholds (CI now prints coverage; gate at 95/90 once CI-measured numbers exist),
+monthly audit partitions + S3 Object Lock anchoring, identity logout/revocation
+endpoint, BFF depth/complexity limits.
 
 ### Later milestones (rough order, one per bounded context)
 M2 profile & contacts (role assignments, permission grants, Cedar policies) ·

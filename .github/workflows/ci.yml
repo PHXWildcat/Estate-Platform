@@ -58,7 +58,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # --coverage makes the per-package coverage tables visible in CI logs;
+      # thresholds (95 backend / 90 frontend target) get enabled once real
+      # CI-measured numbers exist — integration suites only run here, so local
+      # coverage figures understate reality.
       - name: Test
-        run: pnpm test
+        run: pnpm test -- --coverage
         env:
           PG_TEST_URL: postgres://estate:estate_ci@localhost:5432/estate_test

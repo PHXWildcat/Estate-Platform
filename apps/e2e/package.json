@@ -1,0 +1,27 @@
+{
+  "name": "@estate/e2e",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cross-service end-to-end tests (test-only package; runtime services never import each other). Proves the identity → audit event path and schema conventions against real Postgres.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@estate/contracts": "workspace:*",
+    "@estate/db": "workspace:*",
+    "@estate/service-audit": "workspace:*",
+    "@estate/service-identity": "workspace:*",
+    "@nestjs/testing": "catalog:",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "@types/supertest": "catalog:",
+    "jest": "catalog:",
+    "pg": "catalog:",
+    "supertest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}
