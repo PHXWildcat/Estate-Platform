@@ -90,7 +90,9 @@ describeIfPg('walking skeleton: identity → audit chain', () => {
     // getHttpServer() is typed `any` by Nest; assert to supertest's input type.
     const http = supertest(app.getHttpServer() as Parameters<typeof supertest>[0]);
     const email = `e2e-${randomUUID()}@example.com`;
-    const password = 'correct-horse-battery-staple-9';
+    // Generated, not a literal: keeps hardcoded credential-shaped strings out of
+    // the repo (secret scanners can't tell a test password from a real one).
+    const password = `Pw-${randomBytes(18).toString('base64url')}`;
 
     await http.post('/v1/auth/register').send({ email, password }).expect(201);
 
