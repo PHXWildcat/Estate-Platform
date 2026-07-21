@@ -37,6 +37,22 @@ catalog:
   kafkajs: ^2.2.4
   supertest: ^7.1.0
   '@types/supertest': ^6.0.3
+  # bff
+  graphql: ^16.11.0
+  graphql-yoga: ^5.13.0
+  '@graphql-yoga/plugin-persisted-operations': ^3.0.0
+  # web
+  next: ^15.3.3
+  react: ^19.1.0
+  react-dom: ^19.1.0
+  '@types/react': ^19.1.5
+  '@types/react-dom': ^19.1.5
+  tailwindcss: ^4.1.0
+  '@tailwindcss/postcss': ^4.1.0
+  postcss: ^8.5.3
+  '@testing-library/react': ^16.3.0
+  '@testing-library/jest-dom': ^6.6.3
+  jest-environment-jsdom: ^29.7.0
 
 # Supply-chain control (threat model TB5): dependency lifecycle scripts are
 # blocked by default in pnpm 10. Add a package here ONLY after reviewing why it
