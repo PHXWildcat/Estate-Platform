@@ -102,9 +102,24 @@ fail-fast); `@estate/authz` (Cedar PDP, deny-by-default, owner/beneficiary
 policies); WebAuthn passkey register/authenticate in identity (passkey as a
 step-up factor) with its audit actions added to `@estate/contracts` and emitted
 to Kafka; per-package **coverage gates** (jest thresholds set just below current
-coverage, ratcheting toward 95/90 — CI runs `pnpm test --coverage`). Remaining:
-profile & contacts service (core cluster) with Cedar wired into a real PEP —
-beneficiary ABAC's first product use.
+coverage, ratcheting toward 95/90 — CI runs `pnpm test --coverage`). Profile &
+contacts service (core cluster) — **shipped**: field-encrypted profiles/family/
+contacts/role assignments/permission grants, the first Cedar PEP (`ProfileAuthz`,
+deny-by-default) proving the §5.5 beneficiary ABAC (a grant-holder reads only the
+named resource), caller identity via gateway-injected `x-estate-user-id`.
+
+**M2 follow-ups noted while building:**
+- **Cross-request DEK race (crypto package).** `getOrCreateDek` is
+  find-then-insert; two concurrent first-writes for the same brand-new user can
+  each mint a DEK. The intra-request parallel race is fixed (pre-materialize the
+  DEK before parallel field encryption, in identity + profile), but the
+  cross-request case wants a DB guard — a partial unique index on
+  `deks(user_id) WHERE destroyed_at IS NULL` plus an ON CONFLICT upsert in the
+  repository. Affects every service using per-user DEKs.
+- Core-cluster **domain-event** contracts/topic (profile emits audit events only
+  for now); real cross-service session verification to replace the trusted
+  `x-estate-user-id` header; asset-scoped beneficiary ABAC when the asset service
+  lands; a Cedar schema for `validateRequest`.
 
 ### Later milestones (rough order, one per bounded context)
 M2 profile & contacts (role assignments, permission grants, Cedar policies) ·

@@ -16,6 +16,17 @@ export const AUDIT_ACTIONS = [
   'auth.webauthn.clone_detected',
   'crypto.field.decrypted',
   'crypto.dek.destroyed',
+  // Profile & Contacts service (core cluster).
+  'profile.updated',
+  'family_member.created',
+  'family_member.updated',
+  'family_member.deleted',
+  'contact.created',
+  'contact.updated',
+  'contact.deleted',
+  'role.granted',
+  'role.revoked',
+  'permission.granted',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
