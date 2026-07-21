@@ -121,6 +121,19 @@ named resource), caller identity via gateway-injected `x-estate-user-id`.
   `x-estate-user-id` header; asset-scoped beneficiary ABAC when the asset service
   lands; a Cedar schema for `validateRequest`.
 
+**M2 security review (2026-07-21).** Structured review (discovery + adversarial
+filter) of the M2 diff: no authz bypass, injection, crypto, or data-exposure vuln
+above the bar; the Cedar PEP, per-user field encryption, KMS context-binding, and
+WebAuthn origin/challenge/clone controls all verified fail-closed. One confirmed
+finding, **fixed in-branch**:
+- *WebAuthn step-up accepted user-presence, not user-verification (Medium).* The
+  passkey ceremony that elevates a session to step-up used `userVerification:
+  'preferred'` and omitted `requireUserVerification` at verify, so a presence-only
+  tap could satisfy step-up — the same gate as a TOTP code (docs/01 §5). In-scope
+  for the docs/03 §2 device-access adversary. Fixed: `userVerification: 'required'`
+  in both option generators, `requireUserVerification: true` at both verify calls,
+  and the step-up elevation now gated on `authenticationInfo.userVerified`.
+
 ### Later milestones (rough order, one per bounded context)
 M2 profile & contacts (role assignments, permission grants, Cedar policies) ·
 M3 asset ledger (event-sourced `asset_events` → `assets_view`, then Plaid isolate) ·

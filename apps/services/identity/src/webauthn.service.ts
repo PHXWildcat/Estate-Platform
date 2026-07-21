@@ -100,7 +100,10 @@ export class WebAuthnService {
       userName: userId,
       userID: uuidToBytes(userId),
       excludeCredentials: existing.map(toDescriptor),
-      authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+      // userVerification 'required': a passkey here is a STEP-UP factor
+      // (docs/01 §5), so only enroll credentials that perform user verification
+      // (PIN/biometric) — a presence-only tap must never satisfy step-up.
+      authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
     });
     await this.repo.insertChallenge({
       userId,
@@ -130,6 +133,8 @@ export class WebAuthnService {
         expectedChallenge,
         expectedOrigin: this.config.rpOrigin,
         expectedRPID: this.config.rpId,
+        // Enforce that the credential performed user verification at enrollment.
+        requireUserVerification: true,
       });
     } catch {
       // Malformed/forged response — surface a single generic failure.
@@ -168,7 +173,8 @@ export class WebAuthnService {
     const options = await generateAuthenticationOptions({
       rpID: this.config.rpId,
       ...(allowCredentials ? { allowCredentials } : {}),
-      userVerification: 'preferred',
+      // 'required': step-up must be a strong (UV) re-auth, not presence-only.
+      userVerification: 'required',
     });
     await this.repo.insertChallenge({
       userId: userId ?? null,
@@ -219,11 +225,15 @@ export class WebAuthnService {
             ? { transports: cred.transports as AuthenticatorTransportFuture[] }
             : {}),
         },
+        // The library rejects a presence-only assertion outright…
+        requireUserVerification: true,
       });
     } catch {
       throw authenticationFailed();
     }
-    if (!verification.verified) {
+    // …and we gate the step-up elevation on userVerified explicitly (defence in
+    // depth): a passkey step-up must be a strong re-auth, never a bare tap.
+    if (!verification.verified || !verification.authenticationInfo.userVerified) {
       throw authenticationFailed();
     }
     const newCounter = verification.authenticationInfo.newCounter;

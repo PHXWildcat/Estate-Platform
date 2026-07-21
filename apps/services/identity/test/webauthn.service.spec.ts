@@ -260,7 +260,7 @@ describe('WebAuthnService.finishAuthentication', () => {
     fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
     mockVerifyAuth.mockResolvedValue({
       verified: true,
-      authenticationInfo: { newCounter: 6 },
+      authenticationInfo: { newCounter: 6, userVerified: true },
     } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
     const service = makeService(fakes);
 
@@ -283,7 +283,7 @@ describe('WebAuthnService.finishAuthentication', () => {
     fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
     mockVerifyAuth.mockResolvedValue({
       verified: true,
-      authenticationInfo: { newCounter: 5 }, // did not advance ⇒ clone
+      authenticationInfo: { newCounter: 5, userVerified: true }, // did not advance ⇒ clone
     } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
     const service = makeService(fakes);
 
@@ -327,12 +327,29 @@ describe('WebAuthnService.finishAuthentication', () => {
     fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '0' }));
     mockVerifyAuth.mockResolvedValue({
       verified: true,
-      authenticationInfo: { newCounter: 0 }, // authenticator reports no counter
+      authenticationInfo: { newCounter: 0, userVerified: true }, // authenticator reports no counter
     } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
     const service = makeService(fakes);
 
     const result = await service.finishAuthentication(USER_ID, SESSION_ID, response);
     expect(result.mfaLevel).toBe('stepup');
     expect(fakes.sessions.grantStepUp).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a presence-only assertion (userVerified false) — step-up needs UV', async () => {
+    const fakes = makeFakes();
+    fakes.repo.consumeChallenge.mockResolvedValue('auth-challenge');
+    fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
+    mockVerifyAuth.mockResolvedValue({
+      verified: true,
+      authenticationInfo: { newCounter: 6, userVerified: false }, // tap only, no PIN/biometric
+    } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
+    const service = makeService(fakes);
+
+    await expect(
+      service.finishAuthentication(USER_ID, SESSION_ID, response),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(fakes.sessions.grantStepUp).not.toHaveBeenCalled();
+    expect(fakes.repo.updateSignCount).not.toHaveBeenCalled();
   });
 });
