@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { AuditEventSchema } from '../src/audit';
-import { AssetCategorySchema, AssetLedgerAppendedEvent } from '../src/asset-events';
-import { AuthEventSchema, LoginSucceededEvent } from '../src/auth-events';
+// Import through the barrel so the public surface (index.ts re-exports) is
+// itself covered — a symbol dropped from index.ts breaks this suite.
+import {
+  AssetCategorySchema,
+  AssetLedgerAppendedEvent,
+  AuditEventSchema,
+  AuthEventSchema,
+  LoginSucceededEvent,
+  TOPICS,
+} from '../src';
 
 function validAuditEvent() {
   return {
@@ -71,6 +78,10 @@ describe('asset event contracts', () => {
 
   it('accepts a valid ledger-appended envelope', () => {
     expect(AssetLedgerAppendedEvent.safeParse(validLedgerAppended()).success).toBe(true);
+  });
+
+  it('pins the versioned topic name (breaking payload change = NEW topic)', () => {
+    expect(TOPICS.assetEvents).toBe('estate.asset.events.v1');
   });
 
   it('rejects unknown event types and categories (closed vocabularies)', () => {
