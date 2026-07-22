@@ -7,16 +7,18 @@
  */
 import 'reflect-metadata';
 import type { Server } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { Migrator } from '@estate/db';
 import { TOPICS } from '@estate/contracts';
+import { DekConflictError, type FieldCrypto } from '@estate/crypto';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { InMemoryAuditProducer } from '../src/audit-producer';
-import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
+import { PgDekRepository } from '../src/dek.repository';
+import { AUDIT_PRODUCER, FIELD_CRYPTO, PG_POOL_CONFIG } from '../src/di-tokens';
 import { currentTotpCode } from '../src/totp';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
@@ -56,6 +58,7 @@ describeIfPg('identity service end to end', () => {
       const migrator = new Migrator(migrClient, `${__dirname}/../migrations`);
       const { applied } = await migrator.migrate();
       expect(applied).toContain('001_auth_schema.sql');
+      expect(applied).toContain('002_dek_unique_active.sql');
     } finally {
       await migrClient.end();
     }
@@ -247,6 +250,37 @@ describeIfPg('identity service end to end', () => {
       .post('/v1/auth/export-demo')
       .set('Authorization', `Bearer ${rotated.accessToken}`);
     expect(accessAfterRevoke.status).toBe(401);
+  });
+
+  it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {
+    // Registration mints a fresh userId per request, so a same-user HTTP race
+    // cannot be staged here; the race is exercised at the FieldCrypto level,
+    // which is where every service-side first-write funnels through.
+    const fieldCrypto = app.get<FieldCrypto>(FIELD_CRYPTO);
+    const newUser = randomUUID();
+    const dekIds = await Promise.all([1, 2, 3, 4].map(() => fieldCrypto.getOrCreateDek(newUser)));
+    expect(new Set(dekIds).size).toBe(1);
+    const { rows } = await admin.query(
+      `SELECT count(*)::int AS n FROM ${schema}.deks WHERE user_id = $1 AND destroyed_at IS NULL`,
+      [newUser],
+    );
+    expect((rows[0] as { n: number }).n).toBe(1);
+  });
+
+  it('translates a duplicate active-DEK insert to DekConflictError (23505)', async () => {
+    const repo = app.get(PgDekRepository);
+    const userId = randomUUID();
+    const record = {
+      userId,
+      kekAlias: 'local',
+      wrappedKey: randomBytes(32),
+      createdAt: new Date(),
+      destroyedAt: null,
+    };
+    await repo.insert({ ...record, dekId: randomUUID() });
+    await expect(repo.insert({ ...record, dekId: randomUUID() })).rejects.toBeInstanceOf(
+      DekConflictError,
+    );
   });
 
   it('wrote the local auth_events ledger', async () => {

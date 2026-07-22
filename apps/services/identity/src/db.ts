@@ -26,7 +26,7 @@ export class Db implements OnModuleDestroy {
   }
 }
 
-/** Postgres unique-violation detector (used for the no-enumeration register path). */
+/** Postgres unique-violation detector (no-enumeration register path, DEK uniqueness). */
 export function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === 'object' &&

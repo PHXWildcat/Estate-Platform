@@ -93,3 +93,13 @@ deviating from them, stop and propose the change with rationale — do not silen
   the financial cluster from day one + `DekConflictError` adopt-the-winner handling in
   `@estate/crypto` `getOrCreateDek`; auth/core clusters get backfill migrations (with
   pre-flight dedupe) as a follow-up.
+- 2026-07-22 — DEK backfill dedupe (auth/core `002_dek_unique_active.sql`): a raced
+  double is retired ONLY when verified unreferenced — explicit `dek_id` refs on live
+  and soft-deleted rows plus `*_versions` row images, and in the auth cluster the
+  implicit newest-active binding of `mfa_methods.secret_ct` (column has no dek_id).
+  Keeper = referenced DEK, else newest. If >1 active DEK of one user is referenced,
+  the migration RAISEs and rolls back — SQL has no KMS access, and `destroyed_at`
+  means crypto-shredded, so the migration must never pick which ciphertexts die;
+  runbook is re-encrypt onto one DEK, then re-run. Rejected: blind-destroy the loser
+  (data loss) and an in-migration re-encryption tool (KMS creds in the migrator,
+  built for a case with no observed instance and no production deployment).

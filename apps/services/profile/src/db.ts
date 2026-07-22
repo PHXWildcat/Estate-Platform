@@ -26,7 +26,7 @@ export class Db implements OnModuleDestroy {
   }
 }
 
-/** Postgres unique-violation detector (soft-delete-aware uniqueness on contacts). */
+/** Postgres unique-violation detector (contacts soft-delete uniqueness, DEK uniqueness). */
 export function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === 'object' &&

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import type { DekRecord, DekRepository } from '@estate/crypto';
-import { Db } from './db';
+import { DekConflictError, type DekRecord, type DekRepository } from '@estate/crypto';
+import { Db, isUniqueViolation } from './db';
 
 interface DekRow {
   dek_id: string;
@@ -11,7 +11,13 @@ interface DekRow {
   destroyed_at: Date | null;
 }
 
-/** DekRepository backed by the core cluster's `deks` table. */
+/**
+ * DekRepository backed by the core cluster's `deks` table. Since migration
+ * 002, `ux_deks_user_active` guarantees at most one active DEK per user at
+ * the database; a lost first-write race surfaces as a unique violation,
+ * translated here to DekConflictError so @estate/crypto adopts the winner's
+ * DEK instead of minting a duplicate.
+ */
 @Injectable()
 export class PgDekRepository implements DekRepository {
   constructor(private readonly db: Db) {}
@@ -39,18 +45,25 @@ export class PgDekRepository implements DekRepository {
   }
 
   async insert(record: DekRecord): Promise<void> {
-    await this.db.query(
-      `INSERT INTO deks (dek_id, user_id, kek_alias, wrapped_key, created_at, destroyed_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        record.dekId,
-        record.userId,
-        record.kekAlias,
-        record.wrappedKey,
-        record.createdAt,
-        record.destroyedAt,
-      ],
-    );
+    try {
+      await this.db.query(
+        `INSERT INTO deks (dek_id, user_id, kek_alias, wrapped_key, created_at, destroyed_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          record.dekId,
+          record.userId,
+          record.kekAlias,
+          record.wrappedKey,
+          record.createdAt,
+          record.destroyedAt,
+        ],
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new DekConflictError();
+      }
+      throw err;
+    }
   }
 
   async markDestroyed(dekId: string, at: Date): Promise<void> {

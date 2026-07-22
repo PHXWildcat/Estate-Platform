@@ -13,10 +13,12 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
 import { TOPICS } from '@estate/contracts';
+import { DekConflictError } from '@estate/crypto';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { InMemoryAuditProducer } from '../src/audit-producer';
+import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
@@ -59,6 +61,7 @@ describeIfPg('profile & contacts service end to end', () => {
       const migrator = new Migrator(migrClient, `${__dirname}/../migrations`);
       const { applied } = await migrator.migrate();
       expect(applied).toContain('001_core_schema.sql');
+      expect(applied).toContain('002_dek_unique_active.sql');
     } finally {
       await migrClient.end();
     }
@@ -234,6 +237,42 @@ describeIfPg('profile & contacts service end to end', () => {
       .set('x-estate-user-id', asUser(OWNER));
     expect(list.status).toBe(200);
     expect((list.body as unknown[]).length).toBe(3);
+  });
+
+  it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {
+    const newUser = randomUUID();
+    const results = await Promise.all(
+      [1, 2, 3, 4].map((i) =>
+        request(server)
+          .post('/v1/contacts')
+          .set('x-estate-user-id', asUser(newUser))
+          .send({ name: `Race Contact ${i}` }),
+      ),
+    );
+    for (const res of results) {
+      expect(res.status).toBe(201);
+    }
+    const { rows } = await admin.query(
+      `SELECT count(*)::int AS n FROM ${schema}.deks WHERE user_id = $1 AND destroyed_at IS NULL`,
+      [newUser],
+    );
+    expect((rows[0] as { n: number }).n).toBe(1);
+  });
+
+  it('translates a duplicate active-DEK insert to DekConflictError (23505)', async () => {
+    const repo = app.get(PgDekRepository);
+    const userId = randomUUID();
+    const record = {
+      userId,
+      kekAlias: 'local',
+      wrappedKey: randomBytes(32),
+      createdAt: new Date(),
+      destroyedAt: null,
+    };
+    await repo.insert({ ...record, dekId: randomUUID() });
+    await expect(repo.insert({ ...record, dekId: randomUUID() })).rejects.toBeInstanceOf(
+      DekConflictError,
+    );
   });
 
   it('emitted the required audit actions and never leaked PII on the wire', () => {
