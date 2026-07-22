@@ -31,9 +31,16 @@ export function payloadField(eventId: string): string {
   return `asset_event.payload.${eventId}`;
 }
 
-/** AAD field string for an encrypted assets_view column. */
-export function viewField(field: EncryptedField): string {
-  return `asset.${field}`;
+/**
+ * AAD field string for an encrypted assets_view column. Bound to the asset_id
+ * (like payloadField binds event_id) so a projection ciphertext is
+ * authenticated as "this field of THIS asset" — a DB-tamper adversary cannot
+ * splice one of the owner's blobs from asset A into asset B (docs/03 TB4).
+ * Changing this format is a re-encryption: run `rebuild --repair`, which
+ * rewrites the projection from the ledger under the new AAD.
+ */
+export function viewField(assetId: string, field: EncryptedField): string {
+  return `asset.${assetId}.${field}`;
 }
 
 /** Decrypted, API-facing asset representation. */
@@ -475,7 +482,7 @@ export class AssetsService {
           estValue: await this.cipher.decrypt({
             ownerUserId: row.user_id,
             dekId: row.dek_id,
-            field: viewField('est_value'),
+            field: viewField(row.asset_id, 'est_value'),
             ciphertext: row.est_value_ct,
             actorId: actor,
             purpose: 'net_worth',
@@ -535,7 +542,7 @@ export class AssetsService {
       payloadField(eventId),
       serializePayload(spec.payload),
     );
-    const encrypted = await this.encryptSettableFields(spec.actor, spec.payload);
+    const encrypted = await this.encryptSettableFields(spec.actor, spec.assetId, spec.payload);
     try {
       return await this.db.withTransaction(spec.actor, async (tx) => {
         const row = await this.views.lockById(tx, spec.assetId);
@@ -651,6 +658,7 @@ export class AssetsService {
   /** Encrypt the encrypted-capable view fields this payload sets. */
   private async encryptSettableFields(
     owner: string,
+    assetId: string,
     payload: AssetEventPayload,
   ): Promise<Map<EncryptedField, Buffer>> {
     const values = new Map<EncryptedField, string>();
@@ -669,7 +677,7 @@ export class AssetsService {
     }
     const out = new Map<EncryptedField, Buffer>();
     for (const [field, value] of values) {
-      out.set(field, await this.mustEncrypt(owner, viewField(field), value));
+      out.set(field, await this.mustEncrypt(owner, viewField(assetId, field), value));
     }
     return out;
   }
@@ -754,7 +762,7 @@ export class AssetsService {
       this.cipher.decrypt({
         ownerUserId: row.user_id,
         dekId: row.dek_id,
-        field: viewField(field),
+        field: viewField(row.asset_id, field),
         ciphertext,
         actorId: actor,
         purpose,

@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Migrator } from '@estate/db';
 import { Client } from 'pg';
+import { Db } from '../src/db';
+import { PgDekRepository } from '../src/dek.repository';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -152,6 +154,30 @@ describeIfPg('002_dek_unique_active pre-flight dedupe (auth cluster)', () => {
         `SELECT name FROM schema_migrations WHERE name = '002_dek_unique_active.sql'`,
       );
       expect(rows).toHaveLength(0);
+    });
+  });
+
+  it('findActiveByUser resolves a created_at tie to the SAME DEK the migration keeps (no shred)', async () => {
+    // Two active DEKs with an IDENTICAL created_at (the race this index
+    // remediates). The runtime resolver must pick the same one the migration's
+    // part-C "newest active DEK" ordering picks — max dek_id — so the DEK that
+    // seals mfa_methods.secret_ct is exactly the one treated as referenced.
+    await withBaselineSchema(async (client, schema) => {
+      const userId = randomUUID();
+      const idA = randomUUID();
+      const idB = randomUUID();
+      const tie = '2026-07-01T00:00:00.000Z';
+      await seedDek(client, idA, userId, tie);
+      await seedDek(client, idB, userId, tie);
+
+      const expected = [idA, idB].sort().reverse()[0]; // max dek_id (uuid byte order == string order)
+      const db = new Db({ connectionString: pgUrl, options: `-c search_path=${schema}` });
+      try {
+        const active = await new PgDekRepository(db).findActiveByUser(userId);
+        expect(active?.dekId).toBe(expected);
+      } finally {
+        await db.onModuleDestroy();
+      }
     });
   });
 

@@ -27,7 +27,9 @@ export class PgDekRepository implements DekRepository {
       `SELECT dek_id, user_id, kek_alias, wrapped_key, created_at, destroyed_at
          FROM deks
         WHERE user_id = $1 AND destroyed_at IS NULL
-        ORDER BY created_at DESC
+        -- Stable tiebreak matching the 002 dedupe migration's pick (see the
+        -- identity repo for the full rationale); created_at is a client Date.
+        ORDER BY created_at DESC, dek_id DESC
         LIMIT 1`,
       [userId],
     );

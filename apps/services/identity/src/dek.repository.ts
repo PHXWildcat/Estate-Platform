@@ -27,7 +27,12 @@ export class PgDekRepository implements DekRepository {
       `SELECT dek_id, user_id, kek_alias, wrapped_key, created_at, destroyed_at
          FROM deks
         WHERE user_id = $1 AND destroyed_at IS NULL
-        ORDER BY created_at DESC
+        -- dek_id DESC is a STABLE tiebreak: created_at is a client Date (ms),
+        -- so two raced first-writes can tie. This ordering must match the
+        -- 002 dedupe migration's "newest active DEK" pick so the DEK that
+        -- seals mfa_methods.secret_ct is the one the migration treats as
+        -- referenced (otherwise a tie could crypto-shred the live MFA DEK).
+        ORDER BY created_at DESC, dek_id DESC
         LIMIT 1`,
       [userId],
     );

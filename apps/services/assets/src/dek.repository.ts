@@ -27,7 +27,9 @@ export class PgDekRepository implements DekRepository {
       `SELECT dek_id, user_id, kek_alias, wrapped_key, created_at, destroyed_at
          FROM deks
         WHERE user_id = $1 AND destroyed_at IS NULL
-        ORDER BY created_at DESC
+        -- Stable tiebreak: created_at is a client Date (ms), so resolve ties
+        -- deterministically by dek_id (consistency with the other clusters).
+        ORDER BY created_at DESC, dek_id DESC
         LIMIT 1`,
       [userId],
     );

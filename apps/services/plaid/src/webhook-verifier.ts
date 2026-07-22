@@ -13,6 +13,16 @@ import type { PlaidGateway, WebhookJwk } from './plaid-gateway';
 const MAX_AGE_SECONDS = 5 * 60;
 /** Verification keys cache briefly; rotation is handled by unknown-kid refetch. */
 const KEY_CACHE_TTL_MS = 60 * 60 * 1000;
+/**
+ * The webhook route is UNAUTHENTICATED and the kid is attacker-controlled, so
+ * key resolution runs before any signature check. Without a negative cache an
+ * attacker could POST a stream of JWTs with novel kids and drive one outbound
+ * Plaid key-fetch each — burning the service's Plaid rate-limit budget. A
+ * miss is remembered briefly so repeated/rotating unknown kids collapse to at
+ * most one fetch per kid per window (legitimate rotation still refetches once
+ * this expires).
+ */
+const NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const HeaderSchema = z.object({
   alg: z.literal('ES256'), // pinned: anything else (esp. 'none', HS256) is rejected
@@ -43,6 +53,8 @@ export type WebhookVerdict = { valid: true } | { valid: false; reason: string };
 @Injectable()
 export class WebhookVerifier {
   private readonly keyCache = new Map<string, { jwk: WebhookJwk; expiresAt: number }>();
+  /** kid → epoch-ms until which a prior lookup miss is remembered. */
+  private readonly missCache = new Map<string, number>();
 
   constructor(
     @Inject(PLAID_GATEWAY) private readonly gateway: PlaidGateway,
@@ -107,13 +119,23 @@ export class WebhookVerifier {
   }
 
   private async keyFor(kid: string): Promise<WebhookJwk | null> {
+    const now = this.clock().getTime();
     const cached = this.keyCache.get(kid);
-    if (cached && cached.expiresAt > this.clock().getTime()) {
+    if (cached && cached.expiresAt > now) {
       return cached.jwk;
+    }
+    // Suppress repeated outbound fetches for a kid we recently failed to
+    // resolve — the anti-amplification guard for this unauthenticated route.
+    const missUntil = this.missCache.get(kid);
+    if (missUntil !== undefined && missUntil > now) {
+      return null;
     }
     const jwk = await this.gateway.getWebhookVerificationKey(kid);
     if (jwk) {
-      this.keyCache.set(kid, { jwk, expiresAt: this.clock().getTime() + KEY_CACHE_TTL_MS });
+      this.missCache.delete(kid);
+      this.keyCache.set(kid, { jwk, expiresAt: now + KEY_CACHE_TTL_MS });
+    } else {
+      this.missCache.set(kid, now + NEGATIVE_CACHE_TTL_MS);
     }
     return jwk;
   }
