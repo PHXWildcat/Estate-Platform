@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
-import { AssetsService } from '../src/assets.service';
+import { AssetsService, viewField } from '../src/assets.service';
 import { AssetsAuthz } from '../src/authz.service';
 import { buildCipher, fakeDb, FakeBens, FakeLedger, FakeViews, noopEvents } from './support';
 
@@ -245,5 +245,47 @@ describe('AssetsService queries', () => {
       { category: 'jewelry', count: 1, value: '0.00' },
       { category: 'real_estate', count: 2, value: '1050000.00' },
     ]);
+  });
+});
+
+describe('assets_view column AAD binds asset_id (docs/03 TB4 splice resistance)', () => {
+  it('a projection ciphertext cannot be decrypted under a different asset of the same owner', async () => {
+    const cipher = buildCipher();
+    const owner = randomUUID();
+    const assetA = randomUUID();
+    const assetB = randomUUID();
+
+    const { ciphertext, dekId } = await cipher.encrypt(
+      owner,
+      viewField(assetA, 'est_value'),
+      '325000.00',
+    );
+    expect(ciphertext).not.toBeNull();
+
+    // The exact splice a DB-tamper adversary would attempt: move asset A's
+    // est_value blob onto asset B's row (same owner, same DEK, same field).
+    // AAD now carries the asset_id, so GCM authentication must fail.
+    await expect(
+      cipher.decrypt({
+        ownerUserId: owner,
+        dekId,
+        field: viewField(assetB, 'est_value'),
+        ciphertext,
+        actorId: owner,
+        purpose: 'test',
+      }),
+    ).rejects.toThrow();
+
+    // Control: under the correct asset id the same ciphertext decrypts.
+    await expect(
+      cipher.decrypt({
+        ownerUserId: owner,
+        dekId,
+        field: viewField(assetA, 'est_value'),
+        ciphertext,
+        actorId: owner,
+        purpose: 'test',
+      }),
+    ).resolves.toBe('325000.00');
   });
 });

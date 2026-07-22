@@ -84,4 +84,24 @@ describe('WebhookVerifier (Plaid-Verification JWT, TB5)', () => {
     await verifier.verify(jwt, BODY);
     expect(spy).toHaveBeenCalledTimes(1);
   });
+
+  it('negative-caches an unknown kid so repeated unsigned webhooks cannot amplify outbound calls', async () => {
+    const spy = jest.spyOn(gateway, 'getWebhookVerificationKey');
+    // An attacker replaying the SAME unknown kid many times (unauthenticated).
+    const jwt = gateway.signWebhook(BODY.toString('utf8'), {
+      iatMs: now.getTime(),
+      kid: 'attacker-unknown-kid',
+    });
+    for (let i = 0; i < 5; i += 1) {
+      expect((await verifier.verify(jwt, BODY)).valid).toBe(false);
+    }
+    // Only the first miss reaches the provider; the rest are served from cache.
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Once the negative-cache window elapses, a legitimate later rotation to
+    // that kid is retried (no permanent blackhole).
+    now = new Date(now.getTime() + 6 * 60 * 1000);
+    await verifier.verify(jwt, BODY);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
 });

@@ -210,6 +210,47 @@ outbox for post-commit audit/domain emits; `DocumentAttached` event + photos (M4
 as-of replay snapshotting at scale; category is immutable in M3 (recategorize =
 retire + recreate).
 
+**M3 security review (2026-07-22).** Structured review (four parallel discovery
+passes — webhook crypto, Plaid token-isolation/authz, DEK-dedupe migrations, asset
+ledger — each finding adversarially re-verified against source) of the whole merged
+M3 range. No critical or app-surface-exploitable vulnerability. Verified fail-closed:
+object-level authz (ownership always loaded from the row → Cedar owner-only,
+deny-by-default) across both new services; Plaid token isolation (decrypts only at
+sync/revoke, never in responses/events/errors/logs); config fail-fast (prod cannot
+run the stub gateway or local KMS; `plaid/kek` cannot collide with `financial/kek`);
+ledger payload AAD binding to `user_id`+`event_id`; optimistic-concurrency/idempotency
+cannot bypass authz; BigInt money math; all SQL parameterized; the dedupe
+shred-safety theorem (no referenced DEK is ever retired); adopt-the-winner key
+handling. Three bounded findings, all **fixed in-branch** (`claude/m3-security-review-fixes`):
+- *`assets_view` column AAD not bound to `asset_id` (Low, insider/DB-tamper).* The
+  four projection ciphertext columns were sealed with AAD `asset.<field>` — bound to
+  `(user_id, field)` only — so a financial-cluster write adversary (docs/03 TB4) could
+  relocate one of the owner's own blobs between their assets and it would decrypt under
+  the API. Bounded: not reachable via the app surface; same-user only; the authoritative
+  `asset_events` payload is correctly bound to `event_id`, so a projection rebuild
+  re-derives truth. A deviation from the codebase's own convention (Plaid binds row id,
+  the ledger binds `event_id`). Fixed: `viewField(assetId, field)` → `asset.<assetId>.<field>`;
+  changing the AAD is a re-encryption handled by `rebuild --repair`.
+- *Unauthenticated webhook forced a pre-signature outbound Plaid key-fetch (Low/Medium,
+  DoS/amplification).* `keyFor(kid)` ran before the signature check and unknown kids were
+  never cached, so a stream of JWTs with novel kids drove one outbound Plaid call each,
+  burning the service's rate-limit budget. The ES256/JWT crypto itself was sound. Fixed:
+  short-TTL negative cache for unresolved kids (legitimate rotation still refetches once
+  it expires).
+- *DEK-dedupe "newest MFA DEK" tiebreak disagreed with the runtime resolver (Low, latent
+  crypto-shred).* `findActiveByUser` used `ORDER BY created_at DESC LIMIT 1` with no
+  tiebreak, while the 002 migration's part C uses `created_at DESC, dek_id DESC`; since
+  `created_at` is a client-side ms `Date`, a raced tie could make the two disagree and
+  shred the live MFA DEK. Not reachable through identity's current paths (the DEK is
+  pre-materialized once per registration with a fresh `userId`), but a real footgun in the
+  safety-net migration. Fixed: added `, dek_id DESC` to `findActiveByUser` in all four DEK
+  repositories so runtime and migration resolve identically. (The merged 002 migration is
+  immutable and needed no edit — aligning the resolver closes it.)
+Informational nits left as-is: Plaid `sync`/`revoke` 404-vs-403 item-existence oracle
+(gated by unguessable UUIDs); webhook-driven sync audited as `actorType:'user'` not
+`system` (audit fidelity); in-window webhook replay (inherent to Plaid's iat-only model);
+`IsoDateSchema` accepts calendar rollovers (`2026-02-30`).
+
 ### Later milestones (rough order, one per bounded context)
 M4 documents (template matrix, generation pipeline, S3 doc vault) ·
 M5 Terraform/EKS to a real dev environment ·

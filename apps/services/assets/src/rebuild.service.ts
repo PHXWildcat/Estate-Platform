@@ -220,7 +220,7 @@ export class RebuildService {
         const liveValue = await this.cipher.decrypt({
           ownerUserId: live.user_id,
           dekId: live.dek_id,
-          field: viewField(field),
+          field: viewField(live.asset_id, field),
           ciphertext,
           actorId: SYSTEM_ACTOR_ID,
           actorType: 'system',
@@ -252,7 +252,8 @@ export class RebuildService {
         const enc = async (field: EncryptedField, value: string | null): Promise<Buffer | null> =>
           value === null
             ? null
-            : (await this.cipher.encrypt(exp.state.userId, viewField(field), value)).ciphertext;
+            : (await this.cipher.encrypt(exp.state.userId, viewField(assetId, field), value))
+                .ciphertext;
         const state: AssetState<Buffer | null> = {
           ...exp.state,
           estValue: await enc('est_value', exp.state.estValue),
