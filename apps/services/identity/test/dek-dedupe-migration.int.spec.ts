@@ -95,10 +95,9 @@ describeIfPg('002_dek_unique_active pre-flight dedupe (auth cluster)', () => {
 
       expect(await activeDeks(client, userId)).toEqual([referenced]);
       // Retired, not deleted — no hard deletes anywhere.
-      const { rows } = await client.query(
-        `SELECT destroyed_at FROM deks WHERE dek_id = $1`,
-        [orphan],
-      );
+      const { rows } = await client.query(`SELECT destroyed_at FROM deks WHERE dek_id = $1`, [
+        orphan,
+      ]);
       expect((rows[0] as { destroyed_at: Date | null }).destroyed_at).not.toBeNull();
 
       // The plain index is superseded by the unique partial index…
@@ -110,9 +109,9 @@ describeIfPg('002_dek_unique_active pre-flight dedupe (auth cluster)', () => {
       expect(names).toContain('ux_deks_user_active');
       expect(names).not.toContain('ix_deks_user_active');
       // …and the database now rejects a second active DEK outright.
-      await expect(seedDek(client, randomUUID(), userId, '2026-07-03T00:00:00Z')).rejects.toMatchObject(
-        { code: '23505' },
-      );
+      await expect(
+        seedDek(client, randomUUID(), userId, '2026-07-03T00:00:00Z'),
+      ).rejects.toMatchObject({ code: '23505' });
     });
   });
 

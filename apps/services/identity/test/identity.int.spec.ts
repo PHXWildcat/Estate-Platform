@@ -258,9 +258,7 @@ describeIfPg('identity service end to end', () => {
     // which is where every service-side first-write funnels through.
     const fieldCrypto = app.get<FieldCrypto>(FIELD_CRYPTO);
     const newUser = randomUUID();
-    const dekIds = await Promise.all(
-      [1, 2, 3, 4].map(() => fieldCrypto.getOrCreateDek(newUser)),
-    );
+    const dekIds = await Promise.all([1, 2, 3, 4].map(() => fieldCrypto.getOrCreateDek(newUser)));
     expect(new Set(dekIds).size).toBe(1);
     const { rows } = await admin.query(
       `SELECT count(*)::int AS n FROM ${schema}.deks WHERE user_id = $1 AND destroyed_at IS NULL`,
