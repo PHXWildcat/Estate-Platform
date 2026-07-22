@@ -36,7 +36,12 @@ describe('plaid service config (fail-fast posture)', () => {
     const config = loadConfig(
       baseEnv({ PLAID_MODE: 'live', PLAID_CLIENT_ID: 'cid', PLAID_SECRET: 's3cr3t' }),
     );
-    expect(config.plaid).toEqual({ mode: 'live', env: 'sandbox', clientId: 'cid', secret: 's3cr3t' });
+    expect(config.plaid).toEqual({
+      mode: 'live',
+      env: 'sandbox',
+      clientId: 'cid',
+      secret: 's3cr3t',
+    });
   });
 
   function prodEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {

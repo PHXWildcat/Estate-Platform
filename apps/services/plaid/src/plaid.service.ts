@@ -69,14 +69,12 @@ export class PlaidService {
 
   /** Exchange a Link public token and persist the item (token encrypted). */
   async linkItem(userId: string, publicToken: string): Promise<ItemView> {
-    const exchanged = await this.gateway
-      .exchangePublicToken(publicToken)
-      .catch((err: unknown) => {
-        if (err instanceof PlaidGatewayError && err.reason === 'invalid_public_token') {
-          throw new BadRequestException({ error: 'invalid_public_token' });
-        }
-        throw err;
-      });
+    const exchanged = await this.gateway.exchangePublicToken(publicToken).catch((err: unknown) => {
+      if (err instanceof PlaidGatewayError && err.reason === 'invalid_public_token') {
+        throw new BadRequestException({ error: 'invalid_public_token' });
+      }
+      throw err;
+    });
 
     const id = randomUUID();
     // Pre-materialize the DEK before the parallel encrypts (M2 lesson).
@@ -199,16 +197,16 @@ export class PlaidService {
   ): Promise<{ accountsUpserted: number }> {
     await this.monitor.recordSync(item.id);
     const accessToken = await this.decryptAccessToken(item, 'plaid_sync');
-    const result = await this.gateway.syncAccounts(accessToken, item.sync_cursor).catch(
-      async (err: unknown) => {
+    const result = await this.gateway
+      .syncAccounts(accessToken, item.sync_cursor)
+      .catch(async (err: unknown) => {
         if (err instanceof PlaidGatewayError && err.reason === 'invalid_access_token') {
           await this.db.withTransaction(item.user_id, async (tx) => {
             await this.items.setStatus(tx, item.id, 'error');
           });
         }
         throw err;
-      },
-    );
+      });
 
     const now = this.clock();
     // Encrypt outside the transaction (KMS calls don't belong inside it); the

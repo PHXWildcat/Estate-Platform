@@ -33,7 +33,10 @@ describe('StubPlaidGateway (deterministic sandbox)', () => {
 describe('LivePlaidGateway (mocked transport)', () => {
   const OPTIONS = { env: 'sandbox' as const, clientId: 'cid', secret: 's3cr3t' };
 
-  function fetchReturning(bodies: Record<string, unknown>, status = 200): {
+  function fetchReturning(
+    bodies: Record<string, unknown>,
+    status = 200,
+  ): {
     calls: Array<{ url: string; body: Record<string, unknown> }>;
     fetchImpl: FetchLike;
   } {

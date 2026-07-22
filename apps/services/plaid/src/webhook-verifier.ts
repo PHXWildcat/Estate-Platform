@@ -1,4 +1,9 @@
-import { createHash, createPublicKey, timingSafeEqual, verify as verifySignature } from 'node:crypto';
+import {
+  createHash,
+  createPublicKey,
+  timingSafeEqual,
+  verify as verifySignature,
+} from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import { CLOCK, PLAID_GATEWAY, type Clock } from './di-tokens';
@@ -70,7 +75,10 @@ export class WebhookVerifier {
 
     let signatureOk = false;
     try {
-      const key = createPublicKey({ key: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y }, format: 'jwk' });
+      const key = createPublicKey({
+        key: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y },
+        format: 'jwk',
+      });
       signatureOk = verifySignature(
         'sha256',
         Buffer.from(`${headerB64}.${payloadB64}`, 'utf8'),
