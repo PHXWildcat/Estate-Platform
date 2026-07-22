@@ -10,7 +10,7 @@ function baseEnv(overrides: Record<string, string | undefined> = {}): NodeJS.Pro
     KMS_MASTER_KEY_HEX: KEY,
     ITEM_INDEX_KEY_HEX: KEY,
     ...overrides,
-  } as NodeJS.ProcessEnv;
+  };
 }
 
 describe('plaid service config (fail-fast posture)', () => {

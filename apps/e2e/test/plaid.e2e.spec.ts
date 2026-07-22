@@ -184,7 +184,7 @@ describeIfPg('plaid isolate: link/sync/webhook/revoke → audit chain + domain t
             ? PlaidItemSyncedEvent
             : PlaidItemStatusChangedEvent;
       const envelope = schema.parse(JSON.parse(message.value));
-      expect((envelope.payload as { itemId: string }).itemId).toBe(itemId);
+      expect(envelope.payload.itemId).toBe(itemId);
       expect(message.key).toBe(itemId);
     }
 

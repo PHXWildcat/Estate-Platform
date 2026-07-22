@@ -28,7 +28,7 @@ describe('CallerGuard (gateway-injected identity)', () => {
     ['malformed', { 'x-estate-user-id': 'not-a-uuid' }],
     ['array-smuggled', { 'x-estate-user-id': ['a', 'b'] }],
   ])('rejects a %s header with a generic 401', (_label, headers) => {
-    const { context } = contextFor(headers as Record<string, string | string[]>);
+    const { context } = contextFor(headers);
     expect(() => new CallerGuard().canActivate(context)).toThrow(UnauthorizedException);
   });
 });
@@ -44,7 +44,7 @@ describe('StepUpGuard (revocation gate)', () => {
     ['false', { 'x-estate-stepup-verified': 'false' }],
     ['casing games', { 'x-estate-stepup-verified': 'TRUE' }],
   ])('rejects %s with stepup_required', (_label, headers) => {
-    const { context } = contextFor(headers as Record<string, string>);
+    const { context } = contextFor(headers);
     expect(() => new StepUpGuard().canActivate(context)).toThrow(ForbiddenException);
   });
 });
