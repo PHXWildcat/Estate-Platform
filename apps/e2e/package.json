@@ -14,6 +14,7 @@
     "@estate/service-assets": "workspace:*",
     "@estate/service-audit": "workspace:*",
     "@estate/service-identity": "workspace:*",
+    "@estate/service-plaid": "workspace:*",
     "@nestjs/testing": "catalog:",
     "@types/jest": "catalog:",
     "@types/node": "catalog:",

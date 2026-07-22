@@ -136,7 +136,7 @@ finding, **fixed in-branch**:
   in both option generators, `requireUserVerification: true` at both verify calls,
   and the step-up elevation now gated on `authenticationInfo.userVerified`.
 
-### M3 — Asset ledger (first half shipped 2026-07-21; Plaid isolate is the second half)
+### M3 — Asset ledger (first half shipped 2026-07-21; Plaid isolate shipped 2026-07-22)
 Scope agreed: manual-asset ledger first (backend only), Plaid isolating service as a
 separate second PR — `plaid_items`/`accounts` DDL deliberately deferred with it so no
 dormant schema gets frozen by migration drift detection.
@@ -185,15 +185,32 @@ Both `PgDekRepository.insert`s translate 23505→`DekConflictError` (adoption in
 migration dedupe cases (keeper selection, soft-delete/version references,
 implicit MFA binding, abort-and-retire-nothing).
 
-**M3 follow-ups:** Plaid isolating service (+ `plaid_items`/`accounts` DDL);
-local contact-link projection from core domain events →
+**Shipped (M3 second half): Plaid isolating service** — `apps/services/plaid`, a
+SEPARATE app on the financial cluster (disjoint tables, own migrations dir; the
+migrator tolerates co-owned clusters). TB5 isolation is cryptographic: DEKs under a
+dedicated `plaid/kek` alias in the service's own `plaid_deks` table (unique-active
+index from day one), so the asset service's KMS grant can never unwrap a token DEK.
+`plaid_items`/`accounts` DDL per docs/02 §3 plus additive `item_id_ct` + UNIQUE
+`item_bidx` blind index (webhook routing). Flows: link-token → public-token
+exchange (token encrypted, per-item AAD) → sync (the ONLY token-decrypt site with
+revoke, audited with explicit purposes) → verified webhooks (ES256 JWT on
+node:crypto: pinned alg, kid via gateway, iat freshness, constant-time raw-body
+hash; failures audited, no existence oracle) → step-up-gated per-item revocation
+(provider remove best-effort, local soft-delete atomic). Anomalous-sync hook emits
+`plaid.sync.anomalous` past a sliding-window threshold. Gateway is an interface:
+deterministic stub (dev/test, signs real webhooks) + fetch-based live client
+(mock-transport tested); production config REQUIRES live mode + credentials. Domain
+topic `estate.plaid.events.v1` and all audit actions are IDs/enums/counts only,
+asserted end-to-end (`plaid.int.spec.ts` token firewall; `plaid.e2e.spec.ts` audit
+hash-chain proof).
+
+**M3 follow-ups:** local contact-link projection from core domain events →
 `namedBeneficiaries` beneficiary ABAC + contact existence validation; transactional
 outbox for post-commit audit/domain emits; `DocumentAttached` event + photos (M4);
 as-of replay snapshotting at scale; category is immutable in M3 (recategorize =
 retire + recreate).
 
 ### Later milestones (rough order, one per bounded context)
-M3 second half: Plaid isolate ·
 M4 documents (template matrix, generation pipeline, S3 doc vault) ·
 M5 Terraform/EKS to a real dev environment ·
 M6 vault (Zone A) ·
