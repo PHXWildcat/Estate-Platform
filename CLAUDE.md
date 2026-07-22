@@ -103,3 +103,20 @@ deviating from them, stop and propose the change with rationale — do not silen
   runbook is re-encrypt onto one DEK, then re-run. Rejected: blind-destroy the loser
   (data loss) and an in-migration re-encryption tool (KMS creds in the migrator,
   built for a case with no observed instance and no production deployment).
+- 2026-07-22 — Plaid isolate shape: SEPARATE NestJS app (`apps/services/plaid`), not a
+  module in assets — TB5 wants token decryption in its own namespace/IAM/KMS-grant
+  boundary. Isolation is cryptographic, not organizational: own KEK alias `plaid/kek`
+  + own `plaid_deks` table, so the asset service's KMS grant can never unwrap a token
+  DEK. Shares the financial cluster with disjoint tables + own migrations dir (the
+  migrator's shared `schema_migrations` tolerates co-owners; names are disjoint).
+- 2026-07-22 — Plaid DDL additions (docs/02 §3 additive): `item_id_ct` + UNIQUE
+  `item_bidx` blind index (webhook routing = the equality-search case that justifies
+  a blind index); no plaintext Plaid identifiers at rest or on the bus. Webhook JWT
+  verification implemented on node:crypto (alg pinned ES256, kid via gateway, iat
+  ≤5 min, constant-time raw-body hash check) — no new dependency on a
+  security-critical path. Item revocation is step-up-gated (deletion-class action);
+  provider-side remove is best-effort and cannot block local revocation.
+- 2026-07-22 — Plaid gateway is an interface with a deterministic stub (dev/test,
+  signs real ES256 webhooks) and a fetch-based live REST client (unit-tested against
+  a mocked transport). No real credentials exist; production config REQUIRES
+  PLAID_MODE=live + credentials so the stub can never run there.

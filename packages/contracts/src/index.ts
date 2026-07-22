@@ -29,6 +29,20 @@ export {
   type AssetLedgerAppended,
 } from './asset-events';
 export {
+  ACCOUNT_KINDS,
+  AccountKindSchema,
+  PLAID_ITEM_STATUSES,
+  PlaidItemLinkedEvent,
+  PlaidItemStatusChangedEvent,
+  PlaidItemStatusSchema,
+  PlaidItemSyncedEvent,
+  type AccountKind,
+  type PlaidItemLinked,
+  type PlaidItemStatus,
+  type PlaidItemStatusChanged,
+  type PlaidItemSynced,
+} from './plaid-events';
+export {
   ActorTypeSchema,
   defineEvent,
   EventEnvelopeSchema,

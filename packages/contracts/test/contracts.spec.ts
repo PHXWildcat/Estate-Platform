@@ -2,11 +2,15 @@ import { randomUUID } from 'node:crypto';
 // Import through the barrel so the public surface (index.ts re-exports) is
 // itself covered — a symbol dropped from index.ts breaks this suite.
 import {
+  AccountKindSchema,
   AssetCategorySchema,
   AssetLedgerAppendedEvent,
   AuditEventSchema,
   AuthEventSchema,
   LoginSucceededEvent,
+  PlaidItemLinkedEvent,
+  PlaidItemStatusChangedEvent,
+  PlaidItemSyncedEvent,
   TOPICS,
 } from '../src';
 
@@ -97,6 +101,61 @@ describe('asset event contracts', () => {
     // Object schemas strip unknown keys by default — assert the leak cannot survive parsing.
     const parsed = AssetLedgerAppendedEvent.parse(evt);
     expect('estValue' in parsed.payload).toBe(false);
+  });
+});
+
+describe('plaid event contracts', () => {
+  function envelope<T>(type: string, payload: T) {
+    return {
+      eventId: randomUUID(),
+      type,
+      version: 1 as const,
+      occurredAt: new Date().toISOString(),
+      actor: { id: randomUUID(), type: 'user' as const },
+      payload,
+    };
+  }
+
+  it('accepts valid linked/synced/status-changed envelopes', () => {
+    expect(
+      PlaidItemLinkedEvent.safeParse(envelope('plaid.item.linked', { itemId: randomUUID() }))
+        .success,
+    ).toBe(true);
+    expect(
+      PlaidItemSyncedEvent.safeParse(
+        envelope('plaid.item.synced', { itemId: randomUUID(), accountsUpserted: 3 }),
+      ).success,
+    ).toBe(true);
+    expect(
+      PlaidItemStatusChangedEvent.safeParse(
+        envelope('plaid.item.status_changed', { itemId: randomUUID(), status: 'login_required' }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('pins the versioned topic name (breaking payload change = NEW topic)', () => {
+    expect(TOPICS.plaidEvents).toBe('estate.plaid.events.v1');
+  });
+
+  it('rejects unknown statuses and kinds (closed vocabularies)', () => {
+    expect(
+      PlaidItemStatusChangedEvent.safeParse(
+        envelope('plaid.item.status_changed', { itemId: randomUUID(), status: 'on_fire' }),
+      ).success,
+    ).toBe(false);
+    expect(AccountKindSchema.safeParse('offshore_trust').success).toBe(false);
+  });
+
+  it('strips value-bearing extras so tokens/balances cannot ride along', () => {
+    const evt = envelope('plaid.item.synced', {
+      itemId: randomUUID(),
+      accountsUpserted: 1,
+      accessToken: 'access-sandbox-secret',
+      balance: '12345.67',
+    });
+    const parsed = PlaidItemSyncedEvent.parse(evt);
+    expect('accessToken' in parsed.payload).toBe(false);
+    expect('balance' in parsed.payload).toBe(false);
   });
 });
 

@@ -36,6 +36,13 @@ export const AUDIT_ACTIONS = [
   'asset.beneficiary.removed',
   'asset.retired',
   'asset.projection.rebuilt',
+  // Plaid isolating service (financial cluster).
+  'plaid.item.linked',
+  'plaid.item.synced',
+  'plaid.item.revoked',
+  'plaid.item.login_required',
+  'plaid.webhook.rejected',
+  'plaid.sync.anomalous',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
