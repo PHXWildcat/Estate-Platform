@@ -5,6 +5,7 @@
 export const TOPICS = {
   authEvents: 'estate.auth.events.v1',
   auditEvents: 'estate.audit.events.v1',
+  assetEvents: 'estate.asset.events.v1',
 } as const;
 
 export type TopicName = (typeof TOPICS)[keyof typeof TOPICS];

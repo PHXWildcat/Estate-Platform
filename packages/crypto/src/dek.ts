@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { open, seal } from './aead';
-import { AuditEmitFailedError, DekDestroyedError, DekNotFoundError } from './errors';
+import {
+  AuditEmitFailedError,
+  DekConflictError,
+  DekDestroyedError,
+  DekNotFoundError,
+} from './errors';
 import type { KmsKeyProvider } from './kms';
 
 /** A wrapped per-user data key, as persisted in each cluster's `deks` table. */
@@ -89,7 +94,22 @@ export class FieldCrypto {
       createdAt: new Date(),
       destroyedAt: null,
     };
-    await this.deks.insert(record);
+    try {
+      await this.deks.insert(record);
+    } catch (err) {
+      if (err instanceof DekConflictError) {
+        // A concurrent request won the insert. Discard our minted key and
+        // adopt the winner's DEK so the user never ends up with two.
+        plaintextKey.fill(0);
+        const winner = await this.deks.findActiveByUser(userId);
+        if (!winner) {
+          // Conflict but no active row: the winner was destroyed in between.
+          throw new DekNotFoundError();
+        }
+        return winner.dekId;
+      }
+      throw err;
+    }
     this.cacheKey(record.dekId, plaintextKey);
     return record.dekId;
   }

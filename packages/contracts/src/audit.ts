@@ -27,6 +27,15 @@ export const AUDIT_ACTIONS = [
   'role.granted',
   'role.revoked',
   'permission.granted',
+  // Asset service (financial cluster).
+  'asset.created',
+  'asset.updated',
+  'asset.valuation.recorded',
+  'asset.ownership.changed',
+  'asset.beneficiary.designated',
+  'asset.beneficiary.removed',
+  'asset.retired',
+  'asset.projection.rebuilt',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

@@ -7,6 +7,7 @@ import {
 import {
   AuditEmitFailedError,
   DecryptionFailedError,
+  DekConflictError,
   DekDestroyedError,
   DekNotFoundError,
 } from '../src/errors';
@@ -168,6 +169,53 @@ describe('FieldCrypto envelope encryption', () => {
     // a destroyed DEK is also no longer the user's active key
     const next = await crypto.encryptField(USER, 'email', 'alice@example.com');
     expect(next.dekId).not.toBe(enc.dekId);
+  });
+
+  it('converges on one DEK when concurrent first-writes race the insert', async () => {
+    // Repository double emulating the partial unique index on
+    // deks(user_id) WHERE destroyed_at IS NULL. The `raceWindow` flag makes
+    // the interleaving deterministic: while set, reads see "no DEK yet" (as
+    // the loser did before the winner committed), but inserts still conflict.
+    class RacingDekRepository extends InMemoryDekRepository {
+      raceWindow = false;
+      override async findActiveByUser(userId: string): Promise<DekRecord | null> {
+        if (this.raceWindow) return null;
+        return super.findActiveByUser(userId);
+      }
+      override async insert(record: DekRecord): Promise<void> {
+        if (await super.findActiveByUser(record.userId)) {
+          throw new DekConflictError();
+        }
+        await super.insert(record);
+      }
+    }
+    const repo = new RacingDekRepository();
+    const kms = LocalKmsProvider.generate();
+    // Two independent FieldCrypto instances = two concurrent requests with
+    // separate caches.
+    const a = new FieldCrypto(kms, repo, () => undefined, { kekAlias: 'core-cluster' });
+    const b = new FieldCrypto(kms, repo, () => undefined, { kekAlias: 'core-cluster' });
+    const dekA = await a.getOrCreateDek(USER); // winner commits first
+
+    repo.raceWindow = true; // loser's read raced ahead of the winner's commit…
+    const pending = b.getOrCreateDek(USER); //  …so it sees no DEK and mints one
+    repo.raceWindow = false; // winner's row is visible by the conflict re-read
+    const dekB = await pending;
+
+    expect(dekA).toBe(dekB);
+    expect(repo.records.size).toBe(1);
+
+    // The loser adopted the winner's DEK: both instances can round-trip.
+    const enc = await b.encryptField(USER, 'email', 'alice@example.com');
+    const pt = await a.decryptField({
+      userId: USER,
+      dekId: enc.dekId,
+      field: 'email',
+      ciphertext: enc.ciphertext,
+      ...ACTOR,
+      purpose: 'test',
+    });
+    expect(pt.toString('utf8')).toBe('alice@example.com');
   });
 
   it('rejects an unknown DEK id', async () => {

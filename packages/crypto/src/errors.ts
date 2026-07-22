@@ -39,6 +39,18 @@ export class DekDestroyedError extends CryptoError {
 }
 
 /**
+ * Another request concurrently inserted an active DEK for the same user.
+ * Repositories backed by a `deks(user_id) WHERE destroyed_at IS NULL` unique
+ * index translate their duplicate-key error into this; FieldCrypto responds
+ * by discarding its freshly minted key and adopting the winner's DEK.
+ */
+export class DekConflictError extends CryptoError {
+  constructor() {
+    super('active data key already exists for user');
+  }
+}
+
+/**
  * The decryption-audit sink failed. We fail CLOSED: plaintext is never
  * released unless the audit event was accepted (docs/01: every decryption is
  * a logged event).
