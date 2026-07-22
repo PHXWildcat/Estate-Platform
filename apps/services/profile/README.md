@@ -141,6 +141,13 @@ suite can never silently skip.
   than the generic id-based `checkConventions()` (which requires an `id uuid`).
 - **`deks` table** added (backs `@estate/crypto`'s `DekRepository`), mirroring
   identity — required by the conventions section ("each row carries `dek_id`").
+  Since migration 002 its user index is UNIQUE (`ux_deks_user_active`, partial
+  on `destroyed_at IS NULL`, matching the financial cluster): at most one
+  active DEK per user, closing the `getOrCreateDek` cross-request race at the
+  database. 002 first retires any raced double — only after verifying it
+  unreferenced across every `dek_id`-bearing row (live and soft-deleted) and
+  the `*_versions` row images; an unprovable state aborts the migration
+  instead (see the 002 header).
 - Additive lookup indexes (owner/linked-user/FKs) and the per-owner
   soft-delete-aware unique index on `(owner_user_id, email_bidx)`.
 - **ABAC scope stand-in:** with no asset service yet, the §5.5 boundary is

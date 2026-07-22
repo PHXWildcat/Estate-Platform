@@ -109,13 +109,15 @@ deny-by-default) proving the §5.5 beneficiary ABAC (a grant-holder reads only t
 named resource), caller identity via gateway-injected `x-estate-user-id`.
 
 **M2 follow-ups noted while building:**
-- **Cross-request DEK race (crypto package).** `getOrCreateDek` is
+- **Cross-request DEK race (crypto package).** ~~`getOrCreateDek` is
   find-then-insert; two concurrent first-writes for the same brand-new user can
-  each mint a DEK. The intra-request parallel race is fixed (pre-materialize the
-  DEK before parallel field encryption, in identity + profile), but the
-  cross-request case wants a DB guard — a partial unique index on
-  `deks(user_id) WHERE destroyed_at IS NULL` plus an ON CONFLICT upsert in the
-  repository. Affects every service using per-user DEKs.
+  each mint a DEK.~~ **Resolved.** The intra-request parallel race was fixed in
+  M2 (pre-materialize the DEK before parallel field encryption); the
+  cross-request DB guard shipped with M3 — `ux_deks_user_active` partial unique
+  index on all three DEK-bearing clusters (financial from day one; auth+core
+  backfilled by each service's `002_dek_unique_active.sql` with a pre-flight
+  dedupe) plus 23505→`DekConflictError` adopt-the-winner in every
+  `PgDekRepository`.
 - Core-cluster **domain-event** contracts/topic (profile emits audit events only
   for now); real cross-service session verification to replace the trusted
   `x-estate-user-id` header; asset-scoped beneficiary ABAC when the asset service
@@ -168,10 +170,23 @@ docs/02 v1.1); share-sum trigger enforces ≤ 100 rather than the docs' "sum to 
 domain topic carries IDs/enums only, so docs/01 §4 Zone B Kafka payload crypto is
 not yet exercised (prerequisite for any value-bearing consumer).
 
+**Shipped since (M3 continued):** deks unique-index backfill for auth+core —
+`002_dek_unique_active.sql` in identity and profile. Design: pre-flight dedupe
+retires a raced double ONLY when verified unreferenced (`destroyed_at` means
+crypto-shredded, so retirement must be proven safe): explicit `dek_id` columns
+on live AND soft-deleted rows plus `*_versions` row images; in the auth cluster
+additionally the IMPLICIT binding of `mfa_methods.secret_ct` (no dek_id column
+— encrypt/decrypt resolve the newest active DEK), so with MFA rows present the
+newest active DEK counts as referenced. Keeper = the referenced DEK, else the
+newest; if >1 active DEK of one user is referenced the migration RAISEs and
+rolls back (SQL has no KMS access — runbook: re-encrypt onto one DEK, re-run).
+Both `PgDekRepository.insert`s translate 23505→`DekConflictError` (adoption in
+`@estate/crypto`). Int tests cover the race on both clusters plus staged-
+migration dedupe cases (keeper selection, soft-delete/version references,
+implicit MFA binding, abort-and-retire-nothing).
+
 **M3 follow-ups:** Plaid isolating service (+ `plaid_items`/`accounts` DDL);
-deks unique-index backfill migrations for auth+core clusters (pre-flight dedupe of
-any doubled DEKs + 23505→`DekConflictError` translation in identity/profile
-repositories); local contact-link projection from core domain events →
+local contact-link projection from core domain events →
 `namedBeneficiaries` beneficiary ABAC + contact existence validation; transactional
 outbox for post-commit audit/domain emits; `DocumentAttached` event + photos (M4);
 as-of replay snapshotting at scale; category is immutable in M3 (recategorize =

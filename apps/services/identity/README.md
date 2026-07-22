@@ -93,7 +93,14 @@ Tests: `pnpm --filter @estate/service-identity test`. The integration suite
   DEKs; `destroyed_at` = crypto-shredded), per the docs/02 conventions section.
 - `webauthn_challenges` table — server-side single-use challenge storage for
   WebAuthn ceremonies (now used by the M2 passkey endpoints).
-- Plain lookup indexes on session token hashes and `deks(user_id)`.
+- Plain lookup indexes on session token hashes and `deks(user_id)`. Since
+  migration 002 the deks index is UNIQUE (`ux_deks_user_active`, partial on
+  `destroyed_at IS NULL`, matching the financial cluster): at most one active
+  DEK per user, closing the `getOrCreateDek` cross-request race at the
+  database. 002 first retires any raced double — only after verifying it
+  unreferenced (`users.dek_id` incl. soft-deleted rows, `users_versions` row
+  images, and the implicit newest-active binding of `mfa_methods.secret_ct`);
+  an unprovable state aborts the migration instead (see the 002 header).
 
 ## TODOs (deliberate M1 cuts)
 
