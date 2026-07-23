@@ -1,0 +1,56 @@
+{
+  "docType": "living_will",
+  "state": "NY",
+  "version": 1,
+  "title": "Living Will",
+  "legalReview": {
+    "by": "EXEMPLAR ONLY - engineering placeholder pending attorney review",
+    "at": "2026-07-23T00:00:00.000Z"
+  },
+  "activate": true,
+  "executionRequirements": {
+    "witnesses": 2,
+    "notarization": false,
+    "selfProvingAffidavit": false
+  },
+  "variables": [
+    { "name": "declarantName", "kind": "text", "label": "Full legal name", "maxLength": 200 },
+    {
+      "name": "declineArtificialNutrition",
+      "kind": "boolean",
+      "label": "Decline artificial nutrition and hydration?"
+    },
+    {
+      "name": "additionalDirections",
+      "kind": "text",
+      "label": "Additional directions",
+      "required": false,
+      "maxLength": 2000
+    },
+    { "name": "hasAdditionalDirections", "kind": "boolean", "label": "Add additional directions?" }
+  ],
+  "body": [
+    {
+      "heading": "Declaration",
+      "text": "I, {{declarantName}}, being of sound mind, make this statement as a directive to be followed if I become permanently unable to participate in decisions regarding my medical care. These instructions reflect my firm and settled commitment to decline medical treatment under the circumstances indicated below."
+    },
+    {
+      "heading": "Directions",
+      "text": "I direct my attending physician and other medical personnel to withhold or withdraw treatment that serves only to prolong the process of my dying, if I should be in an incurable or irreversible mental or physical condition with no reasonable expectation of recovery."
+    },
+    {
+      "when": "declineArtificialNutrition",
+      "heading": "Artificial Nutrition and Hydration",
+      "text": "I direct that artificial nutrition and hydration be withheld or withdrawn under the circumstances described above."
+    },
+    {
+      "when": "hasAdditionalDirections",
+      "heading": "Additional Directions",
+      "text": "{{additionalDirections}}"
+    },
+    {
+      "heading": "Execution",
+      "text": "These directions express my legal right to refuse treatment. I sign this document in the presence of two adult witnesses, neither of whom is entitled to any portion of my estate."
+    }
+  ]
+}

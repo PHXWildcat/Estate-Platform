@@ -1,0 +1,53 @@
+{
+  "docType": "durable_poa",
+  "state": "TX",
+  "version": 1,
+  "title": "Statutory Durable Power of Attorney",
+  "legalReview": {
+    "by": "EXEMPLAR ONLY - engineering placeholder pending attorney review",
+    "at": "2026-07-23T00:00:00.000Z"
+  },
+  "activate": true,
+  "executionRequirements": {
+    "witnesses": 0,
+    "notarization": true,
+    "selfProvingAffidavit": false
+  },
+  "variables": [
+    { "name": "principalName", "kind": "text", "label": "Principal (you)", "maxLength": 200 },
+    { "name": "agentName", "kind": "text", "label": "Agent (attorney-in-fact)", "maxLength": 200 },
+    { "name": "hasSuccessorAgent", "kind": "boolean", "label": "Name a successor agent?" },
+    {
+      "name": "successorAgentName",
+      "kind": "text",
+      "label": "Successor agent",
+      "required": false,
+      "maxLength": 200
+    },
+    {
+      "name": "effectiveness",
+      "kind": "enum",
+      "label": "When does this power become effective?",
+      "options": ["immediately", "upon_my_disability"]
+    }
+  ],
+  "body": [
+    {
+      "heading": "Designation of Agent",
+      "text": "I, {{principalName}}, appoint {{agentName}} as my agent (attorney-in-fact) to act for me in any lawful way with respect to the powers granted in this document."
+    },
+    {
+      "when": "hasSuccessorAgent",
+      "heading": "Successor Agent",
+      "text": "If {{agentName}} dies, becomes legally disabled, resigns, or refuses to act, I appoint {{successorAgentName}} as successor agent."
+    },
+    {
+      "heading": "Durability and Effectiveness",
+      "text": "This power of attorney is not affected by my subsequent disability or incapacity. Effectiveness as selected by the principal: {{effectiveness}}."
+    },
+    {
+      "heading": "Execution",
+      "text": "Texas law requires this instrument to be acknowledged before a notary public. It is signed on the date of acknowledgment set out in the notarial certificate."
+    }
+  ]
+}

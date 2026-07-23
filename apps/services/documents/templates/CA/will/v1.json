@@ -1,0 +1,71 @@
+{
+  "docType": "will",
+  "state": "CA",
+  "version": 1,
+  "title": "Last Will and Testament",
+  "legalReview": {
+    "by": "EXEMPLAR ONLY - engineering placeholder pending attorney review",
+    "at": "2026-07-23T00:00:00.000Z"
+  },
+  "activate": true,
+  "executionRequirements": {
+    "witnesses": 2,
+    "notarization": false,
+    "selfProvingAffidavit": false
+  },
+  "variables": [
+    { "name": "testatorName", "kind": "text", "label": "Full legal name", "maxLength": 200 },
+    { "name": "county", "kind": "text", "label": "County of residence", "maxLength": 100 },
+    { "name": "executorName", "kind": "text", "label": "Executor", "maxLength": 200 },
+    { "name": "hasAlternateExecutor", "kind": "boolean", "label": "Name an alternate executor?" },
+    {
+      "name": "alternateExecutorName",
+      "kind": "text",
+      "label": "Alternate executor",
+      "required": false,
+      "maxLength": 200
+    },
+    { "name": "hasMinorChildren", "kind": "boolean", "label": "Do you have minor children?" },
+    {
+      "name": "guardianName",
+      "kind": "text",
+      "label": "Guardian for minor children",
+      "required": false,
+      "maxLength": 200
+    },
+    {
+      "name": "residuaryBeneficiaryName",
+      "kind": "text",
+      "label": "Residuary beneficiary",
+      "maxLength": 200
+    }
+  ],
+  "body": [
+    {
+      "heading": "Declaration",
+      "text": "I, {{testatorName}}, a resident of {{county}} County, California, being of sound mind and not acting under duress, menace, fraud, or undue influence, declare this to be my last will and testament, and I revoke all prior wills and codicils."
+    },
+    {
+      "heading": "Appointment of Executor",
+      "text": "I nominate {{executorName}} to serve as executor of this will, to serve without bond."
+    },
+    {
+      "when": "hasAlternateExecutor",
+      "heading": "Alternate Executor",
+      "text": "If {{executorName}} is unable or unwilling to serve, I nominate {{alternateExecutorName}} to serve as executor, to serve without bond."
+    },
+    {
+      "when": "hasMinorChildren",
+      "heading": "Guardianship of Minor Children",
+      "text": "If at my death any of my children are minors and a guardian is needed, I nominate {{guardianName}} as guardian of the person and estate of each such minor child."
+    },
+    {
+      "heading": "Residuary Estate",
+      "text": "I give the residue of my estate, real and personal, wherever situated, to {{residuaryBeneficiaryName}}."
+    },
+    {
+      "heading": "Execution",
+      "text": "IN WITNESS WHEREOF, I sign this will in the presence of the witnesses below, each of whom signs at my request, in my presence, and in the presence of each other.\n\nCalifornia law requires this will to be signed by at least two witnesses, each of whom is present at the same time and understands that this instrument is the testator's will."
+    }
+  ]
+}

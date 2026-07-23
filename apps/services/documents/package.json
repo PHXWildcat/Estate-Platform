@@ -1,0 +1,44 @@
+{
+  "name": "@estate/service-documents",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Document service: state-specific template matrix (versioned like code, attorney sign-off gated), generation pipeline, execution-status tracking, version history. Owns the documents cluster (docs/01 §2.4, docs/02 §4). Content is stored as per-document-DEK envelope ciphertext in the object store; the DB holds metadata and content hashes only.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand",
+    "dev": "node dist/main.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "catalog:",
+    "@aws-sdk/client-s3": "catalog:",
+    "@estate/audit-emitter": "workspace:*",
+    "@estate/auth-guard": "workspace:*",
+    "@estate/authz": "workspace:*",
+    "@estate/contracts": "workspace:*",
+    "@estate/crypto": "workspace:*",
+    "@estate/db": "workspace:*",
+    "@estate/kms-aws": "workspace:*",
+    "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
+    "@nestjs/platform-express": "catalog:",
+    "kafkajs": "catalog:",
+    "pg": "catalog:",
+    "reflect-metadata": "catalog:",
+    "rxjs": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@nestjs/testing": "catalog:",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "@types/supertest": "catalog:",
+    "jest": "catalog:",
+    "supertest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}
