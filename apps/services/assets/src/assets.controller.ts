@@ -17,7 +17,7 @@ import {
   type HistoryEntryDto,
   type NetWorthDto,
 } from './assets.service';
-import { CallerGuard, requireCaller, type CallerRequest } from './caller.guard';
+import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
 import {
   AsOfQuerySchema,
   ChangeOwnershipSchema,

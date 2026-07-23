@@ -23,14 +23,41 @@ import {
   PlaidItemStatusChangedEvent,
   PlaidItemSyncedEvent,
   TOPICS,
+  type MfaLevel,
 } from '@estate/contracts';
 import { Migrator } from '@estate/db';
+import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { AppModule } from '@estate/service-plaid/dist/app.module';
 import { InMemoryAuditProducer } from '@estate/service-plaid/dist/audit-producer';
 import { AUDIT_PRODUCER, PLAID_GATEWAY } from '@estate/service-plaid/dist/di-tokens';
 import type { StubPlaidGateway } from '@estate/service-plaid/dist/stub-plaid-gateway';
 import { AuditIngestor } from '@estate/service-audit/dist/ingestor';
 import { ChainVerifier } from '@estate/service-audit/dist/verifier';
+
+/**
+ * A downstream service now VERIFIES the caller's bearer token instead of
+ * trusting a header. This fake stands in for identity introspection (the real
+ * cross-service path is covered by session-verification.e2e.spec.ts).
+ */
+const fakeVerifier: SessionVerifier = {
+  verify: (token) => {
+    const m = /^(mfa|stepup):([0-9a-f-]{36})$/.exec(token);
+    if (!m) {
+      return Promise.resolve(null);
+    }
+    const [, level, userId] = m;
+    const ctx: SessionContext = {
+      userId: userId!,
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      mfaLevel: level as MfaLevel,
+      stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
+    };
+    return Promise.resolve(ctx);
+  },
+};
+const bearer = (level: 'mfa' | 'stepup', userId: string): Record<string, string> => ({
+  authorization: `Bearer ${level}:${userId}`,
+});
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -76,7 +103,10 @@ describeIfPg('plaid isolate: link/sync/webhook/revoke → audit chain + domain t
     delete process.env['KAFKA_BROKERS']; // NODE_ENV=test ⇒ in-memory producer
     delete process.env['PLAID_MODE']; // ⇒ stub gateway
 
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(SESSION_VERIFIER)
+      .useValue(fakeVerifier)
+      .compile();
     // rawBody: webhook signature verification hashes the exact request bytes.
     app = moduleRef.createNestApplication({ rawBody: true });
     await app.init();
@@ -100,8 +130,8 @@ describeIfPg('plaid isolate: link/sync/webhook/revoke → audit chain + domain t
 
   it('runs the TB5 flow and produces a verifiable audit chain + valid domain events', async () => {
     const http = supertest(app.getHttpServer() as Parameters<typeof supertest>[0]);
-    const owner = { 'x-estate-user-id': OWNER };
-    const stepUp = { ...owner, 'x-estate-stepup-verified': 'true' };
+    const owner = bearer('mfa', OWNER);
+    const stepUp = bearer('stepup', OWNER);
 
     // link (capture the raw token so the firewall can hunt for it)
     const exchangeSpy = jest.spyOn(gateway, 'exchangePublicToken');

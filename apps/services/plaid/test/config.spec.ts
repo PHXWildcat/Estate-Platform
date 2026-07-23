@@ -55,14 +55,16 @@ describe('plaid service config (fail-fast posture)', () => {
       PLAID_ENV: 'production',
       PLAID_CLIENT_ID: 'cid',
       PLAID_SECRET: 's3cr3t',
+      IDENTITY_URL: 'https://identity.internal',
       ...overrides,
     });
   }
 
-  it('accepts a complete production config (AWS KMS + Kafka + live Plaid)', () => {
+  it('accepts a complete production config (AWS KMS + Kafka + live Plaid + identity)', () => {
     const config = loadConfig(prodEnv());
     expect(config.kms).toEqual({ mode: 'aws', keyId: 'alias/plaid-kek', region: 'us-east-1' });
     expect(config.kafkaBrokers).toEqual(['b-1:9092']);
+    expect(config.identityUrl).toBe('https://identity.internal');
   });
 
   it.each([
@@ -70,8 +72,13 @@ describe('plaid service config (fail-fast posture)', () => {
     ['AWS_KMS_KEY_ID', { AWS_KMS_KEY_ID: undefined }],
     ['AWS_REGION', { AWS_REGION: undefined }],
     ['PLAID_CLIENT_ID', { PLAID_CLIENT_ID: undefined }],
+    ['IDENTITY_URL', { IDENTITY_URL: undefined }],
   ])('production fails fast without %s', (_key, overrides) => {
     expect(() => loadConfig(prodEnv(overrides))).toThrow(ConfigError);
+  });
+
+  it('defaults IDENTITY_URL to localhost in dev/test', () => {
+    expect(loadConfig(baseEnv()).identityUrl).toBe('http://localhost:3001');
   });
 
   it('production can NEVER run the stub gateway', () => {

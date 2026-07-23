@@ -12,14 +12,13 @@ import {
 } from '@nestjs/common';
 import { ifMatchOf } from './assets.controller';
 import { AssetsService, type BeneficiariesDto, type CommandResult } from './assets.service';
-import { CallerGuard, requireCaller, type CallerRequest } from './caller.guard';
-import { StepUpGuard } from './stepup.guard';
+import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
 import { DesignateBeneficiarySchema, parse, RemoveBeneficiarySchema, UuidSchema } from './schemas';
 
 /**
  * Beneficiary designations per asset. MUTATIONS REQUIRE STEP-UP (docs/01 §5:
- * beneficiary changes are step-up actions) — asserted via StepUpGuard on the
- * gateway-verified step-up header; see stepup.guard.ts for the trust model.
+ * beneficiary changes are step-up actions) — enforced by StepUpGuard, which
+ * checks the VERIFIED session's step-up freshness (@estate/auth-guard).
  */
 @Controller('v1')
 @UseGuards(CallerGuard)

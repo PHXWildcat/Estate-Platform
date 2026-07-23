@@ -30,7 +30,7 @@ describe('assets service config', () => {
     expect(() => loadConfig(baseEnv({ KMS_MASTER_KEY_HEX: 'deadbeef' }))).toThrow(ConfigError);
   });
 
-  it('production requires AWS KMS and Kafka (LocalKmsProvider is dev-only)', () => {
+  it('production requires AWS KMS, Kafka, and IDENTITY_URL (LocalKmsProvider is dev-only)', () => {
     const prod = {
       NODE_ENV: 'production',
       DATABASE_URL: 'postgres://prod/financial',
@@ -39,14 +39,28 @@ describe('assets service config', () => {
     expect(() =>
       loadConfig({ ...prod, AWS_KMS_KEY_ID: 'alias/financial', AWS_REGION: 'us-east-1' }),
     ).toThrow(ConfigError); // still no brokers
+    expect(() =>
+      loadConfig({
+        ...prod,
+        AWS_KMS_KEY_ID: 'alias/financial',
+        AWS_REGION: 'us-east-1',
+        KAFKA_BROKERS: 'b-1:9092',
+      }),
+    ).toThrow(ConfigError); // still no IDENTITY_URL (cross-service verification)
     const ok = loadConfig({
       ...prod,
       AWS_KMS_KEY_ID: 'alias/financial',
       AWS_REGION: 'us-east-1',
       KAFKA_BROKERS: 'b-1:9092, b-2:9092',
+      IDENTITY_URL: 'https://identity.internal',
     });
     expect(ok.kms).toEqual({ mode: 'aws', keyId: 'alias/financial', region: 'us-east-1' });
     expect(ok.kafkaBrokers).toEqual(['b-1:9092', 'b-2:9092']);
+    expect(ok.identityUrl).toBe('https://identity.internal');
+  });
+
+  it('defaults IDENTITY_URL to localhost outside production', () => {
+    expect(loadConfig(baseEnv()).identityUrl).toBe('http://localhost:3001');
   });
 
   it('never echoes env values in config errors', () => {

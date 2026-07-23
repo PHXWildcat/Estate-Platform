@@ -14,7 +14,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
-import { AssetLedgerAppendedEvent, AuditEventSchema, TOPICS } from '@estate/contracts';
+import {
+  AssetLedgerAppendedEvent,
+  AuditEventSchema,
+  TOPICS,
+  type MfaLevel,
+} from '@estate/contracts';
+import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -27,6 +33,34 @@ const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
 const OWNER = randomUUID();
 const STRANGER = randomUUID();
+
+/**
+ * Stands in for real identity introspection: a bearer token of the form
+ * `<level>:<userId>` verifies to that session (mirrors what CallerGuard would
+ * get from `HttpSessionVerifier` → identity's `/v1/auth/session`). A malformed
+ * token verifies to null (⇒ 401). The real cross-service path is proven in the
+ * session-verification e2e; here we isolate the asset service.
+ */
+const fakeVerifier: SessionVerifier = {
+  verify: (token) => {
+    const m = /^(mfa|stepup):([0-9a-f-]{36})$/.exec(token);
+    if (!m) {
+      return Promise.resolve(null);
+    }
+    const [, level, userId] = m;
+    const ctx: SessionContext = {
+      userId: userId!,
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      mfaLevel: level as MfaLevel,
+      stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
+    };
+    return Promise.resolve(ctx);
+  },
+};
+
+const bearer = (level: 'mfa' | 'stepup', userId: string): Record<string, string> => ({
+  authorization: `Bearer ${level}:${userId}`,
+});
 const CONTACT_A = randomUUID();
 const CONTACT_B = randomUUID();
 const TITLE = 'Lake house on Shore Road';
@@ -56,11 +90,11 @@ describeIfPg('asset ledger service end to end', () => {
   let producer: InMemoryAuditProducer;
   let assetId: string;
 
-  const asOwner = (): Record<string, string> => ({ 'x-estate-user-id': OWNER });
-  const withStepUp = (): Record<string, string> => ({
-    ...asOwner(),
-    'x-estate-stepup-verified': 'true',
-  });
+  const asOwner = (): Record<string, string> => bearer('mfa', OWNER);
+  const asStranger = (): Record<string, string> => bearer('mfa', STRANGER);
+  // A fresh step-up now comes from a stepped-up SESSION (not a boolean header):
+  // same owner, mfa_level 'stepup', within the ≤5-min window.
+  const withStepUp = (): Record<string, string> => bearer('stepup', OWNER);
 
   beforeAll(async () => {
     admin = new Client({ connectionString: pgUrl });
@@ -92,6 +126,8 @@ describeIfPg('asset ledger service end to end', () => {
       .useValue(producer)
       .overrideProvider(PG_POOL_CONFIG)
       .useValue({ connectionString: pgUrl, options: `-c search_path=${schema}` })
+      .overrideProvider(SESSION_VERIFIER)
+      .useValue(fakeVerifier)
       .compile();
     app = moduleRef.createNestApplication({ logger: false });
     await app.init();
@@ -104,8 +140,12 @@ describeIfPg('asset ledger service end to end', () => {
     await admin?.end();
   });
 
-  it('rejects requests without the gateway caller header', async () => {
+  it('rejects a request with no bearer token, and one with a forged token (401)', async () => {
     await request(server).get('/v1/assets').expect(401, { error: 'unauthorized' });
+    await request(server)
+      .get('/v1/assets')
+      .set('authorization', 'Bearer forged-token')
+      .expect(401, { error: 'unauthorized' });
   });
 
   it('creates an asset and stores only ciphertext for sensitive fields', async () => {
@@ -166,7 +206,7 @@ describeIfPg('asset ledger service end to end', () => {
 
     await request(server)
       .get(`/v1/assets/${assetId}`)
-      .set({ 'x-estate-user-id': STRANGER })
+      .set(asStranger())
       .expect(403, { error: 'forbidden' });
   });
 
@@ -314,10 +354,7 @@ describeIfPg('asset ledger service end to end', () => {
       'BeneficiaryRemoved',
     ]);
     expect(history[0]!.payload.title).toBe(TITLE);
-    await request(server)
-      .get(`/v1/assets/${assetId}/events`)
-      .set({ 'x-estate-user-id': STRANGER })
-      .expect(403);
+    await request(server).get(`/v1/assets/${assetId}/events`).set(asStranger()).expect(403);
   });
 
   it('append-only: a non-owner role cannot UPDATE or DELETE ledger rows', async () => {
@@ -410,7 +447,7 @@ describeIfPg('asset ledger service end to end', () => {
       [1, 2, 3, 4].map((i) =>
         request(server)
           .post('/v1/assets')
-          .set({ 'x-estate-user-id': newUser })
+          .set(bearer('mfa', newUser))
           .send({ category: 'cash', title: `Account ${i}` }),
       ),
     );

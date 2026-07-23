@@ -10,11 +10,16 @@ import {
   type KmsKeyProvider,
 } from '@estate/crypto';
 import { AwsKmsProvider } from '@estate/kms-aws';
+import {
+  CallerGuard,
+  HttpSessionVerifier,
+  SESSION_VERIFIER,
+  StepUpGuard,
+} from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
 import { AccountsRepo } from './accounts.repo';
 import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
 import { PlaidAuthz } from './authz.service';
-import { CallerGuard } from './caller.guard';
 import { loadConfig, type PlaidConfig } from './config';
 import { Db } from './db';
 import { PgDekRepository } from './dek.repository';
@@ -35,7 +40,6 @@ import { ItemsRepo } from './items.repo';
 import { LivePlaidGateway } from './live-plaid-gateway';
 import { PlaidController } from './plaid.controller';
 import { PlaidService } from './plaid.service';
-import { StepUpGuard } from './stepup.guard';
 import { StubPlaidGateway } from './stub-plaid-gateway';
 import { SyncActivityMonitor } from './sync-monitor';
 import { WebhookController } from './webhook.controller';
@@ -141,6 +145,15 @@ function kmsProviderFor(config: PlaidConfig): KmsKeyProvider {
     SyncActivityMonitor,
     WebhookVerifier,
     PlaidService,
+    // Real cross-service session verification (@estate/auth-guard): the guards
+    // introspect the caller's bearer token against the identity service,
+    // replacing the M2 gateway-injected header trust.
+    {
+      provide: SESSION_VERIFIER,
+      inject: [CONFIG],
+      useFactory: (config: PlaidConfig): HttpSessionVerifier =>
+        new HttpSessionVerifier({ identityUrl: config.identityUrl }),
+    },
     CallerGuard,
     StepUpGuard,
     { provide: APP_FILTER, useClass: HttpErrorFilter },

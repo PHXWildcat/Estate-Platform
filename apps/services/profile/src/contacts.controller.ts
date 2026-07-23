@@ -10,7 +10,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, type CallerRequest } from './caller.guard';
+import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
 import { ContactsService, type ContactView } from './contacts.service';
 import { ContactSchema, parse, UuidSchema } from './schemas';
 

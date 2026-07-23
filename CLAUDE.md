@@ -120,3 +120,24 @@ deviating from them, stop and propose the change with rationale — do not silen
   signs real ES256 webhooks) and a fetch-based live REST client (unit-tested against
   a mocked transport). No real credentials exist; production config REQUIRES
   PLAID_MODE=live + credentials so the stub can never run there.
+- 2026-07-23 — Cross-service session verification (retires the `x-estate-user-id` /
+  `x-estate-stepup-verified` header trust in profile/assets/plaid, both together).
+  New `packages/auth-guard` (finally realizes the docs/04-reserved package): shared
+  `CallerGuard`/`StepUpGuard` behind a `SessionVerifier` interface. `HttpSessionVerifier`
+  introspects the caller's bearer token via identity's existing `GET /v1/auth/session`
+  (fails CLOSED on 401/non-2xx/network/malformed; short-TTL positive cache keyed by
+  sha256(token), negatives never cached so a transient outage can't lock out a valid
+  token). StepUpGuard now checks the VERIFIED session's `isStepUpFresh` (one shared
+  definition; identity re-exports it), not a boolean header. Chose introspection over
+  identity-issued JWTs: it removes the real vuln (spoofable trust) with the endpoint
+  that already exists, and the `SessionVerifier` seam makes the documented OIDC/JWT
+  local-verify end-state (the "BFF milestone") a drop-in that touches no guard or
+  service. Accepted trade-off: introspection forwards the caller's opaque access token
+  downstream (wider blast radius than an assertion header), bounded by the 15-min token
+  TTL + the mTLS mesh; the JWT end-state removes the forwarding. Each downstream service
+  gains an `IDENTITY_URL` config, fail-fast in production. Cross-service e2e boots
+  identity+assets and proves real introspection: a genuine session is admitted, a forged
+  or missing credential is rejected with 401, and the step-up route stays 403 until a
+  real TOTP step-up elevates the session. BFF unchanged (it has no profile/assets/plaid
+  resolvers yet; when they land they forward the bearer credential downstream instead of
+  injecting `x-estate-user-id`).

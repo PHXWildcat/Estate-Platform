@@ -9,7 +9,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, type CallerRequest } from './caller.guard';
+import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
 import { RolesService, type RoleAssignmentView } from './roles.service';
 import { parse, PermissionGrantSchema, RoleAssignmentSchema, UuidSchema } from './schemas';
 

@@ -13,6 +13,7 @@
   "dependencies": {
     "@aws-sdk/client-kms": "catalog:",
     "@estate/audit-emitter": "workspace:*",
+    "@estate/auth-guard": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/crypto": "workspace:*",
     "@estate/db": "workspace:*",

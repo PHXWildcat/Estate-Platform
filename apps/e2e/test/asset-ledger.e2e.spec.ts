@@ -17,13 +17,45 @@ import { dirname, join } from 'node:path';
 import { Test, type TestingModule } from '@nestjs/testing';
 import supertest from 'supertest';
 import { Client } from 'pg';
-import { AssetLedgerAppendedEvent, AuditEventSchema, TOPICS } from '@estate/contracts';
+import {
+  AssetLedgerAppendedEvent,
+  AuditEventSchema,
+  TOPICS,
+  type MfaLevel,
+} from '@estate/contracts';
 import { checkConventions, Migrator } from '@estate/db';
+import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { AppModule } from '@estate/service-assets/dist/app.module';
 import { InMemoryAuditProducer } from '@estate/service-assets/dist/audit-producer';
 import { AUDIT_PRODUCER } from '@estate/service-assets/dist/di-tokens';
 import { AuditIngestor } from '@estate/service-audit/dist/ingestor';
 import { ChainVerifier } from '@estate/service-audit/dist/verifier';
+
+/**
+ * A downstream service now VERIFIES the caller's bearer token instead of
+ * trusting a header. This fake stands in for identity introspection: a token
+ * `<level>:<userId>` verifies to that session (the real cross-service path is
+ * covered by session-verification.e2e.spec.ts).
+ */
+const fakeVerifier: SessionVerifier = {
+  verify: (token) => {
+    const m = /^(mfa|stepup):([0-9a-f-]{36})$/.exec(token);
+    if (!m) {
+      return Promise.resolve(null);
+    }
+    const [, level, userId] = m;
+    const ctx: SessionContext = {
+      userId: userId!,
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      mfaLevel: level as MfaLevel,
+      stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
+    };
+    return Promise.resolve(ctx);
+  },
+};
+const bearer = (level: 'mfa' | 'stepup', userId: string): Record<string, string> => ({
+  authorization: `Bearer ${level}:${userId}`,
+});
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -69,7 +101,10 @@ describeIfPg('asset ledger: event-sourced commands → audit chain + domain topi
     process.env['KMS_MASTER_KEY_HEX'] = randomBytes(32).toString('hex');
     delete process.env['KAFKA_BROKERS']; // NODE_ENV=test ⇒ in-memory producer
 
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(SESSION_VERIFIER)
+      .useValue(fakeVerifier)
+      .compile();
     app = moduleRef.createNestApplication();
     await app.init();
     producer = app.get<InMemoryAuditProducer>(AUDIT_PRODUCER);
@@ -91,8 +126,8 @@ describeIfPg('asset ledger: event-sourced commands → audit chain + domain topi
 
   it('runs the ledger flow and produces a verifiable audit chain + valid domain events', async () => {
     const http = supertest(app.getHttpServer() as Parameters<typeof supertest>[0]);
-    const owner = { 'x-estate-user-id': OWNER };
-    const stepUp = { ...owner, 'x-estate-stepup-verified': 'true' };
+    const owner = bearer('mfa', OWNER);
+    const stepUp = bearer('stepup', OWNER);
 
     // create (encrypted payload + projection in one transaction)
     const created = await http
@@ -126,7 +161,7 @@ describeIfPg('asset ledger: event-sourced commands → audit chain + domain topi
     // decrypted read for the owner; deny-by-default for anyone else
     const read = await http.get(`/v1/assets/${assetId}`).set(owner).expect(200);
     expect((read.body as { estValue: string }).estValue).toBe('325000.00');
-    await http.get(`/v1/assets/${assetId}`).set({ 'x-estate-user-id': randomUUID() }).expect(403);
+    await http.get(`/v1/assets/${assetId}`).set(bearer('mfa', randomUUID())).expect(403);
 
     // temporal query: nothing held before the ledger began
     const empty = await http.get('/v1/assets?asOf=2020-01-01').set(owner).expect(200);

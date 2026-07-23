@@ -40,6 +40,10 @@ const EnvSchema = z
     // a hard dependency of every sensitive action, so production without Kafka
     // must fail fast at startup rather than silently drop audit events.
     KAFKA_BROKERS: z.string().optional(),
+    // Base URL of the identity service, for cross-service session verification
+    // (CallerGuard introspects the caller's token). Required IN production; dev
+    // defaults to localhost.
+    IDENTITY_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -60,6 +64,13 @@ const EnvSchema = z
             message: `${key} is required in production (LocalKmsProvider is dev/test only)`,
           });
         }
+      }
+      if (!env.IDENTITY_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['IDENTITY_URL'],
+          message: 'IDENTITY_URL is required in production (cross-service session verification)',
+        });
       }
     } else if (!env.KMS_MASTER_KEY_HEX) {
       ctx.addIssue({
@@ -90,6 +101,8 @@ export interface ProfileConfig {
   readonly kafkaBrokers: string[] | null;
   /** KEK alias used when wrapping the core cluster's per-user DEKs. */
   readonly kekAlias: string;
+  /** Identity service base URL for cross-service session verification. */
+  readonly identityUrl: string;
 }
 
 export class ConfigError extends Error {
@@ -130,5 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProfileConfig 
     emailIndexKey: Buffer.from(e.EMAIL_INDEX_KEY_HEX, 'hex'),
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     kekAlias: 'core/kek',
+    // superRefine requires IDENTITY_URL in production; dev falls back to local.
+    identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
   };
 }

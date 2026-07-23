@@ -27,7 +27,7 @@ packages/
   vault-crypto/         CLIENT-side Zone A crypto (2SKD, SRP) — isolated, minimal deps
   db/                   migration runner + generators for docs/02 conventions
   audit-emitter/        typed audit producer — IDs/enums only, enforced at runtime
-  auth-guard/           session verification, step-up freshness, Cedar PEP middleware
+  auth-guard/           session verification (introspection), step-up freshness — SHIPPED 2026-07-23
   kafka/                topic registry, producer/consumer wrappers, Zone B payload crypto
   ui/                   design system (Tailwind, WCAG AA+, dark mode)
   testing/              testcontainers harnesses, fixtures
@@ -119,9 +119,12 @@ named resource), caller identity via gateway-injected `x-estate-user-id`.
   dedupe) plus 23505→`DekConflictError` adopt-the-winner in every
   `PgDekRepository`.
 - Core-cluster **domain-event** contracts/topic (profile emits audit events only
-  for now); real cross-service session verification to replace the trusted
-  `x-estate-user-id` header; asset-scoped beneficiary ABAC when the asset service
-  lands; a Cedar schema for `validateRequest`.
+  for now); ~~real cross-service session verification to replace the trusted
+  `x-estate-user-id` header~~ **Resolved (2026-07-23):** `@estate/auth-guard`'s
+  `CallerGuard`/`StepUpGuard` introspect the caller's bearer token via identity's
+  `GET /v1/auth/session` (both headers retired together); the `SessionVerifier`
+  interface leaves the OIDC/JWT local-verify end-state a drop-in. Asset-scoped
+  beneficiary ABAC when the asset service lands; a Cedar schema for `validateRequest`.
 
 **M2 security review (2026-07-21).** Structured review (discovery + adversarial
 filter) of the M2 diff: no authz bypass, injection, crypto, or data-exposure vuln
