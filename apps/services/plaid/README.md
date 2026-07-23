@@ -62,11 +62,14 @@ the live REST gateway implements.
   carry IDs/enums/counts only — never tokens, institution names, balances, or
   masks (enforced by @estate/contracts schemas and asserted end-to-end).
 
-## Trust-boundary deviations (M2-era, shared with profile/assets)
+## Caller identity: verified sessions (shared with profile/assets)
 
-Caller identity via gateway-injected `x-estate-user-id`, step-up via
-`x-estate-stepup-verified` — both at the documented M2 trust level; real
-cross-service session verification upgrades all services at once.
+Caller identity and step-up are now VERIFIED, not trusted headers (2026-07-23):
+`@estate/auth-guard`'s `CallerGuard`/`StepUpGuard` introspect the caller's
+`Authorization: Bearer` token against identity's `GET /v1/auth/session` and gate
+revocation on the verified session's ≤5-min step-up freshness. This retired the
+M2 `x-estate-user-id` / `x-estate-stepup-verified` header trust. `IDENTITY_URL`
+configures identity's base URL (fail-fast in production).
 
 ## Tests
 

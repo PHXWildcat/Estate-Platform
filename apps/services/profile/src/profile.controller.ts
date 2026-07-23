@@ -10,15 +10,15 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, type CallerRequest } from './caller.guard';
+import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
 import { FamilyService, type FamilyMemberView } from './family.service';
 import { ProfileService, type ProfileView } from './profile.service';
 import { FamilyMemberSchema, parse, ProfileUpsertSchema, UuidSchema } from './schemas';
 
 /**
- * Own profile + family-member endpoints. The caller is the gateway-injected
- * `x-estate-user-id` (see CallerGuard); every operation is scoped to that
- * caller's own data and enforced through the ProfileAuthz PEP.
+ * Own profile + family-member endpoints. The caller is resolved from their
+ * verified session (CallerGuard → identity introspection); every operation is
+ * scoped to that caller's own data and enforced through the ProfileAuthz PEP.
  */
 @Controller('v1/profile')
 @UseGuards(CallerGuard)

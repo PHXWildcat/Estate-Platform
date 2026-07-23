@@ -8,6 +8,7 @@
     "test": "jest --runInBand"
   },
   "devDependencies": {
+    "@estate/auth-guard": "workspace:*",
     "@estate/config": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/db": "workspace:*",

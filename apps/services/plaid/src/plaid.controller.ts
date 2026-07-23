@@ -10,10 +10,9 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, type CallerRequest } from './caller.guard';
+import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
 import { PlaidService } from './plaid.service';
 import { LinkItemBody, parseBody } from './schemas';
-import { StepUpGuard } from './stepup.guard';
 
 /** Owner-facing item + account routes. Every route runs behind CallerGuard. */
 @Controller('v1')

@@ -53,7 +53,25 @@ describe('config validation', () => {
   const PROD_KMS = {
     AWS_KMS_KEY_ID: 'alias/estate-core-kek',
     AWS_REGION: 'us-east-1',
+    IDENTITY_URL: 'https://identity.internal',
   };
+
+  it('production REQUIRES IDENTITY_URL (cross-service session verification)', () => {
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          AWS_KMS_KEY_ID: 'alias/estate-core-kek',
+          AWS_REGION: 'us-east-1',
+        }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it('defaults IDENTITY_URL to localhost outside production', () => {
+    expect(loadConfig(validEnv()).identityUrl).toBe('http://localhost:3001');
+  });
 
   it('production REQUIRES Kafka (audit must never silently no-op)', () => {
     expect(() => loadConfig(validEnv({ NODE_ENV: 'production', ...PROD_KMS }))).toThrow(
@@ -80,6 +98,7 @@ describe('config validation', () => {
       keyId: 'alias/estate-core-kek',
       region: 'us-east-1',
     });
+    expect(config.identityUrl).toBe('https://identity.internal');
   });
 
   it('error messages carry issue paths, never env values', () => {

@@ -12,8 +12,9 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
-import { TOPICS, AuditEventSchema } from '@estate/contracts';
+import { TOPICS, AuditEventSchema, type MfaLevel } from '@estate/contracts';
 import { DekConflictError, type FieldCrypto } from '@estate/crypto';
+import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -26,6 +27,33 @@ const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
 const OWNER = randomUUID();
 const STRANGER = randomUUID();
+
+/**
+ * Stands in for real identity introspection: a bearer token `<level>:<userId>`
+ * verifies to that session (what CallerGuard would get from HttpSessionVerifier
+ * → identity's /v1/auth/session); a malformed token verifies to null (⇒ 401).
+ * The real cross-service path is proven in the session-verification e2e.
+ */
+const fakeVerifier: SessionVerifier = {
+  verify: (token) => {
+    const m = /^(mfa|stepup):([0-9a-f-]{36})$/.exec(token);
+    if (!m) {
+      return Promise.resolve(null);
+    }
+    const [, level, userId] = m;
+    const ctx: SessionContext = {
+      userId: userId!,
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      mfaLevel: level as MfaLevel,
+      stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
+    };
+    return Promise.resolve(ctx);
+  },
+};
+
+const bearer = (level: 'mfa' | 'stepup', userId: string): Record<string, string> => ({
+  authorization: `Bearer ${level}:${userId}`,
+});
 
 describeIfPg('plaid isolating service end to end', () => {
   jest.setTimeout(120_000);
@@ -71,6 +99,8 @@ describeIfPg('plaid isolating service end to end', () => {
       .useValue(producer)
       .overrideProvider(PG_POOL_CONFIG)
       .useValue({ connectionString: pgUrl, options: `-c search_path=${schema}` })
+      .overrideProvider(SESSION_VERIFIER)
+      .useValue(fakeVerifier)
       .compile();
     // rawBody: webhook signature verification hashes the exact request bytes.
     app = moduleRef.createNestApplication({ logger: false, rawBody: true });
@@ -89,14 +119,15 @@ describeIfPg('plaid isolating service end to end', () => {
     }
   });
 
-  const asOwner = (): Record<string, string> => ({ 'x-estate-user-id': OWNER });
+  const asOwner = (): Record<string, string> => bearer('mfa', OWNER);
 
   let itemId: string;
   let plaidItemId: string;
   let rawAccessToken: string;
 
-  it('rejects requests without the gateway-injected user header (401)', async () => {
+  it('rejects a request with no bearer token, and one with a forged token (401)', async () => {
     await request(server).get('/v1/plaid/items').expect(401);
+    await request(server).get('/v1/plaid/items').set('authorization', 'Bearer forged').expect(401);
   });
 
   it('issues a link token for the caller', async () => {
@@ -171,13 +202,13 @@ describeIfPg('plaid isolating service end to end', () => {
   });
 
   it('a stranger cannot see, sync, or revoke the item (Cedar deny-by-default)', async () => {
-    const asStranger = { 'x-estate-user-id': STRANGER };
+    const asStranger = bearer('mfa', STRANGER);
     const list = await request(server).get('/v1/plaid/items').set(asStranger).expect(200);
     expect(list.body).toEqual([]);
     await request(server).post(`/v1/plaid/items/${itemId}/sync`).set(asStranger).expect(403);
     await request(server)
       .delete(`/v1/plaid/items/${itemId}`)
-      .set({ ...asStranger, 'x-estate-stepup-verified': 'true' })
+      .set(bearer('stepup', STRANGER))
       .expect(403);
   });
 
@@ -235,7 +266,7 @@ describeIfPg('plaid isolating service end to end', () => {
     await request(server).delete(`/v1/plaid/items/${itemId}`).set(asOwner()).expect(403);
     await request(server)
       .delete(`/v1/plaid/items/${itemId}`)
-      .set({ ...asOwner(), 'x-estate-stepup-verified': 'true' })
+      .set(bearer('stepup', OWNER))
       .expect(204);
 
     const items = await admin.query(

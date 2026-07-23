@@ -10,6 +10,12 @@ import {
   type KmsKeyProvider,
 } from '@estate/crypto';
 import { AwsKmsProvider } from '@estate/kms-aws';
+import {
+  CallerGuard,
+  HttpSessionVerifier,
+  SESSION_VERIFIER,
+  StepUpGuard,
+} from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
 import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
@@ -18,7 +24,6 @@ import { AssetsAuthz } from './authz.service';
 import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
 import { BeneficiariesController } from './beneficiaries.controller';
 import { BeneficiariesRepo } from './beneficiaries.repo';
-import { CallerGuard } from './caller.guard';
 import { loadConfig, type AssetsConfig } from './config';
 import { Db } from './db';
 import { PgDekRepository } from './dek.repository';
@@ -36,7 +41,6 @@ import { FieldCipher } from './field-cipher';
 import { HttpErrorFilter } from './http-error.filter';
 import { LedgerRepo } from './ledger.repo';
 import { RebuildService } from './rebuild.service';
-import { StepUpGuard } from './stepup.guard';
 
 /**
  * Select the KMS backend. Production uses AWS KMS (CloudHSM-rooted KEKs, the
@@ -113,6 +117,15 @@ function kmsProviderFor(config: AssetsConfig): KmsKeyProvider {
     {
       provide: POLICY_DECISION_POINT,
       useFactory: (): PolicyDecisionPoint => new PolicyDecisionPoint(loadBundledPolicies()),
+    },
+    // Real cross-service session verification: the guards resolve the caller's
+    // bearer token against the identity service (@estate/auth-guard), replacing
+    // the M2 gateway-injected header trust.
+    {
+      provide: SESSION_VERIFIER,
+      inject: [CONFIG],
+      useFactory: (config: AssetsConfig): HttpSessionVerifier =>
+        new HttpSessionVerifier({ identityUrl: config.identityUrl }),
     },
     FieldCipher,
     AssetsAuthz,

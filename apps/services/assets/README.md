@@ -33,18 +33,19 @@ the docs/02 §8 disaster-recovery integrity check.
   conflict adoption in `@estate/crypto` — this cluster closes the M2
   getOrCreateDek race from day one.
 
-## Trust model (M2 boundary — deviations are explicit, not silent)
+## Trust model: verified sessions (2026-07-23 — header trust retired)
 
-- Caller identity is the gateway-injected `x-estate-user-id` header
-  (`CallerGuard`), exactly like the profile service. The gateway MUST strip
-  it from client requests. Real cross-service session verification is a
-  tracked follow-up.
-- **Step-up MFA (docs/01 §5) for beneficiary changes** is asserted via the
-  gateway-injected `x-estate-stepup-verified: true` header (`StepUpGuard`,
-  403 `stepup_required` otherwise). The gateway must set it only after
-  verifying a step-up session fresh within 5 minutes (identity implements
-  the window). This is TRUSTED, NOT VERIFIED — the same trust level as the
-  caller header, upgraded by the same session-verification follow-up.
+- Caller identity comes from the caller's `Authorization: Bearer <token>`,
+  VERIFIED by `@estate/auth-guard`'s `CallerGuard` against identity's
+  `GET /v1/auth/session` (introspection via `HttpSessionVerifier`, fail-closed).
+  This replaced the M2 `x-estate-user-id` header trust — no spoofable assertion.
+  `IDENTITY_URL` configures identity's base URL (fail-fast in production).
+- **Step-up MFA (docs/01 §5) for beneficiary changes** is enforced by
+  `StepUpGuard` against the VERIFIED session: `mfa_level == 'stepup'` AND the
+  ≤5-min freshness window (`isStepUpFresh`), 403 `stepup_required` otherwise.
+  A boolean header can no longer stand in for a fresh step-up. The
+  `SessionVerifier` interface leaves the OIDC/JWT local-verify end-state a
+  drop-in.
 - AuthZ is deny-by-default Cedar (`AssetsAuthz`); **owner-only in M3**.
   Beneficiary read access (`beneficiary.cedar`) requires resolving
   `contacts.linked_user_id`, which lives in the core cluster — deferred

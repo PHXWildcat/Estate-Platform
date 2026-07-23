@@ -10,10 +10,10 @@ import {
   type KmsKeyProvider,
 } from '@estate/crypto';
 import { AwsKmsProvider } from '@estate/kms-aws';
+import { CallerGuard, HttpSessionVerifier, SESSION_VERIFIER } from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
 import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
 import { ProfileAuthz } from './authz.service';
-import { CallerGuard } from './caller.guard';
 import { loadConfig, type ProfileConfig } from './config';
 import { ContactsController } from './contacts.controller';
 import { ContactsRepo } from './contacts.repo';
@@ -132,6 +132,15 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
     FamilyService,
     ContactsService,
     RolesService,
+    // Real cross-service session verification (@estate/auth-guard): CallerGuard
+    // introspects the caller's bearer token against the identity service,
+    // replacing the M2 gateway-injected `x-estate-user-id` header trust.
+    {
+      provide: SESSION_VERIFIER,
+      inject: [CONFIG],
+      useFactory: (config: ProfileConfig): HttpSessionVerifier =>
+        new HttpSessionVerifier({ identityUrl: config.identityUrl }),
+    },
     CallerGuard,
     { provide: APP_FILTER, useClass: HttpErrorFilter },
   ],

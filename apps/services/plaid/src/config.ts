@@ -43,6 +43,10 @@ const EnvSchema = z
     // Comma-separated broker list. Optional in dev/test; REQUIRED in
     // production — audit is a hard dependency of every sensitive action.
     KAFKA_BROKERS: z.string().optional(),
+    // Base URL of the identity service, for cross-service session verification
+    // (CallerGuard/StepUpGuard introspect the caller's token). Required IN
+    // production; dev defaults to localhost.
+    IDENTITY_URL: z.string().url().optional(),
     PLAID_MODE: z.enum(['stub', 'live']).default('stub'),
     PLAID_ENV: z.enum(['sandbox', 'development', 'production']).default('sandbox'),
     PLAID_CLIENT_ID: z.string().min(1).optional(),
@@ -71,6 +75,13 @@ const EnvSchema = z
           code: z.ZodIssueCode.custom,
           path: ['PLAID_MODE'],
           message: 'PLAID_MODE must be "live" in production (the stub gateway is dev/test only)',
+        });
+      }
+      if (!env.IDENTITY_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['IDENTITY_URL'],
+          message: 'IDENTITY_URL is required in production (cross-service session verification)',
         });
       }
     } else if (!env.KMS_MASTER_KEY_HEX) {
@@ -119,6 +130,8 @@ export interface PlaidConfig {
   /** HMAC key for the plaid_items.item_bidx blind index. */
   readonly itemIndexKey: Buffer;
   readonly plaid: PlaidGatewayConfig;
+  /** Identity service base URL for cross-service session verification. */
+  readonly identityUrl: string;
 }
 
 export class ConfigError extends Error {
@@ -164,5 +177,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PlaidConfig {
     kekAlias: 'plaid/kek',
     itemIndexKey: Buffer.from(e.ITEM_INDEX_KEY_HEX, 'hex'),
     plaid,
+    // superRefine requires IDENTITY_URL in production; dev falls back to local.
+    identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
   };
 }

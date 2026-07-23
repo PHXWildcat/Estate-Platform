@@ -26,18 +26,18 @@ DI wiring, config posture, envelope-encryption plumbing, and test harness.
 - **PII firewall.** Audit payloads carry entity IDs + enum tokens only; errors
   are generic tokens; nothing echoes or logs submitted values.
 
-## Trust assumption: `x-estate-user-id` (gateway-injected)
+## Caller identity: verified session (not a trusted header)
 
-M2 does **not** yet call the identity service to verify a session. Instead the
-caller's user id arrives in the `x-estate-user-id` request header, which the
-**BFF / API gateway injects after verifying the session token and strips from
-any inbound client request**. It is therefore gateway-injected, never
-user-supplied. `CallerGuard` shape-checks it is a UUID and attaches it to the
-request; a missing/malformed header is a generic `401`.
-
-Real cross-service session verification (calling identity's
-`/v1/auth/session`, or mTLS + signed identity assertions at the mesh) is a
-later integration — see Follow-ups.
+The caller presents their opaque access token as `Authorization: Bearer
+<token>`. `CallerGuard` (from `@estate/auth-guard`) resolves it through a
+`SessionVerifier` — `HttpSessionVerifier` introspects the token against
+identity's `GET /v1/auth/session` (the session authority) and attaches the
+verified `{userId, sessionId, mfaLevel, stepupExpiresAt}`. A
+missing/invalid/expired/revoked token is a generic `401`; verification fails
+CLOSED. This replaces the M2 `x-estate-user-id` header trust — the service no
+longer honors a spoofable assertion. `IDENTITY_URL` configures the identity
+base URL (fail-fast in production). The `SessionVerifier` interface is the
+seam for the future OIDC/JWT local-verify end-state.
 
 ## Cedar PEP model
 
@@ -156,8 +156,10 @@ suite can never silently skip.
 
 ## Follow-ups
 
-- Real cross-service **session verification** via the identity service (replace
-  the trusted `x-estate-user-id` header).
+- ~~Real cross-service **session verification**~~ **Done (2026-07-23):**
+  `@estate/auth-guard` `CallerGuard` introspects the caller's bearer token via
+  identity's `/v1/auth/session`. The OIDC/JWT local-verify swap (no per-request
+  identity call) is the tracked next step behind the `SessionVerifier` seam.
 - **Asset-scoped beneficiary ABAC** once the Asset & Accounts service lands
   (beneficiaries see only assets naming them — the true docs/03 §5.5 target).
 - A richer **Cedar schema** with validation (typed actions/resources) and a
