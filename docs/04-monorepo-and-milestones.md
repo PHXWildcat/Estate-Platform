@@ -279,9 +279,10 @@ Cedar owner-only PEP, IDs/enums-only audit + domain events on
   `DekConflictError` adoption); `documents.dek_id` references the document's
   content DEK, so crypto-shredding one document erases exactly its versions.
   Content AAD binds document id + owner user id + version + plaintext sha256
-  (the M3-review F1 lesson, from day one). The documents cluster holds no
-  plaintext-PII columns at all — everything sensitive lives inside encrypted
-  content blobs.
+  (the M3-review F1 lesson, from day one). Sensitive document CONTENT lives only
+  inside encrypted blobs; `documents.title` is a user-supplied plaintext
+  display/index label (like `assets_view.title`), treated as low-sensitivity
+  metadata — see the M4 security review for the corrected wording.
 - **ObjectStore port** (in-service, plaid-gateway precedent):
   `LocalFsObjectStore` (dev/test) + `S3ObjectStore` (`If-None-Match:*`
   immutability, stubbed-transport tests); production config REQUIRES s3 mode.
@@ -384,6 +385,90 @@ Cedar owner-only PEP, IDs/enums-only audit + domain events on
   the audit service and the hash chain cryptographically verified, domain
   envelopes schema-validated, and a content/PII firewall sweep across the
   bus.
+
+**M4 security review (2026-07-24).** Structured review of the whole merged M4
+range (both PRs): five parallel discovery passes — upload/scan/sniff ingest,
+per-object DEK crypto, encrypted search + OCR, template engine/renderer/publish,
+and authz/step-up/PII-firewall/config — each candidate finding adversarially
+re-verified against source. **No critical or app-surface-exploitable
+vulnerability.** Verified fail-closed / sound: the content AAD binding
+(document + owner + version + sha256 — the F1 splicing attacks all refuted, even
+same-owner cross-document); fail-closed, strictly pre-storage scan ordering
+(infected/errored bytes never reach the object store or DB) with clamd's
+length-prefixed framing preventing verdict injection and signature
+sanitization clamped to the audit grammar; per-user domain-separated HMAC search
+keys (no cross-tenant token correlation) with tenant/soft-delete-safe AND-match
+SQL and OCR treated as inert untrusted data; the renderer's complete
+HTML-escaping with every intake sink in text context and fail-closed placeholder
+substitution; the sha256-pinned, fail-closed template loader + immutable publish
++ atomic activation; object-level authz always derived from the persisted row
+(deny-by-default, owner-only); step-up on exactly generation/regeneration/
+deletion via the verified session; legal-hold enforced inside the row-locked
+transaction; and the audit PII firewall as a hard schema gate with config
+fail-fast in production. Findings, all **fixed in-branch**
+(`claude/m4-security-review-fixes`):
+- *Execution-requirements ladder failed OPEN (Medium).* `requirementsFor` fell
+  back to `DEFAULT_REQUIREMENTS` (0 witnesses, no notary) for a GENERATED
+  document whose template row was missing (e.g. soft-deleted — `findById`
+  filters `deleted_at IS NULL`) or whose `execution_requirements` column was
+  unparseable, silently collapsing a will/POA's ladder to signed→executed and
+  dropping the state-mandated formalities (docs/03 risk #8). Not reachable
+  through a normal live template, but a real fail-open on a legal gate. Fixed:
+  uploads still use `DEFAULT_REQUIREMENTS`; a generated document now reads its
+  requirements from the sha256-verified template SOURCE via `engine.load` and
+  throws (`template_unavailable`) if the template is gone — which also extends
+  the `body_sha256` integrity pin to the ladder (closing a second finding: the
+  requirements were previously read from an unverified DB column).
+- *Regeneration re-minted a live DEK after crypto-shred (Low, shred-invariant).*
+  `newVersion` never checked the document's DEK was still active; since legal
+  erasure preserves the document row, regenerating a crypto-shredded document
+  drove `getOrCreateDek` to mint a FRESH live DEK (the partial unique index
+  permits it alongside the destroyed row), defeating the erasure guarantee while
+  leaving `dek_id` pointing at the destroyed key (an un-servable version). No
+  disclosure of erased data (the read path pins the destroyed `dek_id` → Gone).
+  Fixed: `newVersion` refuses when the document DEK is destroyed, surfacing
+  `Gone` exactly as reads do — no re-mint.
+- *Scan gate written fail-OPEN in style (Low).* `upload` admitted any verdict
+  that wasn't literally `infected`; the closed `clean|infected` union made it
+  safe today, but a future verdict variant would be silently admitted. Fixed:
+  admit only `verdict === 'clean'`; the type system now surfaces any new variant
+  as a compile error at the gate.
+- *Scanner signature not re-clamped at the audit egress (Low, hardening).*
+  `events.scanRejected` trusted each scanner adapter to have sanitized the
+  third-party signature name; the `AuditEmitter` schema gate was the only
+  backstop. Fixed: re-apply `sanitizeSignature` at the egress so the PII
+  firewall never depends on the adapter.
+- *Unbounded clamd response buffering (Low, not uploader-reachable).* The clamd
+  client re-`concat`'d the whole response on every socket event with no byte cap
+  and only an inactivity timeout, so a compromised/MITM'd clamd peer dribbling
+  bytes without a NUL could grow memory/CPU past the budget. Fixed: an 8 KiB
+  response cap + a hard deadline alongside the inactivity timeout, both
+  fail-closed.
+- *Exemplar templates could be published-active to a real matrix (Low,
+  process).* The legal sign-off gate is structural (the schema can't tell a
+  placeholder from real attorney sign-off), and the seed exemplars ship
+  `activate: true` with placeholder `legalReview`. Fixed: the publish CLI refuses
+  placeholder-marked sources when `NODE_ENV=production` (dev/test, which publish
+  the seeds to prove the matrix, are unaffected).
+- *Documents cluster overclaimed "no plaintext-PII columns" (Info).*
+  `documents.title` is a user-supplied plaintext label (needed for listing +
+  encrypted-search indexing without per-row decrypt), exactly like
+  `assets_view.title`. Corrected the CLAUDE.md decision log + docs/04 wording to
+  describe title as accepted low-sensitivity metadata rather than claiming zero
+  plaintext PII (the M1 "no longer overclaims" precedent); no code change.
+Informational / follow-ups left as-is: orphaned active DEK + ciphertext on a
+rolled-back generate/upload (erasure-completeness gap — a `document_deks`
+orphan-sweep keyed off rows with no referencing `documents.dek_id` is the fix,
+folded into the existing transactional-outbox follow-up, since both stem from
+work outside the commit); 404-before-403 existence oracle on object routes
+(bounded by unguessable UUIDs — same class as M3's Plaid oracle, left as-is);
+audit/domain emit after commit without an outbox (existing M3 follow-up);
+Textract sync `DetectDocumentText` covers PNG/JPEG only, so prod PDF/TIFF OCR
+no-ops until the async-Textract follow-up lands; the retention job must purge
+`document_search_tokens` in lockstep with DEK destruction (retention-job
+responsibility, outside the service); read path echoes the stored
+`content_sha256` rather than recomputing (the AAD already binds it); no
+per-user upload quota (edge/rate-limit concern, TB1).
 
 ### Later milestones (rough order, one per bounded context)
 M5 Terraform/EKS to a real dev environment ·

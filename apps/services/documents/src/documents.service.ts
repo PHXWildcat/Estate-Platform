@@ -9,14 +9,14 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { ExecutionStatus } from '@estate/contracts';
-import { DekDestroyedError } from '@estate/crypto';
+import { DekDestroyedError, type DekRepository } from '@estate/crypto';
 import { ContentCipher } from './content-cipher';
 import { Db, type Queryable } from './db';
 import { DocumentsAuthz, documentResource } from './authz.service';
 import { DocumentsRepo, type DocumentRow } from './documents.repo';
 import { EventsService } from './events.service';
 import { allowsNewVersion, isTransitionAllowed } from './execution-status';
-import { MALWARE_SCANNER, OBJECT_STORE, OCR_ENGINE } from './di-tokens';
+import { DEK_REPOSITORY, MALWARE_SCANNER, OBJECT_STORE, OCR_ENGINE } from './di-tokens';
 import { sniffContent } from './content-sniff';
 import type { MalwareScanner } from './malware-scanner';
 import type { ObjectStore } from './object-store';
@@ -26,12 +26,7 @@ import { SearchIndexer } from './search-indexer';
 import { SearchTokensRepo } from './search-tokens.repo';
 import { RenderError, renderDocument } from './renderer';
 import { TemplateEngine } from './template-engine';
-import {
-  ExecutionRequirementsSchema,
-  intakeSchemaFor,
-  type ExecutionRequirements,
-  type TemplateSource,
-} from './template-model';
+import { intakeSchemaFor, type ExecutionRequirements, type TemplateSource } from './template-model';
 import { TemplatesRepo, type TemplateRow } from './templates.repo';
 import { VersionsRepo, type VersionRow } from './versions.repo';
 import {
@@ -121,6 +116,7 @@ export class DocumentsService {
     private readonly events: EventsService,
     private readonly indexer: SearchIndexer,
     private readonly searchTokens: SearchTokensRepo,
+    @Inject(DEK_REPOSITORY) private readonly deks: DekRepository,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
     @Inject(MALWARE_SCANNER) private readonly scanner: MalwareScanner,
     @Inject(OCR_ENGINE) private readonly ocr: OcrEngine,
@@ -235,6 +231,16 @@ export class DocumentsService {
     if (expectedVersion !== doc.current_version) {
       throw new ConflictException({ error: 'version_conflict' });
     }
+    // Refuse to write a new version onto a document whose content DEK has been
+    // crypto-shredded (legal erasure preserves the document row per docs/02, so
+    // this path is reachable). Otherwise cipher.encrypt → getOrCreateDek would
+    // mint a FRESH live DEK for a legally-erased document — defeating the shred
+    // invariant — while documents.dek_id keeps pointing at the destroyed key,
+    // leaving the new version un-servable. Surface Gone, exactly as reads do.
+    const dek = await this.deks.findById(doc.dek_id);
+    if (!dek || dek.destroyedAt !== null) {
+      throw new GoneException({ error: 'content_erased' });
+    }
     const row = await this.resolveRegenTemplate(doc, input.templateId);
     const source = await this.engine.load(row);
     const rendered = this.render(source, input.variables);
@@ -326,7 +332,13 @@ export class DocumentsService {
       });
       throw new ServiceUnavailableException({ error: 'scan_unavailable' });
     }
-    if (scan.verdict === 'infected') {
+    // Fail closed: admit ONLY an explicit `clean` verdict. Anything else
+    // (an `infected` result today; a future verdict variant such as
+    // `suspicious`/`skipped` tomorrow) is rejected — content must never reach
+    // storage on anything short of a positive all-clear. The union is
+    // clean|infected, so this branch narrows to the infected variant; adding a
+    // new variant surfaces here as a type error, forcing an explicit decision.
+    if (scan.verdict !== 'clean') {
       await this.events.scanRejected(actor, {
         kind: input.kind,
         format: sniffed.format,
@@ -606,15 +618,25 @@ export class DocumentsService {
   }
 
   private async requirementsFor(doc: DocumentRow): Promise<ExecutionRequirements> {
+    // Uploads carry no template and no state-mandated execution ladder.
     if (doc.template_id === null) {
       return DEFAULT_REQUIREMENTS;
     }
+    // A GENERATED instrument's execution ladder MUST come from its template and
+    // MUST fail closed: a missing template (e.g. soft-deleted, so findById
+    // returns null) or a tampered/unparseable requirements value must NEVER
+    // silently drop a will/POA to the weakest (no-witness, no-notary) ladder
+    // (docs/03 risk #8 — the per-state execution-requirement engine is a legal
+    // gate). Read the requirements from the sha256-verified template SOURCE via
+    // engine.load, so the body_sha256 integrity pin that protects the rendered
+    // instrument also protects the formalities gate — closing the asymmetry
+    // where execution_requirements was read from an unverified DB column.
     const row = await this.templates.findById(this.db, doc.template_id);
     if (!row) {
-      return DEFAULT_REQUIREMENTS;
+      throw new ConflictException({ error: 'template_unavailable' });
     }
-    const parsed = ExecutionRequirementsSchema.safeParse(row.execution_requirements);
-    return parsed.success ? parsed.data : DEFAULT_REQUIREMENTS;
+    const source = await this.engine.load(row);
+    return source.executionRequirements;
   }
 
   private async requireLive(documentId: string): Promise<DocumentRow> {
