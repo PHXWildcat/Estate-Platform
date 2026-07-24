@@ -200,6 +200,14 @@ describeIfPg('documents: generate/upload/search/delete → audit chain + domain 
       .expect(201);
     const willId = (generated.body as { documentId: string }).documentId;
 
+    // Reading content back decrypts under the per-document DEK — the decrypt
+    // itself must land in the audit chain (crypto.field.decrypted).
+    const content = await http
+      .get(`/v1/documents/${willId}/versions/1/content`)
+      .set(owner)
+      .expect(200);
+    expect((content.body as { content: string }).content).toContain(TESTATOR);
+
     // Upload ingest: EICAR is rejected and never stored; a clean deed lands.
     await http
       .post('/v1/documents/upload')
@@ -264,6 +272,7 @@ describeIfPg('documents: generate/upload/search/delete → audit chain + domain 
     );
     for (const required of [
       'document.generated',
+      'document.content.viewed',
       'document.uploaded',
       'document.scan.rejected',
       'document.ocr.indexed',
