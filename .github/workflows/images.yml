@@ -118,11 +118,25 @@ jobs:
           artifact-name: sbom-${{ matrix.app }}.spdx.json
           output-file: sbom-${{ matrix.app }}.spdx.json
 
+      # Scan, then gate by OWNERSHIP rather than by severity alone: application
+      # dependencies are ours to bump and block the build; base-image packages
+      # (Debian libs, the bundled node binary) cannot be patched from here — a
+      # distroless image has no package manager — so they are reported instead
+      # of blocking every PR on the base vendor's rebuild cadence. See
+      # .github/scripts/gate-image-scan.mjs for the full rationale.
       - name: Scan image for vulnerabilities
-        uses: anchore/scan-action@v6
+        run: |
+          docker save estate/${{ matrix.app }}:ci -o /tmp/${{ matrix.app }}.tar
+          docker run --rm -v /tmp:/w anchore/grype:v0.97.1 \
+            "docker-archive:/w/${{ matrix.app }}.tar" -o json --quiet \
+            > /tmp/grype-${{ matrix.app }}.json
+          node .github/scripts/gate-image-scan.mjs \
+            /tmp/grype-${{ matrix.app }}.json ${{ matrix.app }}
+
+      - name: Upload vulnerability report
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          image: estate/${{ matrix.app }}:ci
-          # Distroless keeps the OS surface tiny; anything high or critical that
-          # still lands in an image is worth blocking on.
-          severity-cutoff: high
-          fail-build: true
+          name: grype-${{ matrix.app }}
+          path: /tmp/grype-${{ matrix.app }}.json
+          if-no-files-found: warn

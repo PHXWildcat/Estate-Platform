@@ -510,9 +510,20 @@ files and the repo had no Dockerfiles at all — nothing was deployable anywhere
   hand-written digest with nothing to refresh it rots into an unpatchable base.
   Digest pinning lands with the registry + an automated bump (Renovate), where
   it can be maintained.
-- **No local verification.** There is no Docker on the maintainer's Windows
-  workstation, so CI is the only verifier for image builds — a red Images run
-  means a broken image, not flaky CI.
+- **Vulnerability gate splits by ownership, not by severity alone.** Blocking on
+  every high/critical would mean blocking on the base image: a distroless
+  runtime still carries Debian packages and the bundled `node` binary, none of
+  which can be patched from here (no package manager in the image), and some are
+  marked "won't fix" upstream. The first scan found 21 high/critical — **all** in
+  the base, **zero** in this repo's dependency tree. So
+  `.github/scripts/gate-image-scan.mjs` blocks on APPLICATION (npm) findings,
+  which a developer can fix by bumping a dependency, and reports base findings to
+  the job summary. The compensating control for the base is rebasing: images
+  rebuild from a floating patch tag every CI run, with Renovate-driven digest
+  pinning plus a scheduled rebuild as the tracked follow-up. A gate that is
+  permanently red for reasons nobody in this repo can act on trains people to
+  ignore it, which is worse for security than a gate that fires only on the
+  actionable half.
 
 **Deferred to the cloud half (plan already drafted, pending an AWS account):**
 Terraform foundation (remote state, VPC, KMS aliases the code already expects,

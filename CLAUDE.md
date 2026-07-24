@@ -246,4 +246,13 @@ deviating from them, stop and propose the change with rationale — do not silen
   as deliberate gaps in docs/04 rather than silently skipped. CI smoke-tests that
   each service image still exits non-zero with its config error when run with no
   environment, so the fail-fast posture is proven in the shipped artifact.
-  No Docker on the Windows workstation ⇒ CI is the only verifier for image builds.
+- 2026-07-24 — Image vulnerability gate splits by OWNERSHIP, not severity alone:
+  application (npm) high/critical BLOCK; base-image (deb/binary) findings are
+  reported to the job summary. Rationale: the first scan found 21 high/critical,
+  all in the distroless base (libssl3/libc6/bundled node, several "won't fix"),
+  zero in our dependency tree — and a distroless image has no package manager, so
+  there is nothing to patch from here. Blocking every PR on the base vendor's
+  rebuild cadence yields a permanently red pipeline people learn to ignore. The
+  compensating control is rebasing (floating patch tag every build; Renovate
+  digest pinning + scheduled rebuild is the follow-up). Gate lives in
+  `.github/scripts/gate-image-scan.mjs`.

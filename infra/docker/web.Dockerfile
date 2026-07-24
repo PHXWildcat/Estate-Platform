@@ -46,10 +46,11 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0
 USER nonroot
 # `standalone` already contains the minimal node_modules closure and a server.js
-# entrypoint; static assets and `public/` are copied in beside it because Next
-# deliberately leaves them out of the traced bundle.
+# entrypoint; the static assets are copied in beside it because Next deliberately
+# leaves them out of the traced bundle. There is no `public/` directory in this
+# app — add a COPY for it here if one is ever introduced, since Next excludes it
+# from the bundle too.
 COPY --from=builder --chown=nonroot:nonroot /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=nonroot:nonroot /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder --chown=nonroot:nonroot /app/apps/web/public ./apps/web/public
 EXPOSE 3000
 CMD ["apps/web/server.js"]
