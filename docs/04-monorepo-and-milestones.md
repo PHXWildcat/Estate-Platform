@@ -254,8 +254,82 @@ Informational nits left as-is: Plaid `sync`/`revoke` 404-vs-403 item-existence o
 `system` (audit fidelity); in-window webhook replay (inherent to Plaid's iat-only model);
 `IsoDateSchema` accepts calendar rollovers (`2026-02-30`).
 
+### M4 — Document service (documents cluster; first half in review)
+Scope agreed 2026-07-23, two PRs like M3: **PR1** template matrix + generation
+pipeline (plus the object-store/encryption substrate generation depends on);
+**PR2** the upload-facing Zone B Document Vault — upload ingest, malware-scan
+port (clamd INSTREAM live adapter), OCR port (Textract-shaped live adapter),
+per-user-keyed encrypted search tokens, and `documents.e2e.spec.ts` (audit
+hash-chain proof over generation + upload). BFF unchanged (no documents
+resolvers yet), consistent with M3.
+
+**PR1 (this branch): `apps/services/documents`** mirroring the assets/plaid
+service template (fail-fast config, Db/withTransaction with `app.actor_id`
+GUC, `@estate/db` migrator + conventions, `@estate/auth-guard` verification,
+Cedar owner-only PEP, IDs/enums-only audit + domain events on
+`estate.document.events.v1`):
+- **docs/02 §4 DDL** with additive columns (called out inline):
+  `document_templates.variables` (typed intake declaration),
+  `document_templates.body_sha256` (content pin), templates gain
+  updated_at/deleted_at + a `_versions` shadow (activation is audit surface),
+  `ux_document_templates_active` (one active version per doc_type+state),
+  `document_versions.size_bytes/mime`, `ix_documents_user`.
+- **Per-OBJECT DEKs** (docs/01 §4's parenthetical, implemented literally):
+  `document_deks` keys wrapped DEKs by DOCUMENT id (unique-active index +
+  `DekConflictError` adoption); `documents.dek_id` references the document's
+  content DEK, so crypto-shredding one document erases exactly its versions.
+  Content AAD binds document id + owner user id + version + plaintext sha256
+  (the M3-review F1 lesson, from day one). The documents cluster holds no
+  plaintext-PII columns at all — everything sensitive lives inside encrypted
+  content blobs.
+- **ObjectStore port** (in-service, plaid-gateway precedent):
+  `LocalFsObjectStore` (dev/test) + `S3ObjectStore` (`If-None-Match:*`
+  immutability, stubbed-transport tests); production config REQUIRES s3 mode.
+  Both stores refuse traversal keys and mutation — a put to an existing key
+  must be byte-identical (idempotent republish) or it errors. Blobs are
+  ciphertext only.
+- **Template matrix "versioned like code" — literally.** Sources in
+  `apps/services/documents/templates/<state>/<doc_type>/vN.json` with
+  schema-MANDATORY `legalReview` sign-off metadata + per-state
+  `execution_requirements` + a typed `variables` declaration;
+  `template-publish-cli.ts` is the ONLY write path (no runtime template API —
+  git review is the sign-off gate). Published versions are immutable
+  (re-publish identical = no-op, changed bytes = error); the loader verifies
+  `body_sha256` + row identity before parsing (tamper fails closed). Seeds
+  are three EXEMPLAR templates (CA will, TX durable POA, NY living will)
+  proving the matrix machinery — real 50-state attorney content is a legal
+  deliverable, not code.
+- **Renderer:** in-repo deterministic engine (no template library on a
+  security-critical path): strict `{{placeholder}}` substitution + boolean
+  `when` conditionals only; intake validated against the template's typed
+  declaration (`.strict()` — undeclared data cannot reach a render); every
+  value HTML-escaped; unsubstitutable placeholders fail closed. Output is
+  canonical HTML → `content_sha256` is reproducible (content addressing).
+- **Generation pipeline** (`POST /v1/documents/generate`, **StepUpGuard** —
+  docs/01 §5 makes document generation a mandatory step-up action; deletion
+  is equally gated): resolve active template → validate intake → render →
+  encrypt under the document DEK → store blob → documents + document_versions
+  in one transaction. Regeneration (`POST .../versions`, step-up) uses
+  If-Match on current_version and is REFUSED once signing starts
+  (revoke/supersede first). Intake variables are deliberately NOT persisted —
+  the encrypted rendered artifact is the record.
+- **Execution-status tracking:** requirements-parameterized ladder
+  (signed → [witnessed] → [notarized] → executed; revoked/superseded), no
+  skipping required steps, `executedAt` accompanies exactly the `executed`
+  attestation; transitions audited + domain-published. Legal-hold enforcement
+  ships now (blocks deletion, 409); the SETTING surface belongs to
+  settlement (M7). `sealed` remains a dormant flag until M6 client-side
+  crypto exists.
+- **Tests:** 94 local unit tests (renderer escaping/determinism/fail-closed,
+  template cross-validation, state machine, both object stores incl.
+  traversal + immutability, service pipeline with real crypto over in-memory
+  stores, PII firewall, config fail-fast) + PG-gated `documents.int.spec.ts`
+  (real migrations + checkConventions, real publish-CLI run over the real
+  seeds, supertest flow: 401/403/step-up/ciphertext-at-rest/audited
+  decrypt/ladder/If-Match/legal hold/soft-delete attribution) + ci-guard;
+  coverage floor 65/58/50/65 ratcheting toward 95.
+
 ### Later milestones (rough order, one per bounded context)
-M4 documents (template matrix, generation pipeline, S3 doc vault) ·
 M5 Terraform/EKS to a real dev environment ·
 M6 vault (Zone A) ·
 M7 settlement (Temporal) ·

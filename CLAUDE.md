@@ -141,3 +141,38 @@ deviating from them, stop and propose the change with rationale — do not silen
   real TOTP step-up elevates the session. BFF unchanged (it has no profile/assets/plaid
   resolvers yet; when they land they forward the bearer credential downstream instead of
   injecting `x-estate-user-id`).
+- 2026-07-23 — M4 scope: Document service in two PRs — PR1 template matrix +
+  generation pipeline (including the ObjectStore/encryption substrate generation
+  depends on: `document_versions.object_key` needs a store on day one); PR2 the
+  upload-facing doc vault (malware-scan port, OCR port, encrypted search tokens,
+  documents e2e). Full record in docs/04 M4.
+- 2026-07-23 — Documents cluster uses PER-OBJECT DEKs (docs/01 §4's parenthetical,
+  literal): `document_deks` keys wrapped DEKs by DOCUMENT id; `documents.dek_id` is
+  the document's content DEK; crypto-shredding one document erases exactly its
+  versions. Content AAD binds document id + owner + version + plaintext sha256.
+  The cluster stores no plaintext-PII columns — sensitive data exists only inside
+  encrypted content blobs; intake variables are deliberately NOT persisted (the
+  encrypted rendered artifact is the record).
+- 2026-07-23 — Templates are "versioned like code" literally: in-repo JSON sources
+  with schema-mandatory legalReview sign-off + per-state execution_requirements +
+  typed variables declaration; `template-publish-cli.ts` is the only write path (no
+  runtime template-mutation API — git review IS the sign-off gate); published
+  versions immutable and content-pinned (`body_sha256`, verified on load,
+  fail-closed). Renderer is a small in-repo deterministic engine (strict
+  placeholder substitution + boolean conditionals, HTML-escaped, undeclared/absent
+  values fail closed) — no Handlebars/eval on a security-critical path, same
+  rationale as the node:crypto webhook verifier. Output is canonical HTML (not
+  PDF — presentation deferred), so content_sha256 is reproducible.
+- 2026-07-23 — ObjectStore port lives in-service (plaid-gateway precedent):
+  LocalFsObjectStore (dev/test) + S3ObjectStore (If-None-Match:* immutability);
+  prod REQUIRES s3 mode; blobs are ciphertext only (encryption happens in the
+  service; S3 SSE is defense in depth). Objects immutable: re-put must be
+  byte-identical or it errors. Extract to a package only when a second consumer
+  lands.
+- 2026-07-23 — Execution-status ladder is parameterized by the template's
+  execution_requirements (required steps only, no skipping); regeneration is
+  refused once signing starts (revoke/supersede first — a signed instrument's
+  content is a legal record); executedAt accompanies exactly the `executed`
+  attestation. Legal-hold ENFORCEMENT ships in M4 (blocks deletion); the setting
+  surface belongs to settlement (M7). Generation, regeneration, and deletion are
+  step-up gated per docs/01 §5.

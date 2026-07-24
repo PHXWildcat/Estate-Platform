@@ -43,6 +43,14 @@ export const AUDIT_ACTIONS = [
   'plaid.item.login_required',
   'plaid.webhook.rejected',
   'plaid.sync.anomalous',
+  // Document service (documents cluster).
+  'document.template.published',
+  'document.template.activated',
+  'document.generated',
+  'document.version.created',
+  'document.content.viewed',
+  'document.status.changed',
+  'document.deleted',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

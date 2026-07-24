@@ -43,6 +43,24 @@ export {
   type PlaidItemSynced,
 } from './plaid-events';
 export {
+  DOC_TYPES,
+  DOCUMENT_SOURCES,
+  DocTypeSchema,
+  DocumentSourceSchema,
+  DocumentStatusChangedEvent,
+  DocumentVersionCreatedEvent,
+  EXECUTION_STATUSES,
+  ExecutionStatusSchema,
+  US_STATES,
+  UsStateSchema,
+  type DocType,
+  type DocumentSource,
+  type DocumentStatusChanged,
+  type DocumentVersionCreated,
+  type ExecutionStatus,
+  type UsState,
+} from './document-events';
+export {
   ActorTypeSchema,
   defineEvent,
   EventEnvelopeSchema,
