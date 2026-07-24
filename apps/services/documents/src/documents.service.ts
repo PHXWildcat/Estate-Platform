@@ -187,16 +187,17 @@ export class DocumentsService {
     if (!allowsNewVersion(doc.execution_status)) {
       throw new ConflictException({ error: 'invalid_status' });
     }
-    const row = await this.resolveRegenTemplate(doc, input.templateId);
-    const source = await this.engine.load(row);
-    const rendered = this.render(source, input.variables);
     // The implicit concurrency expectation is the version we read; an
-    // explicit If-Match must agree with it, and the locked re-check below
+    // explicit If-Match must agree with it BEFORE any render/KMS work happens
+    // (a stale writer gets its 409 first), and the locked re-check below
     // makes the expectation authoritative.
     const expectedVersion = ifMatch ?? doc.current_version;
     if (expectedVersion !== doc.current_version) {
       throw new ConflictException({ error: 'version_conflict' });
     }
+    const row = await this.resolveRegenTemplate(doc, input.templateId);
+    const source = await this.engine.load(row);
+    const rendered = this.render(source, input.variables);
     const nextVersion = doc.current_version + 1;
     const { ciphertext } = await this.cipher.encrypt({
       documentId,
