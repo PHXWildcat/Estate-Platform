@@ -12,6 +12,7 @@ import {
   type UploadFormat,
 } from '@estate/contracts';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
+import { sanitizeSignature } from './malware-scanner';
 
 /**
  * The single egress point for this service's audit + domain events.
@@ -157,8 +158,10 @@ export class EventsService {
   /**
    * A rejected upload never becomes a document — resourceId stays null and
    * the detail carries enums plus (for infections) the sanitized signature
-   * token. Scanner output is third-party data; sanitizeSignature already
-   * clamped it into the audit-safe grammar.
+   * token. The scanner signature is THIRD-PARTY data; re-clamp it through
+   * sanitizeSignature HERE, at the audit egress, so the PII firewall never
+   * depends on every present and future scanner adapter having sanitized
+   * (defense in depth — the AuditEmitter schema gate is the final backstop).
    */
   async scanRejected(
     actorId: string,
@@ -181,7 +184,9 @@ export class EventsService {
         kind: detail.kind,
         format: detail.format,
         reason: detail.reason,
-        ...(detail.signature !== undefined ? { signature: detail.signature } : {}),
+        ...(detail.signature !== undefined
+          ? { signature: sanitizeSignature(detail.signature) }
+          : {}),
       },
     });
   }

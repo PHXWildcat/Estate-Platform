@@ -150,9 +150,15 @@ deviating from them, stop and propose the change with rationale — do not silen
   literal): `document_deks` keys wrapped DEKs by DOCUMENT id; `documents.dek_id` is
   the document's content DEK; crypto-shredding one document erases exactly its
   versions. Content AAD binds document id + owner + version + plaintext sha256.
-  The cluster stores no plaintext-PII columns — sensitive data exists only inside
-  encrypted content blobs; intake variables are deliberately NOT persisted (the
-  encrypted rendered artifact is the record).
+  Sensitive DOCUMENT CONTENT exists only inside encrypted blobs, and intake
+  variables are deliberately NOT persisted (the encrypted rendered artifact is
+  the record). The one exception is `documents.title` — a user-supplied
+  free-text display/label column kept plaintext so listing and the encrypted
+  search index work without per-row decrypt, exactly as `assets_view.title` is
+  plaintext in the financial cluster (docs/02 §3). Treat titles as
+  low-sensitivity metadata (guide users to keep specifics in the content, not
+  the title); an earlier phrasing here overclaimed "no plaintext-PII columns"
+  and was corrected in the M4 security review.
 - 2026-07-23 — Templates are "versioned like code" literally: in-repo JSON sources
   with schema-mandatory legalReview sign-off + per-state execution_requirements +
   typed variables declaration; `template-publish-cli.ts` is the only write path (no
@@ -209,3 +215,19 @@ deviating from them, stop and propose the change with rationale — do not silen
   `document.version.created` payload widened accordingly (no consumers existed).
   Binary content travels as base64 in ContentDto with an explicit `encoding`
   field; canonical HTML stays utf8.
+- 2026-07-24 — M4 security review (structured discovery + adversarial verify, five
+  parallel passes over the merged range): no critical/app-exploitable vuln. Seven
+  findings fixed in-branch — the load-bearing one being that the execution-
+  requirements ladder failed OPEN (a generated will/POA whose template was
+  soft-deleted or whose requirements column was unparseable dropped to
+  no-witness/no-notary); now a generated doc reads requirements from the
+  sha256-verified template source and fails closed, extending the body_sha256
+  pin to the formalities gate. Also: newVersion refuses to re-mint a DEK on a
+  crypto-shredded document (Gone, not a fresh live key); scan gate admits only
+  `clean` (fail-closed by construction); scanner signature re-clamped at the
+  audit egress; clamd response bounded (8 KiB cap + hard deadline); publish CLI
+  refuses placeholder-legalReview exemplars when NODE_ENV=production; and the
+  "no plaintext-PII columns" claim corrected — `documents.title` is accepted
+  plaintext label metadata like `assets_view.title`. Full record in docs/04 M4
+  review; documented follow-ups (orphan-DEK sweep, 404-vs-403 oracle, post-commit
+  outbox, async Textract) left as-is.

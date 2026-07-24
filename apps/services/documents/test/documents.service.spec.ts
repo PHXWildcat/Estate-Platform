@@ -72,6 +72,7 @@ async function build(options: HarnessOptions = {}): Promise<Harness> {
     events,
     buildIndexer(),
     new FakeSearchTokens(docs),
+    deks,
     store,
     options.scanner ?? new StubScanner(),
     options.ocr ?? new StubOcr(),
@@ -215,6 +216,19 @@ describe('versioning', () => {
       h.service.newVersion(OWNER, documentId, { variables: sampleVariables() }),
     ).rejects.toThrow(ConflictException);
   });
+
+  it('refuses regeneration when the document DEK is crypto-shredded (never re-mints)', async () => {
+    const h = await build();
+    const documentId = await generate(h);
+    const dekId = h.docs.rows.get(documentId)!.dek_id;
+    await h.deks.markDestroyed(dekId, new Date());
+    await expect(
+      h.service.newVersion(OWNER, documentId, { variables: sampleVariables() }),
+    ).rejects.toThrow(GoneException);
+    // The shred invariant holds: no fresh active DEK was minted for the document.
+    expect(await h.deks.findActiveByUser(documentId)).toBeNull();
+    expect(h.docs.rows.get(documentId)!.current_version).toBe(1);
+  });
 });
 
 describe('execution-status tracking', () => {
@@ -262,6 +276,19 @@ describe('execution-status tracking', () => {
       .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
       .find((e) => e.action === 'document.status.changed')!;
     expect(audit.detail).toEqual({ from: 'generated', to: 'signed' });
+  });
+
+  it('fails CLOSED on the execution ladder when a generated doc template is unavailable', async () => {
+    // Old behavior dropped to DEFAULT_REQUIREMENTS (no witnesses/notary) and
+    // let signed→executed skip state-mandated formalities. Now the transition
+    // is refused entirely rather than trusting the weakest ladder.
+    const h = await build();
+    const documentId = await generate(h);
+    // Soft-delete the template out from under the already-generated document.
+    h.templates.rows.get(h.template.id)!.deleted_at = new Date();
+    await expect(
+      h.service.transitionStatus(OWNER, documentId, { status: 'signed' }),
+    ).rejects.toThrow(ConflictException);
   });
 });
 
@@ -392,6 +419,37 @@ describe('upload pipeline', () => {
       .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
       .find((e) => e.action === 'document.scan.rejected')!;
     expect(rejection.detail['reason']).toBe('scanner_error');
+  });
+
+  it('admits ONLY a clean verdict — an unknown verdict is rejected (fail closed)', async () => {
+    // A future/unexpected verdict variant must never fall through to storage.
+    const weird: MalwareScanner = {
+      scan: () => Promise.resolve({ verdict: 'suspicious' } as never),
+    };
+    const h = await build({ scanner: weird });
+    await expect(h.service.upload(OWNER, uploadInput())).rejects.toThrow(
+      UnprocessableEntityException,
+    );
+    expect(h.docs.rows.size).toBe(0);
+    expect(h.versions.rows).toHaveLength(0);
+  });
+
+  it('re-clamps a raw scanner signature at the audit egress', async () => {
+    // A non-conforming (un-sanitized) signature would fail the audit schema
+    // gate and abort the emit; re-clamping at egress makes it emit cleanly and
+    // keeps third-party text out of the append-only store regardless of adapter.
+    const dirty: MalwareScanner = {
+      scan: () => Promise.resolve({ verdict: 'infected', signature: 'Bad Name <script> ünïcode' }),
+    };
+    const h = await build({ scanner: dirty });
+    await expect(h.service.upload(OWNER, uploadInput())).rejects.toThrow(
+      UnprocessableEntityException,
+    );
+    const rejection = h.producer.messages
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .find((e) => e.action === 'document.scan.rejected')!;
+    expect(String(rejection.detail['signature'])).toMatch(/^[A-Za-z0-9_.:-]{1,128}$/);
+    expect(String(rejection.detail['signature'])).not.toContain(' ');
   });
 
   it('rejects undeclared/mismatched/oversized content before scanning', async () => {

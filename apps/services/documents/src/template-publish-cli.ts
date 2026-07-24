@@ -69,16 +69,40 @@ function objectStoreFromEnv(env: NodeJS.ProcessEnv): ObjectStore {
   return new LocalFsObjectStore(env['OBJECT_STORE_DIR'] ?? '.object-store');
 }
 
+/**
+ * Marker that flags a template's legalReview as an engineering placeholder
+ * rather than genuine attorney sign-off. The `legalReview` schema can only
+ * check that `by`/`at` are present (it cannot validate authenticity), so the
+ * seed exemplars carry this marker and are refused in production (see below).
+ */
+export const EXEMPLAR_REVIEW_MARKER = 'EXEMPLAR ONLY';
+
+function isPlaceholderReview(by: string): boolean {
+  return by.toUpperCase().includes(EXEMPLAR_REVIEW_MARKER);
+}
+
 export async function publishTemplates(
   db: Queryable,
   store: ObjectStore,
   emitter: AuditEmitter,
   files: ReadonlyArray<{ path: string; bytes: Buffer }>,
 ): Promise<PublishReport> {
+  // Belt for the legal sign-off gate: attorney-unreviewed exemplar templates
+  // (placeholder legalReview) must never reach a PRODUCTION matrix, where they
+  // would become the single active will/POA/living-will instrument for a state
+  // (docs/03 risk #8). The schema can't tell a placeholder from real sign-off,
+  // so refuse placeholder-marked sources when NODE_ENV=production; dev/test
+  // (which publish the exemplar seeds to prove the matrix) are unaffected.
+  const isProduction = process.env['NODE_ENV'] === 'production';
   const report: PublishReport = { published: [], activated: [], skipped: [] };
   for (const file of files) {
     const source = parseTemplateSource(JSON.parse(file.bytes.toString('utf8')));
     const label = labelOf(source);
+    if (isProduction && isPlaceholderReview(source.legalReview.by)) {
+      throw new Error(
+        `${label}: refusing to publish an attorney-unreviewed exemplar template (legalReview.by is a placeholder) in production`,
+      );
+    }
     const sha = createHash('sha256').update(file.bytes).digest();
     const existing = await findTemplateByKey(db, source.docType, source.state, source.version);
     let row: { id: string };
