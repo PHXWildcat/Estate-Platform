@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import type { DocType, DocumentSource, ExecutionStatus } from '@estate/contracts';
+import type { DocumentKind, DocumentSource, ExecutionStatus } from '@estate/contracts';
 import { Db, type Queryable } from './db';
 
 export interface DocumentRow {
   id: string;
   user_id: string;
-  doc_type: DocType;
+  doc_type: DocumentKind;
   template_id: string | null;
   source: DocumentSource;
   title: string;
@@ -62,7 +62,7 @@ export class DocumentsRepo {
     row: {
       id: string;
       userId: string;
-      docType: DocType;
+      docType: DocumentKind;
       templateId: string | null;
       source: DocumentSource;
       title: string;

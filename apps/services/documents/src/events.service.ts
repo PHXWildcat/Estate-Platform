@@ -6,8 +6,10 @@ import {
   DocumentVersionCreatedEvent,
   TOPICS,
   type DocType,
+  type DocumentKind,
   type DocumentSource,
   type ExecutionStatus,
+  type UploadFormat,
 } from '@estate/contracts';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
 
@@ -38,7 +40,7 @@ export class EventsService {
     actorId: string;
     documentId: string;
     version: number;
-    docType: DocType;
+    docType: DocumentKind;
     source: DocumentSource;
   }): Promise<void> {
     const envelope = DocumentVersionCreatedEvent.parse({
@@ -130,6 +132,60 @@ export class EventsService {
     await this.document('document.deleted', actorId, documentId);
   }
 
+  async documentUploaded(
+    actorId: string,
+    documentId: string,
+    detail: { kind: DocumentKind; format: UploadFormat },
+  ): Promise<void> {
+    await this.document('document.uploaded', actorId, documentId, {
+      kind: detail.kind,
+      format: detail.format,
+    });
+  }
+
+  async ocrIndexed(
+    actorId: string,
+    documentId: string,
+    detail: { version: number; tokens: number },
+  ): Promise<void> {
+    await this.document('document.ocr.indexed', actorId, documentId, {
+      version: detail.version,
+      tokens: detail.tokens,
+    });
+  }
+
+  /**
+   * A rejected upload never becomes a document — resourceId stays null and
+   * the detail carries enums plus (for infections) the sanitized signature
+   * token. Scanner output is third-party data; sanitizeSignature already
+   * clamped it into the audit-safe grammar.
+   */
+  async scanRejected(
+    actorId: string,
+    detail: {
+      kind: DocumentKind;
+      format: UploadFormat;
+      reason: 'infected' | 'scanner_error';
+      signature?: string;
+    },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'document.scan.rejected',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'document_upload',
+      resourceId: null,
+      sessionId: null,
+      detail: {
+        kind: detail.kind,
+        format: detail.format,
+        reason: detail.reason,
+        ...(detail.signature !== undefined ? { signature: detail.signature } : {}),
+      },
+    });
+  }
+
   /** Template publications/activations run as the CLI operator (actor null). */
   async templatePublished(
     templateId: string,
@@ -169,7 +225,9 @@ export class EventsService {
       | 'document.version.created'
       | 'document.content.viewed'
       | 'document.status.changed'
-      | 'document.deleted',
+      | 'document.deleted'
+      | 'document.uploaded'
+      | 'document.ocr.indexed',
     actorId: string,
     documentId: string,
     detail: Record<string, string | number | boolean> = {},

@@ -6,6 +6,7 @@ const DEV_BASE = {
   NODE_ENV: 'development',
   DATABASE_URL: 'postgres://localhost/documents',
   KMS_MASTER_KEY_HEX: KEY,
+  SEARCH_INDEX_KEY_HEX: 'b'.repeat(64),
 };
 
 const PROD_BASE = {
@@ -17,14 +18,21 @@ const PROD_BASE = {
   IDENTITY_URL: 'https://identity.internal',
   OBJECT_STORE_MODE: 's3',
   OBJECT_STORE_BUCKET: 'estate-documents',
+  SEARCH_INDEX_KEY_HEX: 'b'.repeat(64),
+  SCANNER_MODE: 'clamd',
+  CLAMD_HOST: 'clamav.internal',
+  OCR_MODE: 'textract',
 };
 
 describe('documents config', () => {
-  it('loads dev defaults: fs object store, local KMS, no Kafka', () => {
+  it('loads dev defaults: fs object store, local KMS, stub scanner/OCR, no Kafka', () => {
     const config = loadConfig(DEV_BASE);
     expect(config.port).toBe(3005);
     expect(config.kms).toEqual({ mode: 'local', masterKey: Buffer.from(KEY, 'hex') });
     expect(config.objectStore).toEqual({ mode: 'fs', dir: '.object-store' });
+    expect(config.scanner).toEqual({ mode: 'stub' });
+    expect(config.ocr).toEqual({ mode: 'stub' });
+    expect(config.searchIndexKey).toEqual(Buffer.from('b'.repeat(64), 'hex'));
     expect(config.kafkaBrokers).toBeNull();
     expect(config.kekAlias).toBe('documents/kek');
     expect(config.identityUrl).toBe('http://localhost:3001');
@@ -76,14 +84,39 @@ describe('documents config', () => {
     );
   });
 
+  it('production refuses the stub scanner and stub OCR', () => {
+    expect(() => loadConfig({ ...PROD_BASE, SCANNER_MODE: 'stub' })).toThrow(/SCANNER_MODE/);
+    expect(() => loadConfig({ ...PROD_BASE, OCR_MODE: 'stub' })).toThrow(/OCR_MODE/);
+  });
+
+  it('clamd mode requires a host in any environment; port defaults to 3310', () => {
+    expect(() => loadConfig({ ...DEV_BASE, SCANNER_MODE: 'clamd' })).toThrow(/CLAMD_HOST/);
+    const config = loadConfig({ ...DEV_BASE, SCANNER_MODE: 'clamd', CLAMD_HOST: 'localhost' });
+    expect(config.scanner).toEqual({ mode: 'clamd', host: 'localhost', port: 3310 });
+    expect(loadConfig(PROD_BASE).scanner).toEqual({
+      mode: 'clamd',
+      host: 'clamav.internal',
+      port: 3310,
+    });
+  });
+
+  it('textract mode requires a region; SEARCH_INDEX_KEY_HEX is always required', () => {
+    expect(() => loadConfig({ ...DEV_BASE, OCR_MODE: 'textract' })).toThrow(/AWS_REGION/);
+    expect(loadConfig({ ...DEV_BASE, OCR_MODE: 'textract', AWS_REGION: 'us-east-1' }).ocr).toEqual({
+      mode: 'textract',
+      region: 'us-east-1',
+    });
+    const { SEARCH_INDEX_KEY_HEX: _omit, ...withoutKey } = DEV_BASE;
+    expect(() => loadConfig(withoutKey)).toThrow(/SEARCH_INDEX_KEY_HEX/);
+  });
+
   it('production refuses a whitespace-only broker list', () => {
     expect(() => loadConfig({ ...PROD_BASE, KAFKA_BROKERS: ' , ' })).toThrow(ConfigError);
   });
 
   it('dev fails fast without the local KMS master key', () => {
-    expect(() => loadConfig({ NODE_ENV: 'development', DATABASE_URL: 'postgres://x/y' })).toThrow(
-      /KMS_MASTER_KEY_HEX/,
-    );
+    const { KMS_MASTER_KEY_HEX: _omit, ...withoutKms } = DEV_BASE;
+    expect(() => loadConfig(withoutKms)).toThrow(/KMS_MASTER_KEY_HEX/);
     expect(() => loadConfig({ ...DEV_BASE, KMS_MASTER_KEY_HEX: 'nothex' })).toThrow(ConfigError);
   });
 

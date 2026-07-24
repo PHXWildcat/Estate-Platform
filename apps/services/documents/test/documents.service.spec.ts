@@ -4,27 +4,34 @@ import {
   ForbiddenException,
   GoneException,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { AuditEventSchema } from '@estate/contracts';
 import { DocumentsAuthz } from '../src/authz.service';
 import { DocumentsService } from '../src/documents.service';
+import { EICAR_TEST_STRING, StubScanner, type MalwareScanner } from '../src/malware-scanner';
+import { StubOcr, type OcrEngine } from '../src/ocr';
 import { TemplateEngine } from '../src/template-engine';
 import {
   buildCipher,
+  buildIndexer,
   capturingEvents,
   fakeDb,
   FakeDocuments,
+  FakeSearchTokens,
   FakeTemplates,
   FakeVersions,
   MemoryDeks,
   MemoryObjectStore,
+  pdfFixture,
   publishSourceToFakes,
   sampleSource,
   sampleVariables,
 } from './support';
 import type { InMemoryAuditProducer } from '../src/audit-producer';
+import type { UploadDocumentInput } from '../src/schemas';
 import type { TemplateRow } from '../src/templates.repo';
 
 const OWNER = randomUUID();
@@ -41,7 +48,12 @@ interface Harness {
   template: TemplateRow;
 }
 
-async function build(): Promise<Harness> {
+interface HarnessOptions {
+  scanner?: MalwareScanner;
+  ocr?: OcrEngine;
+}
+
+async function build(options: HarnessOptions = {}): Promise<Harness> {
   const docs = new FakeDocuments();
   const versions = new FakeVersions();
   const templates = new FakeTemplates();
@@ -58,7 +70,11 @@ async function build(): Promise<Harness> {
     buildCipher(deks, events),
     new DocumentsAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
     events,
+    buildIndexer(),
+    new FakeSearchTokens(docs),
     store,
+    options.scanner ?? new StubScanner(),
+    options.ocr ?? new StubOcr(),
   );
   return { service, docs, versions, templates, store, deks, producer, template };
 }
@@ -282,6 +298,187 @@ describe('authorization (deny-by-default PEP)', () => {
     ).rejects.toThrow(ForbiddenException);
     await expect(h.service.softDelete(STRANGER, documentId)).rejects.toThrow(ForbiddenException);
     expect(await h.service.list(STRANGER)).toEqual([]);
+  });
+});
+
+describe('upload pipeline', () => {
+  const CONTENT_TEXT = 'Deed for the lake house recorded in Marlow County';
+
+  function uploadInput(overrides: Partial<UploadDocumentInput> = {}): UploadDocumentInput {
+    return {
+      kind: 'property',
+      title: 'Lake house deed',
+      mime: 'application/pdf',
+      contentBase64: pdfFixture(CONTENT_TEXT).toString('base64'),
+      ...overrides,
+    };
+  }
+
+  it('ingests a clean PDF: encrypted blob + OCR artifact, draft status, indexed', async () => {
+    const h = await build();
+    const result = await h.service.upload(OWNER, uploadInput());
+    expect(result.version).toBe(1);
+    expect(result.executionStatus).toBe('draft');
+    expect(result.ocrIndexed).toBe(true);
+
+    const row = h.docs.rows.get(result.documentId)!;
+    expect(row.source).toBe('uploaded');
+    expect(row.doc_type).toBe('property');
+    expect(row.template_id).toBeNull();
+
+    const versionRow = h.versions.rows[0]!;
+    expect(versionRow.mime).toBe('application/pdf');
+    expect(versionRow.ocr_indexed).toBe(true);
+
+    // Blob and OCR artifact are ciphertext: no plaintext markers anywhere.
+    const blob = h.store.objects.get(versionRow.object_key)!;
+    expect(blob.includes(Buffer.from('%PDF'))).toBe(false);
+    expect(blob.includes(Buffer.from('Marlow'))).toBe(false);
+    const ocrArtifact = h.store.objects.get(`documents/${result.documentId}/v1-ocr`)!;
+    expect(ocrArtifact).toBeInstanceOf(Buffer);
+    expect(ocrArtifact.includes(Buffer.from('Marlow'))).toBe(false);
+
+    const actions = h.producer.messages
+      .filter((m) => m.topic === 'estate.audit.events.v1')
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)).action);
+    expect(actions).toContain('document.uploaded');
+    expect(actions).toContain('document.ocr.indexed');
+  });
+
+  it('round-trips binary content as base64 with the stored sha', async () => {
+    const h = await build();
+    const bytes = pdfFixture(CONTENT_TEXT);
+    const { documentId, contentSha256 } = await h.service.upload(OWNER, uploadInput());
+    const content = await h.service.getContent(OWNER, documentId, 1);
+    expect(content.encoding).toBe('base64');
+    expect(Buffer.from(content.content, 'base64').equals(bytes)).toBe(true);
+    expect(content.contentSha256).toBe(contentSha256);
+  });
+
+  it('rejects infected uploads: 422, audited, and NOTHING is ever stored', async () => {
+    const h = await build();
+    await expect(
+      h.service.upload(
+        OWNER,
+        uploadInput({
+          contentBase64: pdfFixture(CONTENT_TEXT, Buffer.from(EICAR_TEST_STRING)).toString(
+            'base64',
+          ),
+        }),
+      ),
+    ).rejects.toThrow(UnprocessableEntityException);
+    expect(h.docs.rows.size).toBe(0);
+    expect(h.versions.rows).toHaveLength(0);
+    expect(h.store.objects.size).toBe(1); // the template body only
+
+    const rejection = h.producer.messages
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .find((e) => e.action === 'document.scan.rejected')!;
+    expect(rejection.detail['reason']).toBe('infected');
+    expect(rejection.detail['signature']).toBe('Eicar-Signature');
+    expect(rejection.resourceId).toBeNull();
+  });
+
+  it('fails CLOSED when the scanner is unavailable (503, audited, not stored)', async () => {
+    const failing: MalwareScanner = {
+      scan: () => Promise.reject(new Error('connection refused')),
+    };
+    const h = await build({ scanner: failing });
+    await expect(h.service.upload(OWNER, uploadInput())).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    expect(h.docs.rows.size).toBe(0);
+    const rejection = h.producer.messages
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .find((e) => e.action === 'document.scan.rejected')!;
+    expect(rejection.detail['reason']).toBe('scanner_error');
+  });
+
+  it('rejects undeclared/mismatched/oversized content before scanning', async () => {
+    const h = await build();
+    // Declared pdf, bytes are PNG-ish: polyglot mislabeling refused.
+    await expect(
+      h.service.upload(
+        OWNER,
+        uploadInput({
+          contentBase64: Buffer.concat([
+            Buffer.from('89504e470d0a1a0a', 'hex'),
+            Buffer.from('not a pdf'),
+          ]).toString('base64'),
+        }),
+      ),
+    ).rejects.toThrow(UnprocessableEntityException);
+    // HTML is never accepted, whatever it claims to be.
+    await expect(
+      h.service.upload(
+        OWNER,
+        uploadInput({
+          mime: 'text/html',
+          contentBase64: Buffer.from('<script>alert(1)</script>').toString('base64'),
+        }),
+      ),
+    ).rejects.toThrow(UnprocessableEntityException);
+    expect(h.docs.rows.size).toBe(0);
+  });
+
+  it('OCR failure is non-fatal: stored un-indexed, searchable by title', async () => {
+    const failingOcr: OcrEngine = {
+      extractText: () => Promise.reject(new Error('ocr exploded')),
+    };
+    const h = await build({ ocr: failingOcr });
+    const result = await h.service.upload(OWNER, uploadInput());
+    expect(result.ocrIndexed).toBe(false);
+    expect(h.versions.rows[0]!.ocr_indexed).toBe(false);
+    expect(h.store.objects.has(`documents/${result.documentId}/v1-ocr`)).toBe(false);
+    const byTitle = await h.service.search(OWNER, 'deed lake');
+    expect(byTitle.map((d) => d.documentId)).toEqual([result.documentId]);
+  });
+});
+
+describe('encrypted search', () => {
+  it('finds documents by OCR text and title (AND semantics), never across users', async () => {
+    const h = await build();
+    const { documentId } = await h.service.upload(OWNER, {
+      kind: 'property',
+      title: 'Lake house deed',
+      mime: 'application/pdf',
+      contentBase64: pdfFixture('recorded in Marlow County').toString('base64'),
+    });
+
+    expect((await h.service.search(OWNER, 'marlow county')).map((d) => d.documentId)).toEqual([
+      documentId,
+    ]);
+    expect(await h.service.search(OWNER, 'marlow nonexistent')).toEqual([]);
+    // Same query, different principal: per-user keying yields nothing.
+    expect(await h.service.search(STRANGER, 'marlow county')).toEqual([]);
+  });
+
+  it('indexes generated documents and re-indexes on new versions', async () => {
+    const h = await build();
+    const { documentId } = await h.service.generate(OWNER, {
+      docType: 'will',
+      state: 'CA',
+      variables: sampleVariables(),
+    });
+    expect((await h.service.search(OWNER, 'jordan executor')).map((d) => d.documentId)).toEqual([
+      documentId,
+    ]);
+    await h.service.newVersion(OWNER, documentId, {
+      variables: { ...sampleVariables(), executorName: 'Robin Replacement' },
+    });
+    expect(await h.service.search(OWNER, 'jordan')).toEqual([]);
+    expect((await h.service.search(OWNER, 'robin')).map((d) => d.documentId)).toEqual([documentId]);
+  });
+
+  it('drops soft-deleted documents from results', async () => {
+    const h = await build();
+    const { documentId } = await h.service.generate(OWNER, {
+      docType: 'will',
+      state: 'CA',
+      variables: sampleVariables(),
+    });
+    await h.service.softDelete(OWNER, documentId);
+    expect(await h.service.search(OWNER, 'jordan executor')).toEqual([]);
   });
 });
 

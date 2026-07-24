@@ -51,6 +51,9 @@ export const AUDIT_ACTIONS = [
   'document.content.viewed',
   'document.status.changed',
   'document.deleted',
+  'document.uploaded',
+  'document.scan.rejected',
+  'document.ocr.indexed',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { ExecutionStatus } from '@estate/contracts';
@@ -15,8 +16,14 @@ import { DocumentsAuthz, documentResource } from './authz.service';
 import { DocumentsRepo, type DocumentRow } from './documents.repo';
 import { EventsService } from './events.service';
 import { allowsNewVersion, isTransitionAllowed } from './execution-status';
-import { OBJECT_STORE } from './di-tokens';
+import { MALWARE_SCANNER, OBJECT_STORE, OCR_ENGINE } from './di-tokens';
+import { sniffContent } from './content-sniff';
+import type { MalwareScanner } from './malware-scanner';
 import type { ObjectStore } from './object-store';
+import type { OcrEngine } from './ocr';
+import { htmlToText } from './search-index';
+import { SearchIndexer } from './search-indexer';
+import { SearchTokensRepo } from './search-tokens.repo';
 import { RenderError, renderDocument } from './renderer';
 import { TemplateEngine } from './template-engine';
 import {
@@ -27,7 +34,13 @@ import {
 } from './template-model';
 import { TemplatesRepo, type TemplateRow } from './templates.repo';
 import { VersionsRepo, type VersionRow } from './versions.repo';
-import type { GenerateDocumentInput, NewVersionInput, StatusTransitionInput } from './schemas';
+import {
+  UPLOAD_MAX_BYTES,
+  type GenerateDocumentInput,
+  type NewVersionInput,
+  type StatusTransitionInput,
+  type UploadDocumentInput,
+} from './schemas';
 
 export interface DocumentDto {
   documentId: string;
@@ -65,7 +78,17 @@ export interface ContentDto {
   version: number;
   mime: string;
   contentSha256: string;
+  /** utf8 for canonical-HTML (generated) content, base64 for binary uploads. */
+  encoding: 'utf8' | 'base64';
   content: string;
+}
+
+export interface UploadResult {
+  documentId: string;
+  version: number;
+  contentSha256: string;
+  executionStatus: ExecutionStatus;
+  ocrIndexed: boolean;
 }
 
 /** Execution requirements applied when a document has no template (uploads). */
@@ -80,6 +103,11 @@ export function contentObjectKey(documentId: string, version: number, shaHex: st
   return `documents/${documentId}/v${version}-${shaHex}`;
 }
 
+/** Object key for a version's encrypted derived OCR-text artifact. */
+export function ocrObjectKey(documentId: string, version: number): string {
+  return `documents/${documentId}/v${version}-ocr`;
+}
+
 @Injectable()
 export class DocumentsService {
   constructor(
@@ -91,7 +119,11 @@ export class DocumentsService {
     private readonly cipher: ContentCipher,
     private readonly authz: DocumentsAuthz,
     private readonly events: EventsService,
+    private readonly indexer: SearchIndexer,
+    private readonly searchTokens: SearchTokensRepo,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
+    @Inject(MALWARE_SCANNER) private readonly scanner: MalwareScanner,
+    @Inject(OCR_ENGINE) private readonly ocr: OcrEngine,
   ) {}
 
   // ------------------------------------------------------------------ commands
@@ -129,6 +161,13 @@ export class DocumentsService {
     });
     const objectKey = contentObjectKey(documentId, 1, rendered.shaHex);
     await this.store.put(objectKey, ciphertext);
+    const title = input.title ?? source.title;
+    // Generated documents are searchable through the same encrypted index as
+    // uploads: tokens from the title + rendered text, HMAC'd per user.
+    const tokens = this.indexer.forDocumentText(
+      actor,
+      `${title} ${htmlToText(rendered.bytes.toString('utf8'))}`,
+    );
     await this.db.withTransaction(actor, async (tx) => {
       await this.documents.insert(tx, {
         id: documentId,
@@ -136,7 +175,7 @@ export class DocumentsService {
         docType: row.doc_type,
         templateId: row.id,
         source: 'generated',
-        title: input.title ?? source.title,
+        title,
         executionStatus: 'generated',
         dekId,
       });
@@ -149,6 +188,7 @@ export class DocumentsService {
         mime: 'text/html',
         createdBy: actor,
       });
+      await this.searchTokens.replaceForDocument(tx, documentId, tokens);
     });
     await this.events.documentGenerated(actor, documentId, {
       docType: row.doc_type,
@@ -208,6 +248,11 @@ export class DocumentsService {
     });
     const objectKey = contentObjectKey(documentId, nextVersion, rendered.shaHex);
     await this.store.put(objectKey, ciphertext);
+    // Re-index: the search index tracks the CURRENT version's content.
+    const tokens = this.indexer.forDocumentText(
+      doc.user_id,
+      `${input.title ?? doc.title} ${htmlToText(rendered.bytes.toString('utf8'))}`,
+    );
     await this.db.withTransaction(actor, async (tx) => {
       const locked = await this.lockLive(tx, documentId);
       this.authz.assertCan(actor, 'update', documentResource(documentId, locked.user_id));
@@ -230,6 +275,7 @@ export class DocumentsService {
       if (input.title !== undefined) {
         await this.documents.updateTitle(tx, documentId, input.title);
       }
+      await this.searchTokens.replaceForDocument(tx, documentId, tokens);
     });
     await this.events.documentVersionCreated(actor, documentId, { version: nextVersion });
     await this.events.versionCreated({
@@ -244,6 +290,127 @@ export class DocumentsService {
       version: nextVersion,
       contentSha256: rendered.shaHex,
       executionStatus: 'generated',
+    };
+  }
+
+  /**
+   * The upload ingest pipeline (docs/01 §2.6 Document Vault). The content is
+   * UNTRUSTED INPUT (docs/03): strict base64 → size cap → magic-byte sniff
+   * cross-checked against the declared mime → malware scan (FAIL CLOSED — a
+   * scanner error rejects the upload, and an infected file is never stored
+   * anywhere) → best-effort OCR (untrusted DATA: sealed into an encrypted
+   * artifact + reduced to HMAC search tokens, never interpreted) → encrypt →
+   * store → atomic metadata + version + index commit.
+   */
+  async upload(actor: string, input: UploadDocumentInput): Promise<UploadResult> {
+    const content = Buffer.from(input.contentBase64, 'base64');
+    if (content.length === 0 || content.length > UPLOAD_MAX_BYTES) {
+      throw new UnprocessableEntityException({ error: 'unsupported_content' });
+    }
+    const sniffed = sniffContent(content, input.mime);
+    if (!sniffed) {
+      throw new UnprocessableEntityException({ error: 'unsupported_content' });
+    }
+    const documentId = randomUUID();
+    this.authz.assertCan(actor, 'create', documentResource(documentId, actor));
+
+    let scan;
+    try {
+      scan = await this.scanner.scan(content);
+    } catch {
+      // Fail closed: an unavailable scanner must never admit content.
+      await this.events.scanRejected(actor, {
+        kind: input.kind,
+        format: sniffed.format,
+        reason: 'scanner_error',
+      });
+      throw new ServiceUnavailableException({ error: 'scan_unavailable' });
+    }
+    if (scan.verdict === 'infected') {
+      await this.events.scanRejected(actor, {
+        kind: input.kind,
+        format: sniffed.format,
+        reason: 'infected',
+        signature: scan.signature,
+      });
+      throw new UnprocessableEntityException({ error: 'malware_detected' });
+    }
+
+    // Best-effort OCR — failure is non-fatal (scan is the gate, not this),
+    // the document simply stores un-indexed beyond its title.
+    let ocrText: string | null = null;
+    try {
+      const text = await this.ocr.extractText(content, sniffed.mime);
+      ocrText = text.length > 0 ? text : null;
+    } catch {
+      ocrText = null;
+    }
+
+    const sha = createHash('sha256').update(content).digest();
+    const shaHex = sha.toString('hex');
+    const dekId = await this.cipher.getOrCreateDek(documentId);
+    const { ciphertext } = await this.cipher.encrypt({
+      documentId,
+      ownerUserId: actor,
+      version: 1,
+      sha256Hex: shaHex,
+      content,
+    });
+    const objectKey = contentObjectKey(documentId, 1, shaHex);
+    await this.store.put(objectKey, ciphertext);
+    if (ocrText !== null) {
+      const artifact = await this.cipher.encryptOcr({
+        documentId,
+        ownerUserId: actor,
+        version: 1,
+        text: ocrText,
+      });
+      await this.store.put(ocrObjectKey(documentId, 1), artifact.ciphertext);
+    }
+    const tokens = this.indexer.forDocumentText(actor, `${input.title} ${ocrText ?? ''}`);
+    await this.db.withTransaction(actor, async (tx) => {
+      await this.documents.insert(tx, {
+        id: documentId,
+        userId: actor,
+        docType: input.kind,
+        templateId: null,
+        source: 'uploaded',
+        title: input.title,
+        executionStatus: 'draft',
+        dekId,
+      });
+      await this.versions.insert(tx, {
+        documentId,
+        version: 1,
+        objectKey,
+        contentSha256: sha,
+        sizeBytes: content.length,
+        mime: sniffed.mime,
+        createdBy: actor,
+        ocrIndexed: ocrText !== null,
+      });
+      await this.searchTokens.replaceForDocument(tx, documentId, tokens);
+    });
+    await this.events.documentUploaded(actor, documentId, {
+      kind: input.kind,
+      format: sniffed.format,
+    });
+    if (ocrText !== null) {
+      await this.events.ocrIndexed(actor, documentId, { version: 1, tokens: tokens.length });
+    }
+    await this.events.versionCreated({
+      actorId: actor,
+      documentId,
+      version: 1,
+      docType: input.kind,
+      source: 'uploaded',
+    });
+    return {
+      documentId,
+      version: 1,
+      contentSha256: shaHex,
+      executionStatus: 'draft',
+      ocrIndexed: ocrText !== null,
     };
   }
 
@@ -357,13 +524,39 @@ export class DocumentsService {
       throw err;
     }
     await this.events.contentViewed(actor, documentId, { version: versionRow.version });
+    // Canonical HTML travels as utf8; binary uploads as base64.
+    const encoding = versionRow.mime === 'text/html' ? 'utf8' : 'base64';
     return {
       documentId,
       version: versionRow.version,
       mime: versionRow.mime,
       contentSha256: shaHex,
-      content: content.toString('utf8'),
+      encoding,
+      content: content.toString(encoding),
     };
+  }
+
+  /**
+   * Encrypted search: reduce the query through the SAME tokenizer + per-user
+   * HMAC as indexing and match ciphertext-side (AND semantics). Nothing is
+   * decrypted to serve a search, so there is no decrypt audit event; results
+   * are the caller's own documents by construction (per-user key + user_id
+   * join) with a defensive per-item authz filter on top.
+   */
+  async search(actor: string, query: string): Promise<DocumentDto[]> {
+    const tokens = this.indexer.forQuery(actor, query);
+    if (tokens.length === 0) {
+      return [];
+    }
+    const documentIds = await this.searchTokens.findMatchingAll(this.db, actor, tokens);
+    const results: DocumentDto[] = [];
+    for (const documentId of documentIds) {
+      const row = await this.documents.getLive(this.db, documentId);
+      if (row && this.authz.can(actor, 'read', documentResource(row.id, row.user_id))) {
+        results.push(toDto(row));
+      }
+    }
+    return results;
   }
 
   // ------------------------------------------------------------------- helpers

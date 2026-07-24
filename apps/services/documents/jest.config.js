@@ -5,5 +5,5 @@
 // authz, events, schemas). CI coverage is higher. Ratchets toward 95/90 —
 // never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 65, branches: 58, functions: 50, lines: 65 } },
+  coverageThreshold: { global: { statements: 70, branches: 62, functions: 55, lines: 70 } },
 });

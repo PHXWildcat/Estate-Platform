@@ -1,5 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
-import { DocTypeSchema, ExecutionStatusSchema, UsStateSchema } from '@estate/contracts';
+import {
+  DocTypeSchema,
+  DocumentKindSchema,
+  ExecutionStatusSchema,
+  UsStateSchema,
+} from '@estate/contracts';
 import { z } from 'zod';
 import { IsoDateSchema } from './template-model';
 
@@ -50,6 +55,32 @@ export const StatusTransitionSchema = z
 export type StatusTransitionInput = z.infer<typeof StatusTransitionSchema>;
 
 export const StateQuerySchema = UsStateSchema;
+
+/** Hard cap on decoded upload size (docs/03: bounded untrusted input). */
+export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+
+// Base64 of UPLOAD_MAX_BYTES, with padding slack. The regex is strict —
+// whitespace/newline-tolerant base64 would make decoded length unpredictable.
+const MAX_BASE64_CHARS = Math.ceil(UPLOAD_MAX_BYTES / 3) * 4 + 4;
+const Base64Schema = z
+  .string()
+  .min(4)
+  .max(MAX_BASE64_CHARS)
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/, 'strict base64 required');
+
+export const UploadDocumentSchema = z
+  .object({
+    /** Instrument type (e.g. a scanned executed will) or a vault category. */
+    kind: DocumentKindSchema,
+    title: z.string().min(1).max(200),
+    /** Declared mime — cross-checked against the sniffed magic bytes. */
+    mime: z.string().min(1).max(100),
+    contentBase64: Base64Schema,
+  })
+  .strict();
+export type UploadDocumentInput = z.infer<typeof UploadDocumentSchema>;
+
+export const SearchQuerySchema = z.string().min(3).max(200);
 
 export const VersionParamSchema = z.coerce.number().int().positive().max(1_000_000);
 

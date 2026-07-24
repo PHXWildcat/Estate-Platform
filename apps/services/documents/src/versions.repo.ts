@@ -33,12 +33,14 @@ export class VersionsRepo {
       sizeBytes: number;
       mime: string;
       createdBy: string;
+      /** Set at insert time — the table is append-only, no post-hoc updates. */
+      ocrIndexed?: boolean;
     },
   ): Promise<void> {
     await tx.query(
       `INSERT INTO document_versions
-         (document_id, version, object_key, content_sha256, size_bytes, mime, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (document_id, version, object_key, content_sha256, size_bytes, mime, created_by, ocr_indexed)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         row.documentId,
         row.version,
@@ -47,6 +49,7 @@ export class VersionsRepo {
         row.sizeBytes,
         row.mime,
         row.createdBy,
+        row.ocrIndexed ?? false,
       ],
     );
   }

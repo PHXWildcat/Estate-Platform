@@ -6,6 +6,7 @@ import {
   HttpCode,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import {
   type ContentDto,
   type DocumentDto,
   type GenerateResult,
+  type UploadResult,
   type VersionDto,
 } from './documents.service';
 import {
@@ -22,7 +24,9 @@ import {
   IfMatchSchema,
   NewVersionSchema,
   parse,
+  SearchQuerySchema,
   StatusTransitionSchema,
+  UploadDocumentSchema,
   UuidSchema,
   VersionParamSchema,
 } from './schemas';
@@ -54,10 +58,27 @@ export class DocumentsController {
     return this.documents.generate(requireCaller(req).userId, parse(GenerateDocumentSchema, body));
   }
 
+  /**
+   * Upload ingest. Not on the docs/01 §5 step-up list (generation, export,
+   * deletion are; adding content is not) — CallerGuard only, with the
+   * scan/sniff pipeline as the gate.
+   */
+  @Post('documents/upload')
+  @HttpCode(201)
+  upload(@Req() req: CallerRequest, @Body() body: unknown): Promise<UploadResult> {
+    return this.documents.upload(requireCaller(req).userId, parse(UploadDocumentSchema, body));
+  }
+
   @Get('documents')
   @HttpCode(200)
   list(@Req() req: CallerRequest): Promise<DocumentDto[]> {
     return this.documents.list(requireCaller(req).userId);
+  }
+
+  @Get('documents/search')
+  @HttpCode(200)
+  search(@Req() req: CallerRequest, @Query('q') q: string): Promise<DocumentDto[]> {
+    return this.documents.search(requireCaller(req).userId, parse(SearchQuerySchema, q));
   }
 
   @Get('documents/:documentId')

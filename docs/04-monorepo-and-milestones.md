@@ -254,7 +254,7 @@ Informational nits left as-is: Plaid `sync`/`revoke` 404-vs-403 item-existence o
 `system` (audit fidelity); in-window webhook replay (inherent to Plaid's iat-only model);
 `IsoDateSchema` accepts calendar rollovers (`2026-02-30`).
 
-### M4 — Document service (documents cluster; first half in review)
+### M4 — Document service (documents cluster; both PRs in review)
 Scope agreed 2026-07-23, two PRs like M3: **PR1** template matrix + generation
 pipeline (plus the object-store/encryption substrate generation depends on);
 **PR2** the upload-facing Zone B Document Vault — upload ingest, malware-scan
@@ -328,6 +328,62 @@ Cedar owner-only PEP, IDs/enums-only audit + domain events on
   seeds, supertest flow: 401/403/step-up/ciphertext-at-rest/audited
   decrypt/ladder/If-Match/legal hold/soft-delete attribution) + ci-guard;
   coverage floor 65/58/50/65 ratcheting toward 95.
+
+**PR2 (Zone B Document Vault — uploads, scan, OCR, encrypted search):**
+- **Upload ingest** (`POST /v1/documents/upload`, CallerGuard — the docs/01
+  §5 step-up list covers generation/export/deletion, not adding content):
+  strict-base64 JSON transport (10 MiB decoded cap, 16 MiB body limit; ONE
+  parser on the untrusted path — no multipart library added to the fuzz
+  surface), magic-byte sniffing cross-checked against the declared mime
+  (allowlist pdf/png/jpeg/tiff; polyglots and script-bearing types like
+  SVG/HTML refused), then a FAIL-CLOSED malware scan: infected or
+  scanner-error content is never stored anywhere (422 `malware_detected` /
+  503 `scan_unavailable`, audited `document.scan.rejected` with sanitized
+  third-party signature tokens). Uploads land as `source='uploaded'`,
+  status `draft`, doc_type widened to DOCUMENT_KINDS (instrument types +
+  docs/00 §8 vault categories).
+- **MalwareScanner port:** deterministic EICAR-detecting stub (dev/test) +
+  clamd INSTREAM client written directly on node:net (length-prefixed
+  chunks, zero terminator, OK/FOUND/ERROR parsing, timeouts — no dependency
+  on a security-critical path); production config REQUIRES clamd mode.
+- **OcrEngine port:** stub (printable-run extraction, dev/test) + AWS
+  Textract sync DetectDocumentText adapter (stubbed-transport tested);
+  production REQUIRES textract mode; async/multi-page Textract is a tracked
+  scale follow-up. OCR runs inline pre-insert (document_versions is
+  append-only, so `ocr_indexed` is set at insert; a background worker is a
+  scale follow-up alongside async Textract). OCR output is UNTRUSTED DATA:
+  best-effort (failure ⇒ stored un-indexed, title-searchable), sealed as an
+  encrypted artifact under the document's DEK (AAD binds doc/owner/version/
+  artifact-type), reduced to HMAC tokens — never parsed, logged, or treated
+  as instructions (docs/03 risk #6).
+- **Encrypted search** (`GET /v1/documents/search`): `document_search_tokens`
+  (002 migration) holds per-user-keyed HMAC keyword tokens (userKey =
+  HMAC(SEARCH_INDEX_KEY, userId); cross-user correlation cryptographically
+  impossible; accepted leak = token counts). A derived, rebuildable
+  projection in the assets_view conventions category: replace-in-place on
+  re-index, filtered against soft-deleted docs at query time, purged with
+  the DEK on legal erasure. Generated documents index through the same
+  pipeline (title + rendered text; re-indexed on new versions); queries are
+  tokenized identically and matched ciphertext-side — search decrypts
+  nothing. Binary content downloads as base64 (`ContentDto.encoding`).
+- **Threat-model delta (docs/03):** TB1 — the upload parser surface is one
+  strict-base64 JSON schema + magic-byte sniffing with adversarial unit
+  tests (polyglots, undeclared types, oversize, malformed base64); TB5 —
+  two new third-party edges (clamd, Textract) behind in-service ports with
+  fail-closed (scan) / fail-soft (OCR) semantics and third-party output
+  sanitization before audit. New audit actions: `document.uploaded`,
+  `document.scan.rejected`, `document.ocr.indexed`.
+- **Tests:** 129 local unit tests (adds clamd protocol incl. split replies +
+  fail-closed matrix, sniffing adversarial cases, tokenizer/keying, upload
+  pipeline: infected-never-stored, scanner-outage 503, OCR-failure
+  non-fatal, per-user search isolation, re-index on new versions); int suite
+  extends to upload → ciphertext-at-rest (blob + OCR artifact) → search →
+  EICAR rejection; NEW `apps/e2e/documents.e2e.spec.ts` proves the full M4
+  flow (publish → step-up generation → upload + EICAR rejection → encrypted
+  search → step-up deletion) with every produced audit byte ingested into
+  the audit service and the hash chain cryptographically verified, domain
+  envelopes schema-validated, and a content/PII firewall sweep across the
+  bus.
 
 ### Later milestones (rough order, one per bounded context)
 M5 Terraform/EKS to a real dev environment ·
