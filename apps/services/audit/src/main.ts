@@ -6,7 +6,20 @@ import { AuditConsumer } from './consumer';
 import { log } from './logger';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    // Nest's logger stays off: this service logs through the PII-safe
+    // structured logger instead (see logger.ts).
+    logger: false,
+    // ...but Nest's DEFAULT abortOnError then swallows startup failures
+    // entirely: it reports initialization errors through that disabled logger
+    // and calls process.exit(1) itself, so a misconfigured or DB-unreachable
+    // worker dies with an exit code and NO output — a crash-looping pod with
+    // nothing to debug, in the one service whose job is the tamper-evident
+    // audit trail (docs/01 §6 treats audit gaps as a paging signal). Rejecting
+    // instead routes the failure to the catch below, which emits a structured
+    // `audit_service_fatal` line naming the error but never event payloads.
+    abortOnError: false,
+  });
   const consumer = app.get(AuditConsumer);
   const pgClient = app.get<Client>(PG_CLIENT);
 

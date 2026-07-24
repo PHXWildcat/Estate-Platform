@@ -48,7 +48,10 @@ catalog:
   graphql-yoga: ^5.13.0
   '@graphql-yoga/plugin-persisted-operations': ^3.0.0
   # web
-  next: ^15.3.3
+  # 15.5.21 is the security floor: earlier 15.x carries high-severity SSRF in
+  # rewrites (which this app uses for /graphql), SSRF in Server Actions on
+  # custom servers, and an App Router DoS.
+  next: ^15.5.21
   react: ^19.1.0
   react-dom: ^19.1.0
   '@types/react': ^19.1.5
@@ -64,3 +67,15 @@ catalog:
 # blocked by default in pnpm 10. Add a package here ONLY after reviewing why it
 # needs a build script; keep this list as close to empty as possible.
 onlyBuiltDependencies: []
+
+# Transitive security bumps. Next.js pins these two exactly, and both carry
+# high-severity advisories at the versions it pins:
+#   * postcss 8.4.31 — arbitrary file read / path traversal via an
+#     attacker-controlled `sourceMappingURL` in a CSS comment (fixed 8.5.18)
+#   * sharp 0.34.5 — inherited libvips CVEs (fixed 0.35.0)
+# Both are same-major bumps, and the image scan gate blocks on application
+# dependencies by design, so they are overridden rather than shipped. Drop these
+# once Next ships newer pins of its own.
+overrides:
+  next>postcss: '>=8.5.18'
+  next>sharp: '>=0.35.0'
