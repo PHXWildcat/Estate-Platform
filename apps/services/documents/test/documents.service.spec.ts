@@ -198,6 +198,15 @@ describe('versioning', () => {
     ).rejects.toThrow(ConflictException);
   });
 
+  it('a stale If-Match 409s BEFORE intake validation (no 422 for stale writers)', async () => {
+    const h = await build();
+    const documentId = await generate(h);
+    // Deliberately invalid intake: the concurrency conflict must win.
+    await expect(h.service.newVersion(OWNER, documentId, { variables: {} }, 99)).rejects.toThrow(
+      ConflictException,
+    );
+  });
+
   it('refuses regeneration once signing has started', async () => {
     const h = await build();
     const documentId = await generate(h);
