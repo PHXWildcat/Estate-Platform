@@ -533,6 +533,9 @@ describeIfPg('document service end to end', () => {
     const after = await admin.query<{ n: number }>(`SELECT count(*)::int AS n FROM documents`);
     expect(after.rows[0]!.n).toBe(before.rows[0]!.n);
     const rejection = producer.messages
+      // Domain-topic envelopes carry no `action`; only audit messages parse
+      // under AuditEventSchema.
+      .filter((m) => m.topic === TOPICS.auditEvents)
       .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
       .find((e) => e.action === 'document.scan.rejected')!;
     expect(rejection.detail['reason']).toBe('infected');
