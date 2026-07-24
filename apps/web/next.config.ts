@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { NextConfig } from 'next';
 
 /**
@@ -14,9 +15,31 @@ const securityHeaders = [
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
 ];
 
+/**
+ * `output: 'standalone'` emits a self-contained server bundle with only the
+ * traced runtime dependencies — exactly what the container should ship (no pnpm
+ * store, no workspace symlinks, no dev dependencies).
+ *
+ * It is opt-in via NEXT_STANDALONE because producing it CREATES SYMLINKS, and
+ * Windows refuses those without Developer Mode or elevation (EPERM), which would
+ * break `pnpm build` on the maintainer's workstation. The container build (Linux)
+ * sets the flag; everyday local builds and `pnpm build` in CI do not.
+ */
+const standalone =
+  process.env.NEXT_STANDALONE === '1'
+    ? {
+        output: 'standalone' as const,
+        // The traced root must be the workspace root, or Next resolves the
+        // monorepo's hoisted dependencies outside the app directory and omits
+        // them. Turborepo runs this task with the package as cwd.
+        outputFileTracingRoot: join(process.cwd(), '..', '..'),
+      }
+    : {};
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  ...standalone,
   // Linting runs from the repo root flat config (`pnpm exec eslint apps/web`);
   // next build must not require a separate eslint-config-next setup.
   eslint: { ignoreDuringBuilds: true },

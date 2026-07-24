@@ -1,0 +1,41 @@
+# Build-context exclusions. Two jobs here: keep the context small (the whole
+# monorepo is the context, because `turbo prune` needs the full workspace), and
+# make sure nothing secret or host-specific can ever be baked into a layer.
+#
+# Build outputs are excluded deliberately: images rebuild from source inside the
+# builder stage, so a stale host `dist/` must never leak into a shipped image.
+
+# Dependencies and build output (rebuilt in the image)
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+
+# VCS, CI, and tooling metadata
+.git
+.gitignore
+.github
+.claude
+.vscode
+.idea
+
+# Secrets and local environment — never in an image layer
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+
+# Local-only infrastructure and docs (not needed to build a service)
+docker-compose*.yml
+docs
+**/*.md
+!apps/**/README.md
+
+# Logs and scratch
+*.log
+.object-store

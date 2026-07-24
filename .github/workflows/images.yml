@@ -1,0 +1,128 @@
+name: Images
+
+# Builds a container image for every deployable app, proves it is actually
+# runnable, and records what is inside it.
+#
+# No registry push: no image registry has been chosen yet (ECR arrives with the
+# cloud half of M5, which is deferred pending an AWS account). Building and
+# verifying without pushing still catches the failure that matters today — a
+# Dockerfile that does not produce a working image — and keeps this pipeline
+# free of registry credentials.
+#
+# There is no Docker on the maintainer's Windows workstation, so THIS WORKFLOW
+# IS THE ONLY VERIFIER for the image build. Treat a red run here as a broken
+# image, not as CI flakiness.
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      # One broken service image should not hide the state of the other seven.
+      fail-fast: false
+      matrix:
+        include:
+          - app: identity
+            pkg: '@estate/service-identity'
+          - app: profile
+            pkg: '@estate/service-profile'
+          - app: assets
+            pkg: '@estate/service-assets'
+          - app: plaid
+            pkg: '@estate/service-plaid'
+          - app: documents
+            pkg: '@estate/service-documents'
+          - app: audit
+            pkg: '@estate/service-audit'
+          - app: bff
+            pkg: '@estate/bff'
+          - app: web
+            pkg: '@estate/web'
+            dockerfile: infra/docker/web.Dockerfile
+            kind: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile || 'infra/docker/node-service.Dockerfile' }}
+          build-args: PKG=${{ matrix.pkg }}
+          tags: estate/${{ matrix.app }}:ci
+          # Load into the local daemon so the smoke test can run it; never push.
+          load: true
+          push: false
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      # A service image must still FAIL CLOSED on missing configuration. Running
+      # it with no environment should exit non-zero with the config error the
+      # service's own zod schema raises — which proves the image contains a real,
+      # bootable app (a broken image also exits non-zero, so the message, not the
+      # exit code, is the signal).
+      - name: Smoke test — config fail-fast
+        if: matrix.kind != 'web'
+        run: |
+          set +e
+          output=$(docker run --rm estate/${{ matrix.app }}:ci 2>&1)
+          code=$?
+          set -e
+          echo "$output"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::image started with no configuration — fail-fast posture lost"
+            exit 1
+          fi
+          if ! echo "$output" | grep -Eq 'configuration|environment variables'; then
+            echo "::error::no config-validation error — image may not contain a bootable app"
+            exit 1
+          fi
+
+      # The frontend has no secrets to validate, so its liveness IS the check.
+      - name: Smoke test — web serves
+        if: matrix.kind == 'web'
+        run: |
+          docker run -d --name web -p 3000:3000 estate/web:ci
+          ok=
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:3000 >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs web
+          docker rm -f web >/dev/null
+          if [ -z "$ok" ]; then
+            echo "::error::web image did not serve on :3000"
+            exit 1
+          fi
+
+      # What shipped, in machine-readable form. Retained as an artifact now;
+      # it becomes an attached attestation once images are pushed to a registry.
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: estate/${{ matrix.app }}:ci
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.app }}.spdx.json
+          output-file: sbom-${{ matrix.app }}.spdx.json
+
+      - name: Scan image for vulnerabilities
+        uses: anchore/scan-action@v6
+        with:
+          image: estate/${{ matrix.app }}:ci
+          # Distroless keeps the OS surface tiny; anything high or critical that
+          # still lands in an image is worth blocking on.
+          severity-cutoff: high
+          fail-build: true
