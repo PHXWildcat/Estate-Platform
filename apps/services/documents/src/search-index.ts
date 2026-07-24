@@ -64,13 +64,16 @@ export function indexTokens(masterKey: Buffer, userId: string, text: string): Bu
  * Plain text of the renderer's canonical HTML, for indexing generated
  * documents through the same pipeline as OCR text. Tags become whitespace;
  * the five entities the renderer's escaper produces are folded back.
+ * `&amp;` is folded LAST — unescaping it first would double-unescape text
+ * that literally contained an entity (renderer output `&amp;lt;` means the
+ * document said "&lt;", not "<").
  */
 export function htmlToText(html: string): string {
   return html
     .replace(/<[^>]*>/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
 }

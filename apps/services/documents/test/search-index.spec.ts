@@ -63,4 +63,11 @@ describe('htmlToText', () => {
       ' Will  Smith & Jones <LLP> "\' ',
     );
   });
+
+  it('never double-unescapes: literal entity text survives one fold', () => {
+    // A document literally containing "&lt;" renders as "&amp;lt;"; folding
+    // must yield the original "&lt;", not "<" (CodeQL js/double-escaping).
+    expect(htmlToText('<p>A &amp;lt; B</p>')).toBe(' A &lt; B ');
+    expect(htmlToText('<p>&amp;amp;</p>')).toBe(' &amp; ');
+  });
 });
