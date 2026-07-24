@@ -1,7 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { FieldCrypto, LocalKmsProvider, type DekRecord, type DekRepository } from '@estate/crypto';
+import type { DocumentsConfig } from '../src/config';
 import { ContentCipher } from '../src/content-cipher';
 import type { Db, Queryable } from '../src/db';
+import { SearchIndexer } from '../src/search-indexer';
 import type { DocumentRow } from '../src/documents.repo';
 import { EventsService } from '../src/events.service';
 import { InMemoryAuditProducer } from '../src/audit-producer';
@@ -232,6 +234,7 @@ export class FakeVersions {
       sizeBytes: number;
       mime: string;
       createdBy: string;
+      ocrIndexed?: boolean;
     },
   ): Promise<void> {
     if (this.rows.some((r) => r.document_id === row.documentId && r.version === row.version)) {
@@ -250,7 +253,7 @@ export class FakeVersions {
       content_sha256: row.contentSha256,
       size_bytes: String(row.sizeBytes),
       mime: row.mime,
-      ocr_indexed: false,
+      ocr_indexed: row.ocrIndexed ?? false,
       created_by: row.createdBy,
       created_at: new Date(),
     });
@@ -295,6 +298,44 @@ export class FakeTemplates {
     return Promise.resolve(
       [...this.rows.values()].filter((r) => r.state === state && r.active && r.deleted_at === null),
     );
+  }
+}
+
+/** SearchIndexer over a random key (constructor wants the full config shape). */
+export function buildIndexer(): SearchIndexer {
+  return new SearchIndexer({ searchIndexKey: randomBytes(32) } as unknown as DocumentsConfig);
+}
+
+/**
+ * In-memory SearchTokensRepo. Holds a FakeDocuments reference so
+ * findMatchingAll can apply the same user/deleted filters as the SQL join.
+ */
+export class FakeSearchTokens {
+  private readonly byDocument = new Map<string, Set<string>>();
+
+  constructor(private readonly documents: FakeDocuments) {}
+
+  replaceForDocument(_q: Queryable, documentId: string, tokens: Buffer[]): Promise<void> {
+    this.byDocument.set(documentId, new Set(tokens.map((t) => t.toString('hex'))));
+    return Promise.resolve();
+  }
+
+  findMatchingAll(_q: Queryable | Db, userId: string, tokens: Buffer[]): Promise<string[]> {
+    if (tokens.length === 0) {
+      return Promise.resolve([]);
+    }
+    const wanted = tokens.map((t) => t.toString('hex'));
+    const out: string[] = [];
+    for (const [documentId, indexed] of this.byDocument) {
+      const doc = this.documents.rows.get(documentId);
+      if (!doc || doc.user_id !== userId || doc.deleted_at !== null) {
+        continue;
+      }
+      if (wanted.every((t) => indexed.has(t))) {
+        out.push(documentId);
+      }
+    }
+    return Promise.resolve(out.sort());
   }
 }
 
@@ -360,6 +401,19 @@ export function sampleSource(overrides: Partial<TemplateSource> = {}): TemplateS
     ],
     ...overrides,
   };
+}
+
+/**
+ * A minimal well-formed-enough PDF fixture: sniffs as application/pdf and
+ * carries its "scanned" text as literal bytes, which is exactly what StubOcr
+ * extracts. Optionally embeds an arbitrary byte payload (e.g. EICAR).
+ */
+export function pdfFixture(text: string, extra: Buffer = Buffer.alloc(0)): Buffer {
+  return Buffer.concat([
+    Buffer.from(`%PDF-1.4\n1 0 obj\n<< >>\nstream\n${text}\nendstream\n`, 'latin1'),
+    extra,
+    Buffer.from('\n%%EOF\n', 'latin1'),
+  ]);
 }
 
 export function sampleVariables(): Record<string, string | boolean> {

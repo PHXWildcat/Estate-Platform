@@ -104,6 +104,36 @@ export const DocumentSourceSchema = z.enum(DOCUMENT_SOURCES);
 export type DocumentSource = z.infer<typeof DocumentSourceSchema>;
 
 /**
+ * Categories for UPLOADED documents (docs/00 §8: the secure document vault
+ * stores legal, tax, identity, insurance, property, military, and medical
+ * documents). Generated instruments use DOC_TYPES; an upload may claim either
+ * an instrument type (e.g. an executed will scanned in) or a vault category.
+ */
+export const UPLOAD_CATEGORIES = [
+  'legal',
+  'tax',
+  'identity',
+  'insurance',
+  'property',
+  'military',
+  'medical',
+  'financial',
+  'other',
+] as const;
+export const UploadCategorySchema = z.enum(UPLOAD_CATEGORIES);
+export type UploadCategory = z.infer<typeof UploadCategorySchema>;
+
+/** Everything `documents.doc_type` may hold: instrument types + categories. */
+export const DOCUMENT_KINDS = [...DOC_TYPES, ...UPLOAD_CATEGORIES] as const;
+export const DocumentKindSchema = z.enum(DOCUMENT_KINDS);
+export type DocumentKind = z.infer<typeof DocumentKindSchema>;
+
+/** Upload formats as audit-safe tokens (mime strings contain '/'). */
+export const UPLOAD_FORMATS = ['pdf', 'png', 'jpeg', 'tiff'] as const;
+export const UploadFormatSchema = z.enum(UPLOAD_FORMATS);
+export type UploadFormat = z.infer<typeof UploadFormatSchema>;
+
+/**
  * Domain events for the Document service. IDs, enums, and counts only — no
  * titles, no content, no variable values. Carrying values would require the
  * docs/01 §4 Zone B Kafka payload crypto, which is not built yet; consumers
@@ -115,7 +145,9 @@ export const DocumentVersionCreatedEvent = defineEvent(
   z.object({
     documentId: z.string().uuid(),
     version: z.number().int().positive(),
-    docType: DocTypeSchema,
+    // Widened from DocTypeSchema when uploads landed (M4 PR2) — the topic had
+    // no consumers yet, so the accepted-value widening is compatible.
+    docType: DocumentKindSchema,
     source: DocumentSourceSchema,
   }),
 );

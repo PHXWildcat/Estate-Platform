@@ -32,10 +32,18 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { InMemoryAuditProducer } from '../src/audit-producer';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
-import type { ContentDto, DocumentDto, GenerateResult, VersionDto } from '../src/documents.service';
+import type {
+  ContentDto,
+  DocumentDto,
+  GenerateResult,
+  UploadResult,
+  VersionDto,
+} from '../src/documents.service';
+import { EICAR_TEST_STRING } from '../src/malware-scanner';
 import { LocalFsObjectStore } from '../src/object-store';
 import { publishTemplates } from '../src/template-publish-cli';
 import type { Queryable } from '../src/db';
+import { pdfFixture } from './support';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -126,6 +134,7 @@ describeIfPg('document service end to end', () => {
       const migrator = new Migrator(migrClient, `${__dirname}/../migrations`);
       const { applied } = await migrator.migrate();
       expect(applied).toContain('001_documents_schema.sql');
+      expect(applied).toContain('002_document_vault.sql');
     } finally {
       await migrClient.end();
     }
@@ -143,9 +152,12 @@ describeIfPg('document service end to end', () => {
 
     process.env['DATABASE_URL'] = pgUrl;
     process.env['KMS_MASTER_KEY_HEX'] = randomBytes(32).toString('hex');
+    process.env['SEARCH_INDEX_KEY_HEX'] = randomBytes(32).toString('hex');
     process.env['OBJECT_STORE_MODE'] = 'fs';
     process.env['OBJECT_STORE_DIR'] = objectDir;
     delete process.env['KAFKA_BROKERS'];
+    delete process.env['SCANNER_MODE']; // ⇒ stub scanner (EICAR-detecting)
+    delete process.env['OCR_MODE']; // ⇒ stub OCR (printable-run extraction)
 
     producer = new InMemoryAuditProducer();
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
@@ -447,6 +459,108 @@ describeIfPg('document service end to end', () => {
     expect(shadow[0]!.actor_id).toBe(OWNER);
   });
 
+  it('uploads a clean PDF: scanned, OCR-indexed, ciphertext at rest, searchable', async () => {
+    const bytes = pdfFixture(`Deed for ${TESTATOR} recorded in Marlow County`);
+    const res = await request(server)
+      .post('/v1/documents/upload')
+      .set(asOwner())
+      .send({
+        kind: 'property',
+        title: 'Lake house deed',
+        mime: 'application/pdf',
+        contentBase64: bytes.toString('base64'),
+      })
+      .expect(201);
+    const upload = res.body as UploadResult;
+    expect(upload.executionStatus).toBe('draft');
+    expect(upload.ocrIndexed).toBe(true);
+
+    // Content + OCR artifact at rest are ciphertext (no PDF marker, no PII).
+    const { rows: versions } = await admin.query<{ object_key: string; ocr_indexed: boolean }>(
+      `SELECT object_key, ocr_indexed FROM document_versions WHERE document_id = $1`,
+      [upload.documentId],
+    );
+    expect(versions[0]!.ocr_indexed).toBe(true);
+    const blob = readFileSync(join(objectDir, ...versions[0]!.object_key.split('/')));
+    expect(blob.includes(Buffer.from('%PDF'))).toBe(false);
+    expect(blob.includes(Buffer.from('Marlow'))).toBe(false);
+    const ocrArtifact = readFileSync(join(objectDir, 'documents', upload.documentId, 'v1-ocr'));
+    expect(ocrArtifact.includes(Buffer.from('Marlow'))).toBe(false);
+
+    // Search tokens are HMACs only — never plaintext-derived visible bytes.
+    const { rows: tokens } = await admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM document_search_tokens WHERE document_id = $1`,
+      [upload.documentId],
+    );
+    expect(tokens[0]!.n).toBeGreaterThan(3);
+
+    // Owner finds it; a stranger's identical query finds nothing.
+    const found = (
+      await request(server).get('/v1/documents/search?q=marlow%20deed').set(asOwner()).expect(200)
+    ).body as DocumentDto[];
+    expect(found.map((d) => d.documentId)).toContain(upload.documentId);
+    const strangers = (
+      await request(server)
+        .get('/v1/documents/search?q=marlow%20deed')
+        .set(asStranger())
+        .expect(200)
+    ).body as DocumentDto[];
+    expect(strangers).toEqual([]);
+
+    // Binary content round-trips base64 through the audited decrypt path.
+    const content = (
+      await request(server)
+        .get(`/v1/documents/${upload.documentId}/versions/1/content`)
+        .set(asOwner())
+        .expect(200)
+    ).body as ContentDto;
+    expect(content.encoding).toBe('base64');
+    expect(Buffer.from(content.content, 'base64').equals(bytes)).toBe(true);
+  });
+
+  it('rejects an EICAR-carrying upload: 422, audited, nothing stored', async () => {
+    const before = await admin.query<{ n: number }>(`SELECT count(*)::int AS n FROM documents`);
+    await request(server)
+      .post('/v1/documents/upload')
+      .set(asOwner())
+      .send({
+        kind: 'other',
+        title: 'Suspicious attachment',
+        mime: 'application/pdf',
+        contentBase64: pdfFixture('payload', Buffer.from(EICAR_TEST_STRING)).toString('base64'),
+      })
+      .expect(422, { error: 'malware_detected' });
+    const after = await admin.query<{ n: number }>(`SELECT count(*)::int AS n FROM documents`);
+    expect(after.rows[0]!.n).toBe(before.rows[0]!.n);
+    const rejection = producer.messages
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .find((e) => e.action === 'document.scan.rejected')!;
+    expect(rejection.detail['reason']).toBe('infected');
+  });
+
+  it('rejects mislabeled and undeclared content types (422)', async () => {
+    await request(server)
+      .post('/v1/documents/upload')
+      .set(asOwner())
+      .send({
+        kind: 'other',
+        title: 'Polyglot',
+        mime: 'application/pdf',
+        contentBase64: Buffer.from('<!doctype html><script>x</script>').toString('base64'),
+      })
+      .expect(422, { error: 'unsupported_content' });
+    await request(server)
+      .post('/v1/documents/upload')
+      .set(asOwner())
+      .send({
+        kind: 'other',
+        title: 'Markup',
+        mime: 'image/svg+xml',
+        contentBase64: Buffer.from('<svg onload=alert(1)>').toString('base64'),
+      })
+      .expect(422, { error: 'unsupported_content' });
+  });
+
   it('audit PII firewall: no produced message ever carries plaintext content', () => {
     expect(producer.messages.length).toBeGreaterThan(0);
     for (const message of [...producer.messages, ...publishProducer.messages]) {
@@ -454,6 +568,8 @@ describeIfPg('document service end to end', () => {
       expect(message.value).not.toContain(EXECUTOR);
       expect(message.value).not.toContain('Alameda');
       expect(message.value).not.toContain('Riley');
+      expect(message.value).not.toContain('Marlow');
+      expect(message.value).not.toContain('Lake house');
     }
   });
 });

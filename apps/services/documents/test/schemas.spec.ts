@@ -4,7 +4,10 @@ import {
   IfMatchSchema,
   NewVersionSchema,
   parse,
+  SearchQuerySchema,
   StatusTransitionSchema,
+  UPLOAD_MAX_BYTES,
+  UploadDocumentSchema,
   UuidSchema,
   VersionParamSchema,
 } from '../src/schemas';
@@ -63,6 +66,38 @@ describe('request schemas', () => {
     expect(parse(IfMatchSchema, undefined)).toBeUndefined();
     expect(parse(IfMatchSchema, '2')).toBe(2);
     expect(() => parse(IfMatchSchema, 'abc')).toThrow(BadRequestException);
+  });
+
+  it('UploadDocumentSchema: strict base64, kinds, size ceiling', () => {
+    const valid = {
+      kind: 'property',
+      title: 'Deed',
+      mime: 'application/pdf',
+      contentBase64: Buffer.from('%PDF-1.4 test').toString('base64'),
+    };
+    expect(parse(UploadDocumentSchema, valid).kind).toBe('property');
+    expect(parse(UploadDocumentSchema, { ...valid, kind: 'will' }).kind).toBe('will');
+    expect(() => parse(UploadDocumentSchema, { ...valid, kind: 'memes' })).toThrow(
+      BadRequestException,
+    );
+    // Whitespace-tolerant base64 would make decoded size unpredictable.
+    expect(() => parse(UploadDocumentSchema, { ...valid, contentBase64: 'AAAA\nBBBB' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => parse(UploadDocumentSchema, { ...valid, contentBase64: 'not base64!!' })).toThrow(
+      BadRequestException,
+    );
+    const oversized = 'A'.repeat(Math.ceil(UPLOAD_MAX_BYTES / 3) * 4 + 8);
+    expect(() => parse(UploadDocumentSchema, { ...valid, contentBase64: oversized })).toThrow(
+      BadRequestException,
+    );
+    expect(() => parse(UploadDocumentSchema, { ...valid, extra: 1 })).toThrow(BadRequestException);
+  });
+
+  it('SearchQuerySchema bounds query length', () => {
+    expect(parse(SearchQuerySchema, 'marlow deed')).toBe('marlow deed');
+    expect(() => parse(SearchQuerySchema, 'ab')).toThrow(BadRequestException);
+    expect(() => parse(SearchQuerySchema, 'x'.repeat(201))).toThrow(BadRequestException);
   });
 
   it('parse errors are the generic token, never field details', () => {

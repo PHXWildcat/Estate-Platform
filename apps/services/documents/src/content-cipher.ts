@@ -19,6 +19,16 @@ export function contentField(ownerUserId: string, version: number, sha256Hex: st
 }
 
 /**
+ * AAD field for a version's derived OCR-text artifact. Unlike content, the
+ * OCR text's hash is not stored anywhere, so the binding is (document via
+ * DEK subject) + owner + version + artifact type — enough to stop cross-
+ * document/owner/version splicing, which is what TB4 tampering can attempt.
+ */
+export function ocrField(ownerUserId: string, version: number): string {
+  return `doc.${ownerUserId}.v${version}.ocr`;
+}
+
+/**
  * Thin injectable wrapper over @estate/crypto's FieldCrypto, scoped to this
  * service's per-DOCUMENT key subject. Every stored blob is AEAD ciphertext
  * under the document's DEK; every decryption flows through FieldCrypto,
@@ -46,6 +56,20 @@ export class ContentCipher {
       input.documentId,
       contentField(input.ownerUserId, input.version, input.sha256Hex),
       input.content,
+    );
+  }
+
+  /** Encrypt a version's derived OCR-text artifact under the document's DEK. */
+  async encryptOcr(input: {
+    documentId: string;
+    ownerUserId: string;
+    version: number;
+    text: string;
+  }): Promise<{ ciphertext: Buffer; dekId: string }> {
+    return this.crypto.encryptField(
+      input.documentId,
+      ocrField(input.ownerUserId, input.version),
+      Buffer.from(input.text, 'utf8'),
     );
   }
 

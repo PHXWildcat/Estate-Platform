@@ -49,6 +49,21 @@ const EnvSchema = z
     OBJECT_STORE_DIR: z.string().min(1).optional(),
     // s3 mode: the bucket holding encrypted content blobs.
     OBJECT_STORE_BUCKET: z.string().min(1).optional(),
+    // Key for the per-user-keyed encrypted search index (document_search_tokens).
+    // Required in every environment — search tokens are written on every
+    // generation/upload.
+    SEARCH_INDEX_KEY_HEX: z
+      .string()
+      .regex(HEX_32_BYTES, 'SEARCH_INDEX_KEY_HEX must be 32 bytes of hex (64 chars)'),
+    // Malware scanning on ingest (docs/01 §2.6). 'stub' is the deterministic
+    // dev/test scanner (flags the EICAR test string); 'clamd' streams to a
+    // ClamAV daemon over its INSTREAM protocol. Production REQUIRES 'clamd'.
+    SCANNER_MODE: z.enum(['stub', 'clamd']).default('stub'),
+    CLAMD_HOST: z.string().min(1).optional(),
+    CLAMD_PORT: z.coerce.number().int().positive().max(65535).default(3310),
+    // OCR for uploads. 'stub' is deterministic dev/test extraction; 'textract'
+    // calls AWS Textract. Production REQUIRES 'textract'.
+    OCR_MODE: z.enum(['stub', 'textract']).default('stub'),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -83,6 +98,20 @@ const EnvSchema = z
             'OBJECT_STORE_MODE must be "s3" in production (the filesystem store is dev/test only)',
         });
       }
+      if (env.SCANNER_MODE !== 'clamd') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SCANNER_MODE'],
+          message: 'SCANNER_MODE must be "clamd" in production (the stub scanner is dev/test only)',
+        });
+      }
+      if (env.OCR_MODE !== 'textract') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['OCR_MODE'],
+          message: 'OCR_MODE must be "textract" in production (the stub OCR is dev/test only)',
+        });
+      }
     } else if (!env.KMS_MASTER_KEY_HEX) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -101,6 +130,20 @@ const EnvSchema = z
         }
       }
     }
+    if (env.SCANNER_MODE === 'clamd' && !env.CLAMD_HOST) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CLAMD_HOST'],
+        message: 'CLAMD_HOST is required when SCANNER_MODE is "clamd"',
+      });
+    }
+    if (env.OCR_MODE === 'textract' && !env.AWS_REGION) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AWS_REGION'],
+        message: 'AWS_REGION is required when OCR_MODE is "textract"',
+      });
+    }
   });
 
 /** Which KMS backs envelope encryption (local dev/test, AWS in production). */
@@ -113,6 +156,15 @@ export type ObjectStoreConfig =
   | { readonly mode: 'fs'; readonly dir: string }
   | { readonly mode: 's3'; readonly bucket: string; readonly region: string };
 
+/** Which malware scanner gates upload ingest. */
+export type ScannerConfig =
+  | { readonly mode: 'stub' }
+  | { readonly mode: 'clamd'; readonly host: string; readonly port: number };
+
+/** Which OCR engine extracts text from uploads. */
+export type OcrConfig =
+  { readonly mode: 'stub' } | { readonly mode: 'textract'; readonly region: string };
+
 export interface DocumentsConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
@@ -122,6 +174,10 @@ export interface DocumentsConfig {
   /** KEK alias wrapping THIS service's per-document DEKs. */
   readonly kekAlias: string;
   readonly objectStore: ObjectStoreConfig;
+  /** HMAC key for the per-user-keyed encrypted search index. */
+  readonly searchIndexKey: Buffer;
+  readonly scanner: ScannerConfig;
+  readonly ocr: OcrConfig;
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
 }
@@ -160,6 +216,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DocumentsConfi
     e.OBJECT_STORE_MODE === 's3'
       ? { mode: 's3', bucket: e.OBJECT_STORE_BUCKET!, region: e.AWS_REGION! }
       : { mode: 'fs', dir: e.OBJECT_STORE_DIR ?? '.object-store' };
+  const scanner: ScannerConfig =
+    e.SCANNER_MODE === 'clamd'
+      ? { mode: 'clamd', host: e.CLAMD_HOST!, port: e.CLAMD_PORT }
+      : { mode: 'stub' };
+  const ocr: OcrConfig =
+    e.OCR_MODE === 'textract' ? { mode: 'textract', region: e.AWS_REGION! } : { mode: 'stub' };
   return {
     nodeEnv: e.NODE_ENV,
     port: e.PORT,
@@ -168,6 +230,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DocumentsConfi
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     kekAlias: 'documents/kek',
     objectStore,
+    searchIndexKey: Buffer.from(e.SEARCH_INDEX_KEY_HEX, 'hex'),
+    scanner,
+    ocr,
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
   };

@@ -8,12 +8,14 @@
     "test": "jest --runInBand"
   },
   "devDependencies": {
+    "@estate/audit-emitter": "workspace:*",
     "@estate/auth-guard": "workspace:*",
     "@estate/config": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/db": "workspace:*",
     "@estate/service-assets": "workspace:*",
     "@estate/service-audit": "workspace:*",
+    "@estate/service-documents": "workspace:*",
     "@estate/service-identity": "workspace:*",
     "@estate/service-plaid": "workspace:*",
     "@nestjs/testing": "catalog:",

@@ -176,3 +176,36 @@ deviating from them, stop and propose the change with rationale — do not silen
   attestation. Legal-hold ENFORCEMENT ships in M4 (blocks deletion); the setting
   surface belongs to settlement (M7). Generation, regeneration, and deletion are
   step-up gated per docs/01 §5.
+- 2026-07-24 — M4 PR2 upload transport is strict-base64 JSON (10 MiB decoded cap,
+  16 MiB body limit), NOT multipart: one parser (zod+JSON) on the untrusted-input
+  path instead of adding busboy/multer to the fuzz surface. Declared mime is never
+  trusted — magic-byte sniffing decides, allowlist pdf/png/jpeg/tiff only,
+  mismatch rejects (polyglot mislabeling). Upload itself is CallerGuard-only
+  (docs/01 §5's step-up list covers generation/export/deletion, not adding
+  content).
+- 2026-07-24 — Malware scan is FAIL-CLOSED and pre-storage: infected or
+  scanner-error uploads are never written anywhere (422/503 + audited
+  `document.scan.rejected` with resourceId null; scanner-produced signature names
+  are sanitized into the audit-safe token grammar). Live scanner = clamd INSTREAM
+  spoken directly on node:net (no dependency on a security-critical path — the
+  webhook-verifier precedent); prod REQUIRES clamd mode. OCR is BEST-EFFORT and
+  non-fatal (scan is the gate): stub in dev/test, AWS Textract sync
+  DetectDocumentText in prod (async/multi-page Textract is a scale follow-up);
+  OCR text is UNTRUSTED DATA — sealed as an encrypted artifact under the
+  document's DEK + reduced to HMAC tokens, never parsed, logged, or treated as
+  instructions.
+- 2026-07-24 — Encrypted search (docs/01 §2.6) is per-user-keyed HMAC tokens in
+  PG: userKey = HMAC(SEARCH_INDEX_KEY, userId), token = HMAC(userKey,
+  normalized keyword); document_search_tokens is a DERIVED, rebuildable
+  projection (assets_view precedent — exempt from soft-delete/_versions;
+  replace-in-place on re-index; purged with the DEK by the retention job).
+  Cross-user correlation is cryptographically out; the accepted leak is token
+  counts per document. Generated documents index through the same pipeline
+  (title + rendered text); search never decrypts anything (no decrypt audit
+  event by design). OpenSearch stays a later milestone.
+- 2026-07-24 — Uploaded documents widen `documents.doc_type` to DOCUMENT_KINDS =
+  instrument types + vault categories (legal/tax/identity/insurance/property/
+  military/medical/financial/other, per docs/00 §8); the unreleased
+  `document.version.created` payload widened accordingly (no consumers existed).
+  Binary content travels as base64 in ContentDto with an explicit `encoding`
+  field; canonical HTML stays utf8.

@@ -1,7 +1,9 @@
+import { connect } from 'node:net';
 import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { KMSClient } from '@aws-sdk/client-kms';
 import { S3Client } from '@aws-sdk/client-s3';
+import { TextractClient } from '@aws-sdk/client-textract';
 import type { AuditProducer } from '@estate/audit-emitter';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import {
@@ -30,7 +32,9 @@ import {
   CONFIG,
   DEK_REPOSITORY,
   FIELD_CRYPTO,
+  MALWARE_SCANNER,
   OBJECT_STORE,
+  OCR_ENGINE,
   PG_POOL_CONFIG,
   POLICY_DECISION_POINT,
 } from './di-tokens';
@@ -39,8 +43,12 @@ import { DocumentsRepo } from './documents.repo';
 import { DocumentsService } from './documents.service';
 import { EventsService } from './events.service';
 import { HttpErrorFilter } from './http-error.filter';
+import { ClamdScanner, StubScanner, type MalwareScanner } from './malware-scanner';
 import { LocalFsObjectStore, type ObjectStore } from './object-store';
+import { StubOcr, TextractOcr, type OcrEngine } from './ocr';
 import { S3ObjectStore } from './s3-object-store';
+import { SearchIndexer } from './search-indexer';
+import { SearchTokensRepo } from './search-tokens.repo';
 import { TemplateEngine } from './template-engine';
 import { TemplatesController } from './templates.controller';
 import { TemplatesRepo } from './templates.repo';
@@ -70,6 +78,23 @@ function objectStoreFor(config: DocumentsConfig): ObjectStore {
     );
   }
   return new LocalFsObjectStore(config.objectStore.dir);
+}
+
+/** Select the malware scanner (stub dev/test, clamd in production). */
+function scannerFor(config: DocumentsConfig): MalwareScanner {
+  if (config.scanner.mode === 'clamd') {
+    const { host, port } = config.scanner;
+    return new ClamdScanner({ connect: () => connect(port, host) });
+  }
+  return new StubScanner();
+}
+
+/** Select the OCR engine (stub dev/test, Textract in production). */
+function ocrFor(config: DocumentsConfig): OcrEngine {
+  if (config.ocr.mode === 'textract') {
+    return new TextractOcr(new TextractClient({ region: config.ocr.region }));
+  }
+  return new StubOcr();
 }
 
 @Module({
@@ -138,6 +163,16 @@ function objectStoreFor(config: DocumentsConfig): ObjectStore {
       inject: [CONFIG],
       useFactory: (config: DocumentsConfig): ObjectStore => objectStoreFor(config),
     },
+    {
+      provide: MALWARE_SCANNER,
+      inject: [CONFIG],
+      useFactory: (config: DocumentsConfig): MalwareScanner => scannerFor(config),
+    },
+    {
+      provide: OCR_ENGINE,
+      inject: [CONFIG],
+      useFactory: (config: DocumentsConfig): OcrEngine => ocrFor(config),
+    },
     // The Cedar PDP is constructed once from the bundled, in-repo policy set.
     // Deny by default.
     {
@@ -158,6 +193,8 @@ function objectStoreFor(config: DocumentsConfig): ObjectStore {
     TemplateEngine,
     DocumentsRepo,
     VersionsRepo,
+    SearchIndexer,
+    SearchTokensRepo,
     DocumentsService,
     CallerGuard,
     StepUpGuard,
