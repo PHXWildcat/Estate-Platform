@@ -500,7 +500,13 @@ files and the repo had no Dockerfiles at all — nothing was deployable anywhere
   must exit non-zero with its own config-validation error, which proves the
   shipped artifact still refuses to boot misconfigured (the property every
   service's `config.ts` asserts, now verified in the container rather than only
-  in unit tests). The web image is verified by actually serving on :3000.
+  in unit tests). The BFF is asserted differently and deliberately: every one of
+  its settings has a development default, so bare it starts and serves — its
+  fail-fast guard is production-only (persisted operations are mandatory there),
+  so it is smoke-tested under `NODE_ENV=production`. Every run is wrapped in a
+  `timeout`, because a container that does NOT exit would otherwise hang the job
+  to GitHub's 6-hour limit (an earlier revision did exactly that). The web image
+  is verified by actually serving on :3000.
 
 **Deliberate gaps, called out rather than faked:**
 - **No registry push and no cosign signing.** Signatures attach to a registry

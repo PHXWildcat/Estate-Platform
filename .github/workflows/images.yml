@@ -47,6 +47,7 @@ jobs:
             pkg: '@estate/service-audit'
           - app: bff
             pkg: '@estate/bff'
+            kind: bff
           - app: web
             pkg: '@estate/web'
             dockerfile: infra/docker/web.Dockerfile
@@ -69,21 +70,38 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.app }}
           cache-to: type=gha,mode=max,scope=${{ matrix.app }}
 
-      # A service image must still FAIL CLOSED on missing configuration. Running
-      # it with no environment should exit non-zero with the config error the
-      # service's own zod schema raises — which proves the image contains a real,
-      # bootable app (a broken image also exits non-zero, so the message, not the
-      # exit code, is the signal).
+      # An image must FAIL CLOSED when it cannot be configured, and the message —
+      # not just the exit code — is the signal, since a broken image also exits
+      # non-zero.
+      #
+      # The six services require real config (DATABASE_URL and friends) in every
+      # environment, so running them bare must fail. The BFF is deliberately
+      # different: every one of its settings has a development default, so bare
+      # it would start and listen forever. Its fail-fast guard is production-only
+      # (persisted operations are mandatory there), so that is what we assert.
+      #
+      # `timeout` wraps the run because a container that DOESN'T exit would
+      # otherwise hang the job until GitHub's 6-hour limit — an earlier revision
+      # of this workflow did exactly that for 40 minutes.
       - name: Smoke test — config fail-fast
         if: matrix.kind != 'web'
+        env:
+          # Only the BFF needs a production posture to reach its guard.
+          SMOKE_ENV: ${{ matrix.kind == 'bff' && '-e NODE_ENV=production' || '' }}
         run: |
           set +e
-          output=$(docker run --rm estate/${{ matrix.app }}:ci 2>&1)
+          output=$(timeout 60 docker run --rm --name smoke-${{ matrix.app }} \
+            $SMOKE_ENV estate/${{ matrix.app }}:ci 2>&1)
           code=$?
           set -e
+          docker rm -f smoke-${{ matrix.app }} >/dev/null 2>&1 || true
           echo "$output"
+          if [ "$code" -eq 124 ]; then
+            echo "::error::image kept running without valid configuration — fail-fast posture lost"
+            exit 1
+          fi
           if [ "$code" -eq 0 ]; then
-            echo "::error::image started with no configuration — fail-fast posture lost"
+            echo "::error::image exited 0 without valid configuration — fail-fast posture lost"
             exit 1
           fi
           if ! echo "$output" | grep -Eq 'configuration|environment variables'; then
