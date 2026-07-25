@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    // No ambient Node types in the shipped build: if src/ ever reaches for a
+    // Node-only global, this fails to compile rather than shipping a module
+    // that breaks in the browser.
+    "types": []
+  },
+  "include": ["src"]
+}

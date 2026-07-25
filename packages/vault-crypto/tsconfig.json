@@ -1,0 +1,12 @@
+{
+  "extends": "../config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // DOM rather than @types/node for the platform surface: this package must
+    // compile against APIs a browser actually has (WebCrypto, TextEncoder,
+    // btoa). Node >= 20 exposes the same globals, so one lib covers both.
+    "lib": ["ES2023", "DOM"],
+    "types": ["node", "jest"]
+  },
+  "include": ["src", "test", "jest.config.js"]
+}

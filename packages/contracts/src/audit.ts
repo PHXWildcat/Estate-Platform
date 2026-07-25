@@ -54,6 +54,20 @@ export const AUDIT_ACTIONS = [
   'document.uploaded',
   'document.scan.rejected',
   'document.ocr.indexed',
+  // Vault service (vault cluster, Zone A). These record that something
+  // happened and to which entity - never what was in it. The server cannot
+  // read vault contents even to log them, which is the point.
+  'vault.keyset.created',
+  'vault.keyset.updated',
+  'vault.opened',
+  'vault.open.failed',
+  'vault.items.listed',
+  'vault.item.created',
+  'vault.item.accessed',
+  'vault.item.updated',
+  'vault.item.deleted',
+  'vault.reset',
+  'vault.session.revoked',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
