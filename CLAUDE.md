@@ -231,3 +231,28 @@ deviating from them, stop and propose the change with rationale — do not silen
   plaintext label metadata like `assets_view.title`. Full record in docs/04 M4
   review; documented follow-ups (orphan-DEK sweep, 404-vs-403 oracle, post-commit
   outbox, async Textract) left as-is.
+- 2026-07-24 — M5 SPLIT: containerization + supply chain ships now; the
+  Terraform/EKS dev environment is deferred until an AWS org, billing (~$420–1,100/mo
+  dev tier) and a CI OIDC role exist. Rationale: nothing was deployable anywhere
+  (no Dockerfiles, empty `infra/`), and images are a hard prerequisite for the
+  cloud half — so the free, blocking half goes first. ONE parameterized
+  `node-service.Dockerfile` (ARG PKG) covers all seven Node apps instead of seven
+  drifting copies; web is separate only because Next.js emits a `standalone`
+  bundle. Distroless + non-root + glibc base matched to the runtime so
+  `@node-rs/argon2`'s prebuilt binary matches its ABI. Images are built and
+  verified in CI but NOT pushed and NOT cosign-signed (signatures need a registry;
+  none chosen until ECR lands), and bases are tag-pinned not digest-pinned (an
+  unrefreshable hand-written digest rots into an unpatchable base) — both recorded
+  as deliberate gaps in docs/04 rather than silently skipped. CI smoke-tests that
+  each service image still exits non-zero with its config error when run with no
+  environment, so the fail-fast posture is proven in the shipped artifact.
+- 2026-07-24 — Image vulnerability gate splits by OWNERSHIP, not severity alone:
+  application (npm) high/critical BLOCK; base-image (deb/binary) findings are
+  reported to the job summary. Rationale: the first scan found 21 high/critical,
+  all in the distroless base (libssl3/libc6/bundled node, several "won't fix"),
+  zero in our dependency tree — and a distroless image has no package manager, so
+  there is nothing to patch from here. Blocking every PR on the base vendor's
+  rebuild cadence yields a permanently red pipeline people learn to ignore. The
+  compensating control is rebasing (floating patch tag every build; Renovate
+  digest pinning + scheduled rebuild is the follow-up). Gate lives in
+  `.github/scripts/gate-image-scan.mjs`.

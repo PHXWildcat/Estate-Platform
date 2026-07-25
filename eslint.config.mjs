@@ -54,6 +54,19 @@ export default tseslint.config(
     },
   },
   {
+    // CI helper scripts run on the runner, not in a service: they are Node
+    // programs whose entire job is to print a verdict to the build log, so the
+    // no-console rule (which exists to keep sensitive data out of service
+    // stdout) does not apply. They never touch user data.
+    files: ['.github/scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { process: 'readonly', console: 'readonly' },
+    },
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
     // Zone boundary: frontend code must never import server-side key handling
     // or database internals. (threat model TB6 / architecture zone rules)
     files: ['apps/web/**'],

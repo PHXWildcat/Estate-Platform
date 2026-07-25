@@ -1,0 +1,160 @@
+name: Images
+
+# Builds a container image for every deployable app, proves it is actually
+# runnable, and records what is inside it.
+#
+# No registry push: no image registry has been chosen yet (ECR arrives with the
+# cloud half of M5, which is deferred pending an AWS account). Building and
+# verifying without pushing still catches the failure that matters today — a
+# Dockerfile that does not produce a working image — and keeps this pipeline
+# free of registry credentials.
+#
+# There is no Docker on the maintainer's Windows workstation, so THIS WORKFLOW
+# IS THE ONLY VERIFIER for the image build. Treat a red run here as a broken
+# image, not as CI flakiness.
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      # One broken service image should not hide the state of the other seven.
+      fail-fast: false
+      matrix:
+        include:
+          - app: identity
+            pkg: '@estate/service-identity'
+          - app: profile
+            pkg: '@estate/service-profile'
+          - app: assets
+            pkg: '@estate/service-assets'
+          - app: plaid
+            pkg: '@estate/service-plaid'
+          - app: documents
+            pkg: '@estate/service-documents'
+          - app: audit
+            pkg: '@estate/service-audit'
+          - app: bff
+            pkg: '@estate/bff'
+            kind: bff
+          - app: web
+            pkg: '@estate/web'
+            dockerfile: infra/docker/web.Dockerfile
+            kind: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile || 'infra/docker/node-service.Dockerfile' }}
+          build-args: PKG=${{ matrix.pkg }}
+          tags: estate/${{ matrix.app }}:ci
+          # Load into the local daemon so the smoke test can run it; never push.
+          load: true
+          push: false
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      # An image must FAIL CLOSED when it cannot be configured, and the message —
+      # not just the exit code — is the signal, since a broken image also exits
+      # non-zero.
+      #
+      # The six services require real config (DATABASE_URL and friends) in every
+      # environment, so running them bare must fail. The BFF is deliberately
+      # different: every one of its settings has a development default, so bare
+      # it would start and listen forever. Its fail-fast guard is production-only
+      # (persisted operations are mandatory there), so that is what we assert.
+      #
+      # `timeout` wraps the run because a container that DOESN'T exit would
+      # otherwise hang the job until GitHub's 6-hour limit — an earlier revision
+      # of this workflow did exactly that for 40 minutes.
+      - name: Smoke test — config fail-fast
+        if: matrix.kind != 'web'
+        env:
+          # Only the BFF needs a production posture to reach its guard.
+          SMOKE_ENV: ${{ matrix.kind == 'bff' && '-e NODE_ENV=production' || '' }}
+        run: |
+          set +e
+          output=$(timeout 60 docker run --rm --name smoke-${{ matrix.app }} \
+            $SMOKE_ENV estate/${{ matrix.app }}:ci 2>&1)
+          code=$?
+          set -e
+          docker rm -f smoke-${{ matrix.app }} >/dev/null 2>&1 || true
+          echo "$output"
+          if [ "$code" -eq 124 ]; then
+            echo "::error::image kept running without valid configuration — fail-fast posture lost"
+            exit 1
+          fi
+          if [ "$code" -eq 0 ]; then
+            echo "::error::image exited 0 without valid configuration — fail-fast posture lost"
+            exit 1
+          fi
+          if ! echo "$output" | grep -Eq 'configuration|environment variables'; then
+            echo "::error::no config-validation error — image may not contain a bootable app"
+            exit 1
+          fi
+
+      # The frontend has no secrets to validate, so its liveness IS the check.
+      - name: Smoke test — web serves
+        if: matrix.kind == 'web'
+        run: |
+          docker run -d --name web -p 3000:3000 estate/web:ci
+          ok=
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:3000 >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs web
+          docker rm -f web >/dev/null
+          if [ -z "$ok" ]; then
+            echo "::error::web image did not serve on :3000"
+            exit 1
+          fi
+
+      # What shipped, in machine-readable form. Retained as an artifact now;
+      # it becomes an attached attestation once images are pushed to a registry.
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: estate/${{ matrix.app }}:ci
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.app }}.spdx.json
+          output-file: sbom-${{ matrix.app }}.spdx.json
+
+      # Scan, then gate by OWNERSHIP rather than by severity alone: application
+      # dependencies are ours to bump and block the build; base-image packages
+      # (Debian libs, the bundled node binary) cannot be patched from here — a
+      # distroless image has no package manager — so they are reported instead
+      # of blocking every PR on the base vendor's rebuild cadence. See
+      # .github/scripts/gate-image-scan.mjs for the full rationale.
+      - name: Scan image for vulnerabilities
+        run: |
+          docker save estate/${{ matrix.app }}:ci -o /tmp/${{ matrix.app }}.tar
+          docker run --rm -v /tmp:/w anchore/grype:v0.97.1 \
+            "docker-archive:/w/${{ matrix.app }}.tar" -o json --quiet \
+            > /tmp/grype-${{ matrix.app }}.json
+          node .github/scripts/gate-image-scan.mjs \
+            /tmp/grype-${{ matrix.app }}.json ${{ matrix.app }}
+
+      - name: Upload vulnerability report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-${{ matrix.app }}
+          path: /tmp/grype-${{ matrix.app }}.json
+          if-no-files-found: warn

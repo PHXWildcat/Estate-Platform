@@ -470,8 +470,90 @@ responsibility, outside the service); read path echoes the stored
 `content_sha256` rather than recomputing (the AAD already binds it); no
 per-user upload quota (edge/rate-limit concern, TB1).
 
+### M5 — Containerization + supply chain (in progress); cloud environment deferred
+
+M5 was planned as "Terraform/EKS to a real dev environment" and has been **split**.
+The cloud half needs an AWS organization, billing, and CI credentials that do not
+exist yet (est. ~$420–1,100/mo for a dev tier), so it is deferred until that is in
+place. What ships now is the half that is a hard prerequisite for it and costs
+nothing: **container images and their supply chain.** `infra/` previously held no
+files and the repo had no Dockerfiles at all — nothing was deployable anywhere.
+
+**Shipping now (PR1):**
+- **One parameterized image recipe** — `infra/docker/node-service.Dockerfile`
+  builds all seven Node apps (six services + BFF) selected by an `ARG PKG`,
+  rather than seven near-identical files that drift; a hardening change lands in
+  exactly one place. `infra/docker/web.Dockerfile` is separate only because
+  Next.js emits a traced `standalone` bundle instead of `dist/main.js`.
+- **Build shape:** `turbo prune --docker` → install from the manifest-only layer
+  (so dependency installs cache until a package.json changes) → `turbo build`
+  (which orders `^build` for the internal packages) → `pnpm deploy --prod` to
+  collect the production closure.
+- **Hardening per docs/01 §3:** distroless runtime (no shell, no package
+  manager), non-root uid 65532, exec-form CMD, and a glibc build base matched to
+  the distroless image so the prebuilt native addon (`@node-rs/argon2`) matches
+  its host ABI. Read-only rootfs is a pod securityContext setting and lands with
+  the Helm charts; nothing in these services writes to local disk in production.
+- **CI (`.github/workflows/images.yml`):** builds all eight images, generates an
+  SPDX **SBOM** per image, scans with grype (fails on high/critical), and
+  **smoke-tests the fail-fast posture** — a service image run with no environment
+  must exit non-zero with its own config-validation error, which proves the
+  shipped artifact still refuses to boot misconfigured (the property every
+  service's `config.ts` asserts, now verified in the container rather than only
+  in unit tests). The BFF is asserted differently and deliberately: every one of
+  its settings has a development default, so bare it starts and serves — its
+  fail-fast guard is production-only (persisted operations are mandatory there),
+  so it is smoke-tested under `NODE_ENV=production`. Every run is wrapped in a
+  `timeout`, because a container that does NOT exit would otherwise hang the job
+  to GitHub's 6-hour limit (an earlier revision did exactly that). The web image
+  is verified by actually serving on :3000.
+
+**Deliberate gaps, called out rather than faked:**
+- **No registry push and no cosign signing.** Signatures attach to a registry
+  reference, and no registry is chosen yet (ECR arrives with the cloud half).
+  Pushing would also mean credentials this pipeline should not hold today.
+- **Base images pinned by tag, not digest.** docs/03 wants digests; a
+  hand-written digest with nothing to refresh it rots into an unpatchable base.
+  Digest pinning lands with the registry + an automated bump (Renovate), where
+  it can be maintained.
+- **Vulnerability gate splits by ownership, not by severity alone.** Blocking on
+  every high/critical would mean blocking on the base image: a distroless
+  runtime still carries Debian packages and the bundled `node` binary, none of
+  which can be patched from here (no package manager in the image), and some are
+  marked "won't fix" upstream. The first scan found 21 high/critical — **all** in
+  the base, **zero** in this repo's dependency tree. So
+  `.github/scripts/gate-image-scan.mjs` blocks on APPLICATION (npm) findings,
+  which a developer can fix by bumping a dependency, and reports base findings to
+  the job summary. The compensating control for the base is rebasing: images
+  rebuild from a floating patch tag every CI run, with Renovate-driven digest
+  pinning plus a scheduled rebuild as the tracked follow-up. A gate that is
+  permanently red for reasons nobody in this repo can act on trains people to
+  ignore it, which is worse for security than a gate that fires only on the
+  actionable half.
+
+**Deferred to the cloud half (plan already drafted, pending an AWS account):**
+Terraform foundation (remote state, VPC, KMS aliases the code already expects,
+Secrets Manager, GitHub OIDC role for CI apply) · data + compute plane (six
+Aurora clusters — *not* consolidated, since docs/02's physical separation is the
+blast-radius control — MSK with the tier still parameterized, S3, EKS with
+Bottlerocket + per-service IRSA so the asset service still cannot unwrap a Plaid
+or documents DEK) · GitOps delivery (ArgoCD, Helm, External Secrets, default-deny
+NetworkPolicies, Kyverno signed-images admission, a **ClamAV deployment** the
+documents service requires in production mode, migration Jobs, and a smoke test
+proving the audit hash chain across a **real Kafka broker hop** — retiring an
+open item tracked since M1). Dev-tier deviations to re-confirm at that point:
+no Shield Advanced (~$3k/mo), no CloudHSM (KMS-managed keys; the
+`AwsKmsProvider` path is identical), single region, and OpenSearch/ElastiCache
+omitted entirely because no code consumes them yet.
+
+**One code interaction to resolve before the cloud half:** the M4 review fix makes
+`template-publish-cli` refuse placeholder-`legalReview` templates when
+`NODE_ENV=production` — which is the posture the dev environment will run. Either
+the environment gets a loud, dev-account-only opt-in to publish the exemplar
+seeds, or it has no active templates and generation returns `template_not_found`.
+Preference is the narrow explicit flag over weakening the guard.
+
 ### Later milestones (rough order, one per bounded context)
-M5 Terraform/EKS to a real dev environment ·
 M6 vault (Zone A) ·
 M7 settlement (Temporal) ·
 M8 AI assistant (privacy proxy) · then referral, notifications hardening, search.
