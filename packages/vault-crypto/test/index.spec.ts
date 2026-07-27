@@ -25,6 +25,7 @@ const EXPECTED_EXPORTS = [
   // ecies (emergency access)
   'ECIES_VERSION',
   'EciesError',
+  'FINGERPRINT_SYMBOLS',
   'PUBLIC_KEY_BYTES',
   'generateRecoveryKeyPair',
   'openWithPrivateKey',

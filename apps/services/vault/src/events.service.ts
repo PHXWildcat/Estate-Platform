@@ -176,7 +176,12 @@ export class EventsService {
   async reset(
     userId: string,
     sessionId: string,
-    detail: { itemsDestroyed: number; revokedSessions: number },
+    detail: {
+      itemsDestroyed: number;
+      revokedSessions: number;
+      /** Escrow policies torn down with the master key they wrapped. */
+      escrowPoliciesRetired: number;
+    },
   ): Promise<void> {
     await this.emit('vault.reset', {
       actorId: userId,

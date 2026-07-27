@@ -20,7 +20,11 @@ describe('EventsService', () => {
     await events.itemAccessed(USER, SESSION, ITEM);
     await events.itemUpdated(USER, SESSION, ITEM, 3);
     await events.itemDeleted(USER, SESSION, ITEM);
-    await events.reset(USER, SESSION, { itemsDestroyed: 7, revokedSessions: 1 });
+    await events.reset(USER, SESSION, {
+      itemsDestroyed: 7,
+      revokedSessions: 1,
+      escrowPoliciesRetired: 2,
+    });
     await events.sessionRevoked(USER, SESSION, VAULT_SESSION, 'locked');
 
     expect(captured.actions()).toEqual([
@@ -62,7 +66,11 @@ describe('EventsService', () => {
   it('registers every action it emits in the shared enum', async () => {
     const captured = capturingEvents();
     await captured.events.opened(USER, SESSION, VAULT_SESSION);
-    await captured.events.reset(USER, SESSION, { itemsDestroyed: 1, revokedSessions: 0 });
+    await captured.events.reset(USER, SESSION, {
+      itemsDestroyed: 1,
+      revokedSessions: 0,
+      escrowPoliciesRetired: 0,
+    });
     for (const action of captured.actions()) {
       expect(AUDIT_ACTIONS).toContain(action);
     }

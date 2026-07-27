@@ -82,6 +82,22 @@ export class KeysetsRepo {
   }
 
   /**
+   * Drop this user's emergency-access keypair.
+   *
+   * Called from reset: the private half is wrapped under the master key that
+   * reset destroys, so leaving the public half published would invite other
+   * owners to seal shares to a key whose private half is already unusable —
+   * an escrow that looks healthy and silently fails at the one moment it has
+   * to work. The DDL's all-or-nothing CHECK is what makes clearing both legal.
+   */
+  async clearRecoveryKeyPair(tx: Queryable, userId: string): Promise<void> {
+    await tx.query(
+      `UPDATE vault_keysets SET public_key = NULL, wrapped_private_key = NULL WHERE user_id = $1`,
+      [userId],
+    );
+  }
+
+  /**
    * The public key an owner will seal a share to. Returned to another user by
    * design - it is a public key - but the owner is expected to confirm its
    * fingerprint with the grantee out of band before trusting it (docs/03 §5.2

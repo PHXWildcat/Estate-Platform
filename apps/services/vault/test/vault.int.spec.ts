@@ -201,10 +201,16 @@ describeIfPg('vault service end to end', () => {
   });
 
   it('versions vault_keysets on its own primary key, like profiles', async () => {
+    // Qualified by schema, not just table name. Every suite in this repo runs
+    // in its own scratch schema inside ONE database, so an unqualified
+    // pg_catalog query sees every other suite's identically-named tables too -
+    // which made this assertion pass or fail purely on jest's file ordering.
     const triggers = await admin.query<{ tgname: string }>(
-      `SELECT tgname FROM pg_trigger t
-        JOIN pg_class c ON c.oid = t.tgrelid
-       WHERE c.relname = 'vault_keysets' AND NOT t.tgisinternal`,
+      `SELECT t.tgname FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = 'vault_keysets' AND NOT t.tgisinternal`,
+      [schema],
     );
     expect(triggers.rows.map((r) => r.tgname).sort()).toEqual([
       'trg_vault_keysets_updated_at',

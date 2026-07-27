@@ -1,6 +1,7 @@
 import { VaultCryptoError, VaultDecryptionError } from '../src/aead';
 import { fromBase64, randomBytes, toBase64 } from '../src/bytes';
 import {
+  FINGERPRINT_SYMBOLS,
   generateRecoveryKeyPair,
   openWithPrivateKey,
   publicKeyFingerprint,
@@ -91,8 +92,21 @@ describe('public key fingerprint', () => {
   it('is short, stable and readable', async () => {
     const [pair] = await keypairs(1);
     const fingerprint = await publicKeyFingerprint(pair!.publicKey);
-    expect(fingerprint).toMatch(/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/);
+    const group = '[0-9A-HJKMNP-TV-Z]{4}';
+    expect(fingerprint).toMatch(new RegExp(`^${group}-${group}-${group}-${group}$`));
     expect(await publicKeyFingerprint(pair!.publicKey)).toBe(fingerprint);
+  });
+
+  it('carries the 80 bits its security argument depends on', async () => {
+    // Not a formatting detail: this fingerprint is the only defense against a
+    // malicious server substituting its own grantee key, and its width is the
+    // cost of grinding a second preimage. 16 symbols over a 32-character
+    // alphabet is 5 bits each.
+    const [pair] = await keypairs(1);
+    const fingerprint = await publicKeyFingerprint(pair!.publicKey);
+    const symbols = fingerprint.replace(/-/g, '');
+    expect(symbols).toHaveLength(FINGERPRINT_SYMBOLS);
+    expect(FINGERPRINT_SYMBOLS * 5).toBe(80);
   });
 
   it('differs between keys', async () => {

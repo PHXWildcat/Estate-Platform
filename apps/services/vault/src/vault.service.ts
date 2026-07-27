@@ -18,6 +18,7 @@ import {
 } from '@estate/vault-crypto';
 import { CLOCK, type Clock } from './di-tokens';
 import { Db, isUniqueViolation, type Queryable } from './db';
+import { EmergencyRepo } from './emergency.repo';
 import { EventsService } from './events.service';
 import { HandshakesRepo } from './handshakes.repo';
 import { ItemsRepo, type ItemRow } from './items.repo';
@@ -117,6 +118,7 @@ export class VaultService {
     private readonly items: ItemsRepo,
     private readonly handshakes: HandshakesRepo,
     private readonly sessions: VaultSessionsRepo,
+    private readonly emergency: EmergencyRepo,
     private readonly authz: VaultAuthz,
     private readonly events: EventsService,
     @Inject(CLOCK) private readonly clock: Clock,
@@ -440,12 +442,23 @@ export class VaultService {
    * service - can decrypt the existing items, so the only coherent escape from
    * a lost password is to abandon them and enroll fresh.
    *
-   * The destruction is cryptographic, not physical, and it falls out of how the
-   * keyset history works: replacing the keyset overwrites `wrapped_master_key`,
-   * and the version trigger never kept a copy, so the old master key ceases to
-   * exist anywhere. The item rows survive as required (no hard deletes) and are
-   * permanently opaque - structure preserved, meaning destroyed, which is
-   * exactly the crypto-shredding primitive CLAUDE.md specifies for erasure.
+   * The destruction is cryptographic, not physical: this transaction destroys
+   * EVERY wrapping of the old master key, after which the retained item rows
+   * are permanently opaque - structure preserved, meaning destroyed, which is
+   * the crypto-shredding primitive CLAUDE.md specifies for erasure.
+   *
+   * "Every wrapping" is the load-bearing word, and the M6 security review found
+   * an earlier revision getting it wrong. There are two:
+   *   1. `vault_keysets.wrapped_master_key`, overwritten by the replace below
+   *      (the version trigger deliberately never kept a copy), and
+   *   2. `emergency_access_configs.wrapped_master_key_recovery` - a SECOND live
+   *      wrapping under the recovery key, whose halves are held by the server
+   *      and the grantees. Leaving it behind meant a grantee could still wait
+   *      out the period, release, and reconstruct the master key the user had
+   *      been told was destroyed. The escrow therefore comes down here too.
+   * The grantee keypair goes with it: its private half is wrapped under the key
+   * being destroyed, so a published public key would only invite other owners
+   * to seal shares nobody can ever open.
    *
    * Necessarily gated by session + step-up rather than by proof: you cannot
    * prove knowledge of a password you have lost. That makes this the one route
@@ -473,18 +486,25 @@ export class VaultService {
         wrappedMasterKey: Buffer.from(payload.wrappedMasterKey, 'base64'),
         kdfParams: payload.kdfParams,
       });
+
+      // The second wrapping, and the keypair that depends on the old key.
+      const escrowRetired = await this.emergency.softDeleteAllForOwner(tx, actorUserId, now);
+      await this.emergency.deleteConfig(tx, actorUserId);
+      await this.keysets.clearRecoveryKeyPair(tx, actorUserId);
+
       const revoked = await this.sessions.revokeAllForUserExcept(tx, {
         userId: actorUserId,
         exceptId: null,
         reason: 'vault_reset',
         at: now,
       });
-      return { itemsDestroyed, revoked };
+      return { itemsDestroyed, revoked, escrowRetired };
     });
 
     await this.events.reset(actorUserId, accountSessionId, {
       itemsDestroyed: result.itemsDestroyed,
       revokedSessions: result.revoked,
+      escrowPoliciesRetired: result.escrowRetired,
     });
     return { itemsDestroyed: result.itemsDestroyed };
   }
