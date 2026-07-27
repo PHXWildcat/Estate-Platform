@@ -332,7 +332,7 @@ export class VaultService {
   async listItems(
     actorUserId: string,
     accountSessionId: string,
-    query: { limit: number; cursor?: string },
+    query: { limit: number; cursor?: string | undefined },
   ): Promise<VaultItemPage> {
     this.authz.assertCan(actorUserId, 'read', vaultResource(actorUserId));
 

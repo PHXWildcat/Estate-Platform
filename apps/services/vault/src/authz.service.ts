@@ -35,8 +35,8 @@ export class VaultAuthz {
     entities: readonly EntityInput[] = [resource],
   ): void {
     const result = this.pdp.authorize({
-      principal: ref('User', principalUserId),
-      action: ref('Action', action),
+      principal: { type: 'User', id: principalUserId },
+      action: { type: 'Action', id: action },
       resource: resource.uid,
       entities,
     });

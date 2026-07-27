@@ -94,6 +94,60 @@ TB1: Internet → Edge (CloudFront/WAF/API GW) · TB2: Edge → Services (authn/
 | 9 | Ransomware | M | H | §5.6; RTO 15m / tested restores |
 | 10 | Notification-channel phishing of role-holders | H | M | Content-free notifications, in-app-only sensitive comms |
 
+## 6a. Threat-model delta — M6 vault, Zone A (2026-07-27)
+
+This document requires a delta for every feature PR that crosses a trust
+boundary. M6 activates **TB6 (client device)** in earnest: until now no code
+held keys the server could not derive, and risk #4 (vault client-side
+compromise, Critical) described something that did not exist yet.
+
+**Controls now shipped.**
+- Keys derive from the vault password AND a 128-bit device-only Secret Key
+  (2SKD), so the server-held verifier and wrapped master key are useless to an
+  attacker who has the database and a correct password guess. This is the
+  control that makes §5.3 (insider bulk decryption) structurally inapplicable to
+  Zone A: there is no bulk decryption path, because there is no decryption path.
+- The vault password never transits (SRP-6a). Every unlock failure emits
+  `vault.open.failed`, which is what makes §4/TB4-style burst detection possible
+  for vault access specifically.
+- Master and item keys are unwrapped as **non-extractable `CryptoKey`s**, the
+  TB6 "non-extractable keys where the platform allows" control — an injected
+  script in the vault origin can use them but not read them out.
+- `@estate/vault-crypto` has zero runtime dependencies, enforced by lint and by
+  a source-scanning test. This is the TB6 supply-chain control: the code holding
+  the only keys that open a vault has no transitive tree to compromise.
+- The client pins the KDF and SRP parameters the server serves it, so a
+  malicious server cannot downgrade the group or the iteration count.
+- Step-up MFA gates vault open and all key-material changes, per §5 of the
+  architecture doc.
+
+**Residuals accepted, and why.**
+- *JS `bigint` is not constant-time.* True of every JavaScript SRP; bounded by
+  network jitter, and no code path branches early on a secret comparison.
+- *Full-history rollback.* A server that serves an old blob AND claims its old
+  version is detectable only by client-side last-seen state. Same class as every
+  hosted zero-knowledge store. Per-version AAD binding stops the easier attack:
+  replaying a blob at a *different* version fails to decrypt.
+- *Reset is token-gated.* A forgotten password cannot be proven, so the reset
+  route is the one place step-up-fresh stolen tokens can destroy — never read —
+  a vault. Compensating: distinct audit action, step-up freshness, and owner
+  notification when the notification port lands.
+- *No rate limiting on failed SRP proofs yet.* Tracked with identity's login
+  rate limiting; handshakes burn on attempt in the meantime.
+
+**Not yet shipped, and therefore not yet mitigated.**
+- §5.2 emergency-access abuse: the whole control set (waiting period, one-tap
+  deny, M-of-N, scope limits) arrives with M6 PR2. Until then the vault has no
+  emergency access at all, which is the safe direction to be incomplete in.
+- §5.2's *scope limits* (granting a contact a vault subset) remain deferred even
+  in PR2; per-item keys are in place so it is a later grant feature, not a
+  re-architecture.
+- §5.1 control 5 — settlement's staged access, with vault emergency access last
+  and separately approved — is an **M7 integration point**. PR2's release path
+  must consult settlement state when settlement exists.
+- The isolated vault origin, CSP, and Trusted Types are frontend controls; no
+  vault UI ships in M6, so they land with that surface.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

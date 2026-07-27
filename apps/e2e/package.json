@@ -18,6 +18,8 @@
     "@estate/service-documents": "workspace:*",
     "@estate/service-identity": "workspace:*",
     "@estate/service-plaid": "workspace:*",
+    "@estate/service-vault": "workspace:*",
+    "@estate/vault-crypto": "workspace:*",
     "@nestjs/testing": "catalog:",
     "@types/jest": "catalog:",
     "@types/node": "catalog:",

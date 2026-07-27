@@ -2,6 +2,10 @@
   "extends": "../../../packages/config/tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    // DOM is here for the TESTS only: they act as the vault client, so they
+    // hold the `CryptoKey` values @estate/vault-crypto returns. tsconfig.build
+    // drops it again so src/ cannot reach for a browser global.
+    "lib": ["ES2023", "DOM"],
     "types": ["node", "jest"]
   },
   "include": ["src", "test", "jest.config.js"]
