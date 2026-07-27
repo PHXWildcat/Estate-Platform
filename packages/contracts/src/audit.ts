@@ -68,6 +68,17 @@ export const AUDIT_ACTIONS = [
   'vault.item.deleted',
   'vault.reset',
   'vault.session.revoked',
+  // Emergency access (docs/03 §5.2). Every transition is recorded, including
+  // requests that were blocked, because the owner's after-the-fact review of
+  // who tried to reach their vault is itself one of the controls.
+  'vault.recovery_key.published',
+  'vault.emergency.configured',
+  'vault.emergency.rearmed',
+  'vault.emergency.revoked',
+  'vault.emergency.requested',
+  'vault.emergency.request_blocked',
+  'vault.emergency.denied',
+  'vault.emergency.released',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

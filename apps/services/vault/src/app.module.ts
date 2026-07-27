@@ -13,7 +13,18 @@ import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
 import { VaultAuthz } from './authz.service';
 import { loadConfig, type VaultConfig } from './config';
 import { Db } from './db';
-import { AUDIT_PRODUCER, CLOCK, CONFIG, PG_POOL_CONFIG, POLICY_DECISION_POINT } from './di-tokens';
+import {
+  AUDIT_PRODUCER,
+  CLOCK,
+  CONFIG,
+  NOTIFIER,
+  PG_POOL_CONFIG,
+  POLICY_DECISION_POINT,
+} from './di-tokens';
+import { EmergencyAccessController } from './emergency.controller';
+import { EmergencyRepo } from './emergency.repo';
+import { EmergencyAccessService } from './emergency.service';
+import { StubNotifier, type NotificationPort } from './notifications';
 import { EventsService } from './events.service';
 import { HandshakesRepo } from './handshakes.repo';
 import { HttpErrorFilter } from './http-error.filter';
@@ -31,8 +42,19 @@ import { VaultService } from './vault.service';
  * future change adds one of those providers to this module, that is a trust
  * zone moving, not a refactor.
  */
+/**
+ * Only the stub exists today. Unlike the other services' mode switches, this
+ * one does NOT refuse to construct in production: the vault must still serve
+ * its core routes without a notification channel. The refusal is scoped to the
+ * emergency-access flow, whose safety genuinely depends on reaching the owner
+ * (see EmergencyAccessService.assertNotificationsUsable).
+ */
+function notifierFor(): NotificationPort {
+  return new StubNotifier();
+}
+
 @Module({
-  controllers: [VaultController],
+  controllers: [VaultController, EmergencyAccessController],
   providers: [
     { provide: CONFIG, useFactory: (): VaultConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -75,12 +97,15 @@ import { VaultService } from './vault.service';
       useFactory: (config: VaultConfig): HttpSessionVerifier =>
         new HttpSessionVerifier({ identityUrl: config.identityUrl }),
     },
+    { provide: NOTIFIER, useFactory: (): NotificationPort => notifierFor() },
     VaultAuthz,
     KeysetsRepo,
     ItemsRepo,
     HandshakesRepo,
     VaultSessionsRepo,
+    EmergencyRepo,
     VaultService,
+    EmergencyAccessService,
     CallerGuard,
     StepUpGuard,
     VaultSessionGuard,

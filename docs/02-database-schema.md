@@ -319,6 +319,34 @@ CREATE TABLE emergency_access_policies (
 );
 ```
 
+**Additive changes made when M6 shipped** (implemented in
+`apps/services/vault/migrations`, recorded here so this section stays the source
+of truth):
+
+- `vault_keysets` gains `public_key` + `wrapped_private_key`: the P-256 keypair
+  that lets a user be named as someone else's emergency contact. The public half
+  is plaintext by definition; the private half is wrapped under that user's own
+  master key.
+- `emergency_access_policies` gains `grantee_user_id`, because the vault cluster
+  cannot dereference `grantee_contact_id` — contacts live in `core` and there
+  are no cross-cluster reads (§8). The owner's client resolves the contact via
+  `contacts.linked_user_id` and submits both. It also gains
+  `grantee_public_key_sha256` (which key a share was sealed to, so substitution
+  is detectable), sticky-deny columns (`denied_at`, `released_at`, `revoked_at`,
+  `request_count`), and `deleted_at` for the soft-delete convention.
+- `emergency_access_configs` is new: owner-level escrow material (`threshold`,
+  `platform_part`, `wrapped_master_key_recovery`) that belongs to the escrow as
+  a whole rather than to any one grantee, because the recovery key is split at
+  two levels — `RK = platform_part XOR contacts_part`, with `contacts_part` then
+  split Shamir M-of-N across the grantees.
+- `emergency_access_notifications` is new: which owner notification was
+  attempted and when. Kind and channel only, never content.
+- Both `vault_keysets` and `emergency_access_configs` use a version-capture
+  trigger that REDACTS key material from the row image. Retaining a superseded
+  wrapped master key (or a superseded platform half) would let a phished old
+  password, or an already-replaced escrow, open the current vault — here the
+  prior row is an attack asset rather than an audit record.
+
 ## 6. `audit` cluster (append-only, hash-chained)
 
 ```sql

@@ -553,7 +553,7 @@ the environment gets a loud, dev-account-only opt-in to publish the exemplar
 seeds, or it has no active templates and generation returns `template_not_found`.
 Preference is the narrow explicit flag over weakening the guard.
 
-### M6 — Vault, Zone A (PR1 shipped; emergency access is PR2)
+### M6 — Vault, Zone A (both PRs shipped)
 
 The first Zone A component. Everything M1–M5 built is server-decryptable under
 policy; this is the half of the product where that must be impossible. The
@@ -661,12 +661,55 @@ needs the isolated-origin and CSP/Trusted-Types work of docs/03 TB6 and deserves
 its own milestone · autofill, password generator, and family sharing from
 docs/00 §7 are not in M6.
 
-**PR2 — emergency access** (docs/03 §5.2): Shamir escrow with a two-level split
-so the platform share is always required, M-of-N implemented with threshold 1 as
-the default, a ≥24h waiting period with one-tap owner deny that is *sticky*
-until the owner re-arms, release burning the escrow, grantee public-key
-authenticity verified out-of-band, and a notification port that cannot be a stub
-in production.
+**PR2 — emergency access** (docs/03 §5.2). The control set, and why each one is
+shaped the way it is:
+
+- **Two-level split, so the waiting period is real.**
+  `RK = platform_part XOR contacts_part`, with `contacts_part` split Shamir
+  M-of-N over the grantees. The XOR is a one-time pad, so every grantee
+  colluding still cannot reconstruct RK without the platform half. Without that
+  the "waiting period" would be an honour system among the very people the
+  §5.2 attack is about. M-of-N is fully implemented (GF(2^8), field laws tested
+  directly) with threshold 1 as the shipped default.
+- **Denial is sticky, and there is deliberately no cooldown.** A denied policy
+  refuses further requests until the owner *re-arms* it. A time-based cooldown
+  would tell a patient grantee exactly how long to wait, and waiting the owner
+  out — until they are hospitalised or simply offline — is docs/03 §5.2's actual
+  attack. Every request attempt, including the refused ones, is audited and
+  notified, because the owner's after-the-fact review is itself a control.
+- **Denial is NOT step-up gated**, alone among owner actions. It has to be one
+  tap from a push notification, possibly on a locked phone. A step-up challenge
+  between an owner and "no" is a control that defeats itself. Configure, re-arm
+  and revoke *are* step-up gated per docs/01 §5.
+- **Release is one-shot.** Handing over the platform half spends the escrow;
+  `revoked` cannot un-ring that bell, so recovery is re-splitting a fresh key.
+- **Key authenticity is in scope.** The service serves a grantee's public key
+  and the owner's client confirms its short fingerprint out of band before
+  sealing to it; the key each share was sealed to is recorded, so a later
+  substitution is detectable. Skipping this would let a malicious server
+  substitute its own key and — already holding `platform_part` and the
+  recovery-wrapped master key — read the entire escrow.
+- **Notifications are a precondition.** In production the emergency-access
+  routes refuse while only the stub notifier is wired. Scoped to those routes
+  rather than boot, so the rest of the vault keeps working; real channels arrive
+  with the notifications milestone.
+
+**Residual, stated rather than buried:** the platform half lives on the server,
+so a server that chooses to release it early defeats the waiting period. That is
+inherent to docs/01's design — a delay enforced by a party is only as good as
+that party — and the compensating controls are the audit trail and owner
+notification. What the split does guarantee is that a database dump alone is not
+enough, and a rogue contact alone is not enough either.
+
+**Deferred, with rationale:** §5.2's per-item *scope limits* (granting a subset
+of the vault) — PR1's per-item keys already make this a later grant feature
+rather than a re-architecture; and §5.1 control 5, settlement's staged access
+with vault emergency access last and separately approved, is an M7 integration
+point (PR2's release path will consult settlement state once settlement exists).
+
+One latent bug worth recording, found by the suite rather than by review:
+`configure` inserts every policy in one transaction, so they share `created_at`,
+and ordering by it alone was non-deterministic. Fixed by tie-breaking on `id`.
 
 ### Later milestones (rough order, one per bounded context)
 M7 settlement (Temporal) ·

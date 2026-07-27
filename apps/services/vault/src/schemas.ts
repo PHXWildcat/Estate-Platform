@@ -136,3 +136,44 @@ export const ListItemsQuerySchema = z
 
 /** `If-Match: <blobVersion>` - the assets optimistic-concurrency precedent. */
 export const IfMatchSchema = z.coerce.number().int().min(1).max(1_000_000_000);
+
+// --- emergency access (docs/03 §5.2) ---
+
+/** Raw uncompressed P-256 point. */
+export const PUBLIC_KEY_BASE64 = base64OfBytes(65);
+export const SHA256_BASE64 = base64OfBytes(32);
+
+export const PublishRecoveryKeySchema = z
+  .object({
+    publicKey: PUBLIC_KEY_BASE64,
+    wrappedPrivateKey: z.string().min(1).max(2048),
+  })
+  .strict();
+
+/**
+ * docs/02 §5 puts the >=24h floor in the DDL; it is restated here so a bad
+ * value is a 400 at the edge rather than a constraint violation deeper in.
+ * There is no ceiling: an owner who wants to make their contacts wait a month
+ * is expressing a preference, not a misconfiguration.
+ */
+export const WAITING_PERIOD_HOURS = z.number().int().min(24).max(8760);
+
+export const GranteeSchema = z
+  .object({
+    granteeContactId: UuidSchema,
+    granteeUserId: UuidSchema,
+    /** The Shamir share, sealed to the grantee's public key. */
+    keyShare: z.string().min(1).max(4096),
+    granteePublicKeySha256: SHA256_BASE64,
+    waitingPeriodHours: WAITING_PERIOD_HOURS,
+  })
+  .strict();
+
+export const ConfigureEmergencyAccessSchema = z
+  .object({
+    threshold: z.number().int().min(1).max(255),
+    platformPart: base64OfBytes(32),
+    wrappedMasterKeyRecovery: z.string().min(1).max(1024),
+    grantees: z.array(GranteeSchema).min(1).max(64),
+  })
+  .strict();

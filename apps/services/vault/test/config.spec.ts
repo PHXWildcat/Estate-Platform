@@ -84,7 +84,28 @@ describe('loadConfig', () => {
       'identityUrl',
       'kafkaBrokers',
       'nodeEnv',
+      'notify',
       'port',
     ]);
+  });
+
+  it('defaults the notification channel to the stub', () => {
+    // Only the stub exists today. Deliberately not a boot-time production
+    // requirement: the refusal is scoped to the emergency-access routes, whose
+    // safety depends on reaching the owner, rather than taking the whole vault
+    // down for a feature most users never arm.
+    expect(loadConfig({ ...BASE }).notify).toEqual({ mode: 'stub' });
+    expect(
+      loadConfig({
+        ...BASE,
+        NODE_ENV: 'production',
+        KAFKA_BROKERS: 'a:9092',
+        IDENTITY_URL: 'https://identity.internal',
+      }).notify,
+    ).toEqual({ mode: 'stub' });
+  });
+
+  it('rejects an unknown notification channel', () => {
+    expect(() => loadConfig({ ...BASE, NOTIFY_MODE: 'carrier-pigeon' })).toThrow(ConfigError);
   });
 });

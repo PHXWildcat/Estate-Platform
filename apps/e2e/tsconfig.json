@@ -2,6 +2,10 @@
   "extends": "../../packages/config/tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    // DOM for the vault E2E: it plays the client role, so it holds the
+    // `CryptoKey` values @estate/vault-crypto returns. This package emits
+    // nothing, so the wider lib has no effect beyond typechecking.
+    "lib": ["ES2023", "DOM"],
     "types": ["node", "jest"]
   },
   "include": ["test", "jest.config.js"]
