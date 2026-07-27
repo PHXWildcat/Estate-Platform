@@ -16,6 +16,7 @@ const PROD_BASE = {
   AWS_KMS_KEY_ID: 'alias/documents-kek',
   AWS_REGION: 'us-east-1',
   IDENTITY_URL: 'https://identity.internal',
+  SETTLEMENT_URL: 'https://settlement.internal',
   OBJECT_STORE_MODE: 's3',
   OBJECT_STORE_BUCKET: 'estate-documents',
   SEARCH_INDEX_KEY_HEX: 'b'.repeat(64),
@@ -36,6 +37,7 @@ describe('documents config', () => {
     expect(config.kafkaBrokers).toBeNull();
     expect(config.kekAlias).toBe('documents/kek');
     expect(config.identityUrl).toBe('http://localhost:3001');
+    expect(config.settlementUrl).toBe('http://localhost:3007');
   });
 
   it('honors OBJECT_STORE_DIR in fs mode', () => {
@@ -69,7 +71,7 @@ describe('documents config', () => {
     expect(config.kafkaBrokers).toEqual(['k1:9092', 'k2:9092']);
   });
 
-  it.each(['KAFKA_BROKERS', 'AWS_KMS_KEY_ID', 'AWS_REGION', 'IDENTITY_URL'])(
+  it.each(['KAFKA_BROKERS', 'AWS_KMS_KEY_ID', 'AWS_REGION', 'IDENTITY_URL', 'SETTLEMENT_URL'])(
     'production fails fast without %s',
     (key) => {
       const env: Record<string, string> = { ...PROD_BASE };

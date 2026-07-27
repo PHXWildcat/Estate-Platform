@@ -120,8 +120,19 @@ export class AuthService {
       throw invalidCredentials();
     }
 
-    if (user.status !== 'active') {
-      await this.recordLoginFailure(user.id, 'account_locked');
+    // Status allowlist (M7). 'deceased_pending' logins are PERMITTED by
+    // design: docs/03 §5.1's rescue path is the owner signing in and voiding
+    // the case, so a death report must never lock the living owner out. At
+    // 'settlement' (verified) a correct password gets the same generic 401 as
+    // every other failure — no status oracle — but a distinct recorded reason,
+    // because decedent-credential replay post-verification is a detection
+    // signal (docs/01 §6 settlement-trigger anomalies).
+    if (user.status !== 'active' && user.status !== 'deceased_pending') {
+      const reason =
+        user.status === 'settlement' || user.status === 'closed'
+          ? 'account_settled'
+          : 'account_locked';
+      await this.recordLoginFailure(user.id, reason);
       throw invalidCredentials();
     }
 
@@ -242,7 +253,7 @@ export class AuthService {
 
   private async recordLoginFailure(
     userId: string | null,
-    reason: 'bad_credentials' | 'account_locked' | 'risk_blocked',
+    reason: 'bad_credentials' | 'account_locked' | 'risk_blocked' | 'account_settled',
   ): Promise<void> {
     await this.authEvents.insert({ userId, kind: 'login.failed', decision: reason });
     await this.events.loginFailed(userId, reason);

@@ -22,4 +22,22 @@ export class AuthEventsRepo {
       [input.userId, input.sessionId ?? null, input.kind, input.decision ?? null],
     );
   }
+
+  /**
+   * Most recent occurrence of an event kind for a user. M7's owner-liveness
+   * check reads the last 'stepup.granted': auth_events is append-only and
+   * survives session revocation/expiry, so it is the durable record of "the
+   * owner proved themselves with step-up MFA at time T".
+   */
+  async lastOccurredAt(userId: string, kind: string): Promise<Date | null> {
+    const rows = await this.db.query<{ occurred_at: Date }>(
+      `SELECT occurred_at
+         FROM auth_events
+        WHERE user_id = $1 AND kind = $2
+        ORDER BY occurred_at DESC
+        LIMIT 1`,
+      [userId, kind],
+    );
+    return rows[0]?.occurred_at ?? null;
+  }
 }

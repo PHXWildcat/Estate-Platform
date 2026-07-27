@@ -325,6 +325,57 @@ deviating from them, stop and propose the change with rationale — do not silen
   `grantee_public_key_sha256` records what it sealed to so substitution is
   detectable. `emergency_access_policies` adds `grantee_user_id` to docs/02 §5
   because the vault cluster cannot dereference a core-cluster contact.
+- 2026-07-27 — M7 scope (all four asked and approved): settlement ships WITHOUT
+  Temporal — the docs/02 §7 Postgres state machine is authoritative and the only
+  scheduled work (the owner-contact sweep) runs behind a deliberately POWERLESS
+  in-process driver, so case state never advances on a timer and Temporal later
+  replaces a setInterval, not a design (approved deviation from docs/01 §7's
+  letter; no deployment exists for its durability to protect — the M5 cloud
+  deferral). Separate `apps/services/settlement` co-tenant on the CORE cluster
+  (Plaid precedent) EXTENDED with read-only use of profile's
+  contacts/role_assignments (docs/02 §7's own DDL references contacts; prod
+  grants SELECT-only). Human review by platform users on a CLI-managed
+  `settlement_operators` allowlist — deliberately NO runtime grant API (stolen
+  operator sessions must not mint operators); interim until the TB7 operator
+  platform. The docs/03 §6a vault-release gate lands in M7 PR2.
+- 2026-07-27 — M7 PR1 control decisions: intake only OPENS a case (reporters
+  must be linked contacts — no email/id lookup = no enumeration oracle; provider
+  matches are operator-filed; one open case per decedent; report locks NOTHING).
+  Account lock at review-approve (never at raw report), INSIDE the case
+  transaction via identity's new internal settlement-lock API — identity
+  enforces its own closed transition table (active↔deceased_pending→settlement),
+  revokes all sessions at verified, and the live-session SQL gains a status
+  ALLOWLIST ('active','deceased_pending') because a status flip alone would
+  have left 30-day refresh tokens working. deceased_pending deliberately keeps
+  the owner's login alive (the §5.1 rescue path) while profile's role-holder
+  grants freeze (to_regclass-guarded predicate — deploy-order independent);
+  'settlement' logins get the generic 401 with a distinct recorded
+  account_settled reason. Verification is twice-human: a lapsed waiting period
+  only makes a case ELIGIBLE; the confirming operator (never the reporter, like
+  the reviewer — DDL CHECK) triggers an owner-liveness re-check against
+  identity's append-only step-up ledger, and a step-up newer than the case
+  auto-voids it (409 owner_alive). The owner's void route is step-up-gated
+  BECAUSE the step-up is the liveness proof. Settings are configurable UP only
+  (5..60d) and frozen while a case is open. Cases have NO deleted_at — a case
+  is evidence (§5.1 c6). Notifications are a precondition: intake +
+  review-approve 503 in production on the stub notifier (M6 precedent).
+- 2026-07-27 — M7 new trust machinery: `ServiceCredentialGuard` in
+  @estate/auth-guard (constant-time compare of a shared static credential;
+  fails closed unwired; ≥32 chars required in prod) authenticates settlement on
+  identity's internal routes — the one flow with no user bearer to forward by
+  construction (chose over bearer-forwarding: identity cannot know settlement's
+  allowlist, and deny-by-default forbids "any session may lock accounts").
+  Interim until mesh mTLS/SPIFFE; the guard is the seam. Evidence reads flow
+  the OTHER way on the operator's own forwarded bearer via
+  `packages/settlement-client` (fail-closed; created as a package immediately —
+  three consumers land in-milestone: documents PR1, assets+vault PR2), with the
+  load-bearing cross-check that settlement's recorded evidence ATTACHER must
+  equal the document's real owner (a reporter registering someone else's
+  document id gets an operator a uniform 404, never a decryption).
+  settlement.cedar permits are all scoped `resource is SettlementCase`, and the
+  case resource carries decedent/reporter attrs, deliberately NOT `owner` —
+  owner.cedar would otherwise grant the subject operator verbs on their own
+  death case.
 - 2026-07-27 — M6 security review (six parallel discovery lenses over the merged
   range + adversarial verify of each finding; 35 raw, 28 unique, 14 verified, 11
   refuted): no critical or app-exploitable vuln in the Zone A guarantee. Three

@@ -170,6 +170,87 @@ act alone.
 - The isolated vault origin, CSP, and Trusted Types are frontend controls; no
   vault UI ships in M6, so they land with that surface.
 
+## 6b. Threat-model delta — M7 settlement PR1 (2026-07-27)
+
+M7 activates **TB8 (role-holders → owner's estate data)** in earnest: it is the
+first flow where the acting principal is routinely NOT the resource owner, and
+the first that deliberately changes another user's account state. §5.1 is the
+control specification; this delta records how each control landed.
+
+**Controls now shipped (PR1: intake → review → waiting period → verified).**
+- *No automated trigger from any single source (control 1).* Intake only OPENS
+  a case. Reporters must already be named by the decedent's contact repository
+  (`contacts.linked_user_id`) — no lookup by email or arbitrary id exists, so
+  intake cannot enumerate accounts. Death-data provider matches are
+  operator-filed signals (`data_provider`), never triggers. One open case per
+  decedent (partial unique index).
+- *Mandatory human review (control 2).* Operators are ordinary platform users
+  on a CLI-managed allowlist (`settlement_operators`; deliberately NO runtime
+  grant API — a stolen operator session cannot mint operators). Review
+  decisions are step-up-gated; reviewer ≠ reporter is a DDL CHECK plus a row
+  check; "no privileged status without recorded review" is a DDL CHECK. The
+  reviewing operator can read death-certificate evidence through a dedicated
+  documents route whose authority is settlement's answer, cross-checked
+  against the document's REAL owner — a reporter registering someone else's
+  document id as evidence gets an operator a uniform 404, not a decryption.
+- *Waiting period with aggressive owner contact (control 3).* Default 5 days,
+  owner-configurable UP to 60 (floor in DDL + schema + service; changes
+  refused while a case is open — a pending case's parameters are frozen).
+  Escalating contact attempts on a 12h multi-channel schedule, recorded
+  append-only. The in-process driver that performs them holds NO transition
+  power: timer expiry only makes a case ELIGIBLE; an operator (again never the
+  reporter) explicitly confirms, and the confirmation re-checks owner liveness
+  against identity's append-only step-up ledger — a step-up newer than the
+  case voids it on the spot, restores the account, and flags the reporter.
+  The owner's own kill switch is a step-up-gated void route (the step-up IS
+  the liveness proof; a bare stolen bearer cannot void).
+- *Account enters deceased_pending (control 4).* Cross-service, identity-
+  enforced: a closed transition table (active↔deceased_pending→settlement)
+  behind a dedicated service credential; identity applies its own invariants
+  regardless of what settlement asks. The lock call happens INSIDE the case
+  transaction — an unconfirmable lock rolls the transition back. During
+  deceased_pending the OWNER's login and sessions stay alive (the rescue
+  path) while profile's role-holder contact grants freeze. At verified the
+  status becomes `settlement`, every session is revoked, live-token lookups
+  fail via a status allowlist in the session SQL, and re-login gets the
+  generic 401 with a distinct recorded reason (`account_settled` — decedent-
+  credential replay is a detection signal). Post-verified rescue is
+  deliberately not self-serve.
+- *Reporter identity preserved (control 6).* `reported_by` is a verified
+  platform user; rejected and voided cases are terminal rows that are never
+  deletable (cases have no soft delete BY DESIGN), with `resolution`
+  distinguishing operator rejection from owner void; every audit event on the
+  flow preserves the reporter id.
+
+**New trust machinery, flagged.** A static shared service credential
+(`ServiceCredentialGuard`, constant-time compare, fail-closed when unwired;
+required ≥32 chars in production) authenticates settlement on identity's
+internal settlement-lock routes — the one flow with no user bearer token to
+forward by construction. Interim until the mesh (mTLS/SPIFFE) provides
+verifiable peer identity; the guard is the seam.
+
+**Deliberate deviations.** Temporal is deferred behind a powerless in-process
+driver (approved: there is no deployment for its durability to protect; the
+DB state machine docs/02 §7 mandates is authoritative either way). Intake and
+review-approve REFUSE in production while only the stub notifier is wired
+(503, the M6 emergency-access precedent) — a waiting period nobody can be
+told about is not a control.
+
+**Not yet shipped (PR2).** Control 5 — staged executor access with vault
+emergency access LAST and separately approved — including the §6a integration
+point (the vault release path consulting settlement state), dual-control
+distributions, tasks/timeline, the documents legal-hold setter, and case
+close. Until PR2, no post-verification access surface exists at all, which is
+the fail-safe ordering: verification currently grants nobody anything.
+
+**Residuals accepted.** A settlement operator is a high-value target; the
+interim allowlist has no JIT elevation or peer approval (TB7 milestone), and
+one operator both approves and confirms a case (two actions, one human) —
+bounded by reviewer≠reporter, the liveness re-check, the owner's void, and
+the append-only audit trail; PR2's stage approvals add multi-party depth.
+Rate limiting on intake shares identity's rate-limit follow-up (per-reporter
+noise is bounded by the linked-contact gate and one-open-case index).
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

@@ -35,28 +35,44 @@ export class SessionsRepo {
     );
   }
 
-  /** Live session for a presented access token (expiry + revocation enforced in SQL). */
+  /**
+   * Live session for a presented access token (expiry + revocation enforced in
+   * SQL). Joined to users with a status ALLOWLIST (M7): a session only works
+   * while the account is 'active' or 'deceased_pending' — the latter by
+   * design, because the owner rescuing themselves out of a fraudulent death
+   * case (docs/03 §5.1) needs their sessions to keep working. 'settlement' and
+   * every other status kills token use here even if bulk revocation missed a
+   * session, and any future status value fails closed.
+   */
   async findLiveByAccessHash(accessTokenH: Buffer, now: Date): Promise<SessionRow | null> {
     const rows = await this.db.query<SessionRow>(
-      `SELECT id, user_id, mfa_level, stepup_expires_at
-         FROM sessions
-        WHERE access_token_h = $1
-          AND revoked_at IS NULL
-          AND access_expires_at > $2
-          AND expires_at > $2`,
+      `SELECT s.id, s.user_id, s.mfa_level, s.stepup_expires_at
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.access_token_h = $1
+          AND s.revoked_at IS NULL
+          AND s.access_expires_at > $2
+          AND s.expires_at > $2
+          AND u.deleted_at IS NULL
+          AND u.status IN ('active', 'deceased_pending')`,
       [accessTokenH, now],
     );
     return rows[0] ?? null;
   }
 
-  /** Live session for a presented refresh token (current hash). */
+  /** Live session for a presented refresh token (current hash). Same status
+   * allowlist as findLiveByAccessHash — a refresh token must not outlive the
+   * account state that minted it. */
   async findLiveByRefreshHash(refreshTokenH: Buffer, now: Date): Promise<SessionRow | null> {
     const rows = await this.db.query<SessionRow>(
-      `SELECT id, user_id, mfa_level, stepup_expires_at
-         FROM sessions
-        WHERE refresh_token_h = $1
-          AND revoked_at IS NULL
-          AND expires_at > $2`,
+      `SELECT s.id, s.user_id, s.mfa_level, s.stepup_expires_at
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.refresh_token_h = $1
+          AND s.revoked_at IS NULL
+          AND s.expires_at > $2
+          AND u.deleted_at IS NULL
+          AND u.status IN ('active', 'deceased_pending')`,
       [refreshTokenH, now],
     );
     return rows[0] ?? null;
@@ -111,6 +127,22 @@ export class SessionsRepo {
         WHERE id = $1 AND revoked_at IS NULL`,
       [sessionId, at, reason],
     );
+  }
+
+  /**
+   * Revoke every live session for a user (M7: verified settlement — the
+   * account is now estate-administered, so no credential minted by the
+   * decedent may survive). Returns the revoked ids for the audit trail.
+   */
+  async revokeAllForUser(userId: string, reason: string, at: Date): Promise<string[]> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE sessions
+          SET revoked_at = $2, revoke_reason = $3
+        WHERE user_id = $1 AND revoked_at IS NULL
+        RETURNING id`,
+      [userId, at, reason],
+    );
+    return rows.map((r) => r.id);
   }
 
   async grantStepUp(sessionId: string, stepupExpiresAt: Date): Promise<void> {

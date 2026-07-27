@@ -822,8 +822,118 @@ lists is a standing hazard: any future column on `vault_keysets` or
 secret-bearing column would silently inherit the wrong policy. A convention test
 asserting the redaction set against the live column list would close that.
 
+### M7 — Settlement (PR1 shipped; PR2 in progress)
+
+The first milestone where the acting principal is routinely NOT the resource
+owner, and the first that changes another user's account state. docs/03 §5.1
+("kill them on paper", risk #2, Critical) is the specification; the §6b delta
+records the control-by-control landing. Scope decisions were asked and
+approved up front: no Temporal in M7 (driver port, below), a separate
+`apps/services/settlement` co-tenant on the CORE cluster, human review by
+CLI-allowlisted operators, and the M6 vault-gate integration point landing in
+PR2.
+
+**PR1 — case core: intake → review → waiting period → verified, plus the
+cross-service account lock.**
+
+- **The state machine is Postgres, per docs/02 §7; Temporal is deferred — an
+  approved deviation from docs/01 §7's letter.** Rationale: the cloud
+  environment Temporal's durability would protect was itself deferred in M5;
+  running a Temporal server (+ its own store, SDK with a native core, worker
+  image, CI story) would buy dev-only fidelity at real cost. The shape keeps
+  adoption a drop-in: the only scheduled work is the owner-contact sweep
+  (`SettlementService.runContactSweep`, idempotent per (case, seq)), driven by
+  a deliberately POWERLESS in-process driver — case state never advances on a
+  timer, so losing the driver degrades contact liveness, never safety.
+  Temporal later replaces the setInterval around the same method.
+- **Co-tenancy extended, flagged**: settlement shares the core cluster with
+  profile (disjoint tables, own migrations dir, shared schema_migrations — the
+  Plaid precedent) AND holds read-only use of profile's
+  `contacts`/`role_assignments`; docs/02 §7 places settlement in core
+  precisely because its rows reference core contacts. Production DB grants:
+  SELECT-only on those two tables. The settlement integration spec migrates
+  BOTH services' migration sets into one scratch schema, proving the co-owner
+  mechanics.
+- **Intake cannot enumerate and cannot trigger.** Reporters act only on
+  estates already naming them (`contacts.linked_user_id`); uniform not_found
+  otherwise; provider matches are operator-filed signals; one open case per
+  decedent; self-reports rejected. A report opens a case, notifies the owner
+  (seq-0 of the append-only contact trail), and locks nothing.
+- **Review and verification are separate human acts.** Approve (step-up,
+  reviewer ≠ reporter by CHECK + row check) starts the waiting period
+  (default 5d, owner-configurable UP to 60, frozen while a case is open) and
+  locks the account; a lapsed timer only makes the case eligible;
+  verify-confirm (step-up, again never the reporter) re-checks owner liveness
+  against identity's step-up ledger and voids on a step-up newer than the
+  case (`409 owner_alive`, account restored, reporter flagged). The owner's
+  kill switch is a step-up-gated void — the step-up IS the liveness proof.
+- **The account lock is identity-enforced.** New internal settlement-lock API
+  behind `ServiceCredentialGuard` (@estate/auth-guard; constant-time compare,
+  fail-closed unwired, ≥32 chars required in production) — the one genuinely
+  new trust mechanism, interim until mesh identity, recorded with rationale
+  (no user bearer exists for these calls; identity cannot know settlement's
+  allowlist). Identity applies its own closed transition table
+  (active↔deceased_pending→settlement), revokes ALL sessions at verified, and
+  adds a status ALLOWLIST to the live-session SQL — a status flip without it
+  would have left 15-min access and 30-DAY refresh tokens usable.
+  deceased_pending deliberately keeps the owner's login/sessions alive (the
+  §5.1 rescue path) while `account_settled` login refusals are distinctly
+  recorded (decedent-credential replay = detection signal). Lock calls run
+  INSIDE the case transaction; unconfirmable ⇒ rollback.
+- **Role-holder reads freeze at the lock** (§5.1 control 4): profile's
+  `effectiveContactReadGrants` — the platform's one live non-owner read path —
+  gains a NOT EXISTS predicate over open settlement cases, feature-detected
+  via to_regclass so profile keeps working on clusters where settlement's
+  migration has not run (deploy-order independence).
+- **Evidence stays owner-encrypted.** A death certificate is uploaded through
+  the documents service under the REPORTER's own account (new
+  `death_certificate`/`court_document` upload categories); the case records
+  {documentId, version, addedBy} only. Operators read it through a dedicated
+  documents route (`/v1/evidence/...`) whose authority is settlement's answer
+  (operator allowlist + evidence registry), forwarded on the operator's own
+  bearer via the new fail-closed `@estate/settlement-client`, and
+  cross-checked: settlement's recorded attacher must equal the document's
+  real owner, so registering someone ELSE's document id as evidence yields a
+  uniform 404, never a decryption. Audited as `document.evidence.accessed`
+  with onBehalfOf = the document owner.
+- **AuthZ**: new narrow `settlement.cedar` (every permit scoped
+  `resource is SettlementCase`; the case carries `decedent`/`reporter`
+  attributes, deliberately NOT `owner` — owner.cedar would grant the subject
+  operator verbs on their own death case). Operator authority is a resolved
+  `isSettlementOperator` principal attribute (profile.cedar resolve-first
+  pattern); a no-widening test proves an operator gains nothing on Zone B
+  resources.
+- **Notifications are a precondition** (M6 precedent): intake and
+  review-approve refuse 503 in production while only the stub notifier is
+  wired, gated on the adapter's own capability bit.
+- Audit: nine `settlement.*` actions + `auth.user.status_changed`,
+  `auth.sessions.revoked_all`, `document.evidence.accessed` (closed enum,
+  IDs/enums only; the case trail is itself a §5.1 control). Ops surface:
+  `operator-cli.ts` is the ONLY allowlist write path (template-publish-cli
+  precedent). Tests: 54 settlement unit tests + a PG suite proving the DDL
+  CHECKs, the co-owner migration mechanics, the GUC-stamped version trail,
+  and the full flow; e2e boots identity+profile+settlement, drives the real
+  ServiceCredentialGuard, proves the rescue path, the grant freeze, the
+  credential kill at verified, the step-up-gated void, and ingests
+  settlement's produced audit bytes into a verified hash chain.
+
+**PR2 (next):** staged executor access (inventory → documents → vault, each
+separately approved), the docs/03 §6a vault-release gate, executor asset
+reads, tasks/timeline (anchored on `verified_at`; date-of-death deliberately
+not stored), dual-control distributions (`created_by` + approver≠recorder
+trigger, `settlement_deks` under `settlement/kek`), documents legal-hold
+setter, case close.
+
+**Follow-ups recorded, not silently dropped:** Temporal adoption (with the
+cloud environment) · the notifications service (unblocks production
+settlement intake) · per-reporter intake rate limits (with identity's
+rate-limit follow-up) · TB7 operator platform replacing the allowlist (JIT
+elevation, peer approval; also closes the one-operator-two-actions residual)
+· edge quotas for settlement endpoints (WAF work) · a data-provider intake
+isolate service · beneficiary contact-link projection (assets'
+`namedBeneficiaries`) · transactional outbox (standing).
+
 ### Later milestones (rough order, one per bounded context)
-M7 settlement (Temporal) ·
 M8 AI assistant (privacy proxy) · then referral, notifications hardening, search.
-Settlement comes late deliberately: highest-risk domains land on mature
+Settlement came late deliberately: highest-risk domains land on mature
 primitives.

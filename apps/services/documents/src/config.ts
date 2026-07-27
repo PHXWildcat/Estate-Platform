@@ -44,6 +44,11 @@ const EnvSchema = z
     // (CallerGuard/StepUpGuard introspect the caller's token). Required IN
     // production; dev defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
+    // Base URL of the settlement service (M7): the evidence-read route asks it
+    // for authority before decrypting case evidence for an operator. Required
+    // IN production; dev defaults to localhost. The client fails closed, so a
+    // wrong value disables evidence reads rather than widening them.
+    SETTLEMENT_URL: z.string().url().optional(),
     OBJECT_STORE_MODE: z.enum(['fs', 's3']).default('fs'),
     // fs mode: directory for the local object store (dev/test only).
     OBJECT_STORE_DIR: z.string().min(1).optional(),
@@ -88,6 +93,13 @@ const EnvSchema = z
           code: z.ZodIssueCode.custom,
           path: ['IDENTITY_URL'],
           message: 'IDENTITY_URL is required in production (cross-service session verification)',
+        });
+      }
+      if (!env.SETTLEMENT_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SETTLEMENT_URL'],
+          message: 'SETTLEMENT_URL is required in production (evidence-read authority checks)',
         });
       }
       if (env.OBJECT_STORE_MODE !== 's3') {
@@ -180,6 +192,8 @@ export interface DocumentsConfig {
   readonly ocr: OcrConfig;
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
+  /** Settlement service base URL for evidence-read authority checks (M7). */
+  readonly settlementUrl: string;
 }
 
 export class ConfigError extends Error {
@@ -235,5 +249,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DocumentsConfi
     ocr,
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
+    settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
   };
 }

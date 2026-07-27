@@ -45,6 +45,12 @@ const EnvSchema = z
     RP_ID: z.string().min(1).optional(),
     RP_ORIGIN: z.string().url().optional(),
     RP_NAME: z.string().min(1).optional(),
+    // Shared secret authenticating the settlement service on the internal
+    // settlement-lock routes (M7). Optional in dev/test — when unset the
+    // ServiceCredentialGuard fails closed and refuses every internal call.
+    // REQUIRED (and non-trivial) in production: the account-lock control of
+    // docs/03 §5.1 must not be silently unreachable.
+    SETTLEMENT_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -84,6 +90,17 @@ const EnvSchema = z
         }
       }
     }
+    if (
+      env.NODE_ENV === 'production' &&
+      (!env.SETTLEMENT_INTERNAL_TOKEN || env.SETTLEMENT_INTERNAL_TOKEN.length < 32)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SETTLEMENT_INTERNAL_TOKEN'],
+        message:
+          'SETTLEMENT_INTERNAL_TOKEN is required in production (>= 32 chars; the settlement account-lock must not be unreachable or weakly guarded)',
+      });
+    }
   });
 
 /**
@@ -112,6 +129,8 @@ export interface IdentityConfig {
   readonly rpOrigin: string;
   /** User-visible RP name shown by the authenticator during ceremonies. */
   readonly rpName: string;
+  /** Shared secret for the internal settlement-lock routes ('' ⇒ refuse all). */
+  readonly settlementInternalToken: string;
 }
 
 export class ConfigError extends Error {
@@ -157,5 +176,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     rpId: e.RP_ID ?? 'localhost',
     rpOrigin: e.RP_ORIGIN ?? 'http://localhost:3000',
     rpName: e.RP_NAME ?? 'Estate Platform',
+    settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
   };
 }

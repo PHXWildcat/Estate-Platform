@@ -48,4 +48,31 @@ export class UsersRepo {
     );
     return rows[0] ?? null;
   }
+
+  async findById(userId: string): Promise<UserRow | null> {
+    const rows = await this.db.query<UserRow>(
+      `SELECT id, password_hash, status, dek_id
+         FROM users
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [userId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Compare-and-set status transition (M7 settlement lock). The allowed `from`
+   * set travels in the SQL so a concurrent transition cannot be overwritten:
+   * zero rows updated means the row was missing OR its status had already
+   * moved — the caller re-reads to tell the two apart.
+   */
+  async updateStatusFrom(userId: string, from: readonly string[], to: string): Promise<boolean> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE users
+          SET status = $3
+        WHERE id = $1 AND deleted_at IS NULL AND status = ANY($2)
+        RETURNING id`,
+      [userId, [...from], to],
+    );
+    return rows.length > 0;
+  }
 }

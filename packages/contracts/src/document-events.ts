@@ -119,6 +119,11 @@ export const UPLOAD_CATEGORIES = [
   'medical',
   'financial',
   'other',
+  // Settlement evidence (M7, docs/03 §5.1): a death certificate is uploaded by
+  // the REPORTER into their own document space and referenced by the case, so
+  // it needs a kind distinct from the decedent-owned vault categories.
+  'death_certificate',
+  'court_document',
 ] as const;
 export const UploadCategorySchema = z.enum(UPLOAD_CATEGORIES);
 export type UploadCategory = z.infer<typeof UploadCategorySchema>;

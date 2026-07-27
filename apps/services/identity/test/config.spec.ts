@@ -58,6 +58,7 @@ describe('config validation', () => {
     RP_NAME: 'Estate Platform',
     AWS_KMS_KEY_ID: 'alias/estate-auth-kek',
     AWS_REGION: 'us-east-1',
+    SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
   };
 
   it('production REQUIRES the WebAuthn RP identity (never a localhost default)', () => {
@@ -86,6 +87,28 @@ describe('config validation', () => {
       keyId: 'alias/estate-auth-kek',
       region: 'us-east-1',
     });
+  });
+
+  it('production REQUIRES a non-trivial settlement internal token (M7 account lock)', () => {
+    const { SETTLEMENT_INTERNAL_TOKEN: _t, ...withoutToken } = PROD_EXTRAS;
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...withoutToken })),
+    ).toThrow(ConfigError);
+    // Present but weak (< 32 chars) is also rejected.
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          ...withoutToken,
+          SETTLEMENT_INTERNAL_TOKEN: 'short',
+        }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it('dev leaves the settlement internal token empty (guard fails closed)', () => {
+    expect(loadConfig(validEnv()).settlementInternalToken).toBe('');
   });
 
   it('dev falls back to localhost RP defaults', () => {

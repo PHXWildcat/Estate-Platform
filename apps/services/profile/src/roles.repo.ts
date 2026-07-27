@@ -34,6 +34,28 @@ export interface EffectiveGrant {
 export class RolesRepo {
   constructor(private readonly db: Db) {}
 
+  /**
+   * Whether the co-tenant settlement service's `settlement_cases` table exists
+   * in this database (M7). Profile and settlement share the core cluster with
+   * disjoint tables, but they deploy independently: profile must keep working
+   * against a cluster where settlement's migrations have not run (and in
+   * profile's own scratch-schema tests, where they never run). A missing table
+   * means the settlement service has never existed here, so no case can exist
+   * and the grant freeze is vacuously satisfied. Detected once per process;
+   * deployments restart services, so a later settlement rollout is picked up.
+   */
+  private settlementCasesPresent: boolean | null = null;
+
+  private async hasSettlementCases(): Promise<boolean> {
+    if (this.settlementCasesPresent === null) {
+      const rows = await this.db.query<{ present: string | null }>(
+        `SELECT to_regclass('settlement_cases')::text AS present`,
+      );
+      this.settlementCasesPresent = (rows[0]?.present ?? null) !== null;
+    }
+    return this.settlementCasesPresent;
+  }
+
   async insert(input: RoleAssignmentInsert): Promise<string> {
     const rows = await this.db.query<{ id: string }>(
       `INSERT INTO role_assignments
@@ -94,12 +116,26 @@ export class RolesRepo {
    * permission_grant. Returns each such assignment's scope so the caller can
    * decide which specific resources are named (scope_id) vs. estate-wide
    * (scope_type='estate', scope_id NULL). This is the docs/03 §5.5 boundary.
+   *
+   * M7 (docs/03 §5.1 control 4: "reads freeze for role-holders"): while the
+   * owner has a settlement case at or past its waiting period, every grant
+   * this query would confer is suspended — the settlement flow, not standing
+   * grants, is the only access path to a possibly-deceased owner's data.
+   * 'reported'/'verifying' cases do NOT freeze: an unreviewed report must not
+   * strip a living owner's contacts of their granted access.
    */
   async effectiveContactReadGrants(
     ownerUserId: string,
     callerUserId: string,
     now: Date,
   ): Promise<EffectiveGrant[]> {
+    const freezePredicate = (await this.hasSettlementCases())
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM settlement_cases sc
+            WHERE sc.decedent_user_id = ra.owner_user_id
+              AND sc.status IN ('waiting_period','verified','active','distributing')
+         )`
+      : '';
     return this.db.query<EffectiveGrant>(
       `SELECT DISTINCT ra.scope_type, ra.scope_id
          FROM role_assignments ra
@@ -115,7 +151,8 @@ export class RolesRepo {
           AND (ra.ends_at IS NULL OR ra.ends_at > $3)
           AND pg.revoked_at IS NULL
           AND pg.resource = 'contact'
-          AND pg.action = 'read'`,
+          AND pg.action = 'read'
+          ${freezePredicate}`,
       [ownerUserId, callerUserId, now],
     );
   }

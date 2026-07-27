@@ -12,5 +12,8 @@ describe('@estate/auth-guard public surface', () => {
     expect(authGuard.STEPUP_WINDOW_MS).toBe(5 * 60 * 1000);
     expect(typeof authGuard.SESSION_VERIFIER).toBe('symbol');
     expect(typeof authGuard.SESSION_CLOCK).toBe('symbol');
+    expect(authGuard.ServiceCredentialGuard).toBeDefined();
+    expect(typeof authGuard.SERVICE_CREDENTIAL).toBe('symbol');
+    expect(authGuard.SERVICE_CREDENTIAL_HEADER).toBe('x-estate-service-credential');
   });
 });

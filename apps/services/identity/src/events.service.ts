@@ -96,7 +96,7 @@ export class EventsService {
 
   async loginFailed(
     userId: string | null,
-    reason: 'bad_credentials' | 'account_locked' | 'risk_blocked',
+    reason: 'bad_credentials' | 'account_locked' | 'risk_blocked' | 'account_settled',
   ): Promise<void> {
     await this.publish(
       LoginFailedEvent,
@@ -170,6 +170,38 @@ export class EventsService {
       resourceType: 'webauthn_credential',
       resourceId: userId,
       sessionId,
+    });
+  }
+
+  /**
+   * M7 settlement lock: a status transition performed FOR the settlement
+   * service (actorType 'service', no user session). The case id ties the
+   * transition to its settlement audit trail; from/to are enum tokens.
+   */
+  async userStatusChanged(userId: string, from: string, to: string, caseId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.user.status_changed',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { from, to, caseId },
+    });
+  }
+
+  /** M7: bulk revocation at settlement verification (no decedent credential survives). */
+  async sessionsRevokedAll(userId: string, count: number, caseId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.sessions.revoked_all',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { count, caseId, reason: 'settlement_verified' },
     });
   }
 

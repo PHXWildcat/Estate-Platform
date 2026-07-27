@@ -33,6 +33,7 @@ import {
 import type { InMemoryAuditProducer } from '../src/audit-producer';
 import type { UploadDocumentInput } from '../src/schemas';
 import type { TemplateRow } from '../src/templates.repo';
+import type { SettlementAuthority } from '@estate/settlement-client';
 
 const OWNER = randomUUID();
 const STRANGER = randomUUID();
@@ -51,7 +52,13 @@ interface Harness {
 interface HarnessOptions {
   scanner?: MalwareScanner;
   ocr?: OcrEngine;
+  settlement?: SettlementAuthority;
 }
+
+/** Default: settlement refuses everything (the client's fail-closed posture). */
+const refusingSettlement: SettlementAuthority = {
+  checkEvidenceRead: () => Promise.resolve({ allowed: false }),
+};
 
 async function build(options: HarnessOptions = {}): Promise<Harness> {
   const docs = new FakeDocuments();
@@ -76,6 +83,7 @@ async function build(options: HarnessOptions = {}): Promise<Harness> {
     store,
     options.scanner ?? new StubScanner(),
     options.ocr ?? new StubOcr(),
+    options.settlement ?? refusingSettlement,
   );
   return { service, docs, versions, templates, store, deks, producer, template };
 }
@@ -562,5 +570,61 @@ describe('audit PII firewall', () => {
       expect(message.value).not.toContain('Jordan');
       expect(message.value).not.toContain('Last Will');
     }
+  });
+});
+
+describe('evidence reads (M7 settlement authority)', () => {
+  const OPERATOR = randomUUID();
+  const CASE_ID = randomUUID();
+
+  function allowingSettlement(ownerUserId: string): SettlementAuthority {
+    return {
+      checkEvidenceRead: () => Promise.resolve({ allowed: true, caseId: CASE_ID, ownerUserId }),
+    };
+  }
+
+  it('decrypts for an operator when settlement grants authority, audited with onBehalfOf', async () => {
+    const h = await build({ settlement: allowingSettlement(OWNER) });
+    const documentId = await generate(h);
+    const content = await h.service.getEvidenceContent(OPERATOR, 'op-token', documentId, 1);
+    expect(content.content).toContain('<!doctype html>');
+    const audit = h.producer.messages
+      .filter((m) => m.topic === 'estate.audit.events.v1')
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .find((e) => e.action === 'document.evidence.accessed')!;
+    expect(audit.actorId).toBe(OPERATOR);
+    expect(audit.onBehalfOf).toBe(OWNER);
+    expect(audit.detail).toEqual({ version: 1, caseId: CASE_ID });
+  });
+
+  it('404s when settlement refuses (fail closed, no oracle)', async () => {
+    const h = await build(); // refusingSettlement default
+    const documentId = await generate(h);
+    await expect(h.service.getEvidenceContent(OPERATOR, 'op-token', documentId, 1)).rejects.toThrow(
+      NotFoundException,
+    );
+  });
+
+  it("404s when the document's real owner differs from the registered uploader", async () => {
+    // A reporter registering someone ELSE's document id as evidence must not
+    // hand an operator a decryption of it: settlement's recorded uploader is
+    // cross-checked against the row's actual owner.
+    const h = await build({ settlement: allowingSettlement(STRANGER) });
+    const documentId = await generate(h); // owned by OWNER, not STRANGER
+    await expect(h.service.getEvidenceContent(OPERATOR, 'op-token', documentId, 1)).rejects.toThrow(
+      NotFoundException,
+    );
+    const actions = h.producer.messages
+      .filter((m) => m.topic === 'estate.audit.events.v1')
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)).action);
+    expect(actions).not.toContain('document.evidence.accessed');
+    expect(actions).not.toContain('crypto.field.decrypted');
+  });
+
+  it('404s an unknown document even with an allowing authority', async () => {
+    const h = await build({ settlement: allowingSettlement(OWNER) });
+    await expect(
+      h.service.getEvidenceContent(OPERATOR, 'op-token', randomUUID(), 1),
+    ).rejects.toThrow(NotFoundException);
   });
 });

@@ -19,6 +19,11 @@ import {
   SESSION_VERIFIER,
   StepUpGuard,
 } from '@estate/auth-guard';
+import {
+  HttpSettlementAuthority,
+  SETTLEMENT_AUTHORITY,
+  type SettlementAuthority,
+} from '@estate/settlement-client';
 import type { PoolConfig } from 'pg';
 import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
 import { DocumentsAuthz } from './authz.service';
@@ -42,6 +47,7 @@ import { DocumentsController } from './documents.controller';
 import { DocumentsRepo } from './documents.repo';
 import { DocumentsService } from './documents.service';
 import { EventsService } from './events.service';
+import { EvidenceController } from './evidence.controller';
 import { HttpErrorFilter } from './http-error.filter';
 import { ClamdScanner, StubScanner, type MalwareScanner } from './malware-scanner';
 import { LocalFsObjectStore, type ObjectStore } from './object-store';
@@ -98,7 +104,7 @@ function ocrFor(config: DocumentsConfig): OcrEngine {
 }
 
 @Module({
-  controllers: [DocumentsController, TemplatesController],
+  controllers: [DocumentsController, EvidenceController, TemplatesController],
   providers: [
     { provide: CONFIG, useFactory: (): DocumentsConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -186,6 +192,14 @@ function ocrFor(config: DocumentsConfig): OcrEngine {
       inject: [CONFIG],
       useFactory: (config: DocumentsConfig): HttpSessionVerifier =>
         new HttpSessionVerifier({ identityUrl: config.identityUrl }),
+    },
+    // M7: settlement answers evidence-read authority questions; the client
+    // fails closed, so an unreachable settlement refuses rather than widens.
+    {
+      provide: SETTLEMENT_AUTHORITY,
+      inject: [CONFIG],
+      useFactory: (config: DocumentsConfig): SettlementAuthority =>
+        new HttpSettlementAuthority({ settlementUrl: config.settlementUrl }),
     },
     ContentCipher,
     DocumentsAuthz,
