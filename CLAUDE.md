@@ -256,3 +256,45 @@ deviating from them, stop and propose the change with rationale — do not silen
   compensating control is rebasing (floating patch tag every build; Renovate
   digest pinning + scheduled rebuild is the follow-up). Gate lives in
   `.github/scripts/gate-image-scan.mjs`.
+- 2026-07-27 — M6 scope: vault (Zone A) in two PRs — PR1 the vault core
+  (`packages/vault-crypto` + `apps/services/vault`), PR2 emergency access.
+  Backend only; a vault UI needs the docs/03 TB6 isolated-origin/CSP work and
+  gets its own milestone. Full record in docs/04 M6 + the docs/03 §6a delta.
+- 2026-07-27 — Vault key hierarchy is 1Password-style 2SKD: keys derive from the
+  vault password AND a 128-bit device-only Secret Key (`ES1-…`, checksummed).
+  APPROVED DEVIATION from docs/00's "Passwords: Argon2id": the password KDF is
+  PBKDF2-HMAC-SHA256 (650k) because WebCrypto has no Argon2 and a WASM Argon2
+  would put a dependency tree on the highest-audit-surface code in the product
+  (docs/04 boundary rule 3 / docs/03 TB6) to buy a defense the Secret Key's 128
+  bits already provides. `kdfParams` is versioned so Argon2id is a later
+  drop-in; account passwords keep Argon2id. One PBKDF2 pass feeds both the
+  unlock key and the SRP private key through domain-separated HKDF expansions.
+- 2026-07-27 — `packages/vault-crypto` has ZERO runtime dependencies, enforced
+  by an ESLint `no-restricted-syntax` fence on the AST source value plus a
+  source-scanning spec. `no-restricted-imports` was rejected for this: its
+  `patterns` groups use gitignore-style matching where `*` never crosses a `/`,
+  so `@noble/hashes/sha256`-style deep specifiers slip through (verified against
+  a probe file). SRP-6a is hand-written on `bigint` for both roles in that one
+  package — the node:crypto/webhook, template-renderer and node:net/clamd
+  precedent — with `x` from 2SKD and identity = user UUID, never email.
+- 2026-07-27 — The vault CLIENT pins the parameters the server serves it
+  (`assertSupportedKdfParams`, before any modpow). Zone A's adversary includes a
+  malicious server, which could otherwise substitute a degenerate SRP group and
+  recover the private key by small-subgroup confinement. Every ciphertext also
+  carries a domain-separated AAD, key wraps included, and item content AAD binds
+  `blobVersion` (create = 1, update of N encrypts under N+1) — so item ids are
+  client-generated, which also makes retried creates idempotent.
+- 2026-07-27 — `vault_keysets` keeps version history (a no-history exemption was
+  proposed and DECLINED) but the trigger's captured row image redacts
+  `wrapped_master_key` and `srp_verifier`. The master key does not rotate on a
+  password change, so a retained old wrapping plus a phished retired password
+  would open the CURRENT vault: here the prior row is an attack asset, not an
+  audit record. Everything with audit value survives. Versioned by `user_id` on
+  the `profiles` precedent. Consequence: reset/erasure IS the crypto-shred —
+  overwriting the live wrap leaves the old master key nowhere.
+- 2026-07-27 — Keyset replacement requires an HMAC proof under a key both sides
+  derive from the SRP session (`keyset_auth_key`), not just step-up + a vault
+  session. Otherwise exfiltrated bearer tokens could overwrite the keyset and
+  destroy every item — reading protected by cryptography, destroying protected
+  by tokens. Reset is the deliberate exception (a lost password cannot be
+  proven) and is therefore step-up-gated, distinctly audited, and notified.

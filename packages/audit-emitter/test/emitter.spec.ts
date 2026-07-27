@@ -73,7 +73,11 @@ describe('AuditEmitter', () => {
   it('rejects actions outside the closed catalog', async () => {
     const producer = new FakeProducer();
     const emitter = new AuditEmitter(producer);
-    const input = { ...validInput(), action: 'vault.opened' as never };
+    // A plausibly-shaped action that no service has registered. This used to be
+    // 'vault.opened', which became real when M6 landed - the catalog grows one
+    // reviewed entry at a time, so this fixture has to name something that is
+    // still outside it.
+    const input = { ...validInput(), action: 'vault.telepathy.performed' as never };
     await expect(emitter.emit(input)).rejects.toThrow(AuditShapeError);
     expect(producer.sent).toHaveLength(0);
   });

@@ -67,6 +67,48 @@ export default tseslint.config(
     },
   },
   {
+    // Zone A audit surface: @estate/vault-crypto runs on the user's device and
+    // holds the only keys that can open the vault, so its dependency tree must
+    // stay empty (docs/04 boundary rule 3, threat model TB6 / risk #4). Only
+    // relative imports are allowed inside src/ — no packages, and not even
+    // node: builtins, which would also break the browser build.
+    //
+    // no-restricted-imports is the wrong tool here: its `patterns` groups use
+    // gitignore-style matching, where `*` never crosses a `/`, so deep
+    // specifiers like '@noble/hashes/sha256' slip through. Matching on the AST
+    // source value is exact.
+    files: ['packages/vault-crypto/src/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'ImportDeclaration[source.value=/^[^.]/]',
+          message: '@estate/vault-crypto must have zero dependencies: relative imports only.',
+        },
+        {
+          selector: 'ImportExpression[source.value=/^[^.]/]',
+          message: '@estate/vault-crypto must have zero dependencies: relative imports only.',
+        },
+        {
+          selector: 'ExportNamedDeclaration[source.value=/^[^.]/]',
+          message: '@estate/vault-crypto must have zero dependencies: relative re-exports only.',
+        },
+        {
+          selector: 'ExportAllDeclaration[source.value=/^[^.]/]',
+          message: '@estate/vault-crypto must have zero dependencies: relative re-exports only.',
+        },
+        {
+          selector: 'TSImportType[argument.value=/^[^.]/]',
+          message: '@estate/vault-crypto must have zero dependencies: relative type imports only.',
+        },
+        {
+          selector: "CallExpression[callee.name='require']",
+          message: '@estate/vault-crypto must have zero dependencies: relative imports only.',
+        },
+      ],
+    },
+  },
+  {
     // Zone boundary: frontend code must never import server-side key handling
     // or database internals. (threat model TB6 / architecture zone rules)
     files: ['apps/web/**'],

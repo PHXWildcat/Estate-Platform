@@ -553,9 +553,123 @@ the environment gets a loud, dev-account-only opt-in to publish the exemplar
 seeds, or it has no active templates and generation returns `template_not_found`.
 Preference is the narrow explicit flag over weakening the guard.
 
+### M6 — Vault, Zone A (PR1 shipped; emergency access is PR2)
+
+The first Zone A component. Everything M1–M5 built is server-decryptable under
+policy; this is the half of the product where that must be impossible. The
+server stores SRP verifiers and opaque client-encrypted blobs and can read none
+of it, so a full dump of the vault cluster — insider, subpoena, or stolen
+snapshot — yields ciphertext.
+
+**Shipping now (PR1):** `packages/vault-crypto` (the reserved client-crypto
+package) and `apps/services/vault` on the vault cluster. SRP-authenticated
+enrollment and unlock, opaque versioned items, a step-up-gated open, a
+destructive reset for forgotten passwords, and eleven audit actions.
+
+- **2SKD, not password-only.** Keys derive from the vault password AND a
+  128-bit Secret Key generated on the device and never transmitted
+  (`ES1-…`, checksummed for retyping). That is what makes the server-held
+  material — verifier, wrapped master key — useless to an attacker holding the
+  database and a correct password guess.
+- **PBKDF2 inside 2SKD, an approved deviation from docs/00's Argon2id.**
+  WebCrypto has no Argon2, and a WASM Argon2 would trade this package's real
+  security property (a dependency-free audit surface on the device, docs/04
+  boundary rule 3 / docs/03 TB6) for a defense the Secret Key already provides.
+  This is 1Password's shipped design. `kdfParams` is versioned so Argon2id can
+  land later without a migration; account passwords keep Argon2id unchanged.
+- **Zero runtime dependencies, enforced twice.** An ESLint `no-restricted-syntax`
+  fence and a source-scanning spec. `no-restricted-imports` was rejected for the
+  job: its `patterns` groups use gitignore-style matching where `*` never
+  crosses a `/`, so deep specifiers like `@noble/hashes/sha256` slip through —
+  verified against a probe file, which the AST-based fence catches.
+- **SRP-6a hand-written on `bigint`** (RFC 5054 4096-bit group, SHA-256), both
+  roles in the client package so there is one vector-pinned implementation to
+  audit and the service imports the server half. The precedent is the node:crypto
+  Plaid webhook verifier, the deterministic template renderer, and the node:net
+  clamd client. Two departures from the RFC, pinned by `KDF_VERSION`: `x` comes
+  from 2SKD (so the verifier inherits the Secret Key's entropy) and the identity
+  is the user's UUID, never their email.
+- **The client pins the parameters it is served.** `kdfParams` and the group id
+  arrive from the server at unlock, so `assertSupportedKdfParams` rejects
+  anything outside the single supported profile *before* any modular
+  exponentiation. Without it a malicious server could substitute a degenerate
+  group and recover the SRP private key by small-subgroup confinement — against
+  exactly the adversary Zone A exists to defeat.
+- **Every ciphertext carries a domain-separated AAD**, key wraps included, so
+  two same-shaped secrets can never be swapped by a server that cannot read
+  either. `blobVersion` is the anti-rollback binding: create uses 1, an update
+  of version N encrypts under N+1 and the server must store exactly that. Item
+  ids are therefore client-generated (the id is in the AAD), which also makes a
+  retried create idempotent — the M3 `eventId` precedent.
+- **Keyset replacement needs a cryptographic proof, not just tokens.** A vault
+  session is a bearer token; without more, exfiltrated tokens could overwrite the
+  keyset with a wrapping of a fresh random master key and destroy every item —
+  reading the vault protected by cryptography while destroying it was protected
+  only by tokens. So SRP's session key, otherwise computed and discarded,
+  authenticates the replacement (`keyset_auth_key`). Storing a key derived from
+  it leaks nothing new: the server computes that session key by construction,
+  and a database-level attacker could rewrite the row directly anyway.
+- **Reset destroys, it does not recover.** The escape hatch for a forgotten
+  password, and necessarily gated by session + step-up rather than proof — you
+  cannot prove knowledge of a password you have lost. Destruction is
+  cryptographic and falls out of the keyset history design: replacing the keyset
+  overwrites `wrapped_master_key`, history never kept a copy, so the old master
+  key ceases to exist and the retained item rows are permanently opaque.
+  Structure preserved, meaning destroyed — crypto-shredding applied to a zone
+  with no DEKs. It is the one route where stolen tokens can destroy (never read)
+  a vault; compensating controls are step-up freshness, a distinct `vault.reset`
+  action, and owner notification once the notification port lands.
+
+**Schema (docs/02 §5), with the deviations stated:**
+- `vault_keysets` is versioned like every other table, **but the captured row
+  image redacts `wrapped_master_key` and `srp_verifier`**. A no-history
+  exemption was proposed and declined; this is the narrower answer. Elsewhere
+  the full prior row is the audit trail, and its ciphertext opens with the same
+  key as the live row. Here it inverts: the master key does not change when the
+  password does, so a retained old wrapping plus a phished retired password
+  would open the *current* vault. History keeps who changed the keyset, when,
+  and under which parameters — the audit-firewall instinct, applied to a table.
+  Versioned by `user_id` (its PK, no surrogate `id`) on the `profiles`
+  precedent, so it is asserted via `appendOnlyTables` plus explicit checks.
+- `vault_items` is a full business table with history: an old blob is ciphertext
+  under the same master key, so retaining it grants nothing new, and item
+  version history is a product feature.
+- Blobs capped at 68 KiB (~64 KiB of content). Size is the only property the
+  server can measure, and an unbounded opaque blob is a storage DoS and a slow
+  list. Large attachments need a streaming path — a follow-up, not a silent
+  allowance.
+- `vault_srp_handshakes` and `vault_sessions` are operational tables on the
+  `auth.sessions` precedent. A handshake is consumed by the ATTEMPT, not by
+  success, so each guess costs a fresh round trip and its own audit event.
+- `emergency_access_policies` is deliberately **not** created yet: it ships with
+  PR2, so no dormant schema sits under migration drift detection (the M3
+  Plaid-DDL decision).
+
+**Coverage note:** the vault service floor gates the CI number (85/70/87/85)
+rather than the local no-Postgres one. Almost all of its logic is a database
+transaction, so a run without `PG_TEST_URL` covers ~45%; setting the floor there
+would gate at half the real number. CI always sets it, enforced by
+`test/ci-guard.spec.ts`.
+
+**Known gaps, deliberately:** no rate limiting or lockout on failed SRP proofs
+(the same follow-up as identity's login rate limiting — edge WAF + Redis
+counters per docs/01; the interim controls are handshake burn-on-attempt and the
+`vault.open.failed` audit stream) · 404-before-403 on item reads, bounded by
+unguessable UUIDs, the same accepted class as M3/M4 · audit emits after commit,
+no transactional outbox (the M3 follow-up) · no web UI, since a vault surface
+needs the isolated-origin and CSP/Trusted-Types work of docs/03 TB6 and deserves
+its own milestone · autofill, password generator, and family sharing from
+docs/00 §7 are not in M6.
+
+**PR2 — emergency access** (docs/03 §5.2): Shamir escrow with a two-level split
+so the platform share is always required, M-of-N implemented with threshold 1 as
+the default, a ≥24h waiting period with one-tap owner deny that is *sticky*
+until the owner re-arms, release burning the escrow, grantee public-key
+authenticity verified out-of-band, and a notification port that cannot be a stub
+in production.
+
 ### Later milestones (rough order, one per bounded context)
-M6 vault (Zone A) ·
 M7 settlement (Temporal) ·
 M8 AI assistant (privacy proxy) · then referral, notifications hardening, search.
-Vault and settlement come late deliberately: highest-risk domains land on mature
+Settlement comes late deliberately: highest-risk domains land on mature
 primitives.
