@@ -298,3 +298,29 @@ deviating from them, stop and propose the change with rationale — do not silen
   destroy every item — reading protected by cryptography, destroying protected
   by tokens. Reset is the deliberate exception (a lost password cannot be
   proven) and is therefore step-up-gated, distinctly audited, and notified.
+- 2026-07-27 — M6 PR2 emergency access: TWO-LEVEL split,
+  `RK = platform_part XOR contacts_part`, with `contacts_part` split Shamir
+  M-of-N (GF(2^8), hand-rolled in vault-crypto) over the grantees. The XOR is a
+  one-time pad, so every grantee colluding still cannot reconstruct RK without
+  the platform half — that is what makes the ≥24h waiting period a real
+  constraint rather than an honour system. Threshold 1 is the shipped default;
+  arbitrary M-of-N works and needs no migration to adopt. Accepted residual: a
+  server that releases its half early defeats the delay (inherent to docs/01's
+  design); compensating controls are the audit trail and owner notification.
+- 2026-07-27 — Emergency-access denial is STICKY with NO time-based cooldown: a
+  denied policy refuses further requests until the owner re-arms (step-up). A
+  cooldown would tell a patient grantee exactly how long to wait, and outlasting
+  an owner who is hospitalised or offline is docs/03 §5.2's actual attack.
+  Denial itself is the one owner action deliberately NOT step-up gated — it must
+  be one tap from a notification. Release is one-shot (the escrow is spent).
+  Every request, including refused ones, is audited and notified.
+- 2026-07-27 — Emergency-access notifications are a PRECONDITION, not a
+  side effect: in production the emergency-access routes refuse
+  (503 `notifications_unavailable`) while only the stub notifier is wired,
+  because a waiting period nobody can be told about is not a control. Scoped to
+  those routes rather than a boot-time check, so the rest of the vault keeps
+  serving. Grantee key authenticity is the owner's job by design: the client
+  confirms a short fingerprint out of band before sealing a share, and
+  `grantee_public_key_sha256` records what it sealed to so substitution is
+  detectable. `emergency_access_policies` adds `grantee_user_id` to docs/02 §5
+  because the vault cluster cannot dereference a core-cluster contact.

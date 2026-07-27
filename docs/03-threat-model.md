@@ -135,16 +135,38 @@ compromise, Critical) described something that did not exist yet.
 - *No rate limiting on failed SRP proofs yet.* Tracked with identity's login
   rate limiting; handshakes burn on attempt in the meantime.
 
+**§5.2 emergency-access controls, now shipped (M6 PR2).**
+- *Waiting period ≥24h, owner-configurable:* enforced by the platform half of a
+  two-level split (`RK = platform_part XOR contacts_part`). Colluding grantees
+  hold only the contacts half, which is information-theoretically useless alone,
+  so the delay is a cryptographic constraint rather than an honour system.
+- *Multi-channel owner notification with one-tap deny:* the notification port
+  ships with a stub, and the emergency-access routes **refuse in production**
+  while only the stub is wired — a waiting period nobody can be told about is
+  not a control. Denial is deliberately the one owner action with no step-up
+  requirement, because it must be one tap from a notification.
+- *Optional M-of-N:* implemented over GF(2^8), threshold 1 by default.
+- *Full audit visible to the owner afterward:* every transition is recorded,
+  including refused requests, so a grantee who tried repeatedly is visible.
+- *Denial is sticky*, with no time-based cooldown — a cooldown would tell a
+  patient grantee how long to wait, and outlasting the owner is the attack.
+- *Key substitution* (not in §5.2's list, but the same threat class): shares are
+  sealed to a public key the owner confirms out of band by fingerprint, and the
+  key each share was sealed to is recorded so a later change is detectable.
+
+**Residual accepted here:** the platform half lives on the server, so a server
+that releases it early defeats the waiting period. Inherent to docs/01's design
+— a delay enforced by a party is only as good as that party. The split still
+guarantees that a database dump alone is insufficient, and that no contact can
+act alone.
+
 **Not yet shipped, and therefore not yet mitigated.**
-- §5.2 emergency-access abuse: the whole control set (waiting period, one-tap
-  deny, M-of-N, scope limits) arrives with M6 PR2. Until then the vault has no
-  emergency access at all, which is the safe direction to be incomplete in.
-- §5.2's *scope limits* (granting a contact a vault subset) remain deferred even
-  in PR2; per-item keys are in place so it is a later grant feature, not a
+- §5.2's *scope limits* (granting a contact a vault subset) remain deferred;
+  per-item keys are in place so it is a later grant feature, not a
   re-architecture.
 - §5.1 control 5 — settlement's staged access, with vault emergency access last
-  and separately approved — is an **M7 integration point**. PR2's release path
-  must consult settlement state when settlement exists.
+  and separately approved — is an **M7 integration point**. The release path
+  must consult settlement state once settlement exists.
 - The isolated vault origin, CSP, and Trusted Types are frontend controls; no
   vault UI ships in M6, so they land with that surface.
 

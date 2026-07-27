@@ -97,6 +97,79 @@ stolen bearer tokens can destroy (never read) a vault. Compensating controls are
 step-up freshness, the distinct `vault.reset` audit action, and owner
 notification once the notification port lands.
 
+## Emergency access (docs/03 §5.2)
+
+The flow that lets a designated contact open the vault when the owner cannot —
+without letting them do it quietly. docs/03 §5.2 names the attack precisely: a
+contact invoking access while the owner is alive but simply unaware. Every
+control here answers that.
+
+**The recovery key is split twice, at two levels:**
+
+```
+RK  =  platform_part  XOR  contacts_part
+                            └── Shamir M-of-N across the grantees
+```
+
+The XOR split is a one-time pad, so either half alone is
+information-theoretically useless. Every grantee in the world colluding still
+cannot reconstruct RK without the platform releasing its half — which is what
+makes the waiting period a real constraint rather than an honour system. The
+Shamir layer then decides how many contacts must cooperate among themselves;
+M-of-N is fully implemented, with threshold 1 as the default.
+
+| Route | Gates |
+| --- | --- |
+| `POST /v1/vault/recovery-key` | caller + step-up |
+| `GET /v1/vault/recovery-key/:granteeUserId` | caller |
+| `GET,POST /v1/vault/emergency-access` | caller (+ step-up to configure) |
+| `GET /v1/vault/emergency-access/granted-to-me` | caller |
+| `POST /v1/vault/emergency-access/:id/request` | caller (grantee) |
+| **`POST /v1/vault/emergency-access/:id/deny`** | **caller only** |
+| `POST /v1/vault/emergency-access/:id/rearm` | caller + step-up |
+| `DELETE /v1/vault/emergency-access/:id` | caller + step-up |
+| `POST /v1/vault/emergency-access/:id/release` | caller (grantee) |
+
+**Denial is deliberately not step-up gated.** It has to be one tap from a push
+notification, possibly on a locked phone, possibly by someone elderly and
+alarmed. A step-up challenge standing between an owner and "no" would be a
+control that defeats itself.
+
+**Denial is sticky.** A denied policy refuses further requests until the owner
+re-arms it, and there is no time-based cooldown that would eventually let a
+denied grantee back in on its own. That is the whole point: a cooldown just
+tells a patient attacker how long to wait, and waiting the owner out is the
+attack.
+
+**Release is one-shot.** Once the platform half is handed over, the escrow is
+spent — the owner has to build a new one. `revoked` cannot un-ring that bell,
+so on the owner's next unlock the client is expected to re-split a fresh
+recovery key (and may rotate the master key, which is cheap because per-item
+keys mean rewrapping keys rather than re-encrypting blobs).
+
+**Key authenticity is the owner's job, and the API is shaped to make that
+visible.** The service hands out a grantee's public key, and the owner's client
+is expected to confirm its short fingerprint with the grantee over a channel
+this platform does not control before sealing a share to it. Without that step a
+malicious server could substitute its own key and — since it already holds
+`platform_part` and the recovery-wrapped master key — read the whole escrow. The
+key each share was sealed to is recorded in `grantee_public_key_sha256`, so a
+later substitution is detectable rather than silent.
+
+**Notifications are a precondition, not a nicety.** The waiting period only
+protects an owner who finds out a request is pending, so in production the
+emergency-access routes refuse while only the stub notifier is wired
+(`503 notifications_unavailable`). This is scoped to those routes rather than
+being a boot-time check: the rest of the vault must keep working. Real channels
+arrive with the notifications milestone.
+
+**What this does not defend against, stated plainly:** the platform half is held
+by the server, so a server that chooses to release it early defeats the waiting
+period. That is inherent to the docs/01 design — a delay enforced by a party is
+only as good as that party — and the compensating controls are the audit trail
+and owner notification. What the split *does* guarantee is that a database dump
+alone is not enough, and a rogue contact alone is not enough either.
+
 ## Schema notes (docs/02 §5)
 
 - `vault_keysets` is versioned like every other table, **but the captured row
@@ -114,9 +187,16 @@ notification once the notification port lands.
 - `vault_srp_handshakes` and `vault_sessions` are operational tables, not
   business data — the `auth.sessions` precedent: no soft delete, no version
   shadow.
-- `emergency_access_policies` from docs/02 §5 is **not** created here. It ships
-  with emergency access (M6 PR2) so no dormant schema sits under migration
-  drift detection.
+- `emergency_access_policies` arrives in `002_emergency_access.sql` per docs/02
+  §5, with three additions: `grantee_user_id` (this service cannot dereference a
+  contact — contacts live in the core cluster and there are no cross-cluster
+  reads — but it must authorize the grantee, so the owner's client submits both
+  ids), `grantee_public_key_sha256`, and the sticky-deny columns.
+  `emergency_access_configs` is new: docs/02 keeps everything per-grantee, but
+  the two-level split has owner-level material that belongs to the escrow as a
+  whole. It carries the same redacted version image as `vault_keysets`, for the
+  same reason — a superseded platform half plus a superseded recovery wrap would
+  together reconstruct an escrow the owner has already replaced.
 
 ## Audit
 

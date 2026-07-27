@@ -7,11 +7,16 @@ export interface KeysetRow {
   srp_salt: Buffer;
   wrapped_master_key: Buffer;
   kdf_params: unknown;
+  /** Raw P-256 point others seal emergency-access shares to. Public by nature. */
+  public_key: Buffer | null;
+  /** Wrapped under THIS user's master key, so only they can ever use it. */
+  wrapped_private_key: Buffer | null;
   created_at: Date;
   updated_at: Date;
 }
 
-const COLUMNS = `user_id, srp_verifier, srp_salt, wrapped_master_key, kdf_params, created_at, updated_at`;
+const COLUMNS = `user_id, srp_verifier, srp_salt, wrapped_master_key, kdf_params,
+  public_key, wrapped_private_key, created_at, updated_at`;
 
 /**
  * `vault_keysets` access. Everything in this table is opaque to the server: the
@@ -58,6 +63,36 @@ export class KeysetsRepo {
         JSON.stringify(input.kdfParams),
       ],
     );
+  }
+
+  /**
+   * Publish this user's emergency-access public key (and store their own
+   * wrapped private half). Separate from the keyset replace path because it
+   * changes no unlock material - it only makes the user addressable as someone
+   * else's emergency contact.
+   */
+  async setRecoveryKeyPair(
+    tx: Queryable,
+    input: { userId: string; publicKey: Buffer; wrappedPrivateKey: Buffer },
+  ): Promise<void> {
+    await tx.query(
+      `UPDATE vault_keysets SET public_key = $2, wrapped_private_key = $3 WHERE user_id = $1`,
+      [input.userId, input.publicKey, input.wrappedPrivateKey],
+    );
+  }
+
+  /**
+   * The public key an owner will seal a share to. Returned to another user by
+   * design - it is a public key - but the owner is expected to confirm its
+   * fingerprint with the grantee out of band before trusting it (docs/03 §5.2
+   * key substitution).
+   */
+  async findPublicKey(q: Queryable | Db, userId: string): Promise<Buffer | null> {
+    const rows = await q.query<{ public_key: Buffer | null }>(
+      `SELECT public_key FROM vault_keysets WHERE user_id = $1`,
+      [userId],
+    );
+    return rows[0]?.public_key ?? null;
   }
 
   /**

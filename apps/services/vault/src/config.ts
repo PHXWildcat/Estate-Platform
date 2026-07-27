@@ -24,6 +24,15 @@ const EnvSchema = z
     // (CallerGuard/StepUpGuard introspect the caller's token). Required IN
     // production; dev defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
+    // Owner-notification channel for emergency access (docs/03 §5.2). Only the
+    // stub exists today; real channels arrive with the notifications
+    // milestone, and a real mode joins this enum then. Deliberately NOT a
+    // boot-time production requirement - that would take the whole vault down
+    // for a feature most users never arm. Instead the emergency-access routes
+    // refuse in production while only the stub is wired (see
+    // EmergencyAccessService), so the failure is scoped to the flow whose
+    // safety actually depends on it.
+    NOTIFY_MODE: z.enum(['stub']).default('stub'),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -42,6 +51,9 @@ const EnvSchema = z
     }
   });
 
+/** Which adapter delivers emergency-access notifications to the owner. */
+export type NotifyConfig = { readonly mode: 'stub' };
+
 export interface VaultConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
@@ -49,6 +61,7 @@ export interface VaultConfig {
   readonly kafkaBrokers: string[] | null;
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
+  readonly notify: NotifyConfig;
 }
 
 export class ConfigError extends Error {
@@ -82,5 +95,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): VaultConfig {
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
+    notify: { mode: e.NOTIFY_MODE },
   };
 }

@@ -22,6 +22,28 @@ const EXPECTED_EXPORTS = [
   'bytesToBigInt',
   'constantTimeEqual',
   'modPow',
+  // ecies (emergency access)
+  'ECIES_VERSION',
+  'EciesError',
+  'PUBLIC_KEY_BYTES',
+  'generateRecoveryKeyPair',
+  'openWithPrivateKey',
+  'publicKeyDigest',
+  'publicKeyFingerprint',
+  'sealToPublicKey',
+  // recovery (emergency access escrow)
+  'RECOVERY_KEY_BYTES',
+  'createEscrow',
+  'recoverMasterKey',
+  'recoveryWrapAad',
+  'shareAad',
+  // shamir
+  'MAX_SHARES',
+  'ShamirError',
+  'combine',
+  'decodeShare',
+  'encodeShare',
+  'split',
   // bytes
   'concatBytes',
   'fromBase64',

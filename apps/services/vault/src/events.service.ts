@@ -34,12 +34,21 @@ export class EventsService {
       | 'vault.item.updated'
       | 'vault.item.deleted'
       | 'vault.reset'
-      | 'vault.session.revoked',
+      | 'vault.session.revoked'
+      | 'vault.recovery_key.published'
+      | 'vault.emergency.configured'
+      | 'vault.emergency.rearmed'
+      | 'vault.emergency.revoked'
+      | 'vault.emergency.requested'
+      | 'vault.emergency.request_blocked'
+      | 'vault.emergency.denied'
+      | 'vault.emergency.released',
     input: {
       actorId: string;
-      resourceType: 'vault' | 'vault_item' | 'vault_session';
+      resourceType: 'vault' | 'vault_item' | 'vault_session' | 'emergency_access_policy';
       resourceId: string | null;
       sessionId?: string | null;
+      onBehalfOf?: string | null;
       detail?: Record<string, string | number | boolean>;
     },
   ): Promise<void> {
@@ -47,7 +56,7 @@ export class EventsService {
       action,
       actorId: input.actorId,
       actorType: 'user',
-      onBehalfOf: null,
+      onBehalfOf: input.onBehalfOf ?? null,
       resourceType: input.resourceType,
       resourceId: input.resourceId,
       sessionId: input.sessionId ?? null,
@@ -190,6 +199,110 @@ export class EventsService {
       resourceId: vaultSessionId,
       sessionId,
       detail: { reason },
+    });
+  }
+
+  // --- emergency access (docs/03 §5.2) ---
+  //
+  // Every transition is recorded, including refusals. docs/03 §5.2 promises the
+  // owner a "full audit visible to owner afterward", and a grantee who tried
+  // repeatedly and was blocked each time is the single most important thing
+  // that trail can show.
+
+  async recoveryKeyPublished(userId: string, sessionId: string): Promise<void> {
+    await this.emit('vault.recovery_key.published', {
+      actorId: userId,
+      resourceType: 'vault',
+      resourceId: userId,
+      sessionId,
+    });
+  }
+
+  async emergencyConfigured(
+    userId: string,
+    sessionId: string,
+    detail: { grantees: number; threshold: number },
+  ): Promise<void> {
+    await this.emit('vault.emergency.configured', {
+      actorId: userId,
+      resourceType: 'vault',
+      resourceId: userId,
+      sessionId,
+      detail,
+    });
+  }
+
+  async emergencyRequested(
+    granteeUserId: string,
+    sessionId: string,
+    policyId: string,
+    detail: { waitingPeriodHours: number },
+  ): Promise<void> {
+    await this.emit('vault.emergency.requested', {
+      actorId: granteeUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+      detail,
+    });
+  }
+
+  async emergencyRequestBlocked(
+    granteeUserId: string,
+    sessionId: string,
+    policyId: string,
+    reason: string,
+  ): Promise<void> {
+    await this.emit('vault.emergency.request_blocked', {
+      actorId: granteeUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+      detail: { reason },
+    });
+  }
+
+  async emergencyDenied(ownerUserId: string, sessionId: string, policyId: string): Promise<void> {
+    await this.emit('vault.emergency.denied', {
+      actorId: ownerUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+    });
+  }
+
+  async emergencyRearmed(ownerUserId: string, sessionId: string, policyId: string): Promise<void> {
+    await this.emit('vault.emergency.rearmed', {
+      actorId: ownerUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+    });
+  }
+
+  async emergencyRevoked(ownerUserId: string, sessionId: string, policyId: string): Promise<void> {
+    await this.emit('vault.emergency.revoked', {
+      actorId: ownerUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+    });
+  }
+
+  async emergencyReleased(
+    granteeUserId: string,
+    sessionId: string,
+    policyId: string,
+    ownerUserId: string,
+  ): Promise<void> {
+    await this.emit('vault.emergency.released', {
+      actorId: granteeUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+      // onBehalfOf is what makes this event legible: a grantee acted, and the
+      // vault it reached belongs to someone else.
+      onBehalfOf: ownerUserId,
     });
   }
 }

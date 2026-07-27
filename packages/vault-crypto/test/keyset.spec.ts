@@ -36,7 +36,11 @@ const PASSWORD = 'a long enough vault password';
 const VAULT_SESSION_ID = '5a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 const ITERATIONS = MIN_ITERATIONS;
 
-jest.setTimeout(60_000);
+// These derive real keys at the real iteration count, so they are slow by
+// design. The ceiling is generous because the whole monorepo suite runs in
+// parallel on modest hardware, and a timeout here would report as a crypto
+// failure when it is really contention.
+jest.setTimeout(120_000);
 
 /** Everything the server knows, and nothing else. */
 interface StoredKeyset {

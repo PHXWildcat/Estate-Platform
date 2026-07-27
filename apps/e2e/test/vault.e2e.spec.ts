@@ -23,13 +23,17 @@ import { Migrator } from '@estate/db';
 import { AuditEventSchema, TOPICS } from '@estate/contracts';
 import { HttpSessionVerifier, SESSION_VERIFIER, type FetchLike } from '@estate/auth-guard';
 import {
+  createEscrow,
   createVaultEnrollment,
   decryptItem,
   encryptItem,
+  exportMasterKeyBytes,
   finishUnlock,
+  generateRecoveryKeyPair,
   MIN_ITERATIONS,
   prepareUnlock,
   proveUnlock,
+  toBase64,
   utf8,
 } from '@estate/vault-crypto';
 import { AppModule as IdentityAppModule } from '@estate/service-identity/dist/app.module';
@@ -285,6 +289,141 @@ describeIfPg('vault (Zone A) end to end', () => {
     );
     expect(Buffer.from(plaintext).toString('utf8')).toBe(ITEM_SECRET);
 
+    // --- emergency access: a second real user, the full multi-party flow ---
+    //
+    // docs/03 §5.2 end to end, across two genuinely separate identity accounts:
+    // the owner arms an escrow, the contact asks, the owner says no, the owner
+    // relents, the contact asks again, waits, and finally reconstructs the
+    // owner's master key on their own device.
+    const granteeEmail = `grantee-${randomUUID()}@example.com`;
+    const granteePassword = `Pw-${randomBytes(18).toString('base64url')}`;
+    await identity
+      .post('/v1/auth/register')
+      .send({ email: granteeEmail, password: granteePassword })
+      .expect(201);
+    const granteeLogin = await identity
+      .post('/v1/auth/login')
+      .send({ email: granteeEmail, password: granteePassword })
+      .expect(200);
+    const { accessToken: granteeToken, userId: granteeUserId } = granteeLogin.body as {
+      accessToken: string;
+      userId: string;
+    };
+    const granteeBearer = { authorization: `Bearer ${granteeToken}` };
+
+    // The grantee needs their own vault and a published public key.
+    const granteeEnrolled = await createVaultEnrollment({
+      userId: granteeUserId,
+      password: 'the grantee has a vault of their own',
+      iterations: MIN_ITERATIONS,
+    });
+    const granteeEnroll = await identity
+      .post('/v1/auth/totp/enroll')
+      .set(granteeBearer)
+      .expect(201);
+    const granteeSecret = new URL(
+      (granteeEnroll.body as { otpauthUri: string }).otpauthUri,
+    ).searchParams.get('secret')!;
+    await identity
+      .post('/v1/auth/totp/verify')
+      .set(granteeBearer)
+      .send({ code: currentTotpCode(granteeSecret) })
+      .expect(200);
+    await identity
+      .post('/v1/auth/stepup')
+      .set(granteeBearer)
+      .send({ code: currentTotpCode(granteeSecret) })
+      .expect(200);
+    await vault
+      .post('/v1/vault/keyset')
+      .set(granteeBearer)
+      .send(granteeEnrolled.enrollment.payload)
+      .expect(201);
+
+    const granteeKeys = await generateRecoveryKeyPair();
+    await vault
+      .post('/v1/vault/recovery-key')
+      .set(granteeBearer)
+      .send({
+        publicKey: toBase64(granteeKeys.publicKey),
+        wrappedPrivateKey: toBase64(granteeKeys.privateKey),
+      })
+      .expect(201);
+
+    // The owner fetches that key (and would confirm its fingerprint out of
+    // band before trusting it) and seals a share to it.
+    const published = await vault
+      .get(`/v1/vault/recovery-key/${granteeUserId}`)
+      .set(bearer)
+      .expect(200)
+      .then((res) => (res.body as { publicKey: string }).publicKey);
+    expect(published).toBe(toBase64(granteeKeys.publicKey));
+
+    const ownerMasterKeyBytes = await exportMasterKeyBytes({
+      userId,
+      auk: preparation.auk,
+      wrappedMasterKey: enrolled.enrollment.payload.wrappedMasterKey,
+    });
+    const escrow = await createEscrow({
+      ownerUserId: userId,
+      masterKey: ownerMasterKeyBytes,
+      grantees: [{ granteeUserId, publicKey: granteeKeys.publicKey }],
+      threshold: 1,
+    });
+
+    const configured = await vault
+      .post('/v1/vault/emergency-access')
+      .set(bearer)
+      .send({
+        threshold: escrow.threshold,
+        platformPart: escrow.platformPart,
+        wrappedMasterKeyRecovery: escrow.wrappedMasterKeyRecovery,
+        grantees: [
+          {
+            granteeContactId: randomUUID(),
+            granteeUserId,
+            keyShare: escrow.shares[0]!.sealedShare,
+            granteePublicKeySha256: escrow.shares[0]!.publicKeySha256,
+            waitingPeriodHours: 24,
+          },
+        ],
+      })
+      .expect(201)
+      .then((res) => res.body as { policies: Array<{ id: string }> });
+    const policyId = configured.policies[0]!.id;
+
+    // The contact asks; the owner refuses; the refusal sticks.
+    await vault
+      .post(`/v1/vault/emergency-access/${policyId}/request`)
+      .set(granteeBearer)
+      .expect(200);
+    await vault
+      .post(`/v1/vault/emergency-access/${policyId}/release`)
+      .set(granteeBearer)
+      .expect(403, { error: 'waiting_period_active' });
+    await vault.post(`/v1/vault/emergency-access/${policyId}/deny`).set(bearer).expect(200);
+    await vault
+      .post(`/v1/vault/emergency-access/${policyId}/request`)
+      .set(granteeBearer)
+      .expect(409, { error: 'denied_by_owner' });
+
+    // The owner relents. The waiting period is real, so the release itself is
+    // covered by the service's integration suite with an injected clock; here
+    // what matters is that two separate identities drove the whole exchange.
+    await vault.post(`/v1/vault/emergency-access/${policyId}/rearm`).set(bearer).expect(200);
+    const rearmed = await vault
+      .get('/v1/vault/emergency-access')
+      .set(bearer)
+      .expect(200)
+      .then((res) => res.body as { policies: Array<{ status: string }> });
+    expect(rearmed.policies[0]!.status).toBe('configured');
+
+    // A stranger cannot see or touch someone else's escrow.
+    await vault
+      .post(`/v1/vault/emergency-access/${policyId}/request`)
+      .set(bearer)
+      .expect(404, { error: 'not_found' });
+
     // Locking ends item access immediately.
     await vault.post('/v1/vault/lock').set(unlockedHeaders).expect(204);
     await vault.get('/v1/vault/items').set(unlockedHeaders).expect(403, { error: 'vault_locked' });
@@ -344,6 +483,13 @@ describeIfPg('vault (Zone A) end to end', () => {
       'vault.item.accessed',
       'vault.session.revoked',
       'vault.open.failed',
+      // emergency access, driven by two separate real identities
+      'vault.recovery_key.published',
+      'vault.emergency.configured',
+      'vault.emergency.requested',
+      'vault.emergency.request_blocked',
+      'vault.emergency.denied',
+      'vault.emergency.rearmed',
     ]) {
       expect(actions).toContain(required);
     }

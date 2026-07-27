@@ -28,6 +28,40 @@ export {
 export { bigIntToBytes, bytesToBigInt, constantTimeEqual, modPow } from './bigint';
 
 export {
+  ECIES_VERSION,
+  EciesError,
+  PUBLIC_KEY_BYTES,
+  generateRecoveryKeyPair,
+  openWithPrivateKey,
+  publicKeyDigest,
+  publicKeyFingerprint,
+  sealToPublicKey,
+  type RecoveryKeyPair,
+} from './ecies';
+
+export {
+  RECOVERY_KEY_BYTES,
+  createEscrow,
+  recoverMasterKey,
+  recoveryWrapAad,
+  shareAad,
+  type EscrowGrantee,
+  type EscrowMaterial,
+  type HeldShare,
+  type SealedShare,
+} from './recovery';
+
+export {
+  MAX_SHARES,
+  ShamirError,
+  combine,
+  decodeShare,
+  encodeShare,
+  split,
+  type Share,
+} from './shamir';
+
+export {
   concatBytes,
   fromBase64,
   randomBytes,
