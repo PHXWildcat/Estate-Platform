@@ -52,18 +52,48 @@ function assertPublicKey(bytes: Uint8Array): void {
   }
 }
 
+/** Symbols in a fingerprint; 5 bits each over the Crockford alphabet. */
+export const FINGERPRINT_SYMBOLS = 16;
+const FINGERPRINT_GROUP = 4;
+
 /**
  * A short, human-readable fingerprint of a public key, for the owner to confirm
  * with the grantee over a channel the platform does not control (docs/03 §5.2).
  * Safety-number style: 16 characters in four groups, read aloud in seconds.
+ *
+ * The width is a security parameter, not a display choice. This is the SOLE
+ * defense against a malicious server substituting its own key at configure
+ * time — nothing server-side can check it, because the server is the adversary
+ * in that scenario. 16 symbols is 80 bits, so a second-preimage grind costs
+ * 2^80 P-256 keygens. An earlier revision emitted 10 symbols (50 bits), which
+ * a determined attacker could grind offline in GPU-days against a targeted
+ * user; the M6 security review caught it.
  */
 export async function publicKeyFingerprint(publicKey: Uint8Array): Promise<string> {
   assertPublicKey(publicKey);
   const digest = await sha256(utf8('estate.vault.grantee-key.v1'), publicKey);
   const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+  // Consume the digest as a bitstream rather than one symbol per byte, so all
+  // 80 bits come from distinct digest bits.
+  let bits = 0;
+  let accumulator = 0;
   let text = '';
-  for (let i = 0; i < 10; i += 1) text += alphabet[digest[i]! & 0x1f];
-  return `${text.slice(0, 5)}-${text.slice(5, 10)}`;
+  for (const byte of digest) {
+    accumulator = (accumulator << 8) | byte;
+    bits += 8;
+    while (bits >= 5 && text.length < FINGERPRINT_SYMBOLS) {
+      bits -= 5;
+      text += alphabet[(accumulator >> bits) & 0x1f];
+    }
+    if (text.length === FINGERPRINT_SYMBOLS) break;
+  }
+
+  const groups: string[] = [];
+  for (let i = 0; i < text.length; i += FINGERPRINT_GROUP) {
+    groups.push(text.slice(i, i + FINGERPRINT_GROUP));
+  }
+  return groups.join('-');
 }
 
 export async function publicKeyDigest(publicKey: Uint8Array): Promise<Uint8Array> {

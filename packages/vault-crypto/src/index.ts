@@ -30,6 +30,7 @@ export { bigIntToBytes, bytesToBigInt, constantTimeEqual, modPow } from './bigin
 export {
   ECIES_VERSION,
   EciesError,
+  FINGERPRINT_SYMBOLS,
   PUBLIC_KEY_BYTES,
   generateRecoveryKeyPair,
   openWithPrivateKey,

@@ -671,6 +671,103 @@ describeIfPg('emergency access end to end', () => {
     });
   });
 
+  describe('reset tears the escrow down with it (M6 security review)', () => {
+    it('destroys every wrapping of the master key, not just the keyset one', async () => {
+      // The regression this exists for: reset used to leave
+      // emergency_access_configs intact, so a SECOND live wrapping of the
+      // pre-reset master key survived. A grantee could then wait out the
+      // period, release, and reconstruct the key the owner had been told was
+      // destroyed - defeating the crypto-shred CLAUDE.md mandates for erasure.
+      const escrow = await configureEscrow([
+        { userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys },
+      ]);
+      expect(escrow.policies).toHaveLength(1);
+
+      // The owner is also somebody else's emergency contact, which is the
+      // normal case in a family: everyone names everyone.
+      const ownerKeys = await generateRecoveryKeyPair();
+      await request(server)
+        .post('/v1/vault/recovery-key')
+        .set(ownerStepUp())
+        .send({
+          publicKey: toBase64(ownerKeys.publicKey),
+          wrappedPrivateKey: toBase64(ownerKeys.privateKey),
+        })
+        .expect(201);
+      await request(server).get(`/v1/vault/recovery-key/${OWNER}`).set(asGrantee()).expect(200);
+
+      const before = await admin.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM emergency_access_configs WHERE user_id = $1`,
+        [OWNER],
+      );
+      expect(before.rows[0]!.count).toBe('1');
+
+      const fresh = await createVaultEnrollment({
+        userId: OWNER,
+        password: 'after the reset',
+        iterations: MIN_ITERATIONS,
+      });
+      await request(server)
+        .post('/v1/vault/reset')
+        .set(ownerStepUp())
+        .send(fresh.enrollment.payload)
+        .expect(200);
+
+      // The recovery wrap is gone...
+      const after = await admin.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM emergency_access_configs WHERE user_id = $1`,
+        [OWNER],
+      );
+      expect(after.rows[0]!.count).toBe('0');
+
+      // ...the policies are retired...
+      const live = await admin.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM emergency_access_policies
+          WHERE user_id = $1 AND deleted_at IS NULL`,
+        [OWNER],
+      );
+      expect(live.rows[0]!.count).toBe('0');
+
+      // ...the grantee no longer sees a designation...
+      const granted = await request(server)
+        .get('/v1/vault/emergency-access/granted-to-me')
+        .set(asGrantee())
+        .expect(200);
+      expect(granted.body).toEqual([]);
+
+      // ...and the release path is closed, so the old key cannot be recovered.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${escrow.policies[0]!.id}/request`)
+        .set(asGrantee())
+        .expect(404, { error: 'not_found' });
+    });
+
+    it("unpublishes the owner's own grantee key, whose private half is now unusable", async () => {
+      // The private half was wrapped under the destroyed master key. Leaving
+      // the public half published would invite other owners to seal shares
+      // that nobody can ever open - an escrow that looks healthy and fails at
+      // the one moment it has to work.
+      await request(server)
+        .get(`/v1/vault/recovery-key/${OWNER}`)
+        .set(asGrantee())
+        .expect(404, { error: 'grantee_key_not_found' });
+
+      const row = await admin.query<{
+        public_key: Buffer | null;
+        wrapped_private_key: Buffer | null;
+      }>(`SELECT public_key, wrapped_private_key FROM vault_keysets WHERE user_id = $1`, [OWNER]);
+      expect(row.rows[0]).toEqual({ public_key: null, wrapped_private_key: null });
+    });
+
+    it('records the escrow teardown in the reset audit event', () => {
+      const resets = producer.messages
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.reset');
+      expect(resets.length).toBeGreaterThan(0);
+      expect(resets[resets.length - 1]!.detail).toMatchObject({ escrowPoliciesRetired: 1 });
+    });
+  });
+
   describe('audit', () => {
     it('records every transition, including the refusals', () => {
       const actions = new Set(

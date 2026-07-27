@@ -85,11 +85,23 @@ A forgotten vault password is unrecoverable by design — nobody, including this
 service, can decrypt the items. `POST /v1/vault/reset` is the escape hatch: it
 soft-deletes every item and replaces the keyset so the user can start over.
 
-The destruction is cryptographic. Replacing the keyset overwrites
-`wrapped_master_key`, and the version trigger never kept a copy, so the old
-master key ceases to exist anywhere and the retained item rows become
-permanently opaque. Structure preserved, meaning destroyed — CLAUDE.md's
-crypto-shredding primitive, applied to a zone with no DEKs.
+The destruction is cryptographic, and it works only because the reset
+transaction destroys **every** wrapping of the old master key. There are two,
+and the M6 security review caught an earlier revision missing the second:
+
+1. `vault_keysets.wrapped_master_key`, overwritten by the keyset replace (the
+   version trigger deliberately never kept a copy), and
+2. `emergency_access_configs.wrapped_master_key_recovery` — a second live
+   wrapping under the recovery key, whose halves are held by the server and the
+   grantees. Leaving it behind meant a designated contact could still wait out
+   the period, release, and reconstruct the master key the owner had been told
+   was destroyed.
+
+So reset also retires the escrow and the owner's own published grantee keypair
+(its private half is wrapped under the key being destroyed). Only then are the
+retained item rows permanently opaque: structure preserved, meaning destroyed —
+CLAUDE.md's crypto-shredding primitive, applied to a zone with no DEKs. After a
+reset the user must re-arm emergency access against the new master key.
 
 This is necessarily gated by session + step-up rather than by proof: you cannot
 prove knowledge of a password you have lost. It is therefore the one route where

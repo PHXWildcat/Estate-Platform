@@ -291,7 +291,8 @@ deviating from them, stop and propose the change with rationale — do not silen
   would open the CURRENT vault: here the prior row is an attack asset, not an
   audit record. Everything with audit value survives. Versioned by `user_id` on
   the `profiles` precedent. Consequence: reset/erasure IS the crypto-shred —
-  overwriting the live wrap leaves the old master key nowhere.
+  but only if EVERY wrapping of the master key goes, which the M6 security
+  review found reset getting wrong (see the 2026-07-27 review entry below).
 - 2026-07-27 — Keyset replacement requires an HMAC proof under a key both sides
   derive from the SRP session (`keyset_auth_key`), not just step-up + a vault
   session. Otherwise exfiltrated bearer tokens could overwrite the keyset and
@@ -324,3 +325,17 @@ deviating from them, stop and propose the change with rationale — do not silen
   `grantee_public_key_sha256` records what it sealed to so substitution is
   detectable. `emergency_access_policies` adds `grantee_user_id` to docs/02 §5
   because the vault cluster cannot dereference a core-cluster contact.
+- 2026-07-27 — M6 security review (six parallel discovery lenses over the merged
+  range + adversarial verify of each finding; 35 raw, 28 unique, 14 verified, 11
+  refuted): no critical or app-exploitable vuln in the Zone A guarantee. Three
+  findings fixed in-branch, the load-bearing one being that vault RESET did not
+  tear down the emergency-access escrow — `emergency_access_configs` holds a
+  SECOND live wrapping of the master key, so a grantee could still release and
+  reconstruct the key the owner was told was destroyed, defeating the
+  crypto-shred. Reset now destroys every wrapping (escrow config, policies, and
+  the owner's own grantee keypair) in one transaction and audits the teardown.
+  Also: the grantee-key fingerprint carried 50 bits where its own spec said 80
+  (it is the only defense against server key substitution, so the width IS the
+  security parameter) — widened to 16 symbols; and reset left a published
+  grantee public key whose private half it had just destroyed, which would have
+  let later escrows seal shares nobody can open. Full record in docs/04 M6.

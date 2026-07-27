@@ -612,9 +612,12 @@ destructive reset for forgotten passwords, and eleven audit actions.
 - **Reset destroys, it does not recover.** The escape hatch for a forgotten
   password, and necessarily gated by session + step-up rather than proof — you
   cannot prove knowledge of a password you have lost. Destruction is
-  cryptographic and falls out of the keyset history design: replacing the keyset
-  overwrites `wrapped_master_key`, history never kept a copy, so the old master
-  key ceases to exist and the retained item rows are permanently opaque.
+  cryptographic and rests on the keyset history design: replacing the keyset
+  overwrites `wrapped_master_key` and history never kept a copy. That is
+  necessary but not sufficient — emergency access adds a SECOND live wrapping,
+  so reset must tear the escrow down too, which the security review below found
+  it failing to do. With that fixed, the retained item rows are permanently
+  opaque.
   Structure preserved, meaning destroyed — crypto-shredding applied to a zone
   with no DEKs. It is the one route where stolen tokens can destroy (never read)
   a vault; compensating controls are step-up freshness, a distinct `vault.reset`
@@ -710,6 +713,114 @@ point (PR2's release path will consult settlement state once settlement exists).
 One latent bug worth recording, found by the suite rather than by review:
 `configure` inserts every policy in one transaction, so they share `created_at`,
 and ordering by it alone was non-deterministic. Fixed by tie-breaking on `id`.
+
+**M6 security review (2026-07-27).** Structured review of the whole merged M6
+range (`845cccd..4521909`, PR1 #12 + PR2 #13): six parallel discovery passes —
+the Zone A boundary, the hand-written crypto, authorization and step-up
+placement, the emergency-access state machine, the data layer, and untrusted
+input — with every candidate finding then adversarially re-verified against
+source by an agent instructed to refute it. 35 raw candidates, 28 unique, the 14
+most severe verified; 11 refuted outright.
+
+**No critical and no app-surface-exploitable vulnerability in the Zone A
+guarantee.** Nothing found lets the server learn, derive, or accumulate a client
+secret, and nothing found grants unauthorized read access to a vault. Three
+defects survived verification, all in the seam PR2 added around PR1's keyset
+lifecycle — PR1's core (2SKD, SRP, AAD binding, proof-gated keyset replacement)
+held under every attack tried. All three are fixed in this branch.
+
+- **Reset did not tear down the emergency-access escrow, so the documented
+  crypto-shred was incomplete (medium).** `VaultService.reset` touched items,
+  the keyset and sessions, but never `emergency_access_configs` — which holds
+  `wrapped_master_key_recovery`, a *second live wrapping of the same master
+  key*, with the server keeping `platform_part` and the grantees holding Shamir
+  shares of the other half. So for any user who had armed emergency access, the
+  claim made in the reset docstring, the service README, this document and the
+  CLAUDE.md decision log — that the old master key "ceases to exist anywhere" —
+  was false. A designated contact could wait out the ≥24h period, release, and
+  reconstruct the key the owner had been told was destroyed; the pre-reset item
+  ciphertext persists by design (`reset` only sets `deleted_at`, and the version
+  trigger captured full row images), and that retention is *justified* by the
+  shred claim. Turning it into plaintext additionally needs vault-cluster,
+  backup or subpoena access, which is why this is medium rather than high — but
+  that is precisely the adversary crypto-shredding exists to defeat. There was
+  also a plain correctness consequence: the surviving escrow escrowed a dead
+  key, so a genuine post-death recovery would have burned its one-shot release
+  and yielded a master key that opens nothing, silently. Notably the authors
+  already redact superseded wraps from both version tables on the reasoning that
+  "a superseded wrapping is not history but a live attack asset" — the surviving
+  live escrow row was exactly that asset, so this was an oversight rather than a
+  choice. **Fixed:** reset now deletes the escrow config, soft-deletes the
+  policies and clears the owner's grantee keypair in the same transaction, and
+  reports `escrowPoliciesRetired` in the `vault.reset` audit detail. Three
+  regression tests cover it, and the false claim is corrected everywhere it was
+  made.
+- **The grantee key fingerprint carried 50 bits, not the 80 its own comment
+  specified (medium).** `publicKeyFingerprint` emitted 10 Crockford symbols in
+  two groups while its docstring said "16 characters in four groups", and the
+  test pinned the weaker behaviour rather than the comment. This is not a
+  display detail: the fingerprint is the *sole* named defense against a
+  malicious server substituting its own key at configure time, and nothing
+  server-side can check it — `grantee_public_key_sha256` is derived client-side
+  from whatever key the client was handed, so it binds to a substituted key just
+  as happily. At 50 bits a targeted second-preimage grind is GPU-days, entirely
+  offline and undetectable; at 80 it is 2^80. Held below high only because no
+  client consumes the fingerprint yet (no vault UI ships in M6). **Fixed:** 16
+  symbols in four groups, consumed as a bitstream so all 80 bits come from
+  distinct digest bits, with the constant exported and asserted.
+- **Reset left the user's own published grantee key while destroying its private
+  half (low, recovery availability).** The private half is wrapped under the
+  master key reset destroys, but `findPublicKey` had no liveness predicate, so
+  other owners arming escrows *afterwards* would seal shares to a key nobody can
+  open — an escrow that reports healthy and fails at the one moment it must
+  work, silently dropping the reachable share count below threshold under
+  M-of-N. **Fixed:** reset clears both columns (the DDL's all-or-nothing CHECK
+  already permitted it), so a stale contact now fails visibly at configure time.
+
+**Attacked and held.** The Zone A boundary itself: every server-held artifact
+was traced for a path to plaintext and none exists. SRP-6a: the client's pinning
+of served `kdfParams` and group id before any modular exponentiation defeats the
+degenerate-group substitution the scheme would otherwise fall to, and handshakes
+are consumed by the attempt rather than by success, so guessing cannot be
+batched against one challenge. The keyset-proof control verifies the MAC over
+the payload as received, before any write. The escrow split holds in both
+directions: a full grantee coalition without `platform_part` gets nothing, and a
+database dump without the shares gets nothing. The state machine resisted every
+attempt to reach release early, replay it, route it through a revoked policy, or
+desensitize the owner with a blocked-notification flood before the request that
+matters. Authorization and step-up placement matched docs/01 §5 on every route,
+including deny's deliberate absence. Two plausible candidates — "release should
+be step-up gated" and "configure destroys an escrow on a bearer token" — were
+refuted on the same ground: the step-up-fresh stolen-token adversary already
+holds the strictly greater, explicitly accepted `POST /v1/vault/reset`
+capability, so neither adds reach.
+
+**Informational, left as-is.** No owner notification when `configure` silently
+retires existing grantees (a design addition inside the open notifications
+follow-up, which also covers reset) · SRP's 4096-bit modexp runs synchronously
+on the request thread at ~63 ms each, worth a line in the existing SRP
+rate-limit follow-up · the opaque-blob fields lack the file's own base64 charset
+refine and an `octet_length` CHECK, inert on every reachable path · a 500-item
+page is ~46 MB of base64, the same authenticated self-attributable capacity
+class M4 accepted for uploads · the server never cross-checks
+`sha256(public_key)` against the submitted digest at configure time (cheap
+defense in depth; the owner-side fingerprint remains the documented authority).
+
+**Coverage gaps for the next reviewer.** This pass reviewed the hand-written
+primitives' protocol wiring, not their cryptanalysis: the `bigint` modPow timing
+profile, the SRP safety checks line-by-line against RFC 5054, and the GF(2^8)
+share-index and coefficient-randomness handling all deserve a dedicated pass.
+WebCrypto P-256 import paths were not audited for point validation on the
+sealing side. The notifications adapter is unreviewed by construction (only the
+stub is wired and the routes 503 in production), so the notifications milestone
+needs its own pass including delivery-channel identifier leakage. Concurrency
+was reasoned about but not fuzzed — parallel releases, a configure racing a
+request, and a reset racing an in-flight unlock all rest on row locks that were
+read rather than stress-tested. Finally, migration drift over the redaction
+lists is a standing hazard: any future column on `vault_keysets` or
+`emergency_access_configs` is captured into history by default, so a future
+secret-bearing column would silently inherit the wrong policy. A convention test
+asserting the redaction set against the live column list would close that.
 
 ### Later milestones (rough order, one per bounded context)
 M7 settlement (Temporal) ·
