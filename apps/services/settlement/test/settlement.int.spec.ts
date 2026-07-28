@@ -176,29 +176,33 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
   });
 
   it('the DDL CHECKs hold: reviewer ≠ reporter and no privileged status without review', async () => {
+    // DML must run on the schema-scoped pool (`db`), not the admin client:
+    // the version-capture trigger resolves settlement_cases_versions via
+    // search_path, so admin (search_path=public) would 42P01 inside the
+    // trigger before the CHECK under test ever fires.
     const caseId = randomUUID();
-    await admin.query(
-      `INSERT INTO ${schema}.settlement_cases (id, decedent_user_id, reported_by, report_source)
+    await db.query(
+      `INSERT INTO settlement_cases (id, decedent_user_id, reported_by, report_source)
        VALUES ($1, $2, $3, 'trusted_contact')`,
       [caseId, randomUUID(), REPORTER],
     );
     await expect(
-      admin.query(
-        `UPDATE ${schema}.settlement_cases
+      db.query(
+        `UPDATE settlement_cases
             SET status = 'verifying', human_review_by = $2, human_review_at = now()
           WHERE id = $1`,
         [caseId, REPORTER],
       ),
     ).rejects.toMatchObject({ code: '23514' });
     await expect(
-      admin.query(
-        `UPDATE ${schema}.settlement_cases
+      db.query(
+        `UPDATE settlement_cases
             SET status = 'waiting_period', waiting_period_ends = now()
           WHERE id = $1`,
         [caseId],
       ),
     ).rejects.toMatchObject({ code: '23514' });
-    await admin.query(`DELETE FROM ${schema}.settlement_cases WHERE id = $1`, [caseId]);
+    await db.query(`DELETE FROM settlement_cases WHERE id = $1`, [caseId]);
   });
 
   it('runs the full §5.1 flow: report → review → waiting period → sweep → verify', async () => {
@@ -268,11 +272,9 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
     clock.value = new Date(clock.value.getTime() + 5 * DAY);
     const verified = await service.confirmVerification(OPERATOR, SESSION, caseId);
     expect(verified.status).toBe('verified');
-    expect(identity.setStateCalls).toContainEqual({
-      userId: DECEDENT,
-      state: 'settlement',
-      caseId,
-    });
+    expect(identity.setStateCalls).toContainEqual(
+      expect.objectContaining({ userId: DECEDENT, state: 'settlement', caseId }),
+    );
 
     // The version trail captured every transition with its GUC actor.
     const versions = await admin.query<{ actor_id: string | null; row_data: { status: string } }>(

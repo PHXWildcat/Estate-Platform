@@ -8,7 +8,12 @@ import type { ContactAttemptsRepo, ContactChannel } from '../src/contact-attempt
 import type { CoreReadsRepo, ReportableEstate } from '../src/core-reads.repo';
 import type { Db, Queryable } from '../src/db';
 import { EventsService } from '../src/events.service';
-import { IdentityLockError, type IdentityLockPort, type LockState } from '../src/identity-lock';
+import {
+  IdentityLockError,
+  OwnerAliveError,
+  type IdentityLockPort,
+  type LockState,
+} from '../src/identity-lock';
 import { StubNotifier } from '../src/notifications';
 import type { OperatorsRepo } from '../src/operators.repo';
 import { SettlementService } from '../src/settlement.service';
@@ -188,6 +193,7 @@ export class InMemoryCases {
       row.human_review_at = reviewer.at;
     }
     row.waiting_period_ends = null;
+    row.verified_at = null;
     row.updated_at = this.clock();
     return Promise.resolve(true);
   }
@@ -285,19 +291,45 @@ export class FakeCoreReads {
 }
 
 export class FakeIdentityLock implements IdentityLockPort {
-  readonly setStateCalls: Array<{ userId: string; state: LockState; caseId: string }> = [];
+  readonly setStateCalls: Array<{
+    userId: string;
+    state: LockState;
+    caseId: string;
+    livenessNotAfter?: Date;
+  }> = [];
   failSetState = false;
   failLiveness = false;
+  /** Simulates a step-up landing AFTER settlement's liveness read: the
+   * watermarked transition is refused the way identity's atomic interlock
+   * refuses it. */
+  raceStepUpAt: Date | null = null;
   livenessAnswer: { status: string; lastStepUpAt: Date | null } = {
     status: 'deceased_pending',
     lastStepUpAt: null,
   };
 
-  setState(userId: string, state: LockState, caseId: string): Promise<void> {
+  setState(
+    userId: string,
+    state: LockState,
+    caseId: string,
+    livenessNotAfter?: Date,
+  ): Promise<void> {
     if (this.failSetState) {
       return Promise.reject(new IdentityLockError());
     }
-    this.setStateCalls.push({ userId, state, caseId });
+    if (
+      livenessNotAfter &&
+      this.raceStepUpAt &&
+      this.raceStepUpAt.getTime() > livenessNotAfter.getTime()
+    ) {
+      return Promise.reject(new OwnerAliveError());
+    }
+    this.setStateCalls.push({
+      userId,
+      state,
+      caseId,
+      ...(livenessNotAfter ? { livenessNotAfter } : {}),
+    });
     return Promise.resolve();
   }
 

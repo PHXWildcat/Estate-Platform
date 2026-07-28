@@ -45,7 +45,14 @@ describe('SettlementLockService.setState (identity-enforced transition table)', 
     const fakes = makeFakes('active');
     const result = await makeService(fakes).setState(USER, 'deceased_pending', CASE, NOW);
     expect(result).toEqual({ status: 'deceased_pending' });
-    expect(fakes.users.updateStatusFrom).toHaveBeenCalledWith(USER, ['active'], 'deceased_pending');
+    // No watermark on the pending lock: the liveness interlock guards only the
+    // terminal 'settlement' transition.
+    expect(fakes.users.updateStatusFrom).toHaveBeenCalledWith(
+      USER,
+      ['active'],
+      'deceased_pending',
+      undefined,
+    );
     expect(fakes.events.userStatusChanged).toHaveBeenCalledWith(
       USER,
       'active',
@@ -72,7 +79,12 @@ describe('SettlementLockService.setState (identity-enforced transition table)', 
   it('restore (active) only ever comes from deceased_pending', async () => {
     const fakes = makeFakes('deceased_pending');
     await makeService(fakes).setState(USER, 'active', CASE, NOW);
-    expect(fakes.users.updateStatusFrom).toHaveBeenCalledWith(USER, ['deceased_pending'], 'active');
+    expect(fakes.users.updateStatusFrom).toHaveBeenCalledWith(
+      USER,
+      ['deceased_pending'],
+      'active',
+      undefined,
+    );
   });
 
   it('is idempotent: setting the current state is a no-op with no audit', async () => {
@@ -104,6 +116,40 @@ describe('SettlementLockService.setState (identity-enforced transition table)', 
     await expect(makeService(fakes).setState(USER, 'deceased_pending', CASE, NOW)).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it('forwards the liveness watermark into the compare-and-set statement', async () => {
+    const fakes = makeFakes('deceased_pending');
+    const watermark = new Date('2026-07-20T00:00:00Z');
+    await makeService(fakes).setState(USER, 'settlement', CASE, NOW, watermark);
+    expect(fakes.users.updateStatusFrom).toHaveBeenCalledWith(
+      USER,
+      ['deceased_pending'],
+      'settlement',
+      watermark,
+    );
+  });
+
+  it('reports owner_alive (not invalid_transition) when the interlock fires', async () => {
+    const fakes = makeFakes('deceased_pending');
+    const watermark = new Date('2026-07-20T00:00:00Z');
+    // The atomic UPDATE matched nothing, and the ledger shows a step-up after
+    // the watermark: the owner is alive, and the caller must void — not retry.
+    fakes.users.updateStatusFrom.mockResolvedValue(false);
+    fakes.authEvents.lastOccurredAt.mockResolvedValue(new Date('2026-07-25T00:00:00Z'));
+    await expect(
+      makeService(fakes).setState(USER, 'settlement', CASE, NOW, watermark),
+    ).rejects.toMatchObject({ response: { error: 'owner_alive' } });
+    expect(fakes.sessions.revokeAllForUser).not.toHaveBeenCalled();
+  });
+
+  it('still reports invalid_transition when the CAS failed for any other reason', async () => {
+    const fakes = makeFakes('deceased_pending');
+    fakes.users.updateStatusFrom.mockResolvedValue(false);
+    fakes.authEvents.lastOccurredAt.mockResolvedValue(new Date('2026-07-01T00:00:00Z'));
+    await expect(
+      makeService(fakes).setState(USER, 'settlement', CASE, NOW, new Date('2026-07-20T00:00:00Z')),
+    ).rejects.toMatchObject({ response: { error: 'invalid_transition' } });
   });
 });
 

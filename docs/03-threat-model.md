@@ -202,6 +202,14 @@ control specification; this delta records how each control landed.
   reporter) explicitly confirms, and the confirmation re-checks owner liveness
   against identity's append-only step-up ledger — a step-up newer than the
   case voids it on the spot, restores the account, and flags the reporter.
+  That check is enforced TWICE, deliberately: settlement reads liveness before
+  asking for the terminal transition, and identity restates the predicate in
+  the same single statement as the status write (a `NOT EXISTS` over
+  `auth_events` in the CAS `UPDATE`, same cluster, no network hop). Without
+  the second one, a step-up landing between settlement's read and its commit
+  would be invisible, and — since there is no un-verify ceremony — would
+  entomb a living owner in `settlement` irreversibly. The interlock turns that
+  race into a refusal (`409 owner_alive`) that voids the case instead.
   The owner's own kill switch is a step-up-gated void route (the step-up IS
   the liveness proof; a bare stolen bearer cannot void).
 - *Account enters deceased_pending (control 4).* Cross-service, identity-
@@ -243,7 +251,15 @@ distributions, tasks/timeline, the documents legal-hold setter, and case
 close. Until PR2, no post-verification access surface exists at all, which is
 the fail-safe ordering: verification currently grants nobody anything.
 
-**Residuals accepted.** A settlement operator is a high-value target; the
+**Residuals accepted.** The liveness interlock narrows the lockout race to a
+single statement but cannot erase it: a step-up committing inside that
+statement's window is still missed. The blast radius is bounded — after the
+transition, sessions are revoked and the status allowlist blocks every session
+lookup, so the step-up buys nothing and the attempt is preserved in
+`auth_events` for after-the-fact review — and closing it completely would
+require the step-up path to take the users row lock, which is the right shape
+for the operator-platform milestone rather than a settlement-side fix. A
+settlement operator is a high-value target; the
 interim allowlist has no JIT elevation or peer approval (TB7 milestone), and
 one operator both approves and confirms a case (two actions, one human) —
 bounded by reviewer≠reporter, the liveness re-check, the owner's void, and

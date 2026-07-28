@@ -15,7 +15,7 @@ import { CoreReadsRepo, type ReportableEstate } from './core-reads.repo';
 import { CLOCK, CONFIG, IDENTITY_LOCK, NOTIFIER, SYSTEM_ACTOR_ID, type Clock } from './di-tokens';
 import { Db, isUniqueViolation } from './db';
 import { EventsService } from './events.service';
-import { IdentityLockError, type IdentityLockPort } from './identity-lock';
+import { IdentityLockError, OwnerAliveError, type IdentityLockPort } from './identity-lock';
 import type { NotificationPort } from './notifications';
 import { OperatorsRepo } from './operators.repo';
 import { SettingsRepo, DEFAULT_WAITING_PERIOD_DAYS } from './settings.repo';
@@ -453,20 +453,45 @@ export class SettlementService {
         // Owner-liveness re-check, fail closed: unreachable identity means no
         // verification, never a default-dead answer.
         const liveness = await this.identity.liveness(locked.decedent_user_id);
-        if (
+        const aliveSinceCase =
           liveness.lastStepUpAt !== null &&
-          liveness.lastStepUpAt.getTime() > locked.created_at.getTime()
-        ) {
-          await this.cases.markResolved(tx, caseId, ['waiting_period'], 'owner_voided', now, null);
-          await this.identity.setState(locked.decedent_user_id, 'active', caseId);
-          const row = (await this.cases.findById(tx, caseId)) as CaseRow;
-          return { row, voided: true };
+          liveness.lastStepUpAt.getTime() > locked.created_at.getTime();
+
+        if (!aliveSinceCase) {
+          await this.cases.markVerified(tx, caseId, now);
+          try {
+            // The watermark restates the liveness predicate INSIDE identity's
+            // status write, closing the window between the read above and this
+            // commit: a step-up landing in between refuses the lock rather
+            // than silently entombing an owner who just proved they are alive.
+            await this.identity.setState(
+              locked.decedent_user_id,
+              'settlement',
+              caseId,
+              locked.created_at,
+            );
+            const row = (await this.cases.findById(tx, caseId)) as CaseRow;
+            return { row, voided: false };
+          } catch (err) {
+            if (!(err instanceof OwnerAliveError)) {
+              throw err;
+            }
+            // Fall through to the void path. markVerified above is undone by
+            // markResolved below — both are inside this open transaction.
+          }
         }
 
-        await this.cases.markVerified(tx, caseId, now);
-        await this.identity.setState(locked.decedent_user_id, 'settlement', caseId);
+        await this.cases.markResolved(
+          tx,
+          caseId,
+          ['waiting_period', 'verified'],
+          'owner_voided',
+          now,
+          null,
+        );
+        await this.identity.setState(locked.decedent_user_id, 'active', caseId);
         const row = (await this.cases.findById(tx, caseId)) as CaseRow;
-        return { row, voided: false };
+        return { row, voided: true };
       });
     } catch (err) {
       throw this.mapIdentityFailure(err);
@@ -608,11 +633,18 @@ export class SettlementService {
       const recorded = (await this.attempts.maxSeq(this.db, c.id)) ?? -1;
       for (let seq = Math.max(1, recorded + 1); seq <= maxSeq; seq++) {
         const channel = CONTACT_CHANNELS[(seq - 1) % CONTACT_CHANNELS.length] as ContactChannel;
-        const inserted = await this.db.withTransaction(SYSTEM_ACTOR_ID, (tx) =>
-          this.attempts.insert(tx, { caseId: c.id, seq, channel, attemptedAt: now }),
-        );
+        const inserted = await this.db.withTransaction(SYSTEM_ACTOR_ID, async (tx) => {
+          // Re-read under the row lock: the snapshot above may be stale, and a
+          // case the owner voided (or an operator rejected) mid-sweep must not
+          // collect further contact attempts on its permanent trail.
+          const current = await this.cases.lockById(tx, c.id);
+          if (!current || current.status !== 'waiting_period') {
+            return false;
+          }
+          return this.attempts.insert(tx, { caseId: c.id, seq, channel, attemptedAt: now });
+        });
         if (!inserted) {
-          continue; // another sweep recorded this slot
+          continue; // resolved mid-sweep, or another sweep recorded this slot
         }
         attempts += 1;
         await this.notifyOwner('owner_contact', c);

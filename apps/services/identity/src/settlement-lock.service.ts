@@ -44,6 +44,8 @@ export class SettlementLockService {
     state: SettlementLockState,
     caseId: string,
     now: Date,
+    /** Owner-liveness watermark: refuse if a step-up was granted after it. */
+    livenessNotAfter?: Date,
   ): Promise<{ status: string }> {
     const user = await this.users.findById(userId);
     if (!user) {
@@ -53,10 +55,23 @@ export class SettlementLockService {
       // Idempotent: settlement retries (or a replayed effect) are no-ops.
       return { status: user.status };
     }
-    const updated = await this.users.updateStatusFrom(userId, ALLOWED_TRANSITIONS[state], state);
+    const updated = await this.users.updateStatusFrom(
+      userId,
+      ALLOWED_TRANSITIONS[state],
+      state,
+      livenessNotAfter,
+    );
     if (!updated) {
-      // The row exists but sat outside the allowed 'from' set (or moved
-      // concurrently). Nothing changed; the caller sees the conflict.
+      // Two ways to land here: the row sat outside the allowed 'from' set, or
+      // the liveness interlock fired. Distinguish them — a caller told
+      // "invalid_transition" would retry, while "owner_alive" means the case
+      // must be voided instead.
+      if (livenessNotAfter) {
+        const lastStepUpAt = await this.authEvents.lastOccurredAt(userId, 'stepup.granted');
+        if (lastStepUpAt && lastStepUpAt.getTime() > livenessNotAfter.getTime()) {
+          throw new ConflictException({ error: 'owner_alive' });
+        }
+      }
       throw new ConflictException({ error: 'invalid_transition' });
     }
     await this.authEvents.insert({ userId, kind: 'settlement.status_changed', decision: state });

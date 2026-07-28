@@ -213,13 +213,18 @@ export class CasesRepo {
     reviewer: { id: string; at: Date } | null,
   ): Promise<boolean> {
     const rows = await tx.query<{ id: string }>(
+      // verified_at is cleared too: a resolved case was never verified, and the
+      // settlement_cases_verified_at_matches CHECK forbids the combination.
+      // (Reachable when a liveness-interlock refusal unwinds an in-transaction
+      // markVerified — see SettlementService.confirmVerification.)
       `UPDATE settlement_cases
           SET status = 'rejected_fraud',
               resolution = $2,
               resolved_at = $3,
               human_review_by = COALESCE($4, human_review_by),
               human_review_at = COALESCE($5, human_review_at),
-              waiting_period_ends = NULL
+              waiting_period_ends = NULL,
+              verified_at = NULL
         WHERE id = $1 AND status = ANY($6)
         RETURNING id`,
       [

@@ -26,6 +26,20 @@ export class IdentityLockError extends Error {
 }
 
 /**
+ * Identity refused the terminal transition because the owner proved liveness
+ * after the case opened — the docs/03 §5.1 interlock firing atomically with
+ * the status write, catching a step-up that landed after settlement's own
+ * liveness read. Distinct from IdentityLockError: this is an ANSWER (the owner
+ * is alive), not a failure, and the case must be voided.
+ */
+export class OwnerAliveError extends Error {
+  constructor() {
+    super('identity refused: owner proved liveness after the case opened');
+    this.name = 'OwnerAliveError';
+  }
+}
+
+/**
  * The identity half of the cross-service account lock, as settlement sees it.
  * Two operations: put the account into a settlement lock state, and read the
  * owner-liveness answer (last step-up grant) for the verification re-check.
@@ -33,7 +47,18 @@ export class IdentityLockError extends Error {
  * token for these calls by construction (the decedent cannot present one).
  */
 export interface IdentityLockPort {
-  setState(userId: string, state: LockState, caseId: string): Promise<void>;
+  /**
+   * `livenessNotAfter` (the case's opening instant) makes identity re-evaluate
+   * owner liveness in the SAME statement as the status write; it throws
+   * OwnerAliveError instead of locking out an owner who just proved they are
+   * alive. Passed on the terminal `settlement` transition.
+   */
+  setState(
+    userId: string,
+    state: LockState,
+    caseId: string,
+    livenessNotAfter?: Date,
+  ): Promise<void>;
   liveness(userId: string): Promise<LivenessAnswer>;
 }
 
@@ -62,7 +87,12 @@ export class HttpIdentityLock implements IdentityLockPort {
     this.fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
   }
 
-  async setState(userId: string, state: LockState, caseId: string): Promise<void> {
+  async setState(
+    userId: string,
+    state: LockState,
+    caseId: string,
+    livenessNotAfter?: Date,
+  ): Promise<void> {
     let response: Awaited<ReturnType<FetchLike>>;
     try {
       response = await this.fetchImpl(`${this.identityUrl}/internal/v1/settlement-lock/${userId}`, {
@@ -71,12 +101,33 @@ export class HttpIdentityLock implements IdentityLockPort {
           'content-type': 'application/json',
           [SERVICE_CREDENTIAL_HEADER]: this.credential,
         },
-        body: JSON.stringify({ state, caseId }),
+        body: JSON.stringify({
+          state,
+          caseId,
+          ...(livenessNotAfter ? { livenessNotAfter: livenessNotAfter.toISOString() } : {}),
+        }),
       });
     } catch {
       throw new IdentityLockError();
     }
     if (!response.ok) {
+      // 409 owner_alive is an ANSWER, not an outage: the liveness interlock
+      // fired atomically with the write, so the case must be voided instead.
+      if (response.status === 409) {
+        let refusal: unknown;
+        try {
+          refusal = await response.json();
+        } catch {
+          throw new IdentityLockError();
+        }
+        if (
+          typeof refusal === 'object' &&
+          refusal !== null &&
+          (refusal as { error?: unknown }).error === 'owner_alive'
+        ) {
+          throw new OwnerAliveError();
+        }
+      }
       throw new IdentityLockError();
     }
     let body: unknown;

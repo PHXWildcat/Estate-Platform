@@ -301,10 +301,13 @@ describe('verification (timer expiry is necessary, never sufficient)', () => {
     const dto = await h.service.confirmVerification(OPERATOR, SESSION, caseId);
     expect(dto.status).toBe('verified');
     expect(dto.verifiedAt).toBe(h.clock.value.toISOString());
-    expect(h.identity.setStateCalls).toEqual([
-      { userId: DECEDENT, state: 'deceased_pending', caseId },
-      { userId: DECEDENT, state: 'settlement', caseId },
+    expect(h.identity.setStateCalls.map((c) => [c.userId, c.state, c.caseId])).toEqual([
+      [DECEDENT, 'deceased_pending', caseId],
+      [DECEDENT, 'settlement', caseId],
     ]);
+    // Only the terminal transition carries the liveness watermark.
+    expect(h.identity.setStateCalls[0]?.livenessNotAfter).toBeUndefined();
+    expect(h.identity.setStateCalls[1]?.livenessNotAfter).toBeInstanceOf(Date);
     expect(auditActions(h.producer)).toContain('settlement.case.verified');
   });
 
@@ -333,6 +336,37 @@ describe('verification (timer expiry is necessary, never sufficient)', () => {
       expect.objectContaining({ via: 'liveness_check', reporterFlagged: true }),
     );
     expect(auditActions(h.producer)).not.toContain('settlement.case.verified');
+  });
+
+  it('passes the case-opening watermark so identity can re-check liveness atomically', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    const opened = h.cases.rows.get(caseId)?.created_at;
+    h.clock.value = new Date(NOW.getTime() + 5 * DAY + HOUR);
+    await h.service.confirmVerification(OPERATOR, SESSION, caseId);
+    const settle = h.identity.setStateCalls.find((c) => c.state === 'settlement');
+    expect(settle?.livenessNotAfter).toEqual(opened);
+  });
+
+  it('a step-up racing the commit voids the case instead of entombing a living owner', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    h.clock.value = new Date(NOW.getTime() + 5 * DAY + HOUR);
+    // Liveness read says "no step-up"; the step-up lands immediately after,
+    // so identity's atomic interlock refuses the terminal transition.
+    h.identity.livenessAnswer = { status: 'deceased_pending', lastStepUpAt: null };
+    h.identity.raceStepUpAt = new Date(NOW.getTime() + 5 * DAY);
+    await expect(h.service.confirmVerification(OPERATOR, SESSION, caseId)).rejects.toMatchObject({
+      response: { error: 'owner_alive' },
+    });
+    const row = h.cases.rows.get(caseId);
+    expect(row?.status).toBe('rejected_fraud');
+    expect(row?.resolution).toBe('owner_voided');
+    // The half-applied verification is unwound, and the account is restored.
+    expect(row?.verified_at).toBeNull();
+    expect(h.identity.setStateCalls.map((c) => c.state)).toEqual(['deceased_pending', 'active']);
+    expect(auditActions(h.producer)).not.toContain('settlement.case.verified');
+    expect(auditActions(h.producer)).toContain('settlement.case.voided');
   });
 
   it('a step-up OLDER than the case does not void (pre-existing sign-ins are not liveness)', async () => {

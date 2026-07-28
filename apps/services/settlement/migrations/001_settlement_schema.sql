@@ -106,6 +106,12 @@ CREATE INDEX ix_settlement_cases_status ON settlement_cases (status);
 CREATE INDEX ix_settlement_cases_reporter ON settlement_cases (reported_by);
 CREATE INDEX ix_settlement_cases_decedent ON settlement_cases (decedent_user_id);
 
+-- The evidence-read authority check filters with `verification_evidence @> ...`;
+-- btree cannot serve jsonb containment, and this table never shrinks (cases are
+-- evidence and are never deleted), so the lookup would seq-scan forever.
+CREATE INDEX ix_settlement_cases_evidence ON settlement_cases
+USING gin (verification_evidence jsonb_path_ops);
+
 CREATE TRIGGER trg_settlement_cases_updated_at
 BEFORE UPDATE ON settlement_cases
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

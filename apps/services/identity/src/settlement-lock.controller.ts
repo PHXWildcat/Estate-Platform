@@ -20,6 +20,9 @@ const SetStateSchema = z
   .object({
     state: z.enum(['deceased_pending', 'settlement', 'active']),
     caseId: z.string().uuid(),
+    /** Owner-liveness watermark (the case's opening instant): identity refuses
+     * the transition if a step-up was granted after it. */
+    livenessNotAfter: z.string().datetime().optional(),
   })
   .strict();
 
@@ -55,7 +58,13 @@ export class SettlementLockController {
   ): Promise<{ status: string }> {
     const id = parse(UuidSchema, userId);
     const input = parse(SetStateSchema, body);
-    return this.settlementLock.setState(id, input.state, input.caseId, this.clock());
+    return this.settlementLock.setState(
+      id,
+      input.state,
+      input.caseId,
+      this.clock(),
+      input.livenessNotAfter ? new Date(input.livenessNotAfter) : undefined,
+    );
   }
 
   @Get(':userId/liveness')

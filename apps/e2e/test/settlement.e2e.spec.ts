@@ -69,6 +69,10 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
   const coreSchema = `e2e_stl_core_${stamp}`;
   const auditSchema = `e2e_stl_audit_${stamp}`;
   let admin: Client;
+  /** Core-cluster DML must run with the scratch schema on the search_path:
+   * the version-capture triggers resolve `<table>_versions` through it, so a
+   * public-search_path client fails inside the trigger. */
+  let coreAdmin: Client;
   let auditDb: Client;
   let identityApp: ReturnType<TestingModule['createNestApplication']>;
   let profileApp: ReturnType<TestingModule['createNestApplication']>;
@@ -101,6 +105,8 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     }
     auditDb = new Client({ connectionString: schemaScopedUrl(baseUrl, auditSchema) });
     await auditDb.connect();
+    coreAdmin = new Client({ connectionString: schemaScopedUrl(baseUrl, coreSchema) });
+    await coreAdmin.connect();
 
     // --- identity (session authority + the settlement lock) ---
     process.env['DATABASE_URL'] = schemaScopedUrl(baseUrl, authSchema);
@@ -191,6 +197,7 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     await profileApp?.close();
     await identityApp?.close();
     await auditDb?.end();
+    await coreAdmin?.end();
     if (admin) {
       for (const schema of [authSchema, coreSchema, auditSchema]) {
         await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
@@ -241,33 +248,50 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       .expect(200);
   }
 
-  /** Seed the decedent's contact repository: a contact linked to `linked`,
-   * with an executor designation and an immediate contact-read grant. */
-  async function seedEstate(ownerUserId: string, linkedUserId: string): Promise<void> {
-    const contactId = randomUUID();
-    await admin.query(
-      `INSERT INTO ${coreSchema}.contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [contactId, ownerUserId, Buffer.from('ct'), linkedUserId, randomUUID()],
-    );
-    await admin.query(
-      `INSERT INTO ${coreSchema}.role_assignments
-         (owner_user_id, contact_id, role, scope_type, effective_condition)
-       VALUES ($1, $2, 'executor', 'estate', 'on_death_verified')`,
-      [ownerUserId, contactId],
-    );
-    const readRole = await admin.query<{ id: string }>(
-      `INSERT INTO ${coreSchema}.role_assignments
-         (owner_user_id, contact_id, role, scope_type, effective_condition)
-       VALUES ($1, $2, 'viewer', 'estate', 'immediate')
-       RETURNING id`,
-      [ownerUserId, contactId],
-    );
-    await admin.query(
-      `INSERT INTO ${coreSchema}.permission_grants (role_assignment_id, resource, action)
-       VALUES ($1, 'contact', 'read')`,
-      [(readRole.rows[0] as { id: string }).id],
-    );
+  /**
+   * Seed the decedent's estate through profile's REAL owner-authenticated API,
+   * so the contact row carries genuine envelope-encrypted fields and a real
+   * DEK (the reporter later READS these contacts, which decrypts them). Only
+   * `linked_user_id` is set directly: it is unencrypted metadata normally set
+   * when a contact accepts an invite, and no invite flow exists yet.
+   *
+   * The contact gets two designations: an executor role effective
+   * on_death_verified (what makes the reporter a plausible settlement
+   * reporter) and an immediate viewer role with a contact-read grant (the
+   * live non-owner read path whose freeze this test asserts).
+   */
+  async function seedEstate(owner: User, linkedUserId: string): Promise<void> {
+    const profile = supertest(profileApp.getHttpServer() as Parameters<typeof supertest>[0]);
+    const created = await profile
+      .post('/v1/contacts')
+      .set(owner.bearer)
+      .send({ name: 'Estate Contact', relationship: 'child' })
+      .expect(201);
+    const contactId = (created.body as { id: string }).id;
+    await coreAdmin.query(`UPDATE contacts SET linked_user_id = $2 WHERE id = $1`, [
+      contactId,
+      linkedUserId,
+    ]);
+    await profile
+      .post('/v1/role-assignments')
+      .set(owner.bearer)
+      .send({
+        contactId,
+        role: 'executor',
+        scopeType: 'estate',
+        effectiveCondition: 'on_death_verified',
+      })
+      .expect(201);
+    const viewer = await profile
+      .post('/v1/role-assignments')
+      .set(owner.bearer)
+      .send({ contactId, role: 'viewer', scopeType: 'estate', effectiveCondition: 'immediate' })
+      .expect(201);
+    await profile
+      .post(`/v1/role-assignments/${(viewer.body as { id: string }).id}/permissions`)
+      .set(owner.bearer)
+      .send({ resource: 'contact', action: 'read' })
+      .expect(201);
   }
 
   it('runs the §5.1 flow: report → review → deceased_pending (rescue stays open, grants freeze) → verify (credentials die)', async () => {
@@ -278,7 +302,7 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     const owner = await registerAndLogin('owner');
     const reporter = await registerAndLogin('reporter');
     const operator = await registerAndLogin('operator');
-    await seedEstate(owner.userId, reporter.userId);
+    await seedEstate(owner, reporter.userId);
     // The operator allowlist has no runtime grant API; this INSERT is the
     // ops-CLI write path.
     await admin.query(`INSERT INTO ${coreSchema}.settlement_operators (user_id) VALUES ($1)`, [
@@ -412,7 +436,7 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     const settlement = supertest(settlementApp.getHttpServer() as Parameters<typeof supertest>[0]);
     const owner2 = await registerAndLogin('owner2');
     const reporter2 = await registerAndLogin('reporter2');
-    await seedEstate(owner2.userId, reporter2.userId);
+    await seedEstate(owner2, reporter2.userId);
 
     const reported = await settlement
       .post('/v1/settlement/cases')

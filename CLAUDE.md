@@ -359,6 +359,23 @@ deviating from them, stop and propose the change with rationale — do not silen
   (5..60d) and frozen while a case is open. Cases have NO deleted_at — a case
   is evidence (§5.1 c6). Notifications are a precondition: intake +
   review-approve 503 in production on the stub notifier (M6 precedent).
+- 2026-07-27 — M7 owner-liveness interlock (found by the pre-push adversarial
+  review, fixed in-branch): the §5.1 "any owner step-up instantly voids the
+  case" control is enforced TWICE — settlement reads liveness, AND identity
+  restates it as a `NOT EXISTS` over `auth_events` inside the same CAS `UPDATE`
+  that writes the status. One check was not enough: settlement's read and its
+  commit are separated by a network hop, and because there is deliberately no
+  un-verify ceremony, a step-up landing in that window would irreversibly
+  entomb a LIVING owner in `settlement` — §5.1's Critical outcome reached by
+  accident rather than by attack. Identity returns `409 owner_alive` (distinct
+  from `invalid_transition`, which a caller would retry); settlement maps it to
+  a typed `OwnerAliveError` and takes the void path, unwinding its own
+  in-transaction `markVerified` (hence `markResolved` also clears `verified_at`,
+  which the DDL CHECK requires). Residual — a step-up inside that one statement
+  — accepted and recorded in docs/03 §6b: post-transition the sessions are
+  revoked and the status allowlist blocks every lookup, so it buys nothing and
+  stays visible in the ledger. Closing it fully needs the step-up path to take
+  the users row lock, which belongs to the TB7 operator-platform milestone.
 - 2026-07-27 — M7 new trust machinery: `ServiceCredentialGuard` in
   @estate/auth-guard (constant-time compare of a shared static credential;
   fails closed unwired; ≥32 chars required in prod) authenticates settlement on

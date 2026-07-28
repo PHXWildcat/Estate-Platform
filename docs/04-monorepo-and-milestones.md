@@ -867,6 +867,17 @@ cross-service account lock.**
   against identity's step-up ledger and voids on a step-up newer than the
   case (`409 owner_alive`, account restored, reporter flagged). The owner's
   kill switch is a step-up-gated void — the step-up IS the liveness proof.
+- **The liveness check is enforced twice, and the second one is the load-
+  bearing one.** A pre-push adversarial review found a TOCTOU: settlement read
+  liveness, then made two more calls before committing, so a step-up landing
+  in that window was invisible — and with no un-verify ceremony, that
+  irreversibly entombs a *living* owner in `settlement`, precisely §5.1's
+  Critical outcome. Fixed by restating the predicate inside identity's CAS
+  `UPDATE` (`NOT EXISTS` over `auth_events`, same statement, same cluster);
+  the refusal comes back as a typed `OwnerAliveError` that settlement converts
+  into the void path, unwinding its own in-transaction `markVerified`. The
+  residual (a step-up committing inside that one statement) is recorded in
+  docs/03 §6b with its bounded blast radius.
 - **The account lock is identity-enforced.** New internal settlement-lock API
   behind `ServiceCredentialGuard` (@estate/auth-guard; constant-time compare,
   fail-closed unwired, ≥32 chars required in production) — the one genuinely
