@@ -4,6 +4,11 @@ import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import {
+  HttpSettlementAuthority,
+  SETTLEMENT_AUTHORITY,
+  type SettlementStageAuthority,
+} from '@estate/settlement-client';
+import {
   FieldCrypto,
   LocalKmsProvider,
   type DekRepository,
@@ -126,6 +131,15 @@ function kmsProviderFor(config: AssetsConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: AssetsConfig): HttpSessionVerifier =>
         new HttpSessionVerifier({ identityUrl: config.identityUrl }),
+    },
+    // M7 PR2: settlement answers the executor staged-access question. The
+    // client fails closed, so an unreachable settlement refuses the estate
+    // read rather than widening it.
+    {
+      provide: SETTLEMENT_AUTHORITY,
+      inject: [CONFIG],
+      useFactory: (config: AssetsConfig): SettlementStageAuthority =>
+        new HttpSettlementAuthority({ settlementUrl: config.settlementUrl }),
     },
     FieldCipher,
     AssetsAuthz,

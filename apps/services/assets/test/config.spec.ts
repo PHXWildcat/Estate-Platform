@@ -47,12 +47,22 @@ describe('assets service config', () => {
         KAFKA_BROKERS: 'b-1:9092',
       }),
     ).toThrow(ConfigError); // still no IDENTITY_URL (cross-service verification)
+    expect(() =>
+      loadConfig({
+        ...prod,
+        AWS_KMS_KEY_ID: 'alias/financial',
+        AWS_REGION: 'us-east-1',
+        KAFKA_BROKERS: 'b-1:9092',
+        IDENTITY_URL: 'https://identity.internal',
+      }),
+    ).toThrow(ConfigError); // still no SETTLEMENT_URL (executor staged access)
     const ok = loadConfig({
       ...prod,
       AWS_KMS_KEY_ID: 'alias/financial',
       AWS_REGION: 'us-east-1',
       KAFKA_BROKERS: 'b-1:9092, b-2:9092',
       IDENTITY_URL: 'https://identity.internal',
+      SETTLEMENT_URL: 'https://settlement.internal',
     });
     expect(ok.kms).toEqual({ mode: 'aws', keyId: 'alias/financial', region: 'us-east-1' });
     expect(ok.kafkaBrokers).toEqual(['b-1:9092', 'b-2:9092']);

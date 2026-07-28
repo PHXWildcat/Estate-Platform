@@ -32,6 +32,9 @@ function build(): {
     buildCipher(),
     new AssetsAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
     noopEvents,
+    // Settlement refuses by default: these suites cover the OWNER paths, and a
+    // refusing gate keeps the executor route from accidentally passing here.
+    { checkStageAccess: () => Promise.resolve({ allowed: false as const }) },
   );
   return { service, ledger, views, bens };
 }

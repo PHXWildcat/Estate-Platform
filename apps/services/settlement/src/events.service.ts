@@ -183,6 +183,188 @@ export class EventsService {
     });
   }
 
+  // ------------------------------------------- PR2: staged access + tracking
+
+  async stageRequested(
+    executorId: string,
+    sessionId: string,
+    caseId: string,
+    stageId: string,
+    stage: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.stage.requested',
+      actorId: executorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'settlement_access_stage',
+      resourceId: stageId,
+      sessionId,
+      detail: { stage, caseId },
+    });
+  }
+
+  async stageApproved(
+    operatorId: string,
+    sessionId: string,
+    caseId: string,
+    stageId: string,
+    stage: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.stage.approved',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: null,
+      resourceType: 'settlement_access_stage',
+      resourceId: stageId,
+      sessionId,
+      detail: { stage, caseId },
+    });
+  }
+
+  async stageDenied(
+    operatorId: string,
+    sessionId: string,
+    caseId: string,
+    stageId: string,
+    stage: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.stage.denied',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: null,
+      resourceType: 'settlement_access_stage',
+      resourceId: stageId,
+      sessionId,
+      detail: { stage, caseId },
+    });
+  }
+
+  async stageRevoked(
+    operatorId: string,
+    sessionId: string,
+    caseId: string,
+    stageId: string,
+    stage: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.stage.revoked',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: null,
+      resourceType: 'settlement_access_stage',
+      resourceId: stageId,
+      sessionId,
+      detail: { stage, caseId },
+    });
+  }
+
+  async tasksGenerated(caseId: string, decedentUserId: string, count: number): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.task.created',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: decedentUserId,
+      resourceType: 'settlement_case',
+      resourceId: caseId,
+      sessionId: null,
+      detail: { count },
+    });
+  }
+
+  async taskCompleted(
+    executorId: string,
+    sessionId: string,
+    caseId: string,
+    taskId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.task.completed',
+      actorId: executorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'settlement_task',
+      resourceId: taskId,
+      sessionId,
+      detail: { caseId },
+    });
+  }
+
+  /** Amounts are ciphertext and NEVER appear here — only who and which. */
+  async distributionRecorded(
+    executorId: string,
+    sessionId: string,
+    caseId: string,
+    distributionId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.distribution.recorded',
+      actorId: executorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'distribution',
+      resourceId: distributionId,
+      sessionId,
+      detail: { caseId },
+    });
+  }
+
+  async distributionApproved(
+    operatorId: string,
+    sessionId: string,
+    caseId: string,
+    distributionId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.distribution.approved',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: null,
+      resourceType: 'distribution',
+      resourceId: distributionId,
+      sessionId,
+      detail: { caseId },
+    });
+  }
+
+  async distributionCompleted(
+    actorId: string,
+    sessionId: string,
+    caseId: string,
+    distributionId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.distribution.completed',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'distribution',
+      resourceId: distributionId,
+      sessionId,
+      detail: { caseId },
+    });
+  }
+
+  async caseClosed(
+    operatorId: string,
+    sessionId: string,
+    caseId: string,
+    decedentUserId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.case.closed',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: decedentUserId,
+      resourceType: 'settlement_case',
+      resourceId: caseId,
+      sessionId,
+      detail: {},
+    });
+  }
+
   async settingsUpdated(
     ownerId: string,
     sessionId: string,

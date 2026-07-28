@@ -3,6 +3,11 @@ import { APP_FILTER } from '@nestjs/core';
 import type { AuditProducer } from '@estate/audit-emitter';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import {
+  HttpSettlementAuthority,
+  SETTLEMENT_AUTHORITY,
+  type SettlementVaultGate,
+} from '@estate/settlement-client';
+import {
   CallerGuard,
   HttpSessionVerifier,
   SESSION_VERIFIER,
@@ -98,6 +103,20 @@ function notifierFor(): NotificationPort {
         new HttpSessionVerifier({ identityUrl: config.identityUrl }),
     },
     { provide: NOTIFIER, useFactory: (): NotificationPort => notifierFor() },
+    // docs/03 §6a: emergency access is the LAST staged grant of a settlement,
+    // so release consults settlement state. The client fails closed on every
+    // error path — an unreachable settlement blocks Zone A rather than opening
+    // it. The credential is required because this asks about the OWNER's
+    // estate, not the calling grantee's authority.
+    {
+      provide: SETTLEMENT_AUTHORITY,
+      inject: [CONFIG],
+      useFactory: (config: VaultConfig): SettlementVaultGate =>
+        new HttpSettlementAuthority({
+          settlementUrl: config.settlementUrl,
+          serviceCredential: config.settlementInternalToken,
+        }),
+    },
     VaultAuthz,
     KeysetsRepo,
     ItemsRepo,

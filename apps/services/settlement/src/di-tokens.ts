@@ -6,6 +6,10 @@ export const POLICY_DECISION_POINT = Symbol('POLICY_DECISION_POINT');
 export const NOTIFIER = Symbol('NOTIFIER');
 export const IDENTITY_LOCK = Symbol('IDENTITY_LOCK');
 export const CLOCK = Symbol('CLOCK');
+/** PR2: envelope encryption for distribution amounts ('settlement/kek'). */
+export const FIELD_CRYPTO = Symbol('FIELD_CRYPTO');
+export const DEK_REPOSITORY = Symbol('DEK_REPOSITORY');
+export const SERVICE_CREDENTIAL_VALUE = Symbol('SERVICE_CREDENTIAL_VALUE');
 
 /** Injectable clock so waiting-period math is testable without real time. */
 export type Clock = () => Date;

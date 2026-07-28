@@ -37,6 +37,15 @@ export function ifMatchOf(req: CallerRequest): bigint | undefined {
   return parse(IfMatchSchema, value);
 }
 
+/** Raw bearer token, re-extracted for forwarding to settlement. CallerGuard
+ * already validated the header shape; '' only means a wiring anomaly and fails
+ * closed inside the settlement client. */
+function bearerTokenOf(req: CallerRequest): string {
+  const raw = req.headers['authorization'];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  return typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
+}
+
 /**
  * Asset commands + queries (owner-only in M3). Commands return a thin
  * acknowledgement — CQRS reads come from the GET endpoints, which decrypt
@@ -58,6 +67,26 @@ export class AssetsController {
   @HttpCode(200)
   list(@Req() req: CallerRequest, @Query('asOf') asOf?: string): Promise<AssetDto[]> {
     return this.assets.listAssets(requireCaller(req).userId, parse(AsOfQuerySchema, asOf));
+  }
+
+  /**
+   * The estate inventory for an executor (M7 PR2, docs/03 §5.1 control 5).
+   * A DELIBERATELY separate route from `/v1/assets`: the owner path stays
+   * exactly as it was, and this one carries its own authorization model
+   * (settlement's staged grant) plus its own audit action. Merging them would
+   * put a non-owner branch inside the hot owner path.
+   */
+  @Get('estates/:ownerUserId/assets')
+  @HttpCode(200)
+  listEstate(
+    @Req() req: CallerRequest,
+    @Param('ownerUserId') ownerUserId: string,
+  ): Promise<AssetDto[]> {
+    return this.assets.listEstateAssets(
+      requireCaller(req).userId,
+      bearerTokenOf(req),
+      parse(UuidSchema, ownerUserId),
+    );
   }
 
   @Get('net-worth')

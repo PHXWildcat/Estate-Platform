@@ -8,6 +8,8 @@
 // to make a local `--coverage` run pass would gate at half the real number, so
 // it gates the real one instead: locally, run the suite with PG_TEST_URL (see
 // the README) when you want coverage. Ratchets toward 95/90 - never lower.
+// M7 PR2 raised the measured numbers to 89.79/72.72/92.59/91.02 (the §6a
+// settlement gate arrived with its own tests), so the floor ratchets UP.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 85, branches: 70, functions: 87, lines: 85 } },
+  coverageThreshold: { global: { statements: 89, branches: 72, functions: 92, lines: 90 } },
 });

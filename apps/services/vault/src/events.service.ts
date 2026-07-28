@@ -42,7 +42,8 @@ export class EventsService {
       | 'vault.emergency.requested'
       | 'vault.emergency.request_blocked'
       | 'vault.emergency.denied'
-      | 'vault.emergency.released',
+      | 'vault.emergency.released'
+      | 'vault.emergency.release_blocked',
     input: {
       actorId: string;
       resourceType: 'vault' | 'vault_item' | 'vault_session' | 'emergency_access_policy';
@@ -291,6 +292,29 @@ export class EventsService {
       resourceType: 'emergency_access_policy',
       resourceId: policyId,
       sessionId,
+    });
+  }
+
+  /**
+   * The docs/03 §6a gate refused: the owner's estate is in settlement and its
+   * `vault` stage is not approved (or settlement was unreachable, which fails
+   * closed the same way). Recorded even though nothing was written — a grantee
+   * probing a settled estate is exactly what the estate needs visible.
+   */
+  async emergencyReleaseBlocked(
+    granteeUserId: string,
+    sessionId: string,
+    policyId: string,
+    caseId: string | null,
+  ): Promise<void> {
+    await this.emit('vault.emergency.release_blocked', {
+      actorId: granteeUserId,
+      resourceType: 'emergency_access_policy',
+      resourceId: policyId,
+      sessionId,
+      detail: caseId
+        ? { reason: 'settlement_stage_not_reached', caseId }
+        : { reason: 'settlement_unavailable' },
     });
   }
 

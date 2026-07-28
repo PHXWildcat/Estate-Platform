@@ -1,8 +1,16 @@
 export {
+  ACCESS_STAGES,
   HttpSettlementAuthority,
+  SERVICE_CREDENTIAL_HEADER,
   SETTLEMENT_AUTHORITY,
+  type AccessStage,
   type EvidenceReadAuthority,
   type FetchLike,
   type HttpSettlementAuthorityOptions,
   type SettlementAuthority,
+  type SettlementEvidenceAuthority,
+  type SettlementStageAuthority,
+  type SettlementVaultGate,
+  type StageAccessAuthority,
+  type VaultReleaseAuthority,
 } from './client';

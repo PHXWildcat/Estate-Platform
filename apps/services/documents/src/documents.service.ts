@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { ExecutionStatus } from '@estate/contracts';
 import { DekDestroyedError, type DekRepository } from '@estate/crypto';
-import { SETTLEMENT_AUTHORITY, type SettlementAuthority } from '@estate/settlement-client';
+import { SETTLEMENT_AUTHORITY, type SettlementEvidenceAuthority } from '@estate/settlement-client';
 import { ContentCipher } from './content-cipher';
 import { Db, type Queryable } from './db';
 import { DocumentsAuthz, documentResource } from './authz.service';
@@ -121,7 +121,8 @@ export class DocumentsService {
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
     @Inject(MALWARE_SCANNER) private readonly scanner: MalwareScanner,
     @Inject(OCR_ENGINE) private readonly ocr: OcrEngine,
-    @Inject(SETTLEMENT_AUTHORITY) private readonly settlement: SettlementAuthority,
+    // Only the evidence question — documents never asks about stages or vault.
+    @Inject(SETTLEMENT_AUTHORITY) private readonly settlement: SettlementEvidenceAuthority,
   ) {}
 
   // ------------------------------------------------------------------ commands
@@ -615,6 +616,28 @@ export class DocumentsService {
       encoding,
       content: content.toString(encoding),
     };
+  }
+
+  /**
+   * Apply or lift a legal hold across an estate's documents (M7 PR2). This
+   * closes the M4 gap where `legal_hold` was ENFORCED (softDelete refuses a
+   * held document) but had no writer — the setting surface was explicitly
+   * assigned to settlement.
+   *
+   * Called only through the internal, service-credential-guarded route: it is
+   * not a user capability, and no bearer token can reach it. Idempotent, and
+   * the audit records how many documents actually moved.
+   */
+  async setEstateLegalHold(
+    ownerUserId: string,
+    hold: boolean,
+    caseId: string,
+  ): Promise<{ changed: number }> {
+    const changed = await this.db.withTransaction(ownerUserId, (tx) =>
+      this.documents.setLegalHoldForOwner(tx, ownerUserId, hold),
+    );
+    await this.events.legalHoldSet(ownerUserId, { hold, changed, caseId });
+    return { changed };
   }
 
   /**

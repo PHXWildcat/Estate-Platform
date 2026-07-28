@@ -108,3 +108,48 @@ export const EvidenceReadQuerySchema = z.object({
   documentId: z.string().uuid(),
   version: z.coerce.number().int().min(1),
 });
+
+// --------------------------------------------------------------- PR2 schemas
+
+/** The staged-access ladder (docs/03 §5.1 control 5). Vault is LAST. */
+export const AccessStageSchema = z.enum(['inventory', 'documents', 'vault']);
+
+export const StageRequestSchema = z.object({ stage: AccessStageSchema }).strict();
+
+export const StageDecisionSchema = z.object({ decision: z.enum(['approve', 'deny']) }).strict();
+
+export const StageAccessQuerySchema = z.object({
+  ownerUserId: z.string().uuid(),
+  stage: AccessStageSchema,
+});
+
+export const VaultReleaseQuerySchema = z.object({ ownerUserId: z.string().uuid() });
+
+export const CompleteTaskSchema = z
+  .object({
+    completed: z.boolean(),
+    /** A document_versions id in the DOCUMENTS cluster (letters testamentary). */
+    courtDocVersionId: z.string().uuid().optional(),
+  })
+  .strict();
+
+/**
+ * A distribution amount as a decimal string. Kept as a STRING end to end: it
+ * is encrypted before storage, never parsed into a float (money and binary
+ * floating point do not mix), and never appears in an audit payload.
+ */
+export const AmountSchema = z
+  .string()
+  .regex(/^\d{1,15}(\.\d{1,2})?$/, 'amount must be a decimal with at most 2 places');
+
+export const RecordDistributionSchema = z
+  .object({
+    beneficiaryContactId: z.string().uuid(),
+    assetId: z.string().uuid().optional(),
+    amount: AmountSchema.optional(),
+  })
+  .strict();
+
+export const DistributionStatusSchema = z
+  .object({ status: z.enum(['in_progress', 'completed', 'disputed']) })
+  .strict();

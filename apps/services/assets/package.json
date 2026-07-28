@@ -19,6 +19,7 @@
     "@estate/crypto": "workspace:*",
     "@estate/db": "workspace:*",
     "@estate/kms-aws": "workspace:*",
+    "@estate/settlement-client": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",

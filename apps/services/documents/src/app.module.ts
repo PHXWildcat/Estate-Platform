@@ -16,7 +16,9 @@ import { AwsKmsProvider } from '@estate/kms-aws';
 import {
   CallerGuard,
   HttpSessionVerifier,
+  SERVICE_CREDENTIAL,
   SESSION_VERIFIER,
+  ServiceCredentialGuard,
   StepUpGuard,
 } from '@estate/auth-guard';
 import {
@@ -48,6 +50,7 @@ import { DocumentsRepo } from './documents.repo';
 import { DocumentsService } from './documents.service';
 import { EventsService } from './events.service';
 import { EvidenceController } from './evidence.controller';
+import { LegalHoldController } from './legal-hold.controller';
 import { HttpErrorFilter } from './http-error.filter';
 import { ClamdScanner, StubScanner, type MalwareScanner } from './malware-scanner';
 import { LocalFsObjectStore, type ObjectStore } from './object-store';
@@ -104,7 +107,7 @@ function ocrFor(config: DocumentsConfig): OcrEngine {
 }
 
 @Module({
-  controllers: [DocumentsController, EvidenceController, TemplatesController],
+  controllers: [DocumentsController, EvidenceController, LegalHoldController, TemplatesController],
   providers: [
     { provide: CONFIG, useFactory: (): DocumentsConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -201,6 +204,14 @@ function ocrFor(config: DocumentsConfig): OcrEngine {
       useFactory: (config: DocumentsConfig): SettlementAuthority =>
         new HttpSettlementAuthority({ settlementUrl: config.settlementUrl }),
     },
+    {
+      // '' when unset: ServiceCredentialGuard fails closed and the internal
+      // legal-hold route refuses everything (dev must opt in explicitly).
+      provide: SERVICE_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: DocumentsConfig): string => config.settlementInternalToken,
+    },
+    ServiceCredentialGuard,
     ContentCipher,
     DocumentsAuthz,
     TemplatesRepo,

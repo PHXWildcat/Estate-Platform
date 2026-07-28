@@ -393,6 +393,34 @@ deviating from them, stop and propose the change with rationale — do not silen
   case resource carries decedent/reporter attrs, deliberately NOT `owner` —
   owner.cedar would otherwise grant the subject operator verbs on their own
   death case.
+- 2026-07-28 — M7 PR2 (staged access, distributions, the §6a gate): the stage
+  LADDER is the control — inventory→documents→vault, request only the next
+  rung, each rung separately operator-approved, requester≠approver as a DDL
+  CHECK — so Zone A is structurally the furthest grant from a fresh death
+  report. Executor identity resolves from role_assignments' dormant
+  `on_death_verified` half (settlement is its first consumer); designation
+  alone grants nothing. docs/03 §6a is CLOSED: vault consults settlement at
+  BOTH request and release (twice, because the waiting period is days long and
+  an estate can enter settlement in between), inside the transaction after the
+  row lock, authenticated by the SERVICE credential — a grantee's bearer must
+  not mint an answer about the owner's estate. Any non-terminal case without an
+  approved vault stage BLOCKS, and so does an unreachable settlement (fail
+  closed everywhere); blocking only delays a legitimate recovery (the escrow is
+  unspent) whereas allowing hands a fraudulent heir the platform half inside
+  the §5.1 window. Dual control on distributions is a row-local CHECK rather
+  than docs/02 §7's stated trigger — with `created_by` added, approver and
+  recorder are columns of the same row, so a CHECK is strictly stronger
+  (immediate, undeferrable, not disableable per session); the doc's intent is
+  preserved, only the mechanism is simpler, and the repo's one CONSTRAINT
+  TRIGGER (assets' share-sum) exists precisely because that invariant spans
+  rows. Amounts are ciphertext under settlement's OWN `settlement/kek` +
+  `settlement_deks`, keyed by the decedent so one shred retires the estate;
+  profile shares the cluster and still cannot read them. Executor estate reads
+  live on a SEPARATE assets route that forwards the caller's bearer to
+  settlement — settlement holds no data-read power, so compromising it
+  mis-answers rather than exfiltrates. Legal hold finally gained its writer
+  (service-credential internal route on documents), closing the M4 gap where
+  enforcement shipped without a setting surface.
 - 2026-07-27 — M6 security review (six parallel discovery lenses over the merged
   range + adversarial verify of each finding; 35 raw, 28 unique, 14 verified, 11
   refuted): no critical or app-exploitable vuln in the Zone A guarantee. Three

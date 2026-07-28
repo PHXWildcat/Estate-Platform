@@ -38,6 +38,31 @@ export class CoreReadsRepo {
     return rows.length > 0;
   }
 
+  /**
+   * Is `userId` the EXECUTOR of `decedentUserId`'s estate? The designation is
+   * `role_assignments.role = 'executor'` with
+   * `effective_condition = 'on_death_verified'` — the dormant half of the M2
+   * role model, which settlement is the first consumer of (nothing else in the
+   * platform resolves a non-'immediate' condition). Designation alone grants
+   * nothing: the caller still needs a verified case AND a separately approved
+   * stage, checked by the service.
+   */
+  async isExecutorOf(decedentUserId: string, userId: string): Promise<boolean> {
+    const rows = await this.db.query<{ ok: number }>(
+      `SELECT 1 AS ok
+         FROM role_assignments ra
+         JOIN contacts c ON c.id = ra.contact_id AND c.deleted_at IS NULL
+        WHERE ra.owner_user_id = $1
+          AND c.linked_user_id = $2
+          AND ra.role = 'executor'
+          AND ra.effective_condition = 'on_death_verified'
+          AND ra.deleted_at IS NULL
+        LIMIT 1`,
+      [decedentUserId, userId],
+    );
+    return rows.length > 0;
+  }
+
   /** Estates whose contact repository names the caller (IDs and role tokens only). */
   async reportableEstates(userId: string): Promise<ReportableEstate[]> {
     const rows = await this.db.query<{
