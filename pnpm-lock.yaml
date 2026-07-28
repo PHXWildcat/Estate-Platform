@@ -417,6 +417,9 @@ importers:
         specifier: 'catalog:'
         version: 3.25.76
     devDependencies:
+      '@estate/auth-guard':
+        specifier: workspace:*
+        version: link:../../../packages/auth-guard
       '@estate/config':
         specifier: workspace:*
         version: link:../../../packages/config

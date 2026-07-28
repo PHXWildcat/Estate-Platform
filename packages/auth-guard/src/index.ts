@@ -14,3 +14,16 @@ export {
   SERVICE_CREDENTIAL_HEADER,
   ServiceCredentialGuard,
 } from './service-credential.guard';
+export {
+  credentialEnvVarsFor,
+  credentialSentinel,
+  credentialSentinelEnv,
+  credentialsHeldIn,
+  expectedEnvVarFor,
+  inboundCredentialFor,
+  outboundCredentialsFor,
+  SERVICE_CREDENTIAL_GRAPH,
+  SERVICE_NAMES,
+  type ServiceCredentialEdge,
+  type ServiceName,
+} from './credential-graph';

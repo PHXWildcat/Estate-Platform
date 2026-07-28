@@ -1,3 +1,4 @@
+import { credentialEnvVarsFor, credentialSentinelEnv, credentialsHeldIn } from '@estate/auth-guard';
 import { randomBytes } from 'node:crypto';
 import { ConfigError, loadConfig } from '../src/config';
 
@@ -93,5 +94,18 @@ describe('plaid service config (fail-fast posture)', () => {
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
     }
+  });
+});
+
+describe('service-credential graph (packages/auth-guard/src/credential-graph.ts)', () => {
+  it('holds exactly the credentials the graph grants it — no more, no fewer', () => {
+    // Every credential in the product is present in this environment. What the
+    // service ABSORBS from it is the security property: the M7 review found one
+    // config field serving as both settlement's inbound and outbound credential,
+    // which transitively handed vault and documents a working key to identity's
+    // irreversible account-lock API. Equality in BOTH directions matters — extra
+    // means an over-grant, missing means a gate silently unwired.
+    const config = loadConfig(baseEnv({ ...credentialSentinelEnv() }));
+    expect(credentialsHeldIn(config)).toEqual(credentialEnvVarsFor('plaid'));
   });
 });

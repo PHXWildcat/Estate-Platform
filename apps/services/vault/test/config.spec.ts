@@ -1,3 +1,4 @@
+import { credentialEnvVarsFor, credentialSentinelEnv, credentialsHeldIn } from '@estate/auth-guard';
 import { ConfigError, loadConfig } from '../src/config';
 
 const BASE = {
@@ -168,5 +169,18 @@ describe('loadConfig', () => {
 
   it('rejects an unknown notification channel', () => {
     expect(() => loadConfig({ ...BASE, NOTIFY_MODE: 'carrier-pigeon' })).toThrow(ConfigError);
+  });
+});
+
+describe('service-credential graph (packages/auth-guard/src/credential-graph.ts)', () => {
+  it('holds exactly the credentials the graph grants it — no more, no fewer', () => {
+    // Every credential in the product is present in this environment. What the
+    // service ABSORBS from it is the security property: the M7 review found one
+    // config field serving as both settlement's inbound and outbound credential,
+    // which transitively handed vault and documents a working key to identity's
+    // irreversible account-lock API. Equality in BOTH directions matters — extra
+    // means an over-grant, missing means a gate silently unwired.
+    const config = loadConfig({ ...BASE, ...credentialSentinelEnv() });
+    expect(credentialsHeldIn(config)).toEqual(credentialEnvVarsFor('vault'));
   });
 });

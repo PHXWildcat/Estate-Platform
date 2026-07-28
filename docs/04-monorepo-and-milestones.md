@@ -966,9 +966,16 @@ cross-service account lock.**
   settlement and refuses on anything short of an explicit allow; the owner path
   is untouched. Settlement holds no data-read power itself, so compromising it
   mis-answers rather than exfiltrates. Reads audit as `asset.estate.viewed`.
-- **Legal hold gained its writer**, closing the M4 gap where enforcement
-  shipped without a setting surface — a service-credential internal route on
-  documents, callable only by settlement.
+- **Legal hold gained a writer ROUTE** — a service-credential internal route on
+  documents (`PUT /internal/v1/legal-hold`), intended for settlement.
+  CORRECTED (credential-graph work, 2026-07-28): this was written as "gained
+  its writer, closing the M4 gap", which overstated it. Nothing in the repo
+  calls that route: settlement declares no documents credential and has no
+  documents port, and `DOCUMENTS_INTERNAL_TOKEN` is not production-required, so
+  a default deploy has documents refusing every legal-hold call. **The M4 gap
+  is not closed** — the surface exists and its caller does not. Tracked as a
+  follow-up; `packages/auth-guard/src/credential-graph.ts` records the edge as
+  having zero holders, and the fence there fails if that is ever fudged.
 - Also: the task checklist generated in the same transaction as verification
   from an in-repo versioned template (anchored on `verified_at`; date of death
   is deliberately never stored), the estate timeline, and operator case close
@@ -1021,7 +1028,7 @@ the same milestone. Both are fixed in this branch.
   twice. **Fixed:** one secret per CALLEE, per direction. Each variable is now
   named for the service whose routes it opens — `IDENTITY_INTERNAL_TOKEN`
   (settlement→identity, the only lock-capable credential),
-  `SETTLEMENT_INTERNAL_TOKEN` (vault/documents→settlement's read-only gate),
+  `SETTLEMENT_INTERNAL_TOKEN` (vault→settlement's read-only gate),
   `DOCUMENTS_INTERNAL_TOKEN` (settlement→documents' legal hold). Splitting the
   field is only half the fix, because an operator pasting one secret into both
   slots recreates the collapse exactly, so settlement's config now *refuses to

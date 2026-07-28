@@ -16,4 +16,24 @@ describe('@estate/auth-guard public surface', () => {
     expect(typeof authGuard.SERVICE_CREDENTIAL).toBe('symbol');
     expect(authGuard.SERVICE_CREDENTIAL_HEADER).toBe('x-estate-service-credential');
   });
+
+  it('re-exports the credential graph and the helpers services assert with', () => {
+    // Every service's config spec imports these THROUGH the barrel. A symbol
+    // added to credential-graph.ts but forgotten here compiles fine inside this
+    // package and breaks every consumer — which is exactly what happened while
+    // building this, and the barrel had no test covering the new surface.
+    expect(authGuard.SERVICE_CREDENTIAL_GRAPH.length).toBeGreaterThanOrEqual(3);
+    expect(authGuard.SERVICE_NAMES.length).toBeGreaterThanOrEqual(8);
+    for (const fn of [
+      authGuard.credentialEnvVarsFor,
+      authGuard.credentialSentinel,
+      authGuard.credentialSentinelEnv,
+      authGuard.credentialsHeldIn,
+      authGuard.expectedEnvVarFor,
+      authGuard.inboundCredentialFor,
+      authGuard.outboundCredentialsFor,
+    ]) {
+      expect(fn).toBeInstanceOf(Function);
+    }
+  });
 });

@@ -22,6 +22,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@estate/auth-guard": "workspace:*",
     "@estate/config": "workspace:*",
     "@nestjs/testing": "catalog:",
     "@types/jest": "catalog:",
