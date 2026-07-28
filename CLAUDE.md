@@ -435,3 +435,28 @@ deviating from them, stop and propose the change with rationale — do not silen
   security parameter) — widened to 16 symbols; and reset left a published
   grantee public key whose private half it had just destroyed, which would have
   let later escrows seal shares nobody can open. Full record in docs/04 M6.
+- 2026-07-28 — M7 security review (six parallel discovery lenses over the merged
+  range `a278635..4d24537` + adversarial verify of each finding, verifiers told
+  to default to refuted; 23 raw, 23 unique, 12 verified, 6 confirmed / 6
+  refuted): no single-source, single-actor or timer-driven path into settlement
+  survived. The six confirmed collapse to TWO defects, both in machinery M7
+  introduced, both contradicting docs written in the same milestone; fixed
+  in-branch. (1) The service credential collapsed FOUR services onto one secret
+  — `SETTLEMENT_INTERNAL_TOKEN` was both what settlement expected inbound and
+  what it presented outbound, so any working deployment made vault's copy equal
+  identity's expected value, letting whoever holds the Zone A service's secret
+  call `PUT /internal/v1/settlement-lock/{victim}` twice and irreversibly entomb
+  a living user with no case, no operator, no waiting period (§5.1's Critical
+  outcome, whole control chain skipped). Rule adopted: ONE SECRET PER CALLEE,
+  PER DIRECTION — each var named for the service whose routes it OPENS
+  (`IDENTITY_INTERNAL_TOKEN`, `SETTLEMENT_INTERNAL_TOKEN`,
+  `DOCUMENTS_INTERNAL_TOKEN`), and settlement's config REFUSES TO BOOT in
+  production when its two credentials are equal, because splitting the field
+  cannot stop one value being pasted into both slots. (2) Profile's grant-freeze
+  `to_regclass` probe cached the NEGATIVE for the process lifetime, so a profile
+  process older than settlement's migration had §5.1 control 4 compiled out of
+  its SQL silently and forever — fail-open indistinguishable from a working
+  freeze; only the positive is cached now (a table cannot un-exist). Also fixed:
+  `revokeStage` lacked the requester≠decider pre-check, so the DDL CHECK
+  surfaced as an unhandled 500 with the access still granted. Full record in
+  docs/04 M7; the credential-scoping rule is in docs/03 §6b.

@@ -13,7 +13,11 @@ const PROD_BASE = {
   DATABASE_URL: 'postgres://prod/core',
   KAFKA_BROKERS: 'k1:9092,k2:9092',
   IDENTITY_URL: 'https://identity.internal',
+  // TWO credentials, in opposite directions and never equal: the inbound one
+  // callers present to THIS service's gate route, the outbound one this
+  // service presents to identity's account-lock API.
   SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
+  IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
   AWS_KMS_KEY_ID: 'alias/estate-settlement-kek',
   AWS_REGION: 'us-east-1',
 };
@@ -27,7 +31,8 @@ describe('settlement config', () => {
     expect(config.kafkaBrokers).toBeNull();
     expect(config.driverIntervalMs).toBe(60_000);
     // Unset in dev: identity's guard fails closed until both sides opt in.
-    expect(config.settlementInternalToken).toBe('');
+    expect(config.internalApiToken).toBe('');
+    expect(config.identityInternalToken).toBe('');
   });
 
   it('rejects a missing DATABASE_URL', () => {
@@ -58,22 +63,44 @@ describe('settlement config', () => {
   it('loads a fully specified production config', () => {
     const config = loadConfig(PROD_BASE);
     expect(config.kafkaBrokers).toEqual(['k1:9092', 'k2:9092']);
-    expect(config.settlementInternalToken).toBe('s'.repeat(48));
+    expect(config.internalApiToken).toBe('s'.repeat(48));
+    expect(config.identityInternalToken).toBe('i'.repeat(48));
   });
 
-  it.each(['KAFKA_BROKERS', 'IDENTITY_URL', 'SETTLEMENT_INTERNAL_TOKEN'])(
-    'production fails fast without %s',
+  it.each([
+    'KAFKA_BROKERS',
+    'IDENTITY_URL',
+    'SETTLEMENT_INTERNAL_TOKEN',
+    'IDENTITY_INTERNAL_TOKEN',
+  ])('production fails fast without %s', (key) => {
+    const env: Record<string, string> = { ...PROD_BASE };
+    delete env[key];
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+  });
+
+  it.each(['SETTLEMENT_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN'])(
+    'production rejects a weak (short) %s',
     (key) => {
-      const env: Record<string, string> = { ...PROD_BASE };
-      delete env[key];
-      expect(() => loadConfig(env)).toThrow(ConfigError);
+      expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
     },
   );
 
-  it('production rejects a weak (short) internal token', () => {
-    expect(() => loadConfig({ ...PROD_BASE, SETTLEMENT_INTERNAL_TOKEN: 'short' })).toThrow(
-      ConfigError,
-    );
+  it('production REFUSES to boot when the two credentials are the same value', () => {
+    // The M7 security review's load-bearing finding. One field used to serve
+    // both directions, so the deployment that made settlement's gate work also
+    // gave vault (and documents) a credential identity would accept on
+    // PUT /internal/v1/settlement-lock/:userId — enough to entomb any living
+    // user with no case, no operator and no waiting period (docs/03 §5.1's
+    // Critical outcome). Splitting the field is only half the fix: an operator
+    // pasting one secret into both slots recreates it exactly. Config refuses.
+    const shared = 'x'.repeat(48);
+    expect(() =>
+      loadConfig({
+        ...PROD_BASE,
+        SETTLEMENT_INTERNAL_TOKEN: shared,
+        IDENTITY_INTERNAL_TOKEN: shared,
+      }),
+    ).toThrow(ConfigError);
   });
 
   it('production refuses a whitespace-only broker list', () => {

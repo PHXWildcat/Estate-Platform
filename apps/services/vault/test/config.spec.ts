@@ -116,6 +116,12 @@ describe('loadConfig', () => {
     // owner's settlement state and opens no ciphertext whatsoever. The
     // invariant this test guards — no KMS key, no master key, no index key —
     // is unchanged.
+    //
+    // It is also scoped to exactly that one CALLEE. The M7 security review
+    // found the credential shared with identity's account-lock API, which
+    // would have made this config — the one in the product's most exposed
+    // service — a key to irreversibly marking a living user deceased. The
+    // exact key list below is what keeps that regression loud.
     const config = loadConfig({ ...BASE });
     expect(Object.keys(config).sort()).toEqual([
       'databaseUrl',
@@ -127,8 +133,17 @@ describe('loadConfig', () => {
       'settlementInternalToken',
       'settlementUrl',
     ]);
-    // Belt and braces: nothing in this config can decrypt anything.
-    for (const forbidden of ['kms', 'masterKey', 'searchIndexKey', 'kekAlias']) {
+    // Belt and braces: nothing in this config can decrypt anything, and
+    // nothing in it authenticates against identity's internal (account-lock)
+    // surface — vault's only service-to-service reach is settlement's gate.
+    for (const forbidden of [
+      'kms',
+      'masterKey',
+      'searchIndexKey',
+      'kekAlias',
+      'identityInternalToken',
+      'internalApiToken',
+    ]) {
       expect(Object.keys(config)).not.toContain(forbidden);
     }
   });

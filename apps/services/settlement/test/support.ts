@@ -442,7 +442,8 @@ export function testConfig(over: Partial<SettlementConfig> = {}): SettlementConf
     databaseUrl: 'postgres://unused',
     kafkaBrokers: null,
     identityUrl: 'http://identity.internal',
-    settlementInternalToken: 's'.repeat(32),
+    internalApiToken: 's'.repeat(32),
+    identityInternalToken: 'i'.repeat(32),
     notify: { mode: 'stub' },
     driverIntervalMs: 60_000,
     kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
@@ -584,6 +585,12 @@ export class InMemoryStages {
     const row = this.rows.find((r) => r.id === stageId);
     if (!row || !['requested', 'approved'].includes(row.status)) {
       return Promise.resolve(false);
+    }
+    // Revocation writes decided_by, so it lands under the SAME CHECK as
+    // approval. The fake used to omit this and permit what Postgres forbids,
+    // which is how the unhandled 23514 in revokeStage stayed invisible.
+    if (revokedBy === row.requested_by) {
+      return Promise.reject(Object.assign(new Error('check violation'), { code: '23514' }));
     }
     row.status = 'revoked';
     row.decided_by = revokedBy;

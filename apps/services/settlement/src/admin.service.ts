@@ -9,7 +9,7 @@ import type { FieldCrypto } from '@estate/crypto';
 import { CasesRepo, type CaseRow, type CaseStatus } from './cases.repo';
 import { CoreReadsRepo } from './core-reads.repo';
 import { CLOCK, FIELD_CRYPTO, type Clock } from './di-tokens';
-import { Db, type Queryable } from './db';
+import { Db, isCheckViolation, type Queryable } from './db';
 import {
   DistributionsRepo,
   type DistributionRow,
@@ -244,20 +244,43 @@ export class SettlementAdminService {
     return stageDto(outcome);
   }
 
-  /** Revoke an approved stage (operator). Access is a grant, not a fact. */
+  /**
+   * Revoke an approved stage (operator). Access is a grant, not a fact.
+   *
+   * Revocation records the revoker in `decided_by`, so it lands under the same
+   * `decided_by <> requested_by` CHECK as approval: an operator who is ALSO the
+   * executor that requested this stage cannot revoke it, and another operator
+   * must. That is a real constraint, not a formality — but it used to surface
+   * as an unhandled 23514 (a 500) with the access left standing, so the caller
+   * could not tell "get a second operator" from "the service is broken". The
+   * M7 security review flagged the unused `isCheckViolation` helper as exactly
+   * this gap. Refused up front, with the DDL as the backstop it is meant to be.
+   */
   async revokeStage(operator: string, sessionId: string, stageId: string): Promise<StageDto> {
     await this.assertOperator(operator);
     const now = this.clock();
-    const row = await this.db.withTransaction(operator, async (tx) => {
-      const locked = await this.stages.lockById(tx, stageId);
-      if (!locked) {
-        throw new NotFoundException({ error: 'not_found' });
-      }
-      if (!(await this.stages.revoke(tx, stageId, operator, now))) {
-        throw new ConflictException({ error: 'invalid_transition' });
-      }
-      return (await this.stages.lockById(tx, stageId)) as StageRow;
-    });
+    const row = await this.db
+      .withTransaction(operator, async (tx) => {
+        const locked = await this.stages.lockById(tx, stageId);
+        if (!locked) {
+          throw new NotFoundException({ error: 'not_found' });
+        }
+        if (locked.requested_by === operator) {
+          throw new ForbiddenException({ error: 'approver_is_requester' });
+        }
+        if (!(await this.stages.revoke(tx, stageId, operator, now))) {
+          throw new ConflictException({ error: 'invalid_transition' });
+        }
+        return (await this.stages.lockById(tx, stageId)) as StageRow;
+      })
+      .catch((err: unknown) => {
+        // Backstop for any dual-control CHECK the pre-check above missed: a
+        // clean refusal, never a 500 that reads as an outage.
+        if (isCheckViolation(err)) {
+          throw new ForbiddenException({ error: 'approver_is_requester' });
+        }
+        throw err;
+      });
     await this.events.stageRevoked(operator, sessionId, row.case_id, stageId, row.stage);
     return stageDto(row);
   }
