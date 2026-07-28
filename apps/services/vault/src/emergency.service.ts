@@ -14,6 +14,18 @@ import { EventsService } from './events.service';
 import { KeysetsRepo } from './keysets.repo';
 import type { EmergencyNotification, NotificationPort } from './notifications';
 import { VaultAuthz, vaultResource } from './authz.service';
+import { SETTLEMENT_AUTHORITY, type SettlementVaultGate } from '@estate/settlement-client';
+
+/**
+ * Internal sentinel: the settlement gate refused. Thrown from inside the
+ * transaction so the write unwinds, then converted to an audited 403 outside.
+ */
+class SettlementGateError extends Error {
+  constructor(readonly caseId: string | null) {
+    super('settlement gate refused emergency access');
+    this.name = 'SettlementGateError';
+  }
+}
 
 export interface GranteeInput {
   readonly granteeContactId: string;
@@ -97,6 +109,7 @@ export class EmergencyAccessService {
     private readonly authz: VaultAuthz,
     private readonly events: EventsService,
     @Inject(NOTIFIER) private readonly notifier: NotificationPort,
+    @Inject(SETTLEMENT_AUTHORITY) private readonly settlement: SettlementVaultGate,
     @Inject(CONFIG) private readonly config: VaultConfig,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
@@ -285,25 +298,33 @@ export class EmergencyAccessService {
     this.assertNotificationsUsable();
     const now = this.clock();
 
-    const outcome = await this.db.withTransaction(granteeUserId, async (tx) => {
-      const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+    const outcome = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
+      this.db.withTransaction(granteeUserId, async (tx) => {
+        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+        // The settlement gate (docs/03 §6a / §5.1 control 5). Checked BEFORE the
+        // clock starts: if the owner's estate is in settlement without an
+        // approved vault stage, the waiting period must never begin, so a
+        // grantee cannot pre-position a request to mature the instant a stage
+        // lands.
+        await this.assertSettlementPermits(policy.user_id);
 
-      const blocked = this.blockReason(policy);
-      if (blocked) {
-        // Counted and reported, not silently dropped: a grantee hammering a
-        // denied policy is exactly what the owner needs to see.
-        await this.emergency.countBlockedRequest(tx, policy.id);
-        return { blocked, policy };
-      }
+        const blocked = this.blockReason(policy);
+        if (blocked) {
+          // Counted and reported, not silently dropped: a grantee hammering a
+          // denied policy is exactly what the owner needs to see.
+          await this.emergency.countBlockedRequest(tx, policy.id);
+          return { blocked, policy };
+        }
 
-      const releasesAt = new Date(now.getTime() + policy.waiting_period_hours * 60 * 60 * 1000);
-      const updated = await this.emergency.markRequested(tx, {
-        id: policy.id,
-        at: now,
-        releasesAt,
-      });
-      return { blocked: null, policy: updated };
-    });
+        const releasesAt = new Date(now.getTime() + policy.waiting_period_hours * 60 * 60 * 1000);
+        const updated = await this.emergency.markRequested(tx, {
+          id: policy.id,
+          at: now,
+          releasesAt,
+        });
+        return { blocked: null, policy: updated };
+      }),
+    );
 
     if (outcome.blocked) {
       await this.events.emergencyRequestBlocked(
@@ -413,26 +434,35 @@ export class EmergencyAccessService {
   ): Promise<ReleaseDto> {
     const now = this.clock();
 
-    const released = await this.db.withTransaction(granteeUserId, async (tx) => {
-      const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+    const released = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
+      this.db.withTransaction(granteeUserId, async (tx) => {
+        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
 
-      if (policy.status === 'denied_by_owner')
-        throw new ForbiddenException({ error: 'denied_by_owner' });
-      if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
-      if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });
-      if (policy.status !== 'waiting' || !policy.releases_at) {
-        throw new ConflictException({ error: 'not_requested' });
-      }
-      if (policy.releases_at.getTime() > now.getTime()) {
-        throw new ForbiddenException({ error: 'waiting_period_active' });
-      }
+        if (policy.status === 'denied_by_owner')
+          throw new ForbiddenException({ error: 'denied_by_owner' });
+        if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
+        if (policy.status === 'released')
+          throw new ConflictException({ error: 'already_released' });
+        if (policy.status !== 'waiting' || !policy.releases_at) {
+          throw new ConflictException({ error: 'not_requested' });
+        }
+        if (policy.releases_at.getTime() > now.getTime()) {
+          throw new ForbiddenException({ error: 'waiting_period_active' });
+        }
 
-      const config = await this.emergency.lockConfig(tx, policy.user_id);
-      if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
+        // The settlement gate again, INSIDE the transaction and after the row
+        // lock (docs/03 §6a). Re-checked here because the waiting period is days
+        // long: an estate can enter settlement between the request and the
+        // collection, and Zone A is the stage that must come last.
+        await this.assertSettlementPermits(policy.user_id);
 
-      const updated = await this.emergency.markReleased(tx, policy.id, now);
-      return { policy: updated, config };
-    });
+        const config = await this.emergency.lockConfig(tx, policy.user_id);
+        if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
+
+        const updated = await this.emergency.markReleased(tx, policy.id, now);
+        return { policy: updated, config };
+      }),
+    );
 
     await this.events.emergencyReleased(
       granteeUserId,
@@ -453,6 +483,54 @@ export class EmergencyAccessService {
       keyShare: released.policy.key_share_ct.toString('base64'),
       threshold: released.config.threshold,
     };
+  }
+
+  /**
+   * The docs/03 §6a integration point: emergency access is the LAST staged
+   * grant of a settlement (§5.1 control 5), so it must not proceed while the
+   * owner's estate is in settlement without an approved `vault` stage.
+   *
+   * Fails CLOSED. An unreachable settlement service blocks release — the
+   * client returns `permitted: false` on every error path. That direction is
+   * deliberate: the failure mode of blocking is a delayed legitimate recovery,
+   * which the owner or an operator can clear; the failure mode of allowing is
+   * handing a fraudulent "heir" the platform half of the recovery key during
+   * exactly the window §5.1 exists to protect.
+   */
+  private async assertSettlementPermits(ownerUserId: string): Promise<void> {
+    const answer = await this.settlement.checkVaultRelease({ ownerUserId });
+    if (!answer.permitted) {
+      throw new SettlementGateError(answer.caseId);
+    }
+  }
+
+  /**
+   * Run `fn`, converting a gate refusal into an audited 403. The audit event
+   * is emitted AFTER the transaction unwinds (the established pattern), so a
+   * blocked attempt is recorded even though nothing was written — a grantee
+   * probing a settled estate is precisely what the owner's estate needs
+   * visible.
+   */
+  private async withSettlementGate<T>(
+    granteeUserId: string,
+    accountSessionId: string,
+    policyId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!(err instanceof SettlementGateError)) {
+        throw err;
+      }
+      await this.events.emergencyReleaseBlocked(
+        granteeUserId,
+        accountSessionId,
+        policyId,
+        err.caseId,
+      );
+      throw new ForbiddenException({ error: 'settlement_stage_not_reached' });
+    }
   }
 
   private async requireOwnerPolicy(

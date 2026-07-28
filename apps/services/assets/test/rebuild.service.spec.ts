@@ -27,6 +27,7 @@ describe('RebuildService (projection = fold(ledger))', () => {
       cipher,
       new AssetsAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
       noopEvents,
+      { checkStageAccess: () => Promise.resolve({ allowed: false as const }) },
     );
     const rebuild = new RebuildService(db, ledger, views, bens, cipher, noopEvents);
     return { service, rebuild, views, bens };

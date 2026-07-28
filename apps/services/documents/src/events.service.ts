@@ -142,6 +142,27 @@ export class EventsService {
     });
   }
 
+  /**
+   * M7 PR2: settlement applied or lifted a legal hold across an estate. Runs
+   * as the calling SERVICE (no user, no session) — the internal route has no
+   * bearer by construction — with the estate owner as the subject.
+   */
+  async legalHoldSet(
+    ownerUserId: string,
+    detail: { hold: boolean; changed: number; caseId: string },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'document.legal_hold.set',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: ownerUserId,
+      resourceType: 'document',
+      resourceId: null,
+      sessionId: null,
+      detail: { hold: detail.hold, changed: detail.changed, caseId: detail.caseId },
+    });
+  }
+
   async documentStatusChanged(
     actorId: string,
     documentId: string,

@@ -16,6 +16,7 @@
     "@estate/authz": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/db": "workspace:*",
+    "@estate/settlement-client": "workspace:*",
     "@estate/vault-crypto": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",

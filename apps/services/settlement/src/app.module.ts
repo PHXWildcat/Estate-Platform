@@ -1,14 +1,30 @@
 import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
+import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
 import {
   CallerGuard,
   HttpSessionVerifier,
+  SERVICE_CREDENTIAL,
   SESSION_VERIFIER,
+  ServiceCredentialGuard,
   StepUpGuard,
 } from '@estate/auth-guard';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
+import {
+  FieldCrypto,
+  LocalKmsProvider,
+  type DekRepository,
+  type KmsKeyProvider,
+} from '@estate/crypto';
+import { AwsKmsProvider } from '@estate/kms-aws';
 import type { PoolConfig } from 'pg';
+import { SettlementAdminController, SettlementVaultGateController } from './admin.controller';
+import { SettlementAdminService } from './admin.service';
+import { PgSettlementDekRepository } from './dek.repository';
+import { DistributionsRepo } from './distributions.repo';
+import { StagesRepo } from './stages.repo';
+import { TasksRepo } from './tasks.repo';
 import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
 import { SettlementAuthz } from './authz.service';
 import { CasesRepo } from './cases.repo';
@@ -20,6 +36,8 @@ import {
   AUDIT_PRODUCER,
   CLOCK,
   CONFIG,
+  DEK_REPOSITORY,
+  FIELD_CRYPTO,
   IDENTITY_LOCK,
   NOTIFIER,
   PG_POOL_CONFIG,
@@ -43,8 +61,29 @@ function notifierFor(): NotificationPort {
   return new StubNotifier();
 }
 
+/**
+ * Select the KMS backend. Production uses AWS KMS under THIS service's own KEK
+ * ('settlement/kek') — never profile's 'core/kek', even though they share the
+ * cluster — so the KMS grant, not the database, is the isolation chokepoint
+ * (docs/03 §5.3). config.ts already fails fast if the active mode's settings
+ * are missing.
+ */
+function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
+  if (config.kms.mode === 'aws') {
+    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
+      keyId: config.kms.keyId,
+    });
+  }
+  return new LocalKmsProvider(config.kms.masterKey);
+}
+
 @Module({
-  controllers: [SettlementController, OperatorController],
+  controllers: [
+    SettlementController,
+    OperatorController,
+    SettlementAdminController,
+    SettlementVaultGateController,
+  ],
   providers: [
     { provide: CONFIG, useFactory: (): SettlementConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -100,13 +139,55 @@ function notifierFor(): NotificationPort {
         }),
     },
     { provide: NOTIFIER, useFactory: (): NotificationPort => notifierFor() },
+    PgSettlementDekRepository,
+    { provide: DEK_REPOSITORY, useExisting: PgSettlementDekRepository },
+    {
+      provide: FIELD_CRYPTO,
+      inject: [CONFIG, DEK_REPOSITORY, EventsService],
+      useFactory: (
+        config: SettlementConfig,
+        deks: DekRepository,
+        events: EventsService,
+      ): FieldCrypto =>
+        new FieldCrypto(
+          kmsProviderFor(config),
+          deks,
+          async (event): Promise<void> => {
+            // Every field decryption is a logged event (docs/01 Zone B rule).
+            await events.audit.emit({
+              action: 'crypto.field.decrypted',
+              actorId: event.actorId,
+              actorType: event.actorType,
+              onBehalfOf: null,
+              resourceType: 'field',
+              resourceId: event.userId,
+              sessionId: null,
+              detail: { dekId: event.dekId, field: event.field, purpose: event.purpose },
+            });
+          },
+          { kekAlias: config.kekAlias },
+        ),
+    },
+    {
+      // '' when unset: ServiceCredentialGuard fails closed, so the vault-gate
+      // authority route refuses and emergency release stays blocked — the safe
+      // direction for Zone A.
+      provide: SERVICE_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: SettlementConfig): string => config.settlementInternalToken,
+    },
+    ServiceCredentialGuard,
     SettlementAuthz,
     CasesRepo,
     ContactAttemptsRepo,
     OperatorsRepo,
     SettingsRepo,
+    StagesRepo,
+    TasksRepo,
+    DistributionsRepo,
     CoreReadsRepo,
     SettlementService,
+    SettlementAdminService,
     SettlementWorkflowDriver,
     CallerGuard,
     StepUpGuard,

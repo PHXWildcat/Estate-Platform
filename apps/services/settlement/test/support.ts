@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
+import type { FieldCrypto } from '@estate/crypto';
+import { SettlementAdminService } from '../src/admin.service';
 import { InMemoryAuditProducer } from '../src/audit-producer';
+import type { DistributionRow } from '../src/distributions.repo';
+import type { AccessStage, StageRow } from '../src/stages.repo';
 import { SettlementAuthz } from '../src/authz.service';
 import type { CaseRow, CaseStatus, EvidenceEntry } from '../src/cases.repo';
 import type { SettlementConfig } from '../src/config';
@@ -16,6 +20,7 @@ import {
 } from '../src/identity-lock';
 import { StubNotifier } from '../src/notifications';
 import type { OperatorsRepo } from '../src/operators.repo';
+import type { TasksRepo } from '../src/tasks.repo';
 import { SettlementService } from '../src/settlement.service';
 
 export const NOW = new Date('2026-07-27T12:00:00Z');
@@ -198,6 +203,21 @@ export class InMemoryCases {
     return Promise.resolve(true);
   }
 
+  advanceStatus(
+    _tx: unknown,
+    caseId: string,
+    from: readonly CaseStatus[],
+    to: CaseStatus,
+  ): Promise<boolean> {
+    const row = this.rows.get(caseId);
+    if (!row || !from.includes(row.status)) {
+      return Promise.resolve(false);
+    }
+    row.status = to;
+    row.updated_at = this.clock();
+    return Promise.resolve(true);
+  }
+
   markVerified(_tx: unknown, caseId: string, verifiedAt: Date): Promise<boolean> {
     const row = this.rows.get(caseId);
     if (!row || row.status !== 'waiting_period') {
@@ -265,9 +285,79 @@ export class InMemorySettings {
   }
 }
 
+export class InMemoryTasks {
+  readonly rows: Array<{
+    id: string;
+    case_id: string;
+    title: string;
+    category: string | null;
+    assigned_role: string | null;
+    due_at: Date | null;
+    completed_at: Date | null;
+    completed_by: string | null;
+    court_doc_version_id: string | null;
+    created_at: Date;
+    updated_at: Date;
+  }> = [];
+
+  insertMany(
+    _tx: unknown,
+    caseId: string,
+    tasks: ReadonlyArray<{
+      title: string;
+      category?: string | null;
+      assignedRole?: string | null;
+      dueAt?: Date | null;
+    }>,
+  ): Promise<number> {
+    for (const t of tasks) {
+      this.rows.push({
+        id: randomUUID(),
+        case_id: caseId,
+        title: t.title,
+        category: t.category ?? null,
+        assigned_role: t.assignedRole ?? null,
+        due_at: t.dueAt ?? null,
+        completed_at: null,
+        completed_by: null,
+        court_doc_version_id: null,
+        created_at: NOW,
+        updated_at: NOW,
+      });
+    }
+    return Promise.resolve(tasks.length);
+  }
+
+  listByCase(_q: unknown, caseId: string): Promise<unknown[]> {
+    return Promise.resolve(this.rows.filter((r) => r.case_id === caseId));
+  }
+
+  lockById(_tx: unknown, taskId: string): Promise<unknown> {
+    return Promise.resolve(this.rows.find((r) => r.id === taskId) ?? null);
+  }
+
+  setCompletion(
+    _tx: unknown,
+    taskId: string,
+    completion: { at: Date; by: string } | null,
+    courtDocVersionId: string | null,
+  ): Promise<boolean> {
+    const row = this.rows.find((r) => r.id === taskId);
+    if (!row) {
+      return Promise.resolve(false);
+    }
+    row.completed_at = completion?.at ?? null;
+    row.completed_by = completion?.by ?? null;
+    row.court_doc_version_id = courtDocVersionId ?? row.court_doc_version_id;
+    return Promise.resolve(true);
+  }
+}
+
 export class FakeCoreReads {
   /** decedent -> linked platform user ids */
   readonly links = new Map<string, Set<string>>();
+  /** `${decedent}:${user}` pairs designated executor on_death_verified. */
+  readonly executors = new Set<string>();
 
   link(decedentUserId: string, userId: string): void {
     const set = this.links.get(decedentUserId) ?? new Set<string>();
@@ -277,6 +367,10 @@ export class FakeCoreReads {
 
   isLinkedContact(decedentUserId: string, userId: string): Promise<boolean> {
     return Promise.resolve(this.links.get(decedentUserId)?.has(userId) ?? false);
+  }
+
+  isExecutorOf(decedentUserId: string, userId: string): Promise<boolean> {
+    return Promise.resolve(this.executors.has(`${decedentUserId}:${userId}`));
   }
 
   reportableEstates(userId: string): Promise<ReportableEstate[]> {
@@ -351,6 +445,8 @@ export function testConfig(over: Partial<SettlementConfig> = {}): SettlementConf
     settlementInternalToken: 's'.repeat(32),
     notify: { mode: 'stub' },
     driverIntervalMs: 60_000,
+    kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
+    kekAlias: 'settlement/kek',
     ...over,
   };
 }
@@ -375,6 +471,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
   const attempts = new InMemoryAttempts();
   const operators = new InMemoryOperators();
   const settings = new InMemorySettings();
+  const tasks = new InMemoryTasks();
   const coreReads = new FakeCoreReads();
   const identity = new FakeIdentityLock();
   const notifier = new StubNotifier();
@@ -387,6 +484,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     attempts as unknown as ContactAttemptsRepo,
     operators as unknown as OperatorsRepo,
     settings,
+    tasks as unknown as TasksRepo,
     coreReads as unknown as CoreReadsRepo,
     authz,
     events,
@@ -407,6 +505,246 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     producer,
     clock,
   };
+}
+
+// ------------------------------------------------------------- PR2 harness
+
+export class InMemoryStages {
+  readonly rows: StageRow[] = [];
+
+  constructor(private readonly clock: () => Date) {}
+
+  insertRequest(
+    _tx: unknown,
+    input: { caseId: string; stage: AccessStage; requestedBy: string; requestedAt: Date },
+  ): Promise<StageRow> {
+    const row: StageRow = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      stage: input.stage,
+      status: 'requested',
+      requested_by: input.requestedBy,
+      requested_at: input.requestedAt,
+      decided_by: null,
+      decided_at: null,
+      created_at: this.clock(),
+      updated_at: this.clock(),
+    };
+    this.rows.push(row);
+    return Promise.resolve(row);
+  }
+
+  listByCase(_q: unknown, caseId: string): Promise<StageRow[]> {
+    return Promise.resolve(this.rows.filter((r) => r.case_id === caseId));
+  }
+
+  lockById(_tx: unknown, stageId: string): Promise<StageRow | null> {
+    return Promise.resolve(this.rows.find((r) => r.id === stageId) ?? null);
+  }
+
+  findLive(_q: unknown, caseId: string, stage: AccessStage): Promise<StageRow | null> {
+    return Promise.resolve(
+      this.rows.find(
+        (r) =>
+          r.case_id === caseId &&
+          r.stage === stage &&
+          (r.status === 'requested' || r.status === 'approved'),
+      ) ?? null,
+    );
+  }
+
+  isApproved(_q: unknown, caseId: string, stage: AccessStage): Promise<boolean> {
+    return Promise.resolve(
+      this.rows.some((r) => r.case_id === caseId && r.stage === stage && r.status === 'approved'),
+    );
+  }
+
+  decide(
+    _tx: unknown,
+    stageId: string,
+    status: 'approved' | 'denied',
+    decidedBy: string,
+    decidedAt: Date,
+  ): Promise<boolean> {
+    const row = this.rows.find((r) => r.id === stageId);
+    if (!row || row.status !== 'requested') {
+      return Promise.resolve(false);
+    }
+    // The DDL CHECK, restated: the fake must not permit what Postgres forbids.
+    if (decidedBy === row.requested_by) {
+      return Promise.reject(Object.assign(new Error('check violation'), { code: '23514' }));
+    }
+    row.status = status;
+    row.decided_by = decidedBy;
+    row.decided_at = decidedAt;
+    return Promise.resolve(true);
+  }
+
+  revoke(_tx: unknown, stageId: string, revokedBy: string, at: Date): Promise<boolean> {
+    const row = this.rows.find((r) => r.id === stageId);
+    if (!row || !['requested', 'approved'].includes(row.status)) {
+      return Promise.resolve(false);
+    }
+    row.status = 'revoked';
+    row.decided_by = revokedBy;
+    row.decided_at = at;
+    return Promise.resolve(true);
+  }
+}
+
+export class InMemoryDistributions {
+  readonly rows: DistributionRow[] = [];
+
+  constructor(private readonly clock: () => Date) {}
+
+  insert(
+    _tx: unknown,
+    input: {
+      caseId: string;
+      assetId: string | null;
+      beneficiaryContactId: string;
+      amountCt: Buffer | null;
+      dekId: string | null;
+      createdBy: string;
+    },
+  ): Promise<DistributionRow> {
+    const row: DistributionRow = {
+      id: randomUUID(),
+      case_id: input.caseId,
+      asset_id: input.assetId,
+      beneficiary_contact_id: input.beneficiaryContactId,
+      amount_ct: input.amountCt,
+      dek_id: input.dekId,
+      status: 'planned',
+      created_by: input.createdBy,
+      approved_by: null,
+      approved_at: null,
+      created_at: this.clock(),
+      updated_at: this.clock(),
+    };
+    this.rows.push(row);
+    return Promise.resolve(row);
+  }
+
+  listByCase(_q: unknown, caseId: string): Promise<DistributionRow[]> {
+    return Promise.resolve(this.rows.filter((r) => r.case_id === caseId));
+  }
+
+  lockById(_tx: unknown, id: string): Promise<DistributionRow | null> {
+    return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
+  }
+
+  approve(_tx: unknown, id: string, approvedBy: string, approvedAt: Date): Promise<boolean> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row || row.status !== 'planned') {
+      return Promise.resolve(false);
+    }
+    // The dual-control DDL CHECK, restated.
+    if (approvedBy === row.created_by) {
+      return Promise.reject(Object.assign(new Error('check violation'), { code: '23514' }));
+    }
+    row.status = 'approved';
+    row.approved_by = approvedBy;
+    row.approved_at = approvedAt;
+    return Promise.resolve(true);
+  }
+
+  setStatus(
+    _tx: unknown,
+    id: string,
+    from: readonly string[],
+    to: DistributionRow['status'],
+  ): Promise<boolean> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row || !from.includes(row.status)) {
+      return Promise.resolve(false);
+    }
+    row.status = to;
+    return Promise.resolve(true);
+  }
+
+  countOpen(_q: unknown, caseId: string): Promise<number> {
+    return Promise.resolve(
+      this.rows.filter((r) => r.case_id === caseId && !['completed', 'disputed'].includes(r.status))
+        .length,
+    );
+  }
+}
+
+/** A FieldCrypto stand-in: records what was sealed, returns a marker buffer. */
+export class FakeFieldCrypto {
+  readonly sealed: Array<{ userId: string; field: string; plaintext: string }> = [];
+
+  encryptField(
+    userId: string,
+    field: string,
+    plaintext: string,
+  ): Promise<{ ciphertext: Buffer; dekId: string }> {
+    this.sealed.push({ userId, field, plaintext });
+    return Promise.resolve({ ciphertext: Buffer.from(`sealed:${field}`), dekId: randomUUID() });
+  }
+}
+
+export interface AdminHarness {
+  admin: SettlementAdminService;
+  cases: InMemoryCases;
+  stages: InMemoryStages;
+  tasks: InMemoryTasks;
+  distributions: InMemoryDistributions;
+  operators: InMemoryOperators;
+  coreReads: FakeCoreReads;
+  crypto: FakeFieldCrypto;
+  producer: InMemoryAuditProducer;
+  clock: ClockHolder;
+}
+
+export function buildAdminHarness(): AdminHarness {
+  const clock: ClockHolder = { value: NOW };
+  const clockFn = (): Date => clock.value;
+  const cases = new InMemoryCases(clockFn);
+  const stages = new InMemoryStages(clockFn);
+  const tasks = new InMemoryTasks();
+  const distributions = new InMemoryDistributions(clockFn);
+  const operators = new InMemoryOperators();
+  const coreReads = new FakeCoreReads();
+  const crypto = new FakeFieldCrypto();
+  const producer = new InMemoryAuditProducer();
+  const events = new EventsService(producer, clockFn);
+  const admin = new SettlementAdminService(
+    fakeDb(),
+    cases,
+    stages,
+    tasks as unknown as TasksRepo,
+    distributions,
+    operators as unknown as OperatorsRepo,
+    coreReads as unknown as CoreReadsRepo,
+    events,
+    crypto as unknown as FieldCrypto,
+    clockFn,
+  );
+  return {
+    admin,
+    cases,
+    stages,
+    tasks,
+    distributions,
+    operators,
+    coreReads,
+    crypto,
+    producer,
+    clock,
+  };
+}
+
+/** Force a case into a post-verification status for administration tests. */
+export function markCaseVerified(cases: InMemoryCases, caseId: string, at: Date): void {
+  const row = cases.rows.get(caseId);
+  if (row) {
+    row.status = 'verified';
+    row.verified_at = at;
+    row.human_review_by = randomUUID();
+    row.human_review_at = at;
+  }
 }
 
 /** Parsed audit actions captured so far. */

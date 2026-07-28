@@ -20,6 +20,7 @@
     "@estate/service-plaid": "workspace:*",
     "@estate/service-profile": "workspace:*",
     "@estate/service-settlement": "workspace:*",
+    "@estate/settlement-client": "workspace:*",
     "@estate/service-vault": "workspace:*",
     "@estate/vault-crypto": "workspace:*",
     "@nestjs/testing": "catalog:",

@@ -115,6 +115,22 @@ export class DocumentsRepo {
     await tx.query(`UPDATE documents SET title = $2 WHERE id = $1`, [id, title]);
   }
 
+  /**
+   * Set or clear the legal hold (M7 PR2). Scoped to one owner's documents so a
+   * caller can only hold the estate it named. Returns how many rows moved,
+   * which the caller audits.
+   */
+  async setLegalHoldForOwner(tx: Queryable, userId: string, hold: boolean): Promise<number> {
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE documents
+          SET legal_hold = $2
+        WHERE user_id = $1 AND deleted_at IS NULL AND legal_hold <> $2
+        RETURNING id`,
+      [userId, hold],
+    );
+    return rows.length;
+  }
+
   async softDelete(tx: Queryable, id: string, at: Date): Promise<void> {
     await tx.query(`UPDATE documents SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`, [
       id,

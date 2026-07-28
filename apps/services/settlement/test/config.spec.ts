@@ -3,6 +3,9 @@ import { ConfigError, loadConfig } from '../src/config';
 const DEV_BASE = {
   NODE_ENV: 'development',
   DATABASE_URL: 'postgres://localhost:5434/core',
+  // PR2 encrypts distribution amounts, so the dev KMS master key is required
+  // outside production exactly as in every other Zone B service.
+  KMS_MASTER_KEY_HEX: 'ab'.repeat(32),
 };
 
 const PROD_BASE = {
@@ -11,6 +14,8 @@ const PROD_BASE = {
   KAFKA_BROKERS: 'k1:9092,k2:9092',
   IDENTITY_URL: 'https://identity.internal',
   SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
+  AWS_KMS_KEY_ID: 'alias/estate-settlement-kek',
+  AWS_REGION: 'us-east-1',
 };
 
 describe('settlement config', () => {
@@ -28,6 +33,27 @@ describe('settlement config', () => {
   it('rejects a missing DATABASE_URL', () => {
     expect(() => loadConfig({ NODE_ENV: 'development' })).toThrow(ConfigError);
   });
+
+  it('wraps its DEKs under its OWN kek alias, never profile’s core/kek', () => {
+    // Both services co-tenant the core cluster; the KMS grant is what keeps a
+    // distribution amount unreadable by profile (docs/03 §5.3).
+    expect(loadConfig(DEV_BASE).kekAlias).toBe('settlement/kek');
+  });
+
+  it.each(['KMS_MASTER_KEY_HEX'])('dev fails fast without %s', (key) => {
+    const env: Record<string, string> = { ...DEV_BASE };
+    delete env[key];
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+  });
+
+  it.each(['AWS_KMS_KEY_ID', 'AWS_REGION'])(
+    'production fails fast without %s (LocalKmsProvider is dev-only)',
+    (key) => {
+      const env: Record<string, string> = { ...PROD_BASE };
+      delete env[key];
+      expect(() => loadConfig(env)).toThrow(ConfigError);
+    },
+  );
 
   it('loads a fully specified production config', () => {
     const config = loadConfig(PROD_BASE);

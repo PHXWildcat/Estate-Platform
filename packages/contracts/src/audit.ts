@@ -82,6 +82,10 @@ export const AUDIT_ACTIONS = [
   'vault.emergency.request_blocked',
   'vault.emergency.denied',
   'vault.emergency.released',
+  // The docs/03 §6a integration point: a release (or a request) refused
+  // because the owner's settlement case has not reached its separately
+  // approved vault stage. Zone A is the LAST stage by design.
+  'vault.emergency.release_blocked',
   // Settlement service (core cluster; docs/03 §5.1). The case lifecycle is
   // the fraudulent-death-trigger audit trail: every transition is recorded,
   // including rejected and owner-voided cases, because the report itself is
@@ -93,8 +97,29 @@ export const AUDIT_ACTIONS = [
   'settlement.case.rejected',
   'settlement.case.voided',
   'settlement.case.verified',
+  'settlement.case.closed',
   'settlement.contact.attempted',
   'settlement.settings.updated',
+  // Staged executor access (docs/03 §5.1 control 5). Each stage is requested
+  // by the executor and separately approved by an operator, so both halves are
+  // recorded — a stage that was approved by whom, and when, is the audit
+  // question that matters after the fact.
+  'settlement.stage.requested',
+  'settlement.stage.approved',
+  'settlement.stage.denied',
+  'settlement.stage.revoked',
+  'settlement.task.created',
+  'settlement.task.completed',
+  // Distribution tracking under dual control (docs/02 §7). Amounts are
+  // ciphertext and never appear in a payload; these record WHO moved a
+  // distribution and to which state.
+  'settlement.distribution.recorded',
+  'settlement.distribution.approved',
+  'settlement.distribution.completed',
+  // An executor read the estate inventory through the staged-access grant.
+  'asset.estate.viewed',
+  // Legal hold set by settlement at verification (the M4 setting surface).
+  'document.legal_hold.set',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

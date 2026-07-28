@@ -3,9 +3,14 @@
 import * as settlementClient from '../src';
 
 describe('@estate/settlement-client public surface', () => {
-  it('re-exports the client, its DI token, and the authority types', () => {
+  it('re-exports the client, its DI token, and the authority constants', () => {
+    // Every runtime export is touched: a barrel re-export compiles to a getter,
+    // so an untouched symbol is an uncovered function AND an unproven export.
     expect(settlementClient.HttpSettlementAuthority).toBeDefined();
     expect(typeof settlementClient.SETTLEMENT_AUTHORITY).toBe('symbol');
+    expect(settlementClient.SERVICE_CREDENTIAL_HEADER).toBe('x-estate-service-credential');
+    // Zone A is LAST in the ladder — the ordering IS the control (docs/03 §5.1).
+    expect(settlementClient.ACCESS_STAGES).toEqual(['inventory', 'documents', 'vault']);
   });
 
   it('defaults to the global fetch transport when none is injected', async () => {

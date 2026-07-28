@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import {
   ConflictException,
+  ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { AssetCategory } from '@estate/contracts';
+import { SETTLEMENT_AUTHORITY, type SettlementStageAuthority } from '@estate/settlement-client';
 import { deserializePayload, serializePayload, type AssetEventPayload } from './asset-events';
 import { AssetsViewRepo, type AssetViewRow } from './assets-view.repo';
 import { AssetsAuthz, assetResource } from './authz.service';
@@ -123,6 +126,9 @@ export class AssetsService {
     private readonly cipher: FieldCipher,
     private readonly authz: AssetsAuthz,
     private readonly events: EventsService,
+    // M7 PR2: settlement answers the executor-access question. Only the stage
+    // question — assets never asks about evidence or Zone A.
+    @Inject(SETTLEMENT_AUTHORITY) private readonly settlement: SettlementStageAuthority,
   ) {}
 
   // ------------------------------------------------------------------ commands
@@ -429,6 +435,55 @@ export class AssetsService {
       });
     }
     return entries;
+  }
+
+  /**
+   * The estate inventory, read by a VERIFIED EXECUTOR rather than the owner
+   * (docs/03 §5.1 control 5 — inventory is the FIRST staged grant, and the
+   * least dangerous one).
+   *
+   * Authorization is settlement's, not Cedar's: `owner.cedar` would correctly
+   * deny a non-owner, and inventing an asset-side executor attribute would put
+   * the decision in the service that holds the data. Instead the executor's own
+   * bearer is forwarded to settlement, which answers only if a verified case
+   * names this caller as executor AND its `inventory` stage was separately
+   * approved by an operator. A refusal — including an unreachable settlement —
+   * is a uniform 403.
+   *
+   * Every such read is audited as `asset.estate.viewed` with onBehalfOf set to
+   * the decedent, because a third party read someone else's estate.
+   */
+  async listEstateAssets(
+    actor: string,
+    bearerToken: string,
+    ownerUserId: string,
+  ): Promise<AssetDto[]> {
+    const authority = await this.settlement.checkStageAccess({
+      bearerToken,
+      ownerUserId,
+      stage: 'inventory',
+    });
+    if (!authority.allowed) {
+      throw new ForbiddenException({ error: 'forbidden' });
+    }
+    const rows = await this.views.listLiveByUser(this.db, ownerUserId);
+    const versions = await this.ledger.latestSeqByAssets(
+      this.db,
+      rows.map((r) => r.asset_id),
+    );
+    const dtos: AssetDto[] = [];
+    for (const row of rows) {
+      // Decryption is attributed to the executor and audited (crypto.field
+      // .decrypted) exactly as an owner read would be.
+      dtos.push(
+        await this.toDto(row, actor, 'estate_inventory', versions.get(row.asset_id) ?? '0'),
+      );
+    }
+    await this.events.estateViewed(actor, ownerUserId, {
+      caseId: authority.caseId,
+      count: dtos.length,
+    });
+    return dtos;
   }
 
   async getBeneficiaries(actor: string, assetId: string): Promise<BeneficiariesDto> {

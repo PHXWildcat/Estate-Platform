@@ -143,6 +143,17 @@ export class FakeDocuments {
   lockById(_q: Queryable, id: string): Promise<DocumentRow | null> {
     return this.getLive(_q, id);
   }
+  /** M7 PR2: settlement's estate-wide legal hold. */
+  setLegalHoldForOwner(_tx: Queryable, userId: string, hold: boolean): Promise<number> {
+    let changed = 0;
+    for (const row of this.rows.values()) {
+      if (row.user_id === userId && row.deleted_at === null && row.legal_hold !== hold) {
+        row.legal_hold = hold;
+        changed += 1;
+      }
+    }
+    return Promise.resolve(changed);
+  }
   listLiveByUser(_q: Queryable | Db, userId: string): Promise<DocumentRow[]> {
     return Promise.resolve(
       [...this.rows.values()]

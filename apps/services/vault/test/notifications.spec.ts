@@ -19,6 +19,8 @@ function configFor(nodeEnv: VaultConfig['nodeEnv']): VaultConfig {
     kafkaBrokers: null,
     identityUrl: 'http://localhost:3001',
     notify: { mode: 'stub' },
+    settlementUrl: 'http://localhost:3007',
+    settlementInternalToken: 's'.repeat(32),
   };
 }
 
@@ -39,6 +41,10 @@ function serviceWith(nodeEnv: VaultConfig['nodeEnv'], notifier: NotificationPort
     { assertCan: (): void => undefined } as unknown as VaultAuthz,
     unusable as EventsService,
     notifier,
+    // A permissive settlement gate: this suite is about the NOTIFICATION gate,
+    // and the settlement gate is proven separately. Permitting here keeps the
+    // assertion honest — the notification refusal must fire on its own.
+    { checkVaultRelease: () => Promise.resolve({ permitted: true, caseId: null }) },
     configFor(nodeEnv),
     () => new Date('2026-08-01T00:00:00.000Z'),
   );

@@ -33,7 +33,7 @@ import {
 import type { InMemoryAuditProducer } from '../src/audit-producer';
 import type { UploadDocumentInput } from '../src/schemas';
 import type { TemplateRow } from '../src/templates.repo';
-import type { SettlementAuthority } from '@estate/settlement-client';
+import type { SettlementEvidenceAuthority } from '@estate/settlement-client';
 
 const OWNER = randomUUID();
 const STRANGER = randomUUID();
@@ -52,11 +52,11 @@ interface Harness {
 interface HarnessOptions {
   scanner?: MalwareScanner;
   ocr?: OcrEngine;
-  settlement?: SettlementAuthority;
+  settlement?: SettlementEvidenceAuthority;
 }
 
 /** Default: settlement refuses everything (the client's fail-closed posture). */
-const refusingSettlement: SettlementAuthority = {
+const refusingSettlement: SettlementEvidenceAuthority = {
   checkEvidenceRead: () => Promise.resolve({ allowed: false }),
 };
 
@@ -577,7 +577,7 @@ describe('evidence reads (M7 settlement authority)', () => {
   const OPERATOR = randomUUID();
   const CASE_ID = randomUUID();
 
-  function allowingSettlement(ownerUserId: string): SettlementAuthority {
+  function allowingSettlement(ownerUserId: string): SettlementEvidenceAuthority {
     return {
       checkEvidenceRead: () => Promise.resolve({ allowed: true, caseId: CASE_ID, ownerUserId }),
     };

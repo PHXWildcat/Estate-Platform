@@ -22,6 +22,7 @@ import { Client } from 'pg';
 import { Migrator } from '@estate/db';
 import { AuditEventSchema, TOPICS } from '@estate/contracts';
 import { HttpSessionVerifier, SESSION_VERIFIER, type FetchLike } from '@estate/auth-guard';
+import { SETTLEMENT_AUTHORITY } from '@estate/settlement-client';
 import {
   createEscrow,
   createVaultEnrollment,
@@ -139,6 +140,16 @@ describeIfPg('vault (Zone A) end to end', () => {
       .useValue(verifier)
       .overrideProvider(VAULT_AUDIT_PRODUCER)
       .useValue(vaultProducer)
+      // M7 PR2 (docs/03 §6a): emergency access now consults settlement. No
+      // settlement service runs in this spec, and the real client fails CLOSED
+      // — which would block every request/release here. This owner has no
+      // death case, so the honest stand-in permits; the gate's blocking
+      // behaviour is proven in the vault service's own integration suite and
+      // in settlement.e2e.spec.ts.
+      .overrideProvider(SETTLEMENT_AUTHORITY)
+      .useValue({
+        checkVaultRelease: () => Promise.resolve({ permitted: true, caseId: null }),
+      })
       .overrideProvider(VAULT_PG_POOL_CONFIG)
       .useValue({ connectionString: schemaScopedUrl(baseUrl, vaultSchema) })
       .compile();

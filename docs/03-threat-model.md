@@ -244,12 +244,52 @@ review-approve REFUSE in production while only the stub notifier is wired
 (503, the M6 emergency-access precedent) — a waiting period nobody can be
 told about is not a control.
 
-**Not yet shipped (PR2).** Control 5 — staged executor access with vault
-emergency access LAST and separately approved — including the §6a integration
-point (the vault release path consulting settlement state), dual-control
-distributions, tasks/timeline, the documents legal-hold setter, and case
-close. Until PR2, no post-verification access surface exists at all, which is
-the fail-safe ordering: verification currently grants nobody anything.
+**Control 5 — staged executor access — now shipped (PR2).**
+- *Staged, ordered, separately approved.* `inventory → documents → vault`, and
+  the order IS the control: an executor may request only the next rung, each
+  requires an operator approval, and Zone A is therefore structurally the
+  furthest grant from a fresh death report. A requested stage grants nothing.
+- *Two people per stage.* The executor requests, an operator approves, and a
+  DDL CHECK forbids them being the same person. Executor designation
+  (`role_assignments`, the dormant `on_death_verified` half that settlement is
+  the first consumer of) grants nothing on its own.
+- *§6a closed.* The vault's emergency-access `request` AND `release` now
+  consult settlement — twice, once before the waiting clock starts and again
+  inside the release transaction after the row lock, because the period is
+  days long and an estate can enter settlement in between. A non-terminal case
+  without an approved `vault` stage BLOCKS; so does an unreachable settlement,
+  since the client fails closed on every path. That direction is deliberate:
+  blocking delays a legitimate recovery (the escrow is unspent and releases
+  once the stage lands), while allowing hands a fraudulent "heir" the platform
+  half of the recovery key inside the very window §5.1 exists to protect.
+  Refusals are audited as `vault.emergency.release_blocked` with the case id.
+  The gate is authenticated by the SERVICE credential, not the grantee's
+  bearer — the question is about the owner's estate, not the caller's rights.
+- *Distributions under dual control* (docs/02 §7): the recorder is stamped from
+  the verified session at insert, the approver must differ, and a row-local
+  CHECK enforces it immediately rather than a trigger (both parties are columns
+  of the same row, so a CHECK is stricter — undeferrable and unbypassable).
+  Amounts are envelope ciphertext under settlement's own `settlement/kek`, so
+  profile's KMS grant cannot read them even sharing the cluster; the plaintext
+  never enters a column, a log, or an audit payload.
+- *Estate reads are the data owner's decision.* Assets exposes a separate
+  executor route that forwards the caller's bearer to settlement and refuses on
+  anything short of an explicit allow; settlement itself holds no data-read
+  power, so compromising it mis-answers questions rather than exfiltrating an
+  estate. Each such read is audited as `asset.estate.viewed` with the decedent
+  as `onBehalfOf`.
+- *Legal hold* (docs/00 compliance) is now settable — by settlement only,
+  through a service-credential internal route, closing the M4 gap where the
+  hold was enforced but had no writer.
+
+**Residual added by PR2.** A settlement operator can approve every stage of a
+case they did not report, so an insider operator plus a colluding "executor"
+designation is a two-party path to an estate. Bounded by: the executor
+designation must already exist in the decedent's own contact records (made
+before the death), the reporter≠reviewer and requester≠approver rules, the
+waiting period and owner-void that precede any of it, and a fully audited
+trail. Reducing it further needs M-of-N operator approval, which belongs to
+the TB7 operator-platform milestone alongside JIT elevation.
 
 **Residuals accepted.** The liveness interlock narrows the lockout race to a
 single statement but cannot erase it: a step-up committing inside that

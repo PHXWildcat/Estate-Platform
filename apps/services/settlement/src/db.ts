@@ -82,3 +82,19 @@ export function isUniqueViolation(err: unknown): boolean {
     (err as { code?: unknown }).code === '23505'
   );
 }
+
+/**
+ * Postgres check-violation detector. The dual-control CHECKs (approver ≠
+ * recorder, approver ≠ requester) are backstops behind service-layer refusals,
+ * so reaching one means a bug or a direct write — but it must still surface as
+ * a clean refusal rather than a 500, which is exactly the gap the assets
+ * service left when it defined this helper and never called it.
+ */
+export function isCheckViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === '23514'
+  );
+}

@@ -5,11 +5,14 @@ import { z } from 'zod';
  * process fails fast on a bad deployment instead of limping into runtime
  * errors. Mirrors the vault/documents services' config posture.
  *
- * Notice what is NOT here: no KMS key, no master key. PR1 stores no ciphertext
- * — cases carry IDs, enums, and timestamps only. PR2's encrypted distribution
- * amounts bring a dedicated 'settlement/kek' + settlement_deks (the plaid_deks
- * precedent), and the KMS config arrives with that feature, not before.
+ * PR2 adds envelope encryption for distribution amounts under a DEDICATED KEK
+ * alias ('settlement/kek') backed by `settlement_deks` — the plaid_deks
+ * precedent. Profile co-owns this cluster but its KMS grant can never unwrap a
+ * distribution amount (docs/03 §5.3: the grant, not the database, is the
+ * chokepoint).
  */
+
+const HEX_32_BYTES = /^[0-9a-fA-F]{64}$/;
 
 const EnvSchema = z
   .object({
@@ -44,6 +47,16 @@ const EnvSchema = z
     // The driver never transitions case state — it only records/sends due
     // contact attempts — so this is a liveness knob, not a safety one.
     DRIVER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+    // Dev/test only: drives LocalKmsProvider. Required OUTSIDE production;
+    // production uses AWS KMS instead (see AWS_KMS_KEY_ID).
+    KMS_MASTER_KEY_HEX: z
+      .string()
+      .regex(HEX_32_BYTES, 'KMS_MASTER_KEY_HEX must be 32 bytes of hex (64 chars)')
+      .optional(),
+    // Production KMS: the key that wraps THIS service's DEKs (never profile's
+    // 'core/kek'), plus its region.
+    AWS_KMS_KEY_ID: z.string().min(1).optional(),
+    AWS_REGION: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -58,6 +71,25 @@ const EnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ['IDENTITY_URL'],
         message: 'IDENTITY_URL is required in production (cross-service session verification)',
+      });
+    }
+    if (env.NODE_ENV === 'production') {
+      // Production must use AWS KMS (CloudHSM-rooted KEKs). The in-process
+      // LocalKmsProvider is never permitted outside dev/test.
+      for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required in production (LocalKmsProvider is dev/test only)`,
+          });
+        }
+      }
+    } else if (!env.KMS_MASTER_KEY_HEX) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['KMS_MASTER_KEY_HEX'],
+        message: 'KMS_MASTER_KEY_HEX is required outside production (drives LocalKmsProvider)',
       });
     }
     if (
@@ -76,6 +108,11 @@ const EnvSchema = z
 /** Which adapter delivers settlement notifications to the owner. */
 export type NotifyConfig = { readonly mode: 'stub' };
 
+/** Which KMS backs envelope encryption (local dev/test, AWS in production). */
+export type KmsConfig =
+  | { readonly mode: 'local'; readonly masterKey: Buffer }
+  | { readonly mode: 'aws'; readonly keyId: string; readonly region: string };
+
 export interface SettlementConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
@@ -87,6 +124,10 @@ export interface SettlementConfig {
   readonly settlementInternalToken: string;
   readonly notify: NotifyConfig;
   readonly driverIntervalMs: number;
+  /** Selected KMS backend (LocalKmsProvider in dev/test, AWS KMS in prod). */
+  readonly kms: KmsConfig;
+  /** KEK alias wrapping THIS service's per-decedent DEKs (never 'core/kek'). */
+  readonly kekAlias: string;
 }
 
 export class ConfigError extends Error {
@@ -123,5 +164,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SettlementConf
     settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
     notify: { mode: e.NOTIFY_MODE },
     driverIntervalMs: e.DRIVER_INTERVAL_MS,
+    // The superRefine above guarantees the required fields per environment, so
+    // these non-null assertions are sound.
+    kms:
+      e.NODE_ENV === 'production'
+        ? { mode: 'aws', keyId: e.AWS_KMS_KEY_ID!, region: e.AWS_REGION! }
+        : { mode: 'local', masterKey: Buffer.from(e.KMS_MASTER_KEY_HEX!, 'hex') },
+    kekAlias: 'settlement/kek',
   };
 }

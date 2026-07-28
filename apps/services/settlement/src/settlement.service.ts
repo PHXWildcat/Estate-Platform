@@ -19,6 +19,8 @@ import { IdentityLockError, OwnerAliveError, type IdentityLockPort } from './ide
 import type { NotificationPort } from './notifications';
 import { OperatorsRepo } from './operators.repo';
 import { SettingsRepo, DEFAULT_WAITING_PERIOD_DAYS } from './settings.repo';
+import { TasksRepo } from './tasks.repo';
+import { generateTasks } from './task-template';
 import type {
   EvidenceInput,
   ProviderReportInput,
@@ -114,6 +116,7 @@ export class SettlementService {
     private readonly attempts: ContactAttemptsRepo,
     private readonly operators: OperatorsRepo,
     private readonly settings: SettingsRepo,
+    private readonly tasks: TasksRepo,
     private readonly coreReads: CoreReadsRepo,
     private readonly authz: SettlementAuthz,
     private readonly events: EventsService,
@@ -428,6 +431,7 @@ export class SettlementService {
     await this.assertOperator(operator);
     const now = this.clock();
     let outcome: { row: CaseRow; voided: boolean };
+    let taskCount = 0;
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
         const locked = await this.cases.lockById(tx, caseId);
@@ -459,6 +463,11 @@ export class SettlementService {
 
         if (!aliveSinceCase) {
           await this.cases.markVerified(tx, caseId, now);
+          // The checklist is generated in the SAME transaction as verification,
+          // so a verified case always has one (and a rolled-back verification
+          // leaves none behind). Anchored on the verification instant — the
+          // platform does not record a date of death.
+          taskCount = await this.tasks.insertMany(tx, caseId, generateTasks(now));
           try {
             // The watermark restates the liveness predicate INSIDE identity's
             // status write, closing the window between the read above and this
@@ -509,6 +518,9 @@ export class SettlementService {
       throw new ConflictException({ error: 'owner_alive' });
     }
     await this.events.caseVerified(operator, sessionId, caseId, outcome.row.decedent_user_id);
+    if (taskCount > 0) {
+      await this.events.tasksGenerated(caseId, outcome.row.decedent_user_id, taskCount);
+    }
     return toDto(outcome.row, now);
   }
 

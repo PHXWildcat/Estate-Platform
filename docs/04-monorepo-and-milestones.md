@@ -928,12 +928,56 @@ cross-service account lock.**
   credential kill at verified, the step-up-gated void, and ingests
   settlement's produced audit bytes into a verified hash chain.
 
-**PR2 (next):** staged executor access (inventory → documents → vault, each
-separately approved), the docs/03 §6a vault-release gate, executor asset
-reads, tasks/timeline (anchored on `verified_at`; date-of-death deliberately
-not stored), dual-control distributions (`created_by` + approver≠recorder
-trigger, `settlement_deks` under `settlement/kek`), documents legal-hold
-setter, case close.
+**PR2 — post-verification administration (shipped).**
+
+- **The ladder is the control.** `settlement_access_stages` implements
+  inventory → documents → vault with no skipping: an executor may request only
+  the next rung, and each rung needs a separate operator approval, so Zone A is
+  structurally the furthest grant from a fresh report. Requester ≠ approver is
+  a DDL CHECK. Executor identity comes from `role_assignments`
+  (`role='executor'`, `effective_condition='on_death_verified'`) — settlement
+  is the first consumer of the dormant half of the M2 role model, and
+  designation alone still grants nothing.
+- **docs/03 §6a closed at last.** The vault consults settlement at BOTH
+  `request` and `release` — twice because the waiting period is days long and
+  an estate can enter settlement in between — inside the transaction, after the
+  row lock. Any non-terminal case without an approved `vault` stage blocks, and
+  so does an unreachable settlement (the client fails closed everywhere).
+  Blocking is the safe direction: the escrow is unspent and releases once the
+  stage lands, whereas allowing hands a fraudulent heir the platform half
+  during exactly the §5.1 window. Authenticated by the SERVICE credential —
+  the grantee's bearer must not mint an answer about the owner's estate.
+  Refusals audit as `vault.emergency.release_blocked`.
+- **Dual control as a CHECK, not a trigger — a deliberate deviation from
+  docs/02 §7's wording.** With `created_by` (additive, and required by the
+  doc's own note) the approver and recorder are columns of the SAME row, so a
+  row-local CHECK is strictly stronger than a trigger: immediate, undeferrable,
+  and impossible to disable per-session. The doc's intent is preserved; only
+  the mechanism is simpler. The one CONSTRAINT TRIGGER precedent in the repo
+  (assets' share-sum) exists because that invariant spans rows.
+- **Amounts are ciphertext under settlement's own KEK.** `settlement_deks` +
+  `settlement/kek` (the plaid_deks precedent), keyed by the DECEDENT so
+  crypto-shredding an estate retires every amount at once. Profile co-tenants
+  the cluster and still cannot read them — the KMS grant is the chokepoint.
+  The plaintext amount is a decimal STRING end to end (never a float) and
+  appears in no column, log, or audit payload.
+- **Executor reads stay the data owner's decision.** Assets gained a separate
+  `/v1/estates/:ownerUserId/assets` route that forwards the caller's bearer to
+  settlement and refuses on anything short of an explicit allow; the owner path
+  is untouched. Settlement holds no data-read power itself, so compromising it
+  mis-answers rather than exfiltrates. Reads audit as `asset.estate.viewed`.
+- **Legal hold gained its writer**, closing the M4 gap where enforcement
+  shipped without a setting surface — a service-credential internal route on
+  documents, callable only by settlement.
+- Also: the task checklist generated in the same transaction as verification
+  from an in-repo versioned template (anchored on `verified_at`; date of death
+  is deliberately never stored), the estate timeline, and operator case close
+  gated on all distributions being terminal.
+- Tests: 92 settlement (the ladder, both dual-control rules, the vault-gate
+  truth table, the PII firewall over every PR2 payload), 162 vault including
+  two integration tests that prove the gate blocks a request and a mid-wait
+  release, and 25 settlement-client. Coverage floors re-measured with
+  `--coverage`; vault's ratcheted UP to 89/72/92/90.
 
 **Follow-ups recorded, not silently dropped:** Temporal adoption (with the
 cloud environment) · the notifications service (unblocks production

@@ -49,6 +49,11 @@ const EnvSchema = z
     // IN production; dev defaults to localhost. The client fails closed, so a
     // wrong value disables evidence reads rather than widening them.
     SETTLEMENT_URL: z.string().url().optional(),
+    // Shared credential authenticating settlement on the internal legal-hold
+    // route (M7 PR2). Unset ⇒ the guard fails closed and holds cannot be
+    // applied, which is safe: enforcement already refuses deletion of anything
+    // already held.
+    SETTLEMENT_INTERNAL_TOKEN: z.string().optional(),
     OBJECT_STORE_MODE: z.enum(['fs', 's3']).default('fs'),
     // fs mode: directory for the local object store (dev/test only).
     OBJECT_STORE_DIR: z.string().min(1).optional(),
@@ -194,6 +199,8 @@ export interface DocumentsConfig {
   readonly identityUrl: string;
   /** Settlement service base URL for evidence-read authority checks (M7). */
   readonly settlementUrl: string;
+  /** Shared credential for the internal legal-hold route ('' ⇒ refuse all). */
+  readonly settlementInternalToken: string;
 }
 
 export class ConfigError extends Error {
@@ -250,5 +257,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DocumentsConfi
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
     settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
+    settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
   };
 }

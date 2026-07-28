@@ -33,6 +33,15 @@ const EnvSchema = z
     // EmergencyAccessService), so the failure is scoped to the flow whose
     // safety actually depends on it.
     NOTIFY_MODE: z.enum(['stub']).default('stub'),
+    // Base URL of the settlement service (M7 PR2, docs/03 §6a): emergency
+    // access is the LAST staged grant of a settlement, so release consults it.
+    // Required IN production; dev defaults to localhost.
+    SETTLEMENT_URL: z.string().url().optional(),
+    // Shared service credential for that gate. The question is about the
+    // OWNER's settlement state, not the calling grantee's authority, so it
+    // cannot ride on a user bearer. Unset ⇒ the client blocks locally, which
+    // keeps Zone A closed rather than open.
+    SETTLEMENT_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -49,6 +58,24 @@ const EnvSchema = z
         message: 'IDENTITY_URL is required in production (cross-service session verification)',
       });
     }
+    if (env.NODE_ENV === 'production' && !env.SETTLEMENT_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SETTLEMENT_URL'],
+        message: 'SETTLEMENT_URL is required in production (the docs/03 §6a emergency-access gate)',
+      });
+    }
+    if (
+      env.NODE_ENV === 'production' &&
+      (!env.SETTLEMENT_INTERNAL_TOKEN || env.SETTLEMENT_INTERNAL_TOKEN.length < 32)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SETTLEMENT_INTERNAL_TOKEN'],
+        message:
+          'SETTLEMENT_INTERNAL_TOKEN is required in production (>= 32 chars; without it the settlement gate blocks every release)',
+      });
+    }
   });
 
 /** Which adapter delivers emergency-access notifications to the owner. */
@@ -62,6 +89,10 @@ export interface VaultConfig {
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
   readonly notify: NotifyConfig;
+  /** Settlement base URL for the docs/03 §6a emergency-access gate. */
+  readonly settlementUrl: string;
+  /** Shared credential for that gate ('' ⇒ the client blocks locally). */
+  readonly settlementInternalToken: string;
 }
 
 export class ConfigError extends Error {
@@ -96,5 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): VaultConfig {
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
     notify: { mode: e.NOTIFY_MODE },
+    settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
+    settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
   };
 }

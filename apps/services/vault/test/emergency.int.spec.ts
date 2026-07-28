@@ -36,6 +36,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { InMemoryAuditProducer } from '../src/audit-producer';
 import { AUDIT_PRODUCER, CLOCK, NOTIFIER, PG_POOL_CONFIG } from '../src/di-tokens';
+import { SETTLEMENT_AUTHORITY, type SettlementVaultGate } from '@estate/settlement-client';
 import { StubNotifier } from '../src/notifications';
 import type { EscrowDto, PolicyDto, ReleaseDto } from '../src/emergency.service';
 
@@ -80,6 +81,21 @@ describeIfPg('emergency access end to end', () => {
   let server: Server;
   let producer: InMemoryAuditProducer;
   let notifier: StubNotifier;
+
+  /**
+   * The settlement gate, mutable per-test. Default: the owner has no
+   * settlement case, so emergency access behaves exactly as it did in M6.
+   */
+  const settlementGate: SettlementVaultGate & {
+    permitted: boolean;
+    caseId: string | null;
+  } = {
+    permitted: true,
+    caseId: null,
+    checkVaultRelease() {
+      return Promise.resolve({ permitted: this.permitted, caseId: this.caseId });
+    },
+  };
 
   /** Injected clock, so the waiting period can be crossed without waiting. */
   let now = new Date('2026-08-01T09:00:00.000Z');
@@ -163,6 +179,12 @@ describeIfPg('emergency access end to end', () => {
       .useValue({ connectionString: pgUrl, options: `-c search_path=${schema}` })
       .overrideProvider(SESSION_VERIFIER)
       .useValue(fakeVerifier)
+      // The docs/03 §6a settlement gate. Without this override the REAL client
+      // is wired at localhost:3007, no settlement is running, and the gate
+      // (correctly) fails closed and blocks every request and release — which
+      // is exactly what the dedicated block test below asserts.
+      .overrideProvider(SETTLEMENT_AUTHORITY)
+      .useValue(settlementGate)
       .compile();
 
     app = moduleRef.createNestApplication({ logger: false });
@@ -804,6 +826,82 @@ describeIfPg('emergency access end to end', () => {
       expect(payloads).not.toContain(VAULT_PASSWORD);
       expect(payloads).not.toContain(toBase64(granteeKeys.privateKey));
       expect(payloads).not.toContain('safe deposit');
+    });
+  });
+
+  /**
+   * docs/03 §6a: emergency access is the LAST staged grant of a settlement
+   * (§5.1 control 5). These run last so the escrow above is already armed and
+   * released; they re-arm a fresh policy and prove the gate independently.
+   */
+  describe('the settlement gate', () => {
+    const SETTLED_CASE = '11111111-2222-4333-8444-555555555555';
+
+    afterEach(() => {
+      settlementGate.permitted = true;
+      settlementGate.caseId = null;
+    });
+
+    async function freshPolicy(): Promise<string> {
+      const escrow = await configureEscrow([
+        { userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys },
+      ]);
+      return escrow.policies[0]!.id;
+    }
+
+    it('BLOCKS a request while the estate is in settlement without the vault stage', async () => {
+      const gatedPolicy = await freshPolicy();
+      settlementGate.permitted = false;
+      settlementGate.caseId = SETTLED_CASE;
+
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/request`)
+        .set(asGrantee())
+        .expect(403, { error: 'settlement_stage_not_reached' });
+
+      // The clock never started: the policy is untouched.
+      const listed = await request(server)
+        .get('/v1/vault/emergency-access')
+        .set(asOwner())
+        .expect(200);
+      expect((listed.body as EscrowDto).policies[0]).toMatchObject({ status: 'configured' });
+
+      // …and the refusal is audited with the case it derives from.
+      const blocked = producer.messages
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.emergency.release_blocked');
+      expect(blocked.length).toBeGreaterThan(0);
+      expect(blocked.at(-1)?.detail).toEqual({
+        reason: 'settlement_stage_not_reached',
+        caseId: SETTLED_CASE,
+      });
+    });
+
+    it('BLOCKS a release when the estate enters settlement mid-waiting-period', async () => {
+      const gatedPolicy = await freshPolicy();
+      // The request happens while nothing is wrong…
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/request`)
+        .set(asGrantee())
+        .expect(200);
+      // …then a death case opens and the waiting period lapses.
+      settlementGate.permitted = false;
+      settlementGate.caseId = SETTLED_CASE;
+      now = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
+        .set(asGrantee())
+        .expect(403, { error: 'settlement_stage_not_reached' });
+
+      // The escrow is unspent: releasing later, once the stage is approved,
+      // still works — the gate delays, it does not destroy.
+      settlementGate.permitted = true;
+      settlementGate.caseId = null;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
+        .set(asGrantee())
+        .expect(200);
     });
   });
 });

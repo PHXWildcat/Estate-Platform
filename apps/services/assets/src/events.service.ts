@@ -100,6 +100,28 @@ export class EventsService {
     });
   }
 
+  /**
+   * M7 PR2: a verified executor read the decedent's estate inventory through
+   * an approved staged grant. The actor is NOT the owner, so onBehalfOf makes
+   * the event legible; the count is a number, never the assets themselves.
+   */
+  async estateViewed(
+    executorUserId: string,
+    ownerUserId: string,
+    detail: { caseId: string; count: number },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'asset.estate.viewed',
+      actorId: executorUserId,
+      actorType: 'user',
+      onBehalfOf: ownerUserId,
+      resourceType: 'estate',
+      resourceId: ownerUserId,
+      sessionId: null,
+      detail: { caseId: detail.caseId, count: detail.count },
+    });
+  }
+
   async assetRetired(actorId: string, assetId: string, reason?: string): Promise<void> {
     await this.asset('asset.retired', actorId, assetId, reason ? { reason } : {});
   }

@@ -239,6 +239,27 @@ export class CasesRepo {
     return rows.length > 0;
   }
 
+  /**
+   * Post-verification status movement (verified → active → distributing →
+   * closed). Compare-and-set on the allowed `from` set, like every other
+   * transition here.
+   */
+  async advanceStatus(
+    tx: Queryable,
+    caseId: string,
+    from: readonly CaseStatus[],
+    to: CaseStatus,
+  ): Promise<boolean> {
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE settlement_cases
+          SET status = $3
+        WHERE id = $1 AND status = ANY($2)
+        RETURNING id`,
+      [caseId, [...from], to],
+    );
+    return rows.length > 0;
+  }
+
   /** waiting_period → verified (operator confirmation after the period lapses). */
   async markVerified(tx: Queryable, caseId: string, verifiedAt: Date): Promise<boolean> {
     const rows = await tx.query<{ id: string }>(

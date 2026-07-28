@@ -13,6 +13,7 @@ import { EventsService } from '../src/events.service';
 import { OperatorsRepo } from '../src/operators.repo';
 import { SettingsRepo } from '../src/settings.repo';
 import { SettlementService } from '../src/settlement.service';
+import { TasksRepo } from '../src/tasks.repo';
 import { StubNotifier } from '../src/notifications';
 import { FakeIdentityLock, testConfig, type ClockHolder } from './support';
 
@@ -80,6 +81,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       new ContactAttemptsRepo(),
       new OperatorsRepo(),
       new SettingsRepo(),
+      new TasksRepo(),
       new CoreReadsRepo(db),
       new SettlementAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
       new EventsService(producer, clockFn),
@@ -135,17 +137,25 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       '001_core_schema.sql',
       '001_settlement_schema.sql',
       '002_dek_unique_active.sql',
+      '002_settlement_admin.sql',
     ]);
   });
 
   it('meets the docs/02 conventions (append-only tables; cases hand-checked below)', async () => {
     const violations = await checkConventions(admin, {
       schema,
-      businessTables: [],
+      // settlement_tasks is the one PR2 table with a full soft-delete shape
+      // (docs/02 §7 gives it deleted_at). Cases, stages and distributions
+      // deliberately have none — they are evidence, access records, and
+      // financial records respectively — so they are asserted by hand below.
+      businessTables: ['settlement_tasks'],
       appendOnlyTables: [
         'settlement_cases_versions',
         'settlement_settings_versions',
         'settlement_contact_attempts',
+        'settlement_access_stages_versions',
+        'settlement_tasks_versions',
+        'distributions_versions',
       ],
     });
     expect(violations).toEqual([]);

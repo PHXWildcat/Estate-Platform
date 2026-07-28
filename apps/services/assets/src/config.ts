@@ -40,6 +40,11 @@ const EnvSchema = z
     // /v1/auth/session route). Required IN production; dev defaults to
     // localhost so no config is needed to run the service locally.
     IDENTITY_URL: z.string().url().optional(),
+    // Base URL of the settlement service (M7 PR2): the executor estate-read
+    // route asks it whether a staged grant permits the caller. Required IN
+    // production; dev defaults to localhost. The client fails closed, so a
+    // wrong value disables executor reads rather than widening them.
+    SETTLEMENT_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -66,6 +71,13 @@ const EnvSchema = z
           code: z.ZodIssueCode.custom,
           path: ['IDENTITY_URL'],
           message: 'IDENTITY_URL is required in production (cross-service session verification)',
+        });
+      }
+      if (!env.SETTLEMENT_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SETTLEMENT_URL'],
+          message: 'SETTLEMENT_URL is required in production (executor staged-access checks)',
         });
       }
     } else if (!env.KMS_MASTER_KEY_HEX) {
@@ -97,6 +109,8 @@ export interface AssetsConfig {
   readonly kekAlias: string;
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
+  /** Settlement base URL for executor staged-access checks (M7 PR2). */
+  readonly settlementUrl: string;
 }
 
 export class ConfigError extends Error {
@@ -138,5 +152,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AssetsConfig {
     kekAlias: 'financial/kek',
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
+    settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
   };
 }
