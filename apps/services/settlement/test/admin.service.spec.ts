@@ -130,6 +130,37 @@ describe('staged executor access (docs/03 §5.1 control 5)', () => {
     expect(auditActions(h.producer)).toContain('settlement.stage.revoked');
   });
 
+  it('the operator who requested a stage cannot revoke it — a second operator must', async () => {
+    // Dual control applies to revocation because revocation writes decided_by,
+    // and the DDL CHECK is decided_by <> requested_by. Before the M7 security
+    // review this refusal reached Postgres unhandled: a 23514 surfaced as a
+    // 500, so a caller could not tell "fetch another operator" from "the
+    // service is down" — while the access the revoke was meant to remove
+    // stayed granted. It refuses cleanly now, and a second operator succeeds.
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+    // An operator who is also the executor on this case: nothing forbids that,
+    // and it is the reason requester and decider identities can collide.
+    h.coreReads.link(DECEDENT, OPERATOR);
+    h.coreReads.executors.add(`${DECEDENT}:${OPERATOR}`);
+    const stage = await h.admin.requestStage(OPERATOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(SECOND_OPERATOR, SESSION, stage.stageId, 'approve');
+
+    await expect(h.admin.revokeStage(OPERATOR, SESSION, stage.stageId)).rejects.toMatchObject({
+      response: { error: 'approver_is_requester' },
+    });
+    // Still granted — the refusal did not silently half-apply.
+    await expect(
+      h.admin.stageAccessAuthority(OPERATOR, DECEDENT, 'inventory'),
+    ).resolves.toMatchObject({ allowed: true });
+
+    await h.admin.revokeStage(SECOND_OPERATOR, SESSION, stage.stageId);
+    await expect(h.admin.stageAccessAuthority(OPERATOR, DECEDENT, 'inventory')).resolves.toEqual({
+      allowed: false,
+      caseId: null,
+    });
+  });
+
   it('no stage exists before verification — a fresh report grants nothing', async () => {
     const h = buildAdminHarness();
     const row = await h.cases.insert(undefined as never, {

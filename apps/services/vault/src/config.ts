@@ -37,10 +37,17 @@ const EnvSchema = z
     // access is the LAST staged grant of a settlement, so release consults it.
     // Required IN production; dev defaults to localhost.
     SETTLEMENT_URL: z.string().url().optional(),
-    // Shared service credential for that gate. The question is about the
-    // OWNER's settlement state, not the calling grantee's authority, so it
-    // cannot ride on a user bearer. Unset ⇒ the client blocks locally, which
-    // keeps Zone A closed rather than open.
+    // Service credential PRESENTED TO settlement for that gate. The question is
+    // about the OWNER's settlement state, not the calling grantee's authority,
+    // so it cannot ride on a user bearer. Unset ⇒ the client blocks locally,
+    // which keeps Zone A closed rather than open.
+    //
+    // Named for the CALLEE (ServiceCredentialGuard's one-secret-per-callee
+    // rule): this value opens settlement's read-only gate route and NOTHING
+    // else. It is deliberately NOT the value settlement presents to identity —
+    // the M7 security review found that collapse, which would have let anyone
+    // holding this vault secret call identity's account-lock API and entomb a
+    // living user.
     SETTLEMENT_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
@@ -91,7 +98,10 @@ export interface VaultConfig {
   readonly notify: NotifyConfig;
   /** Settlement base URL for the docs/03 §6a emergency-access gate. */
   readonly settlementUrl: string;
-  /** Shared credential for that gate ('' ⇒ the client blocks locally). */
+  /**
+   * Credential presented to SETTLEMENT's gate route ('' ⇒ the client blocks
+   * locally). Opens that one read-only route; confers no other authority.
+   */
   readonly settlementInternalToken: string;
 }
 

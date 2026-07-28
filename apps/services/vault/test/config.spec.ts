@@ -1,3 +1,4 @@
+import { credentialEnvVarsFor, credentialSentinelEnv, credentialsHeldIn } from '@estate/auth-guard';
 import { ConfigError, loadConfig } from '../src/config';
 
 const BASE = {
@@ -116,6 +117,12 @@ describe('loadConfig', () => {
     // owner's settlement state and opens no ciphertext whatsoever. The
     // invariant this test guards — no KMS key, no master key, no index key —
     // is unchanged.
+    //
+    // It is also scoped to exactly that one CALLEE. The M7 security review
+    // found the credential shared with identity's account-lock API, which
+    // would have made this config — the one in the product's most exposed
+    // service — a key to irreversibly marking a living user deceased. The
+    // exact key list below is what keeps that regression loud.
     const config = loadConfig({ ...BASE });
     expect(Object.keys(config).sort()).toEqual([
       'databaseUrl',
@@ -127,8 +134,17 @@ describe('loadConfig', () => {
       'settlementInternalToken',
       'settlementUrl',
     ]);
-    // Belt and braces: nothing in this config can decrypt anything.
-    for (const forbidden of ['kms', 'masterKey', 'searchIndexKey', 'kekAlias']) {
+    // Belt and braces: nothing in this config can decrypt anything, and
+    // nothing in it authenticates against identity's internal (account-lock)
+    // surface — vault's only service-to-service reach is settlement's gate.
+    for (const forbidden of [
+      'kms',
+      'masterKey',
+      'searchIndexKey',
+      'kekAlias',
+      'identityInternalToken',
+      'internalApiToken',
+    ]) {
       expect(Object.keys(config)).not.toContain(forbidden);
     }
   });
@@ -153,5 +169,18 @@ describe('loadConfig', () => {
 
   it('rejects an unknown notification channel', () => {
     expect(() => loadConfig({ ...BASE, NOTIFY_MODE: 'carrier-pigeon' })).toThrow(ConfigError);
+  });
+});
+
+describe('service-credential graph (packages/auth-guard/src/credential-graph.ts)', () => {
+  it('holds exactly the credentials the graph grants it — no more, no fewer', () => {
+    // Every credential in the product is present in this environment. What the
+    // service ABSORBS from it is the security property: the M7 review found one
+    // config field serving as both settlement's inbound and outbound credential,
+    // which transitively handed vault and documents a working key to identity's
+    // irreversible account-lock API. Equality in BOTH directions matters — extra
+    // means an over-grant, missing means a gate silently unwired.
+    const config = loadConfig({ ...BASE, ...credentialSentinelEnv() });
+    expect(credentialsHeldIn(config)).toEqual(credentialEnvVarsFor('vault'));
   });
 });

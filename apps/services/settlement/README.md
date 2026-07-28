@@ -40,9 +40,19 @@ vulnerability, so every control below is deliberate friction.
 - Intake and review-approve refuse `503 notifications_unavailable` while only
   the stub notifier is wired (M6 precedent) — a waiting period nobody can be
   told about is not a control.
-- `SETTLEMENT_INTERNAL_TOKEN` unset (dev default) ⇒ identity's guard fails
+- `IDENTITY_INTERNAL_TOKEN` unset (dev default) ⇒ identity's guard fails
   closed and the lock-touching transitions 503 until both sides are
   provisioned.
+- **Two credentials, opposite directions, never the same value.** Each is named
+  for the service whose internal routes it OPENS:
+  `SETTLEMENT_INTERNAL_TOKEN` is what vault presents to
+  *this* service's read-only gate route; `IDENTITY_INTERNAL_TOKEN` is what
+  *this* service presents to identity's account-lock API. Production refuses to
+  boot if they are equal. The M7 security review found them collapsed into one
+  field, which meant the value provisioned to vault — the most exposed service
+  in the product — was also accepted by `PUT /internal/v1/settlement-lock/:userId`,
+  enough to irreversibly mark any living user deceased with no case, no
+  operator and no waiting period.
 
 ## Environment
 
@@ -51,7 +61,8 @@ vulnerability, so every control below is deliberate friction.
 | `DATABASE_URL` | yes | core cluster (local port 5434; CI: `PG_TEST_URL`) |
 | `PORT` | no | default 3007 |
 | `IDENTITY_URL` | prod | session verification + settlement-lock API; dev default `http://localhost:3001` |
-| `SETTLEMENT_INTERNAL_TOKEN` | prod (≥32 chars) | shared credential for identity's internal routes; must match identity's value |
+| `SETTLEMENT_INTERNAL_TOKEN` | prod (≥32 chars) | INBOUND: what vault presents to this service's gate route (the only holder — see `packages/auth-guard/src/credential-graph.ts`) |
+| `IDENTITY_INTERNAL_TOKEN` | prod (≥32 chars) | OUTBOUND: presented to identity's internal routes; must match identity's value, and must differ from the inbound one |
 | `KAFKA_BROKERS` | prod | audit emission |
 | `NOTIFY_MODE` | no | `stub` only until the notifications milestone |
 | `DRIVER_INTERVAL_MS` | no | contact-sweep interval, default 60000; driver disabled under NODE_ENV=test |

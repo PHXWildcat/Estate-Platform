@@ -9,7 +9,12 @@ export const CLOCK = Symbol('CLOCK');
 /** PR2: envelope encryption for distribution amounts ('settlement/kek'). */
 export const FIELD_CRYPTO = Symbol('FIELD_CRYPTO');
 export const DEK_REPOSITORY = Symbol('DEK_REPOSITORY');
-export const SERVICE_CREDENTIAL_VALUE = Symbol('SERVICE_CREDENTIAL_VALUE');
+// NOTE: no service-credential token here on purpose. The inbound credential is
+// bound to @estate/auth-guard's shared SERVICE_CREDENTIAL token in app.module,
+// and the outbound one is passed straight into HttpIdentityLock. A local
+// second token for the same concept was declared here and never used; it is
+// removed because an unused credential channel is where the next accidental
+// aliasing hides (see credential-graph.ts).
 
 /** Injectable clock so waiting-period math is testable without real time. */
 export type Clock = () => Date;

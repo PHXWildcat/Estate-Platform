@@ -60,7 +60,13 @@ function schemaScopedUrl(base: string, schema: string): string {
   return url.toString();
 }
 
-const INTERNAL_TOKEN = `e2e-internal-${'t'.repeat(36)}`;
+// TWO service credentials, one per CALLEE. IDENTITY_TOKEN opens identity's
+// account-lock API and is held only by settlement; SETTLEMENT_TOKEN opens
+// settlement's read-only gate route and is held by vault/documents. The M7
+// security review found these collapsed into one value, which handed the Zone
+// A service a working key to irreversibly mark a living user deceased.
+const IDENTITY_TOKEN = `e2e-identity-${'t'.repeat(36)}`;
+const SETTLEMENT_TOKEN = `e2e-settlement-${'g'.repeat(36)}`;
 const DAY = 24 * 60 * 60 * 1000;
 
 describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', () => {
@@ -112,7 +118,8 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     process.env['DATABASE_URL'] = schemaScopedUrl(baseUrl, authSchema);
     process.env['KMS_MASTER_KEY_HEX'] = randomBytes(32).toString('hex');
     process.env['EMAIL_INDEX_KEY_HEX'] = randomBytes(32).toString('hex');
-    process.env['SETTLEMENT_INTERNAL_TOKEN'] = INTERNAL_TOKEN;
+    process.env['IDENTITY_INTERNAL_TOKEN'] = IDENTITY_TOKEN;
+    delete process.env['SETTLEMENT_INTERNAL_TOKEN'];
     delete process.env['KAFKA_BROKERS'];
     const identityRef = await Test.createTestingModule({ imports: [IdentityAppModule] }).compile();
     identityApp = identityRef.createNestApplication({ logger: false });
@@ -166,7 +173,8 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
 
     // --- settlement ---
     process.env['DATABASE_URL'] = schemaScopedUrl(baseUrl, coreSchema);
-    process.env['SETTLEMENT_INTERNAL_TOKEN'] = INTERNAL_TOKEN;
+    process.env['SETTLEMENT_INTERNAL_TOKEN'] = SETTLEMENT_TOKEN;
+    process.env['IDENTITY_INTERNAL_TOKEN'] = IDENTITY_TOKEN;
     delete process.env['KAFKA_BROKERS'];
     const settlementRef = await Test.createTestingModule({ imports: [SettlementAppModule] })
       .overrideProvider(SESSION_VERIFIER)
@@ -183,7 +191,7 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       .useValue(
         new HttpIdentityLock({
           identityUrl: 'http://identity.internal',
-          credential: INTERNAL_TOKEN,
+          credential: IDENTITY_TOKEN,
           fetchImpl: lockFetch,
         }),
       )
@@ -427,10 +435,36 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     await settlement.get(`/v1/settlement/cases/${caseId}`).set(owner.bearer).expect(401);
     await identity
       .put(`/internal/v1/settlement-lock/${owner.userId}`)
-      .set('x-estate-service-credential', INTERNAL_TOKEN)
+      .set('x-estate-service-credential', IDENTITY_TOKEN)
       .send({ state: 'active', caseId })
       .expect(409, { error: 'invalid_transition' });
   }, 180_000);
+
+  it('the gate credential vault holds does NOT open identity’s account-lock API', async () => {
+    // The M7 security review's confirmed defect, as an executable claim. Vault
+    // and documents hold SETTLEMENT_TOKEN so they can ask settlement about an
+    // owner's case state. If that same value were accepted here, anyone who
+    // compromised the most exposed service in the product could entomb any
+    // living user — no case, no operator, no waiting period (docs/03 §5.1's
+    // Critical outcome). Presenting it must be indistinguishable from
+    // presenting nothing.
+    const identity = supertest(identityApp.getHttpServer() as Parameters<typeof supertest>[0]);
+    const victim = await registerAndLogin('cred-scope-victim');
+    for (const credential of [SETTLEMENT_TOKEN, 'not-a-credential']) {
+      await identity
+        .put(`/internal/v1/settlement-lock/${victim.userId}`)
+        .set('x-estate-service-credential', credential)
+        .send({ state: 'deceased_pending', caseId: randomUUID() })
+        .expect(401, { error: 'unauthorized' });
+    }
+    // ...and the victim is untouched: still active, still logged in.
+    const status = await admin.query<{ status: string }>(
+      `SELECT status FROM ${authSchema}.users WHERE id = $1`,
+      [victim.userId],
+    );
+    expect(status.rows[0]?.status).toBe('active');
+    await identity.get('/v1/auth/session').set(victim.bearer).expect(200);
+  }, 120_000);
 
   it('the owner voids a case with step-up, killing it and flagging the reporter', async () => {
     const settlement = supertest(settlementApp.getHttpServer() as Parameters<typeof supertest>[0]);

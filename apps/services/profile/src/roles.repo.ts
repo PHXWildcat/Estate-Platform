@@ -40,19 +40,29 @@ export class RolesRepo {
    * disjoint tables, but they deploy independently: profile must keep working
    * against a cluster where settlement's migrations have not run (and in
    * profile's own scratch-schema tests, where they never run). A missing table
-   * means the settlement service has never existed here, so no case can exist
-   * and the grant freeze is vacuously satisfied. Detected once per process;
-   * deployments restart services, so a later settlement rollout is picked up.
+   * means settlement has never existed here, so no case can exist and the
+   * grant freeze is vacuously satisfied.
+   *
+   * ONLY THE POSITIVE IS CACHED. The M7 security review found the original
+   * memoised a NEGATIVE for the process lifetime: a profile process that
+   * started before settlement's migration ran would compile the freeze out of
+   * its SQL permanently and silently, so docs/03 §5.1 control 4 ("reads freeze
+   * for role-holders") would never engage for that process even once cases
+   * existed — a fail-OPEN indistinguishable from a working freeze. The table
+   * cannot disappear once created, so caching `true` forever is sound; `false`
+   * is re-probed. The cost is one `to_regclass` per grant resolution, and only
+   * until settlement deploys.
    */
-  private settlementCasesPresent: boolean | null = null;
+  private settlementCasesPresent = false;
 
   private async hasSettlementCases(): Promise<boolean> {
-    if (this.settlementCasesPresent === null) {
-      const rows = await this.db.query<{ present: string | null }>(
-        `SELECT to_regclass('settlement_cases')::text AS present`,
-      );
-      this.settlementCasesPresent = (rows[0]?.present ?? null) !== null;
+    if (this.settlementCasesPresent) {
+      return true;
     }
+    const rows = await this.db.query<{ present: string | null }>(
+      `SELECT to_regclass('settlement_cases')::text AS present`,
+    );
+    this.settlementCasesPresent = (rows[0]?.present ?? null) !== null;
     return this.settlementCasesPresent;
   }
 

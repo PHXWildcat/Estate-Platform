@@ -91,7 +91,7 @@ const config: IdentityConfig = {
   rpId: 'localhost',
   rpOrigin: 'http://localhost:3000',
   rpName: 'Estate Platform',
-  settlementInternalToken: '',
+  internalApiToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {

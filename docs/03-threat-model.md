@@ -307,6 +307,31 @@ the append-only audit trail; PR2's stage approvals add multi-party depth.
 Rate limiting on intake shares identity's rate-limit follow-up (per-reporter
 noise is bounded by the linked-contact gate and one-open-case index).
 
+**Service-credential scoping (added by the M7 security review, 2026-07-28).**
+The internal service credentials introduced for the account lock and the §6a
+gate are the one M7 mechanism that can bypass §5.1's control chain outright, so
+they carry their own rule: **one secret per callee, per direction.** Each
+variable is named for the service whose internal routes it OPENS
+(`IDENTITY_INTERNAL_TOKEN`, `SETTLEMENT_INTERNAL_TOKEN`,
+`DOCUMENTS_INTERNAL_TOKEN`), never for the caller that presents it, and no
+value ever authenticates in both directions.
+
+The review found the original design violating this: settlement used one config
+field as both its inbound-expected and its outbound-presented value, which
+transitively forced identity, settlement, vault and documents onto a single
+shared secret. Anyone holding vault's copy — the most exposed service in the
+product, and by Zone A design the one that should hold the least authority —
+could call `PUT /internal/v1/settlement-lock/{victim}` twice and irreversibly
+move a living user to `settlement` status with no case, no operator, no waiting
+period and no owner-void window. That is §5.1's Critical outcome reached by
+skipping every control above, and it is the sharpest illustration of why the
+credential is scoped rather than shared: a static bearer secret confers exactly
+the routes it opens, so the blast radius IS the naming discipline.
+Settlement's config refuses to boot in production when its two credentials are
+equal, because splitting the field does not stop an operator pasting one value
+into both slots. Rotation remains a synchronized restart of two services; the
+mesh mTLS/SPIFFE follow-up removes the static secret rather than improving it.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

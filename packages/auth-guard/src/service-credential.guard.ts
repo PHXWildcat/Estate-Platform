@@ -23,11 +23,21 @@ interface ServiceCredentialRequest {
  * effects — locking a decedent's account, reading owner liveness — have no
  * user bearer token to forward by construction, and the target service cannot
  * know the caller's authorization state (identity does not know settlement's
- * operator allowlist). A dedicated static credential, provisioned to exactly
- * the two services that share it, is the smallest honest mechanism: the caller
- * asserts "I am the settlement service and I enforced my own checks", and the
- * target still enforces its own invariants on top. Interim until the mesh
- * (mTLS/SPIFFE, docs/01 §3) provides verifiable peer identity.
+ * operator allowlist). A dedicated static credential is the smallest honest
+ * mechanism: the caller asserts "I am service X and I enforced my own checks",
+ * and the target still enforces its own invariants on top. Interim until the
+ * mesh (mTLS/SPIFFE, docs/01 §3) provides verifiable peer identity.
+ *
+ * ONE SECRET PER CALLEE, PER DIRECTION — not per pair of services, and never
+ * one value reused for both what a service expects and what it presents. The
+ * M7 security review found that reuse: settlement used a single config field
+ * as both its inbound-expected and its outbound-presented value, which
+ * transitively forced identity, settlement, vault and documents onto one
+ * secret and handed the Zone A service a working key to identity's
+ * irreversible account-lock API. Each credential is therefore named for the
+ * CALLEE whose routes it opens (IDENTITY_INTERNAL_TOKEN,
+ * DOCUMENTS_INTERNAL_TOKEN, SETTLEMENT_INTERNAL_TOKEN), and holding one grants
+ * exactly that service's internal surface and nothing else.
  *
  * Fail-closed: an unwired (empty) expected credential refuses every request.
  */

@@ -127,9 +127,11 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     {
       // '' when unset: ServiceCredentialGuard fails closed and the internal
       // settlement-lock routes refuse everything (dev must opt in explicitly).
+      // This is identity's OWN inbound credential — held by settlement alone,
+      // never by the other services (M7 security review).
       provide: SERVICE_CREDENTIAL,
       inject: [CONFIG],
-      useFactory: (config: IdentityConfig): string => config.settlementInternalToken,
+      useFactory: (config: IdentityConfig): string => config.internalApiToken,
     },
     ServiceCredentialGuard,
     { provide: APP_FILTER, useClass: HttpErrorFilter },

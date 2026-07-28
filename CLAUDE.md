@@ -418,9 +418,10 @@ deviating from them, stop and propose the change with rationale — do not silen
   profile shares the cluster and still cannot read them. Executor estate reads
   live on a SEPARATE assets route that forwards the caller's bearer to
   settlement — settlement holds no data-read power, so compromising it
-  mis-answers rather than exfiltrates. Legal hold finally gained its writer
-  (service-credential internal route on documents), closing the M4 gap where
-  enforcement shipped without a setting surface.
+  mis-answers rather than exfiltrates. Legal hold gained a writer ROUTE
+  (service-credential internal route on documents) — but NOT a caller: the
+  2026-07-28 credential-graph work found nothing in the repo calls it, so the
+  M4 gap is NOT closed (corrected in docs/04 M7).
 - 2026-07-27 — M6 security review (six parallel discovery lenses over the merged
   range + adversarial verify of each finding; 35 raw, 28 unique, 14 verified, 11
   refuted): no critical or app-exploitable vuln in the Zone A guarantee. Three
@@ -435,3 +436,65 @@ deviating from them, stop and propose the change with rationale — do not silen
   security parameter) — widened to 16 symbols; and reset left a published
   grantee public key whose private half it had just destroyed, which would have
   let later escrows seal shares nobody can open. Full record in docs/04 M6.
+- 2026-07-28 — M7 security review (six parallel discovery lenses over the merged
+  range `a278635..4d24537` + adversarial verify of each finding, verifiers told
+  to default to refuted; 23 raw, 23 unique, 12 verified, 6 confirmed / 6
+  refuted): no single-source, single-actor or timer-driven path into settlement
+  survived. The six confirmed collapse to TWO defects, both in machinery M7
+  introduced, both contradicting docs written in the same milestone; fixed
+  in-branch. (1) The service credential collapsed FOUR services onto one secret
+  — `SETTLEMENT_INTERNAL_TOKEN` was both what settlement expected inbound and
+  what it presented outbound, so any working deployment made vault's copy equal
+  identity's expected value, letting whoever holds the Zone A service's secret
+  call `PUT /internal/v1/settlement-lock/{victim}` twice and irreversibly entomb
+  a living user with no case, no operator, no waiting period (§5.1's Critical
+  outcome, whole control chain skipped). Rule adopted: ONE SECRET PER CALLEE,
+  PER DIRECTION — each var named for the service whose routes it OPENS
+  (`IDENTITY_INTERNAL_TOKEN`, `SETTLEMENT_INTERNAL_TOKEN`,
+  `DOCUMENTS_INTERNAL_TOKEN`), and settlement's config REFUSES TO BOOT in
+  production when its two credentials are equal, because splitting the field
+  cannot stop one value being pasted into both slots. (2) Profile's grant-freeze
+  `to_regclass` probe cached the NEGATIVE for the process lifetime, so a profile
+  process older than settlement's migration had §5.1 control 4 compiled out of
+  its SQL silently and forever — fail-open indistinguishable from a working
+  freeze; only the positive is cached now (a table cannot un-exist). Also fixed:
+  `revokeStage` lacked the requester≠decider pre-check, so the DDL CHECK
+  surfaced as an unhandled 500 with the access still granted. Full record in
+  docs/04 M7; the credential-scoping rule is in docs/03 §6b.
+- 2026-07-28 — Service-to-service trust is DECLARED AND MACHINE-CHECKED:
+  `packages/auth-guard/src/credential-graph.ts` states, as data, which service
+  may hold which internal credential (the packages/authz shared-Cedar-bundle
+  precedent). The M7 collapse survived two PR reviews because the trust graph
+  existed only as prose and the prose was wrong, so the fix is a table that
+  fails the build rather than a paragraph that fails silently. TWO layers,
+  split by a hard constraint: every service depends on @estate/auth-guard, so a
+  suite there can never import services back (workspace cycle). Source scanning
+  therefore lives in `packages/auth-guard/test/credential-graph.spec.ts`
+  (readFileSync only — the vault-crypto zero-dependency-fence precedent, which
+  creates no package edge), and the RUNTIME half — load the service's real
+  config with EVERY credential in the environment, assert it absorbs exactly
+  the granted set — lives in each service's own `test/config.spec.ts`, where it
+  compiles from src (no stale dist) and reuses the dev fixture already there.
+  Deliberately NOT in apps/e2e: all seven specs there carry a copy-pasted
+  `describeIfPg` line, so one tidy-up would silently skip the fence in every
+  environment, and ci-guard only asserts PG_TEST_URL is set, never that a spec
+  ran. Key design points, each from an adversarial critique lens: SERVICE_NAMES
+  is asserted equal to the directories on disk (a hand-maintained list makes a
+  ninth service invisible and silently narrows every other check); the guard
+  check anchors on `provide: SERVICE_CREDENTIAL`, not on the `*_INTERNAL_TOKEN`
+  suffix (a renamed secret evades a name-keyed fence); each credential's env
+  var may be MENTIONED only in the graph module and the config.ts of its callee
+  and holders (catches a process.env read in app.module, or a client default);
+  `opens` is enforced against the real decorated routes; the sentinel value
+  encodes its own variable name and `credentialsHeldIn` deep-walks nested
+  objects and Buffers (a credential folded into a port config would otherwise
+  escape). Mutation-tested, not just green: reintroducing the M7 aliasing, the
+  vault-gains-identity's-key regression, a wrong inbound credential, an
+  undeclared new route, a nested-object credential, and deletion or
+  copy-paste of a service's runtime assertion are each confirmed to turn it
+  red — which is how the anti-drop check was caught passing vacuously (the
+  deleted assertion left its import behind). NOT enforced, recorded instead:
+  which URL a credential is presented to, and cross-service provisioning drift
+  (nothing verifies vault's copy equals settlement's inbound value — an
+  operator pasting identity's secret into vault's slot re-creates M7 at deploy
+  time with every service booting cleanly). Both close with the mesh.

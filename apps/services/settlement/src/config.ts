@@ -28,13 +28,26 @@ const EnvSchema = z
     // API (account lock + owner-liveness re-check). Required IN production;
     // dev defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
-    // Shared secret authenticating THIS service on identity's internal
-    // settlement-lock routes. Optional in dev/test — identity's guard fails
-    // closed while unset, so the lock-touching transitions (approve, void,
-    // verify) refuse until both sides are provisioned. REQUIRED (and
-    // non-trivial) in production: docs/03 §5.1 control 4 must not be
-    // silently unreachable.
+    // TWO credentials, deliberately distinct — one per direction. The M7
+    // security review found that using a single value for both collapsed four
+    // services onto one secret: because settlement's inbound-expected value
+    // and its outbound-presented value were the same string, vault's copy was
+    // necessarily identical to identity's expected value, handing the Zone A
+    // service (and documents) a working key to identity's irreversible
+    // account-lock API. Each secret now opens exactly one callee's routes.
+    //
+    // INBOUND: what THIS service expects on its own internal routes (the
+    // docs/03 §6a vault-release gate). Held by vault. Opens a read-only
+    // authority answer and nothing else.
     SETTLEMENT_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND: what this service PRESENTS to identity's internal
+    // settlement-lock routes. Held by settlement alone; this is the value that
+    // can lock an account, so it must never be handed to another service.
+    // Optional in dev/test — identity's guard fails closed while unset, so the
+    // lock-touching transitions (approve, void, verify) refuse until both
+    // sides are provisioned. REQUIRED in production: docs/03 §5.1 control 4
+    // must not be silently unreachable.
+    IDENTITY_INTERNAL_TOKEN: z.string().optional(),
     // Owner-contact channel (docs/03 §5.1 control 3). Only the stub exists
     // today; real channels arrive with the notifications milestone, and a
     // real mode joins this enum then. Deliberately NOT a boot-time production
@@ -92,16 +105,34 @@ const EnvSchema = z
         message: 'KMS_MASTER_KEY_HEX is required outside production (drives LocalKmsProvider)',
       });
     }
-    if (
-      env.NODE_ENV === 'production' &&
-      (!env.SETTLEMENT_INTERNAL_TOKEN || env.SETTLEMENT_INTERNAL_TOKEN.length < 32)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['SETTLEMENT_INTERNAL_TOKEN'],
-        message:
-          'SETTLEMENT_INTERNAL_TOKEN is required in production (>= 32 chars; the account lock must not be unreachable or weakly guarded)',
-      });
+    if (env.NODE_ENV === 'production') {
+      const credentials = [
+        ['SETTLEMENT_INTERNAL_TOKEN', 'the docs/03 §6a vault-release gate'],
+        ['IDENTITY_INTERNAL_TOKEN', "identity's docs/03 §5.1 account lock"],
+      ] as const;
+      for (const [key, purpose] of credentials) {
+        const value = env[key];
+        if (!value || value.length < 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required in production (>= 32 chars; ${purpose} must not be unreachable or weakly guarded)`,
+          });
+        }
+      }
+      // The whole point of splitting them: one value must never authenticate
+      // both directions, or the collapse the M7 review found returns.
+      if (
+        env.SETTLEMENT_INTERNAL_TOKEN &&
+        env.SETTLEMENT_INTERNAL_TOKEN === env.IDENTITY_INTERNAL_TOKEN
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['IDENTITY_INTERNAL_TOKEN'],
+          message:
+            'IDENTITY_INTERNAL_TOKEN must differ from SETTLEMENT_INTERNAL_TOKEN (sharing one value hands every gate caller a key to the account-lock API)',
+        });
+      }
     }
   });
 
@@ -120,8 +151,11 @@ export interface SettlementConfig {
   readonly kafkaBrokers: string[] | null;
   /** Identity service base URL (session verification + settlement-lock API). */
   readonly identityUrl: string;
-  /** Shared secret for identity's internal settlement-lock routes ('' ⇒ those calls fail closed). */
-  readonly settlementInternalToken: string;
+  /** INBOUND: what this service expects on its own §6a gate route ('' ⇒ refuse all). */
+  readonly internalApiToken: string;
+  /** OUTBOUND: what this service presents to identity's account-lock API
+   * ('' ⇒ those calls fail closed). Never shared with another service. */
+  readonly identityInternalToken: string;
   readonly notify: NotifyConfig;
   readonly driverIntervalMs: number;
   /** Selected KMS backend (LocalKmsProvider in dev/test, AWS KMS in prod). */
@@ -161,7 +195,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SettlementConf
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
-    settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
+    internalApiToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
+    identityInternalToken: e.IDENTITY_INTERNAL_TOKEN ?? '',
     notify: { mode: e.NOTIFY_MODE },
     driverIntervalMs: e.DRIVER_INTERVAL_MS,
     // The superRefine above guarantees the required fields per environment, so

@@ -209,7 +209,7 @@ function ocrFor(config: DocumentsConfig): OcrEngine {
       // legal-hold route refuses everything (dev must opt in explicitly).
       provide: SERVICE_CREDENTIAL,
       inject: [CONFIG],
-      useFactory: (config: DocumentsConfig): string => config.settlementInternalToken,
+      useFactory: (config: DocumentsConfig): string => config.internalApiToken,
     },
     ServiceCredentialGuard,
     ContentCipher,

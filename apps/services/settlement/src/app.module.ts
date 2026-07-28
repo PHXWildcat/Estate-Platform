@@ -135,7 +135,9 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
       useFactory: (config: SettlementConfig): IdentityLockPort =>
         new HttpIdentityLock({
           identityUrl: config.identityUrl,
-          credential: config.settlementInternalToken,
+          // The OUTBOUND credential — distinct from the one this service
+          // expects inbound, so a gate caller never holds account-lock power.
+          credential: config.identityInternalToken,
         }),
     },
     { provide: NOTIFIER, useFactory: (): NotificationPort => notifierFor() },
@@ -171,10 +173,11 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
     {
       // '' when unset: ServiceCredentialGuard fails closed, so the vault-gate
       // authority route refuses and emergency release stays blocked — the safe
-      // direction for Zone A.
+      // direction for Zone A. This is the INBOUND credential only; it opens a
+      // read-only authority answer and confers no lock power.
       provide: SERVICE_CREDENTIAL,
       inject: [CONFIG],
-      useFactory: (config: SettlementConfig): string => config.settlementInternalToken,
+      useFactory: (config: SettlementConfig): string => config.internalApiToken,
     },
     ServiceCredentialGuard,
     SettlementAuthz,

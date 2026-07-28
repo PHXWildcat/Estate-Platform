@@ -822,7 +822,7 @@ lists is a standing hazard: any future column on `vault_keysets` or
 secret-bearing column would silently inherit the wrong policy. A convention test
 asserting the redaction set against the live column list would close that.
 
-### M7 — Settlement (PR1 shipped; PR2 in progress)
+### M7 — Settlement (both PRs shipped; reviewed)
 
 The first milestone where the acting principal is routinely NOT the resource
 owner, and the first that changes another user's account state. docs/03 §5.1
@@ -966,9 +966,16 @@ cross-service account lock.**
   settlement and refuses on anything short of an explicit allow; the owner path
   is untouched. Settlement holds no data-read power itself, so compromising it
   mis-answers rather than exfiltrates. Reads audit as `asset.estate.viewed`.
-- **Legal hold gained its writer**, closing the M4 gap where enforcement
-  shipped without a setting surface — a service-credential internal route on
-  documents, callable only by settlement.
+- **Legal hold gained a writer ROUTE** — a service-credential internal route on
+  documents (`PUT /internal/v1/legal-hold`), intended for settlement.
+  CORRECTED (credential-graph work, 2026-07-28): this was written as "gained
+  its writer, closing the M4 gap", which overstated it. Nothing in the repo
+  calls that route: settlement declares no documents credential and has no
+  documents port, and `DOCUMENTS_INTERNAL_TOKEN` is not production-required, so
+  a default deploy has documents refusing every legal-hold call. **The M4 gap
+  is not closed** — the surface exists and its caller does not. Tracked as a
+  follow-up; `packages/auth-guard/src/credential-graph.ts` records the edge as
+  having zero holders, and the fence there fails if that is ever fudged.
 - Also: the task checklist generated in the same transaction as verification
   from an in-repo versioned template (anchored on `verified_at`; date of death
   is deliberately never stored), the estate timeline, and operator case close
@@ -978,6 +985,120 @@ cross-service account lock.**
   two integration tests that prove the gate blocks a request and a mid-wait
   release, and 25 settlement-client. Coverage floors re-measured with
   `--coverage`; vault's ratcheted UP to 89/72/92/90.
+
+**M7 security review (2026-07-28).** Structured review of the whole merged M7
+range (`a278635..4d24537`, PR1 #15 + PR2 #16): six parallel discovery passes —
+the death-trigger control chain against docs/03 §5.1 line by line, the new
+service-to-service trust boundary, authorization and step-up placement across
+five services, the case state machine and its concurrency, the cross-service
+data layer and co-tenancy, and the audit/PII firewall — with every candidate
+then adversarially re-verified against source by an agent instructed to refute
+it and to default to refuted when uncertain. 23 raw candidates, 23 unique, the
+12 most severe verified; 6 confirmed and 6 refuted.
+
+**No single-source, single-actor or timer-driven path to settlement was found.**
+Every attempt to move a case forward with one report, one operator, one expired
+clock, or one compromised session was refused by the control that was supposed
+to refuse it; the twice-human verification, the reviewer ≠ reporter and
+approver ≠ requester rules, the stage ladder and the owner-liveness interlock
+all held. The six confirmed findings collapse to two distinct defects, both in
+machinery M7 itself introduced, and both contradicting documentation written in
+the same milestone. Both are fixed in this branch.
+
+- **The service credential collapsed four services onto one secret (high).**
+  Found independently by four of the six discovery passes. `SETTLEMENT_INTERNAL_TOKEN`
+  was simultaneously what settlement *expected* on its own inbound gate route
+  and what it *presented* outbound to identity — one config field serving both
+  directions. Because vault and documents must hold settlement's inbound value
+  to ask the docs/03 §6a gate question, and settlement's outbound value must
+  equal identity's expected value, any working deployment forced identity,
+  settlement, vault and documents onto one identical string. The consequence is
+  not theoretical: whoever holds vault's copy can call
+  `PUT /internal/v1/settlement-lock/{victim}` twice — `deceased_pending`, then
+  `settlement`, with any UUID as `caseId` and `livenessNotAfter` simply omitted
+  so the liveness interlock never engages — and irreversibly entomb any active
+  user. No case, no operator, no waiting period, no notification, no owner-void
+  window: docs/03 §5.1's Critical outcome reached by skipping the entire control
+  chain the milestone was built to enforce. It is worse than a lateral-movement
+  finding because vault is the *most* exposed service in the product and, by
+  Zone A design, the one that should hold the least authority. The
+  `ServiceCredentialGuard` docstring asserted the credential was "provisioned to
+  exactly the two services that share it" while it was four — the gap between
+  the documented and the actual trust graph is what let this pass PR review
+  twice. **Fixed:** one secret per CALLEE, per direction. Each variable is now
+  named for the service whose routes it opens — `IDENTITY_INTERNAL_TOKEN`
+  (settlement→identity, the only lock-capable credential),
+  `SETTLEMENT_INTERNAL_TOKEN` (vault→settlement's read-only gate),
+  `DOCUMENTS_INTERNAL_TOKEN` (settlement→documents' legal hold). Splitting the
+  field is only half the fix, because an operator pasting one secret into both
+  slots recreates the collapse exactly, so settlement's config now *refuses to
+  boot in production* when its two credentials are equal. The guard's docstring
+  states the rule rather than a headcount, and an e2e test asserts the gate
+  credential is rejected by the account-lock API and leaves the victim active
+  and logged in.
+- **The profile grant-freeze probe cached a negative for the process lifetime
+  (medium, fail-open).** `RolesRepo` detects the co-tenant `settlement_cases`
+  table with `to_regclass` so profile keeps working against a core cluster where
+  settlement's migrations have not run. It memoised the answer in both
+  directions, so a profile process that started before settlement deployed had
+  §5.1 control 4 — role-holder reads freeze while a case is at or past its
+  waiting period — compiled out of its SQL permanently and silently. Grantees
+  would keep reading a possibly-deceased owner's contacts through a case's
+  entire waiting period, and the only symptom is the control's absence. docs/04
+  claimed "deploy-order independence" for this predicate; that was true of the
+  ordering and false of the caching. **Fixed:** only the positive is cached (the
+  table cannot un-exist), the negative is re-probed, and three unit tests pin
+  the re-probe, the positive cache, and the exact frozen status set.
+
+**Also fixed while in here.** `revokeStage` had no requester ≠ decider
+pre-check, so an operator who is also the executor that requested a stage hit
+the DDL CHECK unhandled: a `23514` surfaced as a 500 with the access still
+granted, indistinguishable from an outage. The unused `isCheckViolation` helper
+was flagged as the tell. It now refuses cleanly (403, second operator must
+revoke) with the CHECK as backstop, and the in-memory stage fake restates the
+constraint it was silently permitting.
+
+**Attacked and held.** Intake as an enumeration oracle: reporters must already
+be linked contacts, so there is no email/id lookup and unlinked reporters get a
+uniform `not_found`. Waiting-period compression: settings are configurable UP
+only and frozen while a case is open, and the driver holds no transition power
+at all — a lapsed clock only makes a case *eligible*. The owner-liveness
+interlock survived a dedicated concurrency pass: the CAS `UPDATE`'s `NOT EXISTS`
+over `auth_events` closes the window settlement's read leaves open, and the
+`409 owner_alive` → `OwnerAliveError` → void path correctly unwinds the
+in-transaction `markVerified`. Evidence reads: the attacher-must-equal-owner
+cross-check means a reporter registering someone else's document id yields a
+uniform 404, never a decryption. Cedar: every settlement permit is scoped
+`resource is SettlementCase`, and the deliberate omission of an `owner`
+attribute keeps owner.cedar from granting a subject operator verbs on their own
+death case. The §6a vault gate fails closed on an unreachable settlement in both
+`request()` and `release()`. The audit PII firewall held over every new payload.
+Six candidates were refuted outright, including "the driver can advance a case"
+(it cannot write status), "a lapsed waiting period auto-verifies" (it does not),
+and "the reporter can approve their own report" (DDL CHECK plus app guard).
+
+**Informational, left as-is.** The static service credential has no rotation
+story — replacing one is a synchronized restart of two services, which the
+mesh/SPIFFE follow-up removes rather than papers over · a settled account's
+`404` vs `403` distinction on some settlement reads is a mild status oracle to
+an authenticated caller, matching the M4 finding left open on the same grounds ·
+operator actions are audited but not rate-limited, deferred with the TB7
+operator platform · the contact-attempt sweep re-reads due attempts on every
+tick with no jitter, a load characteristic rather than a control.
+
+**Coverage gaps for the next reviewer.** This pass reasoned about concurrency
+from the lock ordering rather than fuzzing it: parallel stage decisions, a void
+racing a verify, and two operators approving distinct distributions on one case
+all rest on row locks that were read, not stress-tested. The operator CLI's
+allowlist writes were reviewed as code but never exercised against a hostile
+argv. Nothing here reviews the *absence* of Temporal under real failure — the
+in-process driver's behaviour across a mid-sweep crash is untested because no
+deployment exists to crash it, and that gap closes with the cloud environment,
+not before. The notification port is unreviewed by construction (stub only, and
+the routes 503 in production). Finally, the credential split fixed above makes
+the trust graph correct but still *undocumented as a graph*: a table of which
+service holds which credential, asserted by a test, would keep the next
+addition from re-collapsing it.
 
 **Follow-ups recorded, not silently dropped:** Temporal adoption (with the
 cloud environment) · the notifications service (unblocks production
