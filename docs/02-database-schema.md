@@ -407,6 +407,32 @@ CREATE TABLE distributions (
 );
 ```
 
+**M7 implementation deltas (all additive; PR1 shipped, PR2 pending).**
+As built in `apps/services/settlement/migrations/`, a separate service co-tenant
+on the core cluster (disjoint tables, own migrations dir, shared
+`schema_migrations` — the Plaid-on-financial precedent — plus READ-ONLY use of
+profile's `contacts`/`role_assignments`, which is why settlement lives in core):
+
+- `settlement_cases` gains `resolution`/`resolved_at` (rejected_fraud is one
+  status but two events: operator rejection vs. the living owner voiding) and
+  `verified_at` (the estate-timeline anchor; date-of-death is deliberately not
+  stored). CHECK constraints encode the §5.1 controls the schema can carry:
+  reviewer ≠ reporter, no privileged status without recorded human review,
+  waiting_period requires its deadline, resolution exactly on rejected_fraud.
+  A partial unique index enforces ONE open case per decedent. Deliberately NO
+  `deleted_at`: a case — especially a fraudulent one — is evidence and is never
+  deletable (§5.1 control 6); exempted from the soft-delete convention.
+- New PR1 tables: `settlement_contact_attempts` (append-only owner-contact
+  trail, UNIQUE (case_id, seq) for driver idempotency),
+  `settlement_operators` (interim CLI-managed review allowlist),
+  `settlement_settings` (waiting period, CHECK 5..60 days, versioned by
+  user_id on the profiles precedent).
+- `users.status` transitions for settlement are identity-enforced:
+  active↔deceased_pending→settlement only; live-session lookups carry a status
+  ALLOWLIST ('active','deceased_pending') so verification kills every token.
+- `settlement_tasks`/`distributions` (+`created_by` for the dual-control
+  trigger) and `settlement_deks` ship with PR2 — no dormant schema.
+
 ## 8. Design notes worth arguing about
 
 - **Cross-cluster referential integrity is by convention + events, not FKs.** Auth's `users.id` is the universal key; each cluster validates existence via cached identity events. The cost (eventual consistency on user lifecycle) buys the isolation the security model demands.

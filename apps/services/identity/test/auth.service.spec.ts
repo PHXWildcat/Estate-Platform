@@ -91,6 +91,7 @@ const config: IdentityConfig = {
   rpId: 'localhost',
   rpOrigin: 'http://localhost:3000',
   rpName: 'Estate Platform',
+  settlementInternalToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
@@ -153,6 +154,41 @@ describe('AuthService.login timing equalization', () => {
         .catch((e: UnauthorizedException) => e.getResponse()),
     ).resolves.toEqual({ error: 'invalid_credentials' });
     expect(fakes.events.loginFailed).toHaveBeenCalledWith('u-1', 'account_locked');
+    expect(fakes.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it('deceased_pending logins SUCCEED — the docs/03 §5.1 owner rescue path', async () => {
+    const fakes = makeFakes();
+    fakes.users.findByEmailBidx.mockResolvedValue({
+      id: 'u-1',
+      password_hash: 'argon2-hash',
+      status: 'deceased_pending',
+      dek_id: 'dek-1',
+    });
+    fakes.hasher.verifyPassword.mockResolvedValue(true);
+    const service = makeService(fakes);
+    const result = await service.login('user@example.com', 'correct-password');
+    expect(result.userId).toBe('u-1');
+    expect(fakes.sessions.create).toHaveBeenCalledTimes(1);
+    expect(fakes.events.loginFailed).not.toHaveBeenCalled();
+  });
+
+  it('settlement-status logins fail with the generic 401 but the account_settled reason', async () => {
+    const fakes = makeFakes();
+    fakes.users.findByEmailBidx.mockResolvedValue({
+      id: 'u-1',
+      password_hash: 'argon2-hash',
+      status: 'settlement',
+      dek_id: 'dek-1',
+    });
+    fakes.hasher.verifyPassword.mockResolvedValue(true);
+    const service = makeService(fakes);
+    await expect(
+      service
+        .login('user@example.com', 'correct-password')
+        .catch((e: UnauthorizedException) => e.getResponse()),
+    ).resolves.toEqual({ error: 'invalid_credentials' });
+    expect(fakes.events.loginFailed).toHaveBeenCalledWith('u-1', 'account_settled');
     expect(fakes.sessions.create).not.toHaveBeenCalled();
   });
 

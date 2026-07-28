@@ -47,6 +47,8 @@ jobs:
             pkg: '@estate/service-audit'
           - app: vault
             pkg: '@estate/service-vault'
+          - app: settlement
+            pkg: '@estate/service-settlement'
           - app: bff
             pkg: '@estate/bff'
             kind: bff

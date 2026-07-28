@@ -12,6 +12,8 @@ export const AUDIT_ACTIONS = [
   'auth.login.failed',
   'auth.stepup.granted',
   'auth.session.revoked',
+  'auth.sessions.revoked_all',
+  'auth.user.status_changed',
   'auth.webauthn.registered',
   'auth.webauthn.clone_detected',
   'crypto.field.decrypted',
@@ -54,6 +56,7 @@ export const AUDIT_ACTIONS = [
   'document.uploaded',
   'document.scan.rejected',
   'document.ocr.indexed',
+  'document.evidence.accessed',
   // Vault service (vault cluster, Zone A). These record that something
   // happened and to which entity - never what was in it. The server cannot
   // read vault contents even to log them, which is the point.
@@ -79,6 +82,19 @@ export const AUDIT_ACTIONS = [
   'vault.emergency.request_blocked',
   'vault.emergency.denied',
   'vault.emergency.released',
+  // Settlement service (core cluster; docs/03 §5.1). The case lifecycle is
+  // the fraudulent-death-trigger audit trail: every transition is recorded,
+  // including rejected and owner-voided cases, because the report itself is
+  // evidence (§5.1 control 6 — fraudulent reports are preserved).
+  'settlement.case.reported',
+  'settlement.case.review_started',
+  'settlement.case.evidence_added',
+  'settlement.case.approved',
+  'settlement.case.rejected',
+  'settlement.case.voided',
+  'settlement.case.verified',
+  'settlement.contact.attempted',
+  'settlement.settings.updated',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

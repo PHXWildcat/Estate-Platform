@@ -28,7 +28,10 @@ export const LoginFailedEvent = defineEvent(
     // null when the identifier did not resolve to a user; we never echo the
     // attempted identifier itself.
     userId: z.string().uuid().nullable(),
-    reason: z.enum(['bad_credentials', 'account_locked', 'risk_blocked']),
+    // 'account_settled': correct password against an account in settlement
+    // status (M7) — either the verification was wrong or the decedent's
+    // credentials are being replayed; a detection-worthy signal either way.
+    reason: z.enum(['bad_credentials', 'account_locked', 'risk_blocked', 'account_settled']),
   }),
 );
 

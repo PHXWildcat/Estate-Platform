@@ -1,0 +1,24 @@
+{
+  "name": "@estate/settlement-client",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Fail-closed HTTP client for the settlement service's authority endpoints (M7). Other services never read settlement state directly (docs/02 §8 — no cross-service table reads); they ask settlement an authority question and treat every failure as a refusal. Consumers: documents (operator evidence reads, PR1); assets and vault (staged executor access + emergency-release gate, PR2).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

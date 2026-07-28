@@ -9,3 +9,8 @@ export {
 } from './verifier';
 export { CallerGuard, requireCaller, type CallerContext, type CallerRequest } from './caller.guard';
 export { StepUpGuard } from './stepup.guard';
+export {
+  SERVICE_CREDENTIAL,
+  SERVICE_CREDENTIAL_HEADER,
+  ServiceCredentialGuard,
+} from './service-credential.guard';

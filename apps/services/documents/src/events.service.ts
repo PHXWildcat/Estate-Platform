@@ -118,6 +118,30 @@ export class EventsService {
     });
   }
 
+  /**
+   * M7: a settlement operator read a document version registered as case
+   * evidence. Unlike every other document event the actor is NOT the owner,
+   * so onBehalfOf carries the document owner (the reporter who uploaded the
+   * evidence) and the detail ties the read to its settlement case.
+   */
+  async evidenceAccessed(
+    actorId: string,
+    documentId: string,
+    ownerUserId: string,
+    detail: { version: number; caseId: string },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'document.evidence.accessed',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: ownerUserId,
+      resourceType: 'document',
+      resourceId: documentId,
+      sessionId: null,
+      detail: { version: detail.version, caseId: detail.caseId },
+    });
+  }
+
   async documentStatusChanged(
     actorId: string,
     documentId: string,

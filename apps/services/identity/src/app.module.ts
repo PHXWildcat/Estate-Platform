@@ -2,6 +2,7 @@ import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
+import { SERVICE_CREDENTIAL, ServiceCredentialGuard } from '@estate/auth-guard';
 import {
   FieldCrypto,
   LocalKmsProvider,
@@ -31,6 +32,8 @@ import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
 import { SessionGuard } from './session.guard';
 import { SessionsRepo } from './sessions.repo';
+import { SettlementLockController } from './settlement-lock.controller';
+import { SettlementLockService } from './settlement-lock.service';
 import { StepUpGuard } from './stepup.guard';
 import { UsersRepo } from './users.repo';
 import { WebAuthnRepo } from './webauthn.repo';
@@ -52,7 +55,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
 }
 
 @Module({
-  controllers: [AuthController],
+  controllers: [AuthController, SettlementLockController],
   providers: [
     { provide: CONFIG, useFactory: (): IdentityConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -118,8 +121,17 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     WebAuthnRepo,
     AuthService,
     WebAuthnService,
+    SettlementLockService,
     SessionGuard,
     StepUpGuard,
+    {
+      // '' when unset: ServiceCredentialGuard fails closed and the internal
+      // settlement-lock routes refuse everything (dev must opt in explicitly).
+      provide: SERVICE_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: IdentityConfig): string => config.settlementInternalToken,
+    },
+    ServiceCredentialGuard,
     { provide: APP_FILTER, useClass: HttpErrorFilter },
   ],
 })

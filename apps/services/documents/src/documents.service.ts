@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import type { ExecutionStatus } from '@estate/contracts';
 import { DekDestroyedError, type DekRepository } from '@estate/crypto';
+import { SETTLEMENT_AUTHORITY, type SettlementAuthority } from '@estate/settlement-client';
 import { ContentCipher } from './content-cipher';
 import { Db, type Queryable } from './db';
 import { DocumentsAuthz, documentResource } from './authz.service';
@@ -120,6 +121,7 @@ export class DocumentsService {
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
     @Inject(MALWARE_SCANNER) private readonly scanner: MalwareScanner,
     @Inject(OCR_ENGINE) private readonly ocr: OcrEngine,
+    @Inject(SETTLEMENT_AUTHORITY) private readonly settlement: SettlementAuthority,
   ) {}
 
   // ------------------------------------------------------------------ commands
@@ -537,6 +539,73 @@ export class DocumentsService {
     }
     await this.events.contentViewed(actor, documentId, { version: versionRow.version });
     // Canonical HTML travels as utf8; binary uploads as base64.
+    const encoding = versionRow.mime === 'text/html' ? 'utf8' : 'base64';
+    return {
+      documentId,
+      version: versionRow.version,
+      mime: versionRow.mime,
+      contentSha256: shaHex,
+      encoding,
+      content: content.toString(encoding),
+    };
+  }
+
+  /**
+   * M7 evidence read: a settlement OPERATOR (never the owner) reads a version
+   * registered as death-certificate evidence on a live case. Authorization is
+   * settlement's, not Cedar's: the caller's own bearer is forwarded and
+   * settlement answers only if the caller is an allowlisted operator on a case
+   * listing exactly this (documentId, version) as evidence. Fail closed — an
+   * unreachable settlement, a refusal, and an unknown document are all the
+   * same uniform 404 (no evidence-registration oracle).
+   *
+   * The owner cross-check is load-bearing: settlement records which user
+   * ATTACHED the evidence, and this service refuses when the document's real
+   * owner differs — otherwise a reporter could register someone else's
+   * document id as "evidence" and have an operator decrypt it for them.
+   */
+  async getEvidenceContent(
+    actor: string,
+    bearerToken: string,
+    documentId: string,
+    version: number,
+  ): Promise<ContentDto> {
+    const authority = await this.settlement.checkEvidenceRead({ bearerToken, documentId, version });
+    if (!authority.allowed) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    const doc = await this.documents.getLive(this.db, documentId);
+    if (!doc || doc.user_id !== authority.ownerUserId) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    const versionRow = await this.versions.getByVersion(this.db, documentId, version);
+    if (!versionRow) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    const shaHex = versionRow.content_sha256.toString('hex');
+    const ciphertext = await this.store.get(versionRow.object_key);
+    let content: Buffer;
+    try {
+      content = await this.cipher.decrypt({
+        documentId,
+        ownerUserId: doc.user_id,
+        version: versionRow.version,
+        sha256Hex: shaHex,
+        dekId: doc.dek_id,
+        ciphertext,
+        actorId: actor,
+        purpose: 'evidence_content_read',
+      });
+    } catch (err) {
+      if (err instanceof DekDestroyedError) {
+        throw new GoneException({ error: 'content_erased' });
+      }
+      throw err;
+    }
+    await this.events.evidenceAccessed(actor, documentId, doc.user_id, {
+      version: versionRow.version,
+      caseId: authority.caseId,
+    });
     const encoding = versionRow.mime === 'text/html' ? 'utf8' : 'base64';
     return {
       documentId,
