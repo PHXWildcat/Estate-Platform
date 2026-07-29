@@ -57,6 +57,7 @@ describe('config validation', () => {
     RP_ID: 'estate.example.com',
     RP_ORIGIN: 'https://estate.example.com',
     RP_NAME: 'Estate Platform',
+    KMS_MODE: 'aws',
     AWS_KMS_KEY_ID: 'alias/estate-auth-kek',
     AWS_REGION: 'us-east-1',
     IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
@@ -75,6 +76,72 @@ describe('config validation', () => {
     expect(() =>
       loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...rpOnly })),
     ).toThrow(ConfigError);
+    // The mode is now explicit, so the guarantee is stated directly rather
+    // than inferred from NODE_ENV: production refuses the local provider
+    // however it is asked for.
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          ...PROD_EXTRAS,
+          KMS_MODE: 'local',
+        }),
+      ),
+    ).toThrow(/KMS_MODE/);
+  });
+
+  it('the AWS provider is selectable outside production, and never the default', () => {
+    // The local stack exercises the real adapter against an emulator. Dev must
+    // be able to opt in; it must never happen by accident.
+    expect(loadConfig(validEnv()).kms.mode).toBe('local');
+    const config = loadConfig(
+      validEnv({
+        KMS_MODE: 'aws',
+        AWS_KMS_KEY_ID: 'alias/estate-auth-kek',
+        AWS_REGION: 'us-east-1',
+        AWS_ENDPOINT_URL: 'http://localstack:4566',
+      }),
+    );
+    expect(config.kms).toEqual({
+      mode: 'aws',
+      keyId: 'alias/estate-auth-kek',
+      region: 'us-east-1',
+      endpoint: 'http://localstack:4566',
+    });
+  });
+
+  it('KMS_MODE=aws requires the key material in every environment', () => {
+    expect(() => loadConfig(validEnv({ KMS_MODE: 'aws', AWS_REGION: 'us-east-1' }))).toThrow(
+      /AWS_KMS_KEY_ID/,
+    );
+    expect(() => loadConfig(validEnv({ KMS_MODE: 'aws', AWS_KMS_KEY_ID: 'alias/k' }))).toThrow(
+      /AWS_REGION/,
+    );
+  });
+
+  it('production refuses a plaintext AWS endpoint', () => {
+    // A local emulator over http is exactly the value that must not survive a
+    // copy-paste into a production environment; the SDK itself checks nothing.
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          ...PROD_EXTRAS,
+          AWS_ENDPOINT_URL: 'http://localstack:4566',
+        }),
+      ),
+    ).toThrow(/AWS_ENDPOINT_URL/);
+    const ok = loadConfig(
+      validEnv({
+        NODE_ENV: 'production',
+        KAFKA_BROKERS: 'k1:9092',
+        ...PROD_EXTRAS,
+        AWS_ENDPOINT_URL: 'https://kms.private.internal',
+      }),
+    );
+    expect(ok.kms).toMatchObject({ endpoint: 'https://kms.private.internal' });
   });
 
   it('production with brokers, RP identity, and AWS KMS is accepted', () => {
@@ -87,6 +154,7 @@ describe('config validation', () => {
       mode: 'aws',
       keyId: 'alias/estate-auth-kek',
       region: 'us-east-1',
+      endpoint: null,
     });
   });
 

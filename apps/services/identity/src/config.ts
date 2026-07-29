@@ -4,7 +4,8 @@ import { z } from 'zod';
  * Environment configuration, zod-validated so the process fails fast on a bad
  * deployment instead of limping into runtime errors.
  *
- * KMS_MASTER_KEY_HEX drives LocalKmsProvider and is a DEV/TEST convenience
+ * KMS_MODE selects the KMS backend; KMS_MASTER_KEY_HEX drives the
+ * LocalKmsProvider half of it and is a DEV/TEST convenience
  * only — it MUST be replaced by the AWS KMS adapter (CloudHSM-backed KEKs,
  * IAM-scoped grants) before any real deployment. The production guard below
  * enforces that Kafka is configured; a matching guard for the KMS adapter
@@ -18,17 +19,33 @@ const EnvSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().max(65535).default(3001),
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-    // Dev/test only: drives LocalKmsProvider. Required OUTSIDE production;
-    // production uses AWS KMS instead (see AWS_KMS_KEY_ID) so a real
-    // deployment never depends on an in-process master key.
+    // Which KMS backs envelope encryption. 'local' is the in-process
+    // LocalKmsProvider (dev/test only); 'aws' is the real KMS adapter.
+    // Production REQUIRES 'aws' — see the superRefine below, which keeps the
+    // production guarantee exactly as strong as when this was derived from
+    // NODE_ENV. Making it an explicit enum, as the other adapter selectors
+    // already are, is what lets the AWS adapter be exercised outside
+    // production (e.g. against a local KMS emulator) without ever permitting
+    // the in-process key in a real deployment.
+    KMS_MODE: z.enum(['local', 'aws']).default('local'),
+    // Dev/test only: drives LocalKmsProvider. Required when KMS_MODE is
+    // 'local'; unused under 'aws', so a real deployment never depends on an
+    // in-process master key.
     KMS_MASTER_KEY_HEX: z
       .string()
       .regex(HEX_32_BYTES, 'KMS_MASTER_KEY_HEX must be 32 bytes of hex (64 chars)')
       .optional(),
     // Production KMS: the KMS key id/alias/ARN that wraps this domain's DEKs,
-    // plus its region. Required IN production; ignored otherwise.
+    // plus its region. Required when KMS_MODE is "aws".
     AWS_KMS_KEY_ID: z.string().min(1).optional(),
     AWS_REGION: z.string().min(1).optional(),
+    // Endpoint override for the AWS SDK client. Unset means real AWS.
+    //
+    // The SDK already honours this variable ambiently, so we deliberately
+    // read the SAME name rather than inventing one: our explicitly-passed
+    // value and the SDK's own resolution can then never disagree. Reading it
+    // here is what makes the production TLS guard below possible at all.
+    AWS_ENDPOINT_URL: z.string().url().optional(),
     EMAIL_INDEX_KEY_HEX: z
       .string()
       .regex(HEX_32_BYTES, 'EMAIL_INDEX_KEY_HEX must be 32 bytes of hex (64 chars)'),
@@ -71,12 +88,35 @@ const EnvSchema = z
     if (env.NODE_ENV === 'production') {
       // Production must use AWS KMS (CloudHSM-rooted KEKs). The in-process
       // LocalKmsProvider is never permitted outside dev/test.
+      if (env.KMS_MODE !== 'aws') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['KMS_MODE'],
+          message: 'KMS_MODE must be "aws" in production (LocalKmsProvider is dev/test only)',
+        });
+      }
+      // A plaintext endpoint would put wrapped DEKs on the wire in the clear.
+      // The SDK performs no such check on the variable.
+      if (env.AWS_ENDPOINT_URL && !env.AWS_ENDPOINT_URL.startsWith('https://')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AWS_ENDPOINT_URL'],
+          message:
+            'AWS_ENDPOINT_URL must be https in production (KMS traffic must not be plaintext)',
+        });
+      }
+    }
+    // Mode-conditional requirements, enforced in EVERY environment — the
+    // shape the other adapter selectors already use. Combined with the
+    // production pin above, production still requires exactly AWS_KMS_KEY_ID
+    // + AWS_REGION and still cannot reach LocalKmsProvider.
+    if (env.KMS_MODE === 'aws') {
       for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
         if (!env[key]) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: [key],
-            message: `${key} is required in production (LocalKmsProvider is dev/test only)`,
+            message: `${key} is required when KMS_MODE is "aws"`,
           });
         }
       }
@@ -84,7 +124,8 @@ const EnvSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['KMS_MASTER_KEY_HEX'],
-        message: 'KMS_MASTER_KEY_HEX is required outside production (drives LocalKmsProvider)',
+        message:
+          'KMS_MASTER_KEY_HEX is required when KMS_MODE is "local" (drives LocalKmsProvider)',
       });
     }
     if (env.NODE_ENV === 'production') {
@@ -117,7 +158,13 @@ const EnvSchema = z
  */
 export type KmsConfig =
   | { readonly mode: 'local'; readonly masterKey: Buffer }
-  | { readonly mode: 'aws'; readonly keyId: string; readonly region: string };
+  | {
+      readonly mode: 'aws';
+      readonly keyId: string;
+      readonly region: string;
+      /** Non-AWS KMS endpoint (a local emulator); null means real AWS. */
+      readonly endpoint: string | null;
+    };
 
 export interface IdentityConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
@@ -168,8 +215,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
   // The superRefine above guarantees the required fields per environment, so
   // these non-null assertions are sound.
   const kms: KmsConfig =
-    e.NODE_ENV === 'production'
-      ? { mode: 'aws', keyId: e.AWS_KMS_KEY_ID!, region: e.AWS_REGION! }
+    e.KMS_MODE === 'aws'
+      ? {
+          mode: 'aws',
+          keyId: e.AWS_KMS_KEY_ID!,
+          region: e.AWS_REGION!,
+          endpoint: e.AWS_ENDPOINT_URL ?? null,
+        }
       : { mode: 'local', masterKey: Buffer.from(e.KMS_MASTER_KEY_HEX!, 'hex') };
   return {
     nodeEnv: e.NODE_ENV,

@@ -55,8 +55,9 @@ import type { PlaidGateway } from './plaid-gateway';
  */
 function kmsProviderFor(config: PlaidConfig): KmsKeyProvider {
   if (config.kms.mode === 'aws') {
-    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
-      keyId: config.kms.keyId,
+    const { region, endpoint, keyId } = config.kms;
+    return new AwsKmsProvider(new KMSClient({ region, ...(endpoint ? { endpoint } : {}) }), {
+      keyId,
     });
   }
   return new LocalKmsProvider(config.kms.masterKey);

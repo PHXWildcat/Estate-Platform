@@ -5,7 +5,8 @@ import { z } from 'zod';
  * the process fails fast on a bad deployment instead of limping into runtime
  * errors. Mirrors the assets service's config posture.
  *
- * KMS_MASTER_KEY_HEX drives LocalKmsProvider and is a DEV/TEST convenience
+ * KMS_MODE selects the KMS backend; KMS_MASTER_KEY_HEX drives the
+ * LocalKmsProvider half of it and is a DEV/TEST convenience
  * only — production uses the AWS KMS adapter instead, enforced below. This
  * service's DEKs are wrapped under a DEDICATED KEK alias ('plaid/kek'), never
  * the assets service's 'financial/kek': the KMS grant is the TB5 isolation
@@ -25,8 +26,18 @@ const EnvSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().max(65535).default(3004),
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-    // Dev/test only: drives LocalKmsProvider. Required OUTSIDE production;
-    // production uses AWS KMS instead (see AWS_KMS_KEY_ID).
+    // Which KMS backs envelope encryption. 'local' is the in-process
+    // LocalKmsProvider (dev/test only); 'aws' is the real KMS adapter.
+    // Production REQUIRES 'aws' — see the superRefine below, which keeps the
+    // production guarantee exactly as strong as when this was derived from
+    // NODE_ENV. Making it an explicit enum, as the other adapter selectors
+    // already are, is what lets the AWS adapter be exercised outside
+    // production (e.g. against a local KMS emulator) without ever permitting
+    // the in-process key in a real deployment.
+    KMS_MODE: z.enum(['local', 'aws']).default('local'),
+    // Dev/test only: drives LocalKmsProvider. Required when KMS_MODE is
+    // 'local'; unused under 'aws', so a real deployment never depends on an
+    // in-process master key.
     KMS_MASTER_KEY_HEX: z
       .string()
       .regex(HEX_32_BYTES, 'KMS_MASTER_KEY_HEX must be 32 bytes of hex (64 chars)')
@@ -35,6 +46,13 @@ const EnvSchema = z
     // (a different key than the asset service's), plus its region.
     AWS_KMS_KEY_ID: z.string().min(1).optional(),
     AWS_REGION: z.string().min(1).optional(),
+    // Endpoint override for the AWS SDK client. Unset means real AWS.
+    //
+    // The SDK already honours this variable ambiently, so we deliberately
+    // read the SAME name rather than inventing one: our explicitly-passed
+    // value and the SDK's own resolution can then never disagree. Reading it
+    // here is what makes the production TLS guard below possible at all.
+    AWS_ENDPOINT_URL: z.string().url().optional(),
     // Blind-index key for plaid_items.item_bidx (webhook routing lookup).
     // Required in every environment — the column is NOT NULL.
     ITEM_INDEX_KEY_HEX: z
@@ -61,14 +79,24 @@ const EnvSchema = z
       });
     }
     if (env.NODE_ENV === 'production') {
-      for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
-        if (!env[key]) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: [key],
-            message: `${key} is required in production (LocalKmsProvider is dev/test only)`,
-          });
-        }
+      // Production must use AWS KMS (CloudHSM-rooted KEKs). The in-process
+      // LocalKmsProvider is never permitted outside dev/test.
+      if (env.KMS_MODE !== 'aws') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['KMS_MODE'],
+          message: 'KMS_MODE must be "aws" in production (LocalKmsProvider is dev/test only)',
+        });
+      }
+      // A plaintext endpoint would put wrapped DEKs on the wire in the clear.
+      // The SDK performs no such check on the variable.
+      if (env.AWS_ENDPOINT_URL && !env.AWS_ENDPOINT_URL.startsWith('https://')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AWS_ENDPOINT_URL'],
+          message:
+            'AWS_ENDPOINT_URL must be https in production (KMS traffic must not be plaintext)',
+        });
       }
       if (env.PLAID_MODE !== 'live') {
         ctx.addIssue({
@@ -84,11 +112,27 @@ const EnvSchema = z
           message: 'IDENTITY_URL is required in production (cross-service session verification)',
         });
       }
+    }
+    // Mode-conditional requirements, enforced in EVERY environment — the
+    // shape the other adapter selectors already use. Combined with the
+    // production pin above, production still requires exactly AWS_KMS_KEY_ID
+    // + AWS_REGION and still cannot reach LocalKmsProvider.
+    if (env.KMS_MODE === 'aws') {
+      for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required when KMS_MODE is "aws"`,
+          });
+        }
+      }
     } else if (!env.KMS_MASTER_KEY_HEX) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['KMS_MASTER_KEY_HEX'],
-        message: 'KMS_MASTER_KEY_HEX is required outside production (drives LocalKmsProvider)',
+        message:
+          'KMS_MASTER_KEY_HEX is required when KMS_MODE is "local" (drives LocalKmsProvider)',
       });
     }
     if (env.PLAID_MODE === 'live') {
@@ -107,7 +151,13 @@ const EnvSchema = z
 /** Which KMS backs envelope encryption (local dev/test, AWS in production). */
 export type KmsConfig =
   | { readonly mode: 'local'; readonly masterKey: Buffer }
-  | { readonly mode: 'aws'; readonly keyId: string; readonly region: string };
+  | {
+      readonly mode: 'aws';
+      readonly keyId: string;
+      readonly region: string;
+      /** Non-AWS KMS endpoint (a local emulator); null means real AWS. */
+      readonly endpoint: string | null;
+    };
 
 /** Which Plaid gateway to construct. */
 export type PlaidGatewayConfig =
@@ -161,8 +211,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PlaidConfig {
   // The superRefine above guarantees the required fields per mode, so these
   // non-null assertions are sound.
   const kms: KmsConfig =
-    e.NODE_ENV === 'production'
-      ? { mode: 'aws', keyId: e.AWS_KMS_KEY_ID!, region: e.AWS_REGION! }
+    e.KMS_MODE === 'aws'
+      ? {
+          mode: 'aws',
+          keyId: e.AWS_KMS_KEY_ID!,
+          region: e.AWS_REGION!,
+          endpoint: e.AWS_ENDPOINT_URL ?? null,
+        }
       : { mode: 'local', masterKey: Buffer.from(e.KMS_MASTER_KEY_HEX!, 'hex') };
   const plaid: PlaidGatewayConfig =
     e.PLAID_MODE === 'live'

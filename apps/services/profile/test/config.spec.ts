@@ -52,6 +52,7 @@ describe('config validation', () => {
   });
 
   const PROD_KMS = {
+    KMS_MODE: 'aws',
     AWS_KMS_KEY_ID: 'alias/estate-core-kek',
     AWS_REGION: 'us-east-1',
     IDENTITY_URL: 'https://identity.internal',
@@ -63,6 +64,7 @@ describe('config validation', () => {
         validEnv({
           NODE_ENV: 'production',
           KAFKA_BROKERS: 'k1:9092',
+          KMS_MODE: 'aws',
           AWS_KMS_KEY_ID: 'alias/estate-core-kek',
           AWS_REGION: 'us-east-1',
         }),
@@ -87,6 +89,55 @@ describe('config validation', () => {
     expect(() =>
       loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092' })),
     ).toThrow(ConfigError);
+    // The mode is now explicit, so state the guarantee directly: production
+    // refuses the local provider however it is asked for, and asking for the
+    // AWS one still requires the key material that names a real KEK.
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', KMS_MODE: 'local' })),
+    ).toThrow(/KMS_MODE/);
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          IDENTITY_URL: 'https://identity.internal',
+          KMS_MODE: 'aws',
+        }),
+      ),
+    ).toThrow(/AWS_KMS_KEY_ID/);
+  });
+
+  it('the AWS provider is selectable outside production, and never the default', () => {
+    // The local stack exercises the real adapter against an emulator. Dev must
+    // be able to opt in; it must never happen by accident.
+    expect(loadConfig(validEnv()).kms.mode).toBe('local');
+    const config = loadConfig(
+      validEnv({
+        KMS_MODE: 'aws',
+        AWS_KMS_KEY_ID: 'alias/estate-core-kek',
+        AWS_REGION: 'us-east-1',
+        AWS_ENDPOINT_URL: 'http://localstack:4566',
+      }),
+    );
+    expect(config.kms).toEqual({
+      mode: 'aws',
+      keyId: 'alias/estate-core-kek',
+      region: 'us-east-1',
+      endpoint: 'http://localstack:4566',
+    });
+  });
+
+  it('production refuses a plaintext AWS endpoint', () => {
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          ...PROD_KMS,
+          AWS_ENDPOINT_URL: 'http://localstack:4566',
+        }),
+      ),
+    ).toThrow(/AWS_ENDPOINT_URL/);
   });
 
   it('production with brokers and AWS KMS is accepted (no in-process master key)', () => {
@@ -98,6 +149,7 @@ describe('config validation', () => {
       mode: 'aws',
       keyId: 'alias/estate-core-kek',
       region: 'us-east-1',
+      endpoint: null,
     });
     expect(config.identityUrl).toBe('https://identity.internal');
   });

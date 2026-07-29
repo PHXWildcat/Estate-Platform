@@ -5,12 +5,12 @@ import { z } from 'zod';
  * process fails fast on a bad deployment instead of limping into runtime
  * errors. Mirrors the assets/plaid services' config posture.
  *
- * KMS_MASTER_KEY_HEX drives LocalKmsProvider and is a DEV/TEST convenience
- * only — production uses the AWS KMS adapter instead, enforced below. This
- * service's DEKs are wrapped under a DEDICATED KEK alias ('documents/kek'),
- * never another cluster's alias: the KMS grant is the isolation chokepoint
- * (docs/03 §5.3), so a compromise of another service can never unwrap a
- * document content DEK.
+ * KMS_MODE selects the KMS backend. 'local' drives LocalKmsProvider from
+ * KMS_MASTER_KEY_HEX and is a DEV/TEST convenience only; 'aws' is the real
+ * KMS adapter. Production REQUIRES 'aws'. This service's DEKs are wrapped
+ * under a DEDICATED KEK alias ('documents/kek'), never another cluster's
+ * alias: the KMS grant is the isolation chokepoint (docs/03 §5.3), so a
+ * compromise of another service can never unwrap a document content DEK.
  *
  * OBJECT_STORE_MODE selects where encrypted content blobs live. 'fs' is the
  * dev/test local-filesystem store; 's3' is the real S3 store. Production
@@ -27,16 +27,35 @@ const EnvSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().max(65535).default(3005),
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-    // Dev/test only: drives LocalKmsProvider. Required OUTSIDE production;
-    // production uses AWS KMS instead (see AWS_KMS_KEY_ID).
+    // Which KMS backs envelope encryption. 'local' is the in-process
+    // LocalKmsProvider (dev/test only); 'aws' is the real KMS adapter.
+    // Production REQUIRES 'aws' — see the superRefine below, which keeps the
+    // production guarantee exactly as strong as when this was derived from
+    // NODE_ENV. Making it an explicit enum, like OBJECT_STORE_MODE and
+    // SCANNER_MODE already are, is what lets the AWS adapter be exercised
+    // outside production (e.g. against a local KMS emulator) without ever
+    // permitting the in-process key in a real deployment.
+    KMS_MODE: z.enum(['local', 'aws']).default('local'),
+    // Dev/test only: drives LocalKmsProvider. Required when KMS_MODE is
+    // 'local'; unused under 'aws'.
     KMS_MASTER_KEY_HEX: z
       .string()
       .regex(HEX_32_BYTES, 'KMS_MASTER_KEY_HEX must be 32 bytes of hex (64 chars)')
       .optional(),
-    // Production KMS: the KMS key id/alias/ARN that wraps THIS service's DEKs
-    // (a different key than the other clusters'), plus its region.
+    // AWS KMS: the key id/alias/ARN that wraps THIS service's DEKs (a
+    // different key than the other clusters'), plus its region.
     AWS_KMS_KEY_ID: z.string().min(1).optional(),
     AWS_REGION: z.string().min(1).optional(),
+    // Endpoint override for the AWS SDK clients (KMS, S3, Textract). Unset
+    // means the real AWS endpoints.
+    //
+    // The SDK already honours this variable ambiently, so we deliberately read
+    // the SAME name rather than inventing one: our explicitly-passed value and
+    // the SDK's own resolution can then never disagree. Reading it here buys
+    // two things the ambient path does not — the production TLS guard below,
+    // and `forcePathStyle` for S3, which has no environment selector in the
+    // SDK at all and therefore requires this to be an explicit decision.
+    AWS_ENDPOINT_URL: z.string().url().optional(),
     // Comma-separated broker list. Optional in dev/test; REQUIRED in
     // production — audit is a hard dependency of every sensitive action.
     KAFKA_BROKERS: z.string().optional(),
@@ -74,8 +93,13 @@ const EnvSchema = z
     CLAMD_HOST: z.string().min(1).optional(),
     CLAMD_PORT: z.coerce.number().int().positive().max(65535).default(3310),
     // OCR for uploads. 'stub' is deterministic dev/test extraction; 'textract'
-    // calls AWS Textract. Production REQUIRES 'textract'.
-    OCR_MODE: z.enum(['stub', 'textract']).default('stub'),
+    // calls AWS Textract; 'tesseract' calls a Tesseract sidecar over HTTP.
+    // Production REQUIRES a NON-STUB engine — the guard names the stub rather
+    // than naming one permitted engine, which is what its message has always
+    // meant and what keeps it from rejecting future real adapters.
+    OCR_MODE: z.enum(['stub', 'textract', 'tesseract']).default('stub'),
+    // tesseract mode: base URL of the OCR sidecar.
+    OCR_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -86,14 +110,22 @@ const EnvSchema = z
       });
     }
     if (env.NODE_ENV === 'production') {
-      for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
-        if (!env[key]) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: [key],
-            message: `${key} is required in production (LocalKmsProvider is dev/test only)`,
-          });
-        }
+      if (env.KMS_MODE !== 'aws') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['KMS_MODE'],
+          message: 'KMS_MODE must be "aws" in production (LocalKmsProvider is dev/test only)',
+        });
+      }
+      // A plaintext endpoint would put wrapped DEKs and content ciphertext on
+      // the wire in the clear. The SDK performs no such check on the variable.
+      if (env.AWS_ENDPOINT_URL && !env.AWS_ENDPOINT_URL.startsWith('https://')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AWS_ENDPOINT_URL'],
+          message:
+            'AWS_ENDPOINT_URL must be https in production (KMS/S3 traffic must not be plaintext)',
+        });
       }
       if (!env.IDENTITY_URL) {
         ctx.addIssue({
@@ -124,18 +156,34 @@ const EnvSchema = z
           message: 'SCANNER_MODE must be "clamd" in production (the stub scanner is dev/test only)',
         });
       }
-      if (env.OCR_MODE !== 'textract') {
+      if (env.OCR_MODE === 'stub') {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['OCR_MODE'],
-          message: 'OCR_MODE must be "textract" in production (the stub OCR is dev/test only)',
+          message: 'OCR_MODE must not be "stub" in production (the stub OCR is dev/test only)',
         });
+      }
+    }
+    // Mode-conditional requirements, enforced in EVERY environment — the
+    // OBJECT_STORE_MODE/SCANNER_MODE shape. Combined with the production pin
+    // above, production still requires exactly AWS_KMS_KEY_ID + AWS_REGION and
+    // still cannot reach LocalKmsProvider.
+    if (env.KMS_MODE === 'aws') {
+      for (const key of ['AWS_KMS_KEY_ID', 'AWS_REGION'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required when KMS_MODE is "aws"`,
+          });
+        }
       }
     } else if (!env.KMS_MASTER_KEY_HEX) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['KMS_MASTER_KEY_HEX'],
-        message: 'KMS_MASTER_KEY_HEX is required outside production (drives LocalKmsProvider)',
+        message:
+          'KMS_MASTER_KEY_HEX is required when KMS_MODE is "local" (drives LocalKmsProvider)',
       });
     }
     if (env.OBJECT_STORE_MODE === 's3') {
@@ -163,17 +211,36 @@ const EnvSchema = z
         message: 'AWS_REGION is required when OCR_MODE is "textract"',
       });
     }
+    if (env.OCR_MODE === 'tesseract' && !env.OCR_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OCR_URL'],
+        message: 'OCR_URL is required when OCR_MODE is "tesseract"',
+      });
+    }
   });
 
 /** Which KMS backs envelope encryption (local dev/test, AWS in production). */
 export type KmsConfig =
   | { readonly mode: 'local'; readonly masterKey: Buffer }
-  | { readonly mode: 'aws'; readonly keyId: string; readonly region: string };
+  | {
+      readonly mode: 'aws';
+      readonly keyId: string;
+      readonly region: string;
+      /** Non-AWS KMS endpoint (a local emulator); null means real AWS. */
+      readonly endpoint: string | null;
+    };
 
 /** Which object store holds encrypted content blobs. */
 export type ObjectStoreConfig =
   | { readonly mode: 'fs'; readonly dir: string }
-  | { readonly mode: 's3'; readonly bucket: string; readonly region: string };
+  | {
+      readonly mode: 's3';
+      readonly bucket: string;
+      readonly region: string;
+      /** Non-AWS S3 endpoint (an S3-compatible service); null means real AWS. */
+      readonly endpoint: string | null;
+    };
 
 /** Which malware scanner gates upload ingest. */
 export type ScannerConfig =
@@ -182,7 +249,14 @@ export type ScannerConfig =
 
 /** Which OCR engine extracts text from uploads. */
 export type OcrConfig =
-  { readonly mode: 'stub' } | { readonly mode: 'textract'; readonly region: string };
+  | { readonly mode: 'stub' }
+  | {
+      readonly mode: 'textract';
+      readonly region: string;
+      /** Non-AWS Textract endpoint; null means real AWS. */
+      readonly endpoint: string | null;
+    }
+  | { readonly mode: 'tesseract'; readonly endpoint: string };
 
 export interface DocumentsConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
@@ -231,20 +305,42 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DocumentsConfi
   }
   // The superRefine above guarantees the required fields per mode, so these
   // non-null assertions are sound.
+  const awsEndpoint = e.AWS_ENDPOINT_URL ?? null;
   const kms: KmsConfig =
-    e.NODE_ENV === 'production'
-      ? { mode: 'aws', keyId: e.AWS_KMS_KEY_ID!, region: e.AWS_REGION! }
+    e.KMS_MODE === 'aws'
+      ? { mode: 'aws', keyId: e.AWS_KMS_KEY_ID!, region: e.AWS_REGION!, endpoint: awsEndpoint }
       : { mode: 'local', masterKey: Buffer.from(e.KMS_MASTER_KEY_HEX!, 'hex') };
   const objectStore: ObjectStoreConfig =
     e.OBJECT_STORE_MODE === 's3'
-      ? { mode: 's3', bucket: e.OBJECT_STORE_BUCKET!, region: e.AWS_REGION! }
+      ? {
+          mode: 's3',
+          bucket: e.OBJECT_STORE_BUCKET!,
+          region: e.AWS_REGION!,
+          endpoint: awsEndpoint,
+        }
       : { mode: 'fs', dir: e.OBJECT_STORE_DIR ?? '.object-store' };
   const scanner: ScannerConfig =
     e.SCANNER_MODE === 'clamd'
       ? { mode: 'clamd', host: e.CLAMD_HOST!, port: e.CLAMD_PORT }
       : { mode: 'stub' };
-  const ocr: OcrConfig =
-    e.OCR_MODE === 'textract' ? { mode: 'textract', region: e.AWS_REGION! } : { mode: 'stub' };
+  // Exhaustive rather than a ternary chain ending in the stub. With three
+  // engines a trailing `: { mode: 'stub' }` means any FUTURE engine silently
+  // resolves to the stub — the same fail-open-in-style the M4 review found on
+  // the scan gate. The `never` makes a new enum member a compile error here.
+  const ocr: OcrConfig = ((): OcrConfig => {
+    switch (e.OCR_MODE) {
+      case 'textract':
+        return { mode: 'textract', region: e.AWS_REGION!, endpoint: awsEndpoint };
+      case 'tesseract':
+        return { mode: 'tesseract', endpoint: e.OCR_URL! };
+      case 'stub':
+        return { mode: 'stub' };
+      default: {
+        const unreachable: never = e.OCR_MODE;
+        throw new ConfigError([`OCR_MODE: unsupported engine ${String(unreachable)}`]);
+      }
+    }
+  })();
   return {
     nodeEnv: e.NODE_ENV,
     port: e.PORT,

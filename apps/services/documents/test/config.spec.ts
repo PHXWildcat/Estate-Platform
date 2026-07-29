@@ -14,6 +14,7 @@ const PROD_BASE = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgres://prod/documents',
   KAFKA_BROKERS: 'k1:9092,k2:9092',
+  KMS_MODE: 'aws',
   AWS_KMS_KEY_ID: 'alias/documents-kek',
   AWS_REGION: 'us-east-1',
   IDENTITY_URL: 'https://identity.internal',
@@ -54,7 +55,12 @@ describe('documents config', () => {
       OBJECT_STORE_BUCKET: 'b',
       AWS_REGION: 'us-east-1',
     });
-    expect(config.objectStore).toEqual({ mode: 's3', bucket: 'b', region: 'us-east-1' });
+    expect(config.objectStore).toEqual({
+      mode: 's3',
+      bucket: 'b',
+      region: 'us-east-1',
+      endpoint: null,
+    });
   });
 
   it('loads a fully specified production config', () => {
@@ -63,13 +69,60 @@ describe('documents config', () => {
       mode: 'aws',
       keyId: 'alias/documents-kek',
       region: 'us-east-1',
+      endpoint: null,
     });
     expect(config.objectStore).toEqual({
       mode: 's3',
       bucket: 'estate-documents',
       region: 'us-east-1',
+      endpoint: null,
     });
     expect(config.kafkaBrokers).toEqual(['k1:9092', 'k2:9092']);
+  });
+
+  it('production refuses the local KMS provider and a plaintext AWS endpoint', () => {
+    expect(() => loadConfig({ ...PROD_BASE, KMS_MODE: 'local' })).toThrow(/KMS_MODE/);
+    expect(() => loadConfig({ ...PROD_BASE, AWS_ENDPOINT_URL: 'http://localstack:4566' })).toThrow(
+      /AWS_ENDPOINT_URL/,
+    );
+  });
+
+  it('one endpoint override reaches KMS, S3 and Textract alike', () => {
+    // All three clients address the same emulator in the local stack; a
+    // partial override would leave one of them talking to real AWS.
+    const config = loadConfig({
+      ...DEV_BASE,
+      KMS_MODE: 'aws',
+      AWS_KMS_KEY_ID: 'alias/documents-kek',
+      AWS_REGION: 'us-east-1',
+      OBJECT_STORE_MODE: 's3',
+      OBJECT_STORE_BUCKET: 'estate-documents',
+      OCR_MODE: 'textract',
+      AWS_ENDPOINT_URL: 'http://localstack:4566',
+    });
+    expect(config.kms).toMatchObject({ endpoint: 'http://localstack:4566' });
+    expect(config.objectStore).toMatchObject({ endpoint: 'http://localstack:4566' });
+    expect(config.ocr).toEqual({
+      mode: 'textract',
+      region: 'us-east-1',
+      endpoint: 'http://localstack:4566',
+    });
+  });
+
+  it('tesseract is a real engine: production accepts it, and it needs a URL', () => {
+    // The production guard names the STUB rather than one permitted engine —
+    // which is what its message has always meant, and what stops it rejecting
+    // real adapters that simply are not Textract.
+    expect(() => loadConfig({ ...DEV_BASE, OCR_MODE: 'tesseract' })).toThrow(/OCR_URL/);
+    expect(
+      loadConfig({ ...DEV_BASE, OCR_MODE: 'tesseract', OCR_URL: 'http://ocr:8884' }).ocr,
+    ).toEqual({ mode: 'tesseract', endpoint: 'http://ocr:8884' });
+    const prod = loadConfig({
+      ...PROD_BASE,
+      OCR_MODE: 'tesseract',
+      OCR_URL: 'https://ocr.internal',
+    });
+    expect(prod.ocr).toEqual({ mode: 'tesseract', endpoint: 'https://ocr.internal' });
   });
 
   it.each(['KAFKA_BROKERS', 'AWS_KMS_KEY_ID', 'AWS_REGION', 'IDENTITY_URL', 'SETTLEMENT_URL'])(
@@ -108,6 +161,7 @@ describe('documents config', () => {
     expect(loadConfig({ ...DEV_BASE, OCR_MODE: 'textract', AWS_REGION: 'us-east-1' }).ocr).toEqual({
       mode: 'textract',
       region: 'us-east-1',
+      endpoint: null,
     });
     const { SEARCH_INDEX_KEY_HEX: _omit, ...withoutKey } = DEV_BASE;
     expect(() => loadConfig(withoutKey)).toThrow(/SEARCH_INDEX_KEY_HEX/);

@@ -54,8 +54,8 @@ import { LegalHoldController } from './legal-hold.controller';
 import { HttpErrorFilter } from './http-error.filter';
 import { ClamdScanner, StubScanner, type MalwareScanner } from './malware-scanner';
 import { LocalFsObjectStore, type ObjectStore } from './object-store';
-import { StubOcr, TextractOcr, type OcrEngine } from './ocr';
-import { S3ObjectStore } from './s3-object-store';
+import { StubOcr, TesseractOcr, TextractOcr, type OcrEngine } from './ocr';
+import { S3ObjectStore, s3ClientConfig } from './s3-object-store';
 import { SearchIndexer } from './search-indexer';
 import { SearchTokensRepo } from './search-tokens.repo';
 import { TemplateEngine } from './template-engine';
@@ -71,8 +71,9 @@ import { VersionsRepo } from './versions.repo';
  */
 function kmsProviderFor(config: DocumentsConfig): KmsKeyProvider {
   if (config.kms.mode === 'aws') {
-    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
-      keyId: config.kms.keyId,
+    const { region, endpoint, keyId } = config.kms;
+    return new AwsKmsProvider(new KMSClient({ region, ...(endpoint ? { endpoint } : {}) }), {
+      keyId,
     });
   }
   return new LocalKmsProvider(config.kms.masterKey);
@@ -81,10 +82,8 @@ function kmsProviderFor(config: DocumentsConfig): KmsKeyProvider {
 /** Select the object store (fs dev/test, S3 in production; config-enforced). */
 function objectStoreFor(config: DocumentsConfig): ObjectStore {
   if (config.objectStore.mode === 's3') {
-    return new S3ObjectStore(
-      new S3Client({ region: config.objectStore.region }),
-      config.objectStore.bucket,
-    );
+    const { region, endpoint, bucket } = config.objectStore;
+    return new S3ObjectStore(new S3Client(s3ClientConfig(region, endpoint)), bucket);
   }
   return new LocalFsObjectStore(config.objectStore.dir);
 }
@@ -98,12 +97,28 @@ function scannerFor(config: DocumentsConfig): MalwareScanner {
   return new StubScanner();
 }
 
-/** Select the OCR engine (stub dev/test, Textract in production). */
+/**
+ * Select the OCR engine (stub dev/test; a real engine in production).
+ *
+ * Exhaustive by construction: a chain of `if`s falling through to `StubOcr`
+ * would silently hand a FUTURE engine the stub, which is the fail-open-in-style
+ * the M4 review found on the scan gate. The `never` makes that a compile error.
+ */
 function ocrFor(config: DocumentsConfig): OcrEngine {
-  if (config.ocr.mode === 'textract') {
-    return new TextractOcr(new TextractClient({ region: config.ocr.region }));
+  switch (config.ocr.mode) {
+    case 'textract': {
+      const { region, endpoint } = config.ocr;
+      return new TextractOcr(new TextractClient({ region, ...(endpoint ? { endpoint } : {}) }));
+    }
+    case 'tesseract':
+      return new TesseractOcr({ endpoint: config.ocr.endpoint });
+    case 'stub':
+      return new StubOcr();
+    default: {
+      const unreachable: never = config.ocr;
+      throw new Error(`unsupported OCR engine: ${JSON.stringify(unreachable)}`);
+    }
   }
-  return new StubOcr();
 }
 
 @Module({

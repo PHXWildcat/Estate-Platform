@@ -1,6 +1,23 @@
 import { HeadObjectCommand, PutObjectCommand, S3ServiceException } from '@aws-sdk/client-s3';
 import { ObjectConflictError, ObjectNotFoundError } from '../src/object-store';
-import { S3ObjectStore } from '../src/s3-object-store';
+import { S3ObjectStore, s3ClientConfig } from '../src/s3-object-store';
+
+describe('s3ClientConfig', () => {
+  it('addresses real AWS virtual-host style', () => {
+    expect(s3ClientConfig('us-east-1', null)).toEqual({ region: 'us-east-1' });
+  });
+
+  it('forces path style whenever a custom endpoint is set', () => {
+    // An S3-compatible service has no per-bucket DNS, so virtual-host
+    // addressing resolves nowhere. Unlike the endpoint itself, this has NO
+    // environment selector in the SDK — if it is not set here it is not set.
+    expect(s3ClientConfig('us-east-1', 'http://localstack:4566')).toEqual({
+      region: 'us-east-1',
+      endpoint: 'http://localstack:4566',
+      forcePathStyle: true,
+    });
+  });
+});
 
 /** Stubbed transport: the store's logic is tested, not the AWS SDK. */
 function fakeClient(handler: (command: unknown) => Promise<unknown>): {
