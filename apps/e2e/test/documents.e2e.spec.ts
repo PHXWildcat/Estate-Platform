@@ -31,7 +31,7 @@ import { AuditEmitter } from '@estate/audit-emitter';
 import { Migrator } from '@estate/db';
 import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { AppModule } from '@estate/service-documents/dist/app.module';
-import { InMemoryAuditProducer } from '@estate/service-documents/dist/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER } from '@estate/service-documents/dist/di-tokens';
 import { EICAR_TEST_STRING } from '@estate/service-documents/dist/malware-scanner';
 import { LocalFsObjectStore } from '@estate/service-documents/dist/object-store';

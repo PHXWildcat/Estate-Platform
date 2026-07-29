@@ -241,6 +241,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../packages/kafka
       '@estate/service-assets':
         specifier: workspace:*
         version: link:../services/assets
@@ -325,6 +328,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/kms-aws':
         specifier: workspace:*
         version: link:../../../packages/kms-aws
@@ -340,9 +346,6 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       pg:
         specifier: 'catalog:'
         version: 8.22.0
@@ -474,6 +477,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/kms-aws':
         specifier: workspace:*
         version: link:../../../packages/kms-aws
@@ -489,9 +495,6 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       pg:
         specifier: 'catalog:'
         version: 8.22.0
@@ -556,6 +559,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/kms-aws':
         specifier: workspace:*
         version: link:../../../packages/kms-aws
@@ -574,9 +580,6 @@ importers:
       '@simplewebauthn/server':
         specifier: 'catalog:'
         version: 13.3.2
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       otpauth:
         specifier: 'catalog:'
         version: 9.5.1
@@ -647,6 +650,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/kms-aws':
         specifier: workspace:*
         version: link:../../../packages/kms-aws
@@ -659,9 +665,6 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       pg:
         specifier: 'catalog:'
         version: 8.22.0
@@ -729,6 +732,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/kms-aws':
         specifier: workspace:*
         version: link:../../../packages/kms-aws
@@ -741,9 +747,6 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       pg:
         specifier: 'catalog:'
         version: 8.22.0
@@ -811,6 +814,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/kms-aws':
         specifier: workspace:*
         version: link:../../../packages/kms-aws
@@ -823,9 +829,6 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       pg:
         specifier: 'catalog:'
         version: 8.22.0
@@ -890,6 +893,9 @@ importers:
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@estate/settlement-client':
         specifier: workspace:*
         version: link:../../../packages/settlement-client
@@ -905,9 +911,6 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.1.28(@nestjs/common@11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)
-      kafkajs:
-        specifier: 'catalog:'
-        version: 2.2.4
       pg:
         specifier: 'catalog:'
         version: 8.22.0
@@ -1159,6 +1162,34 @@ importers:
       pg:
         specifier: 'catalog:'
         version: 8.22.0
+      ts-jest:
+        specifier: 'catalog:'
+        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@22.20.1))(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  packages/kafka:
+    dependencies:
+      '@estate/audit-emitter':
+        specifier: workspace:*
+        version: link:../audit-emitter
+      kafkajs:
+        specifier: 'catalog:'
+        version: 2.2.4
+    devDependencies:
+      '@estate/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/jest':
+        specifier: 'catalog:'
+        version: 29.5.14
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.1
+      jest:
+        specifier: 'catalog:'
+        version: 29.7.0(@types/node@22.20.1)
       ts-jest:
         specifier: 'catalog:'
         version: 29.4.11(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@22.20.1))(typescript@5.9.3)

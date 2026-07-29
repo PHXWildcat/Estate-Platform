@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AssetLedgerAppendedEvent, AuditEventSchema, TOPICS } from '@estate/contracts';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { EventsService } from '../src/events.service';
 
 const NOW = new Date('2026-07-21T12:00:00Z');

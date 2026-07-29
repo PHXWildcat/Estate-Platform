@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
 import { Client, type QueryResultRow } from 'pg';
 import { AuditEmitter } from '@estate/audit-emitter';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import type { Queryable } from './db';
 import { LocalFsObjectStore, type ObjectStore } from './object-store';
 import { S3ObjectStore, s3ClientConfig } from './s3-object-store';
@@ -185,7 +185,9 @@ async function main(): Promise<void> {
     .map((b) => b.trim())
     .filter((b) => b.length > 0);
   const producer =
-    brokers.length > 0 ? new KafkaAuditProducer(brokers) : new InMemoryAuditProducer();
+    brokers.length > 0
+      ? new KafkaAuditProducer({ clientId: 'documents-template-publish-cli', brokers })
+      : new InMemoryAuditProducer();
   const emitter = new AuditEmitter(producer, () => new Date());
   const store = objectStoreFromEnv(process.env);
   const client = new Client({ connectionString: databaseUrl });

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import type { FieldCrypto } from '@estate/crypto';
 import { SettlementAdminService } from '../src/admin.service';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import type { DistributionRow } from '../src/distributions.repo';
 import type { AccessStage, StageRow } from '../src/stages.repo';
 import { SettlementAuthz } from '../src/authz.service';

@@ -1,5 +1,5 @@
 import { AuditEmitter } from '@estate/audit-emitter';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import type { Queryable } from '../src/db';
 import { EXEMPLAR_REVIEW_MARKER, publishTemplates } from '../src/template-publish-cli';
 import { MemoryObjectStore, sampleSource } from './support';

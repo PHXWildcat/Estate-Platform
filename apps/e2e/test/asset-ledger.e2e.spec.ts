@@ -26,7 +26,7 @@ import {
 import { checkConventions, Migrator } from '@estate/db';
 import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { AppModule } from '@estate/service-assets/dist/app.module';
-import { InMemoryAuditProducer } from '@estate/service-assets/dist/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER } from '@estate/service-assets/dist/di-tokens';
 import { AuditIngestor } from '@estate/service-audit/dist/ingestor';
 import { ChainVerifier } from '@estate/service-audit/dist/verifier';

@@ -14,7 +14,7 @@ import type { PoolConfig } from 'pg';
 import { AuthController } from './auth.controller';
 import { AuthEventsRepo } from './auth-events.repo';
 import { AuthService } from './auth.service';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { loadConfig, type IdentityConfig } from './config';
 import { Db } from './db';
 import { PgDekRepository } from './dek.repository';
@@ -75,7 +75,10 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: IdentityConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-identity',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

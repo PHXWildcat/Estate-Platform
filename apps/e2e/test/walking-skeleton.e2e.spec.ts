@@ -19,7 +19,7 @@ import { Client } from 'pg';
 import { TOPICS } from '@estate/contracts';
 import { checkConventions, Migrator } from '@estate/db';
 import { AppModule } from '@estate/service-identity/dist/app.module';
-import { InMemoryAuditProducer } from '@estate/service-identity/dist/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER } from '@estate/service-identity/dist/di-tokens';
 import { currentTotpCode } from '@estate/service-identity/dist/totp';
 import { AuditIngestor } from '@estate/service-audit/dist/ingestor';

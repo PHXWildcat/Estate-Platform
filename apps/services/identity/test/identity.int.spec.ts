@@ -16,7 +16,7 @@ import { DekConflictError, type FieldCrypto } from '@estate/crypto';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, FIELD_CRYPTO, PG_POOL_CONFIG } from '../src/di-tokens';
 import { currentTotpCode } from '../src/totp';

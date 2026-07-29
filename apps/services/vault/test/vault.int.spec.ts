@@ -34,7 +34,7 @@ import {
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 import { VAULT_SESSION_HEADER } from '../src/vault-session.guard';
 import type { KeysetStatus, SrpChallenge, VaultItemDto, VaultOpened } from '../src/vault.service';

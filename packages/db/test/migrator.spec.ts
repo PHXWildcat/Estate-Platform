@@ -14,9 +14,50 @@ import {
   updatedAtTriggerSql,
   versionsTableSql,
 } from '../src/conventions';
-import { MigrationDriftError, Migrator } from '../src/migrator';
+import { MigrationDriftError, Migrator, type SqlSession } from '../src/migrator';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
+
+/** Records the statements issued, so ordering can be asserted without a server. */
+class RecordingSession implements SqlSession {
+  readonly queries: string[] = [];
+
+  query(text: string): Promise<{ rows: Array<Record<string, unknown>> }> {
+    this.queries.push(text);
+    return Promise.resolve({ rows: [] });
+  }
+}
+
+describe('Migrator statement ordering', () => {
+  it('takes the advisory lock BEFORE creating schema_migrations', async () => {
+    // The regression pin for the co-tenant race. `CREATE TABLE IF NOT EXISTS`
+    // is not race-safe: two sessions can pass the existence check together and
+    // the loser raises duplicate_relation. Running it outside the lock meant
+    // the two migration jobs that share a cluster — profile+settlement on core,
+    // assets+plaid on financial — could collide on a fresh database. The
+    // concurrency test below can only catch that intermittently; this cannot
+    // miss it.
+    const dir = await mkdtemp(join(tmpdir(), 'estate-mig-order-'));
+    try {
+      const session = new RecordingSession();
+      await new Migrator(session, dir).migrate();
+      const lockAt = session.queries.findIndex((q) => q.includes('pg_advisory_lock'));
+      const createAt = session.queries.findIndex((q) =>
+        q.includes('CREATE TABLE IF NOT EXISTS schema_migrations'),
+      );
+      expect(lockAt).toBeGreaterThanOrEqual(0);
+      expect(createAt).toBeGreaterThan(lockAt);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('always releases the lock, even when the run fails', async () => {
+    const session = new RecordingSession();
+    await expect(new Migrator(session, '/no/such/dir').migrate()).rejects.toThrow();
+    expect(session.queries.some((q) => q.includes('pg_advisory_unlock'))).toBe(true);
+  });
+});
 
 const SETUP_SQL = `
 ${updatedAtFunctionSql()}
@@ -122,5 +163,60 @@ describeIfPg('Migrator against Postgres', () => {
       'utf8',
     );
     expect((await migrator.migrate()).applied).toEqual(['002_add_note.sql']);
+  });
+});
+
+describeIfPg('Migrator co-tenant concurrency', () => {
+  // Two services sharing one cluster (profile+settlement on core,
+  // assets+plaid on financial) run their migration jobs at the same moment
+  // against a database where NOTHING exists yet — including schema_migrations.
+  const schema = `mig_race_${Date.now()}`;
+  let clients: Client[];
+  let dirs: string[];
+
+  beforeAll(async () => {
+    clients = [];
+    dirs = [];
+    for (const owner of ['alpha', 'beta']) {
+      const client = new Client({ connectionString: process.env['PG_TEST_URL'] });
+      await client.connect();
+      clients.push(client);
+      const dir = await mkdtemp(join(tmpdir(), `estate-mig-${owner}-`));
+      // Disjoint file names, as the real co-tenants have.
+      await writeFile(
+        join(dir, `001_${owner}.sql`),
+        `CREATE TABLE ${owner}_thing (id UUID PRIMARY KEY DEFAULT gen_random_uuid());`,
+        'utf8',
+      );
+      dirs.push(dir);
+    }
+    await clients[0]!.query(`CREATE SCHEMA ${schema}`);
+    for (const client of clients) {
+      await client.query(`SET search_path TO ${schema}`);
+    }
+  });
+
+  afterAll(async () => {
+    await clients[0]!.query(`DROP SCHEMA ${schema} CASCADE`);
+    for (const client of clients) {
+      await client.end();
+    }
+    for (const dir of dirs) {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('two co-owners bootstrapping the same empty cluster both succeed', async () => {
+    const results = await Promise.all(
+      clients.map((client, i) => new Migrator(client, dirs[i]!).migrate()),
+    );
+    expect(results[0]!.applied).toEqual(['001_alpha.sql']);
+    expect(results[1]!.applied).toEqual(['001_beta.sql']);
+    // Both co-owners' rows live in the one shared bookkeeping table, and each
+    // ignores the other's — the co-tenancy mechanic M7 relies on.
+    const { rows } = await clients[0]!.query<{ name: string }>(
+      'SELECT name FROM schema_migrations ORDER BY name',
+    );
+    expect(rows.map((r) => r.name)).toEqual(['001_alpha.sql', '001_beta.sql']);
   });
 });

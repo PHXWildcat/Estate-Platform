@@ -6,7 +6,7 @@ import type { Db, Queryable } from '../src/db';
 import { SearchIndexer } from '../src/search-indexer';
 import type { DocumentRow } from '../src/documents.repo';
 import { EventsService } from '../src/events.service';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import {
   assertValidKey,
   ObjectConflictError,

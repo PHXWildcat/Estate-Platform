@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { checkConventions, Migrator } from '@estate/db';
 import { Client } from 'pg';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { SettlementAuthz } from '../src/authz.service';
 import { CasesRepo } from '../src/cases.repo';
 import { ContactAttemptsRepo } from '../src/contact-attempts.repo';

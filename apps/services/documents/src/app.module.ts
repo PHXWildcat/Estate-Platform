@@ -27,7 +27,7 @@ import {
   type SettlementAuthority,
 } from '@estate/settlement-client';
 import type { PoolConfig } from 'pg';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { DocumentsAuthz } from './authz.service';
 import { loadConfig, type DocumentsConfig } from './config';
 import { ContentCipher } from './content-cipher';
@@ -141,7 +141,10 @@ function ocrFor(config: DocumentsConfig): OcrEngine {
       inject: [CONFIG],
       useFactory: (config: DocumentsConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-documents',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

@@ -39,7 +39,7 @@ import {
 } from '@estate/vault-crypto';
 import { AppModule as IdentityAppModule } from '@estate/service-identity/dist/app.module';
 import { currentTotpCode } from '@estate/service-identity/dist/totp';
-import { InMemoryAuditProducer } from '@estate/service-identity/dist/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER as IDENTITY_AUDIT_PRODUCER } from '@estate/service-identity/dist/di-tokens';
 import { AppModule as VaultAppModule } from '@estate/service-vault/dist/app.module';
 import {

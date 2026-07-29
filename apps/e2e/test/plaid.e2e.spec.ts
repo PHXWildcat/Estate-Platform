@@ -28,7 +28,7 @@ import {
 import { Migrator } from '@estate/db';
 import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { AppModule } from '@estate/service-plaid/dist/app.module';
-import { InMemoryAuditProducer } from '@estate/service-plaid/dist/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, PLAID_GATEWAY } from '@estate/service-plaid/dist/di-tokens';
 import type { StubPlaidGateway } from '@estate/service-plaid/dist/stub-plaid-gateway';
 import { AuditIngestor } from '@estate/service-audit/dist/ingestor';

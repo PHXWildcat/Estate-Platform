@@ -3,7 +3,15 @@ import { NestFactory } from '@nestjs/core';
 import type { Client } from 'pg';
 import { AppModule, PG_CLIENT } from './app.module';
 import { AuditConsumer } from './consumer';
+import { handleFatal } from './fatal';
 import { log } from './logger';
+
+/**
+ * Handles this process has already opened, so the fatal path can release them.
+ * Set as soon as the context exists — the window that matters is AFTER
+ * Postgres is connected and BEFORE the consumer reaches the broker.
+ */
+let opened: { close: () => Promise<void> } | null = null;
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.createApplicationContext(AppModule, {
@@ -29,6 +37,12 @@ async function bootstrap(): Promise<void> {
     await pgClient.end();
     await app.close();
   };
+  opened = {
+    close: async (): Promise<void> => {
+      await pgClient.end();
+      await app.close();
+    },
+  };
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       shutdown(signal)
@@ -41,13 +55,4 @@ async function bootstrap(): Promise<void> {
   log({ level: 'info', msg: 'audit_service_started', groupId: 'audit-service' });
 }
 
-bootstrap().catch((err: unknown) => {
-  // Infrastructure failure detail only — never event payloads (which are the
-  // only place PII could appear, and they are handled without throwing).
-  log({
-    level: 'error',
-    msg: 'audit_service_fatal',
-    error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown',
-  });
-  process.exitCode = 1;
-});
+bootstrap().catch((err: unknown) => handleFatal(err, opened));
