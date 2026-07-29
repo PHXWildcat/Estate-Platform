@@ -1,0 +1,26 @@
+{
+  "name": "@estate/stack",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local-stack tooling: generates the stack's environment from the service-credential graph, provisions Kafka topics, and preflight-checks a generated env before the stack comes up. Deliberately NOT under apps/services — the credential-graph fence derives SERVICE_NAMES from the directories there, so a new one would have to be declared as a service.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@estate/auth-guard": "workspace:*",
+    "@estate/contracts": "workspace:*",
+    "@estate/kafka": "workspace:*"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

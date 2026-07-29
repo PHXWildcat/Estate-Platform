@@ -498,3 +498,81 @@ deviating from them, stop and propose the change with rationale — do not silen
   (nothing verifies vault's copy equals settlement's inbound value — an
   operator pasting identity's secret into vault's slot re-creates M7 at deploy
   time with every service booting cleanly). Both close with the mesh.
+- 2026-07-29 — M8 is the LOCAL STACK, not the AI assistant (flagged deviation
+  from docs/04's ordering; approved). Rationale: nothing in the repo had ever
+  run as a deployed system (M5 shipped images that CI builds and never runs);
+  every production adapter was unit-tested against mocked transports only; two
+  shipped milestones are deliberately inert in production pending
+  notifications, whose SES adapter needs somewhere to run; and building the
+  highest-prompt-injection-surface feature on a platform that cannot deploy is
+  the wrong order. Five PRs: adapter seams, runtime seams, the stack, proof/CI,
+  thin UI. Full record + runbook: docs/05-local-stack.md; milestone record in
+  docs/04 M8.
+- 2026-07-29 — M8 PR1 adapter seams: KMS gains the explicit mode enum every
+  other adapter already had (KMS_MODE=local|aws; production pins 'aws'
+  unchanged in strength — a BREAKING config change for deployments, none
+  exist). AWS_ENDPOINT_URL is read/validated explicitly — the SAME name the
+  SDK honours ambiently (verified in locked @smithy/core 3.29.6), so our value
+  and the SDK's resolution cannot disagree; explicit buys the production
+  https-only guard (SDK checks nothing) and S3 forcePathStyle (NO env selector
+  exists in the SDK; s3ClientConfig is shared by service + publish CLI so they
+  cannot address the bucket differently). OCR gains 'tesseract' (sidecar over
+  HTTP — the clamd/node:net precedent: a large C++ parser of attacker bytes
+  stays behind a process boundary); the production guard now names the STUB
+  (!== 'stub'), which is what its message always meant. Both OCR selectors are
+  exhaustive with a `never` — a ternary chain ending in the stub is the M4
+  "fail-open in style" scan-gate lesson — and both were mutation-tested red.
+- 2026-07-29 — M8 PR2 runtime seams: packages/kafka finally built (reserved
+  since M1; in its absence seven byte-identical audit producers grew, all
+  carrying the same bug: `connecting ??= connect()` cached the REJECTED
+  promise, so one broker-not-ready moment at startup poisoned every later
+  audited action for the process lifetime — now only rejection clears the
+  shared in-flight connect). ensureTopics added for PR3 (Redpanda ships
+  auto-create OFF, unlike Apache Kafka; nothing in-repo ever called admin()).
+  Topic REGISTRY stays in @estate/contracts; the package owns transport only.
+  Audit's fatal path now RELEASES ITS HANDLES and arms an unref'd forced exit:
+  process.exitCode alone needs a drained event loop, and PG_CLIENT's open
+  socket held it open forever — a container "up" with a dead audit trail,
+  restart never firing, in the service whose silence is a paging signal.
+  Migrator takes its advisory lock BEFORE `CREATE TABLE IF NOT EXISTS
+  schema_migrations` (not race-safe; the co-tenant pairs profile+settlement
+  and assets+plaid boot-race exactly that statement; ordering pin
+  mutation-tested red). DROPPED from the PR2 plan: nine /healthz routes — a
+  TCP probe on the port each service already listens on satisfies compose
+  `service_healthy` and k8s `tcpSocket` without new unauthenticated surface
+  on hardened services; audit (headless) is covered by exiting-on-failure +
+  restart, which a health endpoint would have papered over.
+- 2026-07-29 — M8 PR3 the stack: docker-compose.stack.yml runs all ten apps +
+  clamd + tesseract + LocalStack (with volumes — keys must not vanish while
+  Postgres volumes persist, stranding DEKs) + Redpanda. .env.stack is
+  GENERATED (apps/stack), never committed: the three service credentials are
+  minted per credential-graph EDGE and written to callee + every holder, so
+  vault's copy equals settlement's inbound BY CONSTRUCTION — closing the
+  recorded provisioning-drift residual FOR GENERATED ENVIRONMENTS (hand
+  provisioning stays unverified; the mechanism is what generalizes to the
+  secrets store). AWS credentials are deliberately fake ('test') as a control:
+  env vars outrank ~/.aws/credentials, so a wrong/missing endpoint fails
+  loudly at real AWS instead of silently minting real DEKs on a real account;
+  the preflight doctor enforces endpoint-points-at-LocalStack + credentials-
+  don't-look-real + the graph invariants + no-stub-adapters. Generator refuses
+  to overwrite .env.stack without --force (new keys orphan every ciphertext in
+  the volumes). apps/stack lives at apps/, NOT apps/services (the
+  credential-graph fence derives SERVICE_NAMES from apps/services dirs).
+  seed-templates runs the publish CLI as NODE_ENV=development EVEN in the
+  production profile — the M4 guard refuses placeholder legalReview in
+  production and the exemplars ARE placeholders; the guard is respected, and
+  docs/05 states loudly that generation working there is not evidence of the
+  legal gate. web's BFF_URL is a BUILD ARG (next serialises rewrites into the
+  routes manifest at build; runtime env is ignored). Stack addressed as
+  http://localhost:3000 (BFF Secure cookies + browser localhost exemption).
+  Smoke-proven live: register/login over real HTTP; audit events crossed REAL
+  Redpanda into the verified hash chain (count=2 — retires the M1 broker-hop
+  open item); DEK minted via real KMS GenerateDataKey against LocalStack
+  (116-byte KMS blob); upload 201 through real clamd INSTREAM (fail-closed
+  gate ⇒ 201 proves the scan ran) + real S3 put; raw EICAR refused 422 by the
+  sniff gate; blobs at rest are ciphertext (no PNG magic). NOT proven, stated
+  in docs/05: KMS grant isolation (LocalStack Community has no IAM — six keys
+  MODEL the boundary; EncryptionContext binding is the testable half, PR4
+  asserts it), everything cloud-posture (IRSA/VPC/WAF/mesh/Kyverno/Aurora),
+  and the M4 legal-hold gap (zero holders; the stack makes it visible, not
+  closed).

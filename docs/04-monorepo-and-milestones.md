@@ -1109,7 +1109,78 @@ elevation, peer approval; also closes the one-operator-two-actions residual)
 isolate service · beneficiary contact-link projection (assets'
 `namedBeneficiaries`) · transactional outbox (standing).
 
+### M8 — The local stack (in progress; PR1–PR3 shipped)
+
+A flagged deviation: docs/04 had M8 as the AI assistant. The local stack went
+first because nothing in the repo had ever run as a deployed system — M5's
+images were built and verified in CI and never executed; every production
+adapter (`AwsKmsProvider`, `S3ObjectStore`, `ClamdScanner`,
+`KafkaAuditProducer`, `TextractOcr`) was unit-tested against mocked transports
+only; M6 emergency access and M7 settlement intake are deliberately inert in
+production pending the notifications service, whose live adapter (SES) needs
+somewhere to run; and building the AI assistant — the highest
+prompt-injection surface in the product — on a platform that cannot deploy,
+cannot notify, and has never run its production code paths is the wrong
+order. This milestone also TAKES OVER three deliverables the deferred M5
+cloud half had claimed: the ClamAV deployment documents requires in
+production mode, migration jobs, and the audit-hash-chain-over-a-real-broker
+smoke (the M1 open item — retired below). The M5 cloud half shrinks
+accordingly.
+
+**Full runbook and limits: `docs/05-local-stack.md`.** Its "what this does
+not prove" section is normative: KMS grant isolation (docs/03 §5.3) is NOT
+exercised — LocalStack Community enforces no IAM, so the stack's six
+per-service keys model the boundary without proving it — and the entire
+cloud posture (IRSA, VPC, WAF/Shield, mesh mTLS, Kyverno, Aurora behaviour)
+stays untested until the real environment exists.
+
+- **PR1 — adapter seams.** `KMS_MODE=local|aws` (the explicit enum every
+  other adapter already had; production pins 'aws', unchanged in strength);
+  `AWS_ENDPOINT_URL` read and validated explicitly (same name the SDK honours
+  ambiently, so the two resolutions cannot disagree; buys the production
+  https-only guard and S3 `forcePathStyle`, which has no SDK env selector);
+  `TesseractOcr` sidecar adapter, with the production OCR guard renamed to
+  refuse the STUB rather than require Textract. Both OCR selectors exhaustive
+  with `never`, mutation-tested.
+- **PR2 — runtime seams.** `packages/kafka` built at last (seven duplicated
+  producers collapsed; the memoised-rejected-connect poison fixed once;
+  `ensureTopics` added because Redpanda ships auto-create off). The audit
+  worker's fatal path now releases its handles so a failed worker EXITS
+  instead of sitting "up" with a dead trail. The migrator takes its advisory
+  lock before creating `schema_migrations` (co-tenant boot race). The planned
+  nine `/healthz` routes were dropped for TCP probes — no new unauthenticated
+  surface, same signal, k8s-compatible.
+- **PR3 — the stack.** `docker-compose.stack.yml` (all ten apps + clamd +
+  tesseract + LocalStack + Redpanda, volumes on the stateful trio, profiles
+  for an 8 GB Docker VM); `apps/stack` generates `.env.stack` from the
+  credential graph — one secret per EDGE written to callee and every holder,
+  closing the recorded provisioning-drift residual for generated
+  environments — and a preflight doctor that refuses real-looking AWS
+  credentials or a non-local endpoint (env vars outrank `~/.aws/credentials`,
+  so the fake `test` credentials are what make a wrong endpoint fail loudly
+  instead of billing a real account). Bootstrap jobs: six KMS keys + bucket
+  (idempotent init hook; the LocalStack healthcheck waits for the HOOK, not
+  the service), explicit topic creation from the contracts registry,
+  migrations sequenced across the two co-tenant pairs, template seeds
+  (dev-mode by design — the M4 production guard refuses placeholder
+  legalReview, and the exemplars are placeholders; stated in docs/05 rather
+  than worked around). Smoke-proven live: register/login over real HTTP; the
+  audit chain verified across a REAL Redpanda hop (retiring the M1 open
+  item); a DEK minted by a real `kms.GenerateDataKey` against LocalStack; an
+  upload through real clamd INSTREAM + real S3 with ciphertext at rest; raw
+  EICAR refused by the sniff gate.
+- **PR4 (planned) — proof and CI.** The out-of-process stack test, the three
+  LocalStack conformance probes (KMS EncryptionContext enforcement on
+  Decrypt, S3 `IfNoneMatch:*` → 412, S3 not-found error shape), a blocking
+  CI workflow under a no-sleep determinism contract, and a stronger ci-guard
+  (the current one proves an env var is set, never that a spec ran).
+- **PR5 (planned) — thin UI.** Assets resolvers with real bearer forwarding
+  (the 2026-07-23 decision's stated end-state), logout (exists nowhere), one
+  web page. Vault UI stays out per the M6 decision (needs the docs/03 TB6
+  isolated-origin/CSP work).
+
 ### Later milestones (rough order, one per bounded context)
-M8 AI assistant (privacy proxy) · then referral, notifications hardening, search.
-Settlement came late deliberately: highest-risk domains land on mature
-primitives.
+AI assistant (privacy proxy) · then referral, notifications (whose SES
+adapter the local stack now gives a place to run), search · the M5 cloud
+half, reduced by what M8 took over. Settlement came late deliberately:
+highest-risk domains land on mature primitives.
