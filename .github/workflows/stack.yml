@@ -1,0 +1,163 @@
+name: Stack
+
+# Runs the platform as REAL PROCESSES against REAL DEPENDENCIES and drives the
+# journey the in-process e2e suite cannot: LocalStack KMS + S3, Redpanda, clamd,
+# tesseract, cross-service HTTP, and the audit chain assembled from events that
+# crossed a broker.
+#
+# BLOCKING, and designed so that it can be. The determinism contract:
+#   * no bare sleeps anywhere — `compose up --wait` for health, and every
+#     in-test wait is a poll with a deadline;
+#   * topics are provisioned explicitly before any service starts (Redpanda
+#     ships auto-create OFF), so nothing races the first produce;
+#   * clamd's signature database is baked into its image and its healthcheck is
+#     `clamdscan --ping`, which distinguishes "listening" from "ready" — the
+#     scan gate is fail-closed, so a warm-up race would fail every upload;
+#   * infra images are tag-pinned;
+#   * `timeout-minutes` on the job, because a container that will not exit
+#     would otherwise run to GitHub's 6-hour limit;
+#   * jest's own JSON result is checked for a MINIMUM number of passed tests,
+#     so a suite that silently skipped turns the job red even though jest was
+#     green (ci-guard.spec.ts covers the env-var half; this covers the rest).
+#
+# The FAST gate runs services from `dist` on the runner (no image builds).
+# Artifact fidelity — the shipped images actually running this stack — is a job
+# in images.yml, where the images are already built.
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stack-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # The two profiles prove different things and neither should mask the
+      # other: development runs every flow, production rehearses the fail-fast
+      # posture and asserts the 503 gates fire.
+      fail-fast: false
+      matrix:
+        profile: [development, production]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Generate the stack environment (host addressing)
+        run: node apps/stack/dist/generate-env-cli.js --mode ${{ matrix.profile }} --addressing host
+
+      # The preflight that refuses a non-local AWS endpoint, real-looking
+      # credentials, a mismatched credential graph, or disabled TLS
+      # verification. It gates `up` locally; it gates the job here.
+      - name: Preflight
+        run: node apps/stack/dist/doctor-cli.js
+
+      - name: Start infrastructure
+        run: |
+          docker compose --env-file .env.stack -f docker-compose.stack.yml up -d --wait \
+            pg-auth pg-core pg-financial pg-documents pg-vault pg-audit \
+            redpanda localstack aws-tls clamav tesseract
+
+      - name: Provision topics, migrate, seed
+        run: |
+          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            --profile bootstrap up --build --exit-code-from provision-topics provision-topics
+          for job in migrate-identity migrate-profile migrate-settlement migrate-assets \
+                     migrate-plaid migrate-documents migrate-vault migrate-audit seed-templates; do
+            docker compose --env-file .env.stack -f docker-compose.stack.yml \
+              --profile bootstrap up --build --exit-code-from "$job" "$job"
+          done
+
+      - name: Run the stack
+        run: |
+          node apps/stack/dist/run-services-cli.js .env.stack --repo-root "$PWD" > stack.log 2>&1 &
+          echo $! > stack.pid
+          # The supervisor waits for every port itself and exits non-zero if a
+          # child dies; poll for its readiness line rather than sleeping.
+          deadline=$((SECONDS + 180))
+          until grep -q 'stack up:' stack.log; do
+            if ! kill -0 "$(cat stack.pid)" 2>/dev/null; then
+              echo "::error::the supervisor exited before the stack came up"
+              cat stack.log
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::stack did not come up within 180s"
+              cat stack.log
+              exit 1
+            fi
+          done
+          cat stack.log
+
+      - name: Stack test
+        env:
+          CI_REQUIRE_STACK: '1'
+          STACK_TEST: '1'
+          STACK_PROFILE: ${{ matrix.profile }}
+          PG_TEST_URL: postgres://estate:estate_dev@localhost:5434/core
+        run: |
+          cd apps/e2e
+          npx jest test/stack.e2e.spec.ts test/aws-conformance.spec.ts test/ci-guard.spec.ts \
+            --runInBand --json --outputFile=../../stack-results.json
+
+      # Jest exits 0 for a suite whose every test SKIPPED. The gate variable
+      # above makes ci-guard fail in that case, but only for the variable it
+      # can see — this closes the general case by asserting work was done.
+      - name: Assert the suite actually ran
+        if: always()
+        run: |
+          if [ ! -f stack-results.json ]; then
+            echo "::error::no jest result file — the stack test did not run"
+            exit 1
+          fi
+          node -e '
+            const r = require("./stack-results.json");
+            const floor = process.env.MATRIX_PROFILE === "production" ? 7 : 11;
+            console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
+            if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
+            if (r.numPassedTests < floor) {
+              console.error(`::error::only ${r.numPassedTests} tests passed, expected at least ${floor} — the suite skipped instead of running`);
+              process.exit(1);
+            }
+          '
+        env:
+          MATRIX_PROFILE: ${{ matrix.profile }}
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          echo '--- supervisor ---'; cat stack.log || true
+          echo '--- compose ps ---'
+          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            --profile bootstrap ps -a || true
+          for svc in localstack aws-tls clamav tesseract redpanda; do
+            echo "--- $svc ---"
+            docker compose --env-file .env.stack -f docker-compose.stack.yml logs --tail 60 "$svc" || true
+          done
+
+      - name: Stop
+        if: always()
+        run: |
+          [ -f stack.pid ] && kill "$(cat stack.pid)" 2>/dev/null || true
+          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            --profile bootstrap --profile services --profile plaid --profile edge down -v || true

@@ -1169,11 +1169,36 @@ stays untested until the real environment exists.
   item); a DEK minted by a real `kms.GenerateDataKey` against LocalStack; an
   upload through real clamd INSTREAM + real S3 with ciphertext at rest; raw
   EICAR refused by the sniff gate.
-- **PR4 (planned) — proof and CI.** The out-of-process stack test, the three
-  LocalStack conformance probes (KMS EncryptionContext enforcement on
-  Decrypt, S3 `IfNoneMatch:*` → 412, S3 not-found error shape), a blocking
-  CI workflow under a no-sleep determinism contract, and a stronger ci-guard
-  (the current one proves an env var is set, never that a spec ran).
+- **PR4 — proof and CI (shipped).** `stack.e2e.spec.ts` drives the platform as
+  real processes over real HTTP; `aws-conformance.spec.ts` probes the three
+  behaviours the adapters assume. Blocking `stack.yml` runs both profiles
+  under a determinism contract — no bare sleeps, explicit topic provisioning,
+  `clamdscan --ping` readiness, pinned infra images, `timeout-minutes` — and
+  `images.yml` gained a job running the same spec against the shipped images,
+  so the fast gate proves the code integrates and that one proves the artifact
+  does. ci-guard gained the stack half, and both workflows assert
+  `numPassedTests` from jest's `--json` against a floor, because jest exits 0
+  for a suite that skipped everything.
+
+  **The conformance result changed what this milestone can claim.** LocalStack
+  *does* enforce the KMS EncryptionContext — a `Decrypt` with a foreign
+  `estate:kek`, or none, is refused. So the stack genuinely exercises the
+  cryptographic half of the Plaid-isolation claim: a DEK wrapped for one domain
+  cannot be unwrapped as another even by a caller holding the right key id. The
+  IAM half — *which principal* may call Decrypt at all — remains untested, and
+  docs/05 states that split precisely instead of hedging. S3 returns 412 for
+  `IfNoneMatch:*` and surfaces not-found as `S3ServiceException`, so both the
+  immutability path and the `instanceof`-gated 404 mapping hold.
+
+  Two findings worth recording. The clamd FOUND path could not be reached with
+  EICAR at all — it matches only at file start, and a plaintext-leading file is
+  refused by magic-byte sniffing before any scan, while adding a PNG header
+  stops it being EICAR — so a custom signature plus a valid PNG carrier proves
+  it instead. And the PR1 production TLS guard correctly refused the production
+  profile against LocalStack's http endpoint; that was resolved by giving the
+  stack a real TLS terminator with a CA the services verify, not by relaxing
+  the guard, and the doctor now rejects `NODE_TLS_REJECT_UNAUTHORIZED` as its
+  own class of mistake.
 - **PR5 (planned) — thin UI.** Assets resolvers with real bearer forwarding
   (the 2026-07-23 decision's stated end-state), logout (exists nowhere), one
   web page. Vault UI stays out per the M6 decision (needs the docs/03 TB6

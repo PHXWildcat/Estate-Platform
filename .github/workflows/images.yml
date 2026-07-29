@@ -162,3 +162,92 @@ jobs:
           name: grype-${{ matrix.app }}
           path: /tmp/grype-${{ matrix.app }}.json
           if-no-files-found: warn
+
+  # ARTIFACT FIDELITY: the same stack test, driven against the SHIPPED IMAGES
+  # rather than services run from `dist`.
+  #
+  # stack.yml is the fast per-PR gate and runs the node processes directly; it
+  # proves the code integrates. It cannot prove the IMAGE does — a broken
+  # entrypoint, a resource tree missing from the runtime layer, or a distroless
+  # base that lost its interpreter would all pass there and fail in production.
+  # This job closes that, and it lives here because the images are already
+  # built above rather than paying for a second set of builds.
+  stack-from-images:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # Only @estate/stack and the e2e package's dependencies are needed: the
+      # services themselves come from images.
+      - name: Build
+        run: pnpm build
+
+      - name: Generate the stack environment (compose addressing)
+        run: node apps/stack/dist/generate-env-cli.js --mode development
+
+      - name: Preflight
+        run: node apps/stack/dist/doctor-cli.js
+
+      # Compose builds with the same cache the matrix above populated, so this
+      # is a cache restore rather than a rebuild.
+      - name: Bring the stack up from images
+        run: |
+          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            --profile bootstrap --profile services --profile plaid --profile edge \
+            up -d --build --wait
+
+      - name: Stack test against the shipped images
+        env:
+          CI_REQUIRE_STACK: '1'
+          STACK_TEST: '1'
+          STACK_PROFILE: development
+          PG_TEST_URL: postgres://estate:estate_dev@localhost:5434/core
+        run: |
+          cd apps/e2e
+          npx jest test/stack.e2e.spec.ts test/aws-conformance.spec.ts test/ci-guard.spec.ts \
+            --runInBand --json --outputFile=../../stack-results.json
+
+      - name: Assert the suite actually ran
+        if: always()
+        run: |
+          if [ ! -f stack-results.json ]; then
+            echo "::error::no jest result file — the stack test did not run"
+            exit 1
+          fi
+          node -e '
+            const r = require("./stack-results.json");
+            console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
+            if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
+            if (r.numPassedTests < 11) {
+              console.error(`::error::only ${r.numPassedTests} tests passed, expected at least 11 — the suite skipped instead of running`);
+              process.exit(1);
+            }
+          '
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            --profile bootstrap --profile services --profile plaid --profile edge ps -a || true
+          for svc in identity documents vault settlement audit localstack aws-tls clamav tesseract; do
+            echo "--- $svc ---"
+            docker compose --env-file .env.stack -f docker-compose.stack.yml logs --tail 60 "$svc" || true
+          done
+
+      - name: Stop
+        if: always()
+        run: |
+          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            --profile bootstrap --profile services --profile plaid --profile edge down -v || true

@@ -69,6 +69,12 @@ describe('credential assignment (derived from the graph)', () => {
     const assigned = assignCredentials(countingMint());
     for (const edge of SERVICE_CREDENTIAL_GRAPH) {
       const expected = assigned.get(edge.callee)?.get(edge.envVar);
+      if (edge.holders.length === 0) {
+        // A zero-holder edge is deliberately unprovisioned: minting an inbound
+        // value nobody can present would be an aspirational grant.
+        expect(expected).toBeUndefined();
+        continue;
+      }
       expect(expected).toBeDefined();
       for (const holder of edge.holders) {
         expect(assigned.get(holder)?.get(edge.envVar)).toBe(expected);
@@ -90,11 +96,25 @@ describe('credential assignment (derived from the graph)', () => {
 
   it('grants each service EXACTLY what the graph entitles it to', () => {
     // Equality in both directions: extra is an over-grant, missing is a gate
-    // silently unwired. Mirrors each service's own config.spec.ts assertion.
+    // silently unwired. Mirrors each service's own config.spec.ts assertion —
+    // with one deliberate subtraction: an inbound edge with ZERO holders is
+    // never minted. The service's config can absorb the variable, but nothing
+    // in the repo can present it, so provisioning a value would be exactly the
+    // aspirational grant the graph records the edge as not having.
     const assigned = assignCredentials();
+    const zeroHolderVars = new Set(
+      SERVICE_CREDENTIAL_GRAPH.filter((e) => e.holders.length === 0).map((e) => e.envVar),
+    );
     for (const service of SERVICES) {
       const held = [...(assigned.get(service.name) ?? new Map()).keys()].sort();
-      expect(held).toEqual(credentialEnvVarsFor(service.name as ServiceName));
+      const entitled = credentialEnvVarsFor(service.name as ServiceName).filter(
+        (envVar) =>
+          !(
+            zeroHolderVars.has(envVar) &&
+            SERVICE_CREDENTIAL_GRAPH.some((e) => e.envVar === envVar && e.callee === service.name)
+          ),
+      );
+      expect(held).toEqual(entitled);
     }
   });
 

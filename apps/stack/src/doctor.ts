@@ -93,13 +93,38 @@ export function diagnose(env: ReadonlyMap<string, string>): Finding[] {
     });
   } else if (
     endpoint.length > 0 &&
-    !/^https?:\/\/(localstack|127\.0\.0\.1|localhost)(:|\/|$)/.test(endpoint)
+    // 'aws-tls' is the production profile's TLS terminator in front of
+    // LocalStack — still entirely local, just not plaintext.
+    !/^https?:\/\/(localstack|aws-tls|127\.0\.0\.1|localhost)(:|\/|$)/.test(endpoint)
   ) {
     findings.push({
       severity: 'error',
       code: 'aws_endpoint_not_local',
-      message: `AWS_ENDPOINT_URL points at ${endpoint}, which is not the local stack. Expected ${NETWORK.awsEndpoint}.`,
+      message: `AWS_ENDPOINT_URL points at ${endpoint}, which is not the local stack. Expected ${NETWORK.awsEndpoint} (or the TLS proxy in production mode).`,
     });
+  }
+
+  // 1b. Production reaches AWS over TLS, so it must also be told which CA to
+  //     trust. Without this the first KMS call fails on an unknown issuer —
+  //     and the tempting "fix" is NODE_TLS_REJECT_UNAUTHORIZED, which would
+  //     turn the production TLS requirement into decoration.
+  if (get('STACK_MODE') === 'production') {
+    if (!endpoint.startsWith('https://')) {
+      findings.push({
+        severity: 'error',
+        code: 'production_endpoint_not_tls',
+        message:
+          'Production mode requires an https AWS endpoint (the stack runs one in front of LocalStack). Every service refuses to boot otherwise, by design.',
+      });
+    }
+    if (get('NODE_EXTRA_CA_CERTS').length === 0) {
+      findings.push({
+        severity: 'error',
+        code: 'tls_ca_not_trusted',
+        message:
+          'Production mode uses a generated CA for the AWS endpoint but NODE_EXTRA_CA_CERTS is unset, so TLS verification would fail. Do NOT set NODE_TLS_REJECT_UNAUTHORIZED — trust the CA instead.',
+      });
+    }
   }
 
   // 2. REAL CREDENTIALS IN A LOCAL FILE. The dummy values are the second layer
@@ -213,6 +238,18 @@ export function diagnose(env: ReadonlyMap<string, string>): Finding[] {
         message: `${key} is "${actual || '(unset)'}", not "${expected}" — the stack would run ${what} instead of the real dependency.`,
       });
     }
+  }
+
+  // 8. TLS verification must never be switched off to make the stack run.
+  //    It is the shortest path from "production mode won't connect" to a
+  //    green stack that proves nothing about transport security.
+  if (env.get('NODE_TLS_REJECT_UNAUTHORIZED') === '0') {
+    findings.push({
+      severity: 'error',
+      code: 'tls_verification_disabled',
+      message:
+        'NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS verification process-wide, which makes the production https requirement decoration. Trust the stack CA via NODE_EXTRA_CA_CERTS instead.',
+    });
   }
 
   return findings;

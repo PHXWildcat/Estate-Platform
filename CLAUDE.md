@@ -576,3 +576,61 @@ deviating from them, stop and propose the change with rationale — do not silen
   asserts it), everything cloud-posture (IRSA/VPC/WAF/mesh/Kyverno/Aurora),
   and the M4 legal-hold gap (zero holders; the stack makes it visible, not
   closed).
+- 2026-07-29 — M8 PR4 proof + CI: `apps/e2e/test/stack.e2e.spec.ts` drives the
+  platform as real processes over real HTTP (13 assertions in dev, 9 in the
+  production rehearsal) and `aws-conformance.spec.ts` probes the three
+  behaviours the adapters ASSUME. DETERMINISM CONTRACT, because a flaky
+  blocking gate trains people to ignore it: no bare sleeps anywhere (poll +
+  deadline), topics provisioned before any service starts, clamd readiness is
+  `clamdscan --ping` (it accepts TCP long before signatures load and the scan
+  gate is fail-closed), infra images tag-pinned, `timeout-minutes` on the job.
+  CONFORMANCE RESULT — LocalStack DOES enforce the KMS EncryptionContext: a
+  Decrypt with a foreign `estate:kek` (or none) is refused, so the local stack
+  genuinely exercises the CRYPTOGRAPHIC half of the Plaid-isolation claim (a
+  DEK wrapped for one domain cannot be unwrapped as another even with the right
+  key id); the IAM half — which principal may call Decrypt at all — remains
+  untested, and docs/05 now states that split precisely rather than hedging.
+  S3 returns 412 for `IfNoneMatch:*` and surfaces not-found as
+  S3ServiceException, so the immutability path and the `instanceof`-gated 404
+  mapping both hold. The probes are parameterized (`CONFORMANCE_*`) so the same
+  file can be pointed at a real AWS account.
+- 2026-07-29 — M8 PR4 clamd FOUND path: EICAR structurally CANNOT exercise this
+  platform's scan gate — it only matches at file start, and a file starting
+  with plain text is refused by magic-byte sniffing before any scan, while
+  prefixing a PNG/PDF header stops it being EICAR. So `infra/clamav/stack-test.ndb`
+  declares one custom signature and the fixtures build a VALID PNG carrying the
+  pattern in a tEXt chunk: sniffing admits it, clamd flags it
+  (`Estate.Stack.TestProbe FOUND` over the real INSTREAM protocol), the upload
+  is refused 422 and nothing is stored. Fixtures are generated with node:zlib
+  only (no image library on the test tree); the clean fixture renders block
+  glyphs that real tesseract reads back as "ESTATE STACK PROBE", which is what
+  makes the OCR→HMAC-token→encrypted-search assertion meaningful.
+- 2026-07-29 — M8 PR4 production TLS: the PR1 guard (`AWS_ENDPOINT_URL` must be
+  https in production) correctly REFUSED the production profile against
+  LocalStack's http endpoint. Resolved by giving the stack real TLS — an nginx
+  terminator (`aws-tls`) with a generated cert the services verify through
+  `NODE_EXTRA_CA_CERTS`, bind-mounted so host-mode runs trust the identical CA
+  — NOT by relaxing the guard, and not via NODE_TLS_REJECT_UNAUTHORIZED, which
+  the doctor now treats as an error in its own right (it would make the
+  production TLS requirement decoration). Every service boots healthy under
+  full production config with KMS over verified TLS.
+- 2026-07-29 — M8 PR4 anti-drift: host addressing (`--addressing host`) lets CI
+  run services from `dist` against containerised infra without image builds,
+  and `run-services-cli` REFUSES a compose-addressed env file (container
+  hostnames do not resolve from the host; every service would boot and fail per
+  request). Because that creates a SECOND env mapping,
+  `apps/stack/test/compose-parity.spec.ts` parses the compose YAML's
+  environment blocks and asserts key-for-key/value-for-value agreement with
+  `serviceProcessEnv` — it immediately caught the CA variable being added to
+  the YAML and not the mapper. Supervisor children get a SCRUBBED parent env
+  (AWS_*, *_INTERNAL_TOKEN, KMS_* removed) so an ambient developer profile
+  cannot leak into a service the explicit mapping did not set. ci-guard gained
+  the stack half (CI_REQUIRE_STACK ⇒ STACK_TEST must be set), and because jest
+  exits 0 for an all-skipped suite, both workflows additionally assert
+  `numPassedTests` against a floor from `--json` output.
+- 2026-07-29 — M8 PR4 also recorded: an inbound credential edge with ZERO
+  holders is deliberately NOT provisioned (documents' legal hold). The service
+  absorbs the variable and its guard fails closed on the empty value; minting a
+  secret nobody can present would be exactly the aspirational grant the
+  credential graph exists to forbid. The generator, the doctor and the
+  entitlement spec all agree on that subtraction.

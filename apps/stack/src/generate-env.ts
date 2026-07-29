@@ -1,6 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { SERVICE_CREDENTIAL_GRAPH } from '@estate/auth-guard';
-import { databaseUrl, kmsKeyIdFor, NETWORK, SERVICES } from './topology';
+import {
+  databaseUrl,
+  kmsKeyIdFor,
+  networkFor,
+  SERVICES,
+  tlsCaPathFor,
+  type Addressing,
+} from './topology';
 
 /**
  * Generates the local stack's environment.
@@ -54,6 +61,13 @@ export const DUMMY_AWS_SECRET_ACCESS_KEY = 'test';
 export interface GenerateOptions {
   /** 'development' runs every flow; 'production' is the fail-fast rehearsal. */
   readonly mode: 'development' | 'production';
+  /**
+   * 'compose' (default): processes run as containers on the compose network.
+   * 'host': processes run on the host against the published infra ports —
+   * CI's fast gate and the local inner loop. Same secrets, same invariants;
+   * only the addresses differ.
+   */
+  readonly addressing?: Addressing;
 }
 
 /** Ordered key/value pairs, so the written file is stable and reviewable. */
@@ -83,6 +97,14 @@ export function assignCredentials(
   };
 
   for (const edge of SERVICE_CREDENTIAL_GRAPH) {
+    // An edge with NO holders gets NO secret. The graph records such an edge
+    // (documents' legal hold) as deliberately unprovisioned — nothing in the
+    // repo can call the route — and minting an inbound value anyway would be
+    // the aspirational grant the graph module exists to forbid. The callee's
+    // guard fails closed on the empty slot, which is the documented state.
+    if (edge.holders.length === 0) {
+      continue;
+    }
     const value = mint();
     // The callee EXPECTS it on its own internal routes...
     put(edge.callee, edge.envVar, value);
@@ -102,27 +124,38 @@ export function generateEnv(
   mintSecret: () => string = secret,
 ): { sections: readonly Section[]; entries: EnvEntries } {
   const production = options.mode === 'production';
+  const addressing = options.addressing ?? 'compose';
+  const network = networkFor(addressing, options.mode);
   const credentials = assignCredentials(mintSecret);
   const sections: Section[] = [];
 
   sections.push({
     title: 'Shared infrastructure',
-    note: 'In-network addresses. The 5433-5438 host ports exist only for host tooling.',
+    note:
+      addressing === 'host'
+        ? 'HOST addressing: processes on the host reach infra via published ports.'
+        : 'In-network addresses. The 5433-5438 host ports exist only for host tooling.',
     entries: [
       ['STACK_MODE', options.mode],
-      ['KAFKA_BROKERS', NETWORK.kafkaBrokers],
-      ['AWS_REGION', NETWORK.region],
-      ['AWS_ENDPOINT_URL', NETWORK.awsEndpoint],
+      ['STACK_ADDRESSING', addressing],
+      ['KAFKA_BROKERS', network.kafkaBrokers],
+      ['AWS_REGION', network.region],
+      ['AWS_ENDPOINT_URL', network.awsEndpoint],
       ['AWS_ACCESS_KEY_ID', DUMMY_AWS_ACCESS_KEY_ID],
       ['AWS_SECRET_ACCESS_KEY', DUMMY_AWS_SECRET_ACCESS_KEY],
-      ['OBJECT_STORE_BUCKET', NETWORK.objectStoreBucket],
+      ['OBJECT_STORE_BUCKET', network.objectStoreBucket],
+      // Production reaches AWS over TLS, so the services must TRUST the
+      // proxy's generated CA. Node verifies against it; nothing anywhere sets
+      // NODE_TLS_REJECT_UNAUTHORIZED, which would be the guard weakened by
+      // another name. Empty in development, where the endpoint is plain http.
+      ['NODE_EXTRA_CA_CERTS', production ? tlsCaPathFor(addressing) : ''],
     ],
   });
 
   for (const service of SERVICES) {
     const entries: Array<readonly [string, string]> = [];
     const upper = service.name.toUpperCase();
-    entries.push([`${upper}_DATABASE_URL`, databaseUrl(service.cluster)]);
+    entries.push([`${upper}_DATABASE_URL`, databaseUrl(service.cluster, addressing)]);
 
     const keyId = kmsKeyIdFor(service);
     if (keyId !== null) {
@@ -162,9 +195,9 @@ export function generateEnv(
     entries: [
       ['DOCUMENTS_OBJECT_STORE_MODE', 's3'],
       ['DOCUMENTS_SCANNER_MODE', 'clamd'],
-      ['DOCUMENTS_CLAMD_HOST', NETWORK.clamdHost],
+      ['DOCUMENTS_CLAMD_HOST', network.clamdHost],
       ['DOCUMENTS_OCR_MODE', 'tesseract'],
-      ['DOCUMENTS_OCR_URL', NETWORK.ocrUrl],
+      ['DOCUMENTS_OCR_URL', network.ocrUrl],
       ['PLAID_MODE', production ? 'live' : 'stub'],
     ],
   });
@@ -215,7 +248,10 @@ export function writeStackEnv(
         'Pass --force if you mean it, and run `docker compose -f docker-compose.stack.yml down -v` to clear the data it could no longer decrypt.',
     };
   }
-  const generated = generateEnv({ mode: options.mode });
+  const generated = generateEnv({
+    mode: options.mode,
+    ...(options.addressing ? { addressing: options.addressing } : {}),
+  });
   io.write(options.target, renderEnvFile(generated, { mode: options.mode }));
   return { status: 'written', path: options.target };
 }

@@ -16,10 +16,17 @@ function main(argv: readonly string[]): number {
     process.stderr.write(`unknown --mode "${String(mode)}" (development|production)\n`);
     return 1;
   }
+  const addressingArg = argv.indexOf('--addressing');
+  const addressing = addressingArg === -1 ? 'compose' : argv[addressingArg + 1];
+  if (addressing !== 'compose' && addressing !== 'host') {
+    process.stderr.write(`unknown --addressing "${String(addressing)}" (compose|host)\n`);
+    return 1;
+  }
 
   const outcome = writeStackEnv(
     {
       mode,
+      addressing,
       target: process.env['STACK_ENV_FILE'] ?? '.env.stack',
       force: argv.includes('--force'),
     },

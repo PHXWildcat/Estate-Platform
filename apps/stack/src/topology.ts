@@ -7,17 +7,104 @@
  * is supposed to run.
  */
 
+/**
+ * Where the stack's processes run relative to its infrastructure.
+ *
+ * 'compose': everything on the compose network — containers address each
+ * other by service name and container-side port. The default, and what
+ * `pnpm stack:up` runs.
+ *
+ * 'host': the infra containers stay in compose but the NODE PROCESSES run on
+ * the host (CI's fast gate, and the local inner loop) — they reach infra
+ * through the PUBLISHED ports on localhost.
+ */
+export type Addressing = 'compose' | 'host';
+
+interface NetworkAddresses {
+  readonly kafkaBrokers: string;
+  readonly awsEndpoint: string;
+  readonly clamdHost: string;
+  readonly ocrUrl: string;
+  readonly region: string;
+  readonly objectStoreBucket: string;
+}
+
+const SHARED = {
+  region: 'us-east-1',
+  objectStoreBucket: 'estate-documents-local',
+} as const;
+
 /** In-network addresses. NOT the host ports: inside the compose network every
- *  Postgres listens on 5432 and Redpanda on its PLAINTEXT listener. The
- *  5433-5438 host mappings exist only for host tooling and PG_TEST_URL. */
-export const NETWORK = {
+ *  Postgres listens on 5432 and Redpanda on its PLAINTEXT listener. */
+export const NETWORK: NetworkAddresses = {
   kafkaBrokers: 'redpanda:29092',
   awsEndpoint: 'http://localstack:4566',
   clamdHost: 'clamav',
   ocrUrl: 'http://tesseract:8884',
-  region: 'us-east-1',
-  objectStoreBucket: 'estate-documents-local',
-} as const;
+  ...SHARED,
+};
+
+/** The same infrastructure as seen from the HOST, via published ports. */
+export const HOST_NETWORK: NetworkAddresses = {
+  // Redpanda's OUTSIDE listener — the only one advertised as localhost.
+  kafkaBrokers: 'localhost:9092',
+  awsEndpoint: 'http://localhost:4566',
+  clamdHost: 'localhost',
+  ocrUrl: 'http://localhost:8884',
+  ...SHARED,
+};
+
+/**
+ * The AWS endpoint in PRODUCTION mode: TLS, through the terminating proxy.
+ *
+ * Production config refuses a plaintext AWS_ENDPOINT_URL — wrapped DEKs must
+ * not cross the wire in the clear — so the production profile reaches
+ * LocalStack through nginx with a generated cert the services actually verify
+ * (NODE_EXTRA_CA_CERTS; nothing disables verification). The alternative was
+ * weakening the guard, which would delete the control being rehearsed.
+ */
+export const TLS_AWS_ENDPOINT = 'https://aws-tls' as const;
+export const TLS_AWS_ENDPOINT_HOST = 'https://localhost:8443' as const;
+
+/**
+ * Where the generated CA is found.
+ *
+ * The proxy writes it to a BIND MOUNT rather than a named volume, so the same
+ * file is visible to containers at `/certs` and to host processes under
+ * `./.stack-certs` — host-mode runs trust the identical CA with no extraction
+ * step, and there is only one cert in play either way.
+ */
+export const TLS_CA_PATH = '/certs/aws-tls.crt' as const;
+export const TLS_CA_PATH_HOST = './.stack-certs/aws-tls.crt' as const;
+
+export function tlsCaPathFor(addressing: Addressing): string {
+  return addressing === 'host' ? TLS_CA_PATH_HOST : TLS_CA_PATH;
+}
+
+export function networkFor(
+  addressing: Addressing,
+  mode: 'development' | 'production' = 'development',
+): NetworkAddresses {
+  const base = addressing === 'host' ? HOST_NETWORK : NETWORK;
+  if (mode !== 'production') {
+    return base;
+  }
+  return {
+    ...base,
+    awsEndpoint: addressing === 'host' ? TLS_AWS_ENDPOINT_HOST : TLS_AWS_ENDPOINT,
+  };
+}
+
+/** Base URL of a service, as seen by its peers under each addressing. */
+export function serviceUrl(name: string, addressing: Addressing): string {
+  const service = SERVICES.find((s) => s.name === name);
+  if (!service || service.port === null) {
+    throw new Error(`no addressable service named ${name}`);
+  }
+  return addressing === 'host'
+    ? `http://localhost:${service.port}`
+    : `http://${service.name}:${service.port}`;
+}
 
 /** The six physical clusters (docs/02). Separate containers, never one server
  *  with six databases: no code may assume clusters are co-located. */
@@ -36,9 +123,11 @@ const PG_USER = 'estate';
 /** Dev-only, and never a secret: it is in docker-compose.dev.yml already. */
 const PG_PASSWORD = 'estate_dev';
 
-export function databaseUrl(cluster: ClusterName): string {
-  const { host, database } = CLUSTERS[cluster];
-  return `postgres://${PG_USER}:${PG_PASSWORD}@${host}:5432/${database}`;
+export function databaseUrl(cluster: ClusterName, addressing: Addressing = 'compose'): string {
+  const { host, database, hostPort } = CLUSTERS[cluster];
+  return addressing === 'host'
+    ? `postgres://${PG_USER}:${PG_PASSWORD}@localhost:${hostPort}/${database}`
+    : `postgres://${PG_USER}:${PG_PASSWORD}@${host}:5432/${database}`;
 }
 
 /** A deployable in the stack, and the facts the generator needs about it. */

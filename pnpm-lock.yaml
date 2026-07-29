@@ -226,6 +226,12 @@ importers:
 
   apps/e2e:
     devDependencies:
+      '@aws-sdk/client-kms':
+        specifier: 'catalog:'
+        version: 3.1091.0
+      '@aws-sdk/client-s3':
+        specifier: 'catalog:'
+        version: 3.1094.0
       '@estate/audit-emitter':
         specifier: workspace:*
         version: link:../../packages/audit-emitter
@@ -271,6 +277,9 @@ importers:
       '@estate/settlement-client':
         specifier: workspace:*
         version: link:../../packages/settlement-client
+      '@estate/stack':
+        specifier: workspace:*
+        version: link:../stack
       '@estate/vault-crypto':
         specifier: workspace:*
         version: link:../../packages/vault-crypto

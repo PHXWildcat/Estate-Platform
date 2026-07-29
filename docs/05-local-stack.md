@@ -26,6 +26,45 @@ session cookies whenever `NODE_ENV=production`, and browsers reject `Secure`
 cookies over plain http on every host *except* localhost. Any other spelling
 silently breaks login in the production profile.
 
+### Testing it
+
+```bash
+# development profile (default): the whole journey
+STACK_TEST=1 pnpm --filter @estate/e2e exec jest test/stack.e2e.spec.ts test/aws-conformance.spec.ts
+
+# production profile: the fail-fast rehearsal
+STACK_TEST=1 STACK_PROFILE=production pnpm --filter @estate/e2e exec jest test/stack.e2e.spec.ts
+```
+
+Both run in CI (`.github/workflows/stack.yml`, blocking, one job per profile).
+The determinism contract is that there are **no bare sleeps** anywhere: every
+wait is a poll with a deadline, topics are provisioned before any service
+starts, and clamd's readiness is `clamdscan --ping` rather than a timer. A
+`--json` result check asserts a minimum number of *passed* tests, because jest
+exits 0 for a suite that skipped everything.
+
+`.github/workflows/images.yml` runs the same spec against the **shipped
+images** in a separate job — stack.yml proves the code integrates, that job
+proves the artifact does.
+
+### Host mode
+
+CI's fast gate and the local inner loop run the node processes on the host
+against the containerised infrastructure:
+
+```bash
+pnpm stack:env -- --addressing host --force
+docker compose --env-file .env.stack -f docker-compose.stack.yml up -d --wait pg-auth pg-core pg-financial pg-documents pg-vault pg-audit redpanda localstack aws-tls clamav tesseract
+node apps/stack/dist/run-services-cli.js .env.stack
+```
+
+The supervisor refuses a compose-addressed env file outright: container
+hostnames do not resolve from the host, so every service would boot and then
+fail per request — the slowest possible way to find that out. A parity spec
+(`apps/stack/test/compose-parity.spec.ts`) asserts the compose YAML's
+environment blocks and the supervisor's mapping agree key-for-key, so the two
+paths cannot drift.
+
 ### The two profiles
 
 | | **development** (default) | **production** (`--mode production`) |
@@ -35,8 +74,19 @@ silently breaks login in the production profile.
 | Malware scan | real clamd | real clamd |
 | OCR | Tesseract sidecar | Tesseract sidecar |
 | Audit bus | Redpanda | Redpanda |
+| AWS transport | plain http | **TLS, verified** |
 | Plaid | deterministic stub | **absent** |
 | Every flow runs | yes | no — see below |
+
+**Production reaches AWS over real TLS.** The production config refuses a
+plaintext `AWS_ENDPOINT_URL` — wrapped DEKs must not cross the wire in the
+clear — and LocalStack speaks http, so the production profile goes through an
+nginx terminator (`aws-tls`) with a generated certificate the services
+genuinely verify via `NODE_EXTRA_CA_CERTS`. Nothing anywhere sets
+`NODE_TLS_REJECT_UNAUTHORIZED`, and the doctor treats that variable as an error
+if it ever appears: switching verification off would turn the production TLS
+requirement into decoration, which is the same class of mistake as relaxing the
+guard it exists to satisfy.
 
 Both profiles run the **production adapters**. That is the point of the
 milestone: `AwsKmsProvider`, `S3ObjectStore`, `ClamdScanner` and
@@ -80,12 +130,19 @@ six independent KMS keys, one per service KEK, which models the boundary; it
 does not prove it. Any service in this stack that knew another's key id could
 call `Decrypt` against it and succeed.
 
-What *is* real is the **EncryptionContext binding**: `AwsKmsProvider` wraps
-every DEK under `estate:kek = <alias>`, and KMS refuses a `Decrypt` whose
-context differs. If LocalStack enforces that, cross-domain unwrapping fails
-even without IAM — which is why the stack test asserts it rather than assuming
-it. If it turns out LocalStack ignores EncryptionContext, that assertion fails
-loudly and this section gets stronger wording.
+What *is* real is the **EncryptionContext binding**, and this is now measured
+rather than assumed. `AwsKmsProvider` wraps every DEK under
+`estate:kek = <alias>`, and `apps/e2e/test/aws-conformance.spec.ts` proves that
+LocalStack **does** enforce it: a `Decrypt` with a foreign context
+(`plaid/kek` against a blob wrapped for `documents/kek`) is refused, and so is
+one with the context omitted entirely.
+
+So the local stack genuinely exercises the cryptographic half of the isolation
+claim — a DEK wrapped for one domain cannot be unwrapped as another, even with
+the right key id. What it does **not** exercise is the IAM half: which
+*principal* may call `Decrypt` on which key at all. That is the difference
+between "a stolen ciphertext cannot be replayed across domains" (proven here)
+and "a compromised asset service cannot reach the Plaid key" (not proven here).
 
 `docs/03` §5.3 (insider bulk decryption) is precisely what this cannot test:
 KMS rate limiting, anomaly detection, circuit breaking, CloudHSM roots, and

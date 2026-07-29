@@ -55,10 +55,17 @@ x-node-build: &node-build
   context: .
   dockerfile: infra/docker/node-service.Dockerfile
 
-# Shared by every one-shot job: same image shape, run once, never restarted.
+# Shared by every one-shot job: run once, never restarted.
+#
+# In BOTH profiles, because compose does not activate a profile to satisfy a
+# `depends_on`: with the jobs in 'bootstrap' alone, `--profile services` was
+# rejected outright ("documents depends on undefined service seed-templates").
+# Listing both means `--profile services` pulls its own prerequisites, while
+# `--profile bootstrap` alone still prepares the databases without starting
+# anything long-running.
 x-job: &job
   restart: 'no'
-  profiles: ['bootstrap']
+  profiles: ['bootstrap', 'services']
 
 services:
   # ------------------------------------------------------------------ data plane
@@ -164,6 +171,29 @@ services:
       retries: 40
       start_period: 20s
 
+  # TLS in front of LocalStack. Production config REFUSES a plaintext
+  # AWS_ENDPOINT_URL (wrapped DEKs must not cross the wire in the clear), and
+  # LocalStack speaks http — so the production profile reaches it through here,
+  # over a generated cert the services genuinely verify. The alternative was
+  # weakening the guard this milestone exists to rehearse.
+  aws-tls:
+    build:
+      context: .
+      dockerfile: infra/docker/aws-tls.Dockerfile
+    ports: ['8443:443']
+    volumes:
+      - ./.stack-certs:/certs
+    healthcheck:
+      # Waits for the CERT, not just nginx: a service that starts before the CA
+      # file exists fails its first KMS call on an unknown issuer.
+      test: ['CMD-SHELL', 'test -f /certs/ready && nc -z 127.0.0.1 443']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      localstack: { condition: service_healthy }
+
   # ---------------------------------------------------------- scanning and OCR
   clamav:
     image: clamav/clamav:1.4
@@ -172,7 +202,20 @@ services:
       # first uploads fail; the image ships a signature database and the volume
       # keeps it between runs. This is a local stack, not a malware appliance.
       FRESHCLAM_CHECKS: '1'
-    volumes: ['clamav-data:/var/lib/clamav']
+    # Published so host-mode runs (services from dist on the host) reach it.
+    ports: ['3310:3310']
+    volumes:
+      - clamav-data:/var/lib/clamav
+      # One custom signature for the stack test's FOUND path — see the README
+      # there for why EICAR structurally cannot exercise this gate. Staged
+      # OUTSIDE the database dir and copied in by the entrypoint override:
+      # the image's init chowns everything under /var/lib/clamav and dies on a
+      # read-only bind mount placed there directly.
+      - ./infra/clamav/stack-test.ndb:/stack-signatures/stack-test.ndb:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'cp /stack-signatures/stack-test.ndb /var/lib/clamav/stack-test.ndb && exec /init'
     healthcheck:
       # clamd accepts connections well before it has finished loading
       # signatures, and the documents service's scan gate is FAIL-CLOSED: every
@@ -188,6 +231,8 @@ services:
     build:
       context: .
       dockerfile: infra/docker/tesseract.Dockerfile
+    # Published so host-mode runs (services from dist on the host) reach it.
+    ports: ['8884:8884']
     healthcheck:
       test: ['CMD-SHELL', 'wget -q -O- http://127.0.0.1:8884/healthz || exit 1']
       interval: 10s
@@ -298,6 +343,9 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+    volumes:
+      - ./.stack-certs:/certs:ro
     depends_on:
       migrate-documents: { condition: service_completed_successfully }
       localstack: { condition: service_healthy }
@@ -319,6 +367,7 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       EMAIL_INDEX_KEY_HEX: ${IDENTITY_EMAIL_INDEX_KEY_HEX}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       RP_ID: ${RP_ID}
@@ -327,6 +376,8 @@ services:
       # The ONLY lock-capable credential in the product. Held by settlement
       # alone (packages/auth-guard/src/credential-graph.ts).
       IDENTITY_INTERNAL_TOKEN: ${IDENTITY_IDENTITY_INTERNAL_TOKEN}
+    volumes:
+      - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-identity: { condition: service_completed_successfully }
@@ -349,9 +400,12 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       EMAIL_INDEX_KEY_HEX: ${PROFILE_EMAIL_INDEX_KEY_HEX}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
+    volumes:
+      - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-profile: { condition: service_completed_successfully }
@@ -374,9 +428,12 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
       SETTLEMENT_URL: http://settlement:3007
+    volumes:
+      - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-assets: { condition: service_completed_successfully }
@@ -403,10 +460,13 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       ITEM_INDEX_KEY_HEX: ${PLAID_ITEM_INDEX_KEY_HEX}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
       PLAID_MODE: ${PLAID_MODE}
+    volumes:
+      - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-plaid: { condition: service_completed_successfully }
@@ -429,6 +489,7 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
       SETTLEMENT_URL: http://settlement:3007
@@ -443,6 +504,8 @@ services:
       # as having zero holders, so nothing is provisioned to present it and the
       # route refuses everything. The M4 legal-hold gap stays open.
       DOCUMENTS_INTERNAL_TOKEN: ''
+    volumes:
+      - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       seed-templates: { condition: service_completed_successfully }
@@ -488,6 +551,7 @@ services:
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
       # TWO credentials, opposite directions, never equal. The inbound one
@@ -497,6 +561,8 @@ services:
       # doctor refuses it in every mode.
       SETTLEMENT_INTERNAL_TOKEN: ${SETTLEMENT_SETTLEMENT_INTERNAL_TOKEN}
       IDENTITY_INTERNAL_TOKEN: ${SETTLEMENT_IDENTITY_INTERNAL_TOKEN}
+    volumes:
+      - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-settlement: { condition: service_completed_successfully }

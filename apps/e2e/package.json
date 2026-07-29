@@ -8,6 +8,8 @@
     "test": "jest --runInBand"
   },
   "devDependencies": {
+    "@aws-sdk/client-kms": "catalog:",
+    "@aws-sdk/client-s3": "catalog:",
     "@estate/audit-emitter": "workspace:*",
     "@estate/auth-guard": "workspace:*",
     "@estate/config": "workspace:*",
@@ -23,6 +25,7 @@
     "@estate/service-settlement": "workspace:*",
     "@estate/service-vault": "workspace:*",
     "@estate/settlement-client": "workspace:*",
+    "@estate/stack": "workspace:*",
     "@estate/vault-crypto": "workspace:*",
     "@nestjs/testing": "catalog:",
     "@types/jest": "catalog:",
