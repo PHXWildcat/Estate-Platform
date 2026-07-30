@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   graphqlError,
   installGraphqlFetchMock,
@@ -28,7 +28,7 @@ const NET_WORTH = {
   totalValue: '225000.00',
   assetCount: 1,
   valuedAssetCount: 1,
-  inTrustValue: '225000.00',
+  inTrustValue: '125000.00',
 };
 
 function assetsHandler(assets = [ASSET]): OperationHandler {
@@ -52,16 +52,24 @@ function fillCreateForm(options: { title: string; value?: string; asOf?: string 
 }
 
 describe('AssetsPanel', () => {
-  it('renders net worth and the inventory, money verbatim as decimal strings', async () => {
+  it('renders the stat row and inventory with grouped, never-floated money', async () => {
     installGraphqlFetchMock({ Assets: assetsHandler(), NetWorth: netWorthHandler() });
     render(<AssetsPanel />);
 
-    // Rendered EXACTLY as the ledger sent it — never parsed through a float.
-    expect(await screen.findByText('$225000.00')).toBeInTheDocument();
-    expect(screen.getByText('The lake house')).toBeInTheDocument();
-    expect(screen.getByText('$450000.00')).toBeInTheDocument();
+    // Digit grouping is pure string formatting — the no-float guarantee lives
+    // in formatMoney and is proven in lib/money.test.ts.
+    expect(await screen.findByText('$225,000.00')).toBeInTheDocument();
+    expect(screen.getByText('$125,000.00')).toBeInTheDocument();
+    expect(screen.getByText(/1 of 1 asset valued/)).toBeInTheDocument();
+    const inventory = within(screen.getByRole('list', { name: 'Your assets' }));
+    expect(inventory.getByText('The lake house')).toBeInTheDocument();
+    expect(inventory.getByText('$450,000.00')).toBeInTheDocument();
     // Partial ownership and trust status are surfaced, not silently dropped.
-    expect(screen.getByText(/Real estate · in trust · 50% owned/)).toBeInTheDocument();
+    // ("Real estate" is scoped to the list — the create form's category select
+    // carries the same label.)
+    expect(inventory.getByText('Real estate')).toBeInTheDocument();
+    expect(inventory.getByText('In trust')).toBeInTheDocument();
+    expect(inventory.getByText('50% ownership')).toBeInTheDocument();
   });
 
   it('shows a sign-in prompt when unauthenticated, never an error', async () => {

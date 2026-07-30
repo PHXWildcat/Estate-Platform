@@ -15,7 +15,7 @@ function applyToDocument(preference: ThemePreference): void {
   }
 }
 
-export function ThemeToggle(): ReactElement {
+export function ThemeToggle({ tone = 'surface' }: { tone?: 'surface' | 'rail' }): ReactElement {
   const [preference, setPreference] = useState<ThemePreference>('system');
 
   useEffect(() => {
@@ -41,11 +41,18 @@ export function ThemeToggle(): ReactElement {
     }
   }
 
+  const rail = tone === 'rail';
   return (
-    <label className="flex items-center gap-2 text-sm text-ink-muted">
+    <label
+      className={
+        rail
+          ? 'flex items-center justify-between gap-2 text-xs text-rail-muted'
+          : 'flex items-center gap-2 text-sm text-ink-muted'
+      }
+    >
       Theme
       <select
-        className="field-input w-auto py-1 text-sm"
+        className={rail ? 'field-input-rail' : 'field-input w-auto py-1 text-sm'}
         value={preference}
         onChange={(event) => choose(event.target.value as ThemePreference)}
       >

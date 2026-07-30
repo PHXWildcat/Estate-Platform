@@ -721,6 +721,25 @@ deviating from them, stop and propose the change with rationale — do not silen
   (`STACK_ALLOW_KEY_LOSS=1` to override). Consequence for the runbook: the data
   volumes are ONE UNIT — `stack:reset` (down -v), never `stack:down`, is how you
   come back from a stopped stack.
+- 2026-07-30 — Frontend visual direction: "Evergreen rail" app shell, chosen by the
+  user from three mocked candidates (fintech-polish lane per docs/00's
+  Wealthfront/Apple influences; mockup artifact in the 2026-07-29 session). Two
+  surface worlds in `globals.css`: the content palette (near-neutral, green-biased,
+  flips with the scheme) and `--rail-*` (deep evergreen, deliberately CONSTANT
+  across schemes — theme switching changes the light in the room, not the
+  building). Typeface: Instrument Sans (SIL OFL), VENDORED into
+  `apps/web/public/fonts` with manual `@font-face` + unicode-range — no
+  next/font/google because builds must not depend on a third-party fetch, and no
+  runtime CDN by CSP posture. Routes split into `(app)` (AppShell: rail +
+  mobile brand bar + bottom tab bar) and `(auth)` (login/register render without
+  app navigation). Nav shows Documents/People/Vault as inert "Soon" previews —
+  backends shipped M4–M7 without UIs; Vault's future entry is an OUTBOUND link
+  (isolated origin, docs/03 TB6). Money display: `formatMoney` groups digits by
+  string manipulation only (proven against >MAX_SAFE_INTEGER values) — the
+  never-parse-money-to-float rule now has a formatter, not just a renderer.
+  Sign-out moved from page content into the rail account section. Deliberately
+  OUT of this pass (layer on next): Framer Motion, dashboard modules/charts,
+  richer loading/empty states.
 - 2026-07-30 — Also from the M8 review: the doctor's endpoint check was a PREFIX
   match, so `https://localhost:x@kms.us-east-1.amazonaws.com/` passed the one
   guard between a misconfigured stack and real AWS — it parses the URL now.

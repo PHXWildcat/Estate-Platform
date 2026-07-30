@@ -1,7 +1,5 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
-import { ThemeToggle } from '../components/ThemeToggle';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -16,42 +14,30 @@ export const metadata: Metadata = {
 const themeInitScript =
   "(function(){try{var t=localStorage.getItem('estate-theme');if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}})();";
 
+/**
+ * Chrome lives in the route-group layouts: `(app)` wraps pages in the
+ * Evergreen-rail AppShell; `(auth)` renders sign-in/register without app
+ * navigation. Both groups provide the `#main` landmark this skip link targets.
+ */
 export default function RootLayout({ children }: { children: ReactNode }): ReactElement {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="flex min-h-screen flex-col">
+      <body className="min-h-screen">
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <link
+          rel="preload"
+          href="/fonts/instrument-sans-latin.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin="anonymous"
+        />
         <a
           href="#main"
-          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-10 focus:rounded-field focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-20 focus:rounded-field focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
         >
           Skip to main content
         </a>
-        <header className="border-b border-line">
-          <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
-            <Link href="/" className="text-base font-semibold tracking-tight">
-              Estate
-            </Link>
-            <nav aria-label="Main" className="flex items-center gap-6">
-              <Link href="/assets" className="text-sm text-ink-muted hover:text-ink">
-                Assets
-              </Link>
-              <Link href="/security" className="text-sm text-ink-muted hover:text-ink">
-                Security
-              </Link>
-              <ThemeToggle />
-            </nav>
-          </div>
-        </header>
-        <main id="main" className="mx-auto w-full max-w-3xl flex-1 px-6 py-10">
-          {children}
-        </main>
-        <footer className="border-t border-line">
-          <p className="mx-auto w-full max-w-3xl px-6 py-6 text-xs text-ink-muted">
-            Milestone 1 walking skeleton. Your session lives in httpOnly cookies — this app never
-            sees or stores tokens.
-          </p>
-        </footer>
+        {children}
       </body>
     </html>
   );

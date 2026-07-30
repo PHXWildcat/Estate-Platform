@@ -9,8 +9,11 @@ import { gqlRequest } from '../graphql/client';
  * both httpOnly cookies. On failure the user is TOLD, not reassured — a
  * "signed out" message over a still-live session would be the worst outcome,
  * so the button only navigates away after the server confirms.
+ *
+ * `tone` restyles for the surface it sits on (the evergreen rail vs. cards);
+ * behavior is identical.
  */
-export function SignOutButton(): ReactElement {
+export function SignOutButton({ tone = 'surface' }: { tone?: 'surface' | 'rail' }): ReactElement {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -28,11 +31,14 @@ export function SignOutButton(): ReactElement {
     setFailed(true);
   }
 
+  const rail = tone === 'rail';
   return (
-    <span className="inline-flex items-center gap-2">
+    <span
+      className={rail ? 'inline-flex flex-col items-end gap-1' : 'inline-flex items-center gap-2'}
+    >
       <button
         type="button"
-        className="btn btn-secondary"
+        className={rail ? 'btn btn-rail px-3 py-1 text-xs' : 'btn btn-secondary'}
         disabled={busy}
         onClick={() => {
           void signOut();
@@ -41,7 +47,7 @@ export function SignOutButton(): ReactElement {
         {busy ? 'Signing out…' : 'Sign out'}
       </button>
       {failed ? (
-        <span role="alert" className="text-sm text-ink-muted">
+        <span role="alert" className={rail ? 'text-xs text-rail-danger' : 'text-sm text-ink-muted'}>
           Sign-out didn’t complete — you are still signed in. Try again.
         </span>
       ) : null}
