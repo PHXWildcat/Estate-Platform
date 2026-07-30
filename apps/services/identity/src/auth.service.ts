@@ -232,6 +232,27 @@ export class AuthService {
    * (docs/01 §5). The decrypt of the TOTP secret deliberately runs through
    * FieldCrypto so the crypto.field.decrypted audit path is exercised.
    */
+  /**
+   * Logout: revoke exactly the presented session, server-side.
+   *
+   * The M1 open item, landed with the first UI that needs it (M8 PR5's
+   * persona switching). Only `revoke`, never `revokeAllForUser` — logging out
+   * one browser must not kill the user's other devices; that stronger verb
+   * stays reserved for theft response and the settlement lock. Idempotent by
+   * construction: the repo's UPDATE is a no-op on an already-revoked row, so
+   * a double-click cannot error.
+   */
+  async logout(userId: string, sessionId: string): Promise<void> {
+    await this.sessions.revoke(sessionId, 'user_logout', this.clock());
+    await this.authEvents.insert({
+      userId,
+      sessionId,
+      kind: 'session.revoked',
+      decision: 'user_logout',
+    });
+    await this.events.sessionRevoked(userId, sessionId, 'logout');
+  }
+
   async stepUp(userId: string, sessionId: string, code: string): Promise<StepUpResult> {
     const ok = await this.checkTotp(userId, code, 'auth.totp.stepup', { verifiedOnly: true });
     if (!ok.valid) {

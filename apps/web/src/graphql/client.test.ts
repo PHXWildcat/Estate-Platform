@@ -50,6 +50,21 @@ describe('gqlRequest', () => {
     expect(body.variables).toEqual(loginVariables);
   });
 
+  it('sends persistedQuery.version = 1, which the BFF requires to find the operation at all', () => {
+    // A REGRESSION PIN, not a formality. Without `version` the BFF's APQ
+    // extractor finds no operation id and answers "Operation not allowed" —
+    // and because non-production builds also send `query`, the failure is
+    // invisible everywhere EXCEPT production. That is exactly how it shipped
+    // unnoticed until the real web image was driven against the local stack.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { login: { ok: true } } }));
+    void gqlRequest('Login', loginVariables);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      extensions: { persistedQuery: { version: number } };
+    };
+    expect(body.extensions.persistedQuery.version).toBe(1);
+  });
+
   it('narrows a known error code and never surfaces server message text', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(

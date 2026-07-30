@@ -147,6 +147,7 @@ describe('bffProcessEnv', () => {
       NODE_ENV: 'development',
       PORT: '4000',
       IDENTITY_URL: 'http://localhost:3001',
+      ASSETS_URL: 'http://localhost:3003',
       PERSISTED_MANIFEST_PATH: '/repo/m.json',
     });
   });

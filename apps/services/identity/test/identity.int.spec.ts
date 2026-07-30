@@ -252,6 +252,50 @@ describeIfPg('identity service end to end', () => {
     expect(accessAfterRevoke.status).toBe(401);
   });
 
+  it('logout revokes exactly the presented session, and only that one', async () => {
+    // A second device stays logged in — logout is per-session by design; the
+    // all-sessions verb stays reserved for theft response and settlement.
+    const emailB = `logout-${randomUUID()}@example.com`;
+    await request(server).post('/v1/auth/register').send({ email: emailB, password: PASSWORD });
+    const first = (
+      await request(server).post('/v1/auth/login').send({ email: emailB, password: PASSWORD })
+    ).body as TokensBody;
+    const second = (
+      await request(server).post('/v1/auth/login').send({ email: emailB, password: PASSWORD })
+    ).body as TokensBody;
+
+    const out = await request(server)
+      .post('/v1/auth/logout')
+      .set('Authorization', `Bearer ${first.accessToken}`);
+    expect(out.status).toBe(200);
+
+    // The logged-out session is dead in BOTH halves: access and refresh.
+    const staleAccess = await request(server)
+      .get('/v1/auth/session')
+      .set('Authorization', `Bearer ${first.accessToken}`);
+    expect(staleAccess.status).toBe(401);
+    const staleRefresh = await request(server)
+      .post('/v1/auth/refresh')
+      .send({ refreshToken: first.refreshToken });
+    expect(staleRefresh.status).toBe(401);
+
+    // The other device is untouched.
+    const alive = await request(server)
+      .get('/v1/auth/session')
+      .set('Authorization', `Bearer ${second.accessToken}`);
+    expect(alive.status).toBe(200);
+
+    const { rows } = await admin.query(
+      `SELECT revoke_reason FROM ${schema}.sessions WHERE id = $1`,
+      [first.sessionId],
+    );
+    expect((rows[0] as { revoke_reason: string }).revoke_reason).toBe('user_logout');
+
+    // Logout without a valid token is a 401, not a crash.
+    const anonymous = await request(server).post('/v1/auth/logout');
+    expect(anonymous.status).toBe(401);
+  });
+
   it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {
     // Registration mints a fresh userId per request, so a same-user HTTP race
     // cannot be staged here; the race is exercised at the FieldCrypto level,

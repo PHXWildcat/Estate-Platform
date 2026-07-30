@@ -33,6 +33,9 @@ export default function RootLayout({ children }: { children: ReactNode }): React
               Estate
             </Link>
             <nav aria-label="Main" className="flex items-center gap-6">
+              <Link href="/assets" className="text-sm text-ink-muted hover:text-ink">
+                Assets
+              </Link>
               <Link href="/security" className="text-sm text-ink-muted hover:text-ink">
                 Security
               </Link>

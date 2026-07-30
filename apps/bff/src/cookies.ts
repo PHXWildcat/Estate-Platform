@@ -66,3 +66,15 @@ export function setSessionCookies(
     serializeSessionCookie(REFRESH_COOKIE, tokens.refreshToken, secure),
   );
 }
+
+/**
+ * Expires both session cookies (logout). `Max-Age=0` with the SAME attributes
+ * the cookies were set with — a clear whose Path/Secure differ from the
+ * original silently fails to remove it in some browsers, leaving a "logged
+ * out" UI with live tokens still attached to every request.
+ */
+export function clearSessionCookies(res: ServerResponse, secure: boolean): void {
+  for (const name of [ACCESS_COOKIE, REFRESH_COOKIE]) {
+    res.appendHeader('Set-Cookie', `${serializeSessionCookie(name, '', secure)}; Max-Age=0`);
+  }
+}

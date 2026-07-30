@@ -162,6 +162,7 @@ export function bffProcessEnv(
     NODE_ENV: fromFile(env, 'STACK_MODE'),
     PORT: '4000',
     IDENTITY_URL: serviceUrl('identity', options.addressing),
+    ASSETS_URL: serviceUrl('assets', options.addressing),
   };
   if (options.manifestPath) {
     out['PERSISTED_MANIFEST_PATH'] = options.manifestPath;

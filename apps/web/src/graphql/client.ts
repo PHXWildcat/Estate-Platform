@@ -37,6 +37,24 @@ export interface SessionInfo {
   stepUpFresh: boolean;
 }
 
+export interface AssetInfo {
+  assetId: string;
+  category: string;
+  title: string;
+  /** Decimal string — money is never a Float. */
+  estValue: string | null;
+  ownershipPct: number;
+  inTrust: boolean;
+  version: string;
+}
+
+export interface NetWorthInfo {
+  totalValue: string;
+  assetCount: number;
+  valuedAssetCount: number;
+  inTrustValue: string;
+}
+
 type EmptyVariables = Record<string, never>;
 
 interface OperationSignatures {
@@ -54,6 +72,20 @@ interface OperationSignatures {
   StepUp: { variables: { code: string }; data: { stepUp: { ok: boolean } } };
   ExportDemo: { variables: EmptyVariables; data: { exportDemo: { ok: boolean } } };
   Session: { variables: EmptyVariables; data: { session: SessionInfo } };
+  Logout: { variables: EmptyVariables; data: { logout: { ok: boolean } } };
+  Assets: { variables: EmptyVariables; data: { assets: AssetInfo[] } };
+  NetWorth: { variables: EmptyVariables; data: { netWorth: NetWorthInfo } };
+  CreateAsset: {
+    variables: {
+      category: string;
+      title: string;
+      /** All three together, or none: the ledger refuses a partial valuation. */
+      estValue?: string;
+      valuationAsOf?: string;
+      valuationSource?: string;
+    };
+    data: { createAsset: { assetId: string; version: string } };
+  };
 }
 
 const hashByDocument: ReadonlyMap<string, string> = new Map(
@@ -98,7 +130,14 @@ export async function gqlRequest<Name extends OperationName>(
 
   const body: Record<string, unknown> = {
     variables,
-    extensions: { persistedQuery: { sha256Hash } },
+    // `version: 1` is REQUIRED by the APQ protocol the BFF's plugin
+    // implements: without it the extractor finds no operation id and every
+    // request is refused as "Operation not allowed". Omitting it was invisible
+    // for a long time because non-production builds also send `query` below,
+    // so the document carried the request and the hash was never consulted —
+    // it would have failed only in production. Found by driving the real
+    // production web image against the stack (M8 PR5).
+    extensions: { persistedQuery: { version: 1, sha256Hash } },
   };
   if (process.env.NODE_ENV !== 'production') {
     body.query = document;

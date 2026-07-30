@@ -40,6 +40,8 @@ export interface IdentityClient {
   totpVerify(accessToken: string, code: string): Promise<void>;
   stepUp(accessToken: string, code: string): Promise<void>;
   exportDemo(accessToken: string): Promise<void>;
+  /** Revokes exactly the presented session. */
+  logout(accessToken: string): Promise<void>;
 }
 
 export type BffErrorCode =
@@ -180,6 +182,14 @@ export class FetchIdentityClient implements IdentityClient {
   async exportDemo(accessToken: string): Promise<void> {
     const res = await this.request({ method: 'POST', path: '/v1/auth/export-demo', accessToken });
     if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  async logout(accessToken: string): Promise<void> {
+    const res = await this.request({ method: 'POST', path: '/v1/auth/logout', accessToken });
+    // 401 means the token is already dead — which IS logged out, not an error.
+    if (!res.ok && res.status !== 401) {
       throw await this.mapError(res);
     }
   }

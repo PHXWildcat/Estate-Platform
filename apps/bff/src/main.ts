@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { createBffApp } from './app';
+import { FetchAssetsClient } from './assets-client';
 import { loadConfig } from './config';
 import { FetchIdentityClient } from './identity-client';
 
@@ -10,6 +11,7 @@ async function bootstrap(): Promise<void> {
   const app = await createBffApp({
     config,
     identity: new FetchIdentityClient(config.identityUrl),
+    assets: new FetchAssetsClient(config.assetsUrl),
   });
   app.enableShutdownHooks();
   await app.listen(config.port);

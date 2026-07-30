@@ -11,6 +11,13 @@ const EnvSchema = z
     /** Base URL of the identity service's internal REST API. */
     IDENTITY_URL: z.string().url().default('http://localhost:3001'),
     /**
+     * Base URL of the assets service (M8 PR5, the first non-identity
+     * downstream). The BFF forwards the caller's own bearer token to it —
+     * never an identity header, never a service credential — so a wrong value
+     * fails closed: requests are refused downstream, nothing widens.
+     */
+    ASSETS_URL: z.string().url().default('http://localhost:3003'),
+    /**
      * Path to the persisted-operations manifest (JSON: sha256 hex → GraphQL
      * document). Optional in dev/test (empty manifest ⇒ arbitrary operations
      * are still allowed there); REQUIRED in production, where only manifest
@@ -34,6 +41,7 @@ export interface BffConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
   readonly identityUrl: string;
+  readonly assetsUrl: string;
   /** null means "no manifest" (never allowed in production). */
   readonly persistedManifestPath: string | null;
 }
@@ -58,6 +66,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BffConfig {
     nodeEnv: e.NODE_ENV,
     port: e.PORT,
     identityUrl: e.IDENTITY_URL.replace(/\/+$/, ''),
+    assetsUrl: e.ASSETS_URL.replace(/\/+$/, ''),
     persistedManifestPath: e.PERSISTED_MANIFEST_PATH ?? null,
   };
 }

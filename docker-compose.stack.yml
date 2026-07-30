@@ -594,6 +594,9 @@ services:
       NODE_ENV: ${STACK_MODE}
       PORT: '4000'
       IDENTITY_URL: http://identity:3001
+      # First non-identity downstream (M8 PR5): the BFF forwards the CALLER'S
+      # bearer to it — no identity headers, no service credential to hold.
+      ASSETS_URL: http://assets:3003
       PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
     volumes:
       # The web bundle sends hash-only GraphQL bodies (its client inlines

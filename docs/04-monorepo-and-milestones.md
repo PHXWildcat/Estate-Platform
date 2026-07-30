@@ -1199,10 +1199,43 @@ stays untested until the real environment exists.
   stack a real TLS terminator with a CA the services verify, not by relaxing
   the guard, and the doctor now rejects `NODE_TLS_REJECT_UNAUTHORIZED` as its
   own class of mistake.
-- **PR5 (planned) — thin UI.** Assets resolvers with real bearer forwarding
-  (the 2026-07-23 decision's stated end-state), logout (exists nowhere), one
-  web page. Vault UI stays out per the M6 decision (needs the docs/03 TB6
-  isolated-origin/CSP work).
+- **PR5 — thin UI (shipped).** The BFF's first non-identity resolvers, which
+  is where the 2026-07-23 decision's stated end-state becomes real: the BFF
+  **forwards the caller's own bearer** downstream, injects no identity header,
+  and holds no assets credential — so it cannot mint authority it was not
+  handed. Money stays a decimal string through GraphQL. Logout landed end to
+  end (retiring the M1 open item): identity revokes the **presented session
+  only**, and the BFF expires both cookies with the same attributes they were
+  set with, *after* the server confirms — a failed revocation leaves the
+  cookies alone and tells the user, because "signed out" over a live session
+  is the worst outcome. One assets page, plus a sign-out control. Vault UI
+  stays out per the M6 decision (needs the docs/03 TB6 isolated-origin/CSP
+  work).
+
+  **Driving the real web image in a browser found three defects no test could
+  see**, all of the same shape — invisible in development, fatal in
+  production:
+  1. The GraphQL client omitted `persistedQuery.version`, which the BFF's APQ
+     extractor requires. **Every persisted operation would have failed in
+     production**, and dev was green because non-production builds also send
+     the full `query`, so the hash was never consulted.
+  2. The persisted-manifest builder hashed raw CRLF bytes on Windows while
+     ECMAScript normalizes template literals to LF — so every hash in the
+     committed manifest was wrong.
+  3. `turbo.json`'s build task declared no `env`, so Turbo 2's strict env mode
+     stripped `BFF_URL` and the web image baked a rewrite to
+     `localhost:4000` — the container proxied `/graphql` to itself.
+
+  Each is now pinned by a regression test or a declared config. This is the
+  clearest argument for the milestone: the stack's value is not that it runs,
+  it is that running it falsifies things nothing else does.
+
+  Also learned: a valuation is **all-or-nothing** in the ledger
+  (`estValue`/`valuationAsOf`/`valuationSource` together, by `.refine`) —
+  an amount with no date and no provenance is not an auditable claim. The BFF
+  refuses a partial valuation with `INVALID_REQUEST` rather than forwarding one
+  and masking a downstream 400. Web coverage floors were **raised** to absorb
+  the new UI (62/55/58/65 → 70/62/64/73).
 
 ### Later milestones (rough order, one per bounded context)
 AI assistant (privacy proxy) · then referral, notifications (whose SES

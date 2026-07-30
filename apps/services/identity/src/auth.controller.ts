@@ -124,6 +124,16 @@ export class AuthController {
     };
   }
 
+  /** Logout: revokes the PRESENTED session only (other devices stay live). */
+  @Post('logout')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async logout(@Req() request: AuthedRequest): Promise<{ status: string }> {
+    const auth = requireAuth(request);
+    await this.auth.logout(auth.userId, auth.sessionId);
+    return { status: 'ok' };
+  }
+
   @Post('totp/enroll')
   @HttpCode(201)
   @UseGuards(SessionGuard)

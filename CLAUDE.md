@@ -634,3 +634,39 @@ deviating from them, stop and propose the change with rationale — do not silen
   secret nobody can present would be exactly the aspirational grant the
   credential graph exists to forbid. The generator, the doctor and the
   entitlement spec all agree on that subtraction.
+- 2026-07-29 — M8 PR5 thin UI: the BFF gained its FIRST non-identity resolvers
+  (assets list/net-worth/create), realizing the 2026-07-23 decision's stated
+  end-state — the BFF FORWARDS THE CALLER'S OWN BEARER downstream and injects
+  no identity header, holds no assets credential, and so cannot mint authority
+  it was not handed (a compromised BFF replays the sessions it is currently
+  serving, never conjures new ones). Money is a decimal STRING through the
+  whole path, GraphQL included. Logout landed end to end, retiring the M1 open
+  item: identity revokes the PRESENTED session only (never revokeAllForUser —
+  logging out one browser must not kill other devices; that verb stays for
+  theft response and the settlement lock), then the BFF expires both cookies
+  with the SAME attributes they were set with. Revocation happens FIRST and a
+  failure does NOT clear cookies — a "signed out" message over a live session
+  is the worst outcome, so the UI says so instead.
+- 2026-07-29 — M8 PR5 found a LATENT PRODUCTION-ONLY BUG by driving the real
+  web image in a browser: the GraphQL client omitted `persistedQuery.version`,
+  which the BFF's APQ extractor requires, so EVERY persisted operation would
+  have failed in production with "Operation not allowed". It was invisible
+  because non-production builds also send `query`, so the document carried the
+  request and the hash was never consulted — dev, tests and CI were all green.
+  Fixed with a regression pin. Two more of the same class: the persisted-manifest
+  BUILDER hashed raw CRLF bytes on Windows while ECMAScript normalizes template
+  literals to LF, so every hash in the committed manifest was wrong (now
+  normalized before hashing); and `turbo.json`'s build task declared no `env`,
+  so Turbo 2's strict env mode stripped BFF_URL and the web image baked a
+  rewrite to localhost:4000 — i.e. proxied /graphql to itself. All three were
+  invisible to every existing test and only reachable by running the real
+  artifact.
+- 2026-07-29 — M8 PR5 also surfaced a DOMAIN rule the UI had to learn: a
+  valuation is all-or-nothing (`CreateAssetSchema.refine` — estValue,
+  valuationAsOf and valuationSource together or none). An amount with no date
+  and no provenance is not a claim anyone could audit later, so the ledger
+  refuses it. The BFF now rejects a partial valuation with INVALID_REQUEST
+  rather than forwarding one and masking a downstream 400, the client type
+  makes the triple indivisible, and the form reveals date+source as soon as an
+  amount is typed. Coverage floors RAISED, not lowered, to absorb the new UI:
+  web 62/55/58/65 → 70/62/64/73.

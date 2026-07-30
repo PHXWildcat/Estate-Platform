@@ -59,15 +59,53 @@ export const SESSION_QUERY = `query Session {
   }
 }`;
 
+export const LOGOUT_MUTATION = `mutation Logout {
+  logout {
+    ok
+  }
+}`;
+
+export const ASSETS_QUERY = `query Assets {
+  assets {
+    assetId
+    category
+    title
+    estValue
+    ownershipPct
+    inTrust
+    version
+  }
+}`;
+
+export const NET_WORTH_QUERY = `query NetWorth {
+  netWorth {
+    totalValue
+    assetCount
+    valuedAssetCount
+    inTrustValue
+  }
+}`;
+
+export const CREATE_ASSET_MUTATION = `mutation CreateAsset($category: String!, $title: String!, $estValue: String, $valuationAsOf: String, $valuationSource: String) {
+  createAsset(category: $category, title: $title, estValue: $estValue, valuationAsOf: $valuationAsOf, valuationSource: $valuationSource) {
+    assetId
+    version
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
   Refresh: REFRESH_MUTATION,
+  Logout: LOGOUT_MUTATION,
   TotpEnroll: TOTP_ENROLL_MUTATION,
   TotpVerify: TOTP_VERIFY_MUTATION,
   StepUp: STEP_UP_MUTATION,
   ExportDemo: EXPORT_DEMO_MUTATION,
   Session: SESSION_QUERY,
+  Assets: ASSETS_QUERY,
+  NetWorth: NET_WORTH_QUERY,
+  CreateAsset: CREATE_ASSET_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;
