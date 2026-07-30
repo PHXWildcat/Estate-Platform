@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnvFile } from '../src/doctor';
 import { generateEnv, renderEnvFile } from '../src/generate-env';
@@ -167,6 +168,59 @@ describe('compose/supervisor mapping parity', () => {
     const job = composeEnvironmentBlock(compose, 'provision-topics');
     expect([...job.keys()]).toEqual(['KAFKA_BROKERS']);
     expect(resolve(job.get('KAFKA_BROKERS') ?? '', file)).toBe(file.get('KAFKA_BROKERS'));
+  });
+
+  describe('scripts a container executes directly carry the git executable bit', () => {
+    // THE BIT ONLY EXISTS IN GIT. Windows has no execute permission, so Docker
+    // Desktop's bind mounts surface every file as executable and a Windows
+    // BuildKit context tars everything 0755 — which is why a missing bit is
+    // INVISIBLE on the machine that commits it and fatal on the Linux runner,
+    // where checkout materializes git's real mode. That is exactly how the
+    // first-ever CI run of stack.yml died: LocalStack's init runner hit
+    // "[Errno 13] Permission denied" on 01-provision.sh (mode 100644), the
+    // health marker never appeared, and the whole gate failed before one test
+    // ran. aws-tls's ENTRYPOINT script had the same latent defect one
+    // dependency further down.
+    const REPO_ROOT = join(__dirname, '..', '..', '..');
+    const gitMode = (path: string): string =>
+      execFileSync('git', ['ls-files', '-s', '--', path], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }).split(' ')[0] ?? '(untracked)';
+
+    it('every LocalStack ready.d hook is executable — the runner execs each file', () => {
+      const dir = join(REPO_ROOT, 'infra', 'localstack', 'init');
+      const hooks = readdirSync(dir);
+      expect(hooks.length).toBeGreaterThan(0);
+      for (const hook of hooks) {
+        expect(`${hook}: ${gitMode(`infra/localstack/init/${hook}`)}`).toBe(`${hook}: 100755`);
+      }
+    });
+
+    it('every exec-form ENTRYPOINT script copied from the repo is executable', () => {
+      // COPY preserves the context file's mode, and exec-form ENTRYPOINT
+      // execs the path directly — no shell to forgive a missing bit.
+      const dockerDir = join(REPO_ROOT, 'infra', 'docker');
+      const checked: string[] = [];
+      for (const name of readdirSync(dockerDir).filter((n) => n.endsWith('.Dockerfile'))) {
+        const dockerfile = readFileSync(join(dockerDir, name), 'utf8');
+        const copies = new Map<string, string>();
+        for (const copy of dockerfile.matchAll(/^COPY\s+(\S+)\s+(\S+)\s*$/gm)) {
+          copies.set(copy[2] as string, copy[1] as string);
+        }
+        for (const entry of dockerfile.matchAll(/^ENTRYPOINT\s+\[\s*"([^"]+)"/gm)) {
+          const source = copies.get(entry[1] as string);
+          if (source !== undefined) {
+            checked.push(source);
+            expect(`${name} -> ${source}: ${gitMode(source)}`).toBe(`${name} -> ${source}: 100755`);
+          }
+        }
+      }
+      // The fence must be fencing something: aws-tls's entrypoint is the known
+      // instance, and this assertion fails if a refactor stops the parser
+      // seeing it (silent vacuity is how the anti-drop check almost shipped).
+      expect(checked).toContain('infra/docker/aws-tls/entrypoint.sh');
+    });
   });
 
   it('every ${VAR} the compose file references is one the generator writes', () => {
