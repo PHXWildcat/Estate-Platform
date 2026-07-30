@@ -11,8 +11,15 @@ describe('loadConfig', () => {
       nodeEnv: 'development',
       port: 4000,
       identityUrl: 'http://localhost:3001',
+      assetsUrl: 'http://localhost:3003',
       persistedManifestPath: null,
     });
+  });
+
+  it('trims trailing slashes off ASSETS_URL', () => {
+    expect(loadConfig({ ASSETS_URL: 'http://assets.internal///' }).assetsUrl).toBe(
+      'http://assets.internal',
+    );
   });
 
   it('trims trailing slashes off IDENTITY_URL', () => {

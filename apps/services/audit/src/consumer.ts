@@ -25,7 +25,44 @@ export class AuditConsumer {
     return this.rejected;
   }
 
-  async start(): Promise<void> {
+  /**
+   * Begin consuming.
+   *
+   * @param onFatal called when the consumer dies for good — `main.ts` wires it
+   * to the same fatal path a failed startup takes. Defaulted so tests and the
+   * verify CLI can start a consumer without owning process control.
+   */
+  async start(onFatal: (err: unknown) => void = () => undefined): Promise<void> {
+    // A CRASH THAT DOES NOT RESTART MUST KILL THE PROCESS.
+    //
+    // `consumer.run()` resolves once the fetch loop is RUNNING, so every
+    // failure after that point arrives as an event rather than a rejected
+    // promise. kafkajs restarts itself only when the error is RETRIABLE
+    // (kafkajs 2.2.4 consumer/index.js: `shouldRestart = isErrorRetriable &&
+    // restartOnFailure(e)`); for anything else it disconnects, emits CRASH and
+    // returns — leaving this process alive, holding its Postgres socket,
+    // answering a TCP probe, and ingesting nothing. That is precisely the "up
+    // with a dead audit trail" state fatal.ts exists to prevent: PR2 closed it
+    // for startup and left it open for steady state, which is the longer half
+    // of the process's life.
+    this.consumer.on(this.consumer.events.CRASH, ({ payload }) => {
+      const error: unknown = payload.error;
+      log({
+        level: 'error',
+        msg: 'audit_consumer_crash',
+        // Restartable crashes are kafkajs reconnecting; they are noteworthy,
+        // not fatal.
+        restarting: payload.restart,
+        groupId: payload.groupId,
+        // Infrastructure detail only. Ingest failures never carry an event
+        // payload into an error message — `ingest` returns a status instead.
+        error: error instanceof Error ? `${error.name}: ${error.message}` : 'unknown',
+      });
+      if (!payload.restart) {
+        onFatal(error);
+      }
+    });
+
     await this.consumer.connect();
     await this.consumer.subscribe({ topic: TOPICS.auditEvents, fromBeginning: true });
     await this.consumer.run({

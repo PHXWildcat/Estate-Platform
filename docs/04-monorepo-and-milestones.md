@@ -1109,7 +1109,238 @@ elevation, peer approval; also closes the one-operator-two-actions residual)
 isolate service · beneficiary contact-link projection (assets'
 `namedBeneficiaries`) · transactional outbox (standing).
 
+### M8 — The local stack (all five PRs shipped; reviewed)
+
+A flagged deviation: docs/04 had M8 as the AI assistant. The local stack went
+first because nothing in the repo had ever run as a deployed system — M5's
+images were built and verified in CI and never executed; every production
+adapter (`AwsKmsProvider`, `S3ObjectStore`, `ClamdScanner`,
+`KafkaAuditProducer`, `TextractOcr`) was unit-tested against mocked transports
+only; M6 emergency access and M7 settlement intake are deliberately inert in
+production pending the notifications service, whose live adapter (SES) needs
+somewhere to run; and building the AI assistant — the highest
+prompt-injection surface in the product — on a platform that cannot deploy,
+cannot notify, and has never run its production code paths is the wrong
+order. This milestone also TAKES OVER three deliverables the deferred M5
+cloud half had claimed: the ClamAV deployment documents requires in
+production mode, migration jobs, and the audit-hash-chain-over-a-real-broker
+smoke (the M1 open item — retired below). The M5 cloud half shrinks
+accordingly.
+
+**Full runbook and limits: `docs/05-local-stack.md`.** Its "what this does
+not prove" section is normative: KMS grant isolation (docs/03 §5.3) is NOT
+exercised — LocalStack Community enforces no IAM, so the stack's six
+per-service keys model the boundary without proving it — and the entire
+cloud posture (IRSA, VPC, WAF/Shield, mesh mTLS, Kyverno, Aurora behaviour)
+stays untested until the real environment exists.
+
+- **PR1 — adapter seams.** `KMS_MODE=local|aws` (the explicit enum every
+  other adapter already had; production pins 'aws', unchanged in strength);
+  `AWS_ENDPOINT_URL` read and validated explicitly (same name the SDK honours
+  ambiently, so the two resolutions cannot disagree; buys the production
+  https-only guard and S3 `forcePathStyle`, which has no SDK env selector);
+  `TesseractOcr` sidecar adapter, with the production OCR guard renamed to
+  refuse the STUB rather than require Textract. Both OCR selectors exhaustive
+  with `never`, mutation-tested.
+- **PR2 — runtime seams.** `packages/kafka` built at last (seven duplicated
+  producers collapsed; the memoised-rejected-connect poison fixed once;
+  `ensureTopics` added because Redpanda ships auto-create off). The audit
+  worker's fatal path now releases its handles so a failed worker EXITS
+  instead of sitting "up" with a dead trail. The migrator takes its advisory
+  lock before creating `schema_migrations` (co-tenant boot race). The planned
+  nine `/healthz` routes were dropped for TCP probes — no new unauthenticated
+  surface, same signal, k8s-compatible.
+- **PR3 — the stack.** `docker-compose.stack.yml` (all ten apps + clamd +
+  tesseract + LocalStack + Redpanda, volumes on the stateful trio, profiles
+  for an 8 GB Docker VM); `apps/stack` generates `.env.stack` from the
+  credential graph — one secret per EDGE written to callee and every holder,
+  closing the recorded provisioning-drift residual for generated
+  environments — and a preflight doctor that refuses real-looking AWS
+  credentials or a non-local endpoint (env vars outrank `~/.aws/credentials`,
+  so the fake `test` credentials are what make a wrong endpoint fail loudly
+  instead of billing a real account). Bootstrap jobs: six KMS keys + bucket
+  (idempotent init hook; the LocalStack healthcheck waits for the HOOK, not
+  the service), explicit topic creation from the contracts registry,
+  migrations sequenced across the two co-tenant pairs, template seeds
+  (dev-mode by design — the M4 production guard refuses placeholder
+  legalReview, and the exemplars are placeholders; stated in docs/05 rather
+  than worked around). Smoke-proven live: register/login over real HTTP; the
+  audit chain verified across a REAL Redpanda hop (retiring the M1 open
+  item); a DEK minted by a real `kms.GenerateDataKey` against LocalStack; an
+  upload through real clamd INSTREAM + real S3 with ciphertext at rest; raw
+  EICAR refused by the sniff gate.
+- **PR4 — proof and CI (shipped).** `stack.e2e.spec.ts` drives the platform as
+  real processes over real HTTP; `aws-conformance.spec.ts` probes the three
+  behaviours the adapters assume. Blocking `stack.yml` runs both profiles
+  under a determinism contract — no bare sleeps, explicit topic provisioning,
+  `clamdscan --ping` readiness, pinned infra images, `timeout-minutes` — and
+  `images.yml` gained a job running the same spec against the shipped images,
+  so the fast gate proves the code integrates and that one proves the artifact
+  does. ci-guard gained the stack half, and both workflows assert
+  `numPassedTests` from jest's `--json` against a floor, because jest exits 0
+  for a suite that skipped everything.
+
+  **The conformance result changed what this milestone can claim.** LocalStack
+  *does* enforce the KMS EncryptionContext — a `Decrypt` with a foreign
+  `estate:kek`, or none, is refused. So the stack genuinely exercises the
+  cryptographic half of the Plaid-isolation claim: a DEK wrapped for one domain
+  cannot be unwrapped as another even by a caller holding the right key id. The
+  IAM half — *which principal* may call Decrypt at all — remains untested, and
+  docs/05 states that split precisely instead of hedging. S3 returns 412 for
+  `IfNoneMatch:*` and surfaces not-found as `S3ServiceException`, so both the
+  immutability path and the `instanceof`-gated 404 mapping hold.
+
+  Two findings worth recording. The clamd FOUND path could not be reached with
+  EICAR at all — it matches only at file start, and a plaintext-leading file is
+  refused by magic-byte sniffing before any scan, while adding a PNG header
+  stops it being EICAR — so a custom signature plus a valid PNG carrier proves
+  it instead. And the PR1 production TLS guard correctly refused the production
+  profile against LocalStack's http endpoint; that was resolved by giving the
+  stack a real TLS terminator with a CA the services verify, not by relaxing
+  the guard, and the doctor now rejects `NODE_TLS_REJECT_UNAUTHORIZED` as its
+  own class of mistake.
+- **PR5 — thin UI (shipped).** The BFF's first non-identity resolvers, which
+  is where the 2026-07-23 decision's stated end-state becomes real: the BFF
+  **forwards the caller's own bearer** downstream, injects no identity header,
+  and holds no assets credential — so it cannot mint authority it was not
+  handed. Money stays a decimal string through GraphQL. Logout landed end to
+  end (retiring the M1 open item): identity revokes the **presented session
+  only**, and the BFF expires both cookies with the same attributes they were
+  set with, *after* the server confirms — a failed revocation leaves the
+  cookies alone and tells the user, because "signed out" over a live session
+  is the worst outcome. One assets page, plus a sign-out control. Vault UI
+  stays out per the M6 decision (needs the docs/03 TB6 isolated-origin/CSP
+  work).
+
+  **Driving the real web image in a browser found three defects no test could
+  see**, all of the same shape — invisible in development, fatal in
+  production:
+  1. The GraphQL client omitted `persistedQuery.version`, which the BFF's APQ
+     extractor requires. **Every persisted operation would have failed in
+     production**, and dev was green because non-production builds also send
+     the full `query`, so the hash was never consulted.
+  2. The persisted-manifest builder hashed raw CRLF bytes on Windows while
+     ECMAScript normalizes template literals to LF — so every hash in the
+     committed manifest was wrong.
+  3. `turbo.json`'s build task declared no `env`, so Turbo 2's strict env mode
+     stripped `BFF_URL` and the web image baked a rewrite to
+     `localhost:4000` — the container proxied `/graphql` to itself.
+
+  Each is now pinned by a regression test or a declared config. This is the
+  clearest argument for the milestone: the stack's value is not that it runs,
+  it is that running it falsifies things nothing else does.
+
+  Also learned: a valuation is **all-or-nothing** in the ledger
+  (`estValue`/`valuationAsOf`/`valuationSource` together, by `.refine`) —
+  an amount with no date and no provenance is not an auditable claim. The BFF
+  refuses a partial valuation with `INVALID_REQUEST` rather than forwarding one
+  and masking a downstream 400. Web coverage floors were **raised** to absorb
+  the new UI (62/55/58/65 → 70/62/64/73).
+
+**M8 security review (2026-07-29/30).** Structured review of the whole merged M8
+range (`b95bb5f..8bec8af`, PR1–PR5): six parallel discovery passes — the adapter
+mode selectors and their production guards, the generated environment and the
+credential graph's provisioning claims, the CI gates as *gates* (what would a
+green run fail to notice), the runtime seams introduced in PR2, the thin UI's
+session and bearer handling, and every claim the milestone's own documentation
+makes about what it proves — each candidate then adversarially re-verified
+against source by an agent instructed to refute it and to default to refuted
+when uncertain.
+
+**No Zone A/Zone B boundary was weakened, no production fail-fast requirement
+was relaxed to make the stack run, and no credential the graph forbids reached a
+service that must not hold it.** The production TLS refusal was met with real
+TLS; the generator's per-edge minting held up; the doctor, the compose-parity
+fence and the credential-graph fence each caught a real drift *during* the
+milestone. Three defects were confirmed, all in machinery M8 itself introduced,
+and all fixed in this branch. Two of the three contradicted a claim made in the
+same milestone's own commit messages — the recurring M6/M7 pattern.
+
+- **Logout treated identity's 401 as success (high).** The BFF called
+  identity's `SessionGuard`-protected logout route with the *access* token,
+  which lives 15 minutes, and read a 401 as "already logged out" — clearing both
+  cookies while the session and its **30-day refresh token stayed live**. Any
+  tab older than the access TTL therefore produced a browser that looked signed
+  out and a session that was not, which is the exact outcome PR5's own commit
+  message claimed it avoided. Identity gained
+  `POST /v1/auth/logout/refresh` — deliberately *not* behind `SessionGuard`,
+  since a live access token is the thing that is missing — resolving the session
+  by refresh-token hash and revoking it. It always answers 200 so it cannot be
+  used as a session-liveness oracle. The BFF falls through to the refresh
+  credential when the access path returns false, and still **clears no cookie
+  unless something was actually revoked**.
+
+- **The blocking stack gate died before it ever ran (high).** `stack.yml` handed
+  the **host-addressed** env file to `docker compose`, where `localhost` is each
+  bootstrap container's own loopback: every migration failed, and with it the
+  whole job — so the production rehearsal had never executed even once while
+  docs/05 credited it as proven. Two env files are now generated, the host one
+  **derived** from the compose one (`--from`, so both carry the same secrets),
+  and `diagnose` takes `--for compose|host` and refuses a mismatch — mirroring
+  `run-services-cli`'s long-standing refusal of the opposite direction, whose
+  asymmetry was the hole. The bootstrap jobs are now inside
+  `compose-parity.spec.ts` too, which also caught `seed-templates` running
+  without `KAFKA_BROKERS` (the template-publication audit events were silently
+  going to the in-memory producer).
+
+  The same finding noted the `numPassedTests` **floors sat two tests below the
+  real counts** — slack exactly wide enough to `.skip` the clamd FOUND path and
+  the OCR→encrypted-search path and still go green. Both workflows now assert
+  the **exact** passed and pending counts.
+
+- **A dead audit consumer left the process running (medium-high).** PR2 fixed
+  the *startup* fatal path and left steady state open. `consumer.run()` resolves
+  once the fetch loop is running, and kafkajs restarts itself only for
+  *retriable* errors (`shouldRestart = isErrorRetriable && restartOnFailure(e)`,
+  verified in the locked 2.2.4 source); anything else disconnects, emits `CRASH`
+  and returns — leaving a live process holding its Postgres socket, answering
+  the TCP probe, and ingesting nothing. Exactly the "up with a dead audit trail"
+  state `fatal.ts` exists to prevent, in the service whose silence docs/01 §6
+  treats as a paging signal. `AuditConsumer.start()` now takes the fatal
+  handler and routes a non-restartable crash to it; `restartOnFailure` is stated
+  explicitly (it can only veto a restart, never force one).
+
+Also fixed, from the same review:
+
+- **LocalStack loses its keys on restart, and the docs claimed otherwise.**
+  *Measured*: with the volume mounted, a plain `docker restart` leaves 0 of 6
+  KMS aliases, an empty bucket, and a previously wrapped DEK failing `Decrypt`
+  with `NotFoundException`. The Postgres volumes persist, so that restart
+  strands every DEK and dangles every `object_key` with no error at the time.
+  Worse, `/tmp/stack-init-complete` **survives** a restart, so the container
+  reported healthy while keyless. The init hook now clears the marker first and
+  refuses to re-provision when its epoch file exists with no keys behind it —
+  re-minting under the same aliases would produce a stack that boots cleanly and
+  cannot read its own data. The false CLAUDE.md claim is corrected and docs/05
+  states the measurement.
+- **The doctor's endpoint check was a prefix match**, so
+  `https://localhost:x@kms.us-east-1.amazonaws.com/` passed the one guard
+  standing between a misconfigured stack and real AWS. It parses the URL now.
+  Related and **not** closed in production: the SDK resolves
+  `AWS_ENDPOINT_URL_KMS`/`_S3`/`_TEXTRACT` *before* `AWS_ENDPOINT_URL`, and each
+  service's https-in-production guard only reads the plain name — the stack's
+  preflight refuses those variables outright, production does not, and six
+  config comments that overclaimed "can never disagree" now say so.
+- **The supervisor's env scrub missed the TLS escape hatches.**
+  `NODE_TLS_REJECT_UNAUTHORIZED` and `NODE_OPTIONS` reach a child from the
+  developer's shell without appearing in the file the doctor read; both are
+  scrubbed now, alongside `NODE_EXTRA_CA_CERTS`.
+- **`--profile plaid` started a doomed container in the production profile.**
+  The compose profile name is generated (`PLAID_PROFILE`), so production leaves
+  plaid out entirely — matching what `plannedServices` already did for host
+  mode. Verified against real `docker compose config` in both modes.
+- Out of scope but observed and fixed: `vault-crypto`'s exhaustive
+  single-character-error sweep timed out under `turbo test`'s 20-way
+  parallelism. Given a 30s budget rather than sampled, since the exhaustiveness
+  is the point.
+
+Left open deliberately: nothing verifies which URL a credential is presented to,
+cross-service provisioning drift for **hand**-provisioned environments, and the
+production per-service-endpoint residual above — all three close with the mesh
+or with deployment configuration management, not with code here.
+
 ### Later milestones (rough order, one per bounded context)
-M8 AI assistant (privacy proxy) · then referral, notifications hardening, search.
-Settlement came late deliberately: highest-risk domains land on mature
-primitives.
+AI assistant (privacy proxy) · then referral, notifications (whose SES
+adapter the local stack now gives a place to run), search · the M5 cloud
+half, reduced by what M8 took over. Settlement came late deliberately:
+highest-risk domains land on mature primitives.

@@ -4,6 +4,13 @@ import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { Response as SupertestResponse } from 'supertest';
 import { createBffApp } from '../src/app';
+import type {
+  Asset,
+  AssetsClient,
+  CreateAssetInput,
+  CreateResult,
+  NetWorth,
+} from '../src/assets-client';
 import type { BffConfig } from '../src/config';
 import type {
   IdentityClient,
@@ -18,6 +25,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     nodeEnv: 'test',
     port: 0,
     identityUrl: 'http://identity.test',
+    assetsUrl: 'http://assets.test',
     persistedManifestPath: null,
     ...overrides,
   };
@@ -94,11 +102,74 @@ export class FakeIdentityClient implements IdentityClient {
     this.exportDemoCalls.push(accessToken);
     return Promise.resolve();
   }
+
+  logoutCalls: string[] = [];
+  logoutError: Error | null = null;
+  /** false models identity's 401: the ACCESS token expired, session still live. */
+  logoutResult = true;
+  logoutByRefreshCalls: string[] = [];
+  logoutByRefreshError: Error | null = null;
+
+  logout(accessToken: string): Promise<boolean> {
+    this.logoutCalls.push(accessToken);
+    return this.logoutError ? Promise.reject(this.logoutError) : Promise.resolve(this.logoutResult);
+  }
+
+  logoutByRefresh(refreshToken: string): Promise<void> {
+    this.logoutByRefreshCalls.push(refreshToken);
+    return this.logoutByRefreshError
+      ? Promise.reject(this.logoutByRefreshError)
+      : Promise.resolve();
+  }
+}
+
+export const ASSET: Asset = {
+  assetId: 'a2c2e6a4-0000-4000-8000-00000000000a',
+  category: 'cash',
+  title: 'Checking account',
+  estValue: '1200.50',
+  valuationAsOf: '2026-07-01',
+  ownershipPct: 100,
+  inTrust: false,
+  version: '3',
+};
+
+/** Configurable in-memory fake; records every call and the token it saw. */
+export class FakeAssetsClient implements AssetsClient {
+  listCalls: string[] = [];
+  netWorthCalls: string[] = [];
+  createCalls: Array<{ accessToken: string; input: CreateAssetInput }> = [];
+
+  listResult: Asset[] = [ASSET];
+  netWorthResult: NetWorth = {
+    totalValue: '1200.50',
+    assetCount: 1,
+    valuedAssetCount: 1,
+    inTrustValue: '0',
+  };
+  createResult: CreateResult = { assetId: ASSET.assetId, version: '1' };
+  listError: Error | null = null;
+
+  list(accessToken: string): Promise<Asset[]> {
+    this.listCalls.push(accessToken);
+    return this.listError ? Promise.reject(this.listError) : Promise.resolve(this.listResult);
+  }
+
+  netWorth(accessToken: string): Promise<NetWorth> {
+    this.netWorthCalls.push(accessToken);
+    return Promise.resolve(this.netWorthResult);
+  }
+
+  create(accessToken: string, input: CreateAssetInput): Promise<CreateResult> {
+    this.createCalls.push({ accessToken, input });
+    return Promise.resolve(this.createResult);
+  }
 }
 
 export interface TestAppOptions {
   config?: BffConfig;
   identity?: IdentityClient;
+  assets?: AssetsClient;
   manifest?: PersistedOperationsManifest;
 }
 
@@ -106,6 +177,7 @@ export async function makeApp(options: TestAppOptions = {}): Promise<INestApplic
   const app = await createBffApp({
     config: options.config ?? testConfig(),
     identity: options.identity ?? new FakeIdentityClient(),
+    assets: options.assets ?? new FakeAssetsClient(),
     persistedOperations: options.manifest ?? new Map(),
     logger: false,
   });

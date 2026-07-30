@@ -25,7 +25,7 @@ import { PgSettlementDekRepository } from './dek.repository';
 import { DistributionsRepo } from './distributions.repo';
 import { StagesRepo } from './stages.repo';
 import { TasksRepo } from './tasks.repo';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { SettlementAuthz } from './authz.service';
 import { CasesRepo } from './cases.repo';
 import { loadConfig, type SettlementConfig } from './config';
@@ -70,8 +70,9 @@ function notifierFor(): NotificationPort {
  */
 function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
   if (config.kms.mode === 'aws') {
-    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
-      keyId: config.kms.keyId,
+    const { region, endpoint, keyId } = config.kms;
+    return new AwsKmsProvider(new KMSClient({ region, ...(endpoint ? { endpoint } : {}) }), {
+      keyId,
     });
   }
   return new LocalKmsProvider(config.kms.masterKey);
@@ -100,7 +101,10 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: SettlementConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-settlement',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

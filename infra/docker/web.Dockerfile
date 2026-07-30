@@ -27,12 +27,20 @@ RUN pnpm dlx turbo@2 prune "${PKG}" --docker
 
 FROM base AS builder
 ARG PKG
+# WHERE THE BFF LIVES IS A BUILD-TIME FACT, not a runtime one. next.config.ts
+# reads BFF_URL when the config is evaluated, and `next build` serialises the
+# resulting rewrite into the routes manifest; the standalone server.js boots
+# from that manifest and never re-evaluates the config. Setting BFF_URL in the
+# running container therefore has NO effect — the image would keep proxying
+# /graphql to localhost:4000, i.e. to itself. It has to be an ARG.
+ARG BFF_URL=http://localhost:4000
 # Telemetry is an outbound call from a build machine — off by default.
 # NEXT_STANDALONE opts into the traced server bundle; it is gated behind this
 # flag because emitting it needs symlinks, which Windows workstations refuse
 # (see apps/web/next.config.ts). Linux builders have no such problem.
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    NEXT_STANDALONE=1
+    NEXT_STANDALONE=1 \
+    BFF_URL=${BFF_URL}
 COPY --from=pruner /app/out/json/ ./
 RUN pnpm install --frozen-lockfile
 COPY --from=pruner /app/out/full/ ./

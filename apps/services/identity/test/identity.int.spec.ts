@@ -16,7 +16,7 @@ import { DekConflictError, type FieldCrypto } from '@estate/crypto';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, FIELD_CRYPTO, PG_POOL_CONFIG } from '../src/di-tokens';
 import { currentTotpCode } from '../src/totp';
@@ -250,6 +250,87 @@ describeIfPg('identity service end to end', () => {
       .post('/v1/auth/export-demo')
       .set('Authorization', `Bearer ${rotated.accessToken}`);
     expect(accessAfterRevoke.status).toBe(401);
+  });
+
+  it('logout revokes exactly the presented session, and only that one', async () => {
+    // A second device stays logged in — logout is per-session by design; the
+    // all-sessions verb stays reserved for theft response and settlement.
+    const emailB = `logout-${randomUUID()}@example.com`;
+    await request(server).post('/v1/auth/register').send({ email: emailB, password: PASSWORD });
+    const first = (
+      await request(server).post('/v1/auth/login').send({ email: emailB, password: PASSWORD })
+    ).body as TokensBody;
+    const second = (
+      await request(server).post('/v1/auth/login').send({ email: emailB, password: PASSWORD })
+    ).body as TokensBody;
+
+    const out = await request(server)
+      .post('/v1/auth/logout')
+      .set('Authorization', `Bearer ${first.accessToken}`);
+    expect(out.status).toBe(200);
+
+    // The logged-out session is dead in BOTH halves: access and refresh.
+    const staleAccess = await request(server)
+      .get('/v1/auth/session')
+      .set('Authorization', `Bearer ${first.accessToken}`);
+    expect(staleAccess.status).toBe(401);
+    const staleRefresh = await request(server)
+      .post('/v1/auth/refresh')
+      .send({ refreshToken: first.refreshToken });
+    expect(staleRefresh.status).toBe(401);
+
+    // The other device is untouched.
+    const alive = await request(server)
+      .get('/v1/auth/session')
+      .set('Authorization', `Bearer ${second.accessToken}`);
+    expect(alive.status).toBe(200);
+
+    const { rows } = await admin.query(
+      `SELECT revoke_reason FROM ${schema}.sessions WHERE id = $1`,
+      [first.sessionId],
+    );
+    expect((rows[0] as { revoke_reason: string }).revoke_reason).toBe('user_logout');
+
+    // THE M8-REVIEW GAP: an expired ACCESS token must not mean an unrevokable
+    // session. The guarded route needs a live access token (15 min) while the
+    // session and refresh token live 30 days, so logout has a refresh path.
+    const third = (
+      await request(server).post('/v1/auth/login').send({ email: emailB, password: PASSWORD })
+    ).body as TokensBody;
+    const byRefresh = await request(server)
+      .post('/v1/auth/logout/refresh')
+      .send({ refreshToken: third.refreshToken });
+    expect(byRefresh.status).toBe(200);
+    // Both halves of that session are now dead.
+    expect(
+      (
+        await request(server)
+          .get('/v1/auth/session')
+          .set('Authorization', `Bearer ${third.accessToken}`)
+      ).status,
+    ).toBe(401);
+    expect(
+      (await request(server).post('/v1/auth/refresh').send({ refreshToken: third.refreshToken }))
+        .status,
+    ).toBe(401);
+    const refreshRevoked = await admin.query(
+      `SELECT revoke_reason FROM ${schema}.sessions WHERE id = $1`,
+      [third.sessionId],
+    );
+    expect((refreshRevoked.rows[0] as { revoke_reason: string }).revoke_reason).toBe('user_logout');
+
+    // An unresolvable refresh token answers 200 rather than becoming an oracle
+    // for whether a captured token is still live.
+    expect(
+      (
+        await request(server)
+          .post('/v1/auth/logout/refresh')
+          .send({ refreshToken: third.refreshToken })
+      ).status,
+    ).toBe(200);
+    // Logout without a valid token is a 401, not a crash.
+    const anonymous = await request(server).post('/v1/auth/logout');
+    expect(anonymous.status).toBe(401);
   });
 
   it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {

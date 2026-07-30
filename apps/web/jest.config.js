@@ -13,6 +13,7 @@ module.exports = createJestConfig({
   // backend packages — this counts the untested pages honestly.
   collectCoverageFrom: ['src/**/*.{ts,tsx}', '!src/**/*.d.ts'],
   // Coverage floor: a few points below current full-source coverage, ratcheting
-  // toward the 90% FE target as the pages get component tests.
-  coverageThreshold: { global: { statements: 62, branches: 55, functions: 58, lines: 65 } },
+  // toward the 90% FE target as the pages get component tests. Raised with M8
+  // PR5, whose AssetsPanel/SignOutButton tests lifted the real number.
+  coverageThreshold: { global: { statements: 70, branches: 62, functions: 64, lines: 73 } },
 });

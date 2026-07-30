@@ -19,6 +19,7 @@ const PROD_BASE = {
   // service presents to identity's account-lock API.
   SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
   IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
+  KMS_MODE: 'aws',
   AWS_KMS_KEY_ID: 'alias/estate-settlement-kek',
   AWS_REGION: 'us-east-1',
 };
@@ -61,8 +62,41 @@ describe('settlement config', () => {
     },
   );
 
+  it('production refuses the local KMS provider and a plaintext AWS endpoint', () => {
+    expect(() => loadConfig({ ...PROD_BASE, KMS_MODE: 'local' })).toThrow(/KMS_MODE/);
+    expect(() => loadConfig({ ...PROD_BASE, AWS_ENDPOINT_URL: 'http://localstack:4566' })).toThrow(
+      /AWS_ENDPOINT_URL/,
+    );
+  });
+
+  it('the AWS provider is selectable outside production, and never the default', () => {
+    // Amounts are ciphertext under settlement's OWN kek; the local stack must
+    // be able to exercise that against an emulator without production mode.
+    expect(loadConfig(DEV_BASE).kms.mode).toBe('local');
+    expect(
+      loadConfig({
+        ...DEV_BASE,
+        KMS_MODE: 'aws',
+        AWS_KMS_KEY_ID: 'alias/estate-settlement-kek',
+        AWS_REGION: 'us-east-1',
+        AWS_ENDPOINT_URL: 'http://localstack:4566',
+      }).kms,
+    ).toEqual({
+      mode: 'aws',
+      keyId: 'alias/estate-settlement-kek',
+      region: 'us-east-1',
+      endpoint: 'http://localstack:4566',
+    });
+  });
+
   it('loads a fully specified production config', () => {
     const config = loadConfig(PROD_BASE);
+    expect(config.kms).toEqual({
+      mode: 'aws',
+      keyId: 'alias/estate-settlement-kek',
+      region: 'us-east-1',
+      endpoint: null,
+    });
     expect(config.kafkaBrokers).toEqual(['k1:9092', 'k2:9092']);
     expect(config.internalApiToken).toBe('s'.repeat(48));
     expect(config.identityInternalToken).toBe('i'.repeat(48));

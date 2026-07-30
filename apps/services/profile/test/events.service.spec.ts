@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { TOPICS } from '@estate/contracts';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { EventsService } from '../src/events.service';
 
 const ACTOR = randomUUID();

@@ -42,7 +42,18 @@ export const PG_CLIENT = 'PG_CLIENT';
       provide: AuditConsumer,
       useFactory: (config: ServiceConfig, ingestor: AuditIngestor): AuditConsumer => {
         const kafka = new Kafka({ clientId: 'audit-service', brokers: config.kafkaBrokers });
-        return new AuditConsumer(kafka.consumer({ groupId: 'audit-service' }), ingestor);
+        return new AuditConsumer(
+          kafka.consumer({
+            groupId: 'audit-service',
+            // Explicit, though it matches kafkajs's default: a RETRIABLE crash
+            // (a broker blip) should reconnect, because the events are still on
+            // the topic and a container restart buys nothing. This callback can
+            // only VETO a restart, never force one — a non-retriable crash is
+            // fatal regardless, which is why consumer.ts handles CRASH itself.
+            retry: { restartOnFailure: () => Promise.resolve(true) },
+          }),
+          ingestor,
+        );
       },
       inject: [APP_CONFIG, AuditIngestor],
     },

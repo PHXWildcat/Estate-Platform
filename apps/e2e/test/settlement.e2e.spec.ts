@@ -39,7 +39,7 @@ import {
   NOTIFIER as SETTLEMENT_NOTIFIER,
   PG_POOL_CONFIG as SETTLEMENT_PG_POOL_CONFIG,
 } from '@estate/service-settlement/dist/di-tokens';
-import { InMemoryAuditProducer } from '@estate/service-settlement/dist/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import {
   HttpIdentityLock,
   type FetchLike as LockFetchLike,

@@ -13,3 +13,6 @@ coverage/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Generated AWS-endpoint TLS material for the local stack (production profile).
+.stack-certs/

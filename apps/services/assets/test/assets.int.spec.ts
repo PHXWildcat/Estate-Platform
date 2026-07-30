@@ -25,7 +25,7 @@ import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import type { AssetDto, CommandResult, NetWorthDto } from '../src/assets.service';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 import { RebuildService } from '../src/rebuild.service';
 

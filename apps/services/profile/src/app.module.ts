@@ -12,7 +12,7 @@ import {
 import { AwsKmsProvider } from '@estate/kms-aws';
 import { CallerGuard, HttpSessionVerifier, SESSION_VERIFIER } from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { ProfileAuthz } from './authz.service';
 import { loadConfig, type ProfileConfig } from './config';
 import { ContactsController } from './contacts.controller';
@@ -49,8 +49,9 @@ import { RolesService } from './roles.service';
  */
 function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
   if (config.kms.mode === 'aws') {
-    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
-      keyId: config.kms.keyId,
+    const { region, endpoint, keyId } = config.kms;
+    return new AwsKmsProvider(new KMSClient({ region, ...(endpoint ? { endpoint } : {}) }), {
+      keyId,
     });
   }
   return new LocalKmsProvider(config.kms.masterKey);
@@ -76,7 +77,10 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: ProfileConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-profile',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

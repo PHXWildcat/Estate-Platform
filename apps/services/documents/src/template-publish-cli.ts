@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
 import { Client, type QueryResultRow } from 'pg';
 import { AuditEmitter } from '@estate/audit-emitter';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import type { Queryable } from './db';
 import { LocalFsObjectStore, type ObjectStore } from './object-store';
-import { S3ObjectStore } from './s3-object-store';
+import { S3ObjectStore, s3ClientConfig } from './s3-object-store';
 import { templateObjectKey } from './template-engine';
 import { parseTemplateSource, type TemplateSource } from './template-model';
 import { activateTemplate, findTemplateByKey, insertTemplate } from './templates.repo';
@@ -64,7 +64,13 @@ function objectStoreFromEnv(env: NodeJS.ProcessEnv): ObjectStore {
     if (!bucket || !region) {
       throw new Error('OBJECT_STORE_BUCKET and AWS_REGION are required for s3 mode');
     }
-    return new S3ObjectStore(new S3Client({ region }), bucket);
+    // Same addressing rules as the service — templates and content share one
+    // bucket, so a CLI that reached it differently would publish blobs the
+    // service could not read back.
+    return new S3ObjectStore(
+      new S3Client(s3ClientConfig(region, env['AWS_ENDPOINT_URL'] ?? null)),
+      bucket,
+    );
   }
   return new LocalFsObjectStore(env['OBJECT_STORE_DIR'] ?? '.object-store');
 }
@@ -179,7 +185,9 @@ async function main(): Promise<void> {
     .map((b) => b.trim())
     .filter((b) => b.length > 0);
   const producer =
-    brokers.length > 0 ? new KafkaAuditProducer(brokers) : new InMemoryAuditProducer();
+    brokers.length > 0
+      ? new KafkaAuditProducer({ clientId: 'documents-template-publish-cli', brokers })
+      : new InMemoryAuditProducer();
   const emitter = new AuditEmitter(producer, () => new Date());
   const store = objectStoreFromEnv(process.env);
   const client = new Client({ connectionString: databaseUrl });

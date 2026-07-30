@@ -124,6 +124,38 @@ export class AuthController {
     };
   }
 
+  /** Logout: revokes the PRESENTED session only (other devices stay live). */
+  @Post('logout')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async logout(@Req() request: AuthedRequest): Promise<{ status: string }> {
+    const auth = requireAuth(request);
+    await this.auth.logout(auth.userId, auth.sessionId);
+    return { status: 'ok' };
+  }
+
+  /**
+   * Logout by REFRESH token — deliberately NOT behind SessionGuard.
+   *
+   * SessionGuard requires a live ACCESS token (15 min), but a session and its
+   * refresh token live 30 days, so the guarded route above cannot revoke the
+   * ordinary case of a tab left open. Presenting the refresh token IS the
+   * authorization here: it is the same credential `POST /refresh` accepts to
+   * mint a new access token, and this route only ever DESTROYS the session it
+   * resolves — the strictly safer of the two things that credential can do.
+   *
+   * Returns 200 whether or not a session was found: an unresolvable refresh
+   * token is already logged out, and distinguishing the two would turn this
+   * into an oracle for whether a captured token is still live.
+   */
+  @Post('logout/refresh')
+  @HttpCode(200)
+  async logoutByRefresh(@Body() body: unknown): Promise<{ status: string }> {
+    const { refreshToken } = parseBody(RefreshSchema, body);
+    await this.auth.logoutByRefreshToken(refreshToken);
+    return { status: 'ok' };
+  }
+
   @Post('totp/enroll')
   @HttpCode(201)
   @UseGuards(SessionGuard)

@@ -26,7 +26,7 @@ import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
 import { AssetsViewRepo } from './assets-view.repo';
 import { AssetsAuthz } from './authz.service';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { BeneficiariesController } from './beneficiaries.controller';
 import { BeneficiariesRepo } from './beneficiaries.repo';
 import { loadConfig, type AssetsConfig } from './config';
@@ -55,8 +55,9 @@ import { RebuildService } from './rebuild.service';
  */
 function kmsProviderFor(config: AssetsConfig): KmsKeyProvider {
   if (config.kms.mode === 'aws') {
-    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
-      keyId: config.kms.keyId,
+    const { region, endpoint, keyId } = config.kms;
+    return new AwsKmsProvider(new KMSClient({ region, ...(endpoint ? { endpoint } : {}) }), {
+      keyId,
     });
   }
   return new LocalKmsProvider(config.kms.masterKey);
@@ -82,7 +83,10 @@ function kmsProviderFor(config: AssetsConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: AssetsConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-assets',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

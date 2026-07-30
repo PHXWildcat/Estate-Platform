@@ -40,6 +40,14 @@ export interface IdentityClient {
   totpVerify(accessToken: string, code: string): Promise<void>;
   stepUp(accessToken: string, code: string): Promise<void>;
   exportDemo(accessToken: string): Promise<void>;
+  /**
+   * Revokes exactly the presented session. Resolves false when identity
+   * refuses the ACCESS token (401) — which means only that the 15-minute
+   * token expired, NOT that the session is gone; use `logoutByRefresh`.
+   */
+  logout(accessToken: string): Promise<boolean>;
+  /** Revokes the session behind a refresh token (the 30-day credential). */
+  logoutByRefresh(refreshToken: string): Promise<void>;
 }
 
 export type BffErrorCode =
@@ -179,6 +187,32 @@ export class FetchIdentityClient implements IdentityClient {
 
   async exportDemo(accessToken: string): Promise<void> {
     const res = await this.request({ method: 'POST', path: '/v1/auth/export-demo', accessToken });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  async logout(accessToken: string): Promise<boolean> {
+    const res = await this.request({ method: 'POST', path: '/v1/auth/logout', accessToken });
+    if (res.status === 401) {
+      // The ACCESS token is dead. That is NOT "logged out": the session and
+      // its 30-day refresh token are still live, and treating this as success
+      // is the M8-review defect — it revoked nothing while telling the user
+      // they were signed out. The caller must fall back to the refresh path.
+      return false;
+    }
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return true;
+  }
+
+  async logoutByRefresh(refreshToken: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/logout/refresh',
+      body: { refreshToken },
+    });
     if (!res.ok) {
       throw await this.mapError(res);
     }

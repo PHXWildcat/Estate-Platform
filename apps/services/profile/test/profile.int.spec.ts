@@ -18,7 +18,7 @@ import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@es
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 

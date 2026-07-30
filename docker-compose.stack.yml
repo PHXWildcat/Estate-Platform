@@ -1,0 +1,651 @@
+# THE LOCAL STACK — the whole platform on one machine, at zero cost, with every
+# external dependency backed by a real local implementation.
+#
+#   pnpm stack:env      generate .env.stack (never committed)
+#   pnpm stack:doctor    preflight it
+#   pnpm stack:up        bring it up
+#
+# Interpolation comes from .env.stack via `--env-file`, which is why every
+# variable below is `${SERVICE_THING}` while the container receives `THING`:
+# one flat generated file, mapped explicitly onto each service's own names. The
+# mapping is verbose on purpose — it is the one place a service could be handed
+# another service's key, so it should be readable rather than clever.
+#
+# WHAT IS REAL HERE: LocalStack KMS (six separate per-service keys) and S3,
+# Redpanda, ClamAV, Tesseract, and genuine cross-service HTTP. What is NOT real
+# is the IAM that would make those six keys an isolation boundary rather than a
+# model of one — see docs/04 and the stack README before reading a green stack
+# as "ready to deploy".
+name: estate-stack
+
+x-pg: &pg
+  image: postgres:16-alpine
+  environment: &pg-env
+    POSTGRES_USER: estate
+    POSTGRES_PASSWORD: estate_dev # dev only; real credentials live in Secrets Manager
+  healthcheck:
+    test: ['CMD-SHELL', 'pg_isready -U estate']
+    interval: 5s
+    timeout: 5s
+    retries: 20
+
+# The runtime images are distroless: no shell, so no CMD-SHELL probe and no
+# curl. The entrypoint IS node, so the probe is a node one-liner opening a TCP
+# connection to the port the container was told to listen on.
+#
+# A TCP probe rather than an HTTP /healthz: every route in every service is
+# guarded, so an HTTP probe would have to be a new UNAUTHENTICATED route on
+# nine hardened services to report anything but 401 — real added surface for
+# nothing the socket check lacks. Kubernetes `tcpSocket` probes work the same
+# way, so this does not paint M9 into a corner.
+x-tcp-healthcheck: &tcp-healthcheck
+  test:
+    [
+      'CMD',
+      '/nodejs/bin/node',
+      '-e',
+      "require('node:net').connect(Number(process.env.PORT),'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))",
+    ]
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 20s
+
+x-node-build: &node-build
+  context: .
+  dockerfile: infra/docker/node-service.Dockerfile
+
+# Shared by every one-shot job: run once, never restarted.
+#
+# In BOTH profiles, because compose does not activate a profile to satisfy a
+# `depends_on`: with the jobs in 'bootstrap' alone, `--profile services` was
+# rejected outright ("documents depends on undefined service seed-templates").
+# Listing both means `--profile services` pulls its own prerequisites, while
+# `--profile bootstrap` alone still prepares the databases without starting
+# anything long-running.
+x-job: &job
+  restart: 'no'
+  profiles: ['bootstrap', 'services']
+
+services:
+  # ------------------------------------------------------------------ data plane
+  # Six SEPARATE containers, one per cluster (docs/02). Deliberately not one
+  # server with six databases: no code may ever assume clusters are co-located.
+  pg-auth:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: auth
+    ports: ['5433:5432']
+    volumes: ['pg-auth-data:/var/lib/postgresql/data']
+
+  pg-core:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: core
+    ports: ['5434:5432']
+    volumes: ['pg-core-data:/var/lib/postgresql/data']
+
+  pg-financial:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: financial
+    ports: ['5435:5432']
+    volumes: ['pg-financial-data:/var/lib/postgresql/data']
+
+  pg-documents:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: documents
+    ports: ['5436:5432']
+    volumes: ['pg-documents-data:/var/lib/postgresql/data']
+
+  pg-vault:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: vault
+    ports: ['5437:5432']
+    volumes: ['pg-vault-data:/var/lib/postgresql/data']
+
+  pg-audit:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: audit
+    ports: ['5438:5432']
+    volumes: ['pg-audit-data:/var/lib/postgresql/data']
+
+  # ------------------------------------------------------------------- the bus
+  redpanda:
+    image: redpandadata/redpanda:v24.1.7
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports: ['9092:9092']
+    # A VOLUME, unlike docker-compose.dev.yml. Without one, `down` wipes the
+    # broker while the Postgres volumes survive, so the audit chain's producers
+    # and its consumer disagree about what was ever sent.
+    volumes: ['redpanda-data:/var/lib/redpanda/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'rpk cluster health --exit-when-healthy || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ------------------------------------------------------------ AWS, locally
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: kms,s3
+      AWS_DEFAULT_REGION: ${AWS_REGION}
+      STACK_OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET}
+      # LocalStack persistence is a Pro feature, so the volume holds the
+      # container's state directory rather than guaranteeing durability. The
+      # init hook is idempotent and re-runs on every start, which is what
+      # actually keeps the keys and bucket present.
+      DEBUG: '0'
+    ports: ['4566:4566']
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./infra/localstack/init:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # Waits for the INIT HOOK, not just for LocalStack. LocalStack reports
+      # healthy as soon as its services answer, which is before the keys and
+      # bucket exist — a service that waited on that alone would race the
+      # provisioner and fail its first encrypt.
+      test: ['CMD', 'test', '-f', '/tmp/stack-init-complete']
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  # TLS in front of LocalStack. Production config REFUSES a plaintext
+  # AWS_ENDPOINT_URL (wrapped DEKs must not cross the wire in the clear), and
+  # LocalStack speaks http — so the production profile reaches it through here,
+  # over a generated cert the services genuinely verify. The alternative was
+  # weakening the guard this milestone exists to rehearse.
+  aws-tls:
+    build:
+      context: .
+      dockerfile: infra/docker/aws-tls.Dockerfile
+    ports: ['8443:443']
+    volumes:
+      - ./.stack-certs:/certs
+    healthcheck:
+      # Waits for the CERT, not just nginx: a service that starts before the CA
+      # file exists fails its first KMS call on an unknown issuer.
+      test: ['CMD-SHELL', 'test -f /certs/ready && nc -z 127.0.0.1 443']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      localstack: { condition: service_healthy }
+
+  # ---------------------------------------------------------- scanning and OCR
+  clamav:
+    image: clamav/clamav:1.4
+    environment:
+      # Freshclam on every boot would make cold starts minutes long and the
+      # first uploads fail; the image ships a signature database and the volume
+      # keeps it between runs. This is a local stack, not a malware appliance.
+      FRESHCLAM_CHECKS: '1'
+    # Published so host-mode runs (services from dist on the host) reach it.
+    ports: ['3310:3310']
+    volumes:
+      - clamav-data:/var/lib/clamav
+      # One custom signature for the stack test's FOUND path — see the README
+      # there for why EICAR structurally cannot exercise this gate. Staged
+      # OUTSIDE the database dir and copied in by the entrypoint override:
+      # the image's init chowns everything under /var/lib/clamav and dies on a
+      # read-only bind mount placed there directly.
+      - ./infra/clamav/stack-test.ndb:/stack-signatures/stack-test.ndb:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'cp /stack-signatures/stack-test.ndb /var/lib/clamav/stack-test.ndb && exec /init'
+    healthcheck:
+      # clamd accepts connections well before it has finished loading
+      # signatures, and the documents service's scan gate is FAIL-CLOSED: every
+      # upload is rejected until the daemon truly answers. PING is the only
+      # probe that distinguishes "listening" from "ready".
+      test: ['CMD-SHELL', 'clamdscan --ping 1 || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+
+  tesseract:
+    build:
+      context: .
+      dockerfile: infra/docker/tesseract.Dockerfile
+    # Published so host-mode runs (services from dist on the host) reach it.
+    ports: ['8884:8884']
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O- http://127.0.0.1:8884/healthz || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # ------------------------------------------------------------ bootstrap jobs
+  provision-topics:
+    <<: *job
+    build:
+      context: .
+      dockerfile: infra/docker/node-service.Dockerfile
+      args: { PKG: '@estate/stack' }
+    command: ['dist/provision-topics-cli.js']
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    depends_on:
+      redpanda: { condition: service_healthy }
+
+  migrate-identity:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-identity' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${IDENTITY_DATABASE_URL}' }
+    depends_on:
+      pg-auth: { condition: service_healthy }
+
+  migrate-profile:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-profile' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${PROFILE_DATABASE_URL}' }
+    depends_on:
+      pg-core: { condition: service_healthy }
+
+  # Settlement co-tenants the core cluster with profile AND queries profile's
+  # `contacts`/`role_assignments` unqualified, so profile's schema must exist
+  # first. Sequencing the pair also keeps two migrators off one fresh cluster —
+  # belt to the advisory-lock ordering fix in @estate/db.
+  migrate-settlement:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-settlement' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${SETTLEMENT_DATABASE_URL}' }
+    depends_on:
+      migrate-profile: { condition: service_completed_successfully }
+
+  migrate-assets:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-assets' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${ASSETS_DATABASE_URL}' }
+    depends_on:
+      pg-financial: { condition: service_healthy }
+
+  # The other co-tenant pair: plaid shares the financial cluster with assets.
+  migrate-plaid:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-plaid' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${PLAID_DATABASE_URL}' }
+    depends_on:
+      migrate-assets: { condition: service_completed_successfully }
+
+  migrate-documents:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-documents' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${DOCUMENTS_DATABASE_URL}' }
+    depends_on:
+      pg-documents: { condition: service_healthy }
+
+  migrate-vault:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-vault' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${VAULT_DATABASE_URL}' }
+    depends_on:
+      pg-vault: { condition: service_healthy }
+
+  migrate-audit:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-audit' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${AUDIT_DATABASE_URL}' }
+    depends_on:
+      pg-audit: { condition: service_healthy }
+
+  # Publishes the three exemplar templates so document generation has an active
+  # matrix. RUNS AS development EVEN IN THE PRODUCTION PROFILE: the M4 review
+  # made the publish CLI refuse placeholder-`legalReview` sources under
+  # NODE_ENV=production, and these seeds are placeholders by design. That guard
+  # is not being weakened — it is being respected, by seeding through the path
+  # it permits. The consequence is stated rather than hidden: in the production
+  # profile the active templates are attorney-UNREVIEWED exemplars, so document
+  # generation working there is not evidence the legal sign-off gate holds.
+  seed-templates:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-documents' } }
+    command: ['dist/template-publish-cli.js']
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DOCUMENTS_DATABASE_URL}
+      OBJECT_STORE_MODE: ${DOCUMENTS_OBJECT_STORE_MODE}
+      OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      # Without brokers the CLI selects the in-memory audit producer, so
+      # template publication and activation — the legal-sign-off gate's own
+      # audit trail — would never reach the chain the stack test verifies.
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    volumes:
+      - ./.stack-certs:/certs:ro
+    depends_on:
+      migrate-documents: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+      provision-topics: { condition: service_completed_successfully }
+
+  # ------------------------------------------------------------------ services
+  identity:
+    build: { <<: *node-build, args: { PKG: '@estate/service-identity' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3001:3001']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3001'
+      DATABASE_URL: ${IDENTITY_DATABASE_URL}
+      KMS_MODE: ${IDENTITY_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${IDENTITY_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${IDENTITY_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      EMAIL_INDEX_KEY_HEX: ${IDENTITY_EMAIL_INDEX_KEY_HEX}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      RP_ID: ${RP_ID}
+      RP_ORIGIN: ${RP_ORIGIN}
+      RP_NAME: ${RP_NAME}
+      # The ONLY lock-capable credential in the product. Held by settlement
+      # alone (packages/auth-guard/src/credential-graph.ts).
+      IDENTITY_INTERNAL_TOKEN: ${IDENTITY_IDENTITY_INTERNAL_TOKEN}
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-identity: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  profile:
+    build: { <<: *node-build, args: { PKG: '@estate/service-profile' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3002:3002']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3002'
+      DATABASE_URL: ${PROFILE_DATABASE_URL}
+      KMS_MODE: ${PROFILE_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${PROFILE_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${PROFILE_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      EMAIL_INDEX_KEY_HEX: ${PROFILE_EMAIL_INDEX_KEY_HEX}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-profile: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  assets:
+    build: { <<: *node-build, args: { PKG: '@estate/service-assets' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3003:3003']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3003'
+      DATABASE_URL: ${ASSETS_DATABASE_URL}
+      KMS_MODE: ${ASSETS_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${ASSETS_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${ASSETS_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+      SETTLEMENT_URL: http://settlement:3007
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-assets: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  # Plaid has its OWN profile: production requires PLAID_MODE=live with real
+  # credentials that do not exist, so it is excluded from the production
+  # rehearsal rather than fed fake ones. A container that boots on invented
+  # credentials and fails every outbound call is worse than an absent one.
+  plaid:
+    build: { <<: *node-build, args: { PKG: '@estate/service-plaid' } }
+    # GENERATED, not literal: 'plaid' in development, an unmatched name in
+    # production. Production config requires PLAID_MODE=live with credentials
+    # that do not exist, so `--profile plaid` in the production profile used to
+    # start a container that failed fast and then crash-looped forever — the
+    # control working, dressed up as a broken stack. `plannedServices` already
+    # made the host-mode supervisor skip it; this is the compose half.
+    profiles: ['${PLAID_PROFILE}']
+    restart: unless-stopped
+    ports: ['3004:3004']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3004'
+      DATABASE_URL: ${PLAID_DATABASE_URL}
+      KMS_MODE: ${PLAID_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${PLAID_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${PLAID_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      ITEM_INDEX_KEY_HEX: ${PLAID_ITEM_INDEX_KEY_HEX}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+      PLAID_MODE: ${PLAID_MODE}
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-plaid: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  documents:
+    build: { <<: *node-build, args: { PKG: '@estate/service-documents' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3005:3005']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3005'
+      DATABASE_URL: ${DOCUMENTS_DATABASE_URL}
+      KMS_MODE: ${DOCUMENTS_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${DOCUMENTS_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${DOCUMENTS_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+      SETTLEMENT_URL: http://settlement:3007
+      OBJECT_STORE_MODE: ${DOCUMENTS_OBJECT_STORE_MODE}
+      OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET}
+      SEARCH_INDEX_KEY_HEX: ${DOCUMENTS_SEARCH_INDEX_KEY_HEX}
+      SCANNER_MODE: ${DOCUMENTS_SCANNER_MODE}
+      CLAMD_HOST: ${DOCUMENTS_CLAMD_HOST}
+      OCR_MODE: ${DOCUMENTS_OCR_MODE}
+      OCR_URL: ${DOCUMENTS_OCR_URL}
+      # Guarded and ready, with no in-repo caller: the graph records this edge
+      # as having zero holders, so nothing is provisioned to present it and the
+      # route refuses everything. The M4 legal-hold gap stays open.
+      DOCUMENTS_INTERNAL_TOKEN: ''
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      seed-templates: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+      clamav: { condition: service_healthy }
+      tesseract: { condition: service_healthy }
+
+  vault:
+    build: { <<: *node-build, args: { PKG: '@estate/service-vault' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3006:3006']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3006'
+      DATABASE_URL: ${VAULT_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+      SETTLEMENT_URL: http://settlement:3007
+      # Zone A holds NO server-side key material — no KMS_MODE, no master key,
+      # no index key. The one credential it carries opens settlement's
+      # read-only §6a gate and nothing else.
+      SETTLEMENT_INTERNAL_TOKEN: ${VAULT_SETTLEMENT_INTERNAL_TOKEN}
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-vault: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+
+  settlement:
+    build: { <<: *node-build, args: { PKG: '@estate/service-settlement' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3007:3007']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3007'
+      DATABASE_URL: ${SETTLEMENT_DATABASE_URL}
+      KMS_MODE: ${SETTLEMENT_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${SETTLEMENT_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${SETTLEMENT_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+      # TWO credentials, opposite directions, never equal. The inbound one
+      # vault presents to settlement's gate; the outbound one settlement
+      # presents to identity's account-lock API. One value in both slots is the
+      # M7 collapse — settlement refuses to boot on it in production, and the
+      # doctor refuses it in every mode.
+      SETTLEMENT_INTERNAL_TOKEN: ${SETTLEMENT_SETTLEMENT_INTERNAL_TOKEN}
+      IDENTITY_INTERNAL_TOKEN: ${SETTLEMENT_IDENTITY_INTERNAL_TOKEN}
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-settlement: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  # Headless: a Kafka consumer with no HTTP surface, so no port and no TCP
+  # probe. Its liveness signal is that it EXITS on failure (M8 PR2) — a dead
+  # audit worker now stops rather than sitting "up" with a dead trail, so
+  # `restart` is what recovers it.
+  audit:
+    build: { <<: *node-build, args: { PKG: '@estate/service-audit' } }
+    profiles: ['services']
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${AUDIT_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    depends_on:
+      migrate-audit: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+
+  # ---------------------------------------------------------------------- edge
+  bff:
+    build: { <<: *node-build, args: { PKG: '@estate/bff' } }
+    profiles: ['edge']
+    restart: unless-stopped
+    ports: ['4000:4000']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '4000'
+      IDENTITY_URL: http://identity:3001
+      # First non-identity downstream (M8 PR5): the BFF forwards the CALLER'S
+      # bearer to it — no identity headers, no service credential to hold.
+      ASSETS_URL: http://assets:3003
+      PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
+    volumes:
+      # The web bundle sends hash-only GraphQL bodies (its client inlines
+      # NODE_ENV at build time and the image bakes production), so the BFF needs
+      # the manifest whatever its own NODE_ENV is. Nothing copies it into the
+      # BFF image, so it is mounted.
+      - ./apps/web/persisted-manifest.json:/app/persisted-manifest.json:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      identity: { condition: service_healthy }
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      # Build-time, not runtime: next build serialises the rewrite target into
+      # the routes manifest and the standalone server never re-reads the config.
+      args: { BFF_URL: 'http://bff:4000' }
+    profiles: ['edge']
+    restart: unless-stopped
+    # ADDRESS THE STACK AS http://localhost:3000. The BFF sets Secure on its
+    # session cookies whenever NODE_ENV=production, and browsers reject Secure
+    # cookies over plain http on every host EXCEPT localhost — so any other
+    # spelling silently breaks login in the production profile.
+    ports: ['3000:3000']
+    environment:
+      PORT: '3000'
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      bff: { condition: service_healthy }
+
+volumes:
+  pg-auth-data:
+  pg-core-data:
+  pg-financial-data:
+  pg-documents-data:
+  pg-vault-data:
+  pg-audit-data:
+  redpanda-data:
+  localstack-data:
+  clamav-data:

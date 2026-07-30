@@ -73,7 +73,11 @@ describe('secret key format', () => {
       }
     }
     expect(accepted).toEqual([]);
-  });
+    // Exhaustive by design — ~840 parses — and jest's default 5s is not enough
+    // when `turbo test` runs 20 packages in parallel. Observed failing that way
+    // and passing alone; the sweep is the value here, so raise the budget rather
+    // than sample it.
+  }, 30_000);
 
   it.each([
     ['a missing prefix', 'AB1-1234567-1234567-1234567-1234567'],

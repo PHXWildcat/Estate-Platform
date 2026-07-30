@@ -1,0 +1,21 @@
+# Normalise line endings in the repository to LF.
+#
+# The working tree stays native (CRLF on Windows) but everything committed is
+# LF. Without this, YAML, SQL and shell files authored on Windows land as CRLF
+# and fail `prettier --check`, which runs BEFORE the tests in CI and blocks the
+# merge — and shell scripts with CRLF fail at runtime inside a Linux container
+# with an error that names the shebang rather than the line endings.
+* text=auto eol=lf
+
+# Files that must be LF regardless of any local core.autocrlf setting: these
+# are executed by Linux containers.
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+
+# Binary, never normalised.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.ico binary

@@ -14,7 +14,7 @@ import {
   StepUpGuard,
 } from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { VaultAuthz } from './authz.service';
 import { loadConfig, type VaultConfig } from './config';
 import { Db } from './db';
@@ -76,7 +76,10 @@ function notifierFor(): NotificationPort {
       inject: [CONFIG],
       useFactory: (config: VaultConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-vault',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

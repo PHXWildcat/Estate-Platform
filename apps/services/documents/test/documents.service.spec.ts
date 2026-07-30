@@ -30,7 +30,7 @@ import {
   sampleSource,
   sampleVariables,
 } from './support';
-import type { InMemoryAuditProducer } from '../src/audit-producer';
+import type { InMemoryAuditProducer } from '@estate/kafka';
 import type { UploadDocumentInput } from '../src/schemas';
 import type { TemplateRow } from '../src/templates.repo';
 import type { SettlementEvidenceAuthority } from '@estate/settlement-client';

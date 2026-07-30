@@ -14,6 +14,23 @@ import {
 } from './object-store';
 
 /**
+ * Client settings for the bucket, shared by the service and the template
+ * publish CLI so the two can never disagree about how to address it.
+ *
+ * A non-null endpoint means an S3-COMPATIBLE service rather than AWS itself,
+ * which needs path-style addressing (`host/bucket/key`) because its host has
+ * no per-bucket DNS. Unlike the endpoint, `forcePathStyle` has no environment
+ * or shared-config selector anywhere in the SDK — it can only be set in code,
+ * which is why this helper exists rather than leaving it to ambient config.
+ */
+export function s3ClientConfig(
+  region: string,
+  endpoint: string | null,
+): { region: string; endpoint?: string; forcePathStyle?: boolean } {
+  return endpoint ? { region, endpoint, forcePathStyle: true } : { region };
+}
+
+/**
  * Production object store on S3. Receives CIPHERTEXT ONLY — envelope
  * encryption happens in the service before put(), so bucket-side SSE is
  * defense in depth, not the encryption boundary.

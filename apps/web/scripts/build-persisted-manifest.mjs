@@ -21,7 +21,13 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const operationsPath = join(webRoot, 'src', 'graphql', 'operations.ts');
 const manifestPath = join(webRoot, 'persisted-manifest.json');
 
-const source = readFileSync(operationsPath, 'utf8');
+// CRLF is normalized to LF: ECMAScript defines template-literal cooked values
+// with LF line terminators regardless of the source file's encoding, so the
+// RUNTIME document always carries \n. Extracting raw bytes from a CRLF
+// working tree (Windows) would otherwise mint hashes of \r\n documents that
+// no client will ever send — a manifest that verifies against itself and
+// matches nothing.
+const source = readFileSync(operationsPath, 'utf8').replace(/\r\n/g, '\n');
 const documentPattern = /^export const (\w+_(?:MUTATION|QUERY)) = `([^`]+)`;$/gm;
 
 const documents = [];

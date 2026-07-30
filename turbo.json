@@ -3,7 +3,15 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+      // Turbo 2 runs tasks in STRICT env mode: anything not listed here is
+      // stripped from the task's environment. Both of these are consumed by
+      // `next build` (next.config.ts) — BFF_URL is serialised into the routes
+      // manifest as the /graphql rewrite target, and omitting it here is
+      // exactly how the web image silently proxied to itself (found by the
+      // M8 PR5 browser verification). Declaring them also makes them part of
+      // the task hash, so a changed BFF_URL correctly busts the cache.
+      "env": ["BFF_URL", "NEXT_STANDALONE"]
     },
     "typecheck": {
       "dependsOn": ["^build"]

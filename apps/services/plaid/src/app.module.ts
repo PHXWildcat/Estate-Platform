@@ -18,7 +18,7 @@ import {
 } from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
 import { AccountsRepo } from './accounts.repo';
-import { InMemoryAuditProducer, KafkaAuditProducer } from './audit-producer';
+import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { PlaidAuthz } from './authz.service';
 import { loadConfig, type PlaidConfig } from './config';
 import { Db } from './db';
@@ -55,8 +55,9 @@ import type { PlaidGateway } from './plaid-gateway';
  */
 function kmsProviderFor(config: PlaidConfig): KmsKeyProvider {
   if (config.kms.mode === 'aws') {
-    return new AwsKmsProvider(new KMSClient({ region: config.kms.region }), {
-      keyId: config.kms.keyId,
+    const { region, endpoint, keyId } = config.kms;
+    return new AwsKmsProvider(new KMSClient({ region, ...(endpoint ? { endpoint } : {}) }), {
+      keyId,
     });
   }
   return new LocalKmsProvider(config.kms.masterKey);
@@ -82,7 +83,10 @@ function kmsProviderFor(config: PlaidConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: PlaidConfig): AuditProducer => {
         if (config.kafkaBrokers) {
-          return new KafkaAuditProducer(config.kafkaBrokers);
+          return new KafkaAuditProducer({
+            clientId: 'service-plaid',
+            brokers: config.kafkaBrokers,
+          });
         }
         // Config already fails fast in production without brokers; this guard
         // makes the invariant local and unmissable: the no-op producer can

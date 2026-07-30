@@ -49,6 +49,7 @@ describe('plaid service config (fail-fast posture)', () => {
     return baseEnv({
       NODE_ENV: 'production',
       KMS_MASTER_KEY_HEX: undefined,
+      KMS_MODE: 'aws',
       AWS_KMS_KEY_ID: 'alias/plaid-kek',
       AWS_REGION: 'us-east-1',
       KAFKA_BROKERS: 'b-1:9092',
@@ -63,9 +64,40 @@ describe('plaid service config (fail-fast posture)', () => {
 
   it('accepts a complete production config (AWS KMS + Kafka + live Plaid + identity)', () => {
     const config = loadConfig(prodEnv());
-    expect(config.kms).toEqual({ mode: 'aws', keyId: 'alias/plaid-kek', region: 'us-east-1' });
+    expect(config.kms).toEqual({
+      mode: 'aws',
+      keyId: 'alias/plaid-kek',
+      region: 'us-east-1',
+      endpoint: null,
+    });
     expect(config.kafkaBrokers).toEqual(['b-1:9092']);
     expect(config.identityUrl).toBe('https://identity.internal');
+  });
+
+  it('production refuses the local KMS provider and a plaintext AWS endpoint', () => {
+    expect(() => loadConfig(prodEnv({ KMS_MODE: 'local' }))).toThrow(/KMS_MODE/);
+    expect(() => loadConfig(prodEnv({ AWS_ENDPOINT_URL: 'http://localstack:4566' }))).toThrow(
+      /AWS_ENDPOINT_URL/,
+    );
+  });
+
+  it('the AWS provider is selectable outside production, and never the default', () => {
+    expect(loadConfig(baseEnv()).kms.mode).toBe('local');
+    expect(
+      loadConfig(
+        baseEnv({
+          KMS_MODE: 'aws',
+          AWS_KMS_KEY_ID: 'alias/plaid-kek',
+          AWS_REGION: 'us-east-1',
+          AWS_ENDPOINT_URL: 'http://localstack:4566',
+        }),
+      ).kms,
+    ).toEqual({
+      mode: 'aws',
+      keyId: 'alias/plaid-kek',
+      region: 'us-east-1',
+      endpoint: 'http://localstack:4566',
+    });
   });
 
   it.each([

@@ -12,7 +12,14 @@
     "dev": "turbo run dev",
     "lint": "eslint --max-warnings 0 .",
     "format": "prettier --check .",
-    "format:fix": "prettier --write ."
+    "format:fix": "prettier --write .",
+    "stack:env": "turbo run build --filter=@estate/stack && node apps/stack/dist/generate-env-cli.js",
+    "stack:doctor": "turbo run build --filter=@estate/stack && node apps/stack/dist/doctor-cli.js",
+    "stack:up": "pnpm stack:doctor -- --for compose && docker compose --env-file .env.stack -f docker-compose.stack.yml --profile bootstrap --profile services --profile plaid --profile edge up -d --build",
+    "stack:down": "docker compose --env-file .env.stack -f docker-compose.stack.yml --profile bootstrap --profile services --profile plaid --profile edge down",
+    "stack:reset": "docker compose --env-file .env.stack -f docker-compose.stack.yml --profile bootstrap --profile services --profile plaid --profile edge down -v",
+    "stack:logs": "docker compose --env-file .env.stack -f docker-compose.stack.yml logs -f",
+    "stack:ps": "docker compose --env-file .env.stack -f docker-compose.stack.yml --profile bootstrap --profile services --profile plaid --profile edge ps"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

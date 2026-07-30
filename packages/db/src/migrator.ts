@@ -40,14 +40,22 @@ export class Migrator {
   ) {}
 
   async migrate(): Promise<{ applied: string[] }> {
-    await this.db.query(`
+    // LOCK FIRST, then create the bookkeeping table. `CREATE TABLE IF NOT
+    // EXISTS` is NOT race-safe in PostgreSQL: two sessions that pass the
+    // existence check together can both proceed, and the loser raises
+    // duplicate_relation (23505 on pg_type_typname_nsp_index / 42P07). The
+    // clusters where that actually happens are the co-tenanted ones — core
+    // (profile + settlement) and financial (assets + plaid) — whose two
+    // migration jobs have every reason to start at the same moment. Taking
+    // the lock first makes table creation part of the serialized region.
+    await this.db.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    try {
+      await this.db.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         name       TEXT PRIMARY KEY,
         checksum   TEXT NOT NULL,
         applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
-    await this.db.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
-    try {
       const files = (await readdir(this.dir)).filter((f) => f.endsWith('.sql')).sort();
       const { rows } = await this.db.query('SELECT name, checksum FROM schema_migrations');
       const seen = new Map(rows.map((r) => [r['name'] as string, r['checksum'] as string]));

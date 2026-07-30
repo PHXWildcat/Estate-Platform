@@ -30,7 +30,7 @@ import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@es
 import { Client, type QueryResultRow } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { InMemoryAuditProducer } from '../src/audit-producer';
+import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 import type {
   ContentDto,
