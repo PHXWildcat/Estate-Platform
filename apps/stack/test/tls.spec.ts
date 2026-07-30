@@ -88,7 +88,13 @@ describe('writeStackEnv addressing passthrough', () => {
     const written = new Map<string, string>();
     writeStackEnv(
       { mode: 'production', addressing: 'host', target: '.env.x', force: false },
-      { exists: () => false, write: (path, contents) => written.set(path, contents) },
+      {
+        exists: () => false,
+        read: () => {
+          throw new Error('not expected');
+        },
+        write: (path, contents) => written.set(path, contents),
+      },
     );
     expect(written.get('.env.x')).toContain('STACK_ADDRESSING=host');
     expect(written.get('.env.x')).toContain('https://localhost:8443');

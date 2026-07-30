@@ -2,8 +2,11 @@ import { credentialsLookReal, diagnose, parseEnvFile, summarize } from '../src/d
 import { generateEnv, renderEnvFile } from '../src/generate-env';
 
 /** The file the generator actually writes, as the doctor will read it. */
-function generatedEnv(mode: 'development' | 'production' = 'development'): Map<string, string> {
-  return parseEnvFile(renderEnvFile(generateEnv({ mode }), { mode }));
+function generatedEnv(
+  mode: 'development' | 'production' = 'development',
+  addressing: 'compose' | 'host' = 'compose',
+): Map<string, string> {
+  return parseEnvFile(renderEnvFile(generateEnv({ mode, addressing }), { mode }));
 }
 
 const codesOf = (env: Map<string, string>): string[] =>
@@ -18,6 +21,46 @@ describe('doctor on a generated environment', () => {
   });
 });
 
+describe('addressing must match its consumer', () => {
+  // The M8 security review found the CI workflow handing the HOST-addressed
+  // file to containerised bootstrap jobs, where 'localhost' is each
+  // container's own loopback. Every migration failed, the blocking gate died
+  // before the stack test ran, and the production rehearsal never executed
+  // while the docs credited it as proven. run-services-cli already refused the
+  // opposite direction; the asymmetry was the hole.
+  it('refuses a host-addressed file about to be handed to compose', () => {
+    const findings = diagnose(generatedEnv('development', 'host'), { consumedBy: 'compose' });
+    expect(findings.map((f) => f.code)).toEqual(['addressing_mismatch']);
+    expect(findings[0]?.severity).toBe('error');
+  });
+
+  it('refuses a compose-addressed file about to be run on the host', () => {
+    const findings = diagnose(generatedEnv(), { consumedBy: 'host' });
+    expect(findings.map((f) => f.code)).toEqual(['addressing_mismatch']);
+  });
+
+  it('accepts each file for the consumer it was generated for', () => {
+    expect(diagnose(generatedEnv(), { consumedBy: 'compose' })).toEqual([]);
+    expect(diagnose(generatedEnv('development', 'host'), { consumedBy: 'host' })).toEqual([]);
+    expect(diagnose(generatedEnv('production', 'host'), { consumedBy: 'host' })).toEqual([]);
+  });
+
+  it('says nothing when no consumer is named — the check is opt-in', () => {
+    expect(diagnose(generatedEnv('development', 'host'))).toEqual([]);
+  });
+
+  it('treats a file with no STACK_ADDRESSING as compose-addressed', () => {
+    // Hand-written files predate the marker; compose is the default the
+    // generator has always written, so assuming it cannot invent a failure.
+    const env = generatedEnv();
+    env.delete('STACK_ADDRESSING');
+    expect(diagnose(env, { consumedBy: 'compose' })).toEqual([]);
+    expect(diagnose(env, { consumedBy: 'host' }).map((f) => f.code)).toEqual([
+      'addressing_mismatch',
+    ]);
+  });
+});
+
 describe('the real-AWS footgun', () => {
   it('refuses when a service uses AWS KMS with no endpoint override', () => {
     // Before an AWS account existed this path merely failed for lack of
@@ -25,6 +68,30 @@ describe('the real-AWS footgun', () => {
     const env = generatedEnv();
     env.delete('AWS_ENDPOINT_URL');
     expect(codesOf(env)).toContain('aws_endpoint_missing');
+  });
+
+  it('refuses a PER-SERVICE endpoint override, which outranks the one it just checked', () => {
+    // @smithy/core resolves AWS_ENDPOINT_URL_KMS before AWS_ENDPOINT_URL, and
+    // the services' https-in-production guard only ever reads the plain name.
+    const env = generatedEnv();
+    env.set('AWS_ENDPOINT_URL_KMS', 'http://kms.somewhere.else:4566');
+    expect(codesOf(env)).toContain('aws_endpoint_service_override');
+  });
+
+  it('is not fooled by a local-looking USERINFO', () => {
+    // `https://localhost:anything@aws.example.com/` begins with the string
+    // `https://localhost:` while addressing a host on the internet. The old
+    // check was a prefix match, and this check is the thing standing between a
+    // misconfigured stack and real AWS calls on a real account.
+    const env = generatedEnv();
+    env.set('AWS_ENDPOINT_URL', 'https://localhost:4566@kms.us-east-1.amazonaws.com/');
+    expect(codesOf(env)).toContain('aws_endpoint_not_local');
+  });
+
+  it('refuses an endpoint it cannot parse rather than assuming it is local', () => {
+    const env = generatedEnv();
+    env.set('AWS_ENDPOINT_URL', 'localstack:4566');
+    expect(codesOf(env)).toContain('aws_endpoint_not_local');
   });
 
   it('refuses an endpoint that is not the local stack', () => {

@@ -1,13 +1,20 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { writeStackEnv } from './generate-env';
 
 /**
  * Write the stack's environment file.
  *
- *   node dist/generate-env-cli.js [--mode development|production] [--force]
+ *   node dist/generate-env-cli.js [--mode development|production]
+ *                                 [--addressing compose|host]
+ *                                 [--from <env-file>] [--force]
  *
- * Wiring only — the decision to write, and the refusal to clobber, live in
- * `writeStackEnv` where they are tested.
+ * `--from` RE-ADDRESSES an existing environment rather than minting a new one:
+ * two addressings are two views of the same volumes, so the second must carry
+ * the first's keys or the search index and every wrapped DEK belong to a
+ * different stack than the rows referencing them.
+ *
+ * Wiring only — the decision to write, the refusal to clobber, and the
+ * derivation live in `writeStackEnv`/`deriveEnv` where they are tested.
  */
 function main(argv: readonly string[]): number {
   const modeArg = argv.indexOf('--mode');
@@ -23,14 +30,26 @@ function main(argv: readonly string[]): number {
     return 1;
   }
 
+  const fromArg = argv.indexOf('--from');
+  if (fromArg !== -1 && argv[fromArg + 1] === undefined) {
+    process.stderr.write('--from expects a path to an existing env file\n');
+    return 1;
+  }
+  const from = fromArg === -1 ? undefined : (argv[fromArg + 1] as string);
+
   const outcome = writeStackEnv(
     {
       mode,
       addressing,
       target: process.env['STACK_ENV_FILE'] ?? '.env.stack',
       force: argv.includes('--force'),
+      ...(from === undefined ? {} : { from }),
     },
-    { exists: existsSync, write: (path, contents) => writeFileSync(path, contents, 'utf8') },
+    {
+      exists: existsSync,
+      read: (path) => readFileSync(path, 'utf8'),
+      write: (path, contents) => writeFileSync(path, contents, 'utf8'),
+    },
   );
 
   if (outcome.status === 'refused') {

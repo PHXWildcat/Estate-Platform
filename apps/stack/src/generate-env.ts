@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { SERVICE_CREDENTIAL_GRAPH } from '@estate/auth-guard';
+import { parseEnvFile } from './env-file';
 import {
   databaseUrl,
   kmsKeyIdFor,
@@ -199,6 +200,12 @@ export function generateEnv(
       ['DOCUMENTS_OCR_MODE', 'tesseract'],
       ['DOCUMENTS_OCR_URL', network.ocrUrl],
       ['PLAID_MODE', production ? 'live' : 'stub'],
+      // Which compose profile the plaid CONTAINER belongs to. In production it
+      // is a name nothing activates: PLAID_MODE=live needs credentials that do
+      // not exist, so the container would fail fast at boot and crash-loop.
+      // `plannedServices` skips it for the host-mode supervisor for the same
+      // reason; this keeps compose and the supervisor agreeing.
+      ['PLAID_PROFILE', production ? 'plaid-requires-live-credentials' : 'plaid'],
     ],
   });
 
@@ -216,9 +223,90 @@ export function generateEnv(
   return { sections, entries };
 }
 
+/**
+ * The keys whose values are decided by ADDRESSING rather than by secrets.
+ *
+ * Computed, not listed: generate the same environment twice with constant key
+ * generators and see which values move. A hand-written list would go stale the
+ * first time a service gained a URL, and the failure would be silent in the
+ * direction that matters (a secret quietly re-minted).
+ */
+export function addressingDependentKeys(mode: GenerateOptions['mode']): ReadonlySet<string> {
+  const constant = (): string => 'constant';
+  const render = (addressing: Addressing): Map<string, string> =>
+    new Map(generateEnv({ mode, addressing }, constant, constant).entries);
+  const compose = render('compose');
+  const host = render('host');
+  const moved = new Set<string>();
+  for (const [key, value] of compose) {
+    if (host.get(key) !== value) {
+      moved.add(key);
+    }
+  }
+  return moved;
+}
+
+export type DeriveOutcome =
+  | { readonly status: 'derived'; readonly generated: { sections: readonly Section[] } }
+  | { readonly status: 'refused'; readonly message: string };
+
+/**
+ * Re-address an EXISTING environment without touching its secrets.
+ *
+ * Two addressings of one stack are two views of the SAME data: the same
+ * Postgres volumes, the same LocalStack keys, the same S3 objects. Generating
+ * the second view from scratch mints a new KMS master key and new blind-index
+ * and search-index keys, so a search index written by the composed stack is
+ * unreadable to the host-mode processes reading the very same rows — no error,
+ * just wrong answers. `writeStackEnv`'s overwrite refusal exists for exactly
+ * this hazard; deriving is how you get a second view without it.
+ *
+ * Everything that is not addressing-dependent is copied verbatim, and a source
+ * missing any expected key is refused rather than silently filled in.
+ */
+export function deriveEnv(
+  source: ReadonlyMap<string, string>,
+  options: GenerateOptions,
+): DeriveOutcome {
+  const sourceMode = source.get('STACK_MODE');
+  if (sourceMode !== options.mode) {
+    return {
+      status: 'refused',
+      message: `source environment is mode '${String(sourceMode)}', not '${options.mode}'. The two profiles differ in more than addressing (adapter selection, TLS, notifier gates) — generate the other mode instead of re-addressing this one.`,
+    };
+  }
+
+  const dependent = addressingDependentKeys(options.mode);
+  const fresh = generateEnv(options);
+  const missing: string[] = [];
+  const sections = fresh.sections.map((section) => ({
+    ...section,
+    entries: section.entries.map(([key, value]): readonly [string, string] => {
+      if (dependent.has(key)) {
+        return [key, value];
+      }
+      const carried = source.get(key);
+      if (carried === undefined) {
+        missing.push(key);
+        return [key, value];
+      }
+      return [key, carried];
+    }),
+  }));
+
+  if (missing.length > 0) {
+    return {
+      status: 'refused',
+      message: `source environment is missing ${missing.length} key(s) this stack needs: ${missing.join(', ')}. Deriving would mint fresh values for them, which is the orphaned-ciphertext hazard the overwrite guard exists to prevent.`,
+    };
+  }
+  return { status: 'derived', generated: { sections } };
+}
+
 /** Filesystem seam, so the overwrite guard is testable without touching disk. */
 export interface EnvFileIo {
   exists(path: string): boolean;
+  read(path: string): string;
   write(path: string, contents: string): void;
 }
 
@@ -237,7 +325,15 @@ export type WriteOutcome =
  * on why every read broke is not.
  */
 export function writeStackEnv(
-  options: GenerateOptions & { readonly target: string; readonly force: boolean },
+  options: GenerateOptions & {
+    readonly target: string;
+    readonly force: boolean;
+    /**
+     * Re-address this existing environment rather than minting a new one. Its
+     * secrets are carried over verbatim — see `deriveEnv`.
+     */
+    readonly from?: string;
+  },
   io: EnvFileIo,
 ): WriteOutcome {
   if (io.exists(options.target) && !options.force) {
@@ -248,11 +344,24 @@ export function writeStackEnv(
         'Pass --force if you mean it, and run `docker compose -f docker-compose.stack.yml down -v` to clear the data it could no longer decrypt.',
     };
   }
-  const generated = generateEnv({
+  const generateOptions: GenerateOptions = {
     mode: options.mode,
     ...(options.addressing ? { addressing: options.addressing } : {}),
-  });
-  io.write(options.target, renderEnvFile(generated, { mode: options.mode }));
+  };
+
+  if (options.from !== undefined) {
+    if (!io.exists(options.from)) {
+      return { status: 'refused', message: `${options.from} not found — nothing to re-address.` };
+    }
+    const derived = deriveEnv(parseEnvFile(io.read(options.from)), generateOptions);
+    if (derived.status === 'refused') {
+      return derived;
+    }
+    io.write(options.target, renderEnvFile(derived.generated, { mode: options.mode }));
+    return { status: 'written', path: options.target };
+  }
+
+  io.write(options.target, renderEnvFile(generateEnv(generateOptions), { mode: options.mode }));
   return { status: 'written', path: options.target };
 }
 

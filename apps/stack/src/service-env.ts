@@ -145,13 +145,35 @@ export function scrubbedBaseEnv(parent: NodeJS.ProcessEnv): Record<string, strin
     if (value === undefined) {
       continue;
     }
-    if (/^AWS_/i.test(key) || /_INTERNAL_TOKEN$/.test(key) || /^KMS_/.test(key)) {
+    if (SCRUBBED.some((pattern) => pattern.test(key))) {
       continue;
     }
     out[key] = value;
   }
   return out;
 }
+
+/**
+ * What never reaches a child from the ambient shell.
+ *
+ * The first three are credential-shaped. `NODE_TLS_REJECT_UNAUTHORIZED` and
+ * `NODE_OPTIONS` are here for a different reason: the doctor refuses a stack
+ * whose ENV FILE disables TLS verification, because that would make production
+ * mode's https requirement decoration — but the doctor reads the file, and both
+ * of these reach a child from the developer's shell without appearing in it.
+ * `NODE_OPTIONS` is the same hole wearing a hat (it can carry
+ * `--use-openssl-ca`, `--require`, and more). Anything a service genuinely
+ * needs is set EXPLICITLY by the mapping above, including
+ * `NODE_EXTRA_CA_CERTS`, which is why scrubbing it costs nothing.
+ */
+const SCRUBBED: readonly RegExp[] = [
+  /^AWS_/i,
+  /_INTERNAL_TOKEN$/,
+  /^KMS_/,
+  /^NODE_TLS_/,
+  /^NODE_OPTIONS$/,
+  /^NODE_EXTRA_CA_CERTS$/,
+];
 
 /** The BFF is not a StackService (no cluster, no credentials); mapped here. */
 export function bffProcessEnv(

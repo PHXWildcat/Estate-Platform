@@ -19,6 +19,7 @@ import {
  */
 
 const COOKIE = `${ACCESS_COOKIE}=${encodeURIComponent(TOKENS.accessToken)}`;
+const BOTH_COOKIES = `${COOKIE}; ${REFRESH_COOKIE}=${encodeURIComponent(TOKENS.refreshToken)}`;
 
 const ASSETS_QUERY =
   'query Assets { assets { assetId category title estValue ownershipPct inTrust version } }';
@@ -188,6 +189,32 @@ describe('logout', () => {
     expect(expiredCookies(res).length).toBe(2);
   });
 
+  it('falls back to the REFRESH credential when the access token has expired', async () => {
+    // The M8-review finding. identity's guarded logout route needs a live
+    // ACCESS token (15 min) but the session and its refresh token live 30 days,
+    // so a tab older than the access TTL gets a 401 — which used to be read as
+    // "already logged out", revoking nothing while reporting success.
+    identity.logoutResult = false;
+    const res = await gql(app, { query: LOGOUT_MUTATION }, { cookie: BOTH_COOKIES });
+    expect(gqlBody(res).data?.['logout']).toEqual({ ok: true });
+    expect(identity.logoutCalls).toEqual([TOKENS.accessToken]);
+    // The session IS revoked, through the credential that still resolves it.
+    expect(identity.logoutByRefreshCalls).toEqual([TOKENS.refreshToken]);
+    expect(expiredCookies(res)).toHaveLength(2);
+  });
+
+  it('does NOT clear cookies when the refresh fallback itself fails', async () => {
+    identity.logoutResult = false;
+    identity.logoutByRefreshError = new Error('identity unreachable');
+    const res = await gql(app, { query: LOGOUT_MUTATION }, { cookie: BOTH_COOKIES });
+    expect(gqlBody(res).errors?.length).toBeGreaterThan(0);
+    expect(expiredCookies(res)).toEqual([]);
+  });
+
+  it('does not reach for the refresh credential when the access token worked', async () => {
+    await gql(app, { query: LOGOUT_MUTATION }, { cookie: BOTH_COOKIES });
+    expect(identity.logoutByRefreshCalls).toEqual([]);
+  });
   it('does NOT clear cookies when revocation fails — no fake logouts', async () => {
     // The cookies are the only copies of the tokens. Clearing them after a
     // failed revocation would strand a live session only a thief could use,

@@ -243,6 +243,41 @@ export class AuthService {
    * a double-click cannot error.
    */
   async logout(userId: string, sessionId: string): Promise<void> {
+    await this.revokeSession(userId, sessionId);
+  }
+
+  /**
+   * Logout by REFRESH token, for the ordinary case where the access token has
+   * already expired.
+   *
+   * The M8 security review's load-bearing finding: `POST /v1/auth/logout` sits
+   * behind SessionGuard, which requires a live ACCESS token (15-minute TTL),
+   * while the session and its refresh token live 30 DAYS. Any tab older than
+   * fifteen minutes therefore got a 401 — which the BFF treated as "already
+   * logged out" — so the session was never revoked, nothing entered the audit
+   * trail, and the user was told they were signed out. This is the path that
+   * makes the promise true: `findLiveByRefreshHash` deliberately has no
+   * access-expiry predicate, so it still resolves the session the browser
+   * holds.
+   *
+   * Returns false when the refresh token resolves nothing (already revoked,
+   * expired, or an account whose status no longer permits token use) — the
+   * caller decides whether that is "already logged out" or a failure.
+   */
+  async logoutByRefreshToken(refreshToken: string): Promise<boolean> {
+    const session = await this.sessions.findLiveByRefreshHash(
+      hashToken(refreshToken),
+      this.clock(),
+    );
+    if (!session) {
+      return false;
+    }
+    await this.revokeSession(session.user_id, session.id);
+    return true;
+  }
+
+  /** One revocation path: row, append-only ledger, audit event, in that order. */
+  private async revokeSession(userId: string, sessionId: string): Promise<void> {
     await this.sessions.revoke(sessionId, 'user_logout', this.clock());
     await this.authEvents.insert({
       userId,

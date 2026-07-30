@@ -5,7 +5,11 @@ import {
   SERVICE_NAMES,
 } from '@estate/auth-guard';
 import { DUMMY_AWS_ACCESS_KEY_ID, DUMMY_AWS_SECRET_ACCESS_KEY } from './generate-env';
-import { NETWORK, SERVICES } from './topology';
+import { NETWORK, SERVICES, type Addressing } from './topology';
+
+// Re-exported: both the doctor and the generator read env files, and importing
+// one from the other would make the two a cycle.
+export { parseEnvFile } from './env-file';
 
 /**
  * Preflight for a generated stack environment.
@@ -33,23 +37,6 @@ export function summarize(findings: readonly Finding[]): {
   };
 }
 
-/** Parse a dotenv file. Deliberately minimal: no interpolation, no exports. */
-export function parseEnvFile(contents: string): Map<string, string> {
-  const env = new Map<string, string>();
-  for (const raw of contents.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line.length === 0 || line.startsWith('#')) {
-      continue;
-    }
-    const eq = line.indexOf('=');
-    if (eq <= 0) {
-      continue;
-    }
-    env.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
-  }
-  return env;
-}
-
 /**
  * Does this look like a real AWS credential rather than LocalStack's?
  *
@@ -68,13 +55,56 @@ export function credentialsLookReal(accessKeyId: string, secretAccessKey: string
 }
 
 /**
+ * Hosts that are the local stack. 'aws-tls' is the production profile's TLS
+ * terminator in front of LocalStack — still entirely local, just not plaintext.
+ */
+const LOCAL_AWS_HOSTS = new Set(['localstack', 'aws-tls', 'localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Is this endpoint the local stack?
+ *
+ * PARSED, not prefix-matched. A URL's authority can carry userinfo, so
+ * `https://localhost:anything@aws.example.com/` starts with the string
+ * `https://localhost:` while addressing a host on the internet — and this check
+ * is the thing standing between a misconfigured stack and real AWS API calls.
+ * An unparseable value is not local (fail closed); a bare host with no scheme
+ * is one, since `new URL` would read it as a scheme.
+ */
+export function isLocalEndpoint(endpoint: string): boolean {
+  try {
+    return LOCAL_AWS_HOSTS.has(new URL(endpoint).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check a generated environment before the stack starts.
  *
  * Ordered by what actually goes wrong, not by section.
  */
-export function diagnose(env: ReadonlyMap<string, string>): Finding[] {
+export function diagnose(
+  env: ReadonlyMap<string, string>,
+  options: { consumedBy?: Addressing } = {},
+): Finding[] {
   const findings: Finding[] = [];
   const get = (key: string): string => env.get(key) ?? '';
+
+  // 0. ADDRESSING MUST MATCH ITS CONSUMER. `run-services-cli` already refuses a
+  //    compose-addressed file, but nothing refused the opposite — and the M8
+  //    security review found the CI workflow handing a HOST-addressed file to
+  //    containerised bootstrap jobs, where `localhost` is each container's own
+  //    loopback. Every migration failed and the blocking gate died before the
+  //    stack test ran, so the production rehearsal never executed while the
+  //    docs credited it as proven. Symmetry closes that.
+  const addressing = get('STACK_ADDRESSING') || 'compose';
+  if (options.consumedBy && addressing !== options.consumedBy) {
+    findings.push({
+      severity: 'error',
+      code: 'addressing_mismatch',
+      message: `This file is addressed for '${addressing}' but is about to be consumed by '${options.consumedBy}'. Container hostnames do not resolve from the host, and host-published ports do not resolve from inside a container — every connection would fail. Regenerate with --addressing ${options.consumedBy === 'host' ? 'host' : 'compose'}.`,
+    });
+  }
 
   // 1. THE REAL-AWS FOOTGUN. PR1 gave every AWS client an endpoint override,
   //    and the SDK honours AWS_ENDPOINT_URL ambiently besides. So a stack with
@@ -91,17 +121,27 @@ export function diagnose(env: ReadonlyMap<string, string>): Finding[] {
         'A service is set to KMS_MODE=aws but AWS_ENDPOINT_URL is unset. The AWS SDK would reach REAL AWS: real keys, real objects, real charges. Set it to ' +
         NETWORK.awsEndpoint,
     });
-  } else if (
-    endpoint.length > 0 &&
-    // 'aws-tls' is the production profile's TLS terminator in front of
-    // LocalStack — still entirely local, just not plaintext.
-    !/^https?:\/\/(localstack|aws-tls|127\.0\.0\.1|localhost)(:|\/|$)/.test(endpoint)
-  ) {
+  } else if (endpoint.length > 0 && !isLocalEndpoint(endpoint)) {
     findings.push({
       severity: 'error',
       code: 'aws_endpoint_not_local',
       message: `AWS_ENDPOINT_URL points at ${endpoint}, which is not the local stack. Expected ${NETWORK.awsEndpoint} (or the TLS proxy in production mode).`,
     });
+  }
+
+  // 1a. PER-SERVICE ENDPOINT OVERRIDES OUTRANK THE ONE ABOVE. The SDK resolves
+  //     `AWS_ENDPOINT_URL_KMS` (and `_S3`, `_TEXTRACT`, …) BEFORE
+  //     `AWS_ENDPOINT_URL`, and the services' https-in-production guard only
+  //     ever sees the plain name. One of these in the file would send a service
+  //     somewhere the preflight above just finished vouching for.
+  for (const key of env.keys()) {
+    if (/^AWS_ENDPOINT_URL_./.test(key)) {
+      findings.push({
+        severity: 'error',
+        code: 'aws_endpoint_service_override',
+        message: `${key} overrides AWS_ENDPOINT_URL for one AWS service and takes precedence over it in the SDK's resolution, so nothing here or in a service's production TLS guard validates where it points. The stack addresses every AWS service through one endpoint — remove it.`,
+      });
+    }
   }
 
   // 1b. Production reaches AWS over TLS, so it must also be told which CA to

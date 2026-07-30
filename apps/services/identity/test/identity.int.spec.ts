@@ -291,6 +291,43 @@ describeIfPg('identity service end to end', () => {
     );
     expect((rows[0] as { revoke_reason: string }).revoke_reason).toBe('user_logout');
 
+    // THE M8-REVIEW GAP: an expired ACCESS token must not mean an unrevokable
+    // session. The guarded route needs a live access token (15 min) while the
+    // session and refresh token live 30 days, so logout has a refresh path.
+    const third = (
+      await request(server).post('/v1/auth/login').send({ email: emailB, password: PASSWORD })
+    ).body as TokensBody;
+    const byRefresh = await request(server)
+      .post('/v1/auth/logout/refresh')
+      .send({ refreshToken: third.refreshToken });
+    expect(byRefresh.status).toBe(200);
+    // Both halves of that session are now dead.
+    expect(
+      (
+        await request(server)
+          .get('/v1/auth/session')
+          .set('Authorization', `Bearer ${third.accessToken}`)
+      ).status,
+    ).toBe(401);
+    expect(
+      (await request(server).post('/v1/auth/refresh').send({ refreshToken: third.refreshToken }))
+        .status,
+    ).toBe(401);
+    const refreshRevoked = await admin.query(
+      `SELECT revoke_reason FROM ${schema}.sessions WHERE id = $1`,
+      [third.sessionId],
+    );
+    expect((refreshRevoked.rows[0] as { revoke_reason: string }).revoke_reason).toBe('user_logout');
+
+    // An unresolvable refresh token answers 200 rather than becoming an oracle
+    // for whether a captured token is still live.
+    expect(
+      (
+        await request(server)
+          .post('/v1/auth/logout/refresh')
+          .send({ refreshToken: third.refreshToken })
+      ).status,
+    ).toBe(200);
     // Logout without a valid token is a 401, not a crash.
     const anonymous = await request(server).post('/v1/auth/logout');
     expect(anonymous.status).toBe(401);

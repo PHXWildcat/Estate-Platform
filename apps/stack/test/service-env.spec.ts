@@ -138,6 +138,21 @@ describe('scrubbedBaseEnv', () => {
     });
     expect(scrubbed).toEqual({ PATH: '/usr/bin', SystemRoot: 'C:\\Windows' });
   });
+
+  it('strips the TLS escape hatches, which the env-file doctor cannot see', () => {
+    // The doctor refuses an env FILE that disables TLS verification, because
+    // that turns production mode's https requirement into decoration. Both of
+    // these reach a child from the developer's shell without ever appearing in
+    // the file the doctor read.
+    expect(
+      scrubbedBaseEnv({
+        PATH: '/usr/bin',
+        NODE_TLS_REJECT_UNAUTHORIZED: '0',
+        NODE_OPTIONS: '--use-openssl-ca --require ./evil.js',
+        NODE_EXTRA_CA_CERTS: '/home/dev/some-other-ca.pem',
+      }),
+    ).toEqual({ PATH: '/usr/bin' });
+  });
 });
 
 describe('bffProcessEnv', () => {

@@ -16,9 +16,13 @@ name: Stack
 #   * infra images are tag-pinned;
 #   * `timeout-minutes` on the job, because a container that will not exit
 #     would otherwise run to GitHub's 6-hour limit;
-#   * jest's own JSON result is checked for a MINIMUM number of passed tests,
-#     so a suite that silently skipped turns the job red even though jest was
-#     green (ci-guard.spec.ts covers the env-var half; this covers the rest).
+#   * jest's own JSON result is checked for the EXACT number of passed and
+#     pending tests, so a suite that silently skipped turns the job red even
+#     though jest was green (ci-guard.spec.ts covers the env-var half; this
+#     covers the rest). Exact rather than a floor: the M8 security review found
+#     the floors sitting two tests below the real counts, and the slack was
+#     wide enough to `.skip` the clamd FOUND path and the OCR→search path and
+#     still go green.
 #
 # The FAST gate runs services from `dist` on the runner (no image builds).
 # Artifact fidelity — the shipped images actually running this stack — is a job
@@ -63,28 +67,50 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Generate the stack environment (host addressing)
-        run: node apps/stack/dist/generate-env-cli.js --mode ${{ matrix.profile }} --addressing host
+      # TWO env files, because the two consumers live on different sides of the
+      # container boundary and each needs its own addressing:
+      #   .env.stack.compose — for anything docker compose runs. Container
+      #     hostnames (pg-core:5432, redpanda:29092).
+      #   .env.stack         — for the host-mode supervisor. Published ports on
+      #     localhost.
+      # Handing the host-addressed file to compose was the M8-review finding:
+      # `localhost` inside a bootstrap container is that container's own
+      # loopback, so every migration failed and the whole gate died before the
+      # stack test ever ran. The doctor now refuses that combination outright.
+      # The host file is DERIVED from the compose one, not generated beside it:
+      # both address the same Postgres volumes, the same LocalStack keys and the
+      # same bucket, so a second independent generation would give the host
+      # processes a different KMS master key and a different search-index key
+      # than the bootstrap jobs wrote under.
+      - name: Generate the stack environments
+        run: |
+          STACK_ENV_FILE=.env.stack.compose \
+            node apps/stack/dist/generate-env-cli.js --mode ${{ matrix.profile }}
+          node apps/stack/dist/generate-env-cli.js --mode ${{ matrix.profile }} \
+            --addressing host --from .env.stack.compose
 
       # The preflight that refuses a non-local AWS endpoint, real-looking
-      # credentials, a mismatched credential graph, or disabled TLS
-      # verification. It gates `up` locally; it gates the job here.
+      # credentials, a mismatched credential graph, disabled TLS verification,
+      # or an addressing that does not match its consumer. It gates `up`
+      # locally; it gates the job here. Both files are checked.
       - name: Preflight
-        run: node apps/stack/dist/doctor-cli.js
+        run: |
+          node apps/stack/dist/doctor-cli.js .env.stack.compose --for compose
+          node apps/stack/dist/doctor-cli.js .env.stack --for host
 
       - name: Start infrastructure
         run: |
-          docker compose --env-file .env.stack -f docker-compose.stack.yml up -d --wait \
+          docker compose --env-file .env.stack.compose -f docker-compose.stack.yml up -d --wait \
             pg-auth pg-core pg-financial pg-documents pg-vault pg-audit \
             redpanda localstack aws-tls clamav tesseract
 
       - name: Provision topics, migrate, seed
         run: |
-          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+          docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
             --profile bootstrap up --build --exit-code-from provision-topics provision-topics
           for job in migrate-identity migrate-profile migrate-settlement migrate-assets \
                      migrate-plaid migrate-documents migrate-vault migrate-audit seed-templates; do
-            docker compose --env-file .env.stack -f docker-compose.stack.yml \
+            docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
               --profile bootstrap up --build --exit-code-from "$job" "$job"
           done
 
@@ -132,11 +158,19 @@ jobs:
           fi
           node -e '
             const r = require("./stack-results.json");
-            const floor = process.env.MATRIX_PROFILE === "production" ? 7 : 11;
+            // EXACT counts, not floors. The original floors sat two tests below
+            // the real numbers, and the slack was exactly the size of the two
+            // most environment-sensitive assertions (the clamd FOUND path and
+            // the OCR->encrypted-search path) — .skip both and the gate still
+            // went green. Pending is also exact rather than zero, because
+            // profile gating legitimately skips the OTHER profile'"'"'s block.
+            const production = process.env.MATRIX_PROFILE === "production";
+            const expectedPassed = production ? 9 : 13;
+            const expectedPending = production ? 8 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
-            if (r.numPassedTests < floor) {
-              console.error(`::error::only ${r.numPassedTests} tests passed, expected at least ${floor} — the suite skipped instead of running`);
+            if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {
+              console.error(`::error::expected exactly ${expectedPassed} passed / ${expectedPending} pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
               process.exit(1);
             }
           '
@@ -148,16 +182,16 @@ jobs:
         run: |
           echo '--- supervisor ---'; cat stack.log || true
           echo '--- compose ps ---'
-          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+          docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
             --profile bootstrap ps -a || true
           for svc in localstack aws-tls clamav tesseract redpanda; do
             echo "--- $svc ---"
-            docker compose --env-file .env.stack -f docker-compose.stack.yml logs --tail 60 "$svc" || true
+            docker compose --env-file .env.stack.compose -f docker-compose.stack.yml logs --tail 60 "$svc" || true
           done
 
       - name: Stop
         if: always()
         run: |
           [ -f stack.pid ] && kill "$(cat stack.pid)" 2>/dev/null || true
-          docker compose --env-file .env.stack -f docker-compose.stack.yml \
+          docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
             --profile bootstrap --profile services --profile plaid --profile edge down -v || true

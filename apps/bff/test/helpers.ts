@@ -105,10 +105,21 @@ export class FakeIdentityClient implements IdentityClient {
 
   logoutCalls: string[] = [];
   logoutError: Error | null = null;
+  /** false models identity's 401: the ACCESS token expired, session still live. */
+  logoutResult = true;
+  logoutByRefreshCalls: string[] = [];
+  logoutByRefreshError: Error | null = null;
 
-  logout(accessToken: string): Promise<void> {
+  logout(accessToken: string): Promise<boolean> {
     this.logoutCalls.push(accessToken);
-    return this.logoutError ? Promise.reject(this.logoutError) : Promise.resolve();
+    return this.logoutError ? Promise.reject(this.logoutError) : Promise.resolve(this.logoutResult);
+  }
+
+  logoutByRefresh(refreshToken: string): Promise<void> {
+    this.logoutByRefreshCalls.push(refreshToken);
+    return this.logoutByRefreshError
+      ? Promise.reject(this.logoutByRefreshError)
+      : Promise.resolve();
   }
 }
 

@@ -197,8 +197,11 @@ jobs:
       - name: Generate the stack environment (compose addressing)
         run: node apps/stack/dist/generate-env-cli.js --mode development
 
+      # `--for compose`: everything here runs as containers, so a host-addressed
+      # file must be refused rather than producing nine services that boot and
+      # fail on every request.
       - name: Preflight
-        run: node apps/stack/dist/doctor-cli.js
+        run: node apps/stack/dist/doctor-cli.js .env.stack --for compose
 
       # Compose builds with the same cache the matrix above populated, so this
       # is a cache restore rather than a rebuild.
@@ -228,10 +231,12 @@ jobs:
           fi
           node -e '
             const r = require("./stack-results.json");
+            // EXACT counts (development profile). A floor with slack in it is
+            // how two skipped assertions stay green; see stack.yml.
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
-            if (r.numPassedTests < 11) {
-              console.error(`::error::only ${r.numPassedTests} tests passed, expected at least 11 — the suite skipped instead of running`);
+            if (r.numPassedTests !== 13 || r.numPendingTests !== 4) {
+              console.error(`::error::expected exactly 13 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
               process.exit(1);
             }
           '

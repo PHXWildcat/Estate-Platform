@@ -37,6 +37,19 @@ function composeEnvironmentBlock(compose: string, service: string): Map<string, 
     if (/^ {2}\S/.test(line)) {
       break; // next service
     }
+    // Two YAML spellings are in use: a block mapping, and the one-line flow
+    // mapping the terse migrate jobs use. Both must be read, or a job written
+    // in the other style silently escapes this fence.
+    const flow = /^ {4}environment:\s*\{(.*)\}\s*$/.exec(line);
+    if (flow) {
+      for (const pair of (flow[1] as string).split(',')) {
+        const entry = /^\s*([A-Z][A-Z0-9_]*):\s*(.*?)\s*$/.exec(pair);
+        if (entry) {
+          env.set(entry[1] as string, (entry[2] as string).replace(/^['"]|['"]$/g, ''));
+        }
+      }
+      continue;
+    }
     if (/^ {4}environment:/.test(line)) {
       inEnvironment = true;
       continue;
@@ -96,6 +109,64 @@ describe('compose/supervisor mapping parity', () => {
     });
     expect([...composeEnv.keys()].sort()).toEqual(Object.keys(mapped).sort());
     expect(resolve(composeEnv.get('IDENTITY_URL') ?? '', file)).toBe(mapped['IDENTITY_URL']);
+  });
+
+  // THE BOOTSTRAP JOBS. They are the other half of the mapping and they were
+  // outside this fence until the M8 security review: they run the same code
+  // against the same clusters and buckets, but their environment blocks are
+  // hand-written per job, so a migrator pointed at the wrong cluster or a
+  // publish CLI addressing the bucket differently from the service would both
+  // "succeed" and leave the stack subtly wrong.
+  it.each(SERVICES.map((s) => [s.name] as const))(
+    'migrate-%s migrates the very cluster the service reads',
+    (name) => {
+      const service = SERVICES.find((s) => s.name === name)!;
+      const job = composeEnvironmentBlock(compose, `migrate-${name}`);
+      const mapped = serviceProcessEnv(service, file, { addressing: 'compose' });
+      expect([...job.keys()]).toEqual(['DATABASE_URL']);
+      expect(resolve(job.get('DATABASE_URL') ?? '', file)).toBe(mapped['DATABASE_URL']);
+    },
+  );
+
+  it('seed-templates addresses the object store exactly as documents does', () => {
+    // The publish CLI's own comment: "templates and content share one bucket,
+    // so a CLI that reached it differently would publish blobs the service
+    // could not read back."
+    const job = composeEnvironmentBlock(compose, 'seed-templates');
+    const documents = serviceProcessEnv(
+      SERVICES.find((s) => s.name === 'documents')!,
+      file,
+      {
+        addressing: 'compose',
+      },
+    );
+    for (const key of [
+      'DATABASE_URL',
+      'OBJECT_STORE_MODE',
+      'OBJECT_STORE_BUCKET',
+      'AWS_REGION',
+      'AWS_ENDPOINT_URL',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'NODE_EXTRA_CA_CERTS',
+      'KAFKA_BROKERS',
+    ]) {
+      expect(`${key}=${resolve(job.get(key) ?? '(absent)', file)}`).toBe(
+        `${key}=${documents[key] ?? '(absent)'}`,
+      );
+    }
+    // NODE_ENV is the one deliberate divergence: the M4 guard refuses
+    // placeholder legalReview in production and the exemplars ARE
+    // placeholders, so seeding runs as development even in the production
+    // profile. docs/05 says loudly that generation working there is therefore
+    // not evidence of the legal gate.
+    expect(job.get('NODE_ENV')).toBe('development');
+  });
+
+  it('provision-topics reaches the same broker the services produce to', () => {
+    const job = composeEnvironmentBlock(compose, 'provision-topics');
+    expect([...job.keys()]).toEqual(['KAFKA_BROKERS']);
+    expect(resolve(job.get('KAFKA_BROKERS') ?? '', file)).toBe(file.get('KAFKA_BROKERS'));
   });
 
   it('every ${VAR} the compose file references is one the generator writes', () => {

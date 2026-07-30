@@ -51,7 +51,12 @@ async function bootstrap(): Promise<void> {
     });
   }
 
-  await consumer.start();
+  // The consumer's own death takes the SAME path a failed startup takes: log,
+  // release the handles, exit non-zero so the restart policy fires. Without
+  // this the process would keep running with a disconnected consumer.
+  await consumer.start((err) => {
+    void handleFatal(err, opened);
+  });
   log({ level: 'info', msg: 'audit_service_started', groupId: 'audit-service' });
 }
 

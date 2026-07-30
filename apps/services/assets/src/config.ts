@@ -43,9 +43,18 @@ const EnvSchema = z
     // Endpoint override for the AWS SDK client. Unset means real AWS.
     //
     // The SDK already honours this variable ambiently, so we deliberately
-    // read the SAME name rather than inventing one: our explicitly-passed
-    // value and the SDK's own resolution can then never disagree. Reading it
-    // here is what makes the production TLS guard below possible at all.
+    // read the SAME name rather than inventing one: when it is SET the value we
+    // pass explicitly wins, so ours and the SDK's resolution cannot disagree.
+    // Reading it here is what makes the production TLS guard below possible at
+    // all.
+    //
+    // Precisely scoped, because an earlier phrasing here overclaimed "can never
+    // disagree": when this is UNSET we pass no endpoint and the SDK resolves
+    // ambiently, which includes the per-service overrides
+    // (`AWS_ENDPOINT_URL_KMS` and friends) and `endpoint_url` in an AWS config
+    // file. Those take precedence and the guard below never sees them. The
+    // local stack's preflight refuses them outright; the production residual is
+    // recorded in docs/05.
     AWS_ENDPOINT_URL: z.string().url().optional(),
     // Comma-separated broker list. Optional in dev/test (audit emission falls
     // back to an injectable no-op producer); REQUIRED in production — audit is

@@ -200,12 +200,67 @@ ports. The `5433-5438` host mappings exist only for host tooling and
 | Kafka | `redpanda:29092` | `localhost:9092` |
 | AWS | `http://localstack:4566` | `http://localhost:4566` |
 
+### The data volumes are ONE UNIT — LocalStack cannot persist its keys
+
+**Measured, not assumed.** LocalStack Community has no persistence
+(`PERSISTENCE` is a Pro feature), and the volume mounted at
+`/var/lib/localstack` holds the state *directory*, not the state. After a plain
+`docker restart localstack`:
+
+- every KMS alias is gone (`list-aliases` → 0 of 6);
+- the S3 bucket and every object in it are gone;
+- a previously wrapped DEK fails `Decrypt` with
+  `NotFoundException — Key arn:…:key/… does not exist`.
+
+The **Postgres volumes do persist**. So restarting that one container leaves
+every wrapped DEK in the six clusters permanently unopenable and every
+`document_versions.object_key` dangling, with no error at the time it happens.
+The symptom arrives later as decrypt failures in a stack that looks healthy.
+
+Two things make that loud instead of silent:
+
+1. **The health marker is cleared first.** `/tmp/stack-init-complete` lives on
+   the container filesystem, which *survives* `docker restart` even though the
+   state does not — so a stale marker used to report a healthy, keyless
+   LocalStack. The init hook now removes it before doing anything that can fail,
+   so it only ever means "*this* run provisioned successfully".
+2. **The init hook refuses to re-provision after key loss.** It writes an epoch
+   file to the volume (which does persist) after a successful provision. Epoch
+   present + KMS aliases absent means exactly one thing, and re-minting keys
+   under the same aliases would hand the services a stack that boots cleanly and
+   cannot read its own data. It exits non-zero with instructions instead; the
+   container goes unhealthy and nothing that depends on it starts.
+
+So: **`pnpm stack:reset` (compose `down -v`), not `stack:down`, is how you
+restart from a stopped stack.** `stack:down` keeps the Postgres volumes, which
+is only useful for inspecting them — the stack cannot be brought back up on
+them. Set `STACK_ALLOW_KEY_LOSS=1` in localstack's environment to re-provision
+anyway when you know the clusters are empty.
+
 ### The environment is generated, never committed
 
 `.env.stack` is produced by `apps/stack` and matched by `.gitignore`'s
 `.env.*`. Regenerating mints new KMS master keys and blind-index keys, which
 orphans every ciphertext already in the volumes — so the generator refuses to
 overwrite without `--force`, and the message tells you to `stack:reset`.
+
+For a **second addressing** of a stack that is already running, derive rather
+than generate:
+
+```bash
+node apps/stack/dist/generate-env-cli.js --addressing host --from .env.stack
+```
+
+`--from` carries every secret over verbatim and re-addresses only what
+addressing decides (the set is computed by generating twice and diffing, not
+hand-listed). Generating the second file independently would hand the host-mode
+processes a different KMS master key and a different search-index key than the
+composed stack wrote under — the same orphaning hazard, arrived at from the
+other direction.
+
+The doctor takes `--for compose|host` and refuses a file whose
+`STACK_ADDRESSING` does not match the consumer about to read it, mirroring
+`run-services-cli`'s long-standing refusal of the opposite direction.
 
 **The three service credentials are derived from the credential graph**
 (`packages/auth-guard/src/credential-graph.ts`). One secret is minted per
@@ -230,7 +285,19 @@ same misconfiguration **succeed silently against a real account** — minting re
 DEKs and real charges.
 
 The doctor enforces both halves: the endpoint must point at the stack, and the
-credentials must not look real.
+credentials must not look real. It **parses** the endpoint rather than matching a
+prefix — `https://localhost:anything@kms.us-east-1.amazonaws.com/` starts with
+`https://localhost:` while addressing a host on the internet, and this check is
+the thing standing between a misconfigured stack and real AWS calls.
+
+**Residual (production, not the stack).** The SDK resolves the per-service
+overrides `AWS_ENDPOINT_URL_KMS` / `_S3` / `_TEXTRACT`, and `endpoint_url` in an
+AWS config file, *before* `AWS_ENDPOINT_URL`. Each service's
+https-in-production guard only reads the plain name, so one of those set in a
+production environment would send KMS traffic somewhere unvalidated. The stack's
+preflight refuses any `AWS_ENDPOINT_URL_*` variable outright; production has no
+equivalent check and closes this with the deployment's own configuration
+management, not with code in this repo.
 
 ### Health probes are TCP, not HTTP
 

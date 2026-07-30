@@ -543,8 +543,9 @@ deviating from them, stop and propose the change with rationale — do not silen
   on hardened services; audit (headless) is covered by exiting-on-failure +
   restart, which a health endpoint would have papered over.
 - 2026-07-29 — M8 PR3 the stack: docker-compose.stack.yml runs all ten apps +
-  clamd + tesseract + LocalStack (with volumes — keys must not vanish while
-  Postgres volumes persist, stranding DEKs) + Redpanda. .env.stack is
+  clamd + tesseract + LocalStack (volume mounted at /var/lib/localstack —
+  but see the 2026-07-30 correction: it does NOT preserve keys) + Redpanda.
+  .env.stack is
   GENERATED (apps/stack), never committed: the three service credentials are
   minted per credential-graph EDGE and written to callee + every holder, so
   vault's copy equals settlement's inbound BY CONSTRUCTION — closing the
@@ -670,3 +671,67 @@ deviating from them, stop and propose the change with rationale — do not silen
   makes the triple indivisible, and the form reveals date+source as soon as an
   amount is typed. Coverage floors RAISED, not lowered, to absorb the new UI:
   web 62/55/58/65 → 70/62/64/73.
+- 2026-07-30 — M8 security review (six parallel discovery lenses over the merged
+  range `b95bb5f..8bec8af` + adversarial verify of each finding, verifiers told
+  to default to refuted): no zone boundary weakened, no production fail-fast
+  relaxed to make the stack run, no credential reaching a service the graph
+  forbids. THREE confirmed defects, all in machinery M8 introduced, TWO of them
+  contradicting a claim in the same milestone's own commit messages — the
+  recurring M6/M7 pattern, now expected rather than surprising. (1) LOGOUT read
+  identity's 401 as success: the guarded route needs a live 15-minute ACCESS
+  token, so a tab older than that cleared both cookies while the session and its
+  30-DAY REFRESH TOKEN stayed live — a browser that looks signed out over a
+  session that is not, which is precisely what the PR5 message claimed to avoid.
+  Identity gained `POST /v1/auth/logout/refresh`, deliberately NOT behind
+  SessionGuard (a live access token is the thing that is missing), resolving by
+  refresh-token hash and always answering 200 so it is not a liveness oracle;
+  the BFF falls through to it and still clears no cookie unless something was
+  revoked. (2) The BLOCKING stack gate had never run: `stack.yml` handed the
+  HOST-addressed env file to compose, where `localhost` is each bootstrap
+  container's own loopback, so every migration failed and the job died before
+  the stack test — the production rehearsal never executed while docs/05
+  credited it as proven. Now two files, the host one DERIVED from the compose
+  one (`--from`, same secrets — two addressings are two views of ONE set of
+  volumes, and independent generation would give the host processes a different
+  KMS master key and search-index key than the bootstrap jobs wrote under), and
+  `diagnose --for compose|host` refuses a mismatch, mirroring
+  run-services-cli's refusal of the opposite direction — the ASYMMETRY was the
+  hole. Same finding: the `numPassedTests` floors sat two tests below the real
+  counts, slack exactly wide enough to `.skip` the clamd FOUND path and the
+  OCR→search path and stay green; both workflows now assert EXACT passed and
+  pending counts. (3) A dead audit CONSUMER left the process running: PR2 fixed
+  startup and left steady state open — `consumer.run()` resolves once the loop
+  is running, and kafkajs restarts only RETRIABLE errors (`shouldRestart =
+  isErrorRetriable && restartOnFailure(e)`, read in the locked 2.2.4 source), so
+  anything else disconnects and returns, leaving a live process holding its PG
+  socket and answering the TCP probe while ingesting nothing. `start()` now
+  takes the fatal handler. Full record in docs/04 M8 review.
+- 2026-07-30 — MEASURED, correcting the PR3 claim: LocalStack Community does NOT
+  persist state and the volume at /var/lib/localstack holds the state DIRECTORY,
+  not the state. A plain `docker restart localstack` leaves 0 of 6 KMS aliases,
+  an empty bucket, and a previously wrapped DEK failing Decrypt with
+  NotFoundException — while the Postgres volumes persist, so that one restart
+  strands every DEK and dangles every object_key with no error at the time.
+  `/tmp/stack-init-complete` also SURVIVES a restart (container filesystem, not
+  container state), so the healthcheck reported a healthy keyless LocalStack.
+  The init hook now clears the marker FIRST and refuses to re-provision when its
+  volume-resident epoch file exists with no keys behind it: re-minting under the
+  same aliases would hand the services a stack that boots cleanly and cannot
+  read its own data, so it exits non-zero with instructions
+  (`STACK_ALLOW_KEY_LOSS=1` to override). Consequence for the runbook: the data
+  volumes are ONE UNIT — `stack:reset` (down -v), never `stack:down`, is how you
+  come back from a stopped stack.
+- 2026-07-30 — Also from the M8 review: the doctor's endpoint check was a PREFIX
+  match, so `https://localhost:x@kms.us-east-1.amazonaws.com/` passed the one
+  guard between a misconfigured stack and real AWS — it parses the URL now.
+  Related and NOT closed: the SDK resolves `AWS_ENDPOINT_URL_KMS`/`_S3`/
+  `_TEXTRACT` BEFORE `AWS_ENDPOINT_URL` and each service's https-in-production
+  guard only reads the plain name; the stack's preflight refuses those variables
+  outright, production does not, and six config comments that overclaimed "can
+  never disagree" now scope themselves precisely. The supervisor also scrubs
+  `NODE_TLS_*`/`NODE_OPTIONS`/`NODE_EXTRA_CA_CERTS` from the parent env — the
+  doctor reads the FILE, and these reach a child from the developer's shell
+  without ever appearing in it. And plaid's compose profile name is now
+  GENERATED (`PLAID_PROFILE`), so the production profile omits the container
+  instead of crash-looping one that cannot boot without live credentials —
+  matching what `plannedServices` already did for host mode.

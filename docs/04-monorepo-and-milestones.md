@@ -1109,7 +1109,7 @@ elevation, peer approval; also closes the one-operator-two-actions residual)
 isolate service · beneficiary contact-link projection (assets'
 `namedBeneficiaries`) · transactional outbox (standing).
 
-### M8 — The local stack (in progress; PR1–PR3 shipped)
+### M8 — The local stack (all five PRs shipped; reviewed)
 
 A flagged deviation: docs/04 had M8 as the AI assistant. The local stack went
 first because nothing in the repo had ever run as a deployed system — M5's
@@ -1236,6 +1236,108 @@ stays untested until the real environment exists.
   refuses a partial valuation with `INVALID_REQUEST` rather than forwarding one
   and masking a downstream 400. Web coverage floors were **raised** to absorb
   the new UI (62/55/58/65 → 70/62/64/73).
+
+**M8 security review (2026-07-29/30).** Structured review of the whole merged M8
+range (`b95bb5f..8bec8af`, PR1–PR5): six parallel discovery passes — the adapter
+mode selectors and their production guards, the generated environment and the
+credential graph's provisioning claims, the CI gates as *gates* (what would a
+green run fail to notice), the runtime seams introduced in PR2, the thin UI's
+session and bearer handling, and every claim the milestone's own documentation
+makes about what it proves — each candidate then adversarially re-verified
+against source by an agent instructed to refute it and to default to refuted
+when uncertain.
+
+**No Zone A/Zone B boundary was weakened, no production fail-fast requirement
+was relaxed to make the stack run, and no credential the graph forbids reached a
+service that must not hold it.** The production TLS refusal was met with real
+TLS; the generator's per-edge minting held up; the doctor, the compose-parity
+fence and the credential-graph fence each caught a real drift *during* the
+milestone. Three defects were confirmed, all in machinery M8 itself introduced,
+and all fixed in this branch. Two of the three contradicted a claim made in the
+same milestone's own commit messages — the recurring M6/M7 pattern.
+
+- **Logout treated identity's 401 as success (high).** The BFF called
+  identity's `SessionGuard`-protected logout route with the *access* token,
+  which lives 15 minutes, and read a 401 as "already logged out" — clearing both
+  cookies while the session and its **30-day refresh token stayed live**. Any
+  tab older than the access TTL therefore produced a browser that looked signed
+  out and a session that was not, which is the exact outcome PR5's own commit
+  message claimed it avoided. Identity gained
+  `POST /v1/auth/logout/refresh` — deliberately *not* behind `SessionGuard`,
+  since a live access token is the thing that is missing — resolving the session
+  by refresh-token hash and revoking it. It always answers 200 so it cannot be
+  used as a session-liveness oracle. The BFF falls through to the refresh
+  credential when the access path returns false, and still **clears no cookie
+  unless something was actually revoked**.
+
+- **The blocking stack gate died before it ever ran (high).** `stack.yml` handed
+  the **host-addressed** env file to `docker compose`, where `localhost` is each
+  bootstrap container's own loopback: every migration failed, and with it the
+  whole job — so the production rehearsal had never executed even once while
+  docs/05 credited it as proven. Two env files are now generated, the host one
+  **derived** from the compose one (`--from`, so both carry the same secrets),
+  and `diagnose` takes `--for compose|host` and refuses a mismatch — mirroring
+  `run-services-cli`'s long-standing refusal of the opposite direction, whose
+  asymmetry was the hole. The bootstrap jobs are now inside
+  `compose-parity.spec.ts` too, which also caught `seed-templates` running
+  without `KAFKA_BROKERS` (the template-publication audit events were silently
+  going to the in-memory producer).
+
+  The same finding noted the `numPassedTests` **floors sat two tests below the
+  real counts** — slack exactly wide enough to `.skip` the clamd FOUND path and
+  the OCR→encrypted-search path and still go green. Both workflows now assert
+  the **exact** passed and pending counts.
+
+- **A dead audit consumer left the process running (medium-high).** PR2 fixed
+  the *startup* fatal path and left steady state open. `consumer.run()` resolves
+  once the fetch loop is running, and kafkajs restarts itself only for
+  *retriable* errors (`shouldRestart = isErrorRetriable && restartOnFailure(e)`,
+  verified in the locked 2.2.4 source); anything else disconnects, emits `CRASH`
+  and returns — leaving a live process holding its Postgres socket, answering
+  the TCP probe, and ingesting nothing. Exactly the "up with a dead audit trail"
+  state `fatal.ts` exists to prevent, in the service whose silence docs/01 §6
+  treats as a paging signal. `AuditConsumer.start()` now takes the fatal
+  handler and routes a non-restartable crash to it; `restartOnFailure` is stated
+  explicitly (it can only veto a restart, never force one).
+
+Also fixed, from the same review:
+
+- **LocalStack loses its keys on restart, and the docs claimed otherwise.**
+  *Measured*: with the volume mounted, a plain `docker restart` leaves 0 of 6
+  KMS aliases, an empty bucket, and a previously wrapped DEK failing `Decrypt`
+  with `NotFoundException`. The Postgres volumes persist, so that restart
+  strands every DEK and dangles every `object_key` with no error at the time.
+  Worse, `/tmp/stack-init-complete` **survives** a restart, so the container
+  reported healthy while keyless. The init hook now clears the marker first and
+  refuses to re-provision when its epoch file exists with no keys behind it —
+  re-minting under the same aliases would produce a stack that boots cleanly and
+  cannot read its own data. The false CLAUDE.md claim is corrected and docs/05
+  states the measurement.
+- **The doctor's endpoint check was a prefix match**, so
+  `https://localhost:x@kms.us-east-1.amazonaws.com/` passed the one guard
+  standing between a misconfigured stack and real AWS. It parses the URL now.
+  Related and **not** closed in production: the SDK resolves
+  `AWS_ENDPOINT_URL_KMS`/`_S3`/`_TEXTRACT` *before* `AWS_ENDPOINT_URL`, and each
+  service's https-in-production guard only reads the plain name — the stack's
+  preflight refuses those variables outright, production does not, and six
+  config comments that overclaimed "can never disagree" now say so.
+- **The supervisor's env scrub missed the TLS escape hatches.**
+  `NODE_TLS_REJECT_UNAUTHORIZED` and `NODE_OPTIONS` reach a child from the
+  developer's shell without appearing in the file the doctor read; both are
+  scrubbed now, alongside `NODE_EXTRA_CA_CERTS`.
+- **`--profile plaid` started a doomed container in the production profile.**
+  The compose profile name is generated (`PLAID_PROFILE`), so production leaves
+  plaid out entirely — matching what `plannedServices` already did for host
+  mode. Verified against real `docker compose config` in both modes.
+- Out of scope but observed and fixed: `vault-crypto`'s exhaustive
+  single-character-error sweep timed out under `turbo test`'s 20-way
+  parallelism. Given a 30s budget rather than sampled, since the exhaustiveness
+  is the point.
+
+Left open deliberately: nothing verifies which URL a credential is presented to,
+cross-service provisioning drift for **hand**-provisioned environments, and the
+production per-service-endpoint residual above — all three close with the mesh
+or with deployment configuration management, not with code here.
 
 ### Later milestones (rough order, one per bounded context)
 AI assistant (privacy proxy) · then referral, notifications (whose SES

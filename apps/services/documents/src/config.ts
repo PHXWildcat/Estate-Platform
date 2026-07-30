@@ -50,11 +50,20 @@ const EnvSchema = z
     // means the real AWS endpoints.
     //
     // The SDK already honours this variable ambiently, so we deliberately read
-    // the SAME name rather than inventing one: our explicitly-passed value and
-    // the SDK's own resolution can then never disagree. Reading it here buys
-    // two things the ambient path does not — the production TLS guard below,
-    // and `forcePathStyle` for S3, which has no environment selector in the
-    // SDK at all and therefore requires this to be an explicit decision.
+    // the SAME name rather than inventing one: when it is SET the value we pass
+    // explicitly wins, so ours and the SDK's resolution cannot disagree.
+    // Reading it here buys two things the ambient path does not — the
+    // production TLS guard below, and `forcePathStyle` for S3, which has no
+    // environment selector in the SDK at all and therefore requires this to be
+    // an explicit decision.
+    //
+    // Precisely scoped, because an earlier phrasing here overclaimed "can never
+    // disagree": when this is UNSET we pass no endpoint and the SDK resolves
+    // ambiently, which includes the per-service overrides
+    // (`AWS_ENDPOINT_URL_KMS`, `_S3`, `_TEXTRACT`) and `endpoint_url` in an AWS
+    // config file. Those take precedence and the guard below never sees them.
+    // The local stack's preflight refuses them outright; the production
+    // residual is recorded in docs/05.
     AWS_ENDPOINT_URL: z.string().url().optional(),
     // Comma-separated broker list. Optional in dev/test; REQUIRED in
     // production — audit is a hard dependency of every sensitive action.

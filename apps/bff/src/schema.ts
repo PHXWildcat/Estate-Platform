@@ -225,12 +225,30 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         ): Promise<typeof OK> => {
           // Revoke server-side FIRST — the cookies are the only copies of the
           // tokens, so clearing them before a failed revocation would strand a
-          // live session that only a thief could still use. A token identity
-          // no longer recognizes is already logged out, not a failure.
-          const token = cookieValue(ctx, ACCESS_COOKIE);
-          if (token !== null) {
-            await identity.logout(token);
+          // live session that only a thief could still use.
+          //
+          // TWO CREDENTIALS, because they expire on different clocks. The
+          // access token lasts 15 minutes and the refresh token 30 days, so
+          // any tab older than the access TTL cannot revoke through the
+          // guarded route — identity answers 401. Treating that 401 as success
+          // was the M8-review finding: it revoked nothing, cleared the
+          // cookies, and reported "signed out" over a session that remained
+          // valid for up to a month. So a dead access token falls through to
+          // the refresh credential rather than being read as done.
+          const accessToken = cookieValue(ctx, ACCESS_COOKIE);
+          const refreshToken = cookieValue(ctx, REFRESH_COOKIE);
+          let revoked = false;
+          if (accessToken !== null) {
+            revoked = await identity.logout(accessToken);
           }
+          if (!revoked && refreshToken !== null) {
+            await identity.logoutByRefresh(refreshToken);
+            revoked = true;
+          }
+          // Cookies are cleared when the session is genuinely gone, or when
+          // there was no credential to revoke in the first place (already
+          // signed out — clearing is then just tidying). Never after a
+          // revocation we could not complete: that path throws above.
           clearSessionCookies(ctx.res, secureCookies);
           return OK;
         },

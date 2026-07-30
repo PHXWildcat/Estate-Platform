@@ -7,9 +7,12 @@ import {
   assignCredentials,
   generateEnv,
   renderEnvFile,
+  addressingDependentKeys,
+  deriveEnv,
   writeStackEnv,
   type EnvFileIo,
 } from '../src/generate-env';
+import { parseEnvFile } from '../src/env-file';
 import { SERVICES } from '../src/topology';
 
 /** In-memory filesystem so the overwrite guard is tested without disk. */
@@ -18,11 +21,134 @@ function fakeIo(present: string[] = []): EnvFileIo & { written: Map<string, stri
   return {
     written,
     exists: (path) => present.includes(path) || written.has(path),
+    read: (path) => {
+      const contents = written.get(path);
+      if (contents === undefined) {
+        throw new Error(`fake io: nothing written at ${path}`);
+      }
+      return contents;
+    },
     write: (path, contents) => {
       written.set(path, contents);
     },
   };
 }
+
+describe('re-addressing an existing environment', () => {
+  // Two addressings are two VIEWS of one stack: the same Postgres volumes, the
+  // same LocalStack keys, the same bucket. Generating the second from scratch
+  // hands the host-mode processes a different KMS master key and a different
+  // search-index key than the composed stack wrote under — and the symptom is
+  // not an error but wrong answers, which is the exact hazard writeStackEnv's
+  // overwrite refusal exists to prevent.
+  const composeFile = (mode: 'development' | 'production' = 'development'): Map<string, string> =>
+    parseEnvFile(renderEnvFile(generateEnv({ mode, addressing: 'compose' }), { mode }));
+
+  it('carries every secret over verbatim', () => {
+    const source = composeFile();
+    const derived = deriveEnv(source, { mode: 'development', addressing: 'host' });
+    expect(derived.status).toBe('derived');
+    if (derived.status !== 'derived') {
+      return;
+    }
+    const result = parseEnvFile(renderEnvFile(derived.generated, { mode: 'development' }));
+    const dependent = addressingDependentKeys('development');
+    for (const [key, value] of source) {
+      if (!dependent.has(key)) {
+        expect(`${key}=${result.get(key)}`).toBe(`${key}=${value}`);
+      }
+    }
+    // Every key material variable is in that set, named explicitly so the
+    // assertion cannot pass by the set being empty.
+    for (const key of [
+      'IDENTITY_KMS_MASTER_KEY_HEX',
+      'DOCUMENTS_SEARCH_INDEX_KEY_HEX',
+      'IDENTITY_EMAIL_INDEX_KEY_HEX',
+      'VAULT_SETTLEMENT_INTERNAL_TOKEN',
+    ]) {
+      expect(dependent.has(key)).toBe(false);
+      expect(result.get(key)).toBe(source.get(key));
+    }
+  });
+
+  it('re-addresses everything that addressing decides', () => {
+    const derived = deriveEnv(composeFile(), { mode: 'development', addressing: 'host' });
+    if (derived.status !== 'derived') {
+      throw new Error(derived.message);
+    }
+    const result = parseEnvFile(renderEnvFile(derived.generated, { mode: 'development' }));
+    expect(result.get('STACK_ADDRESSING')).toBe('host');
+    expect(result.get('KAFKA_BROKERS')).toBe('localhost:9092');
+    expect(result.get('IDENTITY_DATABASE_URL')).toContain('localhost:');
+    expect(result.get('IDENTITY_DATABASE_URL')).not.toContain('pg-auth');
+  });
+
+  it('computes the addressing-dependent set rather than trusting a list', () => {
+    const dependent = addressingDependentKeys('production');
+    // Sanity: the set is neither empty (which would carry stale hostnames over)
+    // nor everything (which would re-mint every secret).
+    expect(dependent.has('IDENTITY_DATABASE_URL')).toBe(true);
+    expect(dependent.has('AWS_ENDPOINT_URL')).toBe(true);
+    expect(dependent.has('NODE_EXTRA_CA_CERTS')).toBe(true);
+    expect(dependent.has('AWS_REGION')).toBe(false);
+    expect(dependent.has('RP_ORIGIN')).toBe(false);
+  });
+
+  it('REFUSES a source in the other mode', () => {
+    // The profiles differ in adapter selection, TLS and the notifier gates, so
+    // re-addressing across them would silently produce a hybrid.
+    const outcome = deriveEnv(composeFile('production'), {
+      mode: 'development',
+      addressing: 'host',
+    });
+    expect(outcome.status).toBe('refused');
+  });
+
+  it('REFUSES a source missing keys rather than minting them', () => {
+    const source = composeFile();
+    source.delete('DOCUMENTS_SEARCH_INDEX_KEY_HEX');
+    const outcome = deriveEnv(source, { mode: 'development', addressing: 'host' });
+    expect(outcome.status).toBe('refused');
+    if (outcome.status === 'refused') {
+      expect(outcome.message).toContain('DOCUMENTS_SEARCH_INDEX_KEY_HEX');
+    }
+  });
+
+  it('writeStackEnv --from derives, and refuses a missing source', () => {
+    const io = fakeIo();
+    writeStackEnv({ mode: 'development', target: '.env.stack.compose', force: false }, io);
+    const written = writeStackEnv(
+      {
+        mode: 'development',
+        addressing: 'host',
+        target: '.env.stack',
+        force: false,
+        from: '.env.stack.compose',
+      },
+      io,
+    );
+    expect(written).toEqual({ status: 'written', path: '.env.stack' });
+    const compose = parseEnvFile(io.written.get('.env.stack.compose') ?? '');
+    const host = parseEnvFile(io.written.get('.env.stack') ?? '');
+    expect(host.get('IDENTITY_KMS_MASTER_KEY_HEX')).toBe(
+      compose.get('IDENTITY_KMS_MASTER_KEY_HEX'),
+    );
+    expect(host.get('STACK_ADDRESSING')).toBe('host');
+
+    expect(
+      writeStackEnv(
+        {
+          mode: 'development',
+          addressing: 'host',
+          target: '.env.other',
+          force: false,
+          from: '.env.absent',
+        },
+        io,
+      ).status,
+    ).toBe('refused');
+  });
+});
 
 describe('writeStackEnv', () => {
   it('writes when there is nothing to lose', () => {

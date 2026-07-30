@@ -344,11 +344,16 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      # Without brokers the CLI selects the in-memory audit producer, so
+      # template publication and activation — the legal-sign-off gate's own
+      # audit trail — would never reach the chain the stack test verifies.
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
     volumes:
       - ./.stack-certs:/certs:ro
     depends_on:
       migrate-documents: { condition: service_completed_successfully }
       localstack: { condition: service_healthy }
+      provision-topics: { condition: service_completed_successfully }
 
   # ------------------------------------------------------------------ services
   identity:
@@ -446,7 +451,13 @@ services:
   # credentials and fails every outbound call is worse than an absent one.
   plaid:
     build: { <<: *node-build, args: { PKG: '@estate/service-plaid' } }
-    profiles: ['plaid']
+    # GENERATED, not literal: 'plaid' in development, an unmatched name in
+    # production. Production config requires PLAID_MODE=live with credentials
+    # that do not exist, so `--profile plaid` in the production profile used to
+    # start a container that failed fast and then crash-looped forever — the
+    # control working, dressed up as a broken stack. `plannedServices` already
+    # made the host-mode supervisor skip it; this is the compose half.
+    profiles: ['${PLAID_PROFILE}']
     restart: unless-stopped
     ports: ['3004:3004']
     environment:
