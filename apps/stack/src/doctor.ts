@@ -268,6 +268,11 @@ export function diagnose(
     ['DOCUMENTS_OBJECT_STORE_MODE', 's3', 'the filesystem object store'],
     ['DOCUMENTS_SCANNER_MODE', 'clamd', 'the stub malware scanner'],
     ['DOCUMENTS_OCR_MODE', 'tesseract', 'the stub OCR engine'],
+    // M9: the carrier path must be real end to end, or the retired 503s would
+    // be replaced by sends into a void.
+    ['VAULT_NOTIFY_MODE', 'http', 'the stub owner notifier'],
+    ['SETTLEMENT_NOTIFY_MODE', 'http', 'the stub owner notifier'],
+    ['NOTIFICATIONS_EMAIL_MODE', 'ses', 'the stub email carrier'],
   ];
   for (const [key, expected, what] of stubbed) {
     const actual = get(key);

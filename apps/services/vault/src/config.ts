@@ -24,15 +24,22 @@ const EnvSchema = z
     // (CallerGuard/StepUpGuard introspect the caller's token). Required IN
     // production; dev defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
-    // Owner-notification channel for emergency access (docs/03 §5.2). Only the
-    // stub exists today; real channels arrive with the notifications
-    // milestone, and a real mode joins this enum then. Deliberately NOT a
-    // boot-time production requirement - that would take the whole vault down
-    // for a feature most users never arm. Instead the emergency-access routes
-    // refuse in production while only the stub is wired (see
-    // EmergencyAccessService), so the failure is scoped to the flow whose
-    // safety actually depends on it.
-    NOTIFY_MODE: z.enum(['stub']).default('stub'),
+    // Owner-notification channel for emergency access (docs/03 §5.2). 'http'
+    // (M9) delegates to the notifications service, which owns address
+    // resolution and the closed template registry. Production now PINS 'http'
+    // — the earlier "not a boot-time requirement" stance predated a real
+    // adapter existing; with one shipped, a production vault running the stub
+    // would be a misconfiguration wearing the control's clothes (the
+    // KMS/clamd/OCR adapter rule). The per-route 503 gate REMAINS as defense
+    // in depth for any future adapter whose capability bit is false.
+    NOTIFY_MODE: z.enum(['stub', 'http']).default('stub'),
+    // Base URL of the notifications service; required whenever NOTIFY_MODE is
+    // 'http'.
+    NOTIFICATIONS_URL: z.string().url().optional(),
+    // OUTBOUND: presented to the notifications service's internal routes
+    // (send + recipient-upsert and nothing else; credential-graph.ts). Unset ⇒
+    // the client short-circuits and every send records as undelivered.
+    NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
     // Base URL of the settlement service (M7 PR2, docs/03 §6a): emergency
     // access is the LAST staged grant of a settlement, so release consults it.
     // Required IN production; dev defaults to localhost.
@@ -83,10 +90,47 @@ const EnvSchema = z
           'SETTLEMENT_INTERNAL_TOKEN is required in production (>= 32 chars; without it the settlement gate blocks every release)',
       });
     }
+    if (env.NODE_ENV === 'production' && env.NOTIFY_MODE !== 'http') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOTIFY_MODE'],
+        message:
+          'NOTIFY_MODE must be "http" in production (the stub notifier reaches nobody; a real adapter exists as of M9)',
+      });
+    }
+    if (env.NOTIFY_MODE === 'http' && !env.NOTIFICATIONS_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOTIFICATIONS_URL'],
+        message: 'NOTIFICATIONS_URL is required when NOTIFY_MODE is "http"',
+      });
+    }
+    if (env.NODE_ENV === 'production') {
+      if (!env.NOTIFICATIONS_INTERNAL_TOKEN || env.NOTIFICATIONS_INTERNAL_TOKEN.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; undelivered owner notifications hollow out the §5.2 waiting period)',
+        });
+      }
+      // One value must never authenticate two callees (the M7 collapse).
+      if (
+        env.NOTIFICATIONS_INTERNAL_TOKEN &&
+        env.NOTIFICATIONS_INTERNAL_TOKEN === env.SETTLEMENT_INTERNAL_TOKEN
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_INTERNAL_TOKEN must differ from SETTLEMENT_INTERNAL_TOKEN (one value must never open two callees)',
+        });
+      }
+    }
   });
 
 /** Which adapter delivers emergency-access notifications to the owner. */
-export type NotifyConfig = { readonly mode: 'stub' };
+export type NotifyConfig = { readonly mode: 'stub' } | { readonly mode: 'http' };
 
 export interface VaultConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
@@ -103,6 +147,11 @@ export interface VaultConfig {
    * locally). Opens that one read-only route; confers no other authority.
    */
   readonly settlementInternalToken: string;
+  /** Notifications service base URL (M9). */
+  readonly notificationsUrl: string;
+  /** OUTBOUND: presented to the notifications service ('' ⇒ sends record as
+   * undelivered). Never the settlement value — one secret per callee. */
+  readonly notificationsInternalToken: string;
 }
 
 export class ConfigError extends Error {
@@ -139,5 +188,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): VaultConfig {
     notify: { mode: e.NOTIFY_MODE },
     settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
     settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
+    notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
+    notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
   };
 }

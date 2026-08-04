@@ -61,7 +61,31 @@ describe('config validation', () => {
     AWS_KMS_KEY_ID: 'alias/estate-auth-kek',
     AWS_REGION: 'us-east-1',
     IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
+    NOTIFICATIONS_URL: 'https://notifications.internal',
+    NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(48),
   };
+
+  it('production REQUIRES the notifications feed (M9) and refuses credential aliasing', () => {
+    const { NOTIFICATIONS_URL: _u, ...withoutUrl } = PROD_EXTRAS;
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...withoutUrl })),
+    ).toThrow(ConfigError);
+    const { NOTIFICATIONS_INTERNAL_TOKEN: _t, ...withoutToken } = PROD_EXTRAS;
+    expect(() =>
+      loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...withoutToken })),
+    ).toThrow(ConfigError);
+    // The M7 collapse as a value: one string in both slots must refuse to boot.
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          ...PROD_EXTRAS,
+          NOTIFICATIONS_INTERNAL_TOKEN: PROD_EXTRAS.IDENTITY_INTERNAL_TOKEN,
+        }),
+      ),
+    ).toThrow(/must differ from IDENTITY_INTERNAL_TOKEN/);
+  });
 
   it('production REQUIRES the WebAuthn RP identity (never a localhost default)', () => {
     // Kafka + AWS KMS present but RP vars missing ⇒ still rejected.

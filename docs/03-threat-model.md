@@ -332,6 +332,63 @@ equal, because splitting the field does not stop an operator pasting one value
 into both slots. Rotation remains a synchronized restart of two services; the
 mesh mTLS/SPIFFE follow-up removes the static secret rather than improving it.
 
+## 6c. Threat-model delta — M9 notifications (2026-08-04)
+
+M9 turns the §6a/§6b notification PRECONDITIONS into a running control: the
+notifications service (docs/01 §2.10, TB5's carrier boundary) delivers the
+owner notifications that the emergency-access and settlement waiting periods
+rest on. Controls shipped, each mapped to what this document demanded:
+
+- **Content-free pointers are enforced by construction, not convention
+  (§5.4, risk #10).** The wire schema has no text field — a closed kind enum,
+  a user id, a requested channel, an optional deadline — so a compromised
+  caller can trigger a template, never author a message. The template
+  registry carries no user data beyond the deadline DATE, uses ONE uniform
+  subject for every kind (a mailbox observer or lock-screen shoulder-surfer
+  learns that Estate wants attention, never WHICH control fired — the M6
+  review's delivery-channel-leakage item), and contains NO links of any kind.
+  The production e2e asserts all three properties on a real delivered
+  message.
+- **Recipient addresses never cross a cluster boundary (§5.3).** The service
+  keeps its own store, AEAD under its own `notifications/kek` (core
+  co-tenants cannot unwrap it), fed by identity at the two plaintext moments
+  (registration, login). No email-ciphertext read path exists anywhere; no
+  blind index exists on the store (nothing legitimate asks "which user has
+  this address"). Every send's decrypt is a logged event.
+- **The gates stay, and became visible.** The per-route 503s remain as
+  defense in depth behind the production adapter pins (`NOTIFY_MODE=http`,
+  `EMAIL_MODE=ses`), and now emit `vault.emergency.notifications_refused` /
+  `settlement.notifications_refused` — a control firing must be
+  distinguishable from an outage in the stream operators watch.
+- **The credential is scoped (§6b's rule).** `NOTIFICATIONS_INTERNAL_TOKEN`
+  opens send + recipient-upsert and nothing else; holders are identity,
+  settlement, vault; pairwise aliasing refusals extend to it in every holder.
+
+**Residuals, accepted and recorded:**
+
+- *Email is the only live channel.* §5.2's "multi-channel" and §5.1's
+  "every channel including hardware-key challenge" remain aspirational;
+  the contact trail records channel INTENT (push/sms/voice) while delivery is
+  email. SMS/push arrive with their own carriers and their own review.
+- *No one-tap deny token yet.* Deny remains an in-app action ("open your
+  Estate app"); an email-borne deny capability needs the vault UI's isolated
+  origin to exist and its own token design + review. Until then the
+  notification shortens discovery time but not the deny path.
+- *A stale or attacker-fed recipient address.* The store trusts identity's
+  word at registration/login; recipient changes are versioned and audited
+  (`notification.recipient.updated`), and pointing a victim's notifications
+  elsewhere requires identity-level compromise, at which point notifications
+  are not the interesting target. Recorded, not defended beyond that.
+- *The carrier sees addresses and timing (TB5).* Inherent to email; the
+  content-free doctrine is the mitigation. SES supply-chain posture rides the
+  existing AWS SDK pinning.
+- *`emergency.reminder` is declared but never emitted* (vault has no
+  scheduler); the sweep-driven reminder belongs with Temporal or a later
+  driver.
+
+The milestone's own security pass (owed since the M6 review, including
+delivery-channel identifier leakage) closes M9 after PR2.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

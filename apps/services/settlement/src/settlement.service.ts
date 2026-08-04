@@ -139,7 +139,7 @@ export class SettlementService {
    * arbitrary id (the anti-enumeration boundary).
    */
   async report(actor: string, sessionId: string, input: ReportCaseInput): Promise<CaseDto> {
-    this.assertNotificationsUsable();
+    await this.assertNotificationsUsable();
     if (input.decedentUserId === actor) {
       // Reporting yourself dead is never a legitimate flow.
       throw new BadRequestException({ error: 'invalid_request' });
@@ -173,7 +173,7 @@ export class SettlementService {
     sessionId: string,
     input: ProviderReportInput,
   ): Promise<CaseDto> {
-    this.assertNotificationsUsable();
+    await this.assertNotificationsUsable();
     await this.assertOperator(operator);
     if (input.decedentUserId === operator) {
       throw new BadRequestException({ error: 'invalid_request' });
@@ -299,7 +299,7 @@ export class SettlementService {
         }
 
         if (input.decision === 'approve') {
-          this.assertNotificationsUsable();
+          await this.assertNotificationsUsable();
           if (locked.status !== 'verifying') {
             throw new ConflictException({ error: 'invalid_transition' });
           }
@@ -716,8 +716,20 @@ export class SettlementService {
     }
   }
 
-  private assertNotificationsUsable(): void {
+  private async assertNotificationsUsable(): Promise<void> {
     if (this.config.nodeEnv === 'production' && !this.notifier.deliversToRealChannels) {
+      // The refusal is a control firing, and as of M9 it is VISIBLE in the
+      // audit stream rather than indistinguishable from an outage.
+      await this.events.audit.emit({
+        action: 'settlement.notifications_refused',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: null,
+        resourceType: 'settlement_case',
+        resourceId: null,
+        sessionId: null,
+        detail: {},
+      });
       throw new ServiceUnavailableException({ error: 'notifications_unavailable' });
     }
   }
@@ -732,8 +744,8 @@ export class SettlementService {
       });
     } catch {
       // Delivery failure is non-fatal: the attempt row + audit event record
-      // that contact was attempted; delivery tracking arrives with the
-      // notifications milestone.
+      // that contact was attempted, and (M9) the notifications service's own
+      // send log records the outcome. Contact liveness degrades; safety never.
     }
   }
 

@@ -51,6 +51,8 @@ const VAULT = process.env['STACK_VAULT_URL'] ?? 'http://localhost:3006';
 const SETTLEMENT = process.env['STACK_SETTLEMENT_URL'] ?? 'http://localhost:3007';
 const AUDIT_DB =
   process.env['STACK_AUDIT_DB_URL'] ?? 'postgres://estate:estate_dev@localhost:5438/audit';
+const CORE_DB =
+  process.env['STACK_CORE_DB_URL'] ?? 'postgres://estate:estate_dev@localhost:5434/core';
 const ENV_FILE = process.env['STACK_ENV_FILE'] ?? join(__dirname, '..', '..', '..', '.env.stack');
 
 jest.setTimeout(240_000);
@@ -111,6 +113,8 @@ async function pollUntil<T>(
 interface Session {
   token: string;
   userId: string;
+  /** The address identity fed into the notifications recipient store (M9). */
+  email: string;
 }
 
 async function registerAndLogin(base = IDENTITY): Promise<Session> {
@@ -126,7 +130,32 @@ async function registerAndLogin(base = IDENTITY): Promise<Session> {
     200,
     'login',
   ) as { accessToken: string; userId: string };
-  return { token: login.accessToken, userId: login.userId };
+  return { token: login.accessToken, userId: login.userId, email };
+}
+
+/** LocalStack's SES message store, read directly (not through the TLS front). */
+const SES_QUERY = process.env['STACK_SES_QUERY_URL'] ?? 'http://localhost:4566';
+
+interface SesStoredMessage {
+  Source?: string;
+  Destination?: { ToAddresses?: string[] };
+  Subject?: string;
+  Body?: { text_part?: string | null };
+}
+
+/** Poll LocalStack for a REAL delivered email matching `predicate` (M9). */
+async function awaitSesMessage(
+  what: string,
+  predicate: (message: SesStoredMessage) => boolean,
+): Promise<SesStoredMessage> {
+  return pollUntil(what, async () => {
+    const response = await fetch(`${SES_QUERY}/_aws/ses`);
+    if (!response.ok) {
+      return null;
+    }
+    const parsed = (await response.json()) as { messages?: SesStoredMessage[] };
+    return parsed.messages?.find(predicate) ?? null;
+  });
 }
 
 /** Enroll TOTP and elevate the session to step-up. */
@@ -428,6 +457,9 @@ describeIfStack('the running stack', () => {
           'document.uploaded',
           'document.scan.rejected',
           'vault.item.created',
+          // M9: identity fed the recipient store at registration, so the
+          // notifications service's audit producer crossed the broker too.
+          'notification.recipient.updated',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(
@@ -454,43 +486,108 @@ describeIfStack('the running stack', () => {
       expect(session.token.length).toBeGreaterThan(10);
     });
 
-    it('refuses settlement intake while notifications are stubbed (the control firing)', async () => {
-      // assertNotificationsUsable is the FIRST line of report(), so this fires
-      // before the anti-enumeration contact check — a waiting period nobody
-      // can be told about is not a control (M7, the M6 precedent).
+    it('opens a settlement case AND the owner is really told — the M9 carrier path, live', async () => {
+      // Until M9 this route answered 503 notifications_unavailable here: a
+      // waiting period nobody can be told about is not a control. Now the
+      // FULL chain runs under production config: identity fed the recipient
+      // store at registration, intake notifies through the notifications
+      // service, and the message comes back out of LocalStack's SES store —
+      // the same SendEmail API real AWS serves.
+      const decedent = await registerAndLogin();
       const reporter = await registerAndLogin();
-      const response = await api(SETTLEMENT, 'POST', '/v1/settlement/cases', {
-        token: reporter.token,
-        body: { decedentUserId: randomUUID(), source: 'trusted_contact' },
-      });
-      expect(response.status).toBe(503);
-      expect((response.body as { error: string }).error).toBe('notifications_unavailable');
+      // Seed the linked-contact reality intake requires (fixture, not the
+      // flow under test — reporters must be linked contacts, the M7
+      // anti-enumeration rule).
+      const core = new Client({ connectionString: CORE_DB });
+      await core.connect();
+      try {
+        await core.query(
+          `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [randomUUID(), decedent.userId, Buffer.from('ct'), reporter.userId, randomUUID()],
+        );
+      } finally {
+        await core.end();
+      }
+      expectStatus(
+        await api(SETTLEMENT, 'POST', '/v1/settlement/cases', {
+          token: reporter.token,
+          body: { decedentUserId: decedent.userId, source: 'trusted_contact' },
+        }),
+        201,
+        'settlement intake (prod, M9 — the retired 503)',
+      );
+      const message = await awaitSesMessage('the case_opened email in LocalStack SES', (m) =>
+        (m.Destination?.ToAddresses ?? []).includes(decedent.email),
+      );
+      // Content-free doctrine, proven on the live wire: uniform subject, a
+      // pointer into the app, and NO links of any kind (docs/03 §5.4, risk #10).
+      expect(message.Subject).toBe('Estate — action needed');
+      const body = message.Body?.text_part ?? '';
+      expect(body).toContain('verify your identity');
+      expect(body).not.toMatch(/https?:\/\//i);
+      expect(body).not.toContain(reporter.email);
     });
 
-    it('refuses emergency-access configuration while notifications are stubbed', async () => {
+    it('arms an emergency-access escrow, and reconfiguration notifies the owner (M9)', async () => {
+      // The other retired 503. Real Zone A enrollment first — configure locks
+      // the keyset — then two configures: the second retires the first's
+      // grantees, which is exactly the silent transition the M6 review flagged
+      // and M9 makes audible.
       const owner = await registerAndLogin();
       await stepUp(owner);
-      // Schema-valid but cryptographically meaningless: the 503 fires right
-      // after authz, before any of this material is interpreted.
-      const response = await api(VAULT, 'POST', '/v1/vault/emergency-access', {
-        token: owner.token,
-        body: {
-          threshold: 1,
-          platformPart: randomBytes(32).toString('base64'),
-          wrappedMasterKeyRecovery: randomBytes(64).toString('base64'),
-          grantees: [
-            {
-              granteeContactId: randomUUID(),
-              granteeUserId: randomUUID(),
-              keyShare: randomBytes(48).toString('base64'),
-              granteePublicKeySha256: randomBytes(32).toString('base64'),
-              waitingPeriodHours: 24,
-            },
-          ],
-        },
+      const password = `Vault-${randomBytes(12).toString('base64url')}`;
+      const enrolled = await createVaultEnrollment({
+        userId: owner.userId,
+        password,
+        iterations: MIN_ITERATIONS,
       });
-      expect(response.status).toBe(503);
-      expect((response.body as { error: string }).error).toBe('notifications_unavailable');
+      expectStatus(
+        await api(VAULT, 'POST', '/v1/vault/keyset', {
+          token: owner.token,
+          body: enrolled.enrollment.payload,
+        }),
+        201,
+        'vault enroll (prod)',
+      );
+      const configureBody = (): unknown => ({
+        threshold: 1,
+        platformPart: randomBytes(32).toString('base64'),
+        wrappedMasterKeyRecovery: randomBytes(64).toString('base64'),
+        grantees: [
+          {
+            granteeContactId: randomUUID(),
+            granteeUserId: randomUUID(),
+            keyShare: randomBytes(48).toString('base64'),
+            granteePublicKeySha256: randomBytes(32).toString('base64'),
+            waitingPeriodHours: 24,
+          },
+        ],
+      });
+      expectStatus(
+        await api(VAULT, 'POST', '/v1/vault/emergency-access', {
+          token: owner.token,
+          body: configureBody(),
+        }),
+        201,
+        'first escrow configure (prod, M9 — the retired 503)',
+      );
+      expectStatus(
+        await api(VAULT, 'POST', '/v1/vault/emergency-access', {
+          token: owner.token,
+          body: configureBody(),
+        }),
+        201,
+        'reconfigure (retires the previous grantees)',
+      );
+      const message = await awaitSesMessage(
+        'the grantees_changed email in LocalStack SES',
+        (m) =>
+          (m.Destination?.ToAddresses ?? []).includes(owner.email) &&
+          (m.Body?.text_part ?? '').includes('emergency contacts'),
+      );
+      expect(message.Subject).toBe('Estate — action needed');
+      expect(message.Body?.text_part ?? '').not.toMatch(/https?:\/\//i);
     });
 
     it('still enforces step-up on the wire in production mode', async () => {

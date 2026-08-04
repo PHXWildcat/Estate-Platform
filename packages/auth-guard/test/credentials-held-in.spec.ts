@@ -18,6 +18,7 @@ import {
 
 const IDENTITY = 'IDENTITY_INTERNAL_TOKEN';
 const SETTLEMENT = 'SETTLEMENT_INTERNAL_TOKEN';
+const NOTIFICATIONS = 'NOTIFICATIONS_INTERNAL_TOKEN';
 
 describe('credentialsHeldIn', () => {
   it('reports nothing for a config that holds no credential', () => {
@@ -117,20 +118,28 @@ describe('graph lookup helpers', () => {
   });
 
   it('resolves outbound credentials by holder', () => {
-    expect(outboundCredentialsFor('vault').map((e) => e.envVar)).toEqual([SETTLEMENT]);
-    expect(outboundCredentialsFor('settlement').map((e) => e.envVar)).toEqual([IDENTITY]);
+    expect(outboundCredentialsFor('vault').map((e) => e.envVar)).toEqual([
+      SETTLEMENT,
+      NOTIFICATIONS,
+    ]);
+    expect(outboundCredentialsFor('settlement').map((e) => e.envVar)).toEqual([
+      IDENTITY,
+      NOTIFICATIONS,
+    ]);
+    expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([NOTIFICATIONS]);
     expect(outboundCredentialsFor('profile')).toEqual([]);
   });
 
-  it('grants settlement both directions, and never the same variable twice', () => {
-    // Settlement is the only service with two credentials — the shape that
-    // collapsed in M7. Its inbound and outbound must be different variables.
+  it('grants settlement three distinct variables, never the same one twice', () => {
+    // Settlement now touches three credentials — its own inbound plus two
+    // outbound (identity account-lock, M9 notifications). Pairwise distinct is
+    // the shape whose collapse the M7 review found.
     const granted = credentialEnvVarsFor('settlement');
-    expect(granted).toEqual([IDENTITY, SETTLEMENT].sort());
+    expect(granted).toEqual([IDENTITY, NOTIFICATIONS, SETTLEMENT].sort());
     expect(new Set(granted).size).toBe(granted.length);
-    expect(inboundCredentialFor('settlement')?.envVar).not.toBe(
-      outboundCredentialsFor('settlement')[0]?.envVar,
-    );
+    for (const outbound of outboundCredentialsFor('settlement')) {
+      expect(inboundCredentialFor('settlement')?.envVar).not.toBe(outbound.envVar);
+    }
   });
 
   it('grants nothing to services with no service-to-service reach', () => {

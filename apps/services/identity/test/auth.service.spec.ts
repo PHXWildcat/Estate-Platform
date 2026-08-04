@@ -40,6 +40,7 @@ function makeFakes(): {
   };
   fieldCrypto: { getOrCreateDek: jest.Mock; encryptField: jest.Mock; decryptField: jest.Mock };
   deks: { findActiveByUser: jest.Mock };
+  notifications: { upsertRecipient: jest.Mock; send: jest.Mock };
 } {
   return {
     users: { findByEmailBidx: jest.fn().mockResolvedValue(null), insert: jest.fn() },
@@ -77,6 +78,10 @@ function makeFakes(): {
       decryptField: jest.fn(),
     },
     deks: { findActiveByUser: jest.fn().mockResolvedValue(null) },
+    notifications: {
+      upsertRecipient: jest.fn().mockResolvedValue({ ok: true }),
+      send: jest.fn().mockResolvedValue({ accepted: false }),
+    },
   };
 }
 
@@ -92,6 +97,8 @@ const config: IdentityConfig = {
   rpOrigin: 'http://localhost:3000',
   rpName: 'Estate Platform',
   internalApiToken: '',
+  notificationsUrl: 'http://localhost:3008',
+  notificationsInternalToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
@@ -106,6 +113,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
     fakes.deks as unknown as DekRepository,
     config,
     () => NOW,
+    fakes.notifications,
   );
 }
 

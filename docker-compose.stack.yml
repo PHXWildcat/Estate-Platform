@@ -148,9 +148,10 @@ services:
   localstack:
     image: localstack/localstack:3
     environment:
-      SERVICES: kms,s3
+      SERVICES: kms,s3,ses
       AWS_DEFAULT_REGION: ${AWS_REGION}
       STACK_OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET}
+      STACK_SES_FROM_ADDRESS: ${SES_FROM_ADDRESS}
       # LocalStack persistence is a Pro feature, so the volume holds the
       # container's state directory rather than guaranteeing durability. The
       # init hook is idempotent and re-runs on every start, which is what
@@ -281,6 +282,16 @@ services:
     depends_on:
       migrate-profile: { condition: service_completed_successfully }
 
+  # Third core co-tenant (M9). No cross-tenant reads, but sequencing the trio
+  # keeps multiple migrators off one fresh cluster.
+  migrate-notifications:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-notifications' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${NOTIFICATIONS_DATABASE_URL}' }
+    depends_on:
+      migrate-settlement: { condition: service_completed_successfully }
+
   migrate-assets:
     <<: *job
     build: { <<: *node-build, args: { PKG: '@estate/service-assets' } }
@@ -378,9 +389,13 @@ services:
       RP_ID: ${RP_ID}
       RP_ORIGIN: ${RP_ORIGIN}
       RP_NAME: ${RP_NAME}
+      NOTIFICATIONS_URL: http://notifications:3008
       # The ONLY lock-capable credential in the product. Held by settlement
-      # alone (packages/auth-guard/src/credential-graph.ts).
+      # alone (packages/auth-guard/src/credential-graph.ts). The second value
+      # is identity's OUTBOUND grant: it feeds the notifications recipient
+      # store at registration/login and opens nothing else.
       IDENTITY_INTERNAL_TOKEN: ${IDENTITY_IDENTITY_INTERNAL_TOKEN}
+      NOTIFICATIONS_INTERNAL_TOKEN: ${IDENTITY_NOTIFICATIONS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
@@ -537,10 +552,13 @@ services:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
       SETTLEMENT_URL: http://settlement:3007
+      NOTIFICATIONS_URL: http://notifications:3008
+      NOTIFY_MODE: ${VAULT_NOTIFY_MODE}
       # Zone A holds NO server-side key material — no KMS_MODE, no master key,
-      # no index key. The one credential it carries opens settlement's
-      # read-only §6a gate and nothing else.
+      # no index key. The two credentials it carries open settlement's
+      # read-only §6a gate and the notifications send surface, nothing else.
       SETTLEMENT_INTERNAL_TOKEN: ${VAULT_SETTLEMENT_INTERNAL_TOKEN}
+      NOTIFICATIONS_INTERNAL_TOKEN: ${VAULT_NOTIFICATIONS_INTERNAL_TOKEN}
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-vault: { condition: service_completed_successfully }
@@ -565,18 +583,54 @@ services:
       NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
-      # TWO credentials, opposite directions, never equal. The inbound one
-      # vault presents to settlement's gate; the outbound one settlement
-      # presents to identity's account-lock API. One value in both slots is the
-      # M7 collapse — settlement refuses to boot on it in production, and the
-      # doctor refuses it in every mode.
+      NOTIFICATIONS_URL: http://notifications:3008
+      NOTIFY_MODE: ${SETTLEMENT_NOTIFY_MODE}
+      # THREE credentials, pairwise distinct. The inbound one vault presents to
+      # settlement's gate; the outbound ones settlement presents to identity's
+      # account-lock API and (M9) the notifications send surface. One value in
+      # two slots is the M7 collapse — settlement refuses to boot on it in
+      # production, and the doctor refuses it in every mode.
       SETTLEMENT_INTERNAL_TOKEN: ${SETTLEMENT_SETTLEMENT_INTERNAL_TOKEN}
       IDENTITY_INTERNAL_TOKEN: ${SETTLEMENT_IDENTITY_INTERNAL_TOKEN}
+      NOTIFICATIONS_INTERNAL_TOKEN: ${SETTLEMENT_NOTIFICATIONS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-settlement: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  # The isolating boundary for delivery carriers (M9, docs/01 §2.10): SES and
+  # its credentials exist only here. Internal-only routes — nothing publishes
+  # a port beyond the host convenience mapping, and the wire is content-free
+  # by schema. Third core co-tenant with its OWN KEK for the recipient store.
+  notifications:
+    build: { <<: *node-build, args: { PKG: '@estate/service-notifications' } }
+    profiles: ['services']
+    restart: unless-stopped
+    ports: ['3008:3008']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3008'
+      DATABASE_URL: ${NOTIFICATIONS_DATABASE_URL}
+      KMS_MODE: ${NOTIFICATIONS_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${NOTIFICATIONS_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${NOTIFICATIONS_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      EMAIL_MODE: ${NOTIFICATIONS_EMAIL_MODE}
+      SES_FROM_ADDRESS: ${SES_FROM_ADDRESS}
+      NOTIFICATIONS_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_INTERNAL_TOKEN}
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-notifications: { condition: service_completed_successfully }
       provision-topics: { condition: service_completed_successfully }
       localstack: { condition: service_healthy }
 

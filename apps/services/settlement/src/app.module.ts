@@ -46,7 +46,8 @@ import {
 import { EventsService } from './events.service';
 import { HttpErrorFilter } from './http-error.filter';
 import { HttpIdentityLock, type IdentityLockPort } from './identity-lock';
-import { StubNotifier, type NotificationPort } from './notifications';
+import { HttpNotificationsClient } from '@estate/notifications-client';
+import { HttpNotifier, StubNotifier, type NotificationPort } from './notifications';
 import { OperatorController } from './operator.controller';
 import { OperatorsRepo } from './operators.repo';
 import { SettingsRepo } from './settings.repo';
@@ -54,11 +55,30 @@ import { SettlementController } from './settlement.controller';
 import { SettlementService } from './settlement.service';
 import { SettlementWorkflowDriver } from './workflow-driver';
 
-/** Only the stub exists today; a real adapter joins the NOTIFY_MODE enum with
- * the notifications milestone. The service gates on the adapter's own
- * deliversToRealChannels capability bit, not on this selector. */
-function notifierFor(): NotificationPort {
-  return new StubNotifier();
+/**
+ * Select the notifier. Exhaustive over the config union with a `never` check —
+ * a selector that could quietly fall through to the stub is the M4
+ * fail-open-in-style lesson. config.ts pins 'http' in production; the
+ * per-route capability gates (intake, review-approve) remain as defense in
+ * depth, still reading the adapter's own deliversToRealChannels bit.
+ */
+function notifierFor(config: SettlementConfig): NotificationPort {
+  const notify = config.notify;
+  switch (notify.mode) {
+    case 'http':
+      return new HttpNotifier(
+        new HttpNotificationsClient({
+          notificationsUrl: config.notificationsUrl,
+          serviceCredential: config.notificationsInternalToken,
+        }),
+      );
+    case 'stub':
+      return new StubNotifier();
+    default: {
+      const exhausted: never = notify;
+      throw new Error(`unhandled NOTIFY_MODE: ${String(exhausted)}`);
+    }
+  }
 }
 
 /**
@@ -144,7 +164,7 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
           credential: config.identityInternalToken,
         }),
     },
-    { provide: NOTIFIER, useFactory: (): NotificationPort => notifierFor() },
+    { provide: NOTIFIER, inject: [CONFIG], useFactory: notifierFor },
     PgSettlementDekRepository,
     { provide: DEK_REPOSITORY, useExisting: PgSettlementDekRepository },
     {

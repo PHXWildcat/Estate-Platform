@@ -33,6 +33,9 @@ describe('loadConfig', () => {
       NODE_ENV: 'production',
       SETTLEMENT_URL: 'https://settlement.internal',
       SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
+      NOTIFY_MODE: 'http',
+      NOTIFICATIONS_URL: 'https://notifications.internal',
+      NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(48),
     };
 
     it('requires Kafka so audit emission cannot be a no-op', () => {
@@ -92,6 +95,38 @@ describe('loadConfig', () => {
         }),
       ).toThrow(/SETTLEMENT_INTERNAL_TOKEN/);
     });
+
+    it('pins the real notifier (M9): the stub cannot run in production', () => {
+      expect(() =>
+        loadConfig({
+          ...PROD,
+          KAFKA_BROKERS: 'a:9092',
+          IDENTITY_URL: 'https://identity.internal',
+          NOTIFY_MODE: 'stub',
+        }),
+      ).toThrow(/NOTIFY_MODE must be "http"/);
+    });
+
+    it('refuses aliasing the notifications credential onto the settlement one', () => {
+      expect(() =>
+        loadConfig({
+          ...PROD,
+          KAFKA_BROKERS: 'a:9092',
+          IDENTITY_URL: 'https://identity.internal',
+          NOTIFICATIONS_INTERNAL_TOKEN: PROD.SETTLEMENT_INTERNAL_TOKEN,
+        }),
+      ).toThrow(/must differ from SETTLEMENT_INTERNAL_TOKEN/);
+    });
+  });
+
+  it('requires the notifications url as soon as NOTIFY_MODE is http, in any environment', () => {
+    expect(() => loadConfig({ ...BASE, NOTIFY_MODE: 'http' })).toThrow(/NOTIFICATIONS_URL/);
+    const config = loadConfig({
+      ...BASE,
+      NOTIFY_MODE: 'http',
+      NOTIFICATIONS_URL: 'http://localhost:3008',
+    });
+    expect(config.notify).toEqual({ mode: 'http' });
   });
 
   it('error messages never echo env values', () => {
@@ -124,11 +159,17 @@ describe('loadConfig', () => {
     // service — a key to irreversibly marking a living user deceased. The
     // exact key list below is what keeps that regression loud.
     const config = loadConfig({ ...BASE });
+    // `notificationsInternalToken` (M9) is the same class as
+    // `settlementInternalToken`: an authentication credential for one callee's
+    // notification-domain routes — not key material, and not identity's
+    // account-lock value (config refuses that aliasing in production).
     expect(Object.keys(config).sort()).toEqual([
       'databaseUrl',
       'identityUrl',
       'kafkaBrokers',
       'nodeEnv',
+      'notificationsInternalToken',
+      'notificationsUrl',
       'notify',
       'port',
       'settlementInternalToken',
@@ -149,13 +190,12 @@ describe('loadConfig', () => {
     }
   });
 
-  it('defaults the notification channel to the stub', () => {
-    // Only the stub exists today. Deliberately not a boot-time production
-    // requirement: the refusal is scoped to the emergency-access routes, whose
-    // safety depends on reaching the owner, rather than taking the whole vault
-    // down for a feature most users never arm.
+  it('defaults the notification channel to the stub in dev — and ONLY in dev', () => {
+    // The pre-M9 stance ("not a boot-time production requirement") is
+    // deliberately reversed now a real adapter exists: production pins 'http',
+    // asserted in the production-posture suite above. Dev keeps the stub.
     expect(loadConfig({ ...BASE }).notify).toEqual({ mode: 'stub' });
-    expect(
+    expect(() =>
       loadConfig({
         ...BASE,
         NODE_ENV: 'production',
@@ -163,8 +203,8 @@ describe('loadConfig', () => {
         IDENTITY_URL: 'https://identity.internal',
         SETTLEMENT_URL: 'https://settlement.internal',
         SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
-      }).notify,
-    ).toEqual({ mode: 'stub' });
+      }),
+    ).toThrow(/NOTIFY_MODE must be "http"/);
   });
 
   it('rejects an unknown notification channel', () => {

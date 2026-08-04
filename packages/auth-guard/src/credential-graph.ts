@@ -74,6 +74,7 @@ export const SERVICE_NAMES = [
   'audit',
   'documents',
   'identity',
+  'notifications',
   'plaid',
   'profile',
   'settlement',
@@ -157,6 +158,20 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     opens: ['PUT /internal/v1/legal-hold'],
     grants:
       "Set or clear the legal hold on an owner's documents, which blocks deletion. It grants no read access to content and decrypts nothing; misuse means denying a legitimate deletion, or silently lifting a hold that litigation requires.",
+  },
+  {
+    envVar: 'NOTIFICATIONS_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // Three holders, one domain. Vault and settlement send (their M6/M7
+    // waiting-period notifications); identity feeds the recipient store at
+    // registration and login — the two moments the user themselves supplies
+    // the plaintext address, which is why no service anywhere needs an
+    // email-ciphertext read path. Every route this opens is
+    // notification-domain: no lock power, no data reads, no case movement.
+    holders: ['identity', 'settlement', 'vault'],
+    opens: ['POST /internal/v1/notifications/send', 'PUT /internal/v1/notifications/recipients'],
+    grants:
+      "Make the platform send a content-free template email to a user, and register/refresh the address it goes to. Misuse means notification spam (desensitization — the M6 review attacked and held this) or pointing a user's notifications at an attacker address, which the versions history and the notification.recipient.updated audit trail record; it exposes no stored address and no estate data.",
   },
 ];
 

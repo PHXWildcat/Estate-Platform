@@ -141,8 +141,8 @@ export interface StackService {
    * service holds no key material at all — vault (Zone A: the server can
    * decrypt nothing) and audit (append-only hashes, no ciphertext).
    *
-   * SIX DISTINCT ALIASES, not one shared key. The alias is baked into the KMS
-   * EncryptionContext, so a DEK wrapped for one domain cannot be unwrapped
+   * SEVEN DISTINCT ALIASES, not one shared key. The alias is baked into the
+   * KMS EncryptionContext, so a DEK wrapped for one domain cannot be unwrapped
    * under another. That binding is testable locally; the IAM grant that would
    * stop a service *asking* is not — see the stack README's limits section.
    */
@@ -157,6 +157,9 @@ export const SERVICES: readonly StackService[] = [
   { name: 'documents', cluster: 'documents', port: 3005, kekAlias: 'documents/kek' },
   { name: 'vault', cluster: 'vault', port: 3006, kekAlias: null },
   { name: 'settlement', cluster: 'core', port: 3007, kekAlias: 'settlement/kek' },
+  // Third core co-tenant (M9): disjoint tables, own KEK — profile and
+  // settlement share the cluster and can never unwrap a recipient address.
+  { name: 'notifications', cluster: 'core', port: 3008, kekAlias: 'notifications/kek' },
   { name: 'audit', cluster: 'audit', port: null, kekAlias: null },
 ];
 
@@ -176,7 +179,7 @@ export function kmsKeyIdFor(service: StackService): string | null {
  */
 export const MIGRATION_ORDER: readonly (readonly string[])[] = [
   ['identity'],
-  ['profile', 'settlement'],
+  ['profile', 'settlement', 'notifications'],
   ['assets', 'plaid'],
   ['documents'],
   ['vault'],

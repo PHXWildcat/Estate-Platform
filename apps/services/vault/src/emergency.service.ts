@@ -122,15 +122,28 @@ export class EmergencyAccessService {
    * production this fails closed rather than shipping a control that only looks
    * like one. Dev and test run against the stub deliberately.
    */
-  private assertNotificationsUsable(): void {
+  private async assertNotificationsUsable(): Promise<void> {
     if (this.config.nodeEnv === 'production' && !this.notifier.deliversToRealChannels) {
+      // The refusal is a control firing, and as of M9 it is VISIBLE: a
+      // production vault silently 503ing emergency access would otherwise be
+      // indistinguishable from an outage in the very stream operators watch.
+      await this.events.audit.emit({
+        action: 'vault.emergency.notifications_refused',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: null,
+        resourceType: 'vault',
+        resourceId: null,
+        sessionId: null,
+        detail: {},
+      });
       throw new ServiceUnavailableException({ error: 'notifications_unavailable' });
     }
   }
 
   private async notify(
     notification: EmergencyNotification,
-    policyId: string,
+    policyId: string | null,
     ownerUserId: string,
   ): Promise<void> {
     let deliveredAt: Date | null = null;
@@ -218,7 +231,7 @@ export class EmergencyAccessService {
     },
   ): Promise<EscrowDto> {
     this.authz.assertCan(actorUserId, 'manage', vaultResource(actorUserId));
-    this.assertNotificationsUsable();
+    await this.assertNotificationsUsable();
 
     if (input.grantees.length === 0) throw new ConflictException({ error: 'no_grantees' });
     if (input.threshold > input.grantees.length) {
@@ -240,7 +253,7 @@ export class EmergencyAccessService {
       if (!keyset) throw new NotFoundException({ error: 'keyset_not_found' });
 
       // Any release in flight dies with the old escrow.
-      await this.emergency.softDeleteAllForOwner(tx, actorUserId, now);
+      const retired = await this.emergency.softDeleteAllForOwner(tx, actorUserId, now);
       await this.emergency.upsertConfig(tx, {
         userId: actorUserId,
         threshold: input.threshold,
@@ -261,17 +274,29 @@ export class EmergencyAccessService {
           }),
         );
       }
-      return rows;
+      return { rows, retired };
     });
 
     await this.events.emergencyConfigured(actorUserId, accountSessionId, {
-      grantees: result.length,
+      grantees: result.rows.length,
       threshold: input.threshold,
     });
+    if (result.retired > 0) {
+      // The M6 review's recorded gap: a reconfiguration silently retired the
+      // previous grantees. The owner is told (anchored to the new escrow's
+      // first policy) — if THEY did it, it is a receipt; if not, it is the
+      // alarm before the new arrangement's waiting period can matter.
+      const anchor = result.rows[0]?.id ?? null;
+      await this.notify(
+        { kind: 'grantees_changed', ownerUserId: actorUserId, policyId: anchor },
+        anchor,
+        actorUserId,
+      );
+    }
     return {
       configured: true,
       threshold: input.threshold,
-      policies: result.map(toPolicyDto),
+      policies: result.rows.map(toPolicyDto),
     };
   }
 
@@ -295,7 +320,7 @@ export class EmergencyAccessService {
     accountSessionId: string,
     policyId: string,
   ): Promise<PolicyDto> {
-    this.assertNotificationsUsable();
+    await this.assertNotificationsUsable();
     const now = this.clock();
 
     const outcome = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
@@ -394,7 +419,7 @@ export class EmergencyAccessService {
 
   /** Clear a denial so the contact can request again. Step-up gated. */
   async rearm(ownerUserId: string, accountSessionId: string, policyId: string): Promise<PolicyDto> {
-    this.assertNotificationsUsable();
+    await this.assertNotificationsUsable();
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
       if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });

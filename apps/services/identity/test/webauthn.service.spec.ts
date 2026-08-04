@@ -87,6 +87,8 @@ const config: IdentityConfig = {
   rpOrigin: 'http://localhost:3000',
   rpName: 'Estate Platform',
   internalApiToken: '',
+  notificationsUrl: 'http://localhost:3008',
+  notificationsInternalToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): WebAuthnService {

@@ -40,6 +40,7 @@ catalog:
   # authz / kms
   '@cedar-policy/cedar-wasm': ^4.4.0
   '@aws-sdk/client-kms': ^3.821.0
+  '@aws-sdk/client-ses': ^3.821.0
   # documents (S3 object store, Textract OCR)
   '@aws-sdk/client-s3': ^3.821.0
   '@aws-sdk/client-textract': ^3.821.0

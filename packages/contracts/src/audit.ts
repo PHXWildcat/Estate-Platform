@@ -120,6 +120,15 @@ export const AUDIT_ACTIONS = [
   'asset.estate.viewed',
   // Legal hold set by settlement at verification (the M4 setting surface).
   'document.legal_hold.set',
+  // Notifications service (M9). Detail carries kind/channel/outcome enums
+  // only — never an address, a subject line, or a body.
+  'notification.sent',
+  'notification.recipient.updated',
+  // The M6/M7 capability gates firing (503 notifications_unavailable) — a
+  // control refusing is a fact the audit stream must carry, or it reads as an
+  // outage.
+  'vault.emergency.notifications_refused',
+  'settlement.notifications_refused',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
