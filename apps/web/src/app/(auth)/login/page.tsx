@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactElement } from 'react';
-import { LoginForm } from '../../components/LoginForm';
+import { LoginForm } from '../../../components/LoginForm';
 
 export const metadata: Metadata = { title: 'Sign in' };
 

@@ -4,9 +4,9 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type AssetInfo, type NetWorthInfo } from '../graphql/client';
 import { messageFor } from '../lib/copy';
+import { formatMoney } from '../lib/money';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
-import { SignOutButton } from './SignOutButton';
 
 /**
  * The asset inventory: list, net worth, and a create form.
@@ -49,10 +49,8 @@ function categoryLabel(category: string): string {
   return CATEGORY_LABELS[category] ?? category;
 }
 
-/** Render a ledger decimal string as dollars without ever parsing to float. */
-function money(value: string | null): string {
-  return value === null ? '—' : `$${value}`;
-}
+/** Uppercase micro-label above a stat figure. */
+const STAT_LABEL = 'text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-muted';
 
 export function AssetsPanel(): ReactElement {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
@@ -172,57 +170,96 @@ export function AssetsPanel(): ReactElement {
   }
 
   const { assets, netWorth } = state;
+  const inTrustCount = assets.filter((asset) => asset.inTrust).length;
+  const unvaluedCount = netWorth.assetCount - netWorth.valuedAssetCount;
 
   return (
-    <div className="space-y-6">
-      <section aria-labelledby="networth-heading" className="card p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 id="networth-heading" className="text-lg font-semibold">
-              Net worth
-            </h2>
-            <p className="mt-2 text-3xl font-semibold tabular-nums tracking-tight">
-              {money(netWorth.totalValue)}
-            </p>
-            <p className="mt-1 text-sm text-ink-muted">
-              {netWorth.valuedAssetCount} of {netWorth.assetCount}{' '}
-              {netWorth.assetCount === 1 ? 'asset' : 'assets'} valued ·{' '}
-              {money(netWorth.inTrustValue)} held in trust
-            </p>
-          </div>
-          <SignOutButton />
+    <div className="space-y-4">
+      <section aria-label="Totals" className="flex flex-col gap-4 sm:flex-row">
+        <div className="card flex-[1.6] p-5">
+          <h2 className={STAT_LABEL}>Net worth</h2>
+          <p className="mt-1.5 text-4xl font-semibold tabular-nums tracking-tight">
+            {formatMoney(netWorth.totalValue)}
+          </p>
+          <p className="mt-1.5 text-[0.8125rem] text-ink-muted">
+            {netWorth.valuedAssetCount} of {netWorth.assetCount}{' '}
+            {netWorth.assetCount === 1 ? 'asset' : 'assets'} valued
+          </p>
+        </div>
+        <div className="card flex-1 p-5">
+          <h2 className={STAT_LABEL}>Held in trust</h2>
+          <p className="mt-2 text-2xl font-semibold tabular-nums tracking-tight">
+            {formatMoney(netWorth.inTrustValue)}
+          </p>
+          <p className="mt-1.5 text-[0.8125rem] text-ink-muted">
+            {inTrustCount} {inTrustCount === 1 ? 'asset' : 'assets'}
+          </p>
+        </div>
+        <div className="card flex-1 p-5">
+          <h2 className={STAT_LABEL}>Inventory</h2>
+          <p className="mt-2 text-2xl font-semibold tabular-nums tracking-tight">
+            {netWorth.assetCount}
+          </p>
+          <p className="mt-1.5 text-[0.8125rem] text-ink-muted">
+            {unvaluedCount === 0
+              ? 'All valued'
+              : `${unvaluedCount} ${unvaluedCount === 1 ? 'asset' : 'assets'} unvalued`}
+          </p>
         </div>
       </section>
 
-      <section aria-labelledby="assets-heading" className="card p-6">
-        <h2 id="assets-heading" className="text-lg font-semibold">
+      <section aria-labelledby="assets-heading" className="card px-5 pb-2 pt-1 sm:px-6">
+        <h2 id="assets-heading" className="sr-only">
           Assets
         </h2>
         {assets.length === 0 ? (
-          <p className="mt-2 text-sm text-ink-muted">
+          <p className="py-4 text-sm text-ink-muted">
             Nothing recorded yet. Add your first asset below — every change is kept as a permanent,
             auditable history.
           </p>
         ) : (
-          <ul className="mt-4 divide-y divide-line" aria-label="Your assets">
-            {assets.map((asset) => (
-              <li key={asset.assetId} className="flex items-baseline justify-between gap-4 py-3">
-                <div>
-                  <p className="font-medium">{asset.title}</p>
-                  <p className="mt-0.5 text-xs text-ink-muted">
+          <>
+            <div
+              aria-hidden="true"
+              className="grid grid-cols-[minmax(0,1fr)_7rem] gap-4 border-b border-line py-3 sm:grid-cols-[minmax(0,1fr)_9.5rem_8rem]"
+            >
+              <span className={STAT_LABEL}>Asset</span>
+              <span className={`${STAT_LABEL} hidden sm:block`}>Category</span>
+              <span className={`${STAT_LABEL} text-right`}>Value</span>
+            </div>
+            <ul aria-label="Your assets">
+              {assets.map((asset) => (
+                <li
+                  key={asset.assetId}
+                  className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-4 border-b border-line py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_9.5rem_8rem]"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {asset.title}
+                      {asset.inTrust ? (
+                        <span className="chip chip-trust ml-2">In trust</span>
+                      ) : null}
+                    </p>
+                    {asset.ownershipPct !== 100 ? (
+                      <p className="mt-0.5 text-xs text-ink-muted">
+                        {asset.ownershipPct}% ownership
+                      </p>
+                    ) : null}
+                  </div>
+                  <p className="hidden text-[0.8125rem] text-ink-muted sm:block">
                     {categoryLabel(asset.category)}
-                    {asset.inTrust ? ' · in trust' : ''}
-                    {asset.ownershipPct !== 100 ? ` · ${asset.ownershipPct}% owned` : ''}
                   </p>
-                </div>
-                <p className="tabular-nums text-sm">{money(asset.estValue)}</p>
-              </li>
-            ))}
-          </ul>
+                  <p className="text-right text-sm font-medium tabular-nums">
+                    {formatMoney(asset.estValue)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </section>
 
-      <section aria-labelledby="add-asset-heading" className="card p-6">
+      <section id="add-asset" aria-labelledby="add-asset-heading" className="card scroll-mt-6 p-6">
         <h2 id="add-asset-heading" className="text-lg font-semibold">
           Add an asset
         </h2>

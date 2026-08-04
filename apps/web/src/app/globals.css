@@ -1,72 +1,142 @@
 @import 'tailwindcss';
 
 /*
+ * Self-hosted Instrument Sans (variable, 400–700). Files + license live in
+ * public/fonts; unicode-range values mirror the upstream css2 subsets so the
+ * latin-ext file downloads only when a page actually uses those code points.
+ */
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url('/fonts/instrument-sans-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url('/fonts/instrument-sans-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+
+/*
  * Design tokens. Semantic CSS custom properties carry both color schemes;
  * Tailwind utilities reference them through @theme inline, so `bg-canvas`,
  * `text-ink`, `border-line`, etc. adapt automatically.
  *
  * Dark mode resolves in two ways, manual choice winning over system:
- *   1. `data-theme="light" | "dark"` on <html> (set by the header toggle,
+ *   1. `data-theme="light" | "dark"` on <html> (set by the theme toggle,
  *      persisted in localStorage — a preference, not sensitive data).
  *   2. `prefers-color-scheme` when no manual choice is stored.
  *
+ * Two surface worlds (2026-07-30 "Evergreen rail" shell decision):
+ *   - Content (`--bg`/`--surface`/…): near-neutral with a green bias, flips
+ *     with the scheme.
+ *   - Rail (`--rail-*`): deep evergreen brand surface, deliberately CONSTANT
+ *     across schemes (it deepens slightly in dark, never lightens) — switching
+ *     theme changes the light in the room, not the building.
+ *
  * Contrast: all text/background pairs below meet WCAG AA at minimum;
- * body text on canvas exceeds 7:1 (AAA) in both schemes.
+ * body text on canvas exceeds 7:1 (AAA) in both schemes, and every rail
+ * text token clears 6:1 against every rail surface it appears on.
  */
 
 :root {
   color-scheme: light;
-  --bg: #faf9f7;
+  --bg: #fafbfa;
   --surface: #ffffff;
-  --surface-sunken: #f2f0ec;
-  --line: #ddd8d0;
-  --ink: #26231f;
-  --ink-muted: #5b564e;
-  --accent: #1f5f4a;
-  --accent-strong: #174838;
+  --surface-sunken: #eff2ef;
+  --line: #e3e7e3;
+  --ink: #171a18;
+  --ink-muted: #5e6560;
+  --accent: #0c6b4e;
+  --accent-strong: #0a5c43;
+  --accent-quiet: #e4f1ea;
   --on-accent: #ffffff;
   --danger: #a4261f;
   --success: #166534;
   --success-surface: #e5f2e8;
   --warn-surface: #f6ead8;
   --warn-ink: #6b4a12;
+
+  --rail: #0d211a;
+  --rail-line: #1d3a2e;
+  --rail-ink: #eef4f0;
+  --rail-muted: #8fa89b;
+  --rail-active: #17372a;
+  --rail-active-line: #23503e;
+  --rail-active-ink: #f2f8f4;
+  --rail-accent: #4ad39e;
+  --rail-danger: #f0928c;
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #191817;
-  --surface: #211f1e;
-  --surface-sunken: #141312;
-  --line: #3b3833;
-  --ink: #ece9e4;
-  --ink-muted: #aca69d;
-  --accent: #46b892;
-  --accent-strong: #63cba7;
-  --on-accent: #0c231b;
+  --bg: #131514;
+  --surface: #1a1d1b;
+  --surface-sunken: #0e100f;
+  --line: #292d2a;
+  --ink: #e6e9e6;
+  --ink-muted: #99a19b;
+  --accent: #3fbb92;
+  --accent-strong: #5ecfa8;
+  --accent-quiet: #17352a;
+  --on-accent: #08251b;
   --danger: #f0928c;
   --success: #7fce9e;
   --success-surface: #1c2f24;
   --warn-surface: #33290f;
   --warn-ink: #e3c88b;
+
+  --rail: #0a1b14;
+  --rail-line: #1a3328;
+  --rail-ink: #eef4f0;
+  --rail-muted: #86a094;
+  --rail-active: #153327;
+  --rail-active-line: #204b3a;
+  --rail-active-ink: #f2f8f4;
+  --rail-accent: #4ad39e;
+  --rail-danger: #f0928c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     color-scheme: dark;
-    --bg: #191817;
-    --surface: #211f1e;
-    --surface-sunken: #141312;
-    --line: #3b3833;
-    --ink: #ece9e4;
-    --ink-muted: #aca69d;
-    --accent: #46b892;
-    --accent-strong: #63cba7;
-    --on-accent: #0c231b;
+    --bg: #131514;
+    --surface: #1a1d1b;
+    --surface-sunken: #0e100f;
+    --line: #292d2a;
+    --ink: #e6e9e6;
+    --ink-muted: #99a19b;
+    --accent: #3fbb92;
+    --accent-strong: #5ecfa8;
+    --accent-quiet: #17352a;
+    --on-accent: #08251b;
     --danger: #f0928c;
     --success: #7fce9e;
     --success-surface: #1c2f24;
     --warn-surface: #33290f;
     --warn-ink: #e3c88b;
+
+    --rail: #0a1b14;
+    --rail-line: #1a3328;
+    --rail-ink: #eef4f0;
+    --rail-muted: #86a094;
+    --rail-active: #153327;
+    --rail-active-line: #204b3a;
+    --rail-active-ink: #f2f8f4;
+    --rail-accent: #4ad39e;
+    --rail-danger: #f0928c;
   }
 }
 
@@ -79,6 +149,7 @@
   --color-ink-muted: var(--ink-muted);
   --color-accent: var(--accent);
   --color-accent-strong: var(--accent-strong);
+  --color-accent-quiet: var(--accent-quiet);
   --color-on-accent: var(--on-accent);
   --color-danger: var(--danger);
   --color-success: var(--success);
@@ -86,11 +157,22 @@
   --color-warn-surface: var(--warn-surface);
   --color-warn-ink: var(--warn-ink);
 
+  --color-rail: var(--rail);
+  --color-rail-line: var(--rail-line);
+  --color-rail-ink: var(--rail-ink);
+  --color-rail-muted: var(--rail-muted);
+  --color-rail-active: var(--rail-active);
+  --color-rail-active-line: var(--rail-active-line);
+  --color-rail-active-ink: var(--rail-active-ink);
+  --color-rail-accent: var(--rail-accent);
+  --color-rail-danger: var(--rail-danger);
+
   --radius-card: 0.75rem;
   --radius-field: 0.5rem;
 
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    'Instrument Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 }
 
@@ -106,6 +188,10 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
+}
+/* The accent is illegible on the dark rail; focus there uses the rail accent. */
+.rail-surface :focus-visible {
+  outline-color: var(--rail-accent);
 }
 
 @layer components {
@@ -151,6 +237,16 @@ body {
     background-color: var(--surface-sunken);
   }
 
+  /* Ghost button for the rail surface. */
+  .btn-rail {
+    background-color: transparent;
+    color: var(--rail-ink);
+    border-color: var(--rail-line);
+  }
+  .btn-rail:hover:not(:disabled) {
+    background-color: var(--rail-active);
+  }
+
   .field-label {
     display: block;
     font-size: 0.875rem;
@@ -172,6 +268,17 @@ body {
   }
   .field-input[aria-invalid='true'] {
     border-color: var(--danger);
+  }
+
+  /* Compact select for the rail surface (theme control). */
+  .field-input-rail {
+    border: 1px solid var(--rail-line);
+    border-radius: var(--radius-field);
+    background-color: transparent;
+    color: var(--rail-ink);
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8125rem;
+    line-height: 1.5;
   }
 
   .field-hint {
@@ -205,5 +312,68 @@ body {
     background-color: var(--warn-surface);
     color: var(--warn-ink);
     border-color: transparent;
+  }
+  /* Quiet accent chip: state that is a fact, not a judgement ("In trust"). */
+  .chip-trust {
+    background-color: var(--accent-quiet);
+    color: var(--accent-strong);
+    border-color: transparent;
+  }
+
+  /* Rail navigation */
+  .rail-group {
+    display: block;
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--rail-muted);
+    padding: 0.875rem 0.625rem 0.375rem;
+  }
+  .rail-item {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.4375rem 0.625rem;
+    border-radius: var(--radius-field);
+    border: 1px solid transparent;
+    font-size: 0.84375rem;
+    font-weight: 500;
+    color: var(--rail-muted);
+    position: relative;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+  a.rail-item:hover {
+    color: var(--rail-ink);
+    background-color: var(--rail-active);
+  }
+  .rail-item[aria-current='page'] {
+    color: var(--rail-active-ink);
+    background-color: var(--rail-active);
+    border-color: var(--rail-active-line);
+    font-weight: 600;
+  }
+  .rail-item[aria-current='page']::before {
+    content: '';
+    position: absolute;
+    left: -0.75rem;
+    top: 0.4375rem;
+    bottom: 0.4375rem;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background-color: var(--rail-accent);
+  }
+  .rail-soon {
+    margin-left: auto;
+    font-size: 0.59375rem;
+    font-weight: 650;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--rail-muted);
+    border: 1px solid var(--rail-line);
+    border-radius: 9999px;
+    padding: 0.0625rem 0.4375rem;
   }
 }

@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { SessionCard } from '../components/SessionCard';
+import { SessionCard } from '../../components/SessionCard';
 
 export default function HomePage(): ReactElement {
   return (

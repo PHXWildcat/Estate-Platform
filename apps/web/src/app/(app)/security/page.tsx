@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import type { ReactElement } from 'react';
-import { SecurityPanel } from '../../components/SecurityPanel';
+import { SecurityPanel } from '../../../components/SecurityPanel';
 
 export const metadata: Metadata = { title: 'Security' };
 
