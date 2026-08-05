@@ -680,10 +680,15 @@ describeIfStack('the running stack', () => {
         await api(ASSISTANT, 'GET', '/v1/analysis/estate-tax', { token: owner.token }),
         200,
         'estate tax analysis',
-      ) as { status: string; summary: { grossEstate: string } };
+      ) as { status: string; findings: { code: string }[]; summary: { grossEstate: string } };
       expect(tax.status).toBe('ok');
       // Money crosses the wire as a decimal STRING, end to end.
       expect(tax.summary.grossEstate).toMatch(/^\d+\.\d{2}$/);
+      // This owner never created a profile row, and THIS EXACT CASE was the
+      // first live run's failure: profile's `404 not_found` read as an outage
+      // and the analysis answered 503. The true answer is "state unknown" —
+      // asserted here so the no-profile path stays a real answer over the wire.
+      expect(tax.findings.map((f) => f.code)).toContain('state_of_residence_unknown');
 
       // Revoking is NOT step-up gated (the protective action must never be
       // harder than the permissive one), and it switches the routes off again.
