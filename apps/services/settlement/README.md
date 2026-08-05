@@ -90,4 +90,7 @@ production grants are SELECT-only on those two tables).
 - Date-of-death is not stored; PR2's timeline anchors on `verified_at`.
 - PR2: staged executor access (inventory → documents → vault), the vault
   emergency-release gate, tasks/timeline, dual-control distributions with
-  `settlement_deks`, documents legal-hold setter, case close.
+  `settlement_deks`, documents legal-hold setter, case close. (The legal-hold
+  SETTER was a route with no caller until M9 PR2: `src/documents-hold.ts` now
+  sets/clears the estate-wide hold with the account lock at every case
+  transition, holding `DOCUMENTS_INTERNAL_TOKEN` per the credential graph.)

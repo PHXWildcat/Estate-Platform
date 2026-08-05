@@ -421,7 +421,8 @@ deviating from them, stop and propose the change with rationale — do not silen
   mis-answers rather than exfiltrates. Legal hold gained a writer ROUTE
   (service-credential internal route on documents) — but NOT a caller: the
   2026-07-28 credential-graph work found nothing in the repo calls it, so the
-  M4 gap is NOT closed (corrected in docs/04 M7).
+  M4 gap was NOT closed (corrected in docs/04 M7; closed in M9 PR2 — see the
+  2026-08-04 legal-hold entry).
 - 2026-07-27 — M6 security review (six parallel discovery lenses over the merged
   range + adversarial verify of each finding; 35 raw, 28 unique, 14 verified, 11
   refuted): no critical or app-exploitable vuln in the Zone A guarantee. Three
@@ -575,8 +576,8 @@ deviating from them, stop and propose the change with rationale — do not silen
   in docs/05: KMS grant isolation (LocalStack Community has no IAM — six keys
   MODEL the boundary; EncryptionContext binding is the testable half, PR4
   asserts it), everything cloud-posture (IRSA/VPC/WAF/mesh/Kyverno/Aurora),
-  and the M4 legal-hold gap (zero holders; the stack makes it visible, not
-  closed).
+  and the M4 legal-hold gap (zero holders; the stack made it visible — closed
+  in M9 PR2).
 - 2026-07-29 — M8 PR4 proof + CI: `apps/e2e/test/stack.e2e.spec.ts` drives the
   platform as real processes over real HTTP (13 assertions in dev, 9 in the
   production rehearsal) and `aws-conformance.spec.ts` probes the three
@@ -630,11 +631,12 @@ deviating from them, stop and propose the change with rationale — do not silen
   exits 0 for an all-skipped suite, both workflows additionally assert
   `numPassedTests` against a floor from `--json` output.
 - 2026-07-29 — M8 PR4 also recorded: an inbound credential edge with ZERO
-  holders is deliberately NOT provisioned (documents' legal hold). The service
-  absorbs the variable and its guard fails closed on the empty value; minting a
-  secret nobody can present would be exactly the aspirational grant the
-  credential graph exists to forbid. The generator, the doctor and the
-  entitlement spec all agree on that subtraction.
+  holders is deliberately NOT provisioned (documents' legal hold, holder-less
+  until M9 PR2). The service absorbs the variable and its guard fails closed
+  on the empty value; minting a secret nobody can present would be exactly the
+  aspirational grant the credential graph exists to forbid. The generator, the
+  doctor and the entitlement spec all agree on that subtraction, which stays
+  in place for any future holder-less edge.
 - 2026-07-29 — M8 PR5 thin UI: the BFF gained its FIRST non-identity resolvers
   (assets list/net-worth/create), realizing the 2026-07-23 decision's stated
   end-state — the BFF FORWARDS THE CALLER'S OWN BEARER downstream and injects
@@ -747,7 +749,8 @@ deviating from them, stop and propose the change with rationale — do not silen
   `notifications_unavailable` in production, and "a waiting period nobody can
   be told about is not a control" stops being rhetoric only when something can
   actually tell them. Bundled: the settlement→documents legal-hold caller
-  (closing the M4 zero-callers gap) ships as PR2 of the same milestone.
+  (closing the M4 zero-callers gap) shipped as PR2 of the same milestone
+  (2026-08-04 entry below).
 - 2026-08-04 — M9 architecture, TWO approved deviations from docs/01. (1) The
   notification service is called SYNCHRONOUSLY over HTTP (new
   `apps/services/notifications`, ninth service, core-cluster co-tenant), not
@@ -793,6 +796,37 @@ deviating from them, stop and propose the change with rationale — do not silen
   the previous grantees. Send failures never roll back state; every send is
   an append-only `notification_sends` row + ids/enums-only audit event, and
   every address decrypt is a logged `crypto.field.decrypted`.
+- 2026-08-04 — M9 PR2 closes the M4 legal-hold zero-callers gap: settlement's
+  `documents-hold.ts` (the identity-lock pattern verbatim — fail closed,
+  idempotent callee, 503 `documents_unavailable` + rollback on any failure)
+  drives documents' `PUT /internal/v1/legal-hold` PAIRED with the account
+  lock at every case transition: set with `deceased_pending` at
+  review-approve, cleared with every restore to `active` (reject-from-wait,
+  owner void, liveness void), and RE-ASSERTED with the terminal lock at
+  verification because the owner's login survives `deceased_pending` (the
+  §5.1 rescue path) and the estate can grow during the wait — the invariant
+  is "every live document of a verified estate is held". Graph edge flipped
+  `holders: [] → ['settlement']` in the same change as the client (the rule
+  the graph comment mandated); `DOCUMENTS_INTERNAL_TOKEN` became
+  production-required on BOTH sides; settlement's aliasing refusal is now a
+  full pairwise loop over all FOUR credentials it touches. Deliberate scope
+  note: the hold OUTLIVES case close — no lift surface exists
+  post-settlement; that ceremony belongs to the TB7 operator platform. A hold
+  stranded by a commit failure blocks only deletion (deny-safe) and heals on
+  re-drive. Proven at three levels: first-ever route tests (real guard, real
+  Postgres, 401/400/sweep/idempotent/audited/409→200), eight transition tests
+  over a fake port, and a dev-journey stack e2e driving the generator-minted
+  credential live (approve freezes the estate against a step-up-authorized
+  deletion; reject releases it); `document.legal_hold.set` joined the
+  verified-hash-chain assertion and the workflow exact counts moved
+  13/4→14/4 (dev) and 9/8→9/9 (production). Running the gates locally also
+  found WHY PR1's CI was red, both fixes cherry-picked onto PR1's branch so
+  #20 merges green on its own: stack.yml's hand-copied migrate list never
+  learned about migrate-notifications (now DERIVED from the compose file —
+  the copy-pasted-line drift class again), and the notifications coverage
+  floor was set from a number CI never produced — closed by the
+  controller/error-filter's first specs and the floor RATCHETED UP to the
+  newly measured numbers, never down.
 - 2026-07-30 — Also from the M8 review: the doctor's endpoint check was a PREFIX
   match, so `https://localhost:x@kms.us-east-1.amazonaws.com/` passed the one
   guard between a misconfigured stack and real AWS — it parses the URL now.

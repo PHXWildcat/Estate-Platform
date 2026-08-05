@@ -12,6 +12,7 @@ import type { ContactAttemptsRepo, ContactChannel } from '../src/contact-attempt
 import type { CoreReadsRepo, ReportableEstate } from '../src/core-reads.repo';
 import type { Db, Queryable } from '../src/db';
 import { EventsService } from '../src/events.service';
+import { DocumentsHoldError, type DocumentsHoldPort } from '../src/documents-hold';
 import {
   IdentityLockError,
   OwnerAliveError,
@@ -435,6 +436,20 @@ export class FakeIdentityLock implements IdentityLockPort {
   }
 }
 
+/** M9 PR2: the legal-hold side effect, recorded per call for assertions. */
+export class FakeDocumentsHold implements DocumentsHoldPort {
+  readonly setHoldCalls: Array<{ ownerUserId: string; hold: boolean; caseId: string }> = [];
+  failSetHold = false;
+
+  setHold(ownerUserId: string, hold: boolean, caseId: string): Promise<void> {
+    if (this.failSetHold) {
+      return Promise.reject(new DocumentsHoldError());
+    }
+    this.setHoldCalls.push({ ownerUserId, hold, caseId });
+    return Promise.resolve();
+  }
+}
+
 export function testConfig(over: Partial<SettlementConfig> = {}): SettlementConfig {
   return {
     nodeEnv: 'test',
@@ -447,6 +462,8 @@ export function testConfig(over: Partial<SettlementConfig> = {}): SettlementConf
     notify: { mode: 'stub' },
     notificationsUrl: 'http://localhost:3008',
     notificationsInternalToken: '',
+    documentsUrl: 'http://documents.internal',
+    documentsInternalToken: 'd'.repeat(32),
     driverIntervalMs: 60_000,
     kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
     kekAlias: 'settlement/kek',
@@ -462,6 +479,7 @@ export interface Harness {
   settings: InMemorySettings;
   coreReads: FakeCoreReads;
   identity: FakeIdentityLock;
+  documentsHold: FakeDocumentsHold;
   notifier: StubNotifier;
   producer: InMemoryAuditProducer;
   clock: ClockHolder;
@@ -477,6 +495,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
   const tasks = new InMemoryTasks();
   const coreReads = new FakeCoreReads();
   const identity = new FakeIdentityLock();
+  const documentsHold = new FakeDocumentsHold();
   const notifier = new StubNotifier();
   const producer = new InMemoryAuditProducer();
   const events = new EventsService(producer, clockFn);
@@ -493,6 +512,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     events,
     notifier,
     identity,
+    documentsHold,
     testConfig(over.config),
     clockFn,
   );
@@ -504,6 +524,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     settings,
     coreReads,
     identity,
+    documentsHold,
     notifier,
     producer,
     clock,

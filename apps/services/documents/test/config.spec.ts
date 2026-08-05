@@ -25,6 +25,10 @@ const PROD_BASE = {
   SCANNER_MODE: 'clamd',
   CLAMD_HOST: 'clamav.internal',
   OCR_MODE: 'textract',
+  // Required in production since M9 PR2 (settlement is the route's caller):
+  // a deploy silently refusing every hold write leaves estate documents
+  // deletable during administration.
+  DOCUMENTS_INTERNAL_TOKEN: 'd'.repeat(48),
 };
 
 describe('documents config', () => {
@@ -125,14 +129,24 @@ describe('documents config', () => {
     expect(prod.ocr).toEqual({ mode: 'tesseract', endpoint: 'https://ocr.internal' });
   });
 
-  it.each(['KAFKA_BROKERS', 'AWS_KMS_KEY_ID', 'AWS_REGION', 'IDENTITY_URL', 'SETTLEMENT_URL'])(
-    'production fails fast without %s',
-    (key) => {
-      const env: Record<string, string> = { ...PROD_BASE };
-      delete env[key];
-      expect(() => loadConfig(env)).toThrow(ConfigError);
-    },
-  );
+  it.each([
+    'KAFKA_BROKERS',
+    'AWS_KMS_KEY_ID',
+    'AWS_REGION',
+    'IDENTITY_URL',
+    'SETTLEMENT_URL',
+    'DOCUMENTS_INTERNAL_TOKEN',
+  ])('production fails fast without %s', (key) => {
+    const env: Record<string, string> = { ...PROD_BASE };
+    delete env[key];
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+  });
+
+  it('production rejects a weak (short) DOCUMENTS_INTERNAL_TOKEN', () => {
+    expect(() => loadConfig({ ...PROD_BASE, DOCUMENTS_INTERNAL_TOKEN: 'short' })).toThrow(
+      ConfigError,
+    );
+  });
 
   it('production refuses the filesystem object store', () => {
     expect(() => loadConfig({ ...PROD_BASE, OBJECT_STORE_MODE: 'fs' })).toThrow(

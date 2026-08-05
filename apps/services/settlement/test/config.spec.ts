@@ -14,15 +14,17 @@ const PROD_BASE = {
   DATABASE_URL: 'postgres://prod/core',
   KAFKA_BROKERS: 'k1:9092,k2:9092',
   IDENTITY_URL: 'https://identity.internal',
-  // THREE credentials, pairwise distinct: the inbound one callers present to
-  // THIS service's gate route, and the two outbound ones this service
-  // presents — identity's account-lock API and (M9) the notifications
-  // service's send/recipient surface.
+  // FOUR credentials, pairwise distinct: the inbound one callers present to
+  // THIS service's gate route, and the three outbound ones this service
+  // presents — identity's account-lock API, (M9) the notifications service's
+  // send/recipient surface, and (M9 PR2) documents' legal-hold route.
   SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
   IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
   NOTIFY_MODE: 'http',
   NOTIFICATIONS_URL: 'https://notifications.internal',
   NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(48),
+  DOCUMENTS_URL: 'https://documents.internal',
+  DOCUMENTS_INTERNAL_TOKEN: 'd'.repeat(48),
   KMS_MODE: 'aws',
   AWS_KMS_KEY_ID: 'alias/estate-settlement-kek',
   AWS_REGION: 'us-east-1',
@@ -36,9 +38,11 @@ describe('settlement config', () => {
     expect(config.notify).toEqual({ mode: 'stub' });
     expect(config.kafkaBrokers).toBeNull();
     expect(config.driverIntervalMs).toBe(60_000);
-    // Unset in dev: identity's guard fails closed until both sides opt in.
+    // Unset in dev: each callee's guard fails closed until both sides opt in.
     expect(config.internalApiToken).toBe('');
     expect(config.identityInternalToken).toBe('');
+    expect(config.documentsInternalToken).toBe('');
+    expect(config.documentsUrl).toBe('http://localhost:3005');
   });
 
   it('rejects a missing DATABASE_URL', () => {
@@ -109,21 +113,25 @@ describe('settlement config', () => {
   it.each([
     'KAFKA_BROKERS',
     'IDENTITY_URL',
+    'DOCUMENTS_URL',
     'SETTLEMENT_INTERNAL_TOKEN',
     'IDENTITY_INTERNAL_TOKEN',
     'NOTIFICATIONS_INTERNAL_TOKEN',
+    'DOCUMENTS_INTERNAL_TOKEN',
   ])('production fails fast without %s', (key) => {
     const env: Record<string, string> = { ...PROD_BASE };
     delete env[key];
     expect(() => loadConfig(env)).toThrow(ConfigError);
   });
 
-  it.each(['SETTLEMENT_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN', 'NOTIFICATIONS_INTERNAL_TOKEN'])(
-    'production rejects a weak (short) %s',
-    (key) => {
-      expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
-    },
-  );
+  it.each([
+    'SETTLEMENT_INTERNAL_TOKEN',
+    'IDENTITY_INTERNAL_TOKEN',
+    'NOTIFICATIONS_INTERNAL_TOKEN',
+    'DOCUMENTS_INTERNAL_TOKEN',
+  ])('production rejects a weak (short) %s', (key) => {
+    expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
+  });
 
   it('production pins the real notifier (M9): the stub cannot run there', () => {
     expect(() => loadConfig({ ...PROD_BASE, NOTIFY_MODE: 'stub' })).toThrow(
@@ -131,11 +139,22 @@ describe('settlement config', () => {
     );
   });
 
-  it('refuses aliasing the notifications credential onto either existing one', () => {
-    for (const victim of ['SETTLEMENT_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN'] as const) {
-      expect(() =>
-        loadConfig({ ...PROD_BASE, NOTIFICATIONS_INTERNAL_TOKEN: PROD_BASE[victim] }),
-      ).toThrow(/must differ from/);
+  it('refuses aliasing ANY two of the four credentials onto one value', () => {
+    // Full pairwise, not a hand-picked subset: the M7 collapse was exactly one
+    // value quietly serving two slots, and every new credential adds pairs.
+    const keys = [
+      'SETTLEMENT_INTERNAL_TOKEN',
+      'IDENTITY_INTERNAL_TOKEN',
+      'NOTIFICATIONS_INTERNAL_TOKEN',
+      'DOCUMENTS_INTERNAL_TOKEN',
+    ] as const;
+    for (const a of keys) {
+      for (const b of keys) {
+        if (a === b) {
+          continue;
+        }
+        expect(() => loadConfig({ ...PROD_BASE, [b]: PROD_BASE[a] })).toThrow(/must differ from/);
+      }
     }
   });
 

@@ -445,6 +445,120 @@ describeIfStack('the running stack', () => {
       expect(answered).toEqual({ permitted: true, caseId: null });
     });
 
+    it('drives a legal hold over the live wire: approval freezes the estate, rejection releases it (M9 PR2)', async () => {
+      // The M4 zero-callers gap, closed and OBSERVED: the generator minted
+      // settlement's documents credential from the graph edge, settlement
+      // presents it inside the review-approve transaction, documents' guard
+      // accepts it, and the hold then defeats a real step-up-authorized
+      // deletion. No assertion here touches the database for the hold itself —
+      // only behavior over HTTP proves it.
+      const decedent = await registerAndLogin();
+      const reporter = await registerAndLogin();
+      const operator = await registerAndLogin();
+      // Fixtures for the realities intake and review require, not the flow
+      // under test: reporters must be linked contacts (M7 anti-enumeration)
+      // and operators live on the CLI-managed allowlist.
+      const core = new Client({ connectionString: CORE_DB });
+      await core.connect();
+      try {
+        await core.query(
+          `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [randomUUID(), decedent.userId, Buffer.from('ct'), reporter.userId, randomUUID()],
+        );
+        await core.query(`INSERT INTO settlement_operators (user_id) VALUES ($1)`, [
+          operator.userId,
+        ]);
+      } finally {
+        await core.end();
+      }
+
+      const upload = expectStatus(
+        await api(DOCUMENTS, 'POST', '/v1/documents/upload', {
+          token: decedent.token,
+          body: {
+            kind: 'legal',
+            title: 'probate paper',
+            mime: 'image/png',
+            contentBase64: textPng('PROBATE CASE PAPERS').toString('base64'),
+          },
+        }),
+        201,
+        'upload before the case opens',
+      ) as { documentId: string };
+
+      const opened = expectStatus(
+        await api(SETTLEMENT, 'POST', '/v1/settlement/cases', {
+          token: reporter.token,
+          body: { decedentUserId: decedent.userId, source: 'trusted_contact' },
+        }),
+        201,
+        'settlement intake (dev journey)',
+      ) as { caseId: string };
+
+      await stepUp(operator);
+      expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review/start`, {
+          token: operator.token,
+        }),
+        200,
+        'review start',
+      );
+      expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review`, {
+          token: operator.token,
+          body: { decision: 'approve' },
+        }),
+        200,
+        'review approve — the account lock AND the estate-wide hold, one transaction',
+      );
+
+      // The decedent's login survives deceased_pending (the §5.1 rescue path),
+      // and even their fresh step-up cannot free the document: the hold
+      // answers to the case, not to any session. POLLED like the beneficiary
+      // test above: the upload put a pre-step-up session into documents' 30s
+      // introspection cache, so until it expires the DELETE 403s on freshness
+      // rather than reaching the hold check.
+      await stepUp(decedent);
+      await pollUntil(
+        'the held DELETE to be refused 409 by the hold, not 403 by the stale cache',
+        async () => {
+          const refused = await api(DOCUMENTS, 'DELETE', `/v1/documents/${upload.documentId}`, {
+            token: decedent.token,
+          });
+          if (refused.status === 409) {
+            expect((refused.body as { error: string }).error).toBe('legal_hold');
+            return true;
+          }
+          if (refused.status === 403) {
+            return null; // introspection cache not expired yet — keep polling
+          }
+          throw new Error(
+            `held delete answered unexpectedly: ${refused.status} ${JSON.stringify(refused.body)}`,
+          );
+        },
+        45_000,
+      );
+
+      // The evidence falls apart: one reject transition restores the account
+      // and lifts the hold, and the owner's deletion goes through.
+      expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review`, {
+          token: operator.token,
+          body: { decision: 'reject', reason: 'insufficient_evidence' },
+        }),
+        200,
+        'review reject — restore + hold lifted in one transition',
+      );
+      expectStatus(
+        await api(DOCUMENTS, 'DELETE', `/v1/documents/${upload.documentId}`, {
+          token: decedent.token,
+        }),
+        200,
+        'delete after the hold lifted',
+      );
+    });
+
     it('assembled every event into a VERIFIED hash chain across the real broker', async () => {
       const db = new Client({ connectionString: AUDIT_DB });
       await db.connect();
@@ -460,6 +574,9 @@ describeIfStack('the running stack', () => {
           // M9: identity fed the recipient store at registration, so the
           // notifications service's audit producer crossed the broker too.
           'notification.recipient.updated',
+          // M9 PR2: settlement drove documents' legal hold inside the
+          // review-approve transaction; documents audited it as the service.
+          'document.legal_hold.set',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(

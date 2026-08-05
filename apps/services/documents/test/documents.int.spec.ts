@@ -26,7 +26,12 @@ import {
   TOPICS,
   type MfaLevel,
 } from '@estate/contracts';
-import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
+import {
+  SERVICE_CREDENTIAL_HEADER,
+  SESSION_VERIFIER,
+  type SessionContext,
+  type SessionVerifier,
+} from '@estate/auth-guard';
 import { Client, type QueryResultRow } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -49,6 +54,7 @@ const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
 const OWNER = randomUUID();
 const STRANGER = randomUUID();
+const INTERNAL_CREDENTIAL = 'int-test-documents-internal-credential';
 const TESTATOR = 'Alexandra Q. Integration';
 const EXECUTOR = 'Jordan T. Executor';
 
@@ -155,6 +161,8 @@ describeIfPg('document service end to end', () => {
     process.env['SEARCH_INDEX_KEY_HEX'] = randomBytes(32).toString('hex');
     process.env['OBJECT_STORE_MODE'] = 'fs';
     process.env['OBJECT_STORE_DIR'] = objectDir;
+    // M9 PR2: the internal legal-hold route is exercised with the real guard.
+    process.env['DOCUMENTS_INTERNAL_TOKEN'] = INTERNAL_CREDENTIAL;
     delete process.env['KAFKA_BROKERS'];
     delete process.env['SCANNER_MODE']; // ⇒ stub scanner (EICAR-detecting)
     delete process.env['OCR_MODE']; // ⇒ stub OCR (printable-run extraction)
@@ -457,6 +465,90 @@ describeIfPg('document service end to end', () => {
       [documentId],
     );
     expect(shadow[0]!.actor_id).toBe(OWNER);
+  });
+
+  it('the internal legal-hold route: credential-gated, estate-wide, idempotent, audited (M9 PR2)', async () => {
+    // The route's first-ever test, driven exactly as settlement drives it —
+    // over HTTP with the service credential and the real guard, never a user
+    // bearer. A fresh estate owner keeps the estate-wide count deterministic.
+    const estateOwner = randomUUID();
+    const upload = async (title: string): Promise<string> => {
+      const res = await request(server)
+        .post('/v1/documents/upload')
+        .set(bearer('mfa', estateOwner))
+        .send({
+          kind: 'legal',
+          title,
+          mime: 'application/pdf',
+          contentBase64: pdfFixture(`estate paper ${title}`).toString('base64'),
+        })
+        .expect(201);
+      return (res.body as UploadResult).documentId;
+    };
+    const heldDocA = await upload('estate-paper-a');
+    const heldDocB = await upload('estate-paper-b');
+    const caseId = randomUUID();
+    const holdBody = { ownerUserId: estateOwner, hold: true, caseId };
+
+    // No credential, a user bearer, or a wrong credential: 401, nothing set.
+    await request(server).put('/internal/v1/legal-hold').send(holdBody).expect(401);
+    await request(server)
+      .put('/internal/v1/legal-hold')
+      .set(bearer('stepup', estateOwner))
+      .send(holdBody)
+      .expect(401);
+    await request(server)
+      .put('/internal/v1/legal-hold')
+      .set(SERVICE_CREDENTIAL_HEADER, 'not-the-credential')
+      .send(holdBody)
+      .expect(401);
+    // Malformed body fails closed before any write.
+    await request(server)
+      .put('/internal/v1/legal-hold')
+      .set(SERVICE_CREDENTIAL_HEADER, INTERNAL_CREDENTIAL)
+      .send({ ownerUserId: estateOwner, hold: 'yes', caseId })
+      .expect(400, { error: 'invalid_request' });
+
+    // The real call sweeps the whole estate...
+    const set = await request(server)
+      .put('/internal/v1/legal-hold')
+      .set(SERVICE_CREDENTIAL_HEADER, INTERNAL_CREDENTIAL)
+      .send(holdBody)
+      .expect(200);
+    expect(set.body).toEqual({ changed: 2 });
+    // ...blocks deletion while held...
+    await request(server)
+      .delete(`/v1/documents/${heldDocA}`)
+      .set(bearer('stepup', estateOwner))
+      .expect(409, { error: 'legal_hold' });
+    // ...and is idempotent, so settlement can re-drive it after a commit
+    // failure without a second effect.
+    const again = await request(server)
+      .put('/internal/v1/legal-hold')
+      .set(SERVICE_CREDENTIAL_HEADER, INTERNAL_CREDENTIAL)
+      .send(holdBody)
+      .expect(200);
+    expect(again.body).toEqual({ changed: 0 });
+
+    // Audited with ids/enums only: the case id and the count, never a title.
+    const audited = producer.messages
+      .filter((m) => m.topic === TOPICS.auditEvents)
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .filter((e) => e.action === 'document.legal_hold.set');
+    expect(audited.length).toBeGreaterThanOrEqual(2);
+    expect(audited[0]!.detail).toEqual({ hold: true, changed: 2, caseId });
+
+    // Clearing restores deletability — the reject/void path.
+    const cleared = await request(server)
+      .put('/internal/v1/legal-hold')
+      .set(SERVICE_CREDENTIAL_HEADER, INTERNAL_CREDENTIAL)
+      .send({ ownerUserId: estateOwner, hold: false, caseId })
+      .expect(200);
+    expect(cleared.body).toEqual({ changed: 2 });
+    await request(server)
+      .delete(`/v1/documents/${heldDocB}`)
+      .set(bearer('stepup', estateOwner))
+      .expect(200);
   });
 
   it('uploads a clean PDF: scanned, OCR-indexed, ciphertext at rest, searchable', async () => {

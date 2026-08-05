@@ -48,6 +48,20 @@ const EnvSchema = z
     // sides are provisioned. REQUIRED in production: docs/03 §5.1 control 4
     // must not be silently unreachable.
     IDENTITY_INTERNAL_TOKEN: z.string().optional(),
+    // Base URL of the documents service (M9 PR2): the legal-hold client
+    // presents the documents credential there when a case transition sets or
+    // clears the estate-wide hold. Required IN production; dev defaults to
+    // localhost.
+    DOCUMENTS_URL: z.string().url().optional(),
+    // OUTBOUND: presented to documents' internal legal-hold route (M9 PR2 —
+    // the caller that closes the M4 zero-callers gap). The FOURTH credential
+    // this service touches; like the others it opens exactly one callee's
+    // routes and must never equal any of the other three. Optional in
+    // dev/test — documents' guard fails closed while unset, so the
+    // hold-touching transitions 503 until both sides are provisioned.
+    // REQUIRED in production: an estate entering administration must not
+    // silently keep its documents deletable.
+    DOCUMENTS_INTERNAL_TOKEN: z.string().optional(),
     // Owner-contact channel (docs/03 §5.1 control 3). 'http' (M9) delegates
     // to the notifications service, which owns address resolution and the
     // closed template registry — this service keeps its no-email-lookup
@@ -163,9 +177,16 @@ const EnvSchema = z
       });
     }
     if (env.NODE_ENV === 'production') {
+      // FOUR credentials touch this service: its own inbound gate value plus
+      // the three outbound ones (identity's account lock, notifications' send
+      // surface, documents' legal-hold route). Each is production-required —
+      // an unreachable control is a silently absent control — and no two may
+      // share a value: one value opening two callees is the M7 collapse.
       const credentials = [
         ['SETTLEMENT_INTERNAL_TOKEN', 'the docs/03 §6a vault-release gate'],
         ['IDENTITY_INTERNAL_TOKEN', "identity's docs/03 §5.1 account lock"],
+        ['NOTIFICATIONS_INTERNAL_TOKEN', 'owner contact for the §5.1 waiting period'],
+        ['DOCUMENTS_INTERNAL_TOKEN', 'the legal hold on an estate in administration'],
       ] as const;
       for (const [key, purpose] of credentials) {
         const value = env[key];
@@ -177,18 +198,16 @@ const EnvSchema = z
           });
         }
       }
-      // The whole point of splitting them: one value must never authenticate
-      // both directions, or the collapse the M7 review found returns.
-      if (
-        env.SETTLEMENT_INTERNAL_TOKEN &&
-        env.SETTLEMENT_INTERNAL_TOKEN === env.IDENTITY_INTERNAL_TOKEN
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['IDENTITY_INTERNAL_TOKEN'],
-          message:
-            'IDENTITY_INTERNAL_TOKEN must differ from SETTLEMENT_INTERNAL_TOKEN (sharing one value hands every gate caller a key to the account-lock API)',
-        });
+      for (const [i, [a]] of credentials.entries()) {
+        for (const [b] of credentials.slice(i + 1)) {
+          if (env[a] && env[a] === env[b]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [b],
+              message: `${b} must differ from ${a} (one value must never open two callees — the M7 collapse)`,
+            });
+          }
+        }
       }
       if (env.NOTIFY_MODE !== 'http') {
         ctx.addIssue({
@@ -198,26 +217,13 @@ const EnvSchema = z
             'NOTIFY_MODE must be "http" in production (the stub notifier reaches nobody; a real adapter exists as of M9)',
         });
       }
-      if (!env.NOTIFICATIONS_INTERNAL_TOKEN || env.NOTIFICATIONS_INTERNAL_TOKEN.length < 32) {
+      if (!env.DOCUMENTS_URL) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          path: ['DOCUMENTS_URL'],
           message:
-            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; unreachable owner contact hollows out the §5.1 waiting period)',
+            'DOCUMENTS_URL is required in production (the legal-hold client must be routable)',
         });
-      }
-      // Three credentials touch this service; no two may share a value.
-      for (const [other, label] of [
-        ['SETTLEMENT_INTERNAL_TOKEN', 'SETTLEMENT_INTERNAL_TOKEN'],
-        ['IDENTITY_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN'],
-      ] as const) {
-        if (env.NOTIFICATIONS_INTERNAL_TOKEN && env.NOTIFICATIONS_INTERNAL_TOKEN === env[other]) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
-            message: `NOTIFICATIONS_INTERNAL_TOKEN must differ from ${label} (one value must never open two callees)`,
-          });
-        }
       }
     }
     if (env.NOTIFY_MODE === 'http' && !env.NOTIFICATIONS_URL) {
@@ -259,8 +265,14 @@ export interface SettlementConfig {
   /** Notifications service base URL (M9). */
   readonly notificationsUrl: string;
   /** OUTBOUND: presented to the notifications service ('' ⇒ sends record as
-   * attempted-not-confirmed). Never either of the other two credentials. */
+   * attempted-not-confirmed). Never any of the other three credentials. */
   readonly notificationsInternalToken: string;
+  /** Documents service base URL (M9 PR2: the legal-hold client). */
+  readonly documentsUrl: string;
+  /** OUTBOUND: presented to documents' internal legal-hold route ('' ⇒ those
+   * calls fail closed and the hold-touching transitions 503). Never any of
+   * the other three credentials. */
+  readonly documentsInternalToken: string;
   readonly driverIntervalMs: number;
   /** Selected KMS backend (LocalKmsProvider in dev/test, AWS KMS in prod). */
   readonly kms: KmsConfig;
@@ -304,6 +316,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SettlementConf
     notify: { mode: e.NOTIFY_MODE },
     notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
     notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
+    documentsUrl: e.DOCUMENTS_URL ?? 'http://localhost:3005',
+    documentsInternalToken: e.DOCUMENTS_INTERNAL_TOKEN ?? '',
     driverIntervalMs: e.DRIVER_INTERVAL_MS,
     // The superRefine above guarantees the required fields per environment, so
     // these non-null assertions are sound.

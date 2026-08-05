@@ -12,8 +12,17 @@ import { CasesRepo, type CaseRow, type EvidenceEntry } from './cases.repo';
 import type { SettlementConfig } from './config';
 import { ContactAttemptsRepo, type ContactChannel } from './contact-attempts.repo';
 import { CoreReadsRepo, type ReportableEstate } from './core-reads.repo';
-import { CLOCK, CONFIG, IDENTITY_LOCK, NOTIFIER, SYSTEM_ACTOR_ID, type Clock } from './di-tokens';
+import {
+  CLOCK,
+  CONFIG,
+  DOCUMENTS_HOLD,
+  IDENTITY_LOCK,
+  NOTIFIER,
+  SYSTEM_ACTOR_ID,
+  type Clock,
+} from './di-tokens';
 import { Db, isUniqueViolation } from './db';
+import { DocumentsHoldError, type DocumentsHoldPort } from './documents-hold';
 import { EventsService } from './events.service';
 import { IdentityLockError, OwnerAliveError, type IdentityLockPort } from './identity-lock';
 import type { NotificationPort } from './notifications';
@@ -104,6 +113,11 @@ function toDto(row: CaseRow, now: Date): CaseDto {
  *    is accepted and bounded by the lock routes' triviality; the identity
  *    side is idempotent, so a commit failure after a successful lock is
  *    healed by retry.
+ *  - The estate-wide legal hold (M9 PR2) rides the SAME rule, paired with the
+ *    lock at every site: set with deceased_pending at review-approve,
+ *    re-asserted with the terminal lock at verification (catching documents
+ *    uploaded during the wait), cleared with every restore to active. Same
+ *    fail-closed rollback, same idempotent re-drive on the documents side.
  *  - Intake and review-approve REFUSE in production while only the stub
  *    notifier is wired (M6 precedent): a waiting period nobody can be told
  *    about is not a control.
@@ -122,6 +136,7 @@ export class SettlementService {
     private readonly events: EventsService,
     @Inject(NOTIFIER) private readonly notifier: NotificationPort,
     @Inject(IDENTITY_LOCK) private readonly identity: IdentityLockPort,
+    @Inject(DOCUMENTS_HOLD) private readonly documentsHold: DocumentsHoldPort,
     @Inject(CONFIG) private readonly config: SettlementConfig,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
@@ -312,6 +327,9 @@ export class SettlementService {
           // Account lock INSIDE the transaction: an unconfirmed lock rolls
           // the approval back (docs/03 §5.1 control 4, fail closed).
           await this.identity.setState(locked.decedent_user_id, 'deceased_pending', caseId);
+          // Legal hold rides the lock (M9 PR2): from this instant the estate
+          // is under administration and its documents must not be deletable.
+          await this.documentsHold.setHold(locked.decedent_user_id, true, caseId);
           const row = (await this.cases.findById(tx, caseId)) as CaseRow;
           return { row, waitingPeriodEnds: ends, restored: false };
         }
@@ -330,6 +348,9 @@ export class SettlementService {
         );
         if (wasLocked) {
           await this.identity.setState(locked.decedent_user_id, 'active', caseId);
+          // The claim fell apart, so the hold set at approval lifts with the
+          // lock — a rejected case must not leave documents frozen.
+          await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
         }
         const row = (await this.cases.findById(tx, caseId)) as CaseRow;
         return { row, waitingPeriodEnds: null, restored: wasLocked };
@@ -399,8 +420,10 @@ export class SettlementService {
           null,
         );
         // Always restore: a no-op when the case never reached the lock stage
-        // (identity's transition table treats same-state as idempotent).
+        // (identity's transition table treats same-state as idempotent), and
+        // the hold-clear below is idempotent the same way.
         await this.identity.setState(locked.decedent_user_id, 'active', caseId);
+        await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
         return (await this.cases.findById(tx, caseId)) as CaseRow;
       });
     } catch (err) {
@@ -479,6 +502,13 @@ export class SettlementService {
               caseId,
               locked.created_at,
             );
+            // Re-assert the hold set at approval: idempotent, and it catches
+            // documents the owner uploaded DURING the waiting period (their
+            // login stays alive in deceased_pending — the rescue path), so
+            // the invariant at verification is "every live document of a
+            // verified estate is held", not "every document that existed at
+            // approval".
+            await this.documentsHold.setHold(locked.decedent_user_id, true, caseId);
             const row = (await this.cases.findById(tx, caseId)) as CaseRow;
             return { row, voided: false };
           } catch (err) {
@@ -499,6 +529,7 @@ export class SettlementService {
           null,
         );
         await this.identity.setState(locked.decedent_user_id, 'active', caseId);
+        await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
         const row = (await this.cases.findById(tx, caseId)) as CaseRow;
         return { row, voided: true };
       });
@@ -750,8 +781,16 @@ export class SettlementService {
   }
 
   private mapIdentityFailure(err: unknown): unknown {
-    return err instanceof IdentityLockError
-      ? new ServiceUnavailableException({ error: 'identity_unavailable' })
-      : err;
+    if (err instanceof IdentityLockError) {
+      return new ServiceUnavailableException({ error: 'identity_unavailable' });
+    }
+    if (err instanceof DocumentsHoldError) {
+      // Same fail-closed contract as identity: the transaction has rolled
+      // back, so the case did not move — the caller retries when documents
+      // is reachable rather than committing a transition whose legal-hold
+      // effect is unconfirmed.
+      return new ServiceUnavailableException({ error: 'documents_unavailable' });
+    }
+    return err;
   }
 }

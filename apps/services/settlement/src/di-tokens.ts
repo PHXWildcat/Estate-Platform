@@ -5,6 +5,8 @@ export const AUDIT_PRODUCER = Symbol('AUDIT_PRODUCER');
 export const POLICY_DECISION_POINT = Symbol('POLICY_DECISION_POINT');
 export const NOTIFIER = Symbol('NOTIFIER');
 export const IDENTITY_LOCK = Symbol('IDENTITY_LOCK');
+/** M9 PR2: the estate-wide legal hold, driven from case transitions. */
+export const DOCUMENTS_HOLD = Symbol('DOCUMENTS_HOLD');
 export const CLOCK = Symbol('CLOCK');
 /** PR2: envelope encryption for distribution amounts ('settlement/kek'). */
 export const FIELD_CRYPTO = Symbol('FIELD_CRYPTO');

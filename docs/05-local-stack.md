@@ -182,12 +182,18 @@ None of this is exercised, and all of it is load-bearing in `docs/01` §3:
   NetworkPolicies
 - Aurora behaviour: failover, PITR, cross-region replication, backup vaulting
 
-### The M4 legal-hold gap is still open
+### The M4 legal-hold gap — CLOSED (M9 PR2)
 
-`DOCUMENTS_INTERNAL_TOKEN` is declared in the credential graph with **zero
-holders**, because no in-repo client calls that route. The stack provisions it
-to documents' inbound slot and to nobody else, so the route exists and refuses
-every caller. The stack does not close the gap; it makes it visible.
+`DOCUMENTS_INTERNAL_TOKEN` now has a holder: settlement drives the estate-wide
+legal hold from its case transitions through `documents-hold.ts`, and the
+generator mints the credential to documents' inbound slot and settlement's
+outbound slot from the graph edge like every other. The dev-journey stack test
+proves it live: review-approve freezes the estate against a real
+step-up-authorized deletion, and the reject transition releases it. (While the
+gap was open, this section also claimed the stack provisioned the inbound slot
+alone — it did not: a zero-holder edge was deliberately NOT provisioned at
+all, and the guard failed closed on the empty value. That subtraction rule
+survives for any future holder-less edge.)
 
 ---
 
