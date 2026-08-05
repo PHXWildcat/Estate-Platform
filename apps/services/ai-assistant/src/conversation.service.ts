@@ -12,11 +12,12 @@ import {
 // a type-only import is erased, which leaves Nest's `design:paramtypes`
 // metadata undefined for this parameter and the provider unresolvable at boot.
 import { AssistantAuthz, conversationResource } from './authz.service';
+import { ASSISTANT_TURN_BUDGET_MS } from '@estate/contracts';
 import { missingScopes } from './consent';
 import { ConsentsRepo } from './consents.repo';
 import { ConversationsRepo } from './conversations.repo';
 import { Db, isUniqueViolation, type Queryable } from './db';
-import { LLM_GATEWAY } from './di-tokens';
+import { CLOCK, LLM_GATEWAY, type Clock } from './di-tokens';
 import { EventsService, flushPendingAudit, type PendingAudit } from './events.service';
 import { FieldCipher, messageField, toolResultField } from './field-cipher';
 import {
@@ -74,6 +75,17 @@ const TRUNCATION_MARKER = '\n[truncated]';
 export const ITERATION_CAP_MESSAGE =
   'I stopped after looking things up several times without reaching an answer. ' +
   'Please try asking a narrower question.';
+
+/**
+ * The turn ran out of its wall-clock budget (M11 security review).
+ *
+ * Platform-authored and distinct from the iteration cap: "this took too long"
+ * and "I kept looking things up without answering" are different facts, and a
+ * user who is told the wrong one asks the wrong follow-up question. Like every
+ * other non-answer in this service it names no provider, no model and no cause.
+ */
+export const TURN_BUDGET_MESSAGE =
+  'That took longer than I can spend on one question. Please try asking something narrower.';
 
 /**
  * The standing system instruction. Platform-authored, constant, and the only
@@ -201,6 +213,10 @@ export class ConversationService {
     private readonly registry: ToolRegistry,
     @Inject(LLM_GATEWAY) private readonly gateway: LlmGateway,
     @Inject(TOOL_EXECUTOR) private readonly executor: ToolExecutorPort,
+    // The SAME injectable clock the audit path uses, so a turn's wall-clock
+    // budget is testable without sleeping and cannot drift from the timestamps
+    // that describe the same turn.
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
   async create(userId: string): Promise<ConversationDto> {
@@ -382,7 +398,30 @@ export class ConversationService {
 
       const toolResults: LlmToolResult[] = [];
       let answer: string | null = null;
+      /*
+       * THE TURN'S WALL CLOCK (M11 security review).
+       *
+       * The iteration cap bounds how many times the loop runs; it does not
+       * bound how LONG it runs, and those are different guarantees. One
+       * provider call is bounded per attempt and the SDK retries, so six
+       * iterations of retried calls with tool reads between them could run for
+       * many minutes — long past any deadline an edge would wait, and the edge
+       * giving up first is worse than useless here: nothing cancels this
+       * transaction, so the turn still commits, the payload has still crossed
+       * TB5, and the user is told it never happened.
+       *
+       * So the SERVICE decides, which is the only place that can: before each
+       * provider call, if the budget is spent, stop looping and answer with
+       * what we have. That is the same shape as the iteration cap, and it makes
+       * the edge's timeout a derivable number rather than a hopeful one.
+       */
+      const startedAt = this.clock().getTime();
+      let budgetSpent = false;
       for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+        if (this.clock().getTime() - startedAt >= ASSISTANT_TURN_BUDGET_MS) {
+          budgetSpent = true;
+          break;
+        }
         const input: LlmTurnInput = {
           system: SYSTEM_INSTRUCTION,
           // Prior turns are stored as real text and tokenized on the way OUT,
@@ -426,7 +465,19 @@ export class ConversationService {
       // an artefact of the provider hop and must not reach the user or the
       // transcript. An invented placeholder the tokenizer never minted is left
       // as a harmless literal rather than resolved to someone's data.
-      const replyText = answer === null ? ITERATION_CAP_MESSAGE : tokenizer.detokenize(answer);
+      /*
+       * A turn that ran out of budget and one that ran out of iterations are
+       * told apart, because they are different facts about what happened: the
+       * first is "this took too long", the second is "the model kept looking
+       * things up without answering". Neither is a provider error, and neither
+       * pretends an answer arrived.
+       */
+      const replyText =
+        answer === null
+          ? budgetSpent
+            ? TURN_BUDGET_MESSAGE
+            : ITERATION_CAP_MESSAGE
+          : tokenizer.detokenize(answer);
       const replyId = randomUUID();
       await this.append(tx, userId, conversationId, replyId, userSeq + 1, 'assistant', replyText);
       await this.conversations.touch(tx, conversationId);

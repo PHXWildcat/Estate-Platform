@@ -38,8 +38,19 @@ const csp = [
   "connect-src 'self'",
   "font-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  // See the note above: NOT locked down, and deliberately not pretending to be.
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  /*
+   * See the note above: NOT locked down, and deliberately not pretending to be.
+   *
+   * `'unsafe-eval'` is DEVELOPMENT ONLY (M11 security review). It shipped in
+   * every environment on the first pass while the rationale above justified
+   * only inline hydration — a directive nobody had explained, which is how a
+   * relaxation outlives its reason. React Refresh needs it under `next dev`;
+   * a production build does not, so production does not get it. `'unsafe-inline'
+   * remains everywhere and is explained above.
+   */
+  process.env.NODE_ENV === 'production'
+    ? "script-src 'self' 'unsafe-inline'"
+    : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "frame-ancestors 'none'",
   "form-action 'self'",
   "base-uri 'self'",

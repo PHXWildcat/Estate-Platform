@@ -276,6 +276,18 @@ describe('a response we do not understand is not data', () => {
     expect(await screen.findByText(/couldn’t load your conversations/i)).toBeInTheDocument();
   });
 
+  it('refuses a start response missing its conversation id', async () => {
+    // The one call site that lacked the guard (M11 security review). The
+    // milestone claimed the rule everywhere; it held in two places out of three.
+    installGraphqlFetchMock({
+      ...handlers({ conversations: [] }),
+      StartConversation: () => jsonResponse({ data: {} }),
+    });
+    render(<ChatPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'New' }));
+    expect(await screen.findByText(/went wrong/i)).toBeInTheDocument();
+  });
+
   it('refuses a transcript that is not a list of messages', async () => {
     installGraphqlFetchMock({
       ...handlers({}),

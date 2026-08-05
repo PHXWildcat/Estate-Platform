@@ -129,7 +129,16 @@ export function ChatPanel(): ReactElement {
       setError(messageFor(result.code));
       return;
     }
-    setActiveId(result.data.startConversation.conversationId);
+    // The same shape check `load` and `openConversation` apply, at the one call
+    // site that was missing it (M11 security review). The milestone claimed the
+    // rule everywhere; a claim that holds in two places out of three is the
+    // shape this codebase keeps finding.
+    const started = result.data.startConversation;
+    if (typeof started?.conversationId !== 'string') {
+      setError(messageFor('UNKNOWN'));
+      return;
+    }
+    setActiveId(started.conversationId);
     setMessages([]);
     await load();
   }

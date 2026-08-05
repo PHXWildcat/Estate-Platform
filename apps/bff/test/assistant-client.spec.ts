@@ -1,3 +1,4 @@
+import { ASSISTANT_TURN_BUDGET_MS, assistantTurnTimeoutMs } from '@estate/contracts';
 import { FetchAssistantClient } from '../src/assistant-client';
 
 /**
@@ -176,6 +177,21 @@ describe('the conversation surface', () => {
     expect(typeof body).toBe('string');
     expect(JSON.parse(body as string)).toEqual({ text: 'hello' });
     expect(seen[0]?.init.headers).toMatchObject({ authorization: `Bearer ${TOKEN}` });
+  });
+
+  it('waits LONGER than the assistant is allowed to spend on a turn', () => {
+    // THE INVARIANT THE M11 REVIEW FOUND INVERTED. It used to be a claim in two
+    // comments; it is now a fact about one shared constant, asserted here so it
+    // cannot silently invert again. If the edge gives up first the turn still
+    // commits — nothing cancels the server side — and the user is told an
+    // exchange that happened did not.
+    expect(assistantTurnTimeoutMs()).toBeGreaterThan(ASSISTANT_TURN_BUDGET_MS);
+    // And the headroom is for the platform's own work, not for another
+    // provider call: a gap wide enough to hide a whole extra turn would put us
+    // back where we started.
+    expect(assistantTurnTimeoutMs() - ASSISTANT_TURN_BUDGET_MS).toBeLessThan(
+      ASSISTANT_TURN_BUDGET_MS,
+    );
   });
 
   it('gives a turn its own deadline, and nothing else one', async () => {

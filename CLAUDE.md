@@ -1266,4 +1266,38 @@ deviating from them, stop and propose the change with rationale — do not silen
   arrives as `{"data":{}}` and white-screened the page — the panel now reads a
   response missing its fields as NO DATA rather than as data, which is the peer
   clients' own rule applied in the browser.
+- 2026-08-05 — M11 security review (three focused lenses over the merged range
+  `dee0cff..557cef2` + two adversarial verifiers per candidate, both defaulting
+  to refuted; 8 raw, 8 unique, 2 confirmed — the same defect found by two lenses
+  — and 6 refuted). Sized to a single-PR range rather than repeating M10's
+  six-lens sweep over code M11 did not touch. THE EDGE TIMEOUT WAS BACKWARDS AND
+  ITS COMMENT SAID THE OPPOSITE: `TURN_TIMEOUT_MS = 150_000` claimed to sit
+  above the assistant's deadline, but the SDK's `maxRetries` defaults to 2 with
+  the timeout applied PER ATTEMPT (~180s for one call) and a turn makes up to
+  six calls (~18 minutes). A verifier corrected the framing precisely — the
+  literal sentence was true (150s > the 60s per-call bound); the RATIONALE both
+  the code and CLAUDE.md restated was false. The harm was not slowness: nothing
+  cancels the server side, so the turn COMMITTED while the user was told it
+  failed — transcript sealed, audit emitted, payload already across TB5 — and
+  the invited retry blocked on the row lock and re-sent a longer transcript to
+  the provider, a second unauthorized egress and a duplicate of an exchange the
+  user was told never happened. THE FIX IS A SHARED NUMBER, NOT A BETTER
+  COMMENT: `packages/contracts/src/assistant-timing.ts` owns
+  `ASSISTANT_TURN_BUDGET_MS`; the service enforces it as a WALL CLOCK across the
+  loop (its own distinct message, so "too long" is not confused with the
+  iteration cap), the SDK's retries are pinned rather than inherited, and the
+  BFF waits `assistantTurnTimeoutMs()` derived from the same constant. Prose
+  could not hold an invariant that spans two services; one constant plus a spec
+  on each side can.
+- 2026-08-05 — Two M11 findings were REFUTED as security findings and fixed
+  anyway, because both contradicted a claim the milestone made about itself —
+  the failure mode this codebase keeps rediscovering. `startConversation`
+  dereferenced its response without the shape guard M11 said it applied
+  everywhere (it held in two call sites out of three), and the CSP shipped
+  `'unsafe-eval'` in every environment while its rationale justified only inline
+  hydration. A directive nobody explained is how a relaxation outlives its
+  reason, so it is development-only now (React Refresh needs it; a production
+  build does not) and `csp.test.ts` pins the policy — including the sentence
+  admitting what it does not do, because an honest partial CSP only stays honest
+  while the honesty is written next to it.
 
