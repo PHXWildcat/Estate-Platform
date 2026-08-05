@@ -1231,4 +1231,39 @@ deviating from them, stop and propose the change with rationale — do not silen
   "binary file not shown". Keyed by nested maps now, so no separator exists to
   choose badly. The lesson generalizes: a control character in source silently
   disables human review of that file, and nothing in the pipeline complains.
+- 2026-08-05 — M11 (the conversation surface) discharges docs/03 §6d's open
+  rendering constraint IN THE SAME PR as the first model-authored pixel, which
+  is what the M10 review said it owed. Model output renders as PLAIN TEXT, and
+  the control is an ABSENCE rather than a filter: `MessageText` builds text
+  nodes, with no parser to misconfigure, no allowlist to widen, no dependency,
+  and no `dangerouslySetInnerHTML` anywhere in the app (a source scan enforces
+  that, with `app/layout.tsx`'s theme script as the one DECLARED exemption —
+  the credential-graph habit of stating exceptions as data). Markdown was
+  declined for the third time on the same reasoning as the template renderer,
+  the webhook verifier and the clamd client: a parser on an untrusted-input path
+  is the thing we do not add. Both roles render through the one component,
+  because a later edit giving the assistant's half a richer path is exactly how
+  this regresses. Behind it a CSP (`img-src 'self' data:`, `connect-src 'self'`)
+  refuses a remote image load even if the renderer regresses — and it says
+  plainly that `script-src` is NOT locked down, since Next's inline bootstrap
+  needs nonces; a stricter directive that gets relaxed under deploy pressure is
+  worse than an honest partial one. Cost, stated where it lands: no lists, no
+  emphasis, and whoever adds formatting inherits the requirement.
+- 2026-08-05 — M11 BFF and UI decisions. The assistant's UNIFORM 404 stays
+  uniform through the BFF (it is the anti-enumeration control — "no such
+  conversation" and "someone else's" must stay indistinguishable), while
+  `assistant_disabled` gets its own code because it is the one refusal a user
+  can act on; the discriminator is the peer's TOKEN, not the status, so a future
+  403 cannot inherit "turn the assistant on". A turn carries its own deadline
+  ABOVE the assistant's per-provider-call bound: a BFF that gave up first would
+  abandon a turn the service is still committing — row lock held — and report a
+  failure for an answer that lands in the transcript unread. CONSENT IS A UI
+  STATE, not an error path: with the master switch off the composer is replaced
+  by an explanation and a link, because the turn route now refuses outright
+  (M10 review) and a box that takes what you type and throws it away is worse.
+  And running the real app found the third browser-only defect in three
+  milestones: `gqlRequest` answers ok for any `data` object, so a version skew
+  arrives as `{"data":{}}` and white-screened the page — the panel now reads a
+  response missing its fields as NO DATA rather than as data, which is the peer
+  clients' own rule applied in the browser.
 

