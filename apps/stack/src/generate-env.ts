@@ -98,11 +98,11 @@ export function assignCredentials(
   };
 
   for (const edge of SERVICE_CREDENTIAL_GRAPH) {
-    // An edge with NO holders gets NO secret. The graph records such an edge
-    // (documents' legal hold) as deliberately unprovisioned — nothing in the
-    // repo can call the route — and minting an inbound value anyway would be
-    // the aspirational grant the graph module exists to forbid. The callee's
-    // guard fails closed on the empty slot, which is the documented state.
+    // An edge with NO holders gets NO secret: minting an inbound value nobody
+    // can present would be the aspirational grant the graph module exists to
+    // forbid; the callee's guard fails closed on the empty slot instead.
+    // (Documents' legal-hold edge lived in this state from M7 until M9 PR2
+    // gave it its caller; no such edge exists today, but the rule stays.)
     if (edge.holders.length === 0) {
       continue;
     }

@@ -20,7 +20,7 @@ const PEERS: Record<string, readonly string[]> = {
   plaid: ['identity'],
   documents: ['identity', 'settlement'],
   vault: ['identity', 'settlement', 'notifications'],
-  settlement: ['identity', 'notifications'],
+  settlement: ['identity', 'notifications', 'documents'],
   notifications: [],
   audit: [],
 };
@@ -82,7 +82,9 @@ export function serviceProcessEnv(
   const name = service.name as ServiceName;
   const inbound = inboundCredentialFor(name);
   if (inbound) {
-    // documents' inbound edge has zero holders; its slot is deliberately empty.
+    // A zero-holder inbound edge has no minted slot; '' keeps the callee's
+    // guard failing closed. (Every current edge has holders — M9 PR2 gave
+    // documents' legal-hold edge its caller — but the rule is the graph's.)
     out[inbound.envVar] = env.get(`${upper}_${inbound.envVar}`) ?? '';
   }
   for (const outbound of outboundCredentialsFor(name)) {

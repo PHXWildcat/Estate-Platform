@@ -403,6 +403,108 @@ describe('verification (timer expiry is necessary, never sufficient)', () => {
   });
 });
 
+describe('the estate-wide legal hold (M9 PR2: settlement → documents)', () => {
+  it('approval sets the hold in the same transition as the account lock', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    expect(h.documentsHold.setHoldCalls).toEqual([{ ownerUserId: DECEDENT, hold: true, caseId }]);
+  });
+
+  it('an unconfirmable hold rolls the approval back exactly like the lock (fail closed)', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await h.service.startReview(OPERATOR, SESSION, caseId);
+    h.documentsHold.failSetHold = true;
+    await expect(
+      h.service.decideReview(OPERATOR, SESSION, caseId, { decision: 'approve' }),
+    ).rejects.toMatchObject({ response: { error: 'documents_unavailable' } });
+    // In the real DB the transaction rolls back; the audit trail shows no
+    // approval. The identity lock that DID land is idempotent and heals on
+    // the operator's retry — the same accepted cost as a commit failure
+    // after a successful lock (M7).
+    expect(auditActions(h.producer)).not.toContain('settlement.case.approved');
+  });
+
+  it('reject from waiting_period lifts the hold with the account restore', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    await h.service.decideReview(OPERATOR, SESSION, caseId, {
+      decision: 'reject',
+      reason: 'insufficient_evidence',
+    });
+    expect(h.documentsHold.setHoldCalls).toEqual([
+      { ownerUserId: DECEDENT, hold: true, caseId },
+      { ownerUserId: DECEDENT, hold: false, caseId },
+    ]);
+  });
+
+  it('reject from verifying never touches documents (nothing was locked or held)', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await h.service.startReview(OPERATOR, SESSION, caseId);
+    await h.service.decideReview(OPERATOR, SESSION, caseId, {
+      decision: 'reject',
+      reason: 'fraud_suspected',
+    });
+    expect(h.documentsHold.setHoldCalls).toEqual([]);
+  });
+
+  it('the owner void lifts the hold with the restore', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    await h.service.void(DECEDENT, SESSION, caseId);
+    expect(h.documentsHold.setHoldCalls).toEqual([
+      { ownerUserId: DECEDENT, hold: true, caseId },
+      { ownerUserId: DECEDENT, hold: false, caseId },
+    ]);
+  });
+
+  it('verification re-asserts the hold: documents uploaded during the wait are covered', async () => {
+    // The owner's login stays alive in deceased_pending (the rescue path), so
+    // the estate can GROW between approval and verification. The invariant is
+    // "every live document of a verified estate is held", enforced by
+    // re-driving the idempotent sweep with the terminal lock.
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    h.clock.value = new Date(NOW.getTime() + 5 * DAY + HOUR);
+    await h.service.confirmVerification(OPERATOR, SESSION, caseId);
+    expect(h.documentsHold.setHoldCalls).toEqual([
+      { ownerUserId: DECEDENT, hold: true, caseId },
+      { ownerUserId: DECEDENT, hold: true, caseId },
+    ]);
+  });
+
+  it('a liveness void at confirmation lifts the hold with the restore', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    h.identity.livenessAnswer = {
+      status: 'deceased_pending',
+      lastStepUpAt: new Date(NOW.getTime() + HOUR),
+    };
+    h.clock.value = new Date(NOW.getTime() + 5 * DAY + HOUR);
+    await expect(h.service.confirmVerification(OPERATOR, SESSION, caseId)).rejects.toMatchObject({
+      response: { error: 'owner_alive' },
+    });
+    expect(h.documentsHold.setHoldCalls).toEqual([
+      { ownerUserId: DECEDENT, hold: true, caseId },
+      { ownerUserId: DECEDENT, hold: false, caseId },
+    ]);
+  });
+
+  it('a documents outage during the owner void refuses the void (fail closed)', async () => {
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    h.documentsHold.failSetHold = true;
+    await expect(h.service.void(DECEDENT, SESSION, caseId)).rejects.toMatchObject({
+      response: { error: 'documents_unavailable' },
+    });
+    // In the real DB the transaction rolls back; the audit trail shows no
+    // void. A hold outliving its case blocks only deletion — deny-safe —
+    // and the owner's retry heals it.
+    expect(auditActions(h.producer)).not.toContain('settlement.case.voided');
+  });
+});
+
 describe('reads and the operator queue', () => {
   it('subject, reporter, and operators can read; strangers cannot', async () => {
     const h = linkedHarness();

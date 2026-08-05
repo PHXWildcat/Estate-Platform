@@ -144,17 +144,15 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
   {
     envVar: 'DOCUMENTS_INTERNAL_TOKEN',
     callee: 'documents',
-    // DELIBERATELY EMPTY. The route is guarded and ready, but no in-repo client
-    // calls it: settlement declares no documents credential and has no
-    // documents port. docs/04, CLAUDE.md and the settlement README described
-    // legal hold as having "gained its writer"; it gained a writer ROUTE. The
-    // M4 gap is not closed — nothing in the repo can set or clear a hold, and
-    // because this variable is not production-required, a default deploy has
-    // documents refusing every legal-hold call. Recorded as [] rather than
-    // aspirationally as ['settlement'] because an unenforced grant in this
-    // table is exactly the prose-vs-reality gap the module exists to close.
-    // Add 'settlement' in the same change that adds the client, never before.
-    holders: [],
+    // Settlement alone (M9 PR2 — the change that closed the M4 zero-callers
+    // gap). This edge sat deliberately EMPTY from M7 until the client existed:
+    // recording ['settlement'] before settlement actually presented the
+    // credential would have been an aspirational grant, exactly the
+    // prose-vs-reality drift this module exists to forbid. The holder was
+    // added in the SAME change as `documents-hold.ts` and the config that
+    // absorbs the secret, and the variable became production-required on the
+    // documents side in that change too.
+    holders: ['settlement'],
     opens: ['PUT /internal/v1/legal-hold'],
     grants:
       "Set or clear the legal hold on an owner's documents, which blocks deletion. It grants no read access to content and decrypts nothing; misuse means denying a legitimate deletion, or silently lifting a hold that litigation requires.",

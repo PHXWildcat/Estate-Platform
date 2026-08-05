@@ -970,12 +970,14 @@ cross-service account lock.**
   documents (`PUT /internal/v1/legal-hold`), intended for settlement.
   CORRECTED (credential-graph work, 2026-07-28): this was written as "gained
   its writer, closing the M4 gap", which overstated it. Nothing in the repo
-  calls that route: settlement declares no documents credential and has no
-  documents port, and `DOCUMENTS_INTERNAL_TOKEN` is not production-required, so
-  a default deploy has documents refusing every legal-hold call. **The M4 gap
-  is not closed** — the surface exists and its caller does not. Tracked as a
-  follow-up; `packages/auth-guard/src/credential-graph.ts` records the edge as
-  having zero holders, and the fence there fails if that is ever fudged.
+  called that route: settlement declared no documents credential and had no
+  documents port, and `DOCUMENTS_INTERNAL_TOKEN` was not production-required,
+  so a default deploy had documents refusing every legal-hold call. The gap
+  stayed open, recorded in the graph as an edge with zero holders.
+  **CLOSED in M9 PR2 (2026-08-04):** settlement's `documents-hold.ts` client
+  now drives the hold from the case transitions, the graph edge reads
+  `holders: ['settlement']`, and the credential is production-required on both
+  sides — see the M9 record.
 - Also: the task checklist generated in the same transaction as verification
   from an in-repo versioned template (anchored on `verified_at`; date of death
   is deliberately never stored), the estate timeline, and operator case close
@@ -1339,7 +1341,7 @@ cross-service provisioning drift for **hand**-provisioned environments, and the
 production per-service-endpoint residual above — all three close with the mesh
 or with deployment configuration management, not with code here.
 
-## M9 — Notifications (PR1 shipped; PR2 = the legal-hold caller)
+## M9 — Notifications (PR1 + PR2 shipped; the security pass remains)
 
 Sequenced AHEAD of the "AI assistant · referral · notifications" order below —
 a user-approved reorder, the M8 precedent — because it is the smallest
@@ -1399,13 +1401,64 @@ those flows rest on only become real when the owner can actually be told.
   chain end to end. Workflow exact-count gates unchanged (replacements are
   1:1).
 
-**PR2 (next): settlement→documents legal hold** — the M4 zero-callers gap:
-graph `holders: [] → ['settlement']` in the same change as the
-`documents-hold.ts` client (identity-lock pattern, inside the review-approve
-transaction), first-ever tests for the legal-hold route, and corrections to
-the four docs that record the gap as open. The milestone closes with its own
-security pass including delivery-channel identifier leakage (owed since the
-M6 review).
+**PR2 — settlement→documents legal hold: the M4 zero-callers gap, closed.**
+
+- **The caller.** `apps/services/settlement/src/documents-hold.ts` — the
+  identity-lock pattern verbatim: a `DocumentsHoldPort` with one idempotent
+  operation, an HTTP adapter that fails closed on network/non-2xx/contract
+  drift (`DocumentsHoldError` → 503 `documents_unavailable`, transaction
+  rolls back), authenticated by the documents service credential because no
+  user bearer exists for this call by construction.
+- **Where it fires — paired with the account lock at every site, inside the
+  case transaction.** Review-approve sets the estate-wide hold with the
+  `deceased_pending` lock; every restore to `active` (reject from the wait,
+  owner void, liveness void at confirmation) clears it; verification
+  RE-ASSERTS it with the terminal lock, because the owner's login survives
+  `deceased_pending` (the §5.1 rescue path) and the estate can grow during
+  the wait — the invariant is "every live document of a verified estate is
+  held", not "every document that existed at approval". A hold stranded by a
+  commit failure blocks only deletion (deny-safe) and heals on re-drive.
+  Deliberate scope note: the hold OUTLIVES case close — no lift surface
+  exists post-settlement; that ceremony belongs to the TB7 operator platform.
+- **Trust machinery.** Graph edge `DOCUMENTS_INTERNAL_TOKEN: holders [] →
+  ['settlement']` in the same change as the client (the rule the graph
+  comment mandated); `DOCUMENTS_INTERNAL_TOKEN` becomes production-required
+  (≥ 32 chars) on BOTH sides; settlement's pairwise-distinctness refusal now
+  covers all FOUR credentials it touches (full n² loop, config and doctor);
+  settlement config gains `DOCUMENTS_URL` (production-required). Generator,
+  doctor, service-env mapping and compose all follow the graph automatically;
+  the zero-holder subtraction machinery stays for the next holder-less edge.
+- **Proof.** First-ever tests for the route (401 for no/user/wrong
+  credential, 400 malformed, estate-wide sweep with exact counts, idempotent
+  re-drive, ids-only audit `document.legal_hold.set`, deletion 409→200 across
+  set/clear) driven over HTTP with the real guard against real Postgres;
+  eight settlement transition tests over a `FakeDocumentsHold` (set at
+  approve, cleared on every restore, re-asserted at verify, fail-closed 503s
+  with no case movement); and a dev-journey stack e2e that drives the whole
+  chain live — generator-minted credential, approve freezes the estate
+  against a real step-up-authorized deletion, reject releases it — plus
+  `document.legal_hold.set` added to the verified-hash-chain assertion.
+  Workflow exact counts moved 13/4 → 14/4 (dev) and 9/8 → 9/9 (production
+  skips the dev journey).
+- **PR1's red CI, root-caused here and landed on PR1's own branch** (found by
+  running the gates locally; cherry-picked onto #20 so it merges green).
+  (1) `stack.yml`'s bootstrap loop was a hand-copied list of eight migrate
+  jobs that never learned about `migrate-notifications` — the stack came up
+  against a core cluster with no notifications tables and both profiles died
+  on the chain assertion, exactly the copy-pasted-line drift the M8 record
+  warned about. The list is now DERIVED from the compose file
+  (`config --services | grep '^migrate-'`), so a tenth service cannot be
+  silently skipped; images.yml was already immune (full-profile `up` follows
+  compose's `depends_on`). (2) The notifications coverage floor was set from
+  a number the suite never produced in CI (65.12 measured on the author's
+  machine vs 61.2 in CI); rather than lowering it, the controller and
+  error-filter gained their first specs (the parse-before-delegate refusal
+  and the never-echo-an-address error boundary — both PII pins worth having)
+  and the floor RATCHETED UP to just under the new measured 68.89/67.2/70.76/
+  67.61.
+
+The milestone closes with its own security pass including delivery-channel
+identifier leakage (owed since the M6 review).
 
 ### Later milestones (rough order, one per bounded context)
 AI assistant (privacy proxy) · then referral, search · the M5 cloud

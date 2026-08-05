@@ -124,18 +124,22 @@ describe('graph lookup helpers', () => {
     ]);
     expect(outboundCredentialsFor('settlement').map((e) => e.envVar)).toEqual([
       IDENTITY,
+      'DOCUMENTS_INTERNAL_TOKEN',
       NOTIFICATIONS,
     ]);
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([NOTIFICATIONS]);
     expect(outboundCredentialsFor('profile')).toEqual([]);
   });
 
-  it('grants settlement three distinct variables, never the same one twice', () => {
-    // Settlement now touches three credentials — its own inbound plus two
-    // outbound (identity account-lock, M9 notifications). Pairwise distinct is
-    // the shape whose collapse the M7 review found.
+  it('grants settlement four distinct variables, never the same one twice', () => {
+    // Settlement now touches four credentials — its own inbound plus three
+    // outbound (identity account-lock, M9 notifications, M9 PR2 documents
+    // legal hold). Pairwise distinct is the shape whose collapse the M7
+    // review found.
     const granted = credentialEnvVarsFor('settlement');
-    expect(granted).toEqual([IDENTITY, NOTIFICATIONS, SETTLEMENT].sort());
+    expect(granted).toEqual(
+      [IDENTITY, NOTIFICATIONS, SETTLEMENT, 'DOCUMENTS_INTERNAL_TOKEN'].sort(),
+    );
     expect(new Set(granted).size).toBe(granted.length);
     for (const outbound of outboundCredentialsFor('settlement')) {
       expect(inboundCredentialFor('settlement')?.envVar).not.toBe(outbound.envVar);

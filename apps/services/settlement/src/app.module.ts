@@ -37,12 +37,14 @@ import {
   CLOCK,
   CONFIG,
   DEK_REPOSITORY,
+  DOCUMENTS_HOLD,
   FIELD_CRYPTO,
   IDENTITY_LOCK,
   NOTIFIER,
   PG_POOL_CONFIG,
   POLICY_DECISION_POINT,
 } from './di-tokens';
+import { HttpDocumentsHold, type DocumentsHoldPort } from './documents-hold';
 import { EventsService } from './events.service';
 import { HttpErrorFilter } from './http-error.filter';
 import { HttpIdentityLock, type IdentityLockPort } from './identity-lock';
@@ -162,6 +164,20 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
           // The OUTBOUND credential — distinct from the one this service
           // expects inbound, so a gate caller never holds account-lock power.
           credential: config.identityInternalToken,
+        }),
+    },
+    // The legal-hold client (M9 PR2). Fails closed on every error; with an
+    // unset dev credential, documents' guard refuses and the hold-touching
+    // transitions 503 until both sides are provisioned.
+    {
+      provide: DOCUMENTS_HOLD,
+      inject: [CONFIG],
+      useFactory: (config: SettlementConfig): DocumentsHoldPort =>
+        new HttpDocumentsHold({
+          documentsUrl: config.documentsUrl,
+          // The documents-callee OUTBOUND credential — the fourth secret this
+          // service touches, distinct from the other three by config refusal.
+          credential: config.documentsInternalToken,
         }),
     },
     { provide: NOTIFIER, inject: [CONFIG], useFactory: notifierFor },

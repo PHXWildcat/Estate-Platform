@@ -173,8 +173,10 @@ jobs:
             // went green. Pending is also exact rather than zero, because
             // profile gating legitimately skips the OTHER profile'"'"'s block.
             const production = process.env.MATRIX_PROFILE === "production";
-            const expectedPassed = production ? 9 : 13;
-            const expectedPending = production ? 8 : 4;
+            // M9 PR2 added the dev-journey legal-hold round trip: dev gains a
+            // pass, production gains its skip.
+            const expectedPassed = production ? 9 : 14;
+            const expectedPending = production ? 9 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
             if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {

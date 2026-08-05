@@ -15,7 +15,7 @@ import { SettingsRepo } from '../src/settings.repo';
 import { SettlementService } from '../src/settlement.service';
 import { TasksRepo } from '../src/tasks.repo';
 import { StubNotifier } from '../src/notifications';
-import { FakeIdentityLock, testConfig, type ClockHolder } from './support';
+import { FakeDocumentsHold, FakeIdentityLock, testConfig, type ClockHolder } from './support';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -39,6 +39,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
 
   let service: SettlementService;
   let identity: FakeIdentityLock;
+  let documentsHold: FakeDocumentsHold;
   let notifier: StubNotifier;
   let producer: InMemoryAuditProducer;
 
@@ -73,6 +74,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
 
     db = new Db({ connectionString: pgUrl, options: `-c search_path=${schema}` });
     identity = new FakeIdentityLock();
+    documentsHold = new FakeDocumentsHold();
     notifier = new StubNotifier();
     producer = new InMemoryAuditProducer();
     service = new SettlementService(
@@ -87,6 +89,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       new EventsService(producer, clockFn),
       notifier,
       identity,
+      documentsHold,
       testConfig(),
       clockFn,
     );

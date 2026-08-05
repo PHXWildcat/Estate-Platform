@@ -237,8 +237,8 @@ jobs:
             // how two skipped assertions stay green; see stack.yml.
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
-            if (r.numPassedTests !== 13 || r.numPendingTests !== 4) {
-              console.error(`::error::expected exactly 13 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
+            if (r.numPassedTests !== 14 || r.numPendingTests !== 4) {
+              console.error(`::error::expected exactly 14 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
               process.exit(1);
             }
           '

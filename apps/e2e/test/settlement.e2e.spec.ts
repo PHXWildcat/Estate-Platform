@@ -35,10 +35,12 @@ import { AppModule as SettlementAppModule } from '@estate/service-settlement/dis
 import {
   AUDIT_PRODUCER as SETTLEMENT_AUDIT_PRODUCER,
   CLOCK as SETTLEMENT_CLOCK,
+  DOCUMENTS_HOLD,
   IDENTITY_LOCK,
   NOTIFIER as SETTLEMENT_NOTIFIER,
   PG_POOL_CONFIG as SETTLEMENT_PG_POOL_CONFIG,
 } from '@estate/service-settlement/dist/di-tokens';
+import type { DocumentsHoldPort } from '@estate/service-settlement/dist/documents-hold';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import {
   HttpIdentityLock,
@@ -87,6 +89,18 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
   const settlementProducer = new InMemoryAuditProducer();
   const settlementNotifier = new StubNotifier();
   const clockHolder = { value: new Date() };
+  // The estate-wide legal hold (M9 PR2) is paired with the account lock at
+  // every transition, so it fires inside this suite's flows. Recorded here
+  // rather than served: the route's REAL guard is proven in documents'
+  // own int spec and the full HTTP chain in the stack e2e — this file's
+  // charter is the settlement↔identity interlock.
+  const documentsHoldCalls: Array<{ ownerUserId: string; hold: boolean; caseId: string }> = [];
+  const documentsHold: DocumentsHoldPort = {
+    setHold: (ownerUserId, hold, caseId): Promise<void> => {
+      documentsHoldCalls.push({ ownerUserId, hold, caseId });
+      return Promise.resolve();
+    },
+  };
 
   beforeAll(async () => {
     const baseUrl = process.env['PG_TEST_URL']!;
@@ -195,6 +209,8 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
           fetchImpl: lockFetch,
         }),
       )
+      .overrideProvider(DOCUMENTS_HOLD)
+      .useValue(documentsHold)
       .compile();
     settlementApp = settlementRef.createNestApplication({ logger: false });
     await settlementApp.init();
@@ -387,6 +403,12 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       [owner.userId],
     );
     expect(statusAfterApprove.rows[0]?.status).toBe('deceased_pending');
+    // …and the estate-wide legal hold fired WITH it (M9 PR2), same transaction.
+    expect(documentsHoldCalls).toContainEqual({
+      ownerUserId: owner.userId,
+      hold: true,
+      caseId,
+    });
     // …but the rescue path stays open: live session AND fresh login work.
     await identity.get('/v1/auth/session').set(owner.bearer).expect(200);
     await identity
@@ -499,6 +521,12 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       [owner2.userId],
     );
     expect(status.rows[0]?.status).toBe('active');
+    // The restore cleared any hold in the same transition (M9 PR2).
+    expect(documentsHoldCalls).toContainEqual({
+      ownerUserId: owner2.userId,
+      hold: false,
+      caseId,
+    });
   }, 120_000);
 
   it('settlement’s produced audit bytes ingest into a verified hash chain, PII-free', async () => {

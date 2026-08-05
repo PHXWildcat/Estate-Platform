@@ -83,6 +83,9 @@ const EnvSchema = z
     // four services onto one secret; one secret per callee, per direction.
     // Unset ⇒ the guard fails closed and holds cannot be applied, which is
     // safe: enforcement already refuses deletion of anything already held.
+    // REQUIRED in production since M9 PR2, when settlement became the
+    // route's caller: a deploy that silently refuses every hold write leaves
+    // an estate's documents deletable during administration.
     DOCUMENTS_INTERNAL_TOKEN: z.string().optional(),
     OBJECT_STORE_MODE: z.enum(['fs', 's3']).default('fs'),
     // fs mode: directory for the local object store (dev/test only).
@@ -148,6 +151,14 @@ const EnvSchema = z
           code: z.ZodIssueCode.custom,
           path: ['SETTLEMENT_URL'],
           message: 'SETTLEMENT_URL is required in production (evidence-read authority checks)',
+        });
+      }
+      if (!env.DOCUMENTS_INTERNAL_TOKEN || env.DOCUMENTS_INTERNAL_TOKEN.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['DOCUMENTS_INTERNAL_TOKEN'],
+          message:
+            'DOCUMENTS_INTERNAL_TOKEN is required in production (>= 32 chars; settlement sets legal holds through this route as of M9, and a deploy that silently refuses every hold leaves estate documents deletable)',
         });
       }
       if (env.OBJECT_STORE_MODE !== 's3') {

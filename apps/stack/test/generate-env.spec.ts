@@ -254,13 +254,17 @@ describe('credential assignment (derived from the graph)', () => {
     expect(vault?.has('IDENTITY_INTERNAL_TOKEN')).toBe(false);
   });
 
-  it('leaves the documents legal-hold credential with no holder', () => {
-    // holders: [] in the graph, because no in-repo client calls that route.
-    // Generating one anyway would be an unenforced grant — exactly the
-    // prose-vs-reality gap the graph module exists to close.
+  it('provisions the legal-hold credential to settlement and documents alone (M9 PR2)', () => {
+    // This edge sat holder-less from M7 (nothing called the route) until M9
+    // PR2 shipped the settlement client; the generator now mints it like any
+    // other edge, equal on both sides by construction.
     const assigned = assignCredentials();
+    expect(assigned.get('settlement')?.get('DOCUMENTS_INTERNAL_TOKEN')).toBe(
+      assigned.get('documents')?.get('DOCUMENTS_INTERNAL_TOKEN'),
+    );
+    expect(assigned.get('documents')?.get('DOCUMENTS_INTERNAL_TOKEN')).toBeTruthy();
     for (const service of SERVICES) {
-      if (service.name === 'documents') continue;
+      if (service.name === 'documents' || service.name === 'settlement') continue;
       expect(assigned.get(service.name)?.has('DOCUMENTS_INTERNAL_TOKEN')).not.toBe(true);
     }
   });

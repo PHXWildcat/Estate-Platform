@@ -97,9 +97,13 @@ describe('serviceProcessEnv', () => {
     ]);
   });
 
-  it("documents' empty inbound credential stays empty, never undefined", () => {
-    const documents = serviceProcessEnv(svc('documents'), generated(), HOST);
-    expect(documents['DOCUMENTS_INTERNAL_TOKEN']).toBe('');
+  it("documents' inbound credential is real, and settlement holds the same value (M9 PR2)", () => {
+    const file = generated();
+    const documents = serviceProcessEnv(svc('documents'), file, HOST);
+    const settlement = serviceProcessEnv(svc('settlement'), file, HOST);
+    expect(documents['DOCUMENTS_INTERNAL_TOKEN']).toBeTruthy();
+    expect(settlement['DOCUMENTS_INTERNAL_TOKEN']).toBe(documents['DOCUMENTS_INTERNAL_TOKEN']);
+    expect(settlement['DOCUMENTS_URL']).toBe('http://localhost:3005');
     expect(documents['OCR_URL']).toBe('http://localhost:8884');
     expect(documents['CLAMD_HOST']).toBe('localhost');
   });
