@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { z } from 'zod';
 import { AssistantAuthz } from '../src/authz.service';
+import type { ConsentScope } from '../src/consent';
+import type { ConsentsRepo } from '../src/consents.repo';
+import type { ToolCallResultRow, ToolCallsRepo } from '../src/tool-calls.repo';
 import {
   ConversationService,
   ITERATION_CAP_MESSAGE,
@@ -31,6 +39,8 @@ const OWNER = randomUUID();
 const STRANGER = randomUUID();
 const BEARER = 'caller-access-token';
 const DEK = randomUUID();
+/** A DEK that no longer opens — crypto-shredded, or a TB4 splice. */
+const SHREDDED_DEK = 'dek-destroyed';
 
 // --------------------------------------------------------------------- fakes
 
@@ -75,6 +85,19 @@ class FakeStore {
   restore(snapshot: Snapshot): void {
     this.conversations = snapshot.conversations;
     this.messages = snapshot.messages;
+  }
+
+  /** A message an EARLIER turn committed. Plaintext, like the fake cipher. */
+  seedMessage(conversationId: string, seq: number, role: 'user' | 'assistant', text: string): void {
+    this.messages.push({
+      id: randomUUID(),
+      conversation_id: conversationId,
+      seq,
+      role,
+      content_ct: Buffer.from(text, 'utf8'),
+      dek_id: DEK,
+      created_at: new Date('2026-08-01T00:00:01Z'),
+    });
   }
 
   seedConversation(userId: string): string {
@@ -204,8 +227,16 @@ function fakeCipher(calls: CipherCalls): FieldCipher {
         ciphertext: value === null || value === undefined ? null : Buffer.from(value, 'utf8'),
         dekId: DEK,
       }),
-    decrypt: (input: { ciphertext: Buffer | null; purpose: string }): Promise<string | null> => {
+    decrypt: (input: {
+      ciphertext: Buffer | null;
+      purpose: string;
+      dekId?: string;
+    }): Promise<string | null> => {
       calls.decryptPurposes.push(input.purpose);
+      if (input.dekId === SHREDDED_DEK) {
+        // A destroyed DEK: @estate/crypto rejects rather than answering null.
+        return Promise.reject(new Error('dek destroyed'));
+      }
       return Promise.resolve(input.ciphertext === null ? null : input.ciphertext.toString('utf8'));
     },
   } as unknown as FieldCipher;
@@ -295,9 +326,45 @@ interface Harness {
   actors: string[];
 }
 
+/**
+ * Prior retrievals, as `assistant_tool_calls` holds them. The fake cipher below
+ * stores plaintext, so the "ciphertext" here is the JSON the executor sealed.
+ */
+function fakeToolCalls(
+  prior: Array<{ tool: string; data?: unknown; shredded?: boolean }>,
+): ToolCallsRepo {
+  const repo: ToolCallsRepo = {
+    listResultsByConversation: (): Promise<ToolCallResultRow[]> =>
+      Promise.resolve(
+        prior.map((entry, index) => ({
+          id: `70010000-0000-4000-8000-00000000000${index}`,
+          tool_name: entry.tool,
+          result_ct: Buffer.from(JSON.stringify(entry.data ?? null), 'utf8'),
+          dek_id: entry.shredded === true ? SHREDDED_DEK : DEK,
+        })),
+      ),
+  };
+  return repo;
+}
+
+/** Only `grantedScopes` is reached from a turn; the writes belong to the controller. */
+function fakeConsents(granted: ConsentScope[]): ConsentsRepo {
+  return {
+    grantedScopes: (): Promise<ReadonlySet<ConsentScope>> =>
+      Promise.resolve(new Set<ConsentScope>(granted)),
+  } as unknown as ConsentsRepo;
+}
+
 function buildHarness(options?: {
   script?: LlmTurnOutput[];
   outcome?: () => ExecutedToolCall;
+  /** Consent scopes the caller holds. Defaults to the master switch alone. */
+  granted?: ConsentScope[];
+  /**
+   * Retrievals recorded by EARLIER turns. `shredded` models a row whose DEK is
+   * gone (crypto-shredded, or a TB4 splice) — the decrypt throws.
+   */
+  priorResults?: Array<{ tool: string; data?: unknown; shredded?: boolean }>;
 }): Harness {
   const store = new FakeStore();
   const events: RecordedEvent[] = [];
@@ -316,6 +383,9 @@ function buildHarness(options?: {
     fakeDb(store, actors),
     conversations,
     messagesRepo(store),
+    // The conversation's already-recorded retrievals, which the turn replays
+    // through the tokenizer before its first provider call (M10 review).
+    fakeToolCalls(options?.priorResults ?? []),
     fakeCipher(cipher),
     // The REAL PEP over the REAL bundled policy set — assistant.cedar included,
     // and every other service's policy alongside it, which is the arrangement
@@ -323,6 +393,10 @@ function buildHarness(options?: {
     // hand-written fake or an assistant-only bundle would hide. Deny-by-default
     // is therefore under test here, not stubbed out of the way.
     new AssistantAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+    // The master switch gates the turn itself (M10 security review), so every
+    // harness has to say what the caller consented to. Default: the switch on
+    // and nothing else, which is the minimum a turn now requires.
+    fakeConsents(options?.granted ?? ['assistant.enabled']),
     fakeEvents(events),
     new ToolRegistry([summaryTool, documentTool]),
     gateway,
@@ -469,6 +543,49 @@ describe('ownership is a Cedar decision (the uniform not-found)', () => {
     // asked about a row that exists, never about one that has been retired.
     await expect(h.service.transcript(OWNER, mine)).rejects.toBeInstanceOf(NotFoundException);
     await expect(h.service.remove(OWNER, mine)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('the master switch gates the turn itself', () => {
+  // M10 SECURITY REVIEW. The only consent read on this path used to be per-tool,
+  // inside the executor — so a user with no consent row, or one who had just
+  // switched the assistant off, still drove a provider call: the tools denied,
+  // but the system prompt, their text and the whole prior transcript crossed
+  // TB5 anyway. Three places claimed the opposite, including the consent UI's
+  // "nothing about your estate is analysed".
+
+  it('refuses a turn when the assistant is switched off, before reaching the provider', async () => {
+    const h = buildHarness({ granted: [] });
+    const conversationId = h.store.seedConversation(OWNER);
+
+    await expect(h.service.takeTurn(OWNER, BEARER, conversationId, 'hello')).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    // Nothing was sent, and nothing was written: no message row, no reply.
+    expect(h.gateway.seen).toEqual([]);
+    expect(h.store.messages).toEqual([]);
+  });
+
+  it('runs on the master switch alone — capability scopes gate TOOLS, not the turn', async () => {
+    // The per-tool gate is still the executor's job; this one only asks whether
+    // the feature is on at all.
+    const h = buildHarness({ granted: ['assistant.enabled'] });
+    const conversationId = h.store.seedConversation(OWNER);
+    await expect(h.service.takeTurn(OWNER, BEARER, conversationId, 'hello')).resolves.toMatchObject(
+      {
+        text: 'an answer',
+      },
+    );
+  });
+
+  it('answers the uniform 404 for someone else’s conversation, whatever their consent', async () => {
+    // The gate sits AFTER the ownership check on purpose: consent state must not
+    // become an oracle about another user's account.
+    const h = buildHarness({ granted: [] });
+    const strangers = h.store.seedConversation(STRANGER);
+    await expect(h.service.takeTurn(OWNER, BEARER, strangers, 'hello')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 });
 
@@ -856,6 +973,78 @@ describe('flattenForInspection', () => {
     for (const value of ['SYSTEM', 'HISTORY', 'TOOLNAME', 'TOOLDESC', 'RESULT']) {
       expect(flattened).toContain(value);
     }
+  });
+});
+
+describe('the tokenizer covers REPLAYED history, not just this turn (M10 review)', () => {
+  const TITLE = "Mom's house on Elm St";
+
+  /**
+   * The defect this pins: the placeholder map was filled only by THIS turn's
+   * tool results, which arrive after the first provider call — so the history
+   * pass ran against an empty map and shipped the whole prior transcript
+   * verbatim. Replies are stored detokenized by design, so those were real
+   * titles: turn 1 protected the value inside a structured result and turn 2
+   * sent it in prose. Every existing tokenizer test seeded an EMPTY
+   * conversation, so all of them passed while the cross-turn property did not
+   * hold.
+   */
+  function continuedConversation(script: LlmTurnOutput[]): Harness {
+    return buildHarness({
+      script,
+      // What turn 1 recorded: a retrieval whose title the tokenizer mapped.
+      priorResults: [{ tool: 'list_assets', data: [{ title: TITLE, category: 'real_estate' }] }],
+    });
+  }
+
+  it('never ships a title the PRIOR turn retrieved, even on the first call of this one', async () => {
+    const h = continuedConversation([{ kind: 'message', text: 'It is insured.' }]);
+    const conversationId = h.store.seedConversation(OWNER);
+    // The assistant's stored reply from turn 1 — real text, as designed.
+    h.store.seedMessage(conversationId, 0, 'assistant', `Your ${TITLE} is titled in the trust.`);
+
+    await h.service.takeTurn(OWNER, BEARER, conversationId, 'is it insured?');
+
+    const everythingSent = JSON.stringify(h.gateway.seen);
+    expect(everythingSent).not.toContain(TITLE);
+    expect(everythingSent).not.toContain('Elm St');
+    // …and the same placeholder as turn 1, so the model reads one numbering.
+    expect(everythingSent).toContain('ASSET_1');
+  });
+
+  it('covers a turn that calls NO tool at all', async () => {
+    // The worst case before the fix: with no retrieval in this turn the map was
+    // never populated, so the entire transcript shipped raw for the whole turn.
+    const h = continuedConversation([{ kind: 'message', text: 'Nothing to add.' }]);
+    const conversationId = h.store.seedConversation(OWNER);
+    h.store.seedMessage(conversationId, 0, 'user', `what about ${TITLE}?`);
+
+    await h.service.takeTurn(OWNER, BEARER, conversationId, 'anything else?');
+
+    expect(JSON.stringify(h.gateway.seen)).not.toContain(TITLE);
+  });
+
+  it('still returns and stores REAL text — tokenization is the provider hop only', async () => {
+    const h = continuedConversation([{ kind: 'message', text: 'Your ⟦ASSET_1⟧ is insured.' }]);
+    const conversationId = h.store.seedConversation(OWNER);
+    h.store.seedMessage(conversationId, 0, 'assistant', `Your ${TITLE} is titled in the trust.`);
+
+    const reply = await h.service.takeTurn(OWNER, BEARER, conversationId, 'is it insured?');
+
+    expect(reply.text).toBe(`Your ${TITLE} is insured.`);
+  });
+
+  it('survives a prior retrieval that no longer decrypts', async () => {
+    // A crypto-shredded or tampered row must not lock a user out of their own
+    // conversation; the turn proceeds with one placeholder it cannot re-derive.
+    const h = buildHarness({
+      script: [{ kind: 'message', text: 'an answer' }],
+      priorResults: [{ tool: 'list_assets', shredded: true }],
+    });
+    const conversationId = h.store.seedConversation(OWNER);
+    await expect(h.service.takeTurn(OWNER, BEARER, conversationId, 'hello')).resolves.toMatchObject(
+      { text: 'an answer' },
+    );
   });
 });
 

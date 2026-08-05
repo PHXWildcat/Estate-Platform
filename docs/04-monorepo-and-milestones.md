@@ -1564,7 +1564,7 @@ actor and identity fires the same event on every login, so it is evidence for
 recovery, not a detection control — closing it needs the mesh's peer identity),
 and the carrier's event-class visibility.
 
-### M10 — AI estate assistant (PR4 in progress)
+### M10 — AI estate assistant (shipped)
 
 The milestone docs/04 always had next, arriving on a platform that can now
 deploy and notify — the two reasons M8 displaced it (see M8's opening note).
@@ -1944,6 +1944,69 @@ the analysis path over real HTTP is already proven by PR3's e2e, and what PR4
 adds is one forwarding hop, covered by the BFF suite. Coverage floors ratcheted
 from measured runs — bff 80/82/78/82 → 85/84/85/86, web 70/62/64/73 →
 79/73/82/83.
+
+**M10 security review.** Six parallel discovery lenses over the merged range
+`26a4813..51bc81e` (prompt injection and egress, consent and authorization, the
+credential graph, crypto/persistence/audit, the analysers, and the UI/BFF hop),
+then TWO adversarial verifiers per candidate on different angles — reachability
+in a real production config, and is-it-already-a-documented-decision — both told
+to default to refuted. 11 raw candidates, 11 unique, 4 confirmed, 7 refuted.
+
+No zone boundary was weakened, no production fail-fast relaxed, and no
+credential reached a service the graph forbids. The M6–M9 pattern held a fifth
+time: every confirmed finding sits in machinery M10 introduced, and three of the
+four contradict a claim the milestone made about itself.
+
+TWO LENSES DISAGREED ABOUT THE SAME DEFECT, which is worth recording because the
+disagreement was the useful part. One confirmed "the turn path consults no
+consent"; the other refuted it on the grounds that nothing calls the turn route
+— no chat UI, no BFF resolver. Both were right about the code; the refutation was
+right about the topology. The finding is real and was fixed, but its reachability
+is "when chat ships", not "today".
+
+1. **Conversation history reached the provider untokenized on the first call of
+   every turn.** The placeholder map is filled only by the turn's own tool
+   results, which arrive AFTER the first `complete()` — so the history pass ran
+   against an empty map every time. Since replies are stored detokenized by
+   design, those were real titles: turn 1 protected "Mom's house on Elm St"
+   inside a structured result and turn 2 shipped it in prose; a turn that called
+   no tool shipped the whole transcript raw. Three places claimed otherwise
+   (docs/04, CLAUDE.md, and the tokenizer's own docstring), and every existing
+   tokenizer test seeded an EMPTY conversation, so all of them passed while the
+   cross-turn property did not hold. Fixed by re-deriving the map from the
+   conversation's own recorded retrievals (`ToolCallsRepo`, decrypted under the
+   same AAD, pushed back through the same rules) before the first provider call.
+   A row that no longer opens is skipped rather than fatal — a crypto-shredded
+   result must not lock a user out of their own conversation.
+2. **The `assistant.enabled` master switch did not gate the conversation
+   turn.** The only consent read on that path was per-tool, inside the executor,
+   so a user with no consent row — or one who had just switched the assistant
+   off — still drove a provider call: the tools denied, but the system prompt,
+   the user's text and the replayed transcript crossed TB5 anyway. Combined with
+   (1), a turn after revocation re-sent estate prose retrieved while consent was
+   live. `takeTurn` now requires the master switch, AFTER the ownership check so
+   consent state cannot become an oracle about someone else's account.
+3. **"Beneficiary designations look consistent" was shown to an estate where
+   nothing carries a designation.** A house, a current account and a car all
+   take the empty branch, `conflicts` stays 0, and the affirmative card fired —
+   reassurance about a check that examined nothing, on the one card a user acts
+   on by doing nothing. Split into two codes, because they are two facts:
+   `designations_consistent` (designations were read and they add up) and
+   `no_designations_on_file` (there were none to read).
+4. **docs/03 §6d credited PR4 with a restricted-markdown rendering constraint
+   that does not exist.** It dispositioned model-output exfiltration by pointing
+   at a control nobody built — the M4 legal-hold zero-callers shape. The section
+   now states the risk as OPEN and names the constraint as a requirement owed by
+   whoever ships the chat surface, in the same PR as the first pixel of
+   model-authored text.
+
+Also fixed while in there, both found by the sweep and neither a vulnerability:
+the "never echoes the provider key" test forced its failure by blanking the key
+it then asserted was absent, so the assertion was vacuous; and
+`beneficiary-conflicts.ts` contained a LITERAL NUL BYTE as a composite-key
+separator, which made git treat the file as binary — so that analyser's logic
+shipped through PR #26 with no reviewable diff at all. Keying by nested maps
+removes the separator question entirely.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.

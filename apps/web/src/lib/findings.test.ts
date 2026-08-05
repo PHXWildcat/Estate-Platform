@@ -24,6 +24,7 @@ const ALL_CODES: readonly FindingCode[] = [
   'designation_overrides_trust',
   'no_beneficiary_designated',
   'designations_consistent',
+  'no_designations_on_file',
   'assets_not_examined',
   'federal_exposure',
   'federal_within_exemption',
