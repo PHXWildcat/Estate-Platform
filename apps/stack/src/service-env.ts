@@ -33,6 +33,11 @@ const PEERS: Record<string, readonly string[]> = {
   vault: ['identity', 'settlement', 'notifications'],
   settlement: ['identity', 'notifications', 'documents'],
   notifications: [],
+  // The assistant reads three peers and verifies sessions against a fourth,
+  // and reaches every one of them by FORWARDING THE CALLER'S OWN BEARER —
+  // there is no credential row below for it, in either direction. A wrong URL
+  // here fails closed (refused downstream); it can never widen access.
+  'ai-assistant': ['identity', 'assets', 'documents', 'profile'],
   audit: [],
 };
 
@@ -136,6 +141,18 @@ export function serviceProcessEnv(
       out['EMAIL_MODE'] = fromFile(env, 'NOTIFICATIONS_EMAIL_MODE');
       out['SES_FROM_ADDRESS'] = fromFile(env, 'SES_FROM_ADDRESS');
       break;
+    case 'ai-assistant':
+      // LLM_MODE only. There is deliberately NO ANTHROPIC_API_KEY here, and
+      // the generator writes none: no such credential exists in this project,
+      // and inventing one would either be a placeholder nobody can use — the
+      // same subtraction the generator applies to a zero-holder credential
+      // edge — or a real provider key sitting in a generated file, which
+      // CLAUDE.md forbids and which would let a LOCAL stack ship retrieved
+      // estate content to a third party. Development runs the deterministic
+      // stub; the production rehearsal omits the container entirely (see
+      // `plannedServices` and the compose profile).
+      out['LLM_MODE'] = fromFile(env, 'AI_ASSISTANT_LLM_MODE');
+      break;
     default:
       break;
   }
@@ -143,17 +160,20 @@ export function serviceProcessEnv(
 }
 
 /**
- * Which services a host-mode run starts.
- *
- * Plaid is excluded from a production-mode run for the same reason it has its
- * own compose profile: production config requires PLAID_MODE=live with real
- * credentials that do not exist, so the process would fail fast at boot — the
- * control working, but a supervisor that knowingly starts a doomed child and
- * then reports the death as a failure is testing nothing.
+ * Services a PRODUCTION-mode run cannot start, because their production config
+ * pins a live third-party provider whose credentials do not exist in this
+ * project: plaid (PLAID_MODE=live) and the assistant (LLM_MODE=anthropic).
+ * Each would fail fast at boot — the control working — but a supervisor that
+ * knowingly starts a doomed child and then reports the death as a failure is
+ * testing nothing. Both have a generated compose profile that omits them the
+ * same way, so the two addressings agree.
  */
+const OMITTED_IN_PRODUCTION: ReadonlySet<string> = new Set(['plaid', 'ai-assistant']);
+
+/** Which services a host-mode run starts. */
 export function plannedServices(env: ReadonlyMap<string, string>): readonly StackService[] {
   const production = env.get('STACK_MODE') === 'production';
-  return SERVICES.filter((service) => !(production && service.name === 'plaid'));
+  return SERVICES.filter((service) => !(production && OMITTED_IN_PRODUCTION.has(service.name)));
 }
 
 /**
@@ -190,11 +210,20 @@ export function scrubbedBaseEnv(parent: NodeJS.ProcessEnv): Record<string, strin
  * `--use-openssl-ca`, `--require`, and more). Anything a service genuinely
  * needs is set EXPLICITLY by the mapping above, including
  * `NODE_EXTRA_CA_CERTS`, which is why scrubbing it costs nothing.
+ *
+ * `ANTHROPIC_*` joins them for the M10 assistant, and it is the one whose
+ * absence would be worst: a developer's own key in the ambient shell would
+ * otherwise reach the service with the largest prompt-injection surface in the
+ * product without the explicit mapping ever deciding it should — and the
+ * consequence is retrieved estate content leaving the machine. Running the
+ * live adapter from the stack is therefore a deliberate act (a mapped variable
+ * here), never an inherited one.
  */
 const SCRUBBED: readonly RegExp[] = [
   /^AWS_/i,
   /_INTERNAL_TOKEN$/,
   /^KMS_/,
+  /^ANTHROPIC_/i,
   /^NODE_TLS_/,
   /^NODE_OPTIONS$/,
   /^NODE_EXTRA_CA_CERTS$/,

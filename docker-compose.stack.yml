@@ -11,11 +11,12 @@
 # mapping is verbose on purpose — it is the one place a service could be handed
 # another service's key, so it should be readable rather than clever.
 #
-# WHAT IS REAL HERE: LocalStack KMS (six separate per-service keys) and S3,
+# WHAT IS REAL HERE: LocalStack KMS (eight separate per-service keys) and S3,
 # Redpanda, ClamAV, Tesseract, and genuine cross-service HTTP. What is NOT real
-# is the IAM that would make those six keys an isolation boundary rather than a
-# model of one — see docs/04 and the stack README before reading a green stack
-# as "ready to deploy".
+# is the IAM that would make those eight keys an isolation boundary rather than
+# a model of one — see docs/04 and the stack README before reading a green stack
+# as "ready to deploy". No model provider is real here either: the assistant
+# runs its deterministic stub gateway (M10).
 name: estate-stack
 
 x-pg: &pg
@@ -35,7 +36,7 @@ x-pg: &pg
 #
 # A TCP probe rather than an HTTP /healthz: every route in every service is
 # guarded, so an HTTP probe would have to be a new UNAUTHENTICATED route on
-# nine hardened services to report anything but 401 — real added surface for
+# ten hardened services to report anything but 401 — real added surface for
 # nothing the socket check lacks. Kubernetes `tcpSocket` probes work the same
 # way, so this does not paint M9 into a corner.
 x-tcp-healthcheck: &tcp-healthcheck
@@ -282,8 +283,8 @@ services:
     depends_on:
       migrate-profile: { condition: service_completed_successfully }
 
-  # Third core co-tenant (M9). No cross-tenant reads, but sequencing the trio
-  # keeps multiple migrators off one fresh cluster.
+  # Third core co-tenant (M9). No cross-tenant reads, but sequencing the core
+  # tenants keeps multiple migrators off one fresh cluster.
   migrate-notifications:
     <<: *job
     build: { <<: *node-build, args: { PKG: '@estate/service-notifications' } }
@@ -291,6 +292,17 @@ services:
     environment: { DATABASE_URL: '${NOTIFICATIONS_DATABASE_URL}' }
     depends_on:
       migrate-settlement: { condition: service_completed_successfully }
+
+  # Fourth core co-tenant (M10), extending the same chain for the same reason:
+  # disjoint tables and no cross-tenant reads, but one migrator at a time on a
+  # fresh cluster.
+  migrate-ai-assistant:
+    <<: *job
+    build: { <<: *node-build, args: { PKG: '@estate/service-ai-assistant' } }
+    command: ['dist/migrate-cli.js']
+    environment: { DATABASE_URL: '${AI_ASSISTANT_DATABASE_URL}' }
+    depends_on:
+      migrate-notifications: { condition: service_completed_successfully }
 
   migrate-assets:
     <<: *job
@@ -639,6 +651,57 @@ services:
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-notifications: { condition: service_completed_successfully }
+      provision-topics: { condition: service_completed_successfully }
+      localstack: { condition: service_healthy }
+
+  # The isolating boundary for MODEL PROVIDERS (M10, docs/01 §2.8, docs/03 §4
+  # TB5), and the fourth core co-tenant — its conversation store is wrapped
+  # under its own KEK, so profile, settlement and notifications share the
+  # cluster and can never unwrap a turn.
+  #
+  # NO SERVICE CREDENTIAL, in either direction: it is the only service block
+  # here with no `*_INTERNAL_TOKEN` at all. It authenticates its callers on
+  # their own bearer and reaches identity/assets/documents/profile by
+  # forwarding that same bearer, so the process with the largest
+  # prompt-injection surface in the product can only ever see what the calling
+  # user could already see. There is no ANTHROPIC_API_KEY either — see the
+  # profile note below and the generator's adapter section.
+  ai-assistant:
+    build: { <<: *node-build, args: { PKG: '@estate/service-ai-assistant' } }
+    # GENERATED, not literal, for plaid's reason with a different development
+    # value: 'services' in development, so it comes up (and goes down, and is
+    # reset) with everything else and no `stack:*` script needs a new
+    # `--profile` flag; an unmatched name in production, where config pins
+    # LLM_MODE=anthropic and no Anthropic credential exists in this project.
+    # A container that boots on an invented key and fails every turn is worse
+    # than an absent one. `plannedServices` omits it from host-mode production
+    # runs identically, so the two addressings agree.
+    profiles: ['${AI_ASSISTANT_PROFILE}']
+    restart: unless-stopped
+    ports: ['3009:3009']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3009'
+      DATABASE_URL: ${AI_ASSISTANT_DATABASE_URL}
+      KMS_MODE: ${AI_ASSISTANT_KMS_MODE}
+      KMS_MASTER_KEY_HEX: ${AI_ASSISTANT_KMS_MASTER_KEY_HEX}
+      AWS_KMS_KEY_ID: ${AI_ASSISTANT_AWS_KMS_KEY_ID}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      IDENTITY_URL: http://identity:3001
+      ASSETS_URL: http://assets:3003
+      DOCUMENTS_URL: http://documents:3005
+      PROFILE_URL: http://profile:3002
+      LLM_MODE: ${AI_ASSISTANT_LLM_MODE}
+    volumes:
+      - ./.stack-certs:/certs:ro
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      migrate-ai-assistant: { condition: service_completed_successfully }
       provision-topics: { condition: service_completed_successfully }
       localstack: { condition: service_healthy }
 

@@ -973,3 +973,107 @@ deviating from them, stop and propose the change with rationale — do not silen
   parse failure cannot masquerade as a pass. The PEP raises 404, never 403 — a
   403 on a conversation id confirms the conversation EXISTS, turning id guessing
   into an oracle for whether someone uses the assistant and how much.
+- 2026-08-05 — M10 PR2 live adapter: `anthropic-gateway.ts` is the ONLY file
+  that may import `@anthropic-ai/sdk` and `config.ts`/`app.module.ts` the only
+  files that may name the API key, both enforced by a source scan
+  (`test/sdk-fence.spec.ts`, the vault-crypto fence precedent) — anything that
+  can import the SDK can construct a client, and anything that can construct a
+  client can bypass the tokenizer, the egress assertion, the consent check and
+  the audit trail in one line. The adapter is a TRANSLATOR, not a policy layer:
+  it re-implements no upstream control and re-frames nothing. It owns two
+  properties. FAIL CLOSED — a refusal, a rate limit, a dead connection, an
+  unparseable response and a truncated turn all collapse to ONE fixed
+  platform-authored sentence, because distinguishing them hands whoever composed
+  the prompt (possibly via an uploaded PDF, docs/03 risk #6) a probe for which
+  control fired; same reasoning as the PEP's uniform 404 and M9's one subject
+  line. DO NOT LEAK — no provider error body, `stop_details.explanation` or
+  request id is returned or logged, and the class holds no logger to be tempted
+  by. Three specifics: `stop_reason` is read BEFORE `content` (a refusal is a
+  200 whose content may be empty, so `content[0]`-first code breaks on exactly
+  the responses that matter); `max_tokens`/`model_context_window_exceeded` are
+  NON-ANSWERS, not answers, because a truncated estate reply reads as complete
+  ("names three beneficiaries" without "…but it is unsigned"); and 401/403 is
+  RETHROWN as a typed reason token rather than absorbed, since a polite apology
+  on every turn would hide a wrong key forever (the M8 dead-audit-trail lesson).
+  Also decided: model id is a pinned CONSTANT not config (which model sees
+  estate content is a threat-model decision, so it changes by reviewed commit);
+  the loop is NON-STREAMING because the port's single-step shape is what lets
+  the egress gate see a complete payload before every call; the prompt-cache
+  breakpoint sits on the system block alone, so the cached prefix is
+  declarations + standing instruction — platform constants, no user id, no
+  timestamp — and THE CACHED PREFIX CONTAINS NO ESTATE CONTENT; tool results
+  travel as a quoted user turn rather than native `tool_result` blocks, because
+  the port carries no `tool_use` ids and both alternatives are worse (per-
+  instance state in a singleton serving concurrent users is a Zone B leak;
+  synthesising ids means fabricating the assistant blocks that requested them,
+  in the one product where the transcript is evidence); server-side refusal
+  fallbacks default ON but are a CONFIG SWITCH because a refusal re-runs THE
+  SAME ESTATE PAYLOAD ON A DIFFERENT MODEL, so zero-retention/no-training must
+  hold for the fallback too. `LlmToolParameter` gained a scalar `type` DERIVED
+  from the tool's zod field (`parameterTypeOf` throws rather than defaulting on
+  an unmappable shape) — a typeless property makes the model guess and the
+  executor refuse the guess as `invalid_input`, two layers from the cause.
+- 2026-08-05 — The privacy proxy tokenizes BY DECLARED FIELD, never by regex
+  over prose: a name detector without NER mangles estate vocabulary that is also
+  names ("Will", "Trust", "Grant", "Rose"), misses what it was built for, and
+  leaves everyone believing a control exists. Tool results are structured JSON
+  with schemas this repo owns, so `TOOL_FIELD_RULES` names exact paths and has
+  no false positives — and because coverage is then a LIST that goes stale,
+  `assertTokenizerCoversTools` runs at registry construction and refuses a tool
+  with no decision in EITHER direction (missing rules, or rules naming a tool
+  that no longer exists), so a new retrieval arrives with a tokenization
+  decision or the process does not start (the `assertSubjectFree` precedent); an
+  empty rule list is a recorded decision. THE EGRESS INTERLOCK IS LOAD-BEARING:
+  tokenizing an asset title of "dad's account 123-45-6789" to ⟦ASSET_1⟧ would
+  let `assertEgressClean` pass and silently convert a fail-closed control into
+  a green turn, so the tokenizer REFUSES to map a value that trips the egress
+  detectors and returns it unchanged — the property holds whatever order the two
+  run in, because the tokenizer cannot be the thing that handles an SSN and so
+  cannot be the thing that hides one. The mapping is per-turn and in memory
+  only, in `#private` fields rather than TypeScript `private` ones (which is
+  erased at compile time, leaving the maps own enumerable properties that
+  `Object.values` — or a structured logger — hands back in plaintext; caught by
+  the module's own spec). The STORED TRANSCRIPT KEEPS REAL TEXT: tokenization is
+  a property of the provider hop, not of the record, so history is tokenized
+  outbound (a title typed in turn 1 keeps its placeholder in turn 5) and the
+  reply is detokenized before it is persisted or returned, with an invented
+  ⟦ASSET_9⟧ left as a harmless literal — no index arithmetic, no nearest match.
+  Recorded gaps, not oversights: `get_document_text` is NOT tokenized (document
+  prose has nothing to key on; accepted only because it is the user's own
+  content, behind its own larger-disclosure consent scope, framed as untrusted —
+  closing it needs NER over legal prose); most PERSON rules are DORMANT but kept,
+  because the failure this codebase keeps finding is a client schema widened
+  while the privacy layer, being elsewhere, silently does not follow; opaque
+  UUIDs are not tokenized (tokenizing them would force an inbound detokenization
+  path on tool arguments), residual being that a log-retaining provider could
+  correlate one opaque id across conversations.
+- 2026-08-05 — M10 PR2 stack wiring: the assistant is the tenth compose service
+  (port 3009, fourth core co-tenant, eighth KEK alias, appended to the core
+  migration chain) and the ONLY service block with no `*_INTERNAL_TOKEN` in
+  either direction — asserted by scanning its mapped keys, not by trusting the
+  mapping. Production OMITS the container on the Plaid pattern (generated
+  profile name + `plannedServices` skip, so compose and host mode agree),
+  because production pins `LLM_MODE=anthropic` and no Anthropic credential
+  exists here. NOTHING MINTS AN `ANTHROPIC_API_KEY` at any layer, each refusing
+  it differently: the generator writes none (a placeholder is a credential
+  nobody can present — the M8 zero-holder-edge subtraction — and a real one
+  would both put a third-party secret in a generated file and make a LOCAL stack
+  able to ship retrieved estate content off the machine), `serviceProcessEnv`
+  maps `LLM_MODE` alone, the supervisor scrubs `ANTHROPIC_*` from the ambient
+  shell (without which a developer's own key reaches the largest
+  prompt-injection surface in the product with no explicit mapping ever deciding
+  it should), and the doctor warns on any `ANTHROPIC_*` in the generated file.
+  The doctor deliberately does NOT flag `LLM_MODE=stub`: the stack can host KMS,
+  S3, a scanner and OCR but cannot host a model provider, so the stub is the
+  only possible dev value (PLAID_MODE's position), and a warning on every dev
+  run is the permanently-red-pipeline mistake. Config completes PR1's
+  NOTIFY_MODE timeline — production pins the real adapter by NAMING THE STUB so
+  a third mode is not silently admitted, the key is required in EVERY
+  environment whenever the mode selects it, and a spec pins that `ConfigError`
+  never echoes it. `LLM_REQUEST_TIMEOUT_MS` bounds the turn's open transaction
+  and row lock, and since the SDK retries twice by default the worst case is
+  roughly deadline × attempts — sized against the transaction, not one hop.
+  Stated rather than implied: no credentials exist, so the live adapter has
+  never made a real call (its whole spec runs on a fake transport, the Plaid
+  live-client precedent) — the first genuine provider call is a deployment
+  event, not a test result.

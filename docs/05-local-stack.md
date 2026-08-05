@@ -77,6 +77,7 @@ paths cannot drift.
 | Notifications (M9) | real HTTP → SES v1 on LocalStack | real HTTP → SES v1 on LocalStack |
 | AWS transport | plain http | **TLS, verified** |
 | Plaid | deterministic stub | **absent** |
+| AI assistant (M10) | deterministic stub gateway | **absent** |
 | Every flow runs | yes | no — see below |
 
 **Production reaches AWS over real TLS.** The production config refuses a
@@ -114,6 +115,16 @@ by weakening the guard:
   `PLAID_MODE=live` with credentials that do not exist. A container that boots
   on invented credentials and fails every outbound call is worse than an
   absent one.
+- **The AI assistant is absent for the same reason (M10).** Production pins
+  `LLM_MODE=anthropic`, and no Anthropic credential exists in this project. In
+  development it runs its deterministic stub gateway and makes no network call
+  to any provider — the stack can host KMS, S3, a virus scanner and an OCR
+  engine, but it cannot host a model provider. Nothing anywhere in the stack
+  mints an `ANTHROPIC_API_KEY`: the generator writes none, `serviceProcessEnv`
+  maps `LLM_MODE` alone, the supervisor scrubs `ANTHROPIC_*` out of the ambient
+  shell, and the doctor warns if one ever appears in the generated file —
+  because a local stack that could reach a real provider is a local stack that
+  could send retrieved estate content off the machine.
 - **Document generation works, but proves nothing about legal sign-off.** See
   the limits section.
 
@@ -131,8 +142,8 @@ organizational — the asset service's KMS grant can never unwrap a token DEK."
 
 **That property is not exercised here.** It is enforced by AWS IAM grants, and
 LocalStack Community does not enforce IAM meaningfully. The stack provisions
-six independent KMS keys, one per service KEK, which models the boundary; it
-does not prove it. Any service in this stack that knew another's key id could
+eight independent KMS keys, one per service KEK (M9 added notifications', M10
+the assistant's), which models the boundary; it does not prove it. Any service in this stack that knew another's key id could
 call `Decrypt` against it and succeed.
 
 What *is* real is the **EncryptionContext binding**, and this is now measured
@@ -314,7 +325,7 @@ management, not with code in this repo.
 
 The runtime images are distroless — no shell, no curl — and every route in
 every service is guarded, so an HTTP probe would have to be a new
-*unauthenticated* route on nine hardened services to return anything but 401.
+*unauthenticated* route on ten hardened services to return anything but 401.
 A TCP connect to the port each service already listens on proves the same thing
 with no added surface, and Kubernetes `tcpSocket` probes work identically.
 
@@ -349,4 +360,6 @@ this was built on allocates 8 GB, which fits but is not generous — ClamAV's
 signature database is the largest single consumer.
 
 Use profiles to run less: omit `--profile edge` to skip the browser tier, or
-`--profile plaid` to skip the one service that stays stubbed.
+`--profile plaid` to skip the one opt-in service. (The assistant is stubbed
+too, but sits in the default `services` profile — it comes up, goes down and is
+reset with everything else, so no `stack:*` script needs another flag.)

@@ -19,6 +19,8 @@ const PROD_BASE: NodeJS.ProcessEnv = {
   KMS_MODE: 'aws',
   AWS_KMS_KEY_ID: 'alias/estate-ai-assistant-kek',
   AWS_REGION: 'us-east-1',
+  LLM_MODE: 'anthropic',
+  ANTHROPIC_API_KEY: 'k'.repeat(48),
 };
 
 describe('loadConfig (dev/test)', () => {
@@ -45,11 +47,30 @@ describe('loadConfig (dev/test)', () => {
     expect(loadConfig(DEV_BASE).kekAlias).not.toBe('core/kek');
   });
 
-  it('refuses the live provider in EVERY environment until PR2 wires it', () => {
-    // Selecting a mode whose adapter does not exist would boot a service whose
-    // gateway cannot answer, surfacing per-request instead of at deploy time.
-    expect(() => loadConfig({ ...DEV_BASE, LLM_MODE: 'anthropic' })).toThrow(/LLM_MODE/);
-    expect(() => loadConfig({ ...PROD_BASE, LLM_MODE: 'anthropic' })).toThrow(/LLM_MODE/);
+  it('refuses the live provider without a key, in EVERY environment', () => {
+    // Mode-conditional rather than production-only: a deployment that selects
+    // the live provider with no key must fail at boot, not per request.
+    expect(() => loadConfig({ ...DEV_BASE, LLM_MODE: 'anthropic' })).toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it('selects the live provider outside production when a key is supplied', () => {
+    const config = loadConfig({
+      ...DEV_BASE,
+      LLM_MODE: 'anthropic',
+      ANTHROPIC_API_KEY: 'k'.repeat(48),
+    });
+    expect(config.llm.mode).toBe('anthropic');
+    // Fallbacks default ON, and are a switch because re-running a refused turn
+    // sends the same estate payload to a DIFFERENT model (docs/03 §4 TB5).
+    expect(config.llm).toMatchObject({ fallbacks: true });
+    expect(
+      loadConfig({
+        ...DEV_BASE,
+        LLM_MODE: 'anthropic',
+        ANTHROPIC_API_KEY: 'k'.repeat(48),
+        LLM_FALLBACKS: 'none',
+      }).llm,
+    ).toMatchObject({ fallbacks: false });
   });
 });
 
@@ -61,14 +82,18 @@ describe('loadConfig (production)', () => {
     expect(config.kafkaBrokers).toEqual(['broker:9092']);
   });
 
-  it.each(['KAFKA_BROKERS', 'IDENTITY_URL', 'ASSETS_URL', 'DOCUMENTS_URL', 'PROFILE_URL'])(
-    'fails fast without %s in production',
-    (key) => {
-      const env: Record<string, string | undefined> = { ...PROD_BASE };
-      delete env[key];
-      expect(() => loadConfig(env)).toThrow(ConfigError);
-    },
-  );
+  it.each([
+    'KAFKA_BROKERS',
+    'IDENTITY_URL',
+    'ASSETS_URL',
+    'DOCUMENTS_URL',
+    'PROFILE_URL',
+    'ANTHROPIC_API_KEY',
+  ])('fails fast without %s in production', (key) => {
+    const env: Record<string, string | undefined> = { ...PROD_BASE };
+    delete env[key];
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+  });
 
   it.each(['AWS_KMS_KEY_ID', 'AWS_REGION'])(
     'fails fast without %s (LocalKmsProvider is dev-only)',
@@ -78,6 +103,21 @@ describe('loadConfig (production)', () => {
       expect(() => loadConfig(env)).toThrow(ConfigError);
     },
   );
+
+  it('pins the real gateway — the stub reaches no provider at all', () => {
+    expect(() => loadConfig({ ...PROD_BASE, LLM_MODE: 'stub' })).toThrow(/LLM_MODE/);
+  });
+
+  it('never echoes the provider key', () => {
+    // The key is the one value in this config that is worth stealing.
+    try {
+      loadConfig({ ...PROD_BASE, ANTHROPIC_API_KEY: '', LLM_MODE: 'anthropic' });
+      throw new Error('expected ConfigError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as Error).message).not.toContain('k'.repeat(48));
+    }
+  });
 
   it('refuses the local KMS provider and a plaintext AWS endpoint', () => {
     expect(() => loadConfig({ ...PROD_BASE, KMS_MODE: 'local' })).toThrow(/KMS_MODE/);

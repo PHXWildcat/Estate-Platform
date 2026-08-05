@@ -26,8 +26,14 @@ import {
 } from './llm-gateway';
 import { MessagesRepo, type MessageRow } from './messages.repo';
 import { assertEgressClean, EgressRefusedError } from './privacy/egress';
+import { Tokenizer } from './privacy/tokenizer';
 import { frameUntrusted, UNTRUSTED_DATA_INSTRUCTION } from './privacy/framing';
-import { ToolRegistry, type ToolContext, type ToolOutcome } from './tools/registry';
+import {
+  parameterTypeOf,
+  ToolRegistry,
+  type ToolContext,
+  type ToolOutcome,
+} from './tools/registry';
 
 /**
  * Hard ceiling on provider round-trips within ONE turn.
@@ -321,18 +327,38 @@ export class ConversationService {
       pending.push(() => this.events.messageSent(userId, conversationId, userMessageId));
       history.push({ role: 'user', text });
 
+      /*
+       * ONE tokenizer per turn, held on the stack and never persisted or
+       * cached. Placeholders are stable WITHIN a turn so the model can reason
+       * about "the same house" across iterations, and meaningless outside it.
+       *
+       * The stored transcript keeps REAL text: a user reading their own history
+       * must see their own estate, not our placeholders. Tokenization is a
+       * property of the provider hop, not of the record.
+       */
+      const tokenizer = new Tokenizer();
+
       const toolResults: LlmToolResult[] = [];
       let answer: string | null = null;
       for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
         const input: LlmTurnInput = {
           system: SYSTEM_INSTRUCTION,
-          history,
+          // Prior turns are stored as real text and tokenized on the way OUT,
+          // so a title the user typed in turn 1 carries the same placeholder in
+          // turn 5.
+          history: history.map((turn) => ({ ...turn, text: tokenizer.tokenizeText(turn.text) })),
           tools: declarations,
           toolResults,
         };
-        // The gate runs before EVERY provider call, not once per turn: each
+        // The gate runs on the TOKENIZED payload — exactly the bytes that will
+        // be sent — and before EVERY provider call, not once per turn: each
         // iteration carries one more tool result, and a retrieved SSN enters
         // the payload at the iteration that fetched it.
+        //
+        // Tokenizing first is safe because the tokenizer refuses to replace a
+        // value that fails the egress check, returning it unchanged for this
+        // gate to catch. Without that interlock the privacy layer would disarm
+        // the fail-closed control by hiding an SSN inside a placeholder.
         await this.assertOutboundClean(userId, conversationId, input);
 
         const output = await this.gateway.complete(input);
@@ -351,10 +377,14 @@ export class ConversationService {
           },
           pending,
         );
-        toolResults.push(this.quoteResult(executed));
+        toolResults.push(this.quoteResult(executed, tokenizer));
       }
 
-      const replyText = answer ?? ITERATION_CAP_MESSAGE;
+      // Detokenize before the reply is persisted OR returned: placeholders are
+      // an artefact of the provider hop and must not reach the user or the
+      // transcript. An invented placeholder the tokenizer never minted is left
+      // as a harmless literal rather than resolved to someone's data.
+      const replyText = answer === null ? ITERATION_CAP_MESSAGE : tokenizer.detokenize(answer);
       const replyId = randomUUID();
       await this.append(tx, userId, conversationId, replyId, userSeq + 1, 'assistant', replyText);
       await this.conversations.touch(tx, conversationId);
@@ -475,7 +505,7 @@ export class ConversationService {
    * up carrying a hostname, a path, or a fragment of someone's data into a
    * provider payload.
    */
-  private quoteResult(executed: ExecutedToolCall): LlmToolResult {
+  private quoteResult(executed: ExecutedToolCall, tokenizer: Tokenizer): LlmToolResult {
     const { toolName, outcome } = executed;
     if (outcome.outcome === 'denied_no_consent') {
       return {
@@ -487,7 +517,10 @@ export class ConversationService {
     if (outcome.outcome === 'error') {
       return { tool: toolName, outcome: 'error', text: 'This lookup did not return data.' };
     }
-    const serialized = JSON.stringify(outcome.data) ?? 'null';
+    // Tokenize BEFORE serializing: the rules address fields of the structured
+    // result, and JSON.stringify is exactly what happens to it next.
+    const tokenized = tokenizer.tokenizeToolResult(toolName, outcome.data);
+    const serialized = JSON.stringify(tokenized) ?? 'null';
     const clipped =
       serialized.length > TOOL_RESULT_PROMPT_CHARS
         ? serialized.slice(0, TOOL_RESULT_PROMPT_CHARS) + TRUNCATION_MARKER
@@ -513,6 +546,7 @@ export class ConversationService {
         name,
         description: schema.description ?? '',
         required: !schema.isOptional(),
+        type: parameterTypeOf(name, schema),
       })),
     }));
   }

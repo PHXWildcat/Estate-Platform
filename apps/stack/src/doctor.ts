@@ -320,6 +320,25 @@ export function diagnose(
     }
   }
 
+  // 7a. AI_ASSISTANT_LLM_MODE is deliberately NOT in the list above. The stack
+  //     can host KMS, S3, a virus scanner and an OCR engine; it cannot host a
+  //     model provider, and no Anthropic credential exists in this project. So
+  //     'stub' is the correct and only possible development value — exactly
+  //     PLAID_MODE's position, which is likewise unchecked — and a warning on
+  //     every single dev run would be the permanently-red-pipeline mistake the
+  //     image-scan gate already refused to make. What IS worth saying is the
+  //     opposite: a provider key in this file is a secret in a generated
+  //     local-only environment, and nothing maps it into any service.
+  for (const key of env.keys()) {
+    if (/^ANTHROPIC_/i.test(key)) {
+      findings.push({
+        severity: 'warning',
+        code: 'model_provider_credential_in_env',
+        message: `${key} is a third-party model-provider credential sitting in the local stack's generated environment. Nothing maps it into a service (serviceProcessEnv sets LLM_MODE only, and the supervisor scrubs ANTHROPIC_* from the ambient shell), so it does nothing here — and wiring it would let a LOCAL stack send retrieved estate content off the machine. Remove it.`,
+      });
+    }
+  }
+
   // 8. TLS verification must never be switched off to make the stack run.
   //    It is the shortest path from "production mode won't connect" to a
   //    green stack that proves nothing about transport security.

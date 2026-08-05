@@ -6,11 +6,11 @@
 # against an existing bucket. Without this every key-holding service fails on
 # its first encrypt, which is its first write.
 #
-# SEVEN INDEPENDENT KEYS, one per service KEK, not one shared key. The alias is
+# EIGHT INDEPENDENT KEYS, one per service KEK, not one shared key. The alias is
 # baked into the KMS EncryptionContext (`estate:kek`), so a DEK wrapped for one
 # domain cannot be unwrapped under another — that binding is real here and the
 # stack test asserts it. What is NOT real here is the IAM grant that would stop
-# a service from ASKING: LocalStack Community does not enforce IAM. Seven keys
+# a service from ASKING: LocalStack Community does not enforce IAM. Eight keys
 # model the boundary; they do not prove it. See the stack README's limits.
 #
 # M9 adds the SES sender identity: SendEmail refuses an unverified Source, in
@@ -91,6 +91,9 @@ ALIASES=(
   "alias/estate-documents-kek"
   "alias/estate-settlement-kek"
   "alias/estate-notifications-kek"
+  # M10: the assistant's conversation store. Without it the fourth core
+  # co-tenant fails its first encrypt, which is its first stored turn.
+  "alias/estate-ai-assistant-kek"
 )
 
 echo "[stack-init] provisioning KMS keys in ${REGION}"

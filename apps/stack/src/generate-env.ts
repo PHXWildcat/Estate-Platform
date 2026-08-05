@@ -193,7 +193,7 @@ export function generateEnv(
 
   sections.push({
     title: 'Adapter selection — every external dependency is REAL',
-    note: 'Only Plaid stays stubbed: production requires PLAID_MODE=live and no credentials exist.',
+    note: 'Plaid and the AI assistant are the exceptions: production pins a live third-party\nprovider for each (PLAID_MODE=live, LLM_MODE=anthropic) and no credentials exist for\neither, so both run stubbed in development and are OMITTED from the production profile.',
     entries: [
       ['DOCUMENTS_OBJECT_STORE_MODE', 's3'],
       ['DOCUMENTS_SCANNER_MODE', 'clamd'],
@@ -216,6 +216,28 @@ export function generateEnv(
       // `plannedServices` skips it for the host-mode supervisor for the same
       // reason; this keeps compose and the supervisor agreeing.
       ['PLAID_PROFILE', production ? 'plaid-requires-live-credentials' : 'plaid'],
+      // M10. The assistant is the PLAID case, not the documents case: the
+      // stack cannot provide a model provider the way it provides KMS or a
+      // virus scanner, so development runs the deterministic stub gateway and
+      // the production rehearsal pins the live provider it cannot boot.
+      //
+      // NOTHING HERE MINTS AN ANTHROPIC_API_KEY, deliberately. A placeholder
+      // would be a credential nobody can present (the zero-holder-edge
+      // subtraction, one layer out), and a real one would put a third-party
+      // secret in a generated file AND make a LOCAL stack capable of sending
+      // retrieved estate content off the machine. `serviceProcessEnv` maps no
+      // such variable and `scrubbedBaseEnv` strips it from the ambient shell,
+      // so the live adapter is unreachable from the stack until someone adds
+      // it here on purpose.
+      ['AI_ASSISTANT_LLM_MODE', production ? 'anthropic' : 'stub'],
+      // Which compose profile the assistant CONTAINER belongs to. 'services'
+      // in development — unlike plaid it is not opt-in, so it comes up, goes
+      // down and is reset with every other service and no `stack:*` script or
+      // workflow needs a new `--profile` flag. In production it is a name
+      // nothing activates, so the container is absent rather than
+      // crash-looping on a credential that does not exist; `plannedServices`
+      // makes the host-mode supervisor skip it in the same mode.
+      ['AI_ASSISTANT_PROFILE', production ? 'ai-assistant-requires-live-credentials' : 'services'],
     ],
   });
 
@@ -389,7 +411,7 @@ export function renderEnvFile(
     '#',
     `# Mode: ${options.mode}`,
     options.mode === 'production'
-      ? '# Production rehearsal: full fail-fast config over TLS, with the REAL\n# carrier path (M9): notifications speaks SES v1 to LocalStack, so the old\n# 503 notifications_unavailable answers are retired. Plaid alone stays\n# absent (no live credentials exist).'
+      ? '# Production rehearsal: full fail-fast config over TLS, with the REAL\n# carrier path (M9): notifications speaks SES v1 to LocalStack, so the old\n# 503 notifications_unavailable answers are retired. Plaid and the AI\n# assistant stay absent — each pins a live third-party provider here and no\n# credentials exist for either.'
       : '# Development: every flow runs, against entirely real dependencies.',
     '',
   ];

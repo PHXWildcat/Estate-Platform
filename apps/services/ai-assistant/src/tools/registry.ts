@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ConsentScope } from '../consent';
+import type { LlmParameterType } from '../llm-gateway';
 
 /**
  * The assistant's tool contract.
@@ -107,6 +108,45 @@ function identifierWords(param: string): string[] {
     .split(/[^a-zA-Z0-9]+/)
     .map((word) => word.toLowerCase())
     .filter((word) => word.length > 0);
+}
+
+/**
+ * Map one zod field to its JSON Schema type, unwrapping optional/nullable/
+ * default so a wrapper does not erase the type underneath.
+ *
+ * Throws rather than defaulting to 'string' for an unmapped shape: a silently
+ * mistyped parameter is a provider that sends the wrong thing and a tool that
+ * refuses it, with the cause two layers away. Every tool here takes flat
+ * scalars, so an exotic shape means someone added one and should say what it
+ * should look like on the wire.
+ */
+export function parameterTypeOf(name: string, schema: z.ZodTypeAny): LlmParameterType {
+  // Narrowed on each branch rather than through a shared ternary: zod's
+  // `removeDefault()` is typed loosely enough that a combined expression
+  // resolves to `any`, and an `any` here would silently defeat the exhaustive
+  // check below — the one place this function must not guess.
+  let inner: z.ZodTypeAny = schema;
+  for (;;) {
+    if (inner instanceof z.ZodOptional || inner instanceof z.ZodNullable) {
+      inner = (inner as z.ZodOptional<z.ZodTypeAny> | z.ZodNullable<z.ZodTypeAny>).unwrap();
+    } else if (inner instanceof z.ZodDefault) {
+      inner = (inner as z.ZodDefault<z.ZodTypeAny>).removeDefault();
+    } else {
+      break;
+    }
+  }
+  if (inner instanceof z.ZodString) {
+    return 'string';
+  }
+  if (inner instanceof z.ZodBoolean) {
+    return 'boolean';
+  }
+  if (inner instanceof z.ZodNumber) {
+    return inner.isInt ? 'integer' : 'number';
+  }
+  throw new ToolContractError(
+    `tool parameter "${name}" has no declarable wire type: add one to parameterTypeOf`,
+  );
 }
 
 export class ToolContractError extends Error {

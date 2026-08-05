@@ -137,6 +137,28 @@ describe('serviceProcessEnv', () => {
     expect(documents['CLAMD_HOST']).toBe('localhost');
   });
 
+  it('gives the assistant four peer URLs and NO credential of any kind (M10)', () => {
+    const assistant = serviceProcessEnv(svc('ai-assistant'), generated(), HOST);
+    // The property the whole service design rests on: it reaches its peers by
+    // forwarding the caller's own bearer, so a mapping that handed it a
+    // service credential would be the over-grant, not a convenience.
+    for (const key of Object.keys(assistant)) {
+      expect(key).not.toMatch(/_INTERNAL_TOKEN$/);
+    }
+    // Nor a model-provider key: none exists, and one here would let the local
+    // stack send retrieved estate content off the machine.
+    expect(assistant['ANTHROPIC_API_KEY']).toBeUndefined();
+    expect(assistant['LLM_MODE']).toBe('stub');
+    expect(assistant['IDENTITY_URL']).toBe('http://localhost:3001');
+    expect(assistant['ASSETS_URL']).toBe('http://localhost:3003');
+    expect(assistant['DOCUMENTS_URL']).toBe('http://localhost:3005');
+    expect(assistant['PROFILE_URL']).toBe('http://localhost:3002');
+    // Hyphenated name, legal env prefix: the flat file writes
+    // AI_ASSISTANT_DATABASE_URL, and the core cluster is shared with profile.
+    expect(assistant['DATABASE_URL']).toContain('@localhost:5434/core');
+    expect(assistant['AWS_KMS_KEY_ID']).toBe('alias/estate-ai-assistant-kek');
+  });
+
   it('throws by NAME on a missing variable rather than booting a half-configured child', () => {
     const file = generated();
     file.delete('IDENTITY_EMAIL_INDEX_KEY_HEX');
@@ -153,9 +175,14 @@ describe('plannedServices', () => {
     );
   });
 
-  it('drops plaid from a production run — live mode has no credentials to boot with', () => {
+  it('drops the live-provider services from a production run — neither has credentials', () => {
+    // Both pin a third-party provider in production config (PLAID_MODE=live,
+    // LLM_MODE=anthropic) whose credentials do not exist here, so each would
+    // fail fast at boot. Starting a doomed child and reporting its death as a
+    // stack failure tests nothing; the compose profiles omit both the same way.
     const names = plannedServices(generated('production')).map((s) => s.name);
     expect(names).not.toContain('plaid');
+    expect(names).not.toContain('ai-assistant');
     expect(names).toContain('identity');
   });
 });

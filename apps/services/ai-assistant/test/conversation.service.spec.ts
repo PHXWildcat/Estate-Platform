@@ -20,6 +20,7 @@ import {
   flattenForInspection,
   StubLlmGateway,
   type LlmGateway,
+  type LlmToolDeclaration,
   type LlmTurnInput,
   type LlmTurnOutput,
 } from '../src/llm-gateway';
@@ -629,7 +630,7 @@ describe('takeTurn', () => {
     expect(h.store.messages.map((m) => m.seq)).toEqual([0, 1, 2, 3]);
   });
 
-  it('declares the registry tools, with required-ness derived from their zod schemas', async () => {
+  it('declares the registry tools, with types and required-ness from their zod schemas', async () => {
     const h = buildHarness();
     const conversationId = h.store.seedConversation(OWNER);
     await h.service.takeTurn(OWNER, BEARER, conversationId, 'hello');
@@ -639,7 +640,16 @@ describe('takeTurn', () => {
       {
         name: 'document_read',
         description: documentTool.description,
-        parameters: [{ name: 'documentId', description: 'Which document to read', required: true }],
+        // `type` is derived from the zod field, so the provider is not left to
+        // guess what to send and be refused by the executor's own re-validation.
+        parameters: [
+          {
+            name: 'documentId',
+            description: 'Which document to read',
+            required: true,
+            type: 'string',
+          },
+        ],
       },
     ]);
   });
@@ -791,12 +801,12 @@ describe('create and list', () => {
 // The stub gateway is the implementation the whole platform runs on until the
 // live adapter lands, so its behaviour is pinned like production code.
 describe('StubLlmGateway', () => {
-  const declarations = [
+  const declarations: LlmToolDeclaration[] = [
     { name: 'estate_summary', description: '', parameters: [] },
     {
       name: 'document_read',
       description: '',
-      parameters: [{ name: 'documentId', description: '', required: true }],
+      parameters: [{ name: 'documentId', description: '', required: true, type: 'string' }],
     },
   ];
   const input = (text: string, toolResults: LlmTurnInput['toolResults'] = []): LlmTurnInput => ({
@@ -846,5 +856,73 @@ describe('flattenForInspection', () => {
     for (const value of ['SYSTEM', 'HISTORY', 'TOOLNAME', 'TOOLDESC', 'RESULT']) {
       expect(flattened).toContain(value);
     }
+  });
+});
+
+describe('the tokenizer sits on the egress path', () => {
+  const TITLE = "Mom's house on Elm St";
+
+  /**
+   * The tokenizer keys its rules on the tool NAME in the executed result, so
+   * the outcome below reports `list_assets` — a double named anything else
+   * would exercise an empty rule set and prove nothing.
+   */
+  function assetHarness(script: LlmTurnOutput[]): Harness {
+    return buildHarness({
+      script,
+      outcome: () => ({
+        toolName: 'list_assets',
+        outcome: { outcome: 'ok', data: [{ title: TITLE, category: 'real_estate' }] },
+      }),
+    });
+  }
+
+  it('never lets a user-authored asset title reach the provider', async () => {
+    // The whole point of the privacy proxy (docs/03 §4 TB5). A tokenizer that
+    // exists but is not on the path is the M4 zero-callers shape; this asserts
+    // the path, not the wiring.
+    const h = assetHarness([
+      { kind: 'tool_call', name: 'list_assets', input: {} },
+      { kind: 'message', text: 'You have one property.' },
+    ]);
+    const conversationId = h.store.seedConversation(OWNER);
+    await h.service.takeTurn(OWNER, BEARER, conversationId, 'what do I own?');
+
+    const everythingSent = JSON.stringify(h.gateway.seen);
+    expect(everythingSent).not.toContain(TITLE);
+    expect(everythingSent).not.toContain('Elm St');
+    // ...and something stable stood in for it, rather than the field vanishing.
+    expect(everythingSent).toContain('ASSET_1');
+    // Non-identifying fields are untouched: a tokenizer that blanked the
+    // category would protect nothing and destroy the answer.
+    expect(everythingSent).toContain('real_estate');
+  });
+
+  it('detokenizes the reply, so the user sees their own words back', async () => {
+    // Placeholders are an artefact of the provider hop. They must not reach the
+    // user, and must not be what the transcript records.
+    const h = assetHarness([
+      { kind: 'tool_call', name: 'list_assets', input: {} },
+      { kind: 'message', text: 'Your ⟦ASSET_1⟧ is titled in the trust.' },
+    ]);
+    const conversationId = h.store.seedConversation(OWNER);
+    const reply = await h.service.takeTurn(OWNER, BEARER, conversationId, 'what do I own?');
+
+    expect(reply.text).toBe(`Your ${TITLE} is titled in the trust.`);
+    expect(reply.text).not.toContain('ASSET_1');
+  });
+
+  it('leaves a placeholder the model invented as a harmless literal', async () => {
+    // A model that hallucinates ⟦ASSET_9⟧ must not have it resolved to somebody
+    // else's data, and must not crash the turn.
+    const h = assetHarness([
+      { kind: 'tool_call', name: 'list_assets', input: {} },
+      { kind: 'message', text: 'Also ⟦ASSET_9⟧ and ⟦PERSON_4⟧ are relevant.' },
+    ]);
+    const conversationId = h.store.seedConversation(OWNER);
+    const reply = await h.service.takeTurn(OWNER, BEARER, conversationId, 'what do I own?');
+
+    expect(reply.text).toBe('Also ⟦ASSET_9⟧ and ⟦PERSON_4⟧ are relevant.');
+    expect(reply.text).not.toContain(TITLE);
   });
 });

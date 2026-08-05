@@ -4,32 +4,53 @@
  * isolating service", and inside that service through ONE interface, so there
  * is exactly one place where estate content crosses to a third party.
  *
- * The live Anthropic adapter is M10 PR2. Until it exists `loadConfig` REFUSES
- * `LLM_MODE=anthropic` outright, in every environment — a config that selects
- * an unwired provider must fail at boot, not per request — so the deterministic
- * stub below is the only implementation this build can run. That is also why
- * the port is shaped around a SINGLE STEP rather than a streamed conversation:
+ * Two implementations satisfy it as of M10 PR2: the deterministic stub below,
+ * which makes no network call at all, and `anthropic-gateway.ts`, which is the
+ * only file in the platform allowed to import the provider SDK (a source scan
+ * enforces that — `test/sdk-fence.spec.ts`). `loadConfig` PINS the live one in
+ * production and requires its key whenever it is selected, so neither a stubbed
+ * production deployment nor a keyless live one can boot.
+ *
+ * The port is shaped around a SINGLE STEP rather than a streamed conversation:
  * a turn is a loop the conversation service drives (ask, maybe run a read-only
  * tool, ask again), and keeping the provider's job to "given this state, say
- * what happens next" is what lets the egress assertion inspect a complete
- * outbound payload before every single provider call.
+ * what happens next" is what lets the tokenizer and the egress assertion
+ * inspect a complete outbound payload before every single provider call.
  */
+
+/**
+ * The JSON Schema types a tool argument may take. Deliberately narrow — every
+ * tool in this service takes flat scalars — so that widening it is a decision
+ * rather than an accident.
+ */
+export type LlmParameterType = 'string' | 'number' | 'integer' | 'boolean';
 
 /**
  * One declared tool parameter, flattened out of the tool's zod schema.
  *
- * The declaration deliberately carries no JSON Schema: a provider-shaped schema
- * blob would be a second description of the tool's input living next to the zod
- * object that actually validates it, and the two would drift. The adapter's job
- * in PR2 is to render this into whatever the provider's API wants; the
- * authority stays `AssistantTool.input`, which is also what `assertSubjectFree`
- * inspects — so a parameter that cannot exist in the registry cannot appear
- * here either.
+ * The declaration carries no JSON Schema BLOB: a provider-shaped schema object
+ * would be a second description of the tool's input living next to the zod
+ * object that actually validates it, and the two would drift. What it does
+ * carry is the scalar type below, derived FROM that zod field rather than
+ * written beside it — the adapter renders these three facts into whatever the
+ * provider's API wants, and the authority stays `AssistantTool.input`, which is
+ * also what `assertSubjectFree` inspects, so a parameter that cannot exist in
+ * the registry cannot appear here either.
  */
 export interface LlmToolParameter {
   readonly name: string;
   readonly description: string;
   readonly required: boolean;
+  /**
+   * The declared type, derived from the tool's own zod schema.
+   *
+   * Without it the provider receives `{"documentId": {}}` — a property with no
+   * type at all — and has to guess what to send. The executor re-validates
+   * against the same zod schema, so a guess that lands wrong comes back as
+   * `invalid_input` with no obvious cause, which is a bad failure mode to build
+   * a tool-calling loop on.
+   */
+  readonly type: LlmParameterType;
 }
 
 export interface LlmToolDeclaration {

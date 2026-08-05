@@ -1,5 +1,6 @@
 import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
+import Anthropic from '@anthropic-ai/sdk';
 import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
 import {
@@ -41,8 +42,10 @@ import {
 import { EventsService } from './events.service';
 import { FieldCipher } from './field-cipher';
 import { HttpErrorFilter } from './http-error.filter';
+import { AnthropicLlmGateway } from './anthropic-gateway';
 import { StubLlmGateway, type LlmGateway } from './llm-gateway';
 import { MessagesRepo } from './messages.repo';
+import { assertTokenizerCoversTools } from './privacy/tokenizer';
 import { ToolExecutor } from './tool-executor';
 import { buildToolRegistry, ToolRegistry } from './tools';
 
@@ -70,18 +73,27 @@ import { buildToolRegistry, ToolRegistry } from './tools';
  * possible place: a deployment that believes it is talking to a reviewed
  * provider while a deterministic stub answers, or the reverse.
  *
- * `loadConfig` already refuses `LLM_MODE=anthropic` outright in every
- * environment until PR2 wires the live adapter; the throwing arm below makes
- * that invariant LOCAL, so this selector can never be reached with a mode it
- * has no implementation for (the notifications/settlement selector shape).
+ * `loadConfig` pins 'anthropic' in production and requires the key whenever
+ * that mode is selected, so a stubbed production deployment cannot boot. This
+ * selector restates the pairing locally: the client is constructed HERE, from
+ * config, and the API key never leaves this factory's scope — the gateway
+ * itself takes a narrow one-method port, so the credential is out of reach of
+ * everything that renders prompts (the Plaid gateway precedent).
  */
 function llmGatewayFor(config: AiAssistantConfig): LlmGateway {
   const llm = config.llm;
   switch (llm.mode) {
     case 'stub':
       return new StubLlmGateway();
-    case 'anthropic':
-      throw new Error('LLM_MODE "anthropic" has no adapter in this build (M10 PR2 wires it)');
+    case 'anthropic': {
+      // `beta.messages` rather than `messages`: the refusal-fallback parameter
+      // is a beta, and the gateway only sends it when `fallbacks` is on.
+      const client = new Anthropic({ apiKey: llm.apiKey, timeout: config.llmRequestTimeoutMs });
+      return new AnthropicLlmGateway(client.beta.messages, {
+        fallbacks: llm.fallbacks,
+        requestTimeoutMs: config.llmRequestTimeoutMs,
+      });
+    }
     default: {
       const exhausted: never = llm;
       throw new Error(`unhandled LLM_MODE: ${String(exhausted)}`);
@@ -211,12 +223,30 @@ function kmsProviderFor(config: AiAssistantConfig): KmsKeyProvider {
     {
       provide: ToolRegistry,
       inject: [CONFIG],
-      useFactory: (config: AiAssistantConfig): ToolRegistry =>
-        buildToolRegistry({
+      useFactory: (config: AiAssistantConfig): ToolRegistry => {
+        const registry = buildToolRegistry({
           assets: new AssetsClient(config.assetsUrl),
           documents: new DocumentsClient(config.documentsUrl),
           profile: new ProfileClient(config.profileUrl),
-        }),
+        });
+        /*
+         * Every REAL tool either has tokenization rules or is explicitly
+         * exempt, decided at boot rather than discovered in production.
+         *
+         * The failure this prevents is quiet: a new tool ships, returns a field
+         * of user-authored text nobody wrote a rule for, and that text reaches
+         * the provider untokenized while the privacy layer reports itself
+         * healthy. A process that will not start is the loud version of the
+         * same fact.
+         *
+         * It lives HERE, at composition, rather than in ConversationService's
+         * constructor: the fence is about the real tool surface, and a unit
+         * test building the service with two doubles should not have to satisfy
+         * a rule about production tools.
+         */
+        assertTokenizerCoversTools(registry.list().map((tool) => tool.name));
+        return registry;
+      },
     },
     ToolExecutor,
     {

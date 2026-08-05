@@ -1564,7 +1564,7 @@ actor and identity fires the same event on every login, so it is evidence for
 recovery, not a detection control — closing it needs the mesh's peer identity),
 and the carrier's event-class visibility.
 
-### M10 — AI estate assistant (PR1 in progress)
+### M10 — AI estate assistant (PR2 in progress)
 
 The milestone docs/04 always had next, arriving on a platform that can now
 deploy and notify — the two reasons M8 displaced it (see M8's opening note).
@@ -1649,6 +1649,165 @@ was measuring `owner.cedar`.
 
 Deferred to PR2 deliberately: the stack wiring (topology, compose, doctor), so
 PR1 touches `apps/stack` only for the hyphen fix.
+
+**PR2 — the live adapter, the privacy proxy, and the stack.**
+
+*The adapter is a translator, not a policy layer.* `anthropic-gateway.ts` is the
+only file in the platform that speaks to a third-party model and the only file
+allowed to import `@anthropic-ai/sdk` — enforced by a source scan
+(`test/sdk-fence.spec.ts`, the `packages/vault-crypto` zero-dependency-fence
+precedent), because anything that can import the SDK can construct a client and
+anything that can construct a client can send estate content past the
+tokenizer, the egress assertion, the consent check and the audit trail in one
+line. The same scan pins the API key's readers to exactly two files: `config.ts`
+parses it and `app.module.ts` consumes it once, so the credential never enters a
+file that renders prompts. None of the upstream controls is re-implemented in
+the adapter, and it re-frames nothing it is handed.
+
+The two properties it does own are FAIL CLOSED and DO NOT LEAK. Every abnormal
+outcome — a safety refusal, a rate limit, a dead connection, an unparseable
+response, a turn that ran past its output budget — collapses to the SAME fixed,
+platform-authored sentence, and no provider text (error bodies,
+`stop_details.explanation`, request ids) is returned or written anywhere. The
+uniformity is the control: distinguishing "the safety classifier declined" from
+"we are rate limited" hands whoever composed the prompt — possibly through text
+in an uploaded PDF, docs/03 risk #6 — a probe for which control fired. It is the
+404-not-403 reasoning from PR1 and M9's one-subject-line-per-kind, one layer
+out. Three details carry weight. `stop_reason` is read BEFORE anything touches
+`content`, because a refusal arrives as a successful HTTP 200 whose content may
+be empty or partial — code that indexes `content[0]` first breaks on exactly the
+responses that matter. Truncation (`max_tokens`, `model_context_window_exceeded`)
+is treated as a NON-ANSWER rather than an answer, because a truncated estate
+reply reads as complete: "the will names three beneficiaries" without "…but the
+document is unsigned" is worse than no answer at all. And a CREDENTIAL failure
+(401/403) is rethrown as a typed error carrying a reason token and nothing else,
+never absorbed into the polite sentence — a deployment whose key is wrong must
+page, not serve every user a bland apology forever (the M8 lesson about a
+container that stays up with a dead audit trail).
+
+Decisions worth having in one place: the model id is a pinned CONSTANT, not
+configuration, because which model sees estate content is a threat-model
+decision and belongs in a reviewed commit; the loop is deliberately
+NON-STREAMING, since the port's single-step shape is what lets the egress gate
+inspect a complete outbound payload before every call; the prompt-cache
+breakpoint sits on the system block and nowhere else, so the cached prefix is
+the tool declarations plus the standing instruction — both platform constants,
+no user id, no timestamp — which is what makes it safe as well as effective:
+THE CACHED PREFIX CONTAINS NO ESTATE CONTENT. Tool results travel as a quoted
+user turn rather than native `tool_result` blocks, because the port carries no
+`tool_use` ids and both ways to get them are worse: holding per-instance state
+across `complete()` calls in a singleton serving concurrent users is a Zone B
+leak, and synthesising ids means synthesising the assistant blocks that
+"requested" them — fabricating a record of what the model said, in the one
+product where the transcript is evidence. Server-side refusal fallbacks are ON
+by default but are a config switch for a TB5 reason stated rather than
+footnoted: on a refusal THE SAME ESTATE PAYLOAD IS RE-RUN ON A DIFFERENT MODEL,
+so every zero-retention and no-training commitment must hold for the fallback
+too, and a deployment whose agreement does not cover it turns fallbacks off
+without a code change. PR2 also widened `LlmToolParameter` with a scalar `type`
+DERIVED from the tool's zod field (`parameterTypeOf`, which throws rather than
+defaulting on a shape it cannot map): a typeless property makes the provider
+guess and the executor refuse the guess as `invalid_input`, a failure whose
+cause is two layers away.
+
+*The privacy proxy tokenizes BY FIELD, never by regex over prose.* The tempting
+design — a detector that finds names in text — does not work without NER, and a
+half-working one is worse than none: "Will", "Trust", "Grant" and "Rose" are
+estate vocabulary AND names, so it mangles ordinary words, misses the names it
+was built for, and leaves everyone believing a control exists. Tool results are
+structured JSON with schemas this repo owns, so `TOOL_FIELD_RULES` names exact
+paths (`list_assets.title`, the document inventories' `title`, the dormant
+PERSON fields) and replacing a known field is precise with no false positives.
+The cost of that precision is that coverage is a LIST, and lists go stale:
+`assertTokenizerCoversTools` runs at registry construction and refuses a tool
+this module has made no decision about in EITHER direction — missing rules, or
+rules naming a tool that no longer exists — so a new retrieval arrives with a
+tokenization decision or the process does not start (the `assertSubjectFree`
+precedent). An empty rule list is a recorded decision, not an omission.
+
+**The interlock with `egress.ts` is the load-bearing part.** Substitution and
+refusal interact badly if nobody thinks about it: a user who titles an asset
+"dad's account 123-45-6789" would have that title replaced by ⟦ASSET_1⟧, after
+which `assertEgressClean` finds nothing, passes, and the fail-closed control has
+been silenced by the privacy layer — the turn proceeds and no operator ever
+learns an SSN is sitting in an asset title. So the tokenizer REFUSES to map a
+value that trips the egress detectors, returning it unchanged for the assertion
+to catch. The property holds whatever order the two run in: the tokenizer cannot
+be the thing that handles an SSN, so it cannot be the thing that hides one.
+
+The mapping is per-turn, in memory, and never persisted — it is the one artifact
+that turns a placeholder back into someone's data. The maps are `#private`
+fields rather than TypeScript `private` ones, which is not stylistic: `private`
+is erased at compile time, so the maps stayed own enumerable properties and
+`Object.values(tokenizer)` handed back every mapped title in plaintext, which a
+structured logger or an error serializer reaches without anyone deciding it
+should (caught by this module's own spec asserting a property it did not yet
+have). The STORED TRANSCRIPT KEEPS REAL TEXT — tokenization is a property of the
+provider hop, not of the record — so history is tokenized on the way out (a
+title typed in turn 1 carries the same placeholder in turn 5) and the reply is
+detokenized before it is persisted or returned. A placeholder the model invented
+is left as a harmless literal: no index arithmetic, no nearest match, so a
+hallucinated ⟦ASSET_9⟧ can never resolve to someone else's row.
+
+Three recorded limits, stated as gaps rather than solved: `get_document_text` is
+NOT tokenized, because it returns the user's own document prose with nothing to
+key on — accepted only because the content is the user's own, sits behind its
+own larger-disclosure consent scope, and is framed as untrusted data; closing it
+needs NER over legal prose, with its own accuracy, cost and vendor questions.
+Most PERSON rules are DORMANT, since the peer clients already drop names before
+they exist as values here — kept anyway, because the failure this codebase keeps
+finding is a client schema widened for a good reason while the privacy layer,
+being somewhere else, silently does not follow. And opaque UUIDs are not
+tokenized (they are already meaningless outside the platform, and tokenizing
+them would force a detokenization path on the INBOUND tool-argument side); the
+residual is that a provider retaining logs could observe the same opaque id
+across conversations, from which nothing about the user is recoverable.
+
+*The stack wiring, and the credential that deliberately does not exist.* The
+assistant becomes the tenth service in the compose stack: port 3009, fourth core
+co-tenant, eighth KMS alias (`ai-assistant/kek`), appended to the core migration
+chain so one migrator at a time meets a fresh cluster. It is the ONLY service
+block with no `*_INTERNAL_TOKEN` at all, in either direction, and the
+service-env spec asserts that by scanning its keys rather than by trusting the
+mapping. Production omits the container the way it omits Plaid — the compose
+profile name is generated, `plannedServices` skips it in host mode, so both
+addressings agree — because production config pins `LLM_MODE=anthropic` and no
+Anthropic credential exists in this project; a container that boots on an
+invented key and fails every turn is worse than an absent one.
+
+NOTHING MINTS AN `ANTHROPIC_API_KEY`, at any layer, and each layer refuses it
+differently. The generator writes none (a placeholder is a credential nobody can
+present — the zero-holder-edge subtraction from M8 PR4 — and a real one would
+put a third-party secret in a generated file AND make a LOCAL stack capable of
+sending retrieved estate content off the machine). `serviceProcessEnv` maps
+`LLM_MODE` and nothing else. The supervisor scrubs `ANTHROPIC_*` from the
+ambient shell, which is the one addition whose absence would be worst: a
+developer's own key sitting in their profile would otherwise reach the service
+with the largest prompt-injection surface in the product without the explicit
+mapping ever deciding it should. And the doctor WARNS on any `ANTHROPIC_*` key
+in the generated file. What the doctor deliberately does NOT do is complain
+about `LLM_MODE=stub`: the stack can host KMS, S3, a virus scanner and an OCR
+engine, but it cannot host a model provider, so the stub is the correct and only
+possible development value (PLAID_MODE's position exactly), and a warning on
+every dev run is the permanently-red-pipeline mistake the image-scan gate
+already refused to make.
+
+Config completes the NOTIFY_MODE timeline the enum started in PR1: production
+pins the real adapter by NAMING THE STUB (`!== 'anthropic'`, so a future third
+mode is not silently admitted — the KMS/clamd/OCR/SES rule), the key is required
+in EVERY environment whenever the mode selects it, and a spec asserts
+`ConfigError` never echoes the key value. `LLM_REQUEST_TIMEOUT_MS` is
+load-bearing rather than hygienic: a turn holds a pooled connection and the
+conversation's row lock across every provider hop, and the SDK retries twice by
+default, so worst-case wall clock is roughly the deadline times the attempt
+count — sized against the transaction, not against one hop.
+
+**What PR2 does not prove, stated rather than implied.** No Anthropic
+credentials exist in this project, so the live adapter has never made a real
+call: its entire spec runs against a fake transport (the Plaid live-client
+precedent), the local stack runs the stub, and the production rehearsal proves
+that the pin refuses to boot without a key — not that a real turn works. The
+first genuine provider call is a deployment event, not a test result.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
