@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { pctToSql } from './money';
+import { pctToSql } from '@estate/money';
 import type { Queryable } from './db';
 
 /**

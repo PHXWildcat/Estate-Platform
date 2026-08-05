@@ -45,7 +45,18 @@ export interface ToolContext {
  */
 export type ToolOutcome =
   | { readonly outcome: 'ok'; readonly data: unknown }
-  | { readonly outcome: 'denied_no_consent' }
+  | {
+      readonly outcome: 'denied_no_consent';
+      /**
+       * Which required scopes were not granted. Safe to put in a prompt and in
+       * a response: these are compile-time constants from the closed
+       * `CONSENT_SCOPES` vocabulary, never user or model text. Naming them is
+       * what lets the assistant say "turn on document access" instead of the
+       * unactionable "something was denied" — a refusal the user cannot act on
+       * teaches them the feature is broken rather than gated.
+       */
+      readonly missing: readonly ConsentScope[];
+    }
   | { readonly outcome: 'error'; readonly reason: string };
 
 export interface AssistantTool {
@@ -54,11 +65,20 @@ export interface AssistantTool {
   /** Shown to the model. Describes what it returns and when to reach for it. */
   readonly description: string;
   /**
-   * The consent scope this tool requires. Declaring it is mandatory — there is
-   * no unscoped tool — and `registry.spec.ts` proves every registered tool
-   * carries one, so a tool cannot ship with its gate forgotten.
+   * The consent scopes this tool requires — ALL of them, not any of them.
+   * Declaring at least one is mandatory (there is no unscoped tool) and
+   * `tool-registry.spec.ts` proves every registered tool carries a non-empty
+   * set, so a tool cannot ship with its gate forgotten.
+   *
+   * A SET rather than a single scope because M10 PR3's analysers read across
+   * domains: missing-document detection needs the document inventory AND the
+   * profile facts that decide which instruments are expected. Requiring the
+   * union is strictly narrower than the alternative of minting one coarse
+   * `assistant.analysis` grant that would imply asset, document and profile
+   * reads together — and it keeps every existing tool's gate exactly where it
+   * was, as a one-element set.
    */
-  readonly scope: ConsentScope;
+  readonly scopes: readonly ConsentScope[];
   /** Argument declaration. Must not name a subject — see `assertSubjectFree`. */
   readonly input: z.ZodObject<z.ZodRawShape>;
   execute(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome>;
@@ -183,6 +203,38 @@ function isSubjectWord(word: string): boolean {
   return word.endsWith('id') && SUBJECT_WORDS.has(word.slice(0, -2));
 }
 
+/**
+ * Refuse a tool that declares no consent scope.
+ *
+ * An empty set would make `permits`-for-every-scope vacuously true, so the tool
+ * would run for a user who has granted nothing — a gate that reads as present
+ * and is not, which is the vacuous-check failure this codebase has now found
+ * three times (the M4 legal-hold zero-callers, the M6 reset teardown, PR1's own
+ * Cedar PEP). Boot-time, like every other tool-contract rule here.
+ */
+export function assertScoped(tool: AssistantTool): void {
+  if (tool.scopes.length === 0) {
+    throw new ToolContractError(
+      `tool "${tool.name}" declares no consent scope: every retrieval is gated, and an empty set gates nothing`,
+    );
+  }
+}
+
+/**
+ * The scope set as ONE audit-safe token: sorted, de-duplicated, joined with
+ * ':'. `assistant_tool_calls.scope` is a single TEXT column and audit detail
+ * values must match SAFE_TOKEN_PATTERN (`[A-Za-z0-9_.:-]{1,128}`), so a
+ * comma-joined list is not expressible and an array column would mean
+ * backfilling an append-only table whose UPDATE is revoked.
+ *
+ * Sorted so the same set always produces the same token — evidence that changes
+ * spelling with declaration order is evidence somebody has to normalize before
+ * they can count it.
+ */
+export function scopeToken(scopes: readonly ConsentScope[]): string {
+  return [...new Set(scopes)].sort().join(':');
+}
+
 export function assertSubjectFree(tool: AssistantTool): void {
   for (const param of Object.keys(tool.input.shape)) {
     const offending = identifierWords(param).find(isSubjectWord);
@@ -207,6 +259,7 @@ export class ToolRegistry {
     const byName = new Map<string, AssistantTool>();
     for (const tool of tools) {
       assertSubjectFree(tool);
+      assertScoped(tool);
       if (byName.has(tool.name)) {
         throw new ToolContractError(`duplicate tool name "${tool.name}"`);
       }

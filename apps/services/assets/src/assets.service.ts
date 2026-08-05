@@ -17,7 +17,7 @@ import { Db, isUniqueViolation, type Queryable } from './db';
 import { EventsService } from './events.service';
 import { FieldCipher } from './field-cipher';
 import { LedgerRepo, type LedgerRow } from './ledger.repo';
-import { centsToMoney, moneyToCents, ownedShareCents, sqlToPct } from './money';
+import { centsToMoney, moneyToCents, ownedShareCents, sqlToPct } from '@estate/money';
 import { applyAssetEvent, shareSum, type AssetState, type EncryptedField } from './projection';
 import type {
   ChangeOwnershipInput,

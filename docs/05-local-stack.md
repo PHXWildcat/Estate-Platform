@@ -127,6 +127,16 @@ by weakening the guard:
   could send retrieved estate content off the machine.
 - **Document generation works, but proves nothing about legal sign-off.** See
   the limits section.
+- **Estate-tax analysis works in development, and proves nothing about the tax
+  table (M10 PR3).** The reference figures carry an `unreviewed-exemplar`
+  sign-off block, and the analyser refuses (`503 reference_unreviewed`) wherever
+  `NODE_ENV=production`. That refusal is NOT exercised by this stack: the
+  assistant container is absent from the production profile entirely, so the
+  gate is proven by unit tests rather than over the wire here. What the stack
+  does prove is the other side — a green estate-tax estimate in development,
+  which is **not** evidence that a tax professional has checked a single figure
+  in it. The other three analysers condition only on the user's own account and
+  carry no such gate.
 
 ---
 

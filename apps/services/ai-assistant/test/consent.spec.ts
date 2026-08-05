@@ -1,6 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CONSENT_SCOPES, isConsentScope, permits, type ConsentScope } from '../src/consent';
+import {
+  CONSENT_SCOPES,
+  isConsentScope,
+  missingScopes,
+  permits,
+  type ConsentScope,
+} from '../src/consent';
+
+/** A grant set, as `ConsentsRepo.grantedScopes` returns one. */
+const all = (...scopes: ConsentScope[]): ReadonlySet<ConsentScope> => new Set(scopes);
 
 describe('consent scopes', () => {
   it('rejects a value that is not a scope', () => {
@@ -26,8 +35,6 @@ describe('consent scopes', () => {
 });
 
 describe('permits — deny by default', () => {
-  const all = (...scopes: ConsentScope[]): ReadonlySet<ConsentScope> => new Set(scopes);
-
   it('denies every scope to a user who has granted nothing', () => {
     for (const scope of CONSENT_SCOPES) {
       expect(permits(all(), scope)).toBe(false);
@@ -55,5 +62,48 @@ describe('permits — deny by default', () => {
   it('treats the master switch as sufficient only for itself', () => {
     expect(permits(all('assistant.enabled'), 'assistant.enabled')).toBe(true);
     expect(permits(all('assistant.enabled'), 'assistant.profile')).toBe(false);
+  });
+});
+
+describe("missingScopes — all of a tool's scopes, never any", () => {
+  it('is empty only when every required scope AND the master switch are granted', () => {
+    const granted = all('assistant.enabled', 'assistant.assets', 'assistant.profile');
+    expect(missingScopes(granted, ['assistant.assets', 'assistant.profile'])).toEqual([]);
+  });
+
+  it('names every scope that is missing, so a refusal is actionable', () => {
+    // A user told "something was denied" learns the feature is broken; a user
+    // told which switch to turn on learns it is gated.
+    const granted = all('assistant.enabled', 'assistant.assets');
+    expect(missingScopes(granted, ['assistant.assets', 'assistant.documents.metadata'])).toEqual([
+      'assistant.documents.metadata',
+    ]);
+  });
+
+  it('reports the master switch in its own right', () => {
+    // Not collapsed into every scope: the capability grants may all be present,
+    // and telling the user to re-grant them would send them somewhere useless.
+    expect(missingScopes(all('assistant.assets'), ['assistant.assets'])).toEqual([
+      'assistant.enabled',
+    ]);
+  });
+
+  it('refuses a multi-scope analyser holding only one of its scopes', () => {
+    // The rule that makes an analyser safe: a partial run would answer "no
+    // conflicts" from data nobody agreed to share.
+    const granted = all('assistant.enabled', 'assistant.assets');
+    expect(
+      missingScopes(granted, [
+        'assistant.assets',
+        'assistant.documents.metadata',
+        'assistant.profile',
+      ]),
+    ).toEqual(['assistant.documents.metadata', 'assistant.profile']);
+  });
+
+  it('requires the master switch even for an empty requirement list', () => {
+    // Defence in depth behind `assertScoped`: a tool that declared no scope
+    // would still not run for a user who has the assistant switched off.
+    expect(missingScopes(all(), [])).toEqual(['assistant.enabled']);
   });
 });

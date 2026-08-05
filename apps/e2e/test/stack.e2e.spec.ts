@@ -49,6 +49,10 @@ const ASSETS = process.env['STACK_ASSETS_URL'] ?? 'http://localhost:3003';
 const DOCUMENTS = process.env['STACK_DOCUMENTS_URL'] ?? 'http://localhost:3005';
 const VAULT = process.env['STACK_VAULT_URL'] ?? 'http://localhost:3006';
 const SETTLEMENT = process.env['STACK_SETTLEMENT_URL'] ?? 'http://localhost:3007';
+// M10: the AI assistant runs in the DEVELOPMENT profile only — production pins
+// LLM_MODE=anthropic and no provider credential exists in this project, so the
+// container is absent there (apps/stack/src/service-env.ts).
+const ASSISTANT = process.env['STACK_ASSISTANT_URL'] ?? 'http://localhost:3009';
 const AUDIT_DB =
   process.env['STACK_AUDIT_DB_URL'] ?? 'postgres://estate:estate_dev@localhost:5438/audit';
 const CORE_DB =
@@ -621,6 +625,78 @@ describeIfStack('the running stack', () => {
       ).toBe(200);
     });
 
+    it('computes an estate analysis over the live services, gated by the master switch (M10 PR3)', async () => {
+      // The analysers are deterministic code, not a model, so this asserts real
+      // arithmetic over the real ledger — and it runs with LLM_MODE=stub, which
+      // is the point: nothing on this path reaches a model provider.
+
+      // Deny by default: consent is the PRESENCE of an unrevoked row, so a user
+      // who has never answered is refused exactly like one who revoked.
+      expect(
+        (await api(ASSISTANT, 'GET', '/v1/analysis/funding', { token: owner.token })).status,
+      ).toBe(403);
+
+      // Granting is step-up gated (widening third-party egress is export-class,
+      // docs/01 §5). The session was elevated earlier in this journey; the
+      // assistant sees that through introspection, so POLL for the cache TTL
+      // rather than assuming it is immediate — the same documented propagation
+      // delay the beneficiary designation above waits on.
+      await pollUntil(
+        'step-up to propagate to the assistant',
+        async () => {
+          const attempt = await api(ASSISTANT, 'PUT', '/v1/consents/assistant.enabled', {
+            token: owner.token,
+          });
+          if (attempt.status === 200 || attempt.status === 204) {
+            return true;
+          }
+          if (attempt.status === 403) {
+            return null;
+          }
+          throw new Error(
+            `consent grant failed: ${attempt.status} ${JSON.stringify(attempt.body)}`,
+          );
+        },
+        45_000,
+      );
+
+      const funding = expectStatus(
+        await api(ASSISTANT, 'GET', '/v1/analysis/funding', { token: owner.token }),
+        200,
+        'funding analysis',
+      ) as { status: string; findings: { code: string }[]; disclaimer: string };
+
+      // This owner has assets and no trust on file, so the analyser must say
+      // that funding is not the gap rather than manufacturing one.
+      expect(funding.status).toBe('ok');
+      expect(funding.findings.map((f) => f.code)).toContain('no_trust_on_file');
+      // docs/01 §2.8: education/analysis only, watermarked as non-legal-advice.
+      expect(funding.disclaimer).toMatch(/not legal or tax advice/i);
+
+      // The reference-data gate is environment-scoped, and this stack is not
+      // production, so the tax analyser RUNS here — docs/05 says plainly that
+      // a green analyser in the stack is not evidence of a reviewed tax table.
+      const tax = expectStatus(
+        await api(ASSISTANT, 'GET', '/v1/analysis/estate-tax', { token: owner.token }),
+        200,
+        'estate tax analysis',
+      ) as { status: string; summary: { grossEstate: string } };
+      expect(tax.status).toBe('ok');
+      // Money crosses the wire as a decimal STRING, end to end.
+      expect(tax.summary.grossEstate).toMatch(/^\d+\.\d{2}$/);
+
+      // Revoking is NOT step-up gated (the protective action must never be
+      // harder than the permissive one), and it switches the routes off again.
+      expectStatus(
+        await api(ASSISTANT, 'DELETE', '/v1/consents/assistant.enabled', { token: owner.token }),
+        200,
+        'revoke consent',
+      );
+      expect(
+        (await api(ASSISTANT, 'GET', '/v1/analysis/funding', { token: owner.token })).status,
+      ).toBe(403);
+    });
+
     it('assembled every event into a VERIFIED hash chain across the real broker', async () => {
       const db = new Client({ connectionString: AUDIT_DB });
       await db.connect();
@@ -639,6 +715,9 @@ describeIfStack('the running stack', () => {
           // M9 PR2: settlement drove documents' legal hold inside the
           // review-approve transaction; documents audited it as the service.
           'document.legal_hold.set',
+          // M10 PR3: an analysis run with no conversation and no model — the
+          // audit event is the whole record that it happened.
+          'assistant.analysis.completed',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(

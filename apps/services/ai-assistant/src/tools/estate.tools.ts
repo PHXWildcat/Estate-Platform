@@ -58,7 +58,7 @@ function getEstateSummary(assets: AssetsClient): AssistantTool {
       'how many assets are recorded, how many carry a valuation, and how much ' +
       'sits in trust. Monetary values are decimal strings. Takes no arguments — ' +
       'it always reports on the signed-in user.',
-    scope: 'assistant.assets',
+    scopes: ['assistant.assets'],
     input: NoArgs,
     async execute(ctx: ToolContext): Promise<ToolOutcome> {
       const view = await assets.netWorth(ctx.bearer);
@@ -75,7 +75,7 @@ function listAssets(assets: AssetsClient): AssistantTool {
       "The signed-in user's assets: category, title, estimated value (a decimal " +
       'string, or null when unvalued), the date and ownership percentage on ' +
       'record, and whether the asset is held in trust. Takes no arguments.',
-    scope: 'assistant.assets',
+    scopes: ['assistant.assets'],
     input: NoArgs,
     async execute(ctx: ToolContext): Promise<ToolOutcome> {
       const view = await assets.listAssets(ctx.bearer);
@@ -108,7 +108,7 @@ function getAssetBeneficiaries(assets: AssetsClient): AssistantTool {
       'id (from list_assets). Returns contact ids, designation types and share ' +
       'percentages — never names — plus whether each designation adds up to a ' +
       'complete 100%.',
-    scope: 'assistant.assets',
+    scopes: ['assistant.assets'],
     input: BeneficiariesArgs,
     async execute(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> {
       // Re-parsing is how the typed argument is obtained without a cast, and it

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { AssetState } from './projection';
-import { pctToSql } from './money';
+import { pctToSql } from '@estate/money';
 import type { Queryable } from './db';
 
 /**

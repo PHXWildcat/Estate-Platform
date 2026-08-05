@@ -9,10 +9,15 @@
 //
 // Functions still lags because main.ts, migrate-cli.ts, the three HTTP read
 // clients and the live-transport half of the gateway port are exercised end to
-// end rather than from this package — the settlement precedent. The clients get
-// their own specs, and the stack e2e covers the boot path, in PR2 when the
-// service is wired into the stack.
+// end rather than from this package — the settlement precedent.
+//
+// RATCHETED at M10 PR3 (the analysers), from a run WITHOUT PG_TEST_URL:
+// 82.21/78.78/72.99/81.58 locally, and CI measures higher because the Postgres
+// integration suite covers more of the same source. So the floor below is a
+// true lower bound in both configurations — set from a measured run of THIS
+// suite, which is the M9 PR2 lesson about a floor invented from a number CI
+// never produced.
 // Ratchets toward 95/90; never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 71, branches: 69, functions: 65, lines: 71 } },
+  coverageThreshold: { global: { statements: 81, branches: 78, functions: 72, lines: 81 } },
 });

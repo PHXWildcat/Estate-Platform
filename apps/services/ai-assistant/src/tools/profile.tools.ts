@@ -39,7 +39,7 @@ function getProfileFacts(profile: ProfileClient): AssistantTool {
       'residence, marital status, and how many minor children are on record. ' +
       'Deliberately returns no names, birth dates, addresses or identifiers of ' +
       'any kind — ask the user if a name is needed. Takes no arguments.',
-    scope: 'assistant.profile',
+    scopes: ['assistant.profile'],
     input: NoArgs,
     async execute(ctx: ToolContext): Promise<ToolOutcome> {
       // Two reads, and BOTH must succeed. A partial answer here is worse than

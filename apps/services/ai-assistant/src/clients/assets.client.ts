@@ -22,10 +22,18 @@ import { defaultFetch, pathSegment, readJson, type FetchLike } from './http';
  * One asset, narrowed to what a planning conversation actually reasons about.
  *
  * zod strips unknown keys, so this schema IS the narrowing: `costBasis`,
- * `location`, `notes` and `fundingStatus` are on the wire and deliberately do
- * not survive it. Those are free-text fields a user wrote for themselves; a
- * coverage or beneficiary-gap answer needs none of them, and the smallest
- * faithful shape is the one that cannot surprise us later.
+ * `location` and `notes` are on the wire and deliberately do not survive it.
+ * Those are free-text fields a user wrote for themselves; a coverage or
+ * beneficiary-gap answer needs none of them, and the smallest faithful shape is
+ * the one that cannot surprise us later.
+ *
+ * `fundingStatus` WAS in that list and is now kept (M10 PR3). This file's own
+ * rule is that widening it is a reviewed edit rather than a quiet one, so:
+ * funding recommendations are half of docs/00 feature 6, the field is a closed
+ * four-value enum the assets service owns (`unfunded | in_progress | funded |
+ * na`), it identifies nobody, and without it the funding analyser would have to
+ * INFER funding from `inTrust` alone — which cannot distinguish "not started"
+ * from "retitling is under way" and would nag a user who is mid-transfer.
  *
  * `title` and `category` ARE user-supplied strings and reach the model as data,
  * never as instructions — the same rule the document-content view states at
@@ -41,6 +49,21 @@ const AssetViewSchema = z.object({
   valuationAsOf: z.string().nullable(),
   ownershipPct: z.number(),
   inTrust: z.boolean(),
+  /**
+   * Trust-funding progress, or null when the owner has never said.
+   *
+   * A NULLISH STRING, not an enum, and not a required key. Both looseness are
+   * deliberate: this is a peer service's vocabulary (`unfunded | in_progress |
+   * funded | na` today), and `readJson` fails a read CLOSED on schema drift, so
+   * a stricter shape here would turn "assets added a fifth status" or "assets
+   * omitted the field" into "you have no assets" — a confidently empty estate,
+   * which is the one answer this client exists to prevent. An unfamiliar value
+   * is simply a status the analyser does not act on.
+   */
+  fundingStatus: z
+    .string()
+    .nullish()
+    .transform((value) => value ?? null),
 });
 export type AssetView = z.infer<typeof AssetViewSchema>;
 

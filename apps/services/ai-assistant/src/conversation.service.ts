@@ -508,10 +508,18 @@ export class ConversationService {
   private quoteResult(executed: ExecutedToolCall, tokenizer: Tokenizer): LlmToolResult {
     const { toolName, outcome } = executed;
     if (outcome.outcome === 'denied_no_consent') {
+      // The scope names ARE quoted, unlike the `error` reason below, and the
+      // difference is where the string comes from: these are compile-time
+      // constants from the closed CONSENT_SCOPES vocabulary, so there is no
+      // path by which retrieved content or a provider response reaches this
+      // sentence. Naming them makes the refusal actionable — the assistant can
+      // tell the user which switch to turn on.
       return {
         tool: toolName,
         outcome: 'denied_no_consent',
-        text: 'Not run: the user has not granted the consent scope this tool requires.',
+        text:
+          'Not run: the user has not granted every consent scope this tool requires. ' +
+          `Missing: ${outcome.missing.join(', ')}.`,
       };
     }
     if (outcome.outcome === 'error') {

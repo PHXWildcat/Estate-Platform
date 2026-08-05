@@ -11,6 +11,7 @@ import type {
   ProfileClient,
   ProfileFactsView,
 } from '../src/clients';
+import { AnalysisService } from '../src/analysis.service';
 import { buildToolRegistry, type ToolContext, type ToolOutcome } from '../src/tools';
 import type { ToolRegistry } from '../src/tools';
 
@@ -69,7 +70,13 @@ function harness(over: Partial<Answers> = {}): Harness {
     facts: (bearer: string) => seen(bearer, over.facts ?? null),
     family: (bearer: string) => seen(bearer, over.family ?? null),
   } as unknown as ProfileClient;
-  return { registry: buildToolRegistry({ assets, documents, profile }), bearers, args };
+  // The analysers read through the same three doubles, so a tool-surface test
+  // exercises them without a second set of fakes. 'test' is the environment the
+  // reference-data gate treats as usable (analysis/reference/review.ts).
+  const analysis = new AnalysisService(assets, documents, profile, {
+    nodeEnv: 'test',
+  } as never);
+  return { registry: buildToolRegistry({ assets, documents, profile, analysis }), bearers, args };
 }
 
 /** Invoke one tool directly, the way the executor does once its gates pass. */
@@ -97,7 +104,7 @@ const VALID_INPUT: Record<string, Record<string, unknown>> = {
 };
 
 describe('the tool surface', () => {
-  it('is exactly these seven read-only tools', () => {
+  it('is exactly these eleven read-only tools', () => {
     // A PINNED list, deliberately hand-maintained. Every tool widens what may
     // be shipped to a third-party model provider, so a new one should have to
     // be written down twice — once where it is built and once here — rather
@@ -114,6 +121,12 @@ describe('the tool surface', () => {
       'search_documents',
       'get_document_text',
       'get_profile_facts',
+      // The deterministic analysers (M10 PR3). They compute over what the seven
+      // above return and reach no peer the others cannot.
+      'analyze_funding',
+      'analyze_missing_documents',
+      'analyze_beneficiary_conflicts',
+      'estimate_estate_tax',
     ]);
   });
 
@@ -122,8 +135,12 @@ describe('the tool surface', () => {
     // cheap fence around a load-bearing claim: a successful prompt injection
     // is survivable because it has no sink to reach, and `send_...` appearing
     // in this list is exactly what losing that would look like.
+    // `analyze_`/`estimate_` joined the verb list in M10 PR3: an analyser reads
+    // the same peers the retrievals do and then does arithmetic, so it is a read
+    // with a computation on the end. What the fence is really watching for is a
+    // `send_`, `create_`, `update_` or `fetch_` — a SINK — appearing here.
     for (const tool of harness().registry.list()) {
-      expect(tool.name).toMatch(/^(get|list|search)_/);
+      expect(tool.name).toMatch(/^(get|list|search|analyze|estimate)_/);
     }
   });
 
@@ -133,10 +150,14 @@ describe('the tool surface', () => {
     // against (permits), so a tool declaring it would run for anyone who has
     // simply turned the assistant on.
     const registry = harness().registry;
-    expect(registry.list()).toHaveLength(7);
+    expect(registry.list()).toHaveLength(11);
     for (const tool of registry.list()) {
-      expect(CONSENT_SCOPES).toContain(tool.scope);
-      expect(tool.scope).not.toBe('assistant.enabled');
+      // A SET since M10 PR3, and every member must be a real capability scope.
+      expect(tool.scopes.length).toBeGreaterThan(0);
+      for (const scope of tool.scopes) {
+        expect(CONSENT_SCOPES).toContain(scope);
+        expect(scope).not.toBe('assistant.enabled');
+      }
     }
   });
 
@@ -391,7 +412,7 @@ describe('consent scope coverage', () => {
     const covered = new Set<ConsentScope>(
       harness()
         .registry.list()
-        .map((tool) => tool.scope),
+        .flatMap((tool) => [...tool.scopes]),
     );
     for (const scope of CONSENT_SCOPES) {
       if (scope === 'assistant.enabled') {

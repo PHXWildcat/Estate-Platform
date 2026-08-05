@@ -190,6 +190,27 @@ const TOOL_FIELD_RULES: ReadonlyMap<string, readonly FieldRule[]> = new Map<
   // (tools/profile.tools.ts); the DORMANT rule covers a future edit that
   // returns members instead.
   ['get_profile_facts', [{ path: ['members', 'name'], kind: 'PERSON' }]],
+
+  // ---------------------------------------------------------------------
+  // The deterministic analysers (M10 PR3).
+  //
+  // An analyser result is codes, severities, counts and money strings — with
+  // ONE user-authored field: `subject.label`, the title of the asset or
+  // document a finding is about. So every analyser gets the same rule, keyed on
+  // the path the findings actually use, and the finding CODES travel untouched
+  // because a code is the whole point of the design (the model explains a
+  // token; it does not repeat a title).
+  //
+  // The kind differs per analyser because the subject differs: funding and
+  // beneficiary findings are about assets, missing-document findings are about
+  // documents. Estate-tax findings are estate-level and carry a null label, so
+  // its rule is DORMANT in the same sense as the PERSON rules — declared so a
+  // later per-asset tax finding cannot ship untokenized.
+  // ---------------------------------------------------------------------
+  ['analyze_funding', [{ path: ['findings', 'subject', 'label'], kind: 'ASSET' }]],
+  ['analyze_beneficiary_conflicts', [{ path: ['findings', 'subject', 'label'], kind: 'ASSET' }]],
+  ['analyze_missing_documents', [{ path: ['findings', 'subject', 'label'], kind: 'DOCUMENT' }]],
+  ['estimate_estate_tax', [{ path: ['findings', 'subject', 'label'], kind: 'ASSET' }]],
 ]);
 
 export class TokenizerCoverageError extends Error {

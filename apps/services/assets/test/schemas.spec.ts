@@ -1,6 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
 import { deserializePayload, serializePayload } from '../src/asset-events';
-import { centsToMoney, moneyToCents, ownedShareCents, pctToSql, sqlToPct } from '../src/money';
 import {
   ChangeOwnershipSchema,
   CreateAssetSchema,
@@ -100,22 +99,6 @@ describe('event payload round-trip', () => {
   });
 });
 
-describe('money math', () => {
-  it('round-trips decimal strings through cents', () => {
-    expect(moneyToCents('0')).toBe(0n);
-    expect(moneyToCents('1234.5')).toBe(123450n);
-    expect(centsToMoney(123450n)).toBe('1234.50');
-  });
-
-  it('computes owned shares exactly', () => {
-    expect(ownedShareCents(moneyToCents('100.00'), 50)).toBe(5000n);
-    expect(ownedShareCents(moneyToCents('0.01'), 33.333)).toBe(0n); // rounds to nearest cent
-    expect(ownedShareCents(moneyToCents('1000000000000.00'), 33.333)).toBe(33333000000000n);
-  });
-
-  it('normalizes percents for NUMERIC(6,3) and back', () => {
-    expect(pctToSql(100)).toBe('100.000');
-    expect(pctToSql(33.333)).toBe('33.333');
-    expect(sqlToPct('33.333')).toBe(33.333);
-  });
-});
+// The money-math cases moved WITH the code to `packages/money` in M10 PR3 —
+// tests follow their subject, or the package ships with the assertions living
+// in a service that merely happens to import it.
