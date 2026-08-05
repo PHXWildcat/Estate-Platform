@@ -47,6 +47,7 @@ import { HttpErrorFilter } from './http-error.filter';
 import { AnthropicLlmGateway } from './anthropic-gateway';
 import { StubLlmGateway, type LlmGateway } from './llm-gateway';
 import { MessagesRepo } from './messages.repo';
+import { ToolCallsRepo } from './tool-calls.repo';
 import { assertTokenizerCoversTools } from './privacy/tokenizer';
 import { ToolExecutor } from './tool-executor';
 import { buildToolRegistry, ToolRegistry } from './tools';
@@ -214,6 +215,8 @@ function kmsProviderFor(config: AiAssistantConfig): KmsKeyProvider {
     ConversationsRepo,
     MessagesRepo,
     ConsentsRepo,
+    // Read-only, and its one reader is the turn's tokenizer reseed (M10 review).
+    ToolCallsRepo,
     // The peer clients, constructed once and shared by the tools and the
     // analysers. They hold NO credential: every method takes the caller's own
     // bearer per invocation, so a shared instance carries no authority between

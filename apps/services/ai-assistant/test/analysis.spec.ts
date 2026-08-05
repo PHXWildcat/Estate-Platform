@@ -336,7 +336,9 @@ describe('analyseBeneficiaryConflicts', () => {
     );
     const house = analyseBeneficiaryConflicts([asset({ category: 'real_estate' })], new Map());
     expect(codes(insurance)).toContain('no_beneficiary_designated');
-    expect(codes(house)).toEqual(['designations_consistent']);
+    // A house with no designation is not a finding — and the estate-level
+    // answer is "none on file", never "they are consistent" (M10 review).
+    expect(codes(house)).toEqual(['no_designations_on_file']);
   });
 
   it('never reports "consistent" from a partial examination', () => {
@@ -348,9 +350,31 @@ describe('analyseBeneficiaryConflicts', () => {
     expect(codes(result)).not.toContain('designations_consistent');
   });
 
-  it('says designations are consistent when they are', () => {
+  it('says designations are consistent only when some were actually read', () => {
     const result = analyseBeneficiaryConflicts([asset()], new Map([[ASSET_A, designations()]]));
     expect(codes(result)).toEqual(['designations_consistent']);
+    expect(finding(result, 'designations_consistent').detail).toMatchObject({
+      assetsWithDesignations: 1,
+    });
+  });
+
+  it('never claims consistency over an estate where nothing carries a designation', () => {
+    // M10 SECURITY REVIEW. A house, a current account and a car carry no
+    // designations — the normal state for those categories — so every asset
+    // took the empty branch and `conflicts` stayed 0. The old code then said
+    // "every asset we examined adds up to 100%", which is affirmative
+    // reassurance about a check that examined nothing, on the one card a user
+    // acts on by doing nothing.
+    const result = analyseBeneficiaryConflicts(
+      [
+        asset({ category: 'real_estate' }),
+        asset({ assetId: ASSET_B, category: 'cash' }),
+        asset({ assetId: 'a55e0000-0000-4000-8000-0000000000a3', category: 'vehicle' }),
+      ],
+      new Map(),
+    );
+    expect(codes(result)).toEqual(['no_designations_on_file']);
+    expect(codes(result)).not.toContain('designations_consistent');
   });
 });
 

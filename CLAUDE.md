@@ -1185,3 +1185,50 @@ deviating from them, stop and propose the change with rationale — do not silen
   would have silently disappeared from the page — with every unit test green.
   Fixed by including the index, pinned by a test that renders exactly that pair.
   The same pass caught a layout inconsistency no assertion would have.
+- 2026-08-05 — M10 security review (six parallel discovery lenses over the
+  merged range `26a4813..51bc81e` + TWO adversarial verifiers per candidate on
+  different angles — reachability in a real production config, and
+  is-it-already-a-documented-decision — both defaulting to refuted; 11 raw, 11
+  unique, 4 confirmed, 7 refuted). No zone boundary weakened, no production
+  fail-fast relaxed, no credential reaching a service the graph forbids. The
+  M6–M9 pattern held a FIFTH time: every confirmed finding sits in machinery M10
+  introduced and three of four falsify a claim the milestone made about itself.
+  TWO LENSES DISAGREED ABOUT ONE DEFECT and the disagreement was the useful
+  part — one confirmed "the turn path consults no consent", the other refuted it
+  because NOTHING CALLS THE TURN ROUTE (no chat UI, no BFF resolver). Both were
+  right; reachability is "when chat ships", not "today". (1) HISTORY REACHED THE
+  PROVIDER UNTOKENIZED on the first call of every turn: the placeholder map is
+  filled only by the turn's own tool results, which arrive after the first
+  `complete()`, so the history pass ran against an empty map — and because
+  replies are stored detokenized BY DESIGN, turn 1 protected a title inside a
+  structured result and turn 2 shipped it in prose; a turn calling no tool
+  shipped the whole transcript raw. Every existing tokenizer test seeded an
+  EMPTY conversation, so all of them passed while the documented cross-turn
+  property was false. Fixed by re-deriving the map from the conversation's own
+  recorded retrievals before the first provider call (same AAD, same rules, no
+  second copy of the rule table); an unopenable row is skipped, because a
+  crypto-shredded result must not lock a user out of their own conversation.
+  (2) The `assistant.enabled` MASTER SWITCH DID NOT GATE THE TURN — the only
+  consent read was per-tool, so a user with no consent row still drove a
+  provider call with their text and the replayed transcript; the gate now sits
+  in `takeTurn` AFTER the ownership check, so consent state cannot become an
+  oracle about someone else's account. (3) "Designations look consistent" was
+  shown to an estate where NOTHING carries a designation — affirmative
+  reassurance from a check that examined nothing, on the one card a user acts on
+  by doing nothing; split into `designations_consistent` and
+  `no_designations_on_file` because they are two different facts. (4) docs/03
+  §6d credited PR4 with a restricted-markdown rendering constraint THAT DOES NOT
+  EXIST (the M4 zero-callers shape, in prose): the risk is now stated OPEN and
+  the constraint named as a requirement owed by whoever ships chat.
+- 2026-08-05 — Two non-vulnerabilities worth the same fix discipline, both from
+  the M10 sweep. A test that "proved" ConfigError never echoes the provider key
+  forced its failure by setting that key to '' — overwriting the sentinel it
+  then asserted was absent, so the assertion was VACUOUS; it now triggers the
+  error with a different missing variable and leaves a real key in the
+  environment. And `analysis/beneficiary-conflicts.ts` used a LITERAL NUL BYTE
+  as a composite-key separator, which makes git classify the file as BINARY —
+  so that analyser shipped through PR #26 with no reviewable diff at all, only
+  "binary file not shown". Keyed by nested maps now, so no separator exists to
+  choose badly. The lesson generalizes: a control character in source silently
+  disables human review of that file, and nothing in the pipeline complains.
+

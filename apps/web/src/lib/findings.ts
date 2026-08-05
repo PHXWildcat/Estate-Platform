@@ -47,6 +47,7 @@ export type FindingCode =
   | 'designation_overrides_trust'
   | 'no_beneficiary_designated'
   | 'designations_consistent'
+  | 'no_designations_on_file'
   | 'assets_not_examined'
   // estate tax
   | 'federal_exposure'
@@ -198,9 +199,24 @@ const COPY: Record<FindingCode, (finding: FindingInfo) => FindingCopy> = {
     title: `${subjectName(f)} names no beneficiary`,
     body: 'Policies and annuities pass by designation. With none recorded, the proceeds fall back to your estate and into probate.',
   }),
-  designations_consistent: () => ({
+  designations_consistent: (f) => ({
     title: 'Beneficiary designations look consistent',
-    body: 'Every asset we examined adds up to 100% and none conflicts with your trust.',
+    body: `Every asset that names beneficiaries adds up to 100% and none conflicts with your trust (${plural(
+      count(f.detail, 'assetsWithDesignations'),
+      'asset',
+      'assets',
+    )} checked).`,
+  }),
+  // Distinct from the line above, because it is a different fact: there was
+  // nothing to check (M10 security review). Saying "consistent" here would be
+  // reassurance about a check that examined nothing.
+  no_designations_on_file: (f) => ({
+    title: 'No beneficiary designations on file',
+    body: `None of your ${plural(
+      count(f.detail, 'assetsExamined'),
+      'asset',
+      'assets',
+    )} names a beneficiary directly. That is normal for property and everyday accounts — they pass under your will or trust instead.`,
   }),
   assets_not_examined: (f) => ({
     title: 'Not every asset was examined',

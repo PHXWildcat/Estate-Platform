@@ -8,6 +8,9 @@ const DEV_BASE: NodeJS.ProcessEnv = {
   KMS_MASTER_KEY_HEX: KMS_HEX,
 };
 
+/** A stand-in provider key, distinctive enough to grep an error message for. */
+const SECRET = 'sk-ant-test-DO-NOT-ECHO-'.padEnd(48, 'x');
+
 const PROD_BASE: NodeJS.ProcessEnv = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgres://estate:estate@db:5432/core',
@@ -20,7 +23,7 @@ const PROD_BASE: NodeJS.ProcessEnv = {
   AWS_KMS_KEY_ID: 'alias/estate-ai-assistant-kek',
   AWS_REGION: 'us-east-1',
   LLM_MODE: 'anthropic',
-  ANTHROPIC_API_KEY: 'k'.repeat(48),
+  ANTHROPIC_API_KEY: SECRET,
 };
 
 describe('loadConfig (dev/test)', () => {
@@ -57,7 +60,7 @@ describe('loadConfig (dev/test)', () => {
     const config = loadConfig({
       ...DEV_BASE,
       LLM_MODE: 'anthropic',
-      ANTHROPIC_API_KEY: 'k'.repeat(48),
+      ANTHROPIC_API_KEY: SECRET,
     });
     expect(config.llm.mode).toBe('anthropic');
     // Fallbacks default ON, and are a switch because re-running a refused turn
@@ -67,7 +70,7 @@ describe('loadConfig (dev/test)', () => {
       loadConfig({
         ...DEV_BASE,
         LLM_MODE: 'anthropic',
-        ANTHROPIC_API_KEY: 'k'.repeat(48),
+        ANTHROPIC_API_KEY: SECRET,
         LLM_FALLBACKS: 'none',
       }).llm,
     ).toMatchObject({ fallbacks: false });
@@ -110,12 +113,26 @@ describe('loadConfig (production)', () => {
 
   it('never echoes the provider key', () => {
     // The key is the one value in this config that is worth stealing.
+    //
+    // THE KEY MUST STILL BE PRESENT WHEN THE ERROR IS RAISED (M10 security
+    // review). This test used to force the failure by setting
+    // ANTHROPIC_API_KEY: '' — which overwrote the 48-character sentinel it then
+    // asserted was absent, so `not.toContain` was trivially true and the
+    // assertion proved nothing. The failure is triggered by a DIFFERENT missing
+    // variable now, leaving a real key in the environment for the error path to
+    // leak if it ever started echoing values.
+    const env: NodeJS.ProcessEnv = { ...PROD_BASE };
+    delete env['KAFKA_BROKERS'];
+    expect(env['ANTHROPIC_API_KEY']).toBe(SECRET);
     try {
-      loadConfig({ ...PROD_BASE, ANTHROPIC_API_KEY: '', LLM_MODE: 'anthropic' });
+      loadConfig(env);
       throw new Error('expected ConfigError');
     } catch (err) {
       expect(err).toBeInstanceOf(ConfigError);
-      expect((err as Error).message).not.toContain('k'.repeat(48));
+      expect((err as Error).message).not.toContain(SECRET);
+      // The issue list is what ConfigError renders; check it too, not just the
+      // assembled message.
+      expect(JSON.stringify((err as ConfigError).issues)).not.toContain(SECRET);
     }
   });
 

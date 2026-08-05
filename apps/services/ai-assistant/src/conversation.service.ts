@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -11,11 +12,13 @@ import {
 // a type-only import is erased, which leaves Nest's `design:paramtypes`
 // metadata undefined for this parameter and the provider unresolvable at boot.
 import { AssistantAuthz, conversationResource } from './authz.service';
+import { missingScopes } from './consent';
+import { ConsentsRepo } from './consents.repo';
 import { ConversationsRepo } from './conversations.repo';
 import { Db, isUniqueViolation, type Queryable } from './db';
 import { LLM_GATEWAY } from './di-tokens';
 import { EventsService, flushPendingAudit, type PendingAudit } from './events.service';
-import { FieldCipher, messageField } from './field-cipher';
+import { FieldCipher, messageField, toolResultField } from './field-cipher';
 import {
   flattenForInspection,
   type LlmGateway,
@@ -25,6 +28,7 @@ import {
   type LlmTurnInput,
 } from './llm-gateway';
 import { MessagesRepo, type MessageRow } from './messages.repo';
+import { ToolCallsRepo } from './tool-calls.repo';
 import { assertEgressClean, EgressRefusedError } from './privacy/egress';
 import { Tokenizer } from './privacy/tokenizer';
 import { frameUntrusted, UNTRUSTED_DATA_INSTRUCTION } from './privacy/framing';
@@ -189,8 +193,10 @@ export class ConversationService {
     private readonly db: Db,
     private readonly conversations: ConversationsRepo,
     private readonly messages: MessagesRepo,
+    private readonly toolCalls: ToolCallsRepo,
     private readonly cipher: FieldCipher,
     private readonly authz: AssistantAuthz,
+    private readonly consents: ConsentsRepo,
     private readonly events: EventsService,
     private readonly registry: ToolRegistry,
     @Inject(LLM_GATEWAY) private readonly gateway: LlmGateway,
@@ -311,6 +317,30 @@ export class ConversationService {
         conversationResource(conversation.id, conversation.user_id),
       );
 
+      /*
+       * THE MASTER SWITCH GATES THE TURN ITSELF (M10 security review).
+       *
+       * Until this check existed the only consent read on the whole path was
+       * per-tool, inside the executor — so a user with no consent row, or one
+       * who had just switched the assistant OFF, could still drive a provider
+       * call: the tools all denied, but the system prompt, this turn's text and
+       * the whole prior transcript still crossed TB5. Three places already
+       * claimed otherwise (consents.controller.ts, analysis.controller.ts's
+       * "a feature that keeps computing after being switched off is not off",
+       * and the consent UI's "nothing about your estate is analysed"), and the
+       * transcript replay made it more than theoretical: a turn after
+       * revocation re-sends estate prose retrieved while consent was live.
+       *
+       * It sits AFTER the ownership check so a stranger's conversation id still
+       * answers the uniform 404 rather than revealing whether that user has the
+       * assistant enabled — consent state must not become an oracle about
+       * someone else's account.
+       */
+      const granted = await this.consents.grantedScopes(userId);
+      if (missingScopes(granted, []).length > 0) {
+        throw new ForbiddenException({ error: 'assistant_disabled' });
+      }
+
       const priorRows = await this.messages.listByConversation(tx, conversationId);
       const history: LlmTurn[] = [];
       for (const row of priorRows) {
@@ -335,8 +365,20 @@ export class ConversationService {
        * The stored transcript keeps REAL text: a user reading their own history
        * must see their own estate, not our placeholders. Tokenization is a
        * property of the provider hop, not of the record.
+       *
+       * SEEDED FROM PRIOR RETRIEVALS BEFORE THE FIRST PROVIDER CALL (M10
+       * security review). The map used to be filled only by this turn's own
+       * tool results, which arrive AFTER the first `complete()` — so the
+       * history pass below ran against an empty map every time, and the whole
+       * prior transcript went to the provider verbatim. Since replies are
+       * stored detokenized by design, those were real titles: turn 1 protected
+       * "Mom's house on Elm St" inside a structured result, and turn 2 shipped
+       * it in prose. Re-deriving the map from the conversation's own recorded
+       * retrievals closes that and makes the documented property true — a title
+       * tokenized in turn 1 keeps its placeholder in turn 5.
        */
       const tokenizer = new Tokenizer();
+      await this.seedTokenizer(tx, userId, conversationId, tokenizer);
 
       const toolResults: LlmToolResult[] = [];
       let answer: string | null = null;
@@ -538,6 +580,64 @@ export class ConversationService {
       outcome: 'ok',
       text: frameUntrusted({ kind: 'tool_result', ref: toolName }, clipped),
     };
+  }
+
+  /**
+   * Re-derive this conversation's placeholder map from the retrievals it has
+   * already recorded (M10 security review).
+   *
+   * The values are read from `assistant_tool_calls`, decrypted under the same
+   * per-user DEK and AAD that sealed them, and pushed back through the ordinary
+   * `tokenizeToolResult` path — the SAME rules, so a field that is tokenized
+   * when it is fetched is tokenized when it is replayed, with no second copy of
+   * the rule table to drift.
+   *
+   * Nothing is returned and nothing is stored: the map lives on the turn's
+   * stack exactly as before. What changes is only that it is no longer empty
+   * when the first provider call renders the history.
+   *
+   * A ROW THAT WILL NOT OPEN IS SKIPPED, not fatal. A tool result whose DEK was
+   * crypto-shredded, or whose ciphertext a TB4 adversary moved between rows, is
+   * evidence of something worth an operator's attention — but the honest
+   * consequence for THIS turn is a placeholder that cannot be re-derived, and
+   * refusing the turn outright would let a single unreadable historical row
+   * lock a user out of their own conversation for good. The decrypt failure is
+   * still recorded by `FieldCrypto`'s own audit path.
+   */
+  private async seedTokenizer(
+    tx: Queryable,
+    userId: string,
+    conversationId: string,
+    tokenizer: Tokenizer,
+  ): Promise<void> {
+    const rows = await this.toolCalls.listResultsByConversation(tx, conversationId);
+    for (const row of rows) {
+      let plaintext: string | null;
+      try {
+        plaintext = await this.cipher.decrypt({
+          ownerUserId: userId,
+          dekId: row.dek_id,
+          field: toolResultField(row.id),
+          ciphertext: row.result_ct,
+          actorId: userId,
+          purpose: 'assistant_tokenizer_reseed',
+        });
+      } catch {
+        continue;
+      }
+      if (plaintext === null) {
+        continue;
+      }
+      let data: unknown;
+      try {
+        data = JSON.parse(plaintext);
+      } catch {
+        continue;
+      }
+      // The return value is discarded on purpose: the point is the SIDE EFFECT
+      // on the tokenizer's map, not a tokenized copy of an old result.
+      tokenizer.tokenizeToolResult(row.tool_name, data);
+    }
   }
 
   /**
