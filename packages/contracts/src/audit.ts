@@ -129,6 +129,21 @@ export const AUDIT_ACTIONS = [
   // outage.
   'vault.emergency.notifications_refused',
   'settlement.notifications_refused',
+  // AI estate assistant service (core cluster; docs/01 §2.8, docs/03 §4 TB5).
+  // The firewall is stricter here than anywhere else: these carry IDs and
+  // enums only, which in THIS service also excludes prompt text, retrieved
+  // estate content, and model output. A refusal is as loudly recorded as a
+  // success — every tool the assistant was denied, and every egress the
+  // privacy assertion caught, is a control firing, not an absence.
+  'assistant.conversation.started',
+  'assistant.conversation.deleted',
+  'assistant.message.sent',
+  'assistant.turn.completed',
+  'assistant.tool.invoked',
+  'assistant.tool.refused',
+  'assistant.consent.granted',
+  'assistant.consent.revoked',
+  'assistant.egress.refused',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

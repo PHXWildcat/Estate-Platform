@@ -5,7 +5,7 @@ import {
   SERVICE_NAMES,
 } from '@estate/auth-guard';
 import { DUMMY_AWS_ACCESS_KEY_ID, DUMMY_AWS_SECRET_ACCESS_KEY } from './generate-env';
-import { NETWORK, SERVICES, type Addressing } from './topology';
+import { envPrefixFor, NETWORK, SERVICES, type Addressing } from './topology';
 
 // Re-exported: both the doctor and the generator read env files, and importing
 // one from the other would make the two a cycle.
@@ -112,7 +112,7 @@ export function diagnose(
   //    minting real DEKs and real charges on whatever profile is in scope.
   //    Before an AWS account existed that path merely failed; now it succeeds.
   const endpoint = get('AWS_ENDPOINT_URL');
-  const usesAws = SERVICES.some((s) => get(`${s.name.toUpperCase()}_KMS_MODE`) === 'aws');
+  const usesAws = SERVICES.some((s) => get(`${envPrefixFor(s.name)}_KMS_MODE`) === 'aws');
   if (usesAws && endpoint.length === 0) {
     findings.push({
       severity: 'error',
@@ -186,7 +186,7 @@ export function diagnose(
   //    be wrong here; a hand edit can. This is the check the graph module says
   //    nothing performs.
   for (const edge of SERVICE_CREDENTIAL_GRAPH) {
-    const calleeVar = `${edge.callee.toUpperCase()}_${edge.envVar}`;
+    const calleeVar = `${envPrefixFor(edge.callee)}_${edge.envVar}`;
     const expected = get(calleeVar);
     if (edge.holders.length === 0) {
       continue;
@@ -200,7 +200,7 @@ export function diagnose(
       continue;
     }
     for (const holder of edge.holders) {
-      const holderVar = `${holder.toUpperCase()}_${edge.envVar}`;
+      const holderVar = `${envPrefixFor(holder)}_${edge.envVar}`;
       const held = get(holderVar);
       if (held !== expected) {
         findings.push({
@@ -221,12 +221,12 @@ export function diagnose(
   //    (rightly) refuses token-shaped identifiers it has not declared.
   for (const service of SERVICE_NAMES) {
     for (const inbound of inboundCredentialsFor(service)) {
-      const inboundValue = get(`${service.toUpperCase()}_${inbound.envVar}`);
+      const inboundValue = get(`${envPrefixFor(service)}_${inbound.envVar}`);
       if (inboundValue.length === 0) {
         continue;
       }
       for (const outbound of outboundCredentialsFor(service)) {
-        if (get(`${service.toUpperCase()}_${outbound.envVar}`) === inboundValue) {
+        if (get(`${envPrefixFor(service)}_${outbound.envVar}`) === inboundValue) {
           findings.push({
             severity: 'error',
             code: 'credential_aliased',
@@ -257,7 +257,7 @@ export function diagnose(
     if (edge.holders.length === 0) {
       continue;
     }
-    const calleeVar = `${edge.callee.toUpperCase()}_${edge.envVar}`;
+    const calleeVar = `${envPrefixFor(edge.callee)}_${edge.envVar}`;
     const value = get(calleeVar);
     if (value.length === 0) {
       continue;
@@ -277,11 +277,11 @@ export function diagnose(
   // 5. Each service needs its cluster. A missing URL is a service that starts
   //    and 500s per request rather than failing at boot.
   for (const service of SERVICES) {
-    if (get(`${service.name.toUpperCase()}_DATABASE_URL`).length === 0) {
+    if (get(`${envPrefixFor(service.name)}_DATABASE_URL`).length === 0) {
       findings.push({
         severity: 'error',
         code: 'database_url_missing',
-        message: `${service.name.toUpperCase()}_DATABASE_URL is unset.`,
+        message: `${envPrefixFor(service.name)}_DATABASE_URL is unset.`,
       });
     }
   }

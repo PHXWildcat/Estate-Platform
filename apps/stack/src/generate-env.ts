@@ -3,6 +3,7 @@ import { SERVICE_CREDENTIAL_GRAPH } from '@estate/auth-guard';
 import { parseEnvFile } from './env-file';
 import {
   databaseUrl,
+  envPrefixFor,
   kmsKeyIdFor,
   networkFor,
   SERVICES,
@@ -155,7 +156,7 @@ export function generateEnv(
 
   for (const service of SERVICES) {
     const entries: Array<readonly [string, string]> = [];
-    const upper = service.name.toUpperCase();
+    const upper = envPrefixFor(service.name);
     entries.push([`${upper}_DATABASE_URL`, databaseUrl(service.cluster, addressing)]);
 
     const keyId = kmsKeyIdFor(service);

