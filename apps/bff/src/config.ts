@@ -18,6 +18,14 @@ const EnvSchema = z
      */
     ASSETS_URL: z.string().url().default('http://localhost:3003'),
     /**
+     * Base URL of the AI assistant service (M10 PR4, the second non-identity
+     * downstream). Same posture as ASSETS_URL, and one more reason for it: the
+     * BFF forwards the caller's own bearer, and the assistant holds no
+     * credential either — so the whole chain from browser to analyser runs on
+     * one session's authority and a wrong value here fails closed.
+     */
+    AI_ASSISTANT_URL: z.string().url().default('http://localhost:3009'),
+    /**
      * Path to the persisted-operations manifest (JSON: sha256 hex → GraphQL
      * document). Optional in dev/test (empty manifest ⇒ arbitrary operations
      * are still allowed there); REQUIRED in production, where only manifest
@@ -42,6 +50,7 @@ export interface BffConfig {
   readonly port: number;
   readonly identityUrl: string;
   readonly assetsUrl: string;
+  readonly aiAssistantUrl: string;
   /** null means "no manifest" (never allowed in production). */
   readonly persistedManifestPath: string | null;
 }
@@ -67,6 +76,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BffConfig {
     port: e.PORT,
     identityUrl: e.IDENTITY_URL.replace(/\/+$/, ''),
     assetsUrl: e.ASSETS_URL.replace(/\/+$/, ''),
+    aiAssistantUrl: e.AI_ASSISTANT_URL.replace(/\/+$/, ''),
     persistedManifestPath: e.PERSISTED_MANIFEST_PATH ?? null,
   };
 }

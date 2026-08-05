@@ -93,6 +93,51 @@ export const CREATE_ASSET_MUTATION = `mutation CreateAsset($category: String!, $
   }
 }`;
 
+export const READINESS_QUERY = `query Readiness {
+  readiness {
+    funding {
+      ...AnalysisFields
+    }
+    missingDocuments {
+      ...AnalysisFields
+    }
+    beneficiaryConflicts {
+      ...AnalysisFields
+    }
+    estateTax {
+      ...AnalysisFields
+    }
+  }
+}
+
+fragment AnalysisFields on Analysis {
+  status
+  reason
+  disclaimer
+  findings {
+    code
+    severity
+    subject {
+      kind
+      ref
+      label
+    }
+    detail
+  }
+}`;
+
+export const CONSENTS_QUERY = `query Consents {
+  consents
+}`;
+
+export const GRANT_CONSENT_MUTATION = `mutation GrantConsent($scope: String!) {
+  grantConsent(scope: $scope)
+}`;
+
+export const REVOKE_CONSENT_MUTATION = `mutation RevokeConsent($scope: String!) {
+  revokeConsent(scope: $scope)
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -106,6 +151,10 @@ export const operations = {
   Assets: ASSETS_QUERY,
   NetWorth: NET_WORTH_QUERY,
   CreateAsset: CREATE_ASSET_MUTATION,
+  Readiness: READINESS_QUERY,
+  Consents: CONSENTS_QUERY,
+  GrantConsent: GRANT_CONSENT_MUTATION,
+  RevokeConsent: REVOKE_CONSENT_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

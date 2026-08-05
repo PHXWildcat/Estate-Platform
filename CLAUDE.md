@@ -1145,3 +1145,43 @@ deviating from them, stop and propose the change with rationale — do not silen
   the sign) but reachable through a subtraction, which is exactly what an
   analyser does — so the function now validates its input and throws rather than
   answering confidently for input it cannot handle.
+- 2026-08-05 — M10 PR4 (the thin UI) ships READINESS + CONSENT, not chat: the
+  analysis routes work in both stack profiles today, while a conversation UI
+  could only ever be demonstrated against the deterministic stub (production
+  omits the assistant container for want of a provider credential). It also
+  closes the zero-callers gap PR3 opened by design — the `GET /v1/analysis/*`
+  routes existed for a UI that did not yet exist, which is the M4 legal-hold
+  shape. The BFF gains its SECOND non-identity downstream on the assets-client
+  terms (forwards the caller's own bearer, holds no credential), and because
+  the assistant holds none either, the whole chain from browser to analyser
+  runs on one session's authority. AN ANALYSIS CROSSES GRAPHQL AS A PAYLOAD
+  WITH A STATUS, never as a thrown error: the page requests all four at once,
+  so one 503 costs its own card instead of blanking the set — and there are
+  FOUR statuses where the service has three, because `DISABLED` (the master
+  consent switch is off) is the only one the user can act on and collapsing it
+  into `UNAVAILABLE` would make the page lie about which happened. What never
+  happens at any layer is a failure rendering as an empty finding list.
+- 2026-08-05 — `apps/web/src/lib/findings.ts` is where an analyser CODE becomes
+  a sentence, and on this surface the writer is reviewed code rather than a
+  model — identical for every user, incapable of inventing a finding. Two rules
+  keep it honest: every sentence is a fact about the user's own account and
+  never a legal claim (the same line `reference/required-documents.ts` holds,
+  and what lets the readiness surface ship while the estate-tax table cannot),
+  and every number comes from the finding's `detail` through `formatMoney`, so
+  money is never parsed. The map is TOTAL over the code union, so a new finding
+  without wording is a compile error; an unknown code still renders a safe
+  fallback, because a service deployed ahead of the app must not blank the page.
+  The consent UI makes the M6 asymmetry visible: granting reveals an inline
+  step-up prompt and retries the same grant, revoking is one click, and every
+  mutation renders the SERVER's returned grant set rather than a local boolean
+  (absence is denial, so an optimistic toggle could show a grant that was
+  refused).
+- 2026-08-05 — Driving the real browser found what jsdom could not, the M8 PR5
+  lesson repeating: findings keyed on code + subject ref COLLIDED, because the
+  commonest analysis in the product emits several `instrument_missing` findings
+  with no subject row ("no guardian designation on file" and "no HIPAA
+  authorization on file" are both that shape). React's remedy for a duplicate
+  key is to drop or duplicate a child, so a real finding about someone's estate
+  would have silently disappeared from the page — with every unit test green.
+  Fixed by including the index, pinned by a test that renders exactly that pair.
+  The same pass caught a layout inconsistency no assertion would have.

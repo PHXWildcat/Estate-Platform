@@ -3,6 +3,7 @@ import type { GraphQLSchema } from 'graphql';
 import { createSchema } from 'graphql-yoga';
 import type { MfaLevel } from '@estate/contracts';
 import type { Asset, AssetsClient, CreateResult, NetWorth } from './assets-client';
+import type { AnalysisName, AnalysisView, AssistantClient } from './assistant-client';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -64,12 +65,75 @@ export const typeDefs = /* GraphQL */ `
     version: String!
   }
 
+  """
+  Why an analysis has a STATUS rather than throwing. The readiness page asks
+  for all four at once, so one unavailable analysis must not blank the other
+  three. Four values where the service has three: DISABLED is the master
+  consent switch being off, which is the one the user can act on.
+  """
+  enum AnalysisStatus {
+    OK
+    UNAVAILABLE
+    REFUSED
+    DISABLED
+  }
+
+  type FindingSubject {
+    "asset | document | estate."
+    kind: String!
+    "The owning service's row id, or null for an estate-level finding."
+    ref: ID
+    "User-authored title, or null. Rendered as data, never as instructions."
+    label: String
+  }
+
+  """
+  One deterministic finding. 'code' is a closed token the UI turns into a
+  sentence — the analyser computes, and no model is involved on this path.
+  """
+  type Finding {
+    code: String!
+    "high | medium | info."
+    severity: String!
+    subject: FindingSubject!
+    "Numbers behind the code: counts, enum tokens, money as decimal STRINGS."
+    detail: JSON!
+  }
+
+  type Analysis {
+    status: AnalysisStatus!
+    "Enum token when the analysis did not run ('reference_unreviewed'); never prose."
+    reason: String
+    "Empty for every status but OK — a failure is never an empty result."
+    findings: [Finding!]!
+    "docs/01 §2.8's non-legal-advice watermark. Present on every status."
+    disclaimer: String!
+  }
+
+  type Readiness {
+    funding: Analysis!
+    missingDocuments: Analysis!
+    beneficiaryConflicts: Analysis!
+    estateTax: Analysis!
+  }
+
+  "Opaque JSON for a finding's detail map (scalars only, validated upstream)."
+  scalar JSON
+
   type Query {
     "Current session, or null when unauthenticated."
     session: Session
     "The caller's assets. The BFF forwards the caller's own bearer token."
     assets: [Asset!]!
     netWorth: NetWorth!
+    """
+    The four deterministic analyses, computed by the assistant service from the
+    caller's own estate. No model provider is involved on this path: the
+    analysers compute, and consent scopes gate egress rather than this read.
+    """
+    readiness: Readiness!
+    "Consent scopes the caller has granted the assistant. Absence is denial."
+    consents: [String!]!
   }
 
   type Mutation {
@@ -97,6 +161,19 @@ export const typeDefs = /* GraphQL */ `
       valuationAsOf: String
       valuationSource: String
     ): CreatedAsset!
+    """
+    Grants one assistant consent scope. STEP-UP GATED downstream (docs/01 §5:
+    a grant widens what may reach a third-party model provider, which is
+    export-class), so this can fail with STEPUP_REQUIRED. Returns the caller's
+    full grant set so a client never has to guess the result.
+    """
+    grantConsent(scope: String!): [String!]!
+    """
+    Revokes one scope. Deliberately NOT step-up gated, the M6
+    emergency-access-denial rule: the protective action must never be harder
+    than the permissive one.
+    """
+    revokeConsent(scope: String!): [String!]!
   }
 `;
 
@@ -109,6 +186,7 @@ export interface RequestContext {
 export interface SchemaDeps {
   identity: IdentityClient;
   assets: AssetsClient;
+  assistant: AssistantClient;
   /** Adds the Secure attribute to session cookies (production). */
   secureCookies: boolean;
   /** Clock override for tests. */
@@ -128,6 +206,18 @@ interface CredentialsArgs {
 
 interface CodeArgs {
   readonly code: string;
+}
+
+interface ScopeArgs {
+  readonly scope: string;
+}
+
+/** The four analyses, as the readiness query returns them. */
+interface Readiness {
+  readonly funding: AnalysisView;
+  readonly missingDocuments: AnalysisView;
+  readonly beneficiaryConflicts: AnalysisView;
+  readonly estateTax: AnalysisView;
 }
 
 const MFA_LEVEL_GQL: Record<MfaLevel, SessionPayload['mfaLevel']> = {
@@ -151,7 +241,7 @@ function requireAccessToken(ctx: RequestContext): string {
 }
 
 export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
-  const { identity, assets, secureCookies } = deps;
+  const { identity, assets, assistant, secureCookies } = deps;
   const now = deps.now ?? ((): number => Date.now());
 
   return createSchema<RequestContext>({
@@ -186,6 +276,39 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           _args: unknown,
           ctx: RequestContext,
         ): Promise<NetWorth> => assets.netWorth(requireAccessToken(ctx)),
+        // The four analyses run CONCURRENTLY and independently: each carries
+        // its own status, so a peer blinking during one of them costs that
+        // card and not the page. `Promise.all` rather than `allSettled`
+        // because the client already turns every non-401 downstream failure
+        // into a status — what still rejects is UNAUTHENTICATED, which is a
+        // fact about the whole request and should surface as one.
+        readiness: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<Readiness> => {
+          const token = requireAccessToken(ctx);
+          const names: readonly AnalysisName[] = [
+            'funding',
+            'missing-documents',
+            'beneficiary-conflicts',
+            'estate-tax',
+          ];
+          const [funding, missingDocuments, beneficiaryConflicts, estateTax] = await Promise.all(
+            names.map((name) => assistant.analysis(token, name)),
+          );
+          return {
+            funding: funding as AnalysisView,
+            missingDocuments: missingDocuments as AnalysisView,
+            beneficiaryConflicts: beneficiaryConflicts as AnalysisView,
+            estateTax: estateTax as AnalysisView,
+          };
+        },
+        consents: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<string[]> => assistant.consents(requireAccessToken(ctx)),
       },
       Mutation: {
         register: async (
@@ -286,6 +409,16 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
               : {}),
           });
         },
+        grantConsent: async (
+          _parent: unknown,
+          args: ScopeArgs,
+          ctx: RequestContext,
+        ): Promise<string[]> => assistant.grantConsent(requireAccessToken(ctx), args.scope),
+        revokeConsent: async (
+          _parent: unknown,
+          args: ScopeArgs,
+          ctx: RequestContext,
+        ): Promise<string[]> => assistant.revokeConsent(requireAccessToken(ctx), args.scope),
         totpEnroll: async (
           _parent: unknown,
           _args: unknown,

@@ -239,6 +239,12 @@ export function bffProcessEnv(
     PORT: '4000',
     IDENTITY_URL: serviceUrl('identity', options.addressing),
     ASSETS_URL: serviceUrl('assets', options.addressing),
+    // M10 PR4: the readiness surface reads the assistant's analysis routes
+    // through the BFF, on the caller's own forwarded bearer. In the PRODUCTION
+    // profile the assistant container is absent (no provider credential
+    // exists), so this URL points at nothing there and the readiness page
+    // reads UNAVAILABLE — the stack's shape, not the product's.
+    AI_ASSISTANT_URL: serviceUrl('ai-assistant', options.addressing),
   };
   if (options.manifestPath) {
     out['PERSISTED_MANIFEST_PATH'] = options.manifestPath;

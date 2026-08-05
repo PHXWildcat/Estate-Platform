@@ -20,7 +20,7 @@ interface NavItem {
   label: string;
   icon: IconName;
   /** Absent for "Soon" entries — they are previews, not destinations. */
-  href?: '/' | '/assets' | '/security';
+  href?: '/' | '/assets' | '/assistant' | '/security';
   /** Active only on exact match (the Overview item, so "/" ≠ everything). */
   exact?: boolean;
 }
@@ -33,6 +33,9 @@ export const NAV_GROUPS: ReadonlyArray<{ label: string; items: readonly NavItem[
       { label: 'Assets', icon: 'assets', href: '/assets' },
       { label: 'Documents', icon: 'documents' },
       { label: 'People', icon: 'people' },
+      // M10 PR4: the readiness surface. A real destination, not a "Soon"
+      // preview — its backend (the deterministic analysers) ships with it.
+      { label: 'Assistant', icon: 'assistant', href: '/assistant' },
     ],
   },
   {

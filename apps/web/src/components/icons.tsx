@@ -8,7 +8,7 @@ import type { ReactElement } from 'react';
  */
 
 export type IconName =
-  'overview' | 'assets' | 'documents' | 'people' | 'vault' | 'security' | 'sign-out';
+  'overview' | 'assets' | 'documents' | 'people' | 'assistant' | 'vault' | 'security' | 'sign-out';
 
 const PATHS: Record<IconName, ReactElement> = {
   overview: (
@@ -39,6 +39,16 @@ const PATHS: Record<IconName, ReactElement> = {
       <circle cx="6.6" cy="6.4" r="2.6" />
       <path d="M2.4 15c0-2.6 1.9-4.2 4.2-4.2s4.2 1.6 4.2 4.2" strokeLinecap="round" />
       <path d="M11.8 4.4a2.6 2.6 0 0 1 0 4M13.4 11.2c1.4.6 2.2 1.9 2.2 3.8" strokeLinecap="round" />
+    </>
+  ),
+  // A checklist, not a spark or a robot: this surface is deterministic checks
+  // over the user's own records, and the icon should not promise a chatbot.
+  assistant: (
+    <>
+      <rect x="3" y="2.5" width="12" height="13" rx="1.6" />
+      <path d="M6 6.6l1.4 1.4 2.6-2.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6 11.6l1.4 1.4 2.6-2.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M11.6 7h1.6M11.6 12h1.6" strokeLinecap="round" />
     </>
   ),
   vault: (

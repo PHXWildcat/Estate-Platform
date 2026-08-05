@@ -14,6 +14,10 @@ module.exports = createJestConfig({
   collectCoverageFrom: ['src/**/*.{ts,tsx}', '!src/**/*.d.ts'],
   // Coverage floor: a few points below current full-source coverage, ratcheting
   // toward the 90% FE target as the pages get component tests. Raised with M8
-  // PR5, whose AssetsPanel/SignOutButton tests lifted the real number.
-  coverageThreshold: { global: { statements: 70, branches: 62, functions: 64, lines: 73 } },
+  // PR5, whose AssetsPanel/SignOutButton tests lifted the real number, and
+  // RATCHETED again at M10 PR4 from a measured `--coverage` run
+  // (80.08/74.09/83.33/83.76) — the readiness panel, its consent controls and
+  // the finding-copy table all arrived with tests. Measured, not guessed: PR3's
+  // CI failure was a floor nobody had run.
+  coverageThreshold: { global: { statements: 79, branches: 73, functions: 82, lines: 83 } },
 });
