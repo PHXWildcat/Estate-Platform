@@ -44,6 +44,10 @@ catalog:
   # documents (S3 object store, Textract OCR)
   '@aws-sdk/client-s3': ^3.821.0
   '@aws-sdk/client-textract': ^3.821.0
+  # ai-assistant (the LLM provider — TB5's newest third party). The SDK exists
+  # ONLY in that service, which is the whole point of an isolating service: no
+  # other package may import it, and no other package should need to.
+  '@anthropic-ai/sdk': ^0.115.0
   # bff
   graphql: ^16.11.0
   graphql-yoga: ^5.13.0

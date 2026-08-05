@@ -13,7 +13,7 @@ import {
   type EnvFileIo,
 } from '../src/generate-env';
 import { parseEnvFile } from '../src/env-file';
-import { SERVICES } from '../src/topology';
+import { envPrefixFor, SERVICES } from '../src/topology';
 
 /** In-memory filesystem so the overwrite guard is tested without disk. */
 function fakeIo(present: string[] = []): EnvFileIo & { written: Map<string, string> } {
@@ -284,13 +284,17 @@ describe('generateEnv', () => {
 
   it('gives every key-holding service its OWN KEK, never a shared one', () => {
     const entries = new Map(generateEnv({ mode: 'development' }).entries);
+    // envPrefixFor, not `toUpperCase()`: 'ai-assistant' would otherwise look up
+    // AI-ASSISTANT_AWS_KMS_KEY_ID, find nothing, and this assertion would pass
+    // with an `undefined` in the set it is checking for uniqueness.
     const keyIds = SERVICES.filter((s) => s.kekAlias !== null).map((s) =>
-      entries.get(`${s.name.toUpperCase()}_AWS_KMS_KEY_ID`),
+      entries.get(`${envPrefixFor(s.name)}_AWS_KMS_KEY_ID`),
     );
-    // Seven since M9: notifications' recipient store gets its own alias, so
-    // the other core co-tenants can never unwrap an address.
-    expect(keyIds).toHaveLength(7);
-    expect(new Set(keyIds).size).toBe(7);
+    // Eight since M10: the assistant's conversation store gets its own alias,
+    // so the other three core co-tenants can never unwrap a turn.
+    expect(keyIds).toHaveLength(8);
+    expect(keyIds.every((id) => typeof id === 'string')).toBe(true);
+    expect(new Set(keyIds).size).toBe(8);
   });
 
   it('gives Zone A and audit no key material at all', () => {

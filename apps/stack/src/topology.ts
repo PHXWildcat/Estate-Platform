@@ -141,7 +141,7 @@ export interface StackService {
    * service holds no key material at all — vault (Zone A: the server can
    * decrypt nothing) and audit (append-only hashes, no ciphertext).
    *
-   * SEVEN DISTINCT ALIASES, not one shared key. The alias is baked into the
+   * EIGHT DISTINCT ALIASES, not one shared key. The alias is baked into the
    * KMS EncryptionContext, so a DEK wrapped for one domain cannot be unwrapped
    * under another. That binding is testable locally; the IAM grant that would
    * stop a service *asking* is not — see the stack README's limits section.
@@ -160,6 +160,13 @@ export const SERVICES: readonly StackService[] = [
   // Third core co-tenant (M9): disjoint tables, own KEK — profile and
   // settlement share the cluster and can never unwrap a recipient address.
   { name: 'notifications', cluster: 'core', port: 3008, kekAlias: 'notifications/kek' },
+  // FOURTH core co-tenant (M10), same rule one more time: conversation turns
+  // quote estate content back to the user, so they are wrapped under this
+  // service's OWN KEK and the three tenants sharing the cluster can never
+  // unwrap one (docs/03 §5.3 — the KMS grant is the chokepoint, not the
+  // database). Also the first service name with a hyphen, which is why every
+  // env prefix goes through `envPrefixFor` below.
+  { name: 'ai-assistant', cluster: 'core', port: 3009, kekAlias: 'ai-assistant/kek' },
   { name: 'audit', cluster: 'audit', port: null, kekAlias: null },
 ];
 
@@ -192,7 +199,7 @@ export function envPrefixFor(name: string): string {
  */
 export const MIGRATION_ORDER: readonly (readonly string[])[] = [
   ['identity'],
-  ['profile', 'settlement', 'notifications'],
+  ['profile', 'settlement', 'notifications', 'ai-assistant'],
   ['assets', 'plaid'],
   ['documents'],
   ['vault'],

@@ -23,12 +23,18 @@ import { z } from 'zod';
  *    settlement, notifications) can never unwrap a conversation (docs/03 §5.3:
  *    the KMS grant, not the database, is the chokepoint).
  *
- * LLM_MODE follows the adapter rule, on the NOTIFY_MODE timeline: the enum
- * carries both modes from the start, and the production pin arrives WITH the
- * real adapter in M10 PR2 rather than pinning a mode that does not yet exist.
- * Until then 'anthropic' is refused outright in every environment — a config
- * that selects an unwired provider must not reach the selector and discover it
- * there.
+ * LLM_MODE follows the adapter rule and, as of M10 PR2, completes the
+ * NOTIFY_MODE timeline: the enum carried both modes from the start and the
+ * production PIN arrives now, WITH the real adapter, rather than pinning a mode
+ * that did not yet exist. Production must run 'anthropic'; the stub reaches no
+ * provider and would make an assistant that silently answers from nothing.
+ *
+ * ANTHROPIC_API_KEY is a THIRD-PARTY credential, not an internal one, and the
+ * distinction is the reason this service exists. It holds no `*_INTERNAL_TOKEN`
+ * in either direction — nothing here opens another service's routes — while the
+ * provider key lives ONLY here, in the isolating service for TB5's newest third
+ * party (the Plaid and SES precedent: the SDK and its credentials exist in one
+ * namespace and nowhere else).
  */
 
 const HEX_32_BYTES = /^[0-9a-fA-F]{64}$/;
@@ -53,8 +59,32 @@ const EnvSchema = z
     PROFILE_URL: z.string().url().optional(),
 
     // Which gateway answers a turn. 'stub' is deterministic and makes no
-    // network call at all; 'anthropic' is M10 PR2.
+    // network call at all; 'anthropic' reaches the live provider.
     LLM_MODE: z.enum(['stub', 'anthropic']).default('stub'),
+    // Required whenever LLM_MODE is 'anthropic', in EVERY environment — the
+    // shape the KMS and OCR selectors already use. Never defaulted, never
+    // logged: ConfigError prints paths and messages only.
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    /*
+     * Server-side refusal fallbacks. Anthropic recommends them for this model,
+     * and they turn a safety-classifier refusal into an answer from a fallback
+     * model instead of a dead turn.
+     *
+     * It is a config switch rather than a hardcoded default because it has a
+     * TB5 dimension: on a refusal the SAME estate payload is re-run on a
+     * DIFFERENT model, so the zero-data-retention requirement must hold for the
+     * fallback too. Set 'none' if that contract cannot be evidenced.
+     */
+    LLM_FALLBACKS: z.enum(['default', 'none']).default('default'),
+    /*
+     * Deadline for ONE provider call, in milliseconds (the unit the TypeScript
+     * SDK uses). Load-bearing rather than hygienic: a turn holds a pooled
+     * connection and the conversation's row lock open across every provider
+     * hop, so this is what bounds them. The SDK also retries twice by default,
+     * so worst-case wall clock is roughly this times the attempt count — size
+     * it against the transaction, not against a single hop.
+     */
+    LLM_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().max(600000).default(60000),
 
     // Which KMS backs envelope encryption for the conversation store.
     KMS_MODE: z.enum(['local', 'aws']).default('local'),
@@ -70,16 +100,14 @@ const EnvSchema = z
     AWS_ENDPOINT_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
-    // The live provider does not exist yet. Refused in EVERY environment, not
-    // just production: selecting it would otherwise boot a service whose
-    // gateway cannot answer, and the failure would surface per-request instead
-    // of at deploy time.
-    if (env.LLM_MODE === 'anthropic') {
+    // Mode-conditional, and enforced in EVERY environment rather than only in
+    // production: a deployment that selects the live provider without a key
+    // must fail at boot, not per request.
+    if (env.LLM_MODE === 'anthropic' && !env.ANTHROPIC_API_KEY) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['LLM_MODE'],
-        message:
-          'LLM_MODE "anthropic" is not wired yet (the live adapter lands in M10 PR2; use "stub")',
+        path: ['ANTHROPIC_API_KEY'],
+        message: 'ANTHROPIC_API_KEY is required when LLM_MODE is "anthropic"',
       });
     }
 
@@ -107,6 +135,18 @@ const EnvSchema = z
             message: `${key} is required in production (${purpose})`,
           });
         }
+      }
+      // Pin the REAL adapter, naming the stub so a future third mode is not
+      // accidentally admitted (the KMS/clamd/OCR/SES rule). The stub answers
+      // from a deterministic script and reaches no provider at all, so in
+      // production it would be an assistant confidently answering from nothing.
+      if (env.LLM_MODE !== 'anthropic') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['LLM_MODE'],
+          message:
+            'LLM_MODE must be "anthropic" in production (the stub gateway reaches no provider)',
+        });
       }
       if (env.KMS_MODE !== 'aws') {
         ctx.addIssue({
@@ -148,7 +188,15 @@ const EnvSchema = z
   });
 
 /** Which gateway answers a turn (deterministic stub in dev/test). */
-export type LlmConfig = { readonly mode: 'stub' } | { readonly mode: 'anthropic' };
+export type LlmConfig =
+  | { readonly mode: 'stub' }
+  | {
+      readonly mode: 'anthropic';
+      /** THIRD-PARTY credential. Lives only in this service (docs/03 §4 TB5). */
+      readonly apiKey: string;
+      /** Re-run a refused request on a fallback model, server-side. */
+      readonly fallbacks: boolean;
+    };
 
 /** Which KMS backs envelope encryption (local dev/test, AWS in production). */
 export type KmsConfig =
@@ -172,6 +220,8 @@ export interface AiAssistantConfig {
   readonly documentsUrl: string;
   readonly profileUrl: string;
   readonly llm: LlmConfig;
+  /** Per-provider-call deadline in ms; bounds the turn's open transaction. */
+  readonly llmRequestTimeoutMs: number;
   readonly kms: KmsConfig;
   /** KEK alias wrapping THIS service's per-user DEKs (never 'core/kek'). */
   readonly kekAlias: string;
@@ -211,7 +261,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AiAssistantCon
     assetsUrl: e.ASSETS_URL ?? 'http://localhost:3003',
     documentsUrl: e.DOCUMENTS_URL ?? 'http://localhost:3005',
     profileUrl: e.PROFILE_URL ?? 'http://localhost:3002',
-    llm: { mode: e.LLM_MODE },
+    // The superRefine above guarantees the key whenever the mode needs it.
+    llmRequestTimeoutMs: e.LLM_REQUEST_TIMEOUT_MS,
+    llm:
+      e.LLM_MODE === 'anthropic'
+        ? {
+            mode: 'anthropic',
+            apiKey: e.ANTHROPIC_API_KEY!,
+            fallbacks: e.LLM_FALLBACKS === 'default',
+          }
+        : { mode: 'stub' },
     // The superRefine above guarantees the required fields per mode, so these
     // non-null assertions are sound.
     kms:
