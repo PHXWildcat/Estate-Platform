@@ -14,6 +14,9 @@ const PROD_BASE: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://estate:estate@db:5432/core',
   KAFKA_BROKERS: 'broker:9092',
   NOTIFICATIONS_INTERNAL_TOKEN: STRONG_TOKEN,
+  // The second inbound credential (M9 review): the recipient-upsert surface
+  // is identity's alone and must never share a value with the send surface.
+  NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: `${STRONG_TOKEN}-recipients`,
   EMAIL_MODE: 'ses',
   SES_FROM_ADDRESS: 'no-reply@estate.example',
   KMS_MODE: 'aws',
@@ -64,7 +67,8 @@ describe('loadConfig (production)', () => {
 
   it.each([
     ['KAFKA_BROKERS', 'audit emission'],
-    ['NOTIFICATIONS_INTERNAL_TOKEN', 'the internal surface'],
+    ['NOTIFICATIONS_INTERNAL_TOKEN', 'the send surface'],
+    ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN', 'the recipient surface'],
     ['SES_FROM_ADDRESS', 'the verified sender'],
   ])('requires %s in production', (key) => {
     const env = { ...PROD_BASE };
@@ -88,10 +92,26 @@ describe('loadConfig (production)', () => {
     });
   });
 
-  it('rejects a weak inbound credential', () => {
-    expect(() => loadConfig({ ...PROD_BASE, NOTIFICATIONS_INTERNAL_TOKEN: 'short' })).toThrow(
-      ConfigError,
-    );
+  it.each(['NOTIFICATIONS_INTERNAL_TOKEN', 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'])(
+    'rejects a weak %s',
+    (key) => {
+      expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
+    },
+  );
+
+  it('refuses one value pasted into BOTH inbound slots (M9 review)', () => {
+    // Splitting the surfaces buys nothing if the operator provisions one
+    // secret twice: vault and settlement would again hold a working key to
+    // the recipient route and could silently repoint any owner's alerts.
+    expect(() =>
+      loadConfig({ ...PROD_BASE, NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: STRONG_TOKEN }),
+    ).toThrow(/must differ from/);
+  });
+
+  it('absorbs the recipient credential into its own field, not the send one', () => {
+    const config = loadConfig(PROD_BASE);
+    expect(config.internalApiToken).toBe(STRONG_TOKEN);
+    expect(config.recipientsApiToken).toBe(`${STRONG_TOKEN}-recipients`);
   });
 });
 

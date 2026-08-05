@@ -395,7 +395,7 @@ services:
       # is identity's OUTBOUND grant: it feeds the notifications recipient
       # store at registration/login and opens nothing else.
       IDENTITY_INTERNAL_TOKEN: ${IDENTITY_IDENTITY_INTERNAL_TOKEN}
-      NOTIFICATIONS_INTERNAL_TOKEN: ${IDENTITY_NOTIFICATIONS_INTERNAL_TOKEN}
+      NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: ${IDENTITY_NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
@@ -627,7 +627,13 @@ services:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       EMAIL_MODE: ${NOTIFICATIONS_EMAIL_MODE}
       SES_FROM_ADDRESS: ${SES_FROM_ADDRESS}
+      # TWO inbound credentials, one per internal surface (M9 review): sending
+      # is held by vault + settlement, deciding WHERE a user's notifications go
+      # is identity's alone. One value in both slots would re-create the
+      # over-grant; this service refuses to boot on it in production and the
+      # doctor refuses it in every mode.
       NOTIFICATIONS_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_INTERNAL_TOKEN}
+      NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck

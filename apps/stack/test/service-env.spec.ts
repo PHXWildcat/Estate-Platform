@@ -56,7 +56,7 @@ describe('serviceProcessEnv', () => {
       'KMS_MODE',
       'NODE_ENV',
       'NODE_EXTRA_CA_CERTS',
-      'NOTIFICATIONS_INTERNAL_TOKEN',
+      'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
       'NOTIFICATIONS_URL',
       'PORT',
       'RP_ID',
@@ -95,6 +95,35 @@ describe('serviceProcessEnv', () => {
       'DATABASE_URL',
       'KAFKA_BROKERS',
     ]);
+  });
+
+  it('keeps notifications’ two surfaces on two different secrets (M9 review)', () => {
+    const file = generated();
+    const notifications = serviceProcessEnv(svc('notifications'), file, HOST);
+    const identity = serviceProcessEnv(svc('identity'), file, HOST);
+    const vault = serviceProcessEnv(svc('vault'), file, HOST);
+
+    // Both inbound slots are real, and DIFFERENT: one value in both would put
+    // the send holders back in charge of where alerts go.
+    expect(notifications['NOTIFICATIONS_INTERNAL_TOKEN']).toBeTruthy();
+    expect(notifications['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN']).toBeTruthy();
+    expect(notifications['NOTIFICATIONS_INTERNAL_TOKEN']).not.toBe(
+      notifications['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
+    );
+
+    // Identity holds the RECIPIENTS key and cannot send...
+    expect(identity['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN']).toBe(
+      notifications['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
+    );
+    expect(identity['NOTIFICATIONS_INTERNAL_TOKEN']).toBeUndefined();
+
+    // ...and vault holds the SEND key and cannot repoint an address, which is
+    // the whole point: the Zone A service must not be able to silence the
+    // §5.1/§5.2 owner alerts of a user it is not even serving.
+    expect(vault['NOTIFICATIONS_INTERNAL_TOKEN']).toBe(
+      notifications['NOTIFICATIONS_INTERNAL_TOKEN'],
+    );
+    expect(vault['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN']).toBeUndefined();
   });
 
   it("documents' inbound credential is real, and settlement holds the same value (M9 PR2)", () => {

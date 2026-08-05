@@ -28,11 +28,17 @@ const EnvSchema = z
     // Comma-separated broker list. Optional in dev/test; REQUIRED in
     // production — every send and every recipient change is an audited action.
     KAFKA_BROKERS: z.string().optional(),
-    // INBOUND: what THIS service expects on its internal routes. Held by
-    // vault + settlement (send) and identity (recipient upsert) — every route
-    // it opens is notification-domain; it confers no lock- or read-class
-    // power anywhere else (credential-graph.ts).
+    // INBOUND #1 — SENDING. Held by vault + settlement. Lets a holder fire one
+    // of nine closed template kinds at a user; the wire has no text field, so
+    // it chooses neither the words nor the destination (credential-graph.ts).
     NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
+    // INBOUND #2 — RECIPIENTS. Held by IDENTITY ALONE, and deliberately a
+    // different secret from the one above: this one decides WHERE a user's
+    // notifications go, so a holder can silence the §5.1 contact sweep and the
+    // §5.2 emergency-access alerts by pointing them at their own mailbox. The
+    // M9 security review found both surfaces behind one secret, which handed
+    // that power to vault and settlement, which only ever send.
+    NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: z.string().optional(),
     // Which carrier delivers email. 'stub' records without delivering
     // (dev/test); 'ses' is the real adapter. Production REQUIRES 'ses' — see
     // the superRefine below.
@@ -87,13 +93,34 @@ const EnvSchema = z
             'AWS_ENDPOINT_URL must be https in production (KMS and SES traffic must not be plaintext)',
         });
       }
-      const token = env.NOTIFICATIONS_INTERNAL_TOKEN;
-      if (!token || token.length < 32) {
+      const credentials = [
+        ['NOTIFICATIONS_INTERNAL_TOKEN', 'an open send surface is a phishing primitive'],
+        [
+          'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
+          "an open recipient surface lets anyone redirect an owner's alerts",
+        ],
+      ] as const;
+      for (const [key, why] of credentials) {
+        const token = env[key];
+        if (!token || token.length < 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required in production (>= 32 chars; ${why})`,
+          });
+        }
+      }
+      // Splitting the surfaces buys nothing if one value is pasted into both
+      // slots — the same reasoning settlement's config applies to its four.
+      if (
+        env.NOTIFICATIONS_INTERNAL_TOKEN &&
+        env.NOTIFICATIONS_INTERNAL_TOKEN === env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          path: ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
           message:
-            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; an open send/recipient surface is a phishing primitive)',
+            'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN must differ from NOTIFICATIONS_INTERNAL_TOKEN (one value opening both surfaces re-creates the over-grant the split exists to remove)',
         });
       }
     }
@@ -159,8 +186,11 @@ export interface NotificationsConfig {
   readonly port: number;
   readonly databaseUrl: string;
   readonly kafkaBrokers: string[] | null;
-  /** INBOUND: what this service expects on its internal routes ('' ⇒ refuse all). */
+  /** INBOUND: what this service expects on its SEND route ('' ⇒ refuse all). */
   readonly internalApiToken: string;
+  /** INBOUND: what it expects on the RECIPIENT-UPSERT route, held by identity
+   * alone ('' ⇒ refuse all). Never equal to the send credential. */
+  readonly recipientsApiToken: string;
   readonly email: EmailConfig;
   readonly kms: KmsConfig;
   /** KEK alias wrapping THIS service's per-user DEKs (never 'core/kek'). */
@@ -197,6 +227,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NotificationsC
     databaseUrl: e.DATABASE_URL,
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     internalApiToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
+    recipientsApiToken: e.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ?? '',
     // The superRefine above guarantees the required fields per mode, so these
     // non-null assertions are sound.
     email:

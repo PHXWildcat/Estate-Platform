@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
-import { InternalController } from '../src/internal.controller';
+import { InternalController, RecipientsController } from '../src/internal.controller';
 import type { NotificationsService } from '../src/notifications.service';
 
 /**
@@ -13,6 +13,7 @@ import type { NotificationsService } from '../src/notifications.service';
 describe('InternalController', () => {
   const build = (): {
     controller: InternalController;
+    recipients: RecipientsController;
     calls: { send: unknown[]; upsert: unknown[] };
   } => {
     const calls: { send: unknown[]; upsert: unknown[] } = { send: [], upsert: [] };
@@ -26,7 +27,11 @@ describe('InternalController', () => {
         return Promise.resolve({ ok: true });
       },
     } as unknown as NotificationsService;
-    return { controller: new InternalController(service), calls };
+    return {
+      controller: new InternalController(service),
+      recipients: new RecipientsController(service),
+      calls,
+    };
   };
 
   it('send: parses the content-free wire and delegates', async () => {
@@ -51,17 +56,25 @@ describe('InternalController', () => {
     expect(calls.send).toEqual([]);
   });
 
-  it('upsertRecipient: parses and delegates', async () => {
-    const { controller, calls } = build();
+  it('upsertRecipient: parses and delegates (separate controller since the M9 review)', async () => {
+    const { recipients, calls } = build();
     const body = { userId: randomUUID(), email: 'owner@example.com' };
-    await expect(controller.upsertRecipient(body)).resolves.toEqual({ ok: true });
+    await expect(recipients.upsertRecipient(body)).resolves.toEqual({ ok: true });
     expect(calls.upsert).toEqual([body]);
   });
 
+  it('the two surfaces are separate classes, so they can carry separate guards', () => {
+    // The split is only real if a guard can bind to one without the other:
+    // sending is vault + settlement, repointing an address is identity alone.
+    const { controller, recipients } = build();
+    expect('upsertRecipient' in controller).toBe(false);
+    expect('send' in recipients).toBe(false);
+  });
+
   it('upsertRecipient: refuses a malformed address without echoing it', async () => {
-    const { controller, calls } = build();
+    const { recipients, calls } = build();
     try {
-      await controller.upsertRecipient({ userId: randomUUID(), email: 'not-an-address' });
+      await recipients.upsertRecipient({ userId: randomUUID(), email: 'not-an-address' });
       throw new Error('expected BadRequestException');
     } catch (err) {
       expect(err).toBeInstanceOf(BadRequestException);

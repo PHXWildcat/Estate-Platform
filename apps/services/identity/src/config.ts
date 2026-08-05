@@ -93,10 +93,13 @@ const EnvSchema = z
     // notifications.
     NOTIFICATIONS_URL: z.string().url().optional(),
     // OUTBOUND: what this service PRESENTS to the notifications service's
-    // internal routes (per credential-graph.ts, held by identity, vault and
-    // settlement; it opens send + recipient-upsert and nothing else).
-    // Optional in dev/test — the client short-circuits to a no-op while unset.
-    NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
+    // RECIPIENT-UPSERT route — the only notifications route identity uses, and
+    // one it is the sole holder of (credential-graph.ts). Deliberately NOT the
+    // send credential: identity never sends, and the M9 security review found
+    // one secret opening both, which handed vault and settlement the power to
+    // repoint any owner's alerts. Optional in dev/test — the client
+    // short-circuits to a no-op while unset.
+    NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -180,25 +183,28 @@ const EnvSchema = z
             'NOTIFICATIONS_URL is required in production (an unfed recipient store silently starves the M6/M7 owner notifications)',
         });
       }
-      if (!env.NOTIFICATIONS_INTERNAL_TOKEN || env.NOTIFICATIONS_INTERNAL_TOKEN.length < 32) {
+      if (
+        !env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ||
+        env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN.length < 32
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          path: ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
           message:
-            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; recipient upserts must not be silently unauthenticated)',
+            'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN is required in production (>= 32 chars; recipient upserts must not be silently unauthenticated)',
         });
       }
       // One value must never authenticate both directions (the M7 collapse):
       // splitting the fields cannot stop one value being pasted into both slots.
       if (
         env.IDENTITY_INTERNAL_TOKEN &&
-        env.IDENTITY_INTERNAL_TOKEN === env.NOTIFICATIONS_INTERNAL_TOKEN
+        env.IDENTITY_INTERNAL_TOKEN === env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN
       ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          path: ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
           message:
-            'NOTIFICATIONS_INTERNAL_TOKEN must differ from IDENTITY_INTERNAL_TOKEN (sharing one value hands every notifications holder a key to the account-lock API)',
+            'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN must differ from IDENTITY_INTERNAL_TOKEN (sharing one value hands the notifications recipient surface a key to the account-lock API)',
         });
       }
     }
@@ -295,6 +301,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     rpName: e.RP_NAME ?? 'Estate Platform',
     internalApiToken: e.IDENTITY_INTERNAL_TOKEN ?? '',
     notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
-    notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
+    notificationsInternalToken: e.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ?? '',
   };
 }

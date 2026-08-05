@@ -1,4 +1,8 @@
-import { inboundCredentialFor, outboundCredentialsFor, type ServiceName } from '@estate/auth-guard';
+import {
+  inboundCredentialsFor,
+  outboundCredentialsFor,
+  type ServiceName,
+} from '@estate/auth-guard';
 import { kmsKeyIdFor, SERVICES, serviceUrl, type Addressing, type StackService } from './topology';
 
 /**
@@ -80,11 +84,12 @@ export function serviceProcessEnv(
   // inbound slot plus each outbound grant, prefixed in the file, bare in the
   // process — exactly what the container mapping does.
   const name = service.name as ServiceName;
-  const inbound = inboundCredentialFor(name);
-  if (inbound) {
+  for (const inbound of inboundCredentialsFor(name)) {
     // A zero-holder inbound edge has no minted slot; '' keeps the callee's
     // guard failing closed. (Every current edge has holders — M9 PR2 gave
     // documents' legal-hold edge its caller — but the rule is the graph's.)
+    // Plural since M9's review: notifications expects one credential per
+    // internal surface (send vs recipient-upsert).
     out[inbound.envVar] = env.get(`${upper}_${inbound.envVar}`) ?? '';
   }
   for (const outbound of outboundCredentialsFor(name)) {

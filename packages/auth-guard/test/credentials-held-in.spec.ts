@@ -10,8 +10,8 @@ import {
   credentialSentinel,
   credentialSentinelEnv,
   credentialsHeldIn,
-  expectedEnvVarFor,
-  inboundCredentialFor,
+  envVarPrefixFor,
+  inboundCredentialsFor,
   outboundCredentialsFor,
   SERVICE_CREDENTIAL_GRAPH,
 } from '../src/credential-graph';
@@ -19,6 +19,7 @@ import {
 const IDENTITY = 'IDENTITY_INTERNAL_TOKEN';
 const SETTLEMENT = 'SETTLEMENT_INTERNAL_TOKEN';
 const NOTIFICATIONS = 'NOTIFICATIONS_INTERNAL_TOKEN';
+const NOTIFICATIONS_RECIPIENTS = 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN';
 
 describe('credentialsHeldIn', () => {
   it('reports nothing for a config that holds no credential', () => {
@@ -106,15 +107,33 @@ describe('the sentinel fixture', () => {
 });
 
 describe('graph lookup helpers', () => {
-  it('derives the mandated variable name from the service', () => {
-    expect(expectedEnvVarFor('identity')).toBe(IDENTITY);
-    expect(expectedEnvVarFor('documents')).toBe('DOCUMENTS_INTERNAL_TOKEN');
+  it('derives the mandated name prefix from the service', () => {
+    expect(envVarPrefixFor('identity')).toBe('IDENTITY_');
+    expect(envVarPrefixFor('documents')).toBe('DOCUMENTS_');
   });
 
   it('resolves inbound credentials, and none for services without internal routes', () => {
-    expect(inboundCredentialFor('identity')?.envVar).toBe(IDENTITY);
-    expect(inboundCredentialFor('vault')).toBeUndefined();
-    expect(inboundCredentialFor('audit')).toBeUndefined();
+    expect(inboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([IDENTITY]);
+    expect(inboundCredentialsFor('vault')).toEqual([]);
+    expect(inboundCredentialsFor('audit')).toEqual([]);
+  });
+
+  it('gives notifications TWO inbound credentials, one per capability (M9 review)', () => {
+    // The send surface and the recipient-upsert surface have different
+    // legitimate holders, so they must not share a secret: holding "may
+    // notify this user" must not also mean "may decide where their alerts go".
+    const inbound = inboundCredentialsFor('notifications');
+    expect(inbound.map((e) => e.envVar)).toEqual([NOTIFICATIONS, NOTIFICATIONS_RECIPIENTS]);
+    expect(inbound.find((e) => e.envVar === NOTIFICATIONS)?.holders).toEqual([
+      'settlement',
+      'vault',
+    ]);
+    // The load-bearing half: identity, and nobody else, may repoint an address.
+    expect(inbound.find((e) => e.envVar === NOTIFICATIONS_RECIPIENTS)?.holders).toEqual([
+      'identity',
+    ]);
+    // ...and they are enforced by different guards, or the split is cosmetic.
+    expect(new Set(inbound.map((e) => e.guard.token)).size).toBe(2);
   });
 
   it('resolves outbound credentials by holder', () => {
@@ -127,13 +146,17 @@ describe('graph lookup helpers', () => {
       'DOCUMENTS_INTERNAL_TOKEN',
       NOTIFICATIONS,
     ]);
-    expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([NOTIFICATIONS]);
+    // Identity holds the RECIPIENTS credential and NOT the send one: it feeds
+    // the store and never makes the platform speak.
+    expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([
+      NOTIFICATIONS_RECIPIENTS,
+    ]);
     expect(outboundCredentialsFor('profile')).toEqual([]);
   });
 
   it('grants settlement four distinct variables, never the same one twice', () => {
     // Settlement now touches four credentials — its own inbound plus three
-    // outbound (identity account-lock, M9 notifications, M9 PR2 documents
+    // outbound (identity account-lock, M9 notifications SEND, M9 PR2 documents
     // legal hold). Pairwise distinct is the shape whose collapse the M7
     // review found.
     const granted = credentialEnvVarsFor('settlement');
@@ -141,8 +164,9 @@ describe('graph lookup helpers', () => {
       [IDENTITY, NOTIFICATIONS, SETTLEMENT, 'DOCUMENTS_INTERNAL_TOKEN'].sort(),
     );
     expect(new Set(granted).size).toBe(granted.length);
+    const inboundVars = inboundCredentialsFor('settlement').map((e) => e.envVar);
     for (const outbound of outboundCredentialsFor('settlement')) {
-      expect(inboundCredentialFor('settlement')?.envVar).not.toBe(outbound.envVar);
+      expect(inboundVars).not.toContain(outbound.envVar);
     }
   });
 

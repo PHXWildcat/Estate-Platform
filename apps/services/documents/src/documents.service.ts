@@ -17,7 +17,13 @@ import { DocumentsAuthz, documentResource } from './authz.service';
 import { DocumentsRepo, type DocumentRow } from './documents.repo';
 import { EventsService } from './events.service';
 import { allowsNewVersion, isTransitionAllowed } from './execution-status';
-import { DEK_REPOSITORY, MALWARE_SCANNER, OBJECT_STORE, OCR_ENGINE } from './di-tokens';
+import {
+  DEK_REPOSITORY,
+  MALWARE_SCANNER,
+  OBJECT_STORE,
+  OCR_ENGINE,
+  SYSTEM_ACTOR_ID,
+} from './di-tokens';
 import { sniffContent } from './content-sniff';
 import type { MalwareScanner } from './malware-scanner';
 import type { ObjectStore } from './object-store';
@@ -627,13 +633,22 @@ export class DocumentsService {
    * Called only through the internal, service-credential-guarded route: it is
    * not a user capability, and no bearer token can reach it. Idempotent, and
    * the audit records how many documents actually moved.
+   *
+   * The transaction actor is SYSTEM_ACTOR_ID, not the owner: `app.actor_id`
+   * feeds the `documents_versions` trigger, and this is a platform action the
+   * owner did not and could not take. Attributing it to them would make the
+   * append-only version history of a frozen estate read as though the
+   * decedent froze their own documents the day a stranger reported them dead
+   * — and the audit event for the same operation already records it correctly
+   * as a service action, so the two would disagree. (M9 security review; the
+   * route had no caller before M9 PR2, so no such row had ever been written.)
    */
   async setEstateLegalHold(
     ownerUserId: string,
     hold: boolean,
     caseId: string,
   ): Promise<{ changed: number }> {
-    const changed = await this.db.withTransaction(ownerUserId, (tx) =>
+    const changed = await this.db.withTransaction(SYSTEM_ACTOR_ID, (tx) =>
       this.documents.setLegalHoldForOwner(tx, ownerUserId, hold),
     );
     await this.events.legalHoldSet(ownerUserId, { hold, changed, caseId });

@@ -24,11 +24,13 @@ import {
   EMAIL_SENDER,
   FIELD_CRYPTO,
   PG_POOL_CONFIG,
+  RECIPIENTS_CREDENTIAL,
 } from './di-tokens';
 import { SesEmailSender, StubEmailSender, type EmailSender } from './email';
 import { EventsService } from './events.service';
 import { HttpErrorFilter } from './http-error.filter';
-import { InternalController } from './internal.controller';
+import { InternalController, RecipientsController } from './internal.controller';
+import { RecipientsCredentialGuard } from './recipients-credential.guard';
 import { NotificationsService } from './notifications.service';
 import { RecipientsRepo } from './recipients.repo';
 import { SendsRepo } from './sends.repo';
@@ -72,7 +74,7 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
 }
 
 @Module({
-  controllers: [InternalController],
+  controllers: [InternalController, RecipientsController],
   providers: [
     { provide: CONFIG, useFactory: (): NotificationsConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -133,13 +135,25 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
         ),
     },
     {
-      // '' when unset: ServiceCredentialGuard fails closed and every internal
-      // route refuses (dev must opt in explicitly by provisioning the edge).
+      // '' when unset: ServiceCredentialGuard fails closed and the SEND route
+      // refuses (dev must opt in explicitly by provisioning the edge).
       provide: SERVICE_CREDENTIAL,
       inject: [CONFIG],
       useFactory: (config: NotificationsConfig): string => config.internalApiToken,
     },
+    {
+      // The second inbound credential, for the recipient-upsert surface only.
+      // Two tokens because a guard binds exactly one, and these two routes
+      // have different legitimate holders — sending is vault + settlement,
+      // saying where a user's notifications GO is identity's alone
+      // (credential-graph.ts; found by the M9 security review). Fails closed
+      // on '' exactly as the send credential does.
+      provide: RECIPIENTS_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: NotificationsConfig): string => config.recipientsApiToken,
+    },
     ServiceCredentialGuard,
+    RecipientsCredentialGuard,
     RecipientsRepo,
     SendsRepo,
     NotificationsService,

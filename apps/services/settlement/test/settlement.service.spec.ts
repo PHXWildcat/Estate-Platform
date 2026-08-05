@@ -491,6 +491,31 @@ describe('the estate-wide legal hold (M9 PR2: settlement → documents)', () => 
     ]);
   });
 
+  it('a documents outage at VERIFICATION never leaves the account terminally locked', async () => {
+    // The M9 security review's load-bearing finding. `settlement` is the one
+    // irreversible identity state (no transition back to `active`), so if the
+    // lock ran before the fallible hold, a documents blip would roll the case
+    // back to waiting_period while the owner stayed locked out forever — and
+    // every restore path would then 503. Order is the fix: nothing
+    // irreversible may run before something that can still fail.
+    const h = linkedHarness();
+    const caseId = await approvedCase(h);
+    h.clock.value = new Date(NOW.getTime() + 5 * DAY + HOUR);
+    h.documentsHold.failSetHold = true;
+    await expect(h.service.confirmVerification(OPERATOR, SESSION, caseId)).rejects.toMatchObject({
+      response: { error: 'documents_unavailable' },
+    });
+    // THE ASSERTION THAT PINS THE ORDERING: the terminal, irreversible
+    // `settlement` transition was never even attempted, so the owner remains
+    // restorable and every void/reject path still works. Only the
+    // approve-time deceased_pending call is on record.
+    expect(h.identity.setStateCalls.map((c) => c.state)).toEqual(['deceased_pending']);
+    // In the real DB the transaction rolls back (the in-memory repos here have
+    // no rollback, the sibling fail-closed tests above take the same tack), so
+    // the durable evidence is the audit trail: no verification happened.
+    expect(auditActions(h.producer)).not.toContain('settlement.case.verified');
+  });
+
   it('a documents outage during the owner void refuses the void (fail closed)', async () => {
     const h = linkedHarness();
     const caseId = await approvedCase(h);

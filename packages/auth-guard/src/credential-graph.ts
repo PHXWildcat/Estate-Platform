@@ -86,9 +86,11 @@ export type ServiceName = (typeof SERVICE_NAMES)[number];
 /** One credential: what it opens, and exactly who may hold it. */
 export interface ServiceCredentialEdge {
   /**
-   * The environment variable carrying it. Always `<CALLEE>_INTERNAL_TOKEN` —
-   * the naming IS the control, so the fence derives the expected name from
-   * `callee` rather than trusting this string.
+   * The environment variable carrying it. Always begins `<CALLEE>_` and ends
+   * `_INTERNAL_TOKEN` — the naming IS the control, so the fence derives the
+   * prefix from `callee` rather than trusting this string. A callee with more
+   * than one internal SURFACE qualifies the middle (see `guard`), because two
+   * capabilities on one service must not share one secret.
    */
   readonly envVar: string;
   /** The service that EXPECTS this value on its own internal routes. */
@@ -100,10 +102,30 @@ export interface ServiceCredentialEdge {
    */
   readonly holders: readonly ServiceName[];
   /**
+   * The guard class and DI token that enforce this edge, as SOURCE NAMES —
+   * the fence greps for them.
+   *
+   * Most callees have exactly one internal surface and use the shared
+   * `ServiceCredentialGuard` / `SERVICE_CREDENTIAL` pair. A callee whose
+   * internal routes fall into capability classes with DIFFERENT legitimate
+   * holders needs one credential per class, and therefore one guard per class
+   * — a guard binds a single token, so the token IS the partition. The M9
+   * security review found the alternative the hard way: notifications' send
+   * and recipient-upsert routes shared one secret, so vault and settlement,
+   * which only ever send, also held the power to repoint any user's
+   * notification address.
+   */
+  readonly guard: {
+    /** Guard class named in the controller's `@UseGuards(...)`. */
+    readonly className: string;
+    /** DI token the callee's app.module binds to this credential. */
+    readonly token: string;
+  };
+  /**
    * The exact internal surface it unlocks. ENFORCED: the fence extracts the
-   * routes of every `ServiceCredentialGuard`-protected controller and requires
-   * this list to match them exactly, so a new internal route cannot be added
-   * without restating what the credential now opens.
+   * routes of every controller guarded by `guard.className` and requires this
+   * list to match exactly, so a new internal route cannot be added without
+   * restating what the credential now opens.
    */
   readonly opens: readonly string[];
   /**
@@ -113,6 +135,12 @@ export interface ServiceCredentialEdge {
   readonly grants: string;
 }
 
+/** The shared guard/token pair, used by every single-surface callee. */
+const SHARED_GUARD = {
+  className: 'ServiceCredentialGuard',
+  token: 'SERVICE_CREDENTIAL',
+} as const;
+
 export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
   {
     envVar: 'IDENTITY_INTERNAL_TOKEN',
@@ -120,6 +148,7 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // Settlement alone. This is the only lock-capable credential in the
     // product, and the one the M7 review found leaking to vault and documents.
     holders: ['settlement'],
+    guard: SHARED_GUARD,
     opens: [
       'PUT /internal/v1/settlement-lock/:userId',
       'GET /internal/v1/settlement-lock/:userId/liveness',
@@ -137,6 +166,7 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // holder by several prose docs; it is not one, and never was — documents
     // reaches settlement by forwarding the operator's own bearer.
     holders: ['vault'],
+    guard: SHARED_GUARD,
     opens: ['GET /v1/settlement/authority/vault-release'],
     grants:
       "Read whether an owner's estate is in settlement and whether the vault access stage is approved. Read-only and narrow: it writes nothing, exposes no case contents, and cannot move a case forward. A holder learns one boolean about one user.",
@@ -153,6 +183,7 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // absorbs the secret, and the variable became production-required on the
     // documents side in that change too.
     holders: ['settlement'],
+    guard: SHARED_GUARD,
     opens: ['PUT /internal/v1/legal-hold'],
     grants:
       "Set or clear the legal hold on an owner's documents, which blocks deletion. It grants no read access to content and decrypts nothing; misuse means denying a legitimate deletion, or silently lifting a hold that litigation requires.",
@@ -160,27 +191,58 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
   {
     envVar: 'NOTIFICATIONS_INTERNAL_TOKEN',
     callee: 'notifications',
-    // Three holders, one domain. Vault and settlement send (their M6/M7
-    // waiting-period notifications); identity feeds the recipient store at
-    // registration and login — the two moments the user themselves supplies
-    // the plaintext address, which is why no service anywhere needs an
-    // email-ciphertext read path. Every route this opens is
-    // notification-domain: no lock power, no data reads, no case movement.
-    holders: ['identity', 'settlement', 'vault'],
-    opens: ['POST /internal/v1/notifications/send', 'PUT /internal/v1/notifications/recipients'],
+    // SEND ONLY. Vault and settlement send their M6/M7 waiting-period
+    // notifications and do nothing else to this service; identity is
+    // deliberately NOT here — it never sends, it only feeds the recipient
+    // store, which is the separate edge below.
+    holders: ['settlement', 'vault'],
+    guard: SHARED_GUARD,
+    opens: ['POST /internal/v1/notifications/send'],
     grants:
-      "Make the platform send a content-free template email to a user, and register/refresh the address it goes to. Misuse means notification spam (desensitization — the M6 review attacked and held this) or pointing a user's notifications at an attacker address, which the versions history and the notification.recipient.updated audit trail record; it exposes no stored address and no estate data.",
+      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of nine notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address, no estate data, and cannot redirect delivery.',
+  },
+  {
+    envVar: 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // IDENTITY ALONE, and this is the security-relevant half of the split.
+    // Identity feeds the store at registration and login — the two moments
+    // the user themselves supplies the plaintext address, which is why no
+    // service anywhere needs an email-ciphertext read path.
+    //
+    // The M9 security review found these two routes sharing ONE secret, so
+    // vault and settlement — which only ever send — also held the power to
+    // repoint any user's notifications at an attacker's mailbox. That is
+    // strictly worse than it sounds: it is CROSS-DOMAIN. Vault's copy could
+    // silence settlement's §5.1 death-case alerts, and settlement's could
+    // silence vault's §5.2 emergency-access alerts, in each case removing the
+    // one signal the owner gets during the waiting period that exists to
+    // catch exactly that attack. Splitting the edge is what makes the
+    // module's own rule 3 ("holders is exhaustive and MINIMAL") true here.
+    holders: ['identity'],
+    guard: { className: 'RecipientsCredentialGuard', token: 'RECIPIENTS_CREDENTIAL' },
+    opens: ['PUT /internal/v1/notifications/recipients'],
+    grants:
+      "Set the address a user's notifications are delivered to. A holder can silently redirect every future owner alert — including the §5.1 death-case contact sweep and the §5.2 emergency-access waiting-period alerts — to a mailbox they control, defeating the waiting period by removing the owner's only signal. It reads nothing: the stored address is never returned by any route, and the change is recorded (prior ciphertext retained in the versions table) though NOT attributed to a caller, so the audit trail proves that an address changed, never who changed it.",
   },
 ];
 
-/** The mandated variable name for a service's own inbound credential. */
-export function expectedEnvVarFor(service: ServiceName): string {
-  return `${service.toUpperCase()}_INTERNAL_TOKEN`;
+/**
+ * The mandated name shape for a credential opening `service`'s routes:
+ * `<SERVICE>_…_INTERNAL_TOKEN`, with an optional capability qualifier in the
+ * middle for a callee that has more than one internal surface. The prefix is
+ * the control — a credential named for its CALLER is what rule 1 forbids.
+ */
+export function envVarPrefixFor(service: ServiceName): string {
+  return `${service.toUpperCase()}_`;
 }
 
-/** The credential a service EXPECTS on its own routes, if it has any. */
-export function inboundCredentialFor(service: ServiceName): ServiceCredentialEdge | undefined {
-  return SERVICE_CREDENTIAL_GRAPH.find((edge) => edge.callee === service);
+/**
+ * Every credential a service EXPECTS on its own routes. Usually one; a callee
+ * whose internal routes split into capability classes with different holders
+ * has one per class (notifications: send vs recipient-upsert).
+ */
+export function inboundCredentialsFor(service: ServiceName): readonly ServiceCredentialEdge[] {
+  return SERVICE_CREDENTIAL_GRAPH.filter((edge) => edge.callee === service);
 }
 
 /** Every credential a service may hold and present to a peer. */
@@ -190,14 +252,13 @@ export function outboundCredentialsFor(service: ServiceName): readonly ServiceCr
 
 /**
  * Every credential env var a service may legitimately have configured — its own
- * inbound one plus each outbound one. Services assert their real config holds
+ * inbound one(s) plus each outbound one. Services assert their real config holds
  * exactly this set: no more (the M7 collapse) and no fewer (a silently unwired
  * gate). Sorted so it compares cleanly with `credentialsHeldIn`.
  */
 export function credentialEnvVarsFor(service: ServiceName): string[] {
-  const inbound = inboundCredentialFor(service);
   return [
-    ...(inbound ? [inbound.envVar] : []),
+    ...inboundCredentialsFor(service).map((edge) => edge.envVar),
     ...outboundCredentialsFor(service).map((edge) => edge.envVar),
   ].sort();
 }
