@@ -40,8 +40,16 @@ export function moneyToCents(value: string): bigint {
     throw new RangeError('not a money string');
   }
   const negative = value.startsWith('-');
-  const [whole = '0', frac = ''] = (negative ? value.slice(1) : value).split('.');
-  const cents = BigInt(whole) * 100n + BigInt(frac.padEnd(2, '0') || '0');
+  const unsigned = negative ? value.slice(1) : value;
+  // Split on the FIRST '.' by index rather than destructuring `split('.')` with
+  // defaults. The defaults read as caution and were dead code: the regex above
+  // already guarantees a whole part, so `= '0'` and `|| '0'` were branches no
+  // input could take — which a 100% branch floor is exactly the right thing to
+  // have noticed.
+  const dot = unsigned.indexOf('.');
+  const whole = dot === -1 ? unsigned : unsigned.slice(0, dot);
+  const frac = dot === -1 ? '' : unsigned.slice(dot + 1);
+  const cents = BigInt(whole) * 100n + BigInt(frac.padEnd(2, '0'));
   return negative ? -cents : cents;
 }
 
