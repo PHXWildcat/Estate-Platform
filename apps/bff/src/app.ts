@@ -5,6 +5,7 @@ import { GraphQLError, type FieldNode, type ValidationContext } from 'graphql';
 import { createYoga, type Plugin } from 'graphql-yoga';
 import { usePersistedOperations } from '@graphql-yoga/plugin-persisted-operations';
 import type { AssetsClient } from './assets-client';
+import type { AssistantClient } from './assistant-client';
 import type { BffConfig } from './config';
 import type { IdentityClient } from './identity-client';
 import { loadPersistedManifest, type PersistedOperationsManifest } from './persisted';
@@ -74,6 +75,7 @@ export interface BffAppOptions {
   config: BffConfig;
   identity: IdentityClient;
   assets: AssetsClient;
+  assistant: AssistantClient;
   /** Injectable for tests; defaults to loading from PERSISTED_MANIFEST_PATH. */
   persistedOperations?: PersistedOperationsManifest;
   /** Nest logger override (tests pass false). */
@@ -86,13 +88,13 @@ export interface BffAppOptions {
  * call `app.listen(port)` (main.ts) or `app.init()` (tests/supertest).
  */
 export async function createBffApp(options: BffAppOptions): Promise<INestApplication> {
-  const { config, identity, assets } = options;
+  const { config, identity, assets, assistant } = options;
   const production = config.nodeEnv === 'production';
   const manifest =
     options.persistedOperations ?? loadPersistedManifest(config.persistedManifestPath);
 
   const yoga = createYoga<RequestContext>({
-    schema: createBffSchema({ identity, assets, secureCookies: production }),
+    schema: createBffSchema({ identity, assets, assistant, secureCookies: production }),
     graphqlEndpoint: '/graphql',
     // POST-only mount + no GraphiQL/landing page: nothing to render in a browser.
     graphiql: false,

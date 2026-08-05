@@ -11,6 +11,7 @@ import type {
   CreateResult,
   NetWorth,
 } from '../src/assets-client';
+import type { AnalysisName, AnalysisView, AssistantClient } from '../src/assistant-client';
 import type { BffConfig } from '../src/config';
 import type {
   IdentityClient,
@@ -26,6 +27,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     port: 0,
     identityUrl: 'http://identity.test',
     assetsUrl: 'http://assets.test',
+    aiAssistantUrl: 'http://assistant.test',
     persistedManifestPath: null,
     ...overrides,
   };
@@ -166,10 +168,68 @@ export class FakeAssetsClient implements AssetsClient {
   }
 }
 
+/** One OK analysis, the shape the readiness page renders. */
+export const ANALYSIS: AnalysisView = {
+  status: 'OK',
+  reason: null,
+  findings: [
+    {
+      code: 'asset_not_titled_in_trust',
+      severity: 'high',
+      subject: { kind: 'asset', ref: ASSET.assetId, label: 'The lake house' },
+      detail: { category: 'real_estate', estValue: '250000.00' },
+    },
+  ],
+  disclaimer: 'Automated analysis for education only. Not legal or tax advice.',
+};
+
+/** Configurable in-memory fake; records every call and the token it saw. */
+export class FakeAssistantClient implements AssistantClient {
+  analysisCalls: Array<{ accessToken: string; name: AnalysisName }> = [];
+  consentsCalls: string[] = [];
+  grantCalls: Array<{ accessToken: string; scope: string }> = [];
+  revokeCalls: Array<{ accessToken: string; scope: string }> = [];
+
+  /** Per-analysis overrides; anything unset answers ANALYSIS. */
+  analysisResults = new Map<AnalysisName, AnalysisView>();
+  analysisError: Error | null = null;
+  consentsResult: string[] = ['assistant.enabled'];
+  grantError: Error | null = null;
+
+  analysis(accessToken: string, name: AnalysisName): Promise<AnalysisView> {
+    this.analysisCalls.push({ accessToken, name });
+    if (this.analysisError) {
+      return Promise.reject(this.analysisError);
+    }
+    return Promise.resolve(this.analysisResults.get(name) ?? ANALYSIS);
+  }
+
+  consents(accessToken: string): Promise<string[]> {
+    this.consentsCalls.push(accessToken);
+    return Promise.resolve(this.consentsResult);
+  }
+
+  grantConsent(accessToken: string, scope: string): Promise<string[]> {
+    this.grantCalls.push({ accessToken, scope });
+    if (this.grantError) {
+      return Promise.reject(this.grantError);
+    }
+    this.consentsResult = [...new Set([...this.consentsResult, scope])];
+    return Promise.resolve(this.consentsResult);
+  }
+
+  revokeConsent(accessToken: string, scope: string): Promise<string[]> {
+    this.revokeCalls.push({ accessToken, scope });
+    this.consentsResult = this.consentsResult.filter((granted) => granted !== scope);
+    return Promise.resolve(this.consentsResult);
+  }
+}
+
 export interface TestAppOptions {
   config?: BffConfig;
   identity?: IdentityClient;
   assets?: AssetsClient;
+  assistant?: AssistantClient;
   manifest?: PersistedOperationsManifest;
 }
 
@@ -178,6 +238,7 @@ export async function makeApp(options: TestAppOptions = {}): Promise<INestApplic
     config: options.config ?? testConfig(),
     identity: options.identity ?? new FakeIdentityClient(),
     assets: options.assets ?? new FakeAssetsClient(),
+    assistant: options.assistant ?? new FakeAssistantClient(),
     persistedOperations: options.manifest ?? new Map(),
     logger: false,
   });

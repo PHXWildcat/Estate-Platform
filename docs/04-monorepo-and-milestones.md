@@ -1564,7 +1564,7 @@ actor and identity fires the same event on every login, so it is evidence for
 recovery, not a detection control — closing it needs the mesh's peer identity),
 and the carrier's event-class visibility.
 
-### M10 — AI estate assistant (PR3 in progress)
+### M10 — AI estate assistant (PR4 in progress)
 
 The milestone docs/04 always had next, arriving on a platform that can now
 deploy and notify — the two reasons M8 displaced it (see M8's opening note).
@@ -1885,6 +1885,65 @@ step-up, reads a live funding analysis and a live estate-tax estimate, sees
 a revoke switch the routes off again. The assistant runs only in the development
 profile, so the workflow's exact counts moved 15/4 → 16/4 (dev) and 9/10 → 9/11
 (production).
+
+**PR4 — the thin UI: estate readiness and consent.**
+
+The analysis routes PR3 built for a UI had no consumer, which is the shape this
+codebase has been bitten by before (M4's legal-hold route sat with zero callers
+for three milestones). PR4 closes that with the readiness surface and the
+consent controls that gate the assistant at all.
+
+**Chat is deliberately out.** The analysis path works fully in both stack
+profiles today; a conversation UI could only ever be demonstrated against the
+deterministic stub, because the production profile omits the assistant container
+until an Anthropic credential exists. Chat becomes its own PR when there is
+something real to talk to.
+
+- **The BFF gains its second non-identity downstream** (`assistant-client.ts`),
+  on the assets-client terms: it forwards the caller's own bearer, injects no
+  identity header, holds no credential. That matters twice over here, because
+  the assistant holds none either — so the whole chain from browser to analyser
+  runs on one session's authority.
+- **An analysis is a PAYLOAD WITH A STATUS, not a thrown error.** The page asks
+  for all four at once, so one 503 must cost its own card rather than blanking
+  the set. Four statuses where the service has three: `DISABLED` (the master
+  consent switch is off) is the one a user can act on, and collapsing it into
+  `UNAVAILABLE` would make the page lie about which happened. What never
+  happens at any layer is a failure rendering as an empty finding list.
+- **`lib/findings.ts` is where a code becomes a sentence** — reviewed like code,
+  identical for every user, and incapable of inventing a finding. Two rules hold
+  it honest: every sentence is a fact about the user's own account rather than a
+  legal claim (the same line the analysers' reference data holds, and what lets
+  this surface ship without a lawyer's sign-off), and every number comes from
+  `detail` through `formatMoney`, so money is never parsed. The copy map is
+  total over the union, so a new finding code without wording is a compile
+  error; an unknown code still gets a safe fallback for the case where a service
+  deploys ahead of the app.
+- **The consent asymmetry is visible in the UI.** Granting reveals an inline
+  step-up prompt and retries the same grant once identity accepts the code —
+  the user never leaves the page. Revoking is one click, always: the M6
+  emergency-access-denial rule that the protective action must never be harder
+  than the permissive one. Every mutation answers with the server's full grant
+  set, which the component renders rather than toggling a local boolean —
+  absence IS denial, so an optimistic checkbox could show a grant the server
+  refused.
+
+**Driving the real app found what jsdom could not** (the M8 PR5 lesson, again).
+Rendering the page in a browser surfaced a duplicate React key: findings were
+keyed on code + subject ref, and the commonest analysis in the product emits
+several `instrument_missing` findings with no subject row at all — "no guardian
+designation on file" and "no HIPAA authorization on file" are both that shape.
+React's remedy for a duplicate key is to drop or duplicate a child, so a real
+finding about someone's estate would have silently vanished. Fixed, with a
+regression test that renders exactly that pair. The same pass caught the master
+switch's button wrapping under its description while every other row's sat
+beside it.
+
+Deliberately no new stack e2e test, so the workflow counts stay 16/4 and 9/11:
+the analysis path over real HTTP is already proven by PR3's e2e, and what PR4
+adds is one forwarding hop, covered by the BFF suite. Coverage floors ratcheted
+from measured runs — bff 80/82/78/82 → 85/84/85/86, web 70/62/64/73 →
+79/73/82/83.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.

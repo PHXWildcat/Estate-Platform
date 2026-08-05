@@ -733,6 +733,9 @@ services:
       # First non-identity downstream (M8 PR5): the BFF forwards the CALLER'S
       # bearer to it — no identity headers, no service credential to hold.
       ASSETS_URL: http://assets:3003
+      # Second one (M10 PR4), same posture. Absent from the production profile,
+      # where the assistant itself is omitted for want of a provider credential.
+      AI_ASSISTANT_URL: http://ai-assistant:3009
       PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
     volumes:
       # The web bundle sends hash-only GraphQL bodies (its client inlines

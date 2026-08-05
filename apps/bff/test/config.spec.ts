@@ -12,6 +12,9 @@ describe('loadConfig', () => {
       port: 4000,
       identityUrl: 'http://localhost:3001',
       assetsUrl: 'http://localhost:3003',
+      // M10 PR4: the assistant's port (3009), same fail-closed posture as the
+      // assets URL — a wrong value is refused downstream, never widened.
+      aiAssistantUrl: 'http://localhost:3009',
       persistedManifestPath: null,
     });
   });
@@ -19,6 +22,12 @@ describe('loadConfig', () => {
   it('trims trailing slashes off ASSETS_URL', () => {
     expect(loadConfig({ ASSETS_URL: 'http://assets.internal///' }).assetsUrl).toBe(
       'http://assets.internal',
+    );
+  });
+
+  it('trims trailing slashes off AI_ASSISTANT_URL', () => {
+    expect(loadConfig({ AI_ASSISTANT_URL: 'http://assistant.internal//' }).aiAssistantUrl).toBe(
+      'http://assistant.internal',
     );
   });
 

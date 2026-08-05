@@ -115,6 +115,12 @@ by weakening the guard:
   `PLAID_MODE=live` with credentials that do not exist. A container that boots
   on invented credentials and fails every outbound call is worse than an
   absent one.
+- **The readiness page reads UNAVAILABLE in the production profile (M10 PR4).**
+  The BFF is wired to the assistant in both profiles, but the assistant
+  container is absent from production (below), so its four analysis cards say
+  "we could not run this check" there. That is the stack's shape, not the
+  product's — and it is the honest rendering, which is the point: a failed check
+  never shows as an empty finding list.
 - **The AI assistant is absent for the same reason (M10).** Production pins
   `LLM_MODE=anthropic`, and no Anthropic credential exists in this project. In
   development it runs its deterministic stub gateway and makes no network call

@@ -55,6 +55,40 @@ export interface NetWorthInfo {
   inTrustValue: string;
 }
 
+/**
+ * Four statuses, and the UI must keep them apart (M10 PR4). `OK` with no
+ * findings is a real answer — "nothing found"; `UNAVAILABLE` is a read that did
+ * not happen; `REFUSED` is a control firing (the estate-tax reference data has
+ * no professional sign-off, so production will not state it); `DISABLED` is the
+ * one the user can act on. Rendering any of the last three as "no findings"
+ * would tell someone their estate is in order on the strength of a failure.
+ */
+export type AnalysisStatus = 'OK' | 'UNAVAILABLE' | 'REFUSED' | 'DISABLED';
+
+export interface FindingInfo {
+  /** Closed token from the analyser. `lib/findings.ts` turns it into a sentence. */
+  code: string;
+  severity: 'high' | 'medium' | 'info';
+  subject: { kind: 'asset' | 'document' | 'estate'; ref: string | null; label: string | null };
+  /** Counts, enum tokens, and money as decimal STRINGS — never parsed to a float. */
+  detail: Record<string, string | number | boolean | null>;
+}
+
+export interface AnalysisInfo {
+  status: AnalysisStatus;
+  reason: string | null;
+  findings: FindingInfo[];
+  /** docs/01 §2.8's non-legal-advice watermark. Present on every status. */
+  disclaimer: string;
+}
+
+export interface ReadinessInfo {
+  funding: AnalysisInfo;
+  missingDocuments: AnalysisInfo;
+  beneficiaryConflicts: AnalysisInfo;
+  estateTax: AnalysisInfo;
+}
+
 type EmptyVariables = Record<string, never>;
 
 interface OperationSignatures {
@@ -86,6 +120,10 @@ interface OperationSignatures {
     };
     data: { createAsset: { assetId: string; version: string } };
   };
+  Readiness: { variables: EmptyVariables; data: { readiness: ReadinessInfo } };
+  Consents: { variables: EmptyVariables; data: { consents: string[] } };
+  GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };
+  RevokeConsent: { variables: { scope: string }; data: { revokeConsent: string[] } };
 }
 
 const hashByDocument: ReadonlyMap<string, string> = new Map(
