@@ -3,6 +3,44 @@ import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
 
 /**
+ * A deferred audit emission, held until the transaction that produced it has
+ * COMMITTED.
+ *
+ * Kafka does not enrol in the Postgres transaction: `AuditProducer.send`
+ * reaches the broker immediately and no ROLLBACK can recall it. An event
+ * emitted inside a transaction that then rolls back is a permanent record, in
+ * an append-only store, of a row that does not exist — and this service's
+ * stream is the only account of what estate data reached a model provider, so
+ * an auditor who cannot resolve a `resourceId` cannot tell "the platform lost
+ * the row" from "the retrieval never happened".
+ *
+ * `remove()` already stated the rule (the M9 ordering rule, applied to
+ * evidence); a turn is the same shape and must obey it too. Buffer, then flush
+ * once the rows are durable.
+ *
+ * NOT everything belongs in a buffer. An event that is TRUE regardless of the
+ * transaction's fate — a refusal that references no row created inside it —
+ * must still fire on the failure path, or the control becomes silent exactly
+ * when it acts. `assistant.egress.refused` is that case.
+ */
+export type PendingAudit = () => Promise<void>;
+
+/**
+ * Emit buffered events in the order they were recorded, after the commit.
+ *
+ * A failure here is the opposite trade from the one this exists to prevent:
+ * the rows are durable and an event is missing, rather than an event asserting
+ * rows that never landed. That is the same trade every audit-after-commit call
+ * site in the product makes, and the error propagates rather than being
+ * swallowed.
+ */
+export async function flushPendingAudit(pending: readonly PendingAudit[]): Promise<void> {
+  for (const emit of pending) {
+    await emit();
+  }
+}
+
+/**
  * The single audit egress point for the AI estate assistant (docs/02 §6 PII
  * firewall: entity IDs and enum tokens only). In THIS service that firewall is
  * also a PROMPT-CONTENT firewall, and it is the stricter of the two: a turn

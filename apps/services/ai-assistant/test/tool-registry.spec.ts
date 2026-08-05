@@ -33,6 +33,17 @@ describe('the subject is never a tool parameter', () => {
     'uid',
     'onBehalfOf',
     'impersonateUser',
+    // Run-together lowercase spellings carry no boundary for the word splitter
+    // to find — the form a developer writes when naming a parameter after a SQL
+    // column. Found by the M10 PR1 review; this is the third spelling class this
+    // fence has had to learn, after the anchored regex and camelCase compounds.
+    'userid',
+    'ownerid',
+    'subjectid',
+    'principalid',
+    'actorid',
+    'tenantid',
+    'userids',
   ])('refuses a tool declaring %s', (param) => {
     expect(() => assertSubjectFree(tool('t', { [param]: z.string() }))).toThrow(ToolContractError);
   });
@@ -46,12 +57,23 @@ describe('the subject is never a tool parameter', () => {
     );
   });
 
-  it.each(['assetId', 'documentId', 'version', 'query', 'state', 'accountId'])(
-    'allows the resource-selecting parameter %s',
-    (param) => {
-      expect(() => assertSubjectFree(tool('t', { [param]: z.string() }))).not.toThrow();
-    },
-  );
+  it.each([
+    'assetId',
+    'documentId',
+    'version',
+    'query',
+    'state',
+    'accountId',
+    // These must NOT trip the check. `liquidity` contains "uid" and `factorId`
+    // contains "actor", which is exactly why the fence matches whole words and
+    // an `<word>id` suffix rather than substrings — a fence that refuses
+    // plausible estate parameters is one someone deletes.
+    'liquidityTier',
+    'factorId',
+    'documentIds',
+  ])('allows the resource-selecting parameter %s', (param) => {
+    expect(() => assertSubjectFree(tool('t', { [param]: z.string() }))).not.toThrow();
+  });
 
   it('validates the whole set at construction, so a bad tool cannot boot', () => {
     expect(

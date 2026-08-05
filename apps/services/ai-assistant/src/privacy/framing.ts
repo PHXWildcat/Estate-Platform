@@ -48,14 +48,30 @@ function neutralizeDelimiters(text: string): string {
 }
 
 /**
+ * Sanitize a value destined for the HEADER line. Two hazards, not one: a
+ * delimiter would terminate the frame at the header, and a newline would end
+ * the header line and leave whatever follows outside any marked region.
+ *
+ * The header is sanitized for the same reason the body is. `UntrustedSource`
+ * documents `ref` as an opaque identifier and never content, and both callers
+ * honour that today — a registry constant and a UUID — but applying the
+ * guarantee to the body while trusting the caller for the header is the shape
+ * of latent invariant this codebase keeps finding in review. This function
+ * should be incapable of emitting an escapable frame for ANY input, which is
+ * what its own module docstring claims.
+ */
+function sanitizeHeaderValue(value: string): string {
+  return neutralizeDelimiters(value).replace(/[\r\n]+/g, ' ');
+}
+
+/**
  * Wrap untrusted text for inclusion in a prompt. The instruction sits OUTSIDE
  * the delimited region — text inside the region is never the authority on how
  * text inside the region should be treated.
  */
 export function frameUntrusted(source: UntrustedSource, text: string): string {
-  return [`${OPEN} kind=${source.kind} ref=${source.ref}`, neutralizeDelimiters(text), CLOSE].join(
-    '\n',
-  );
+  const header = `${OPEN} kind=${sanitizeHeaderValue(source.kind)} ref=${sanitizeHeaderValue(source.ref)}`;
+  return [header, neutralizeDelimiters(text), CLOSE].join('\n');
 }
 
 /**

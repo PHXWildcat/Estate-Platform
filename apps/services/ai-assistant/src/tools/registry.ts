@@ -121,9 +121,31 @@ export class ToolContractError extends Error {
  * construction, which happens at boot — so the failure is a process that will
  * not start, not a request that quietly reads the wrong estate.
  */
+/**
+ * True for a subject word, including the run-together `<word>id` / `<word>ids`
+ * spellings that carry no boundary to split on — `userid` and `ownerid` are the
+ * lowercase forms a developer writes when naming a parameter after a SQL
+ * column, and the word splitter cannot see them.
+ *
+ * Derived from SUBJECT_WORDS by suffix rather than enumerated, so a word added
+ * above is covered in every spelling without a second list to keep in sync. It
+ * deliberately does NOT use substring matching: `uid` is a substring of
+ * `liquidity` and `actor` of `factor`, so a contains-check would refuse
+ * plausible estate parameters and a fence that cries wolf gets deleted.
+ */
+function isSubjectWord(word: string): boolean {
+  if (SUBJECT_WORDS.has(word)) {
+    return true;
+  }
+  if (word.endsWith('ids') && SUBJECT_WORDS.has(word.slice(0, -3))) {
+    return true;
+  }
+  return word.endsWith('id') && SUBJECT_WORDS.has(word.slice(0, -2));
+}
+
 export function assertSubjectFree(tool: AssistantTool): void {
   for (const param of Object.keys(tool.input.shape)) {
-    const offending = identifierWords(param).find((word) => SUBJECT_WORDS.has(word));
+    const offending = identifierWords(param).find(isSubjectWord);
     if (offending !== undefined) {
       throw new ToolContractError(
         `tool "${tool.name}" declares subject-selecting parameter "${param}": the subject comes from the verified session, never from tool input`,

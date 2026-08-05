@@ -718,6 +718,18 @@ describe('the egress assertion', () => {
     // partial turn survives.
     expect(h.gateway.seen).toEqual([]);
     expect(h.store.messages).toEqual([]);
+
+    // AND the audit stream says nothing happened either. Found by the M10 PR1
+    // review: turn events were emitted from inside the transaction, and Kafka
+    // does not roll back — so a refused turn left `assistant.message.sent`
+    // pointing at a message row that never committed. An auditor resolving that
+    // resourceId finds nothing and cannot tell "the platform lost the row" from
+    // "the retrieval never happened", which is precisely the question this
+    // stream exists to answer. `egressRefused` is the deliberate exception: it
+    // references no row created here and is true whatever the transaction did.
+    expect(named(h.events, 'messageSent')).toHaveLength(0);
+    expect(named(h.events, 'turnCompleted')).toHaveLength(0);
+    expect(named(h.events, 'toolInvoked')).toHaveLength(0);
   });
 
   it('fires on content a TOOL retrieved, not only on what the user typed', async () => {

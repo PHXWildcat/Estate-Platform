@@ -8,7 +8,7 @@ import type {
   ToolInvocationRequest,
 } from './conversation.service';
 import type { Queryable } from './db';
-import { EventsService } from './events.service';
+import { EventsService, type PendingAudit } from './events.service';
 import { FieldCipher, toolResultField } from './field-cipher';
 import { ToolRegistry, type AssistantTool, type ToolContext, type ToolOutcome } from './tools';
 
@@ -122,6 +122,7 @@ export class ToolExecutor implements ToolExecutorPort {
     tx: Queryable,
     ctx: ToolContext,
     request: ToolInvocationRequest,
+    pending: PendingAudit[],
   ): Promise<ExecutedToolCall> {
     // 1. Resolve. A model may hallucinate a name; that is a recorded refusal.
     // No `assistant_tool_calls` row is written, because no retrieval was
@@ -130,11 +131,13 @@ export class ToolExecutor implements ToolExecutorPort {
     // than a conversation-anchored refusal event.
     const tool = this.registry.get(request.name);
     if (tool === null) {
-      await this.events.toolRefused(ctx.userId, request.conversationId, {
-        tool: UNKNOWN_TOOL_TOKEN,
-        scope: NO_SCOPE_TOKEN,
-        reason: 'unknown_tool',
-      });
+      pending.push(() =>
+        this.events.toolRefused(ctx.userId, request.conversationId, {
+          tool: UNKNOWN_TOOL_TOKEN,
+          scope: NO_SCOPE_TOKEN,
+          reason: 'unknown_tool',
+        }),
+      );
       // The reported name is the CONSTANT, not what the model said: the turn
       // service quotes this back into the next prompt, and a hallucinated name
       // can be composed from a sentence an attacker wrote into a PDF. It is
@@ -152,7 +155,7 @@ export class ToolExecutor implements ToolExecutorPort {
     // deny-by-default posture is structural rather than conventional.
     const granted = await this.consents.grantedScopes(ctx.userId);
     if (!permits(granted, tool.scope)) {
-      return await this.record(tx, ctx, request, tool, { outcome: 'denied_no_consent' });
+      return await this.record(tx, ctx, request, tool, { outcome: 'denied_no_consent' }, pending);
     }
 
     // 3. Validate. The failure NEVER echoes the input: an argument may be
@@ -161,10 +164,14 @@ export class ToolExecutor implements ToolExecutorPort {
     // body is a token and nothing else).
     const parsed = tool.input.safeParse(request.input);
     if (!parsed.success) {
-      return await this.record(tx, ctx, request, tool, {
-        outcome: 'error',
-        reason: 'invalid_input',
-      });
+      return await this.record(
+        tx,
+        ctx,
+        request,
+        tool,
+        { outcome: 'error', reason: 'invalid_input' },
+        pending,
+      );
     }
 
     // 4. Execute under the verified subject. A throwing tool is contained here:
@@ -178,7 +185,7 @@ export class ToolExecutor implements ToolExecutorPort {
     }
 
     // 5 + 6.
-    return await this.record(tx, ctx, request, tool, outcome);
+    return await this.record(tx, ctx, request, tool, outcome, pending);
   }
 
   /**
@@ -211,6 +218,7 @@ export class ToolExecutor implements ToolExecutorPort {
     request: ToolInvocationRequest,
     tool: AssistantTool,
     outcome: ToolOutcome,
+    pending: PendingAudit[],
   ): Promise<ExecutedToolCall> {
     const toolCallId = randomUUID();
 
@@ -256,18 +264,22 @@ export class ToolExecutor implements ToolExecutorPort {
     // constants from this service's own registry — never from the name the
     // model supplied, even when the two happen to be equal.
     if (outcome.outcome === 'ok') {
-      await this.events.toolInvoked(ctx.userId, request.conversationId, {
-        tool: tool.name,
-        scope: tool.scope,
-        toolCallId,
-      });
+      pending.push(() =>
+        this.events.toolInvoked(ctx.userId, request.conversationId, {
+          tool: tool.name,
+          scope: tool.scope,
+          toolCallId,
+        }),
+      );
     } else {
-      await this.events.toolRefused(ctx.userId, request.conversationId, {
-        tool: tool.name,
-        scope: tool.scope,
-        reason:
-          outcome.outcome === 'denied_no_consent' ? 'no_consent' : auditReason(outcome.reason),
-      });
+      pending.push(() =>
+        this.events.toolRefused(ctx.userId, request.conversationId, {
+          tool: tool.name,
+          scope: tool.scope,
+          reason:
+            outcome.outcome === 'denied_no_consent' ? 'no_consent' : auditReason(outcome.reason),
+        }),
+      );
     }
 
     // The reported name is the RESOLVED tool's own, a compile-time constant

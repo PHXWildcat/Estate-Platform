@@ -14,7 +14,7 @@ import { AssistantAuthz, conversationResource } from './authz.service';
 import { ConversationsRepo } from './conversations.repo';
 import { Db, isUniqueViolation, type Queryable } from './db';
 import { LLM_GATEWAY } from './di-tokens';
-import { EventsService } from './events.service';
+import { EventsService, flushPendingAudit, type PendingAudit } from './events.service';
 import { FieldCipher, messageField } from './field-cipher';
 import {
   flattenForInspection,
@@ -116,6 +116,8 @@ export interface ToolExecutorPort {
     tx: Queryable,
     ctx: ToolContext,
     request: ToolInvocationRequest,
+    /** Audit emissions the executor DEFERS until the turn commits. */
+    pending: PendingAudit[],
   ): Promise<ExecutedToolCall>;
 }
 
@@ -280,7 +282,16 @@ export class ConversationService {
     const ctx: ToolContext = { userId, bearer };
     const declarations = this.declarations();
 
-    return this.db.withTransaction(userId, async (tx) => {
+    // Audit for this turn is BUFFERED and emitted after the commit. Kafka does
+    // not enrol in the transaction, so an event sent from inside one that later
+    // rolls back is a permanent record of a row that never existed — and the
+    // egress-refusal path below rolls back by design. `remove()` states the same
+    // rule; a turn is the same shape. `assistant.egress.refused` is deliberately
+    // NOT buffered: it references no row created here and is true whatever
+    // happens to the transaction, so buffering it would silence the control at
+    // the exact moment it fires.
+    const pending: PendingAudit[] = [];
+    const result = await this.db.withTransaction(userId, async (tx) => {
       // Liveness from the row, authority from the policy, and the row lock held
       // for the rest of the turn. Both refusals are the uniform not-found (see
       // `transcript` for why they must be indistinguishable).
@@ -307,7 +318,7 @@ export class ConversationService {
       const userSeq = last === undefined ? 0 : last.seq + 1;
       const userMessageId = randomUUID();
       await this.append(tx, userId, conversationId, userMessageId, userSeq, 'user', text);
-      await this.events.messageSent(userId, conversationId, userMessageId);
+      pending.push(() => this.events.messageSent(userId, conversationId, userMessageId));
       history.push({ role: 'user', text });
 
       const toolResults: LlmToolResult[] = [];
@@ -329,12 +340,17 @@ export class ConversationService {
           answer = output.text;
           break;
         }
-        const executed = await this.executor.execute(tx, ctx, {
-          conversationId,
-          messageId: userMessageId,
-          name: output.name,
-          input: output.input,
-        });
+        const executed = await this.executor.execute(
+          tx,
+          ctx,
+          {
+            conversationId,
+            messageId: userMessageId,
+            name: output.name,
+            input: output.input,
+          },
+          pending,
+        );
         toolResults.push(this.quoteResult(executed));
       }
 
@@ -342,10 +358,12 @@ export class ConversationService {
       const replyId = randomUUID();
       await this.append(tx, userId, conversationId, replyId, userSeq + 1, 'assistant', replyText);
       await this.conversations.touch(tx, conversationId);
-      await this.events.turnCompleted(userId, conversationId, replyId, {
-        toolCalls: toolResults.length,
-        gateway: this.gateway.name,
-      });
+      pending.push(() =>
+        this.events.turnCompleted(userId, conversationId, replyId, {
+          toolCalls: toolResults.length,
+          gateway: this.gateway.name,
+        }),
+      );
 
       return {
         conversationId,
@@ -354,6 +372,10 @@ export class ConversationService {
         toolCalls: toolResults.length,
       };
     });
+
+    // The rows are durable; only now may the stream assert they exist.
+    await flushPendingAudit(pending);
+    return result;
   }
 
   /** Seal one turn under the owner's DEK and append it (append-only table). */

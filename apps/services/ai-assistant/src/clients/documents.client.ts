@@ -71,7 +71,12 @@ const DocumentListSchema = z.array(DocumentViewSchema);
  * reasons a hostile sentence in a deed is merely wrong rather than dangerous.
  */
 const DocumentContentViewSchema = z.object({
-  documentId: z.string().min(1),
+  // A UUID, not merely non-empty: this value is echoed into the UNTRUSTED_DATA
+  // header by `get_document_text`. Framing sanitizes the header itself, so this
+  // is defense in depth rather than the load-bearing check — but a peer that
+  // drifted into returning something else should read as an unparseable
+  // response (fail closed, no data) rather than flow onward.
+  documentId: z.string().uuid(),
   version: z.number().int(),
   mime: z.string().min(1),
   /** utf8 for canonical-HTML (generated) content, base64 for binary uploads. */
