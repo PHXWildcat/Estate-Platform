@@ -1,3 +1,4 @@
+import { assistantTurnTimeoutMs } from '@estate/contracts';
 import { z } from 'zod';
 import { bffError } from './identity-client';
 
@@ -144,18 +145,25 @@ type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
  * than the service's own text is better than a UI that renders none.
  */
 /**
- * How long the BFF waits for ONE turn, in milliseconds.
+ * How long the BFF waits for ONE turn, DERIVED from the assistant's own turn
+ * budget rather than chosen to look bigger (M11 security review).
  *
- * Deliberately ABOVE the assistant's own per-provider-call deadline
- * (LLM_REQUEST_TIMEOUT_MS, 60s by default) rather than below it: the service is
- * the component that decides when a provider call has taken too long, and a BFF
- * that gave up first would abandon a turn the assistant is still committing —
- * with the conversation's row lock still held — and report a failure for an
- * answer that then lands in the transcript unread. The SDK may retry inside
- * that budget, so this leaves room for roughly two attempts plus the platform's
- * own work.
+ * The first version of this constant was a hand-picked 150s with a comment
+ * claiming it sat above the assistant's deadline. It did not. The assistant
+ * bounded one PROVIDER CALL, the SDK retried with the timeout applied per
+ * attempt, and a turn made up to six calls — so the edge gave up first on the
+ * feature's normal path. Nothing cancels the server side when a client aborts,
+ * so the turn still committed: the transcript recorded an exchange the user was
+ * told had failed, and the retry they were invited to make blocked on the
+ * conversation's row lock and re-sent a longer transcript to the provider.
+ *
+ * Now the service enforces `ASSISTANT_TURN_BUDGET_MS` as a wall clock across
+ * its whole loop, and this waits `assistantTurnTimeoutMs()` — the same constant
+ * plus headroom for the transaction, the encryption, the audit flush and the
+ * network. The ordering is a fact about one shared number instead of a claim in
+ * two comments, and `assistant-client.spec.ts` pins it.
  */
-const TURN_TIMEOUT_MS = 150_000;
+const TURN_TIMEOUT_MS = assistantTurnTimeoutMs();
 
 const FALLBACK_DISCLAIMER =
   'This is an automated analysis for education only. It is not legal or tax advice.';

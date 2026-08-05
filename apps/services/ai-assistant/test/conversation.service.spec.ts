@@ -11,10 +11,12 @@ import { AssistantAuthz } from '../src/authz.service';
 import type { ConsentScope } from '../src/consent';
 import type { ConsentsRepo } from '../src/consents.repo';
 import type { ToolCallResultRow, ToolCallsRepo } from '../src/tool-calls.repo';
+import { ASSISTANT_TURN_BUDGET_MS } from '@estate/contracts';
 import {
   ConversationService,
   ITERATION_CAP_MESSAGE,
   MAX_TOOL_ITERATIONS,
+  TURN_BUDGET_MESSAGE,
   TOOL_RESULT_PROMPT_CHARS,
   type ExecutedToolCall,
   type ToolExecutorPort,
@@ -365,12 +367,21 @@ function buildHarness(options?: {
    * gone (crypto-shredded, or a TB4 splice) — the decrypt throws.
    */
   priorResults?: Array<{ tool: string; data?: unknown; shredded?: boolean }>;
+  /** Milliseconds the clock jumps forward on each read (0 = frozen). */
+  clockStepMs?: number;
 }): Harness {
   const store = new FakeStore();
   const events: RecordedEvent[] = [];
   const cipher: CipherCalls = { decryptPurposes: [] };
   const actors: string[] = [];
   const gateway = new ScriptedGateway(options?.script ?? [{ kind: 'message', text: 'an answer' }]);
+  let clockMs = Date.parse('2026-08-05T10:00:00.000Z');
+  const step = options?.clockStepMs ?? 0;
+  const clock = (): Date => {
+    const now = new Date(clockMs);
+    clockMs += step;
+    return now;
+  };
   const executor = new FakeExecutor(
     options?.outcome ??
       ((): ExecutedToolCall => ({
@@ -401,6 +412,9 @@ function buildHarness(options?: {
     new ToolRegistry([summaryTool, documentTool]),
     gateway,
     executor,
+    // A controllable clock: the turn's wall-clock budget is testable without
+    // sleeping, and a test that needs to exhaust it advances this instead.
+    clock,
   );
   return { service, conversations, store, events, cipher, gateway, executor, actors };
 }
@@ -543,6 +557,75 @@ describe('ownership is a Cedar decision (the uniform not-found)', () => {
     // asked about a row that exists, never about one that has been retired.
     await expect(h.service.transcript(OWNER, mine)).rejects.toBeInstanceOf(NotFoundException);
     await expect(h.service.remove(OWNER, mine)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('a turn is bounded by wall clock, not only by iteration count', () => {
+  // M11 SECURITY REVIEW. The iteration cap bounds how many times the loop runs;
+  // it does not bound how LONG it runs. One provider call is bounded per
+  // ATTEMPT and the SDK retries, so six iterations of retried calls could run
+  // for many minutes — past any deadline an edge would wait. And the edge
+  // giving up first is worse than useless: nothing cancels this transaction, so
+  // the turn still commits and the payload has still crossed TB5 while the user
+  // is told it never happened.
+
+  /** A script that would keep the loop going until the iteration cap. */
+  const alwaysCallsATool: LlmTurnOutput[] = Array.from({ length: MAX_TOOL_ITERATIONS }, () => ({
+    kind: 'tool_call' as const,
+    name: 'estate_summary',
+    input: {},
+  }));
+
+  it('stops when the budget is spent, and says so in its own words', async () => {
+    // Each clock read advances past the whole budget, so the check trips on the
+    // first iteration — no sleeping, and no dependence on real time.
+    const h = buildHarness({
+      script: alwaysCallsATool,
+      clockStepMs: ASSISTANT_TURN_BUDGET_MS,
+    });
+    const conversationId = h.store.seedConversation(OWNER);
+
+    const reply = await h.service.takeTurn(OWNER, BEARER, conversationId, 'what do I own?');
+
+    expect(reply.text).toBe(TURN_BUDGET_MESSAGE);
+    // Distinct from the iteration cap: "this took too long" and "I kept looking
+    // things up without answering" are different facts, and a user told the
+    // wrong one asks the wrong follow-up.
+    expect(reply.text).not.toBe(ITERATION_CAP_MESSAGE);
+    // The provider was never called: the budget was already spent.
+    expect(h.gateway.seen).toEqual([]);
+  });
+
+  it('still reports the ITERATION cap when time was not the problem', async () => {
+    const h = buildHarness({ script: alwaysCallsATool, clockStepMs: 0 });
+    const conversationId = h.store.seedConversation(OWNER);
+
+    const reply = await h.service.takeTurn(OWNER, BEARER, conversationId, 'what do I own?');
+
+    expect(reply.text).toBe(ITERATION_CAP_MESSAGE);
+    expect(h.gateway.seen).toHaveLength(MAX_TOOL_ITERATIONS);
+  });
+
+  it('commits the turn rather than losing it when the budget runs out', async () => {
+    // The user's question and the platform's answer are both recorded: a turn
+    // that took too long still HAPPENED, and the transcript is the evidence.
+    const h = buildHarness({ script: alwaysCallsATool, clockStepMs: ASSISTANT_TURN_BUDGET_MS });
+    const conversationId = h.store.seedConversation(OWNER);
+
+    await h.service.takeTurn(OWNER, BEARER, conversationId, 'what do I own?');
+
+    expect(h.store.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('does not cut short a turn that answers inside its budget', async () => {
+    const h = buildHarness({
+      script: [{ kind: 'message', text: 'an answer' }],
+      clockStepMs: 1_000,
+    });
+    const conversationId = h.store.seedConversation(OWNER);
+    await expect(h.service.takeTurn(OWNER, BEARER, conversationId, 'hello')).resolves.toMatchObject(
+      { text: 'an answer' },
+    );
   });
 });
 

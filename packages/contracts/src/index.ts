@@ -76,4 +76,9 @@ export {
   type ActorType,
   type EventEnvelope,
 } from './envelope';
+export {
+  ASSISTANT_PROVIDER_MAX_RETRIES,
+  ASSISTANT_TURN_BUDGET_MS,
+  assistantTurnTimeoutMs,
+} from './assistant-timing';
 export { TOPICS, type TopicName } from './topics';

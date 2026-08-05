@@ -1,6 +1,7 @@
 import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import Anthropic from '@anthropic-ai/sdk';
+import { ASSISTANT_PROVIDER_MAX_RETRIES } from '@estate/contracts';
 import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
 import {
@@ -91,7 +92,20 @@ function llmGatewayFor(config: AiAssistantConfig): LlmGateway {
     case 'anthropic': {
       // `beta.messages` rather than `messages`: the refusal-fallback parameter
       // is a beta, and the gateway only sends it when `fallbacks` is on.
-      const client = new Anthropic({ apiKey: llm.apiKey, timeout: config.llmRequestTimeoutMs });
+      /*
+       * `maxRetries` is PINNED, not left to the SDK's default of 2 (M11
+       * security review). The default is invisible from this repo and
+       * multiplies the per-call bound by three, because the timeout applies
+       * PER ATTEMPT — which is exactly the term the M11 edge-timeout
+       * arithmetic missed. One retry keeps a transient 429 or a dropped
+       * connection recoverable while leaving the per-call worst case small
+       * enough to fit inside a turn budget that has other work to do.
+       */
+      const client = new Anthropic({
+        apiKey: llm.apiKey,
+        timeout: config.llmRequestTimeoutMs,
+        maxRetries: ASSISTANT_PROVIDER_MAX_RETRIES,
+      });
       return new AnthropicLlmGateway(client.beta.messages, {
         fallbacks: llm.fallbacks,
         requestTimeoutMs: config.llmRequestTimeoutMs,

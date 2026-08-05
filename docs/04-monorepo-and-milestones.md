@@ -2008,7 +2008,7 @@ separator, which made git treat the file as binary — so that analyser's logic
 shipped through PR #26 with no reviewable diff at all. Keying by nested maps
 removes the separator question entirely.
 
-### M11 — the assistant conversation surface (in progress)
+### M11 — the assistant conversation surface (shipped)
 
 M10 shipped the assistant service complete and a UI that deliberately stopped
 short of chat, leaving the conversation routes with no consumer — the
@@ -2056,6 +2056,51 @@ the workflow counts stay 16/4 and 9/11: a real conversation over HTTP, the
 encrypted transcript read back in order, `assistant.turn.completed` in the
 verified audit chain, and — the M10 review's fix, asserted live — the turn route
 refusing once consent is revoked.
+
+**M11 security review.** Three focused lenses over the merged range
+`dee0cff..557cef2` — the renderer and CSP, the BFF hop and its error taxonomy,
+the chat UI's state and consent gate — then two adversarial verifiers per
+candidate, both defaulting to refuted. 8 raw, 8 unique, **2 confirmed (the same
+defect found twice), 6 refuted**. Sized to a single-PR range rather than
+repeating M10's six-lens sweep over code M11 did not touch.
+
+**THE EDGE TIMEOUT WAS BACKWARDS, and its comment said the opposite.**
+`TURN_TIMEOUT_MS = 150_000` claimed to sit "deliberately ABOVE the assistant's
+own deadline" so the BFF would never abandon a turn the service was still
+committing. Two multipliers were missed: the SDK's `maxRetries` defaults to 2
+with the timeout applied PER ATTEMPT (~180s for one call), and a turn makes up
+to six calls with tool reads between them (a ceiling near eighteen minutes). A
+verifier corrected the framing precisely — the literal sentence was true, since
+150s does exceed the 60s per-call bound; what was false was the RATIONALE both
+the code and CLAUDE.md restated.
+
+The consequence was not a slow request. Nothing cancels the server side when a
+client aborts, so the turn committed anyway: both messages sealed,
+`assistant.turn.completed` emitted, the estate payload already across TB5 —
+while the user was told it failed and invited to retry. The retry then blocked
+on the conversation's `FOR UPDATE` lock and re-sent a longer transcript to the
+provider: a second egress nobody authorized, and a transcript recording an
+exchange the user was told never happened, in a product where the transcript is
+evidence.
+
+Fixed by making the invariant a fact rather than a claim.
+`packages/contracts/src/assistant-timing.ts` owns one number: the service
+enforces `ASSISTANT_TURN_BUDGET_MS` as a WALL CLOCK across its whole loop
+(checked before each provider call, answering with its own distinct message so
+"this took too long" is not confused with the iteration cap), the SDK's
+`maxRetries` is pinned rather than inherited, and the BFF waits
+`assistantTurnTimeoutMs()` — derived from the same constant plus headroom. A
+spec on each side pins its half, including that the headroom is too small to
+hide another whole turn.
+
+Two refuted findings were fixed anyway, because both contradicted claims M11
+made about itself: `startConversation` dereferenced its response without the
+shape guard the milestone said it applied everywhere (the guard held in two
+call sites out of three), and the CSP shipped `'unsafe-eval'` in every
+environment while the rationale justified only inline hydration — a directive
+nobody had explained, which is how a relaxation outlives its reason. It is
+development-only now, and `csp.test.ts` pins the whole policy including the
+sentence admitting what it does NOT do.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
