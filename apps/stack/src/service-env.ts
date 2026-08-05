@@ -3,7 +3,14 @@ import {
   outboundCredentialsFor,
   type ServiceName,
 } from '@estate/auth-guard';
-import { kmsKeyIdFor, SERVICES, serviceUrl, type Addressing, type StackService } from './topology';
+import {
+  envPrefixFor,
+  kmsKeyIdFor,
+  SERVICES,
+  serviceUrl,
+  type Addressing,
+  type StackService,
+} from './topology';
 
 /**
  * Maps the flat generated environment (`.env.stack`) onto each process's own
@@ -49,7 +56,7 @@ export function serviceProcessEnv(
   env: ReadonlyMap<string, string>,
   options: ServiceEnvOptions,
 ): Record<string, string> {
-  const upper = service.name.toUpperCase();
+  const upper = envPrefixFor(service.name);
   const out: Record<string, string> = {
     DATABASE_URL: fromFile(env, `${upper}_DATABASE_URL`),
     KAFKA_BROKERS: fromFile(env, 'KAFKA_BROKERS'),
@@ -77,7 +84,7 @@ export function serviceProcessEnv(
   }
 
   for (const peer of PEERS[service.name] ?? []) {
-    out[`${peer.toUpperCase()}_URL`] = serviceUrl(peer, options.addressing);
+    out[`${envPrefixFor(peer)}_URL`] = serviceUrl(peer, options.addressing);
   }
 
   // Credentials come from the graph, never from a hand-kept list: the callee's

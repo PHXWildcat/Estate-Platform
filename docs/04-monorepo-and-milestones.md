@@ -1341,7 +1341,7 @@ cross-service provisioning drift for **hand**-provisioned environments, and the
 production per-service-endpoint residual above — all three close with the mesh
 or with deployment configuration management, not with code here.
 
-## M9 — Notifications (PR1 + PR2 shipped; the security pass remains)
+### M9 — Notifications (both PRs shipped; reviewed)
 
 Sequenced AHEAD of the "AI assistant · referral · notifications" order below —
 a user-approved reorder, the M8 precedent — because it is the smallest
@@ -1564,8 +1564,94 @@ actor and identity fires the same event on every login, so it is evidence for
 recovery, not a detection control — closing it needs the mesh's peer identity),
 and the carrier's event-class visibility.
 
+### M10 — AI estate assistant (PR1 in progress)
+
+The milestone docs/04 always had next, arriving on a platform that can now
+deploy and notify — the two reasons M8 displaced it (see M8's opening note).
+Four PRs: **PR1** the spine with no model call anywhere, **PR2** the live
+Anthropic adapter plus the tokenizing privacy proxy and the stack wiring,
+**PR3** the deterministic analysers (missing-document, beneficiary-conflict,
+funding, estate tax), **PR4** the thin UI.
+
+**The scoping decision that shaped everything: retrieval is structured, not
+semantic.** docs/00 feature 6 reads like a RAG feature and mostly is not.
+Funding recommendations, missing-document detection, beneficiary-conflict
+detection and estate-tax estimation are structured-data problems over facts the
+platform already computes — `assets_view.in_trust`, `funding_status`,
+`ownership_pct`, and the `designationComplete` flag that
+`GET /v1/assets/:assetId/beneficiaries` already returns per designation class.
+So there are **no embeddings, no vector store and no semantic index**. M4's
+per-user HMAC search index is not a poor substitute for embeddings here: it
+does a job embeddings cannot, LOCATING a candidate document without decrypting
+anything.
+
+Document explanation splits along the same line. Generated instruments are
+explained from the in-repo, `body_sha256`-pinned template — product content,
+not user data — and where the user's own rendered instrument is genuinely
+needed they point at ONE document, fetched through M4's existing audited
+content route on their own bearer, so each read is a logged event rather than a
+standing capability over the corpus. **Uploaded-document OCR text has no read
+path in M10 at all**: M4 sealed that artifact with `encryptOcr` and
+deliberately no counterpart, and building one is its own PR with its own
+consent scope, audit action and Cedar resource.
+
+Rejected, with reasons: an embedding index is a plaintext-derived projection
+living outside the DEK envelope with no KMS chokepoint, it needs a SECOND
+third-party egress (Anthropic has no embeddings API) carrying its own retention
+profile, and OpenSearch is deferred so there is nowhere to host it. Accepted
+cost, stated rather than hidden: there is no semantic search.
+
+**PR1 — the spine (no model call).**
+
+- `apps/services/ai-assistant` — the TENTH service, core-cluster co-tenant
+  (fourth, after profile/settlement/notifications) with disjoint tables, its
+  own migrations dir and its own KEK (`ai-assistant/kek` + `assistant_deks`),
+  so no co-tenant can unwrap a conversation. Port 3009.
+- **It holds ZERO internal service credentials, in either direction** — the
+  first service of which that is true by design. CallerGuard authenticates on
+  the caller's own bearer and the read clients FORWARD that same bearer, so it
+  sees exactly what the caller could already see and can never mint authority
+  it was not handed. That matters most here because this is the one process an
+  attacker can address in natural language. Machine-checked: present in
+  `SERVICE_NAMES`, absent from every edge, with the AUDIT precedent's explicit
+  empty-set assertion in its own `test/config.spec.ts`.
+- **The subject is never a tool parameter.** A tool receives its authority (the
+  verified session subject plus the caller's bearer) and declares only what to
+  fetch, never whose data. Enforced at registry construction, so a violation is
+  a process that will not start. Combined with every tool being read-only and
+  there being no send, write or fetch sink, an injection has nothing to reach —
+  which is what keeps docs/03 risk #6 at Medium impact.
+- **Consent is deny-by-default structurally.** No `granted` boolean exists:
+  `assistant_consents` follows profile's `permission_grants` (append + revoke,
+  rows are the history), so consent is the presence of an unrevoked row.
+  `permits()` requires the `assistant.enabled` master switch alongside the
+  specific scope. Granting is step-up gated; revoking is not — the M6
+  emergency-access-denial rule that the protective action must never be harder
+  than the permissive one.
+- **Transcripts are persisted, encrypted, and that is a security decision.** If
+  the client supplied history per turn it could forge prior assistant turns and
+  prior tool results, and a forged tool result is indistinguishable from a real
+  one — a self-service prompt-injection channel no framing closes.
+- `LLM_MODE` carries both modes from the start but REFUSES `anthropic` in every
+  environment until PR2 wires it, on the NOTIFY_MODE timeline: the production
+  pin arrives with the adapter rather than pinning a mode that does not exist.
+
+Found while building, both recorded in the decision log: `ai-assistant` is the
+first service name with a HYPHEN and the stack minted the illegal
+`AI-ASSISTANT_DATABASE_URL` (fixed with one `envPrefixFor` helper across
+eleven sites, a no-op for the nine single-word services); and `assistant.cedar`
+had to name its attribute `subject` rather than `owner`, because `owner.cedar`
+permits ANY action on a resource carrying `owner` — the draft policy claimed a
+three-verb limit the bundle did not enforce. settlement.cedar avoids `owner`
+for the identical reason. Its spec found that, and the scope test had to be
+rebuilt against the isolated policy because asserting through the shared bundle
+was measuring `owner.cedar`.
+
+Deferred to PR2 deliberately: the stack wiring (topology, compose, doctor), so
+PR1 touches `apps/stack` only for the hyphen fix.
+
 ### Later milestones (rough order, one per bounded context)
-AI assistant (privacy proxy) · then referral, search · the M5 cloud
-half, reduced by what M8 took over. Settlement came late deliberately:
-highest-risk domains land on mature primitives. (Notifications moved up and
-shipped as M9 — see above.)
+Referral · search · the M5 cloud half, reduced by what M8 took over.
+Settlement came late deliberately: highest-risk domains land on mature
+primitives. (Notifications moved up and shipped as M9; the AI assistant is M10,
+both above.)

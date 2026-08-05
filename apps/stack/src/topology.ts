@@ -169,6 +169,19 @@ export function kmsKeyIdFor(service: StackService): string | null {
 }
 
 /**
+ * The flat-file env-var prefix for a service. Service names are directory
+ * names, and a directory may contain a hyphen where an environment-variable
+ * key may not — `ai-assistant` would otherwise mint `AI-ASSISTANT_DATABASE_URL`,
+ * which is not a legal identifier and which `--env-file` will not hand back.
+ * A plain `toUpperCase()` was correct for nine single-word services and stopped
+ * being correct at the tenth, so the normalization lives in one place rather
+ * than at each of the eleven call sites that build a prefix.
+ */
+export function envPrefixFor(name: string): string {
+  return name.toUpperCase().replace(/-/g, '_');
+}
+
+/**
  * Migration ordering. DDL order between co-tenants is free (disjoint file
  * names, and the migrator ignores rows it has no file for), but RUNTIME order
  * is not: settlement queries profile's `contacts` and `role_assignments`

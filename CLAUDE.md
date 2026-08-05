@@ -890,3 +890,86 @@ deviating from them, stop and propose the change with rationale — do not silen
   identifiers are closed by construction, the EVENT CLASS reaching the carrier
   is an accepted residual, and fully closing it is the isolated-origin push
   channel. Full record in docs/04 M9 review.
+- 2026-08-04 — M10 is the AI ESTATE ASSISTANT (docs/04's stated next milestone;
+  both reasons M8 displaced it are gone — the platform deploys and can notify).
+  Four PRs: PR1 the spine with no model call, PR2 the live Anthropic adapter +
+  privacy proxy + stack wiring, PR3 the deterministic analysers, PR4 the thin
+  UI. The load-bearing scoping decision is RETRIEVAL: **no embeddings, no vector
+  store, no semantic index.** Feature 6 reads like RAG and mostly is not —
+  funding recommendations, missing-document detection, beneficiary-conflict
+  detection and estate-tax estimation are STRUCTURED-data problems over facts
+  the platform already computes (`assets_view.in_trust`, `funding_status`,
+  `ownership_pct`, the `designationComplete` flag `GET /v1/assets/:id/
+  beneficiaries` already returns). The assistant reads them through read-only
+  tool calls. M4's per-user HMAC index is not a poor substitute for embeddings
+  here — it does a job embeddings cannot, LOCATING a document without
+  decrypting anything. Document explanation splits: generated instruments are
+  explained from the in-repo, sha256-pinned TEMPLATE (product content, not user
+  data), and where the user's own rendered instrument is needed they point at
+  ONE document, fetched through the existing audited content route on their own
+  bearer. Uploaded-document OCR text has NO read path in M10 at all (M4's
+  sealed artifact has `encryptOcr` and deliberately no counterpart). REJECTED:
+  an embedding index — it is a plaintext-derived projection living outside the
+  DEK envelope with no KMS chokepoint, it needs a SECOND third-party egress
+  (Anthropic has no embeddings API) with its own retention profile, and
+  OpenSearch is deferred so there is nowhere to host it. Accepted cost, stated
+  rather than hidden: there is no semantic search — "the lake house" will not
+  match unless "lake" is an indexed token.
+- 2026-08-04 — The assistant holds ZERO internal service credentials, in either
+  direction, and it is the first service of which that is true by design. It
+  authenticates callers with CallerGuard on their own bearer and reaches
+  assets/documents/profile by FORWARDING that same bearer (the M8 PR5 BFF
+  pattern), so it can only ever see what the calling user could already see and
+  a compromised assistant replays the sessions it is currently serving rather
+  than minting new authority. This matters more here than anywhere: it is the
+  one process an attacker can address in natural language. The claim is
+  machine-checked, not asserted — `ai-assistant` is in `SERVICE_NAMES` but in no
+  edge, and its `test/config.spec.ts` follows the AUDIT precedent of asserting
+  the granted set is explicitly `[]` as well as equal to what it absorbs
+  (without the second assertion the test passes vacuously if the graph ever
+  loses the service). Consequence found while wiring: `ai-assistant` is the
+  first service name containing a HYPHEN, and both `envVarPrefixFor` and the
+  stack's generators built env-var prefixes with a bare `toUpperCase()`,
+  minting the illegal `AI-ASSISTANT_DATABASE_URL`. Fixed with one
+  `envPrefixFor` helper mapping `-`→`_`, routed through all eleven prefix sites;
+  a no-op for the nine single-word services and verified as such.
+- 2026-08-04 — Consent is DENY BY DEFAULT STRUCTURALLY: there is no `granted`
+  boolean anywhere. `assistant_consents` follows profile's `permission_grants`
+  (append + revoke, no soft delete, no `_versions` — the rows are the history),
+  so consent is the PRESENCE of an unrevoked row and a user who never answered
+  is indistinguishable from one who revoked. `permits()` additionally requires
+  the `assistant.enabled` master switch alongside the specific scope, so
+  revoking one row turns the assistant off without the user revoking five
+  things. GRANTING is step-up gated (widening third-party egress is
+  export-class, docs/01 §5); REVOKING is not — the M6 emergency-access-denial
+  rule that the protective action must never be harder than the permissive one.
+  The scope vocabulary is closed in BOTH a TypeScript union and a SQL CHECK, and
+  a spec reads the migration file to pin them to each other rather than to a
+  comment.
+- 2026-08-04 — THE SUBJECT IS NEVER A TOOL PARAMETER. A tool is handed its
+  authority (a verified session subject plus that caller's bearer) and declares
+  only WHAT to fetch, never WHOSE data. Injected text can persuade the model to
+  CALL a tool; it has no field in which to say whose estate it wants. Enforced
+  at registry construction, so a violation is a process that will not start.
+  The first implementation used an anchored regex and had a real hole —
+  `ownerUserId` passed, because the subject word was neither at the start nor
+  after an underscore — so it now splits identifiers into words across
+  camelCase and snake_case and matches whole words; `account` is deliberately
+  ALLOWED because in this product it names a financial resource rather than a
+  person. This is layer 1 of three: (2) every tool is read-only with no send,
+  write or fetch sink, so a successful injection has no egress; (3) framing
+  retrieved text as data, which is ADVISORY and documented as the weakest of
+  the three. Layers 1 and 2 cannot be argued with by a payload; layer 3 can.
+- 2026-08-04 — `assistant.cedar` names its resource attribute `subject`, NOT
+  `owner`, and the policy's own spec is what found the bug. `owner.cedar`
+  permits a principal ANY action on a resource carrying `owner` equal to them,
+  so the first draft — which claimed to grant exactly read/converse/delete —
+  silently granted every verb in the product, including ones no milestone has
+  written yet (an export or share added later would be INHERITED rather than
+  step-up gated as docs/01 §5 requires). settlement.cedar avoids `owner` for the
+  identical mechanical reason. The accompanying scope test also had to be
+  rewritten: asserting against the shared bundle measured `owner.cedar`, so it
+  now builds a PDP from `assistant.cedar` alone, with a positive control so a
+  parse failure cannot masquerade as a pass. The PEP raises 404, never 403 — a
+  403 on a conversation id confirms the conversation EXISTS, turning id guessing
+  into an oracle for whether someone uses the assistant and how much.
