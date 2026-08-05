@@ -138,6 +138,50 @@ export const REVOKE_CONSENT_MUTATION = `mutation RevokeConsent($scope: String!) 
   revokeConsent(scope: $scope)
 }`;
 
+export const CONVERSATIONS_QUERY = `query Conversations {
+  conversations {
+    conversationId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const CONVERSATION_QUERY = `query Conversation($conversationId: ID!) {
+  conversation(conversationId: $conversationId) {
+    conversationId
+    messages {
+      messageId
+      seq
+      role
+      text
+      createdAt
+    }
+  }
+}`;
+
+export const START_CONVERSATION_MUTATION = `mutation StartConversation {
+  startConversation {
+    conversationId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const SEND_MESSAGE_MUTATION = `mutation SendMessage($conversationId: ID!, $text: String!) {
+  sendMessage(conversationId: $conversationId, text: $text) {
+    conversationId
+    messageId
+    text
+    toolCalls
+  }
+}`;
+
+export const DELETE_CONVERSATION_MUTATION = `mutation DeleteConversation($conversationId: ID!) {
+  deleteConversation(conversationId: $conversationId) {
+    ok
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -155,6 +199,11 @@ export const operations = {
   Consents: CONSENTS_QUERY,
   GrantConsent: GRANT_CONSENT_MUTATION,
   RevokeConsent: REVOKE_CONSENT_MUTATION,
+  Conversations: CONVERSATIONS_QUERY,
+  Conversation: CONVERSATION_QUERY,
+  StartConversation: START_CONVERSATION_MUTATION,
+  SendMessage: SEND_MESSAGE_MUTATION,
+  DeleteConversation: DELETE_CONVERSATION_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

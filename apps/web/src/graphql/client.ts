@@ -19,6 +19,10 @@ export const GQL_ERROR_CODES = [
   'STEPUP_REQUIRED',
   'INVALID_REQUEST',
   'INVALID_CREDENTIALS',
+  /** The assistant's uniform not-found — never distinguishes whose it was. */
+  'NOT_FOUND',
+  /** The `assistant.enabled` master switch is off, and the user can fix it. */
+  'ASSISTANT_DISABLED',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -82,6 +86,37 @@ export interface AnalysisInfo {
   disclaimer: string;
 }
 
+export interface ConversationInfo {
+  conversationId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TranscriptMessageInfo {
+  messageId: string;
+  seq: number;
+  role: 'user' | 'assistant';
+  /**
+   * MODEL-AUTHORED on the assistant side, and untrusted markup either way. It
+   * is rendered ONLY through `MessageText`, which builds text nodes and nothing
+   * else — no component may interpret this string (docs/03 §6d).
+   */
+  text: string;
+  createdAt: string;
+}
+
+export interface TranscriptInfo {
+  conversationId: string;
+  messages: TranscriptMessageInfo[];
+}
+
+export interface TurnInfo {
+  conversationId: string;
+  messageId: string;
+  text: string;
+  toolCalls: number;
+}
+
 export interface ReadinessInfo {
   funding: AnalysisInfo;
   missingDocuments: AnalysisInfo;
@@ -121,6 +156,20 @@ interface OperationSignatures {
     data: { createAsset: { assetId: string; version: string } };
   };
   Readiness: { variables: EmptyVariables; data: { readiness: ReadinessInfo } };
+  Conversations: { variables: EmptyVariables; data: { conversations: ConversationInfo[] } };
+  Conversation: {
+    variables: { conversationId: string };
+    data: { conversation: TranscriptInfo };
+  };
+  StartConversation: { variables: EmptyVariables; data: { startConversation: ConversationInfo } };
+  SendMessage: {
+    variables: { conversationId: string; text: string };
+    data: { sendMessage: TurnInfo };
+  };
+  DeleteConversation: {
+    variables: { conversationId: string };
+    data: { deleteConversation: { ok: boolean } };
+  };
   Consents: { variables: EmptyVariables; data: { consents: string[] } };
   GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };
   RevokeConsent: { variables: { scope: string }; data: { revokeConsent: string[] } };

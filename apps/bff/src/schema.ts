@@ -3,7 +3,14 @@ import type { GraphQLSchema } from 'graphql';
 import { createSchema } from 'graphql-yoga';
 import type { MfaLevel } from '@estate/contracts';
 import type { Asset, AssetsClient, CreateResult, NetWorth } from './assets-client';
-import type { AnalysisName, AnalysisView, AssistantClient } from './assistant-client';
+import type {
+  AnalysisName,
+  AnalysisView,
+  AssistantClient,
+  Conversation,
+  Transcript,
+  Turn,
+} from './assistant-client';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -120,6 +127,40 @@ export const typeDefs = /* GraphQL */ `
   "Opaque JSON for a finding's detail map (scalars only, validated upstream)."
   scalar JSON
 
+  type Conversation {
+    conversationId: ID!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  """
+  One message. 'text' is MODEL-AUTHORED on the assistant side and is UNTRUSTED
+  MARKUP: the web app renders it through MessageText, which builds text nodes
+  and nothing else, so a model-emitted image or link is characters on a screen
+  rather than a request (docs/03 §6d).
+  """
+  type TranscriptMessage {
+    messageId: ID!
+    seq: Int!
+    "user | assistant."
+    role: String!
+    text: String!
+    createdAt: String!
+  }
+
+  type Transcript {
+    conversationId: ID!
+    messages: [TranscriptMessage!]!
+  }
+
+  type Turn {
+    conversationId: ID!
+    messageId: ID!
+    text: String!
+    "How many read-only retrievals the assistant made while composing this."
+    toolCalls: Int!
+  }
+
   type Query {
     "Current session, or null when unauthenticated."
     session: Session
@@ -134,6 +175,14 @@ export const typeDefs = /* GraphQL */ `
     readiness: Readiness!
     "Consent scopes the caller has granted the assistant. Absence is denial."
     consents: [String!]!
+    "The caller's own conversations."
+    conversations: [Conversation!]!
+    """
+    One decrypted transcript. A conversation that does not exist and one
+    belonging to somebody else answer identically — the service's uniform
+    not-found, kept uniform here so an id cannot be probed.
+    """
+    conversation(conversationId: ID!): Transcript!
   }
 
   type Mutation {
@@ -174,6 +223,15 @@ export const typeDefs = /* GraphQL */ `
     than the permissive one.
     """
     revokeConsent(scope: String!): [String!]!
+    startConversation: Conversation!
+    """
+    Take one turn. Slow by nature — it waits on a real provider round trip —
+    and refused outright when the assistant.enabled master switch is off, so a
+    client should ask for consents before offering a composer.
+    """
+    sendMessage(conversationId: ID!, text: String!): Turn!
+    "Soft delete downstream: the ciphertext survives, erasure is a separate act."
+    deleteConversation(conversationId: ID!): Ok!
   }
 `;
 
@@ -210,6 +268,10 @@ interface CodeArgs {
 
 interface ScopeArgs {
   readonly scope: string;
+}
+
+interface ConversationArgs {
+  readonly conversationId: string;
 }
 
 /** The four analyses, as the readiness query returns them. */
@@ -309,6 +371,17 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           _args: unknown,
           ctx: RequestContext,
         ): Promise<string[]> => assistant.consents(requireAccessToken(ctx)),
+        conversations: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<Conversation[]> => assistant.conversations(requireAccessToken(ctx)),
+        conversation: async (
+          _parent: unknown,
+          args: ConversationArgs,
+          ctx: RequestContext,
+        ): Promise<Transcript> =>
+          assistant.transcript(requireAccessToken(ctx), args.conversationId),
       },
       Mutation: {
         register: async (
@@ -408,6 +481,25 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
                 }
               : {}),
           });
+        },
+        startConversation: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<Conversation> => assistant.startConversation(requireAccessToken(ctx)),
+        sendMessage: async (
+          _parent: unknown,
+          args: ConversationArgs & { readonly text: string },
+          ctx: RequestContext,
+        ): Promise<Turn> =>
+          assistant.sendMessage(requireAccessToken(ctx), args.conversationId, args.text),
+        deleteConversation: async (
+          _parent: unknown,
+          args: ConversationArgs,
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await assistant.deleteConversation(requireAccessToken(ctx), args.conversationId);
+          return OK;
         },
         grantConsent: async (
           _parent: unknown,

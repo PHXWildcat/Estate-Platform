@@ -690,6 +690,39 @@ describeIfStack('the running stack', () => {
       // asserted here so the no-profile path stays a real answer over the wire.
       expect(tax.findings.map((f) => f.code)).toContain('state_of_residence_unknown');
 
+      // A CONVERSATION OVER THE REAL WIRE (M11), while consent is live. The
+      // gateway is the deterministic stub here — no provider credential exists
+      // in this project — so what this proves is the PLATFORM half: the turn
+      // route, its consent gate, the encrypted transcript, and the audit event.
+      const conversation = expectStatus(
+        await api(ASSISTANT, 'POST', '/v1/conversations', { token: owner.token, body: {} }),
+        201,
+        'start conversation',
+      ) as { conversationId: string };
+
+      const turn = expectStatus(
+        await api(ASSISTANT, 'POST', `/v1/conversations/${conversation.conversationId}/turns`, {
+          token: owner.token,
+          body: { text: 'what should I look at first?' },
+        }),
+        200,
+        'take a turn',
+      ) as { text: string };
+      expect(turn.text.length).toBeGreaterThan(0);
+
+      // The transcript is stored ENCRYPTED and read back decrypted, so this
+      // asserts the round trip rather than an echo: both turns are present, in
+      // order, with the roles the service recorded.
+      const transcript = expectStatus(
+        await api(ASSISTANT, 'GET', `/v1/conversations/${conversation.conversationId}`, {
+          token: owner.token,
+        }),
+        200,
+        'read transcript',
+      ) as { messages: { role: string; text: string }[] };
+      expect(transcript.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+      expect(transcript.messages[0]?.text).toBe('what should I look at first?');
+
       // Revoking is NOT step-up gated (the protective action must never be
       // harder than the permissive one), and it switches the routes off again.
       expectStatus(
@@ -697,6 +730,19 @@ describeIfStack('the running stack', () => {
         200,
         'revoke consent',
       );
+
+      // …INCLUDING THE TURN ROUTE. The M10 security review found the master
+      // switch gating the analyses but not the conversation, so a revoked user
+      // could still drive a provider call. Asserted live, because that is the
+      // one control whose absence looked exactly like its presence.
+      expect(
+        (
+          await api(ASSISTANT, 'POST', `/v1/conversations/${conversation.conversationId}/turns`, {
+            token: owner.token,
+            body: { text: 'are you still there?' },
+          })
+        ).status,
+      ).toBe(403);
       expect(
         (await api(ASSISTANT, 'GET', '/v1/analysis/funding', { token: owner.token })).status,
       ).toBe(403);
@@ -723,6 +769,8 @@ describeIfStack('the running stack', () => {
           // M10 PR3: an analysis run with no conversation and no model — the
           // audit event is the whole record that it happened.
           'assistant.analysis.completed',
+          // M11: a real turn crossed the platform and was recorded.
+          'assistant.turn.completed',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(

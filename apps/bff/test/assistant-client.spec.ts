@@ -123,6 +123,102 @@ describe('analysis', () => {
   });
 });
 
+describe('the conversation surface', () => {
+  const CONVO = {
+    conversationId: 'c1',
+    createdAt: '2026-08-05T10:00:00Z',
+    updatedAt: '2026-08-05T10:00:00Z',
+  };
+
+  it('maps the assistant’s uniform 404 to one code, with nothing added', async () => {
+    // The service refuses "no such conversation" and "someone else's" the same
+    // way so an id is not an oracle. Two distinct codes here would rebuild it.
+    await expect(
+      client(respond(404, { error: 'not_found' })).transcript(TOKEN, 'c1'),
+    ).rejects.toMatchObject({ extensions: { code: 'NOT_FOUND' } });
+    await expect(client(respond(404, {})).transcript(TOKEN, 'c2')).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+  });
+
+  it('maps the master switch being off to its own actionable code', async () => {
+    await expect(
+      client(respond(403, { error: 'assistant_disabled' })).sendMessage(TOKEN, 'c1', 'hi'),
+    ).rejects.toMatchObject({ extensions: { code: 'ASSISTANT_DISABLED' } });
+  });
+
+  it('does not let a future 403 inherit "turn the assistant on"', async () => {
+    // Discriminated by TOKEN, not by status: an unrecognized forbidden case
+    // stays a masked generic failure rather than telling a user to flip a
+    // switch that is already on.
+    await expect(
+      client(respond(403, { error: 'some_other_rule' })).sendMessage(TOKEN, 'c1', 'hi'),
+    ).rejects.not.toMatchObject({ extensions: { code: 'ASSISTANT_DISABLED' } });
+  });
+
+  it('sends the turn text as a JSON body on the caller’s bearer', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const spy = ((url: string, init: RequestInit) => {
+      seen.push({ url, init });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({ conversationId: 'c1', messageId: 'm1', text: 'hi back', toolCalls: 0 }),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    await client(spy).sendMessage(TOKEN, 'c1', 'hello');
+    expect(seen[0]?.url).toBe('http://assistant.test/v1/conversations/c1/turns');
+    expect(seen[0]?.init.method).toBe('POST');
+    // The body is a JSON string by construction (the client stringifies it);
+    // parsing it back is what asserts the shape rather than the serialization.
+    const body: unknown = seen[0]?.init.body;
+    expect(typeof body).toBe('string');
+    expect(JSON.parse(body as string)).toEqual({ text: 'hello' });
+    expect(seen[0]?.init.headers).toMatchObject({ authorization: `Bearer ${TOKEN}` });
+  });
+
+  it('gives a turn its own deadline, and nothing else one', async () => {
+    // A turn waits on a real provider round trip; a list that hangs is a broken
+    // peer, not a slow one, and should not be papered over with a timeout.
+    const seen: RequestInit[] = [];
+    const spy = ((_url: string, init: RequestInit) => {
+      seen.push(init);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(CONVO) });
+    }) as unknown as typeof globalThis.fetch;
+    const c = client(spy);
+    await c.conversations(TOKEN).catch(() => undefined);
+    await c.sendMessage(TOKEN, 'c1', 'hello').catch(() => undefined);
+    expect(seen[0]?.signal).toBeUndefined();
+    expect(seen[1]?.signal).toBeDefined();
+  });
+
+  it('percent-encodes the conversation id into every path', async () => {
+    const seen: string[] = [];
+    const spy = ((url: string) => {
+      seen.push(url);
+      return Promise.resolve({
+        ok: true,
+        status: 204,
+        json: () => Promise.reject(new Error('no body')),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    await client(spy).deleteConversation(TOKEN, '../../v1/consents/assistant.enabled');
+    expect(seen[0]).toBe(
+      'http://assistant.test/v1/conversations/..%2F..%2Fv1%2Fconsents%2Fassistant.enabled',
+    );
+  });
+
+  it('refuses a transcript it cannot validate rather than passing it on', async () => {
+    await expect(
+      client(respond(200, { conversationId: 'c1', messages: [{ role: 'wizard' }] })).transcript(
+        TOKEN,
+        'c1',
+      ),
+    ).rejects.toThrow(/failed validation/);
+  });
+});
+
 describe('consents', () => {
   const GRANTED = { granted: ['assistant.enabled', 'assistant.assets'] };
 

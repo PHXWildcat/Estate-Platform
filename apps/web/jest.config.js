@@ -19,5 +19,8 @@ module.exports = createJestConfig({
   // (80.08/74.09/83.33/83.76) — the readiness panel, its consent controls and
   // the finding-copy table all arrived with tests. Measured, not guessed: PR3's
   // CI failure was a floor nobody had run.
-  coverageThreshold: { global: { statements: 79, branches: 73, functions: 82, lines: 83 } },
+  // RATCHETED again at M11 (the conversation surface): measured
+  // 80.71/75.32/84.66/84.55 with the chat panel and the message renderer under
+  // test. Never lowered.
+  coverageThreshold: { global: { statements: 80, branches: 75, functions: 84, lines: 84 } },
 });

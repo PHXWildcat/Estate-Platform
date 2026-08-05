@@ -85,11 +85,52 @@ export type AnalysisName = 'funding' | 'missing-documents' | 'beneficiary-confli
 
 const ConsentsSchema = z.object({ granted: z.array(z.string().min(1)) });
 
+/** One conversation, as `GET /v1/conversations` returns it. */
+export const ConversationSchema = z.object({
+  conversationId: z.string().min(1),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+});
+export type Conversation = z.infer<typeof ConversationSchema>;
+
+/**
+ * One message of a transcript. `text` is MODEL-AUTHORED on the assistant side
+ * and user-authored on the other, and neither is trusted markup: the web app
+ * renders both through `MessageText`, which builds text nodes and nothing else
+ * (docs/03 §6d). Nothing in this client interprets it.
+ */
+export const TranscriptMessageSchema = z.object({
+  messageId: z.string().min(1),
+  seq: z.number().int(),
+  role: z.enum(['user', 'assistant']),
+  text: z.string(),
+  createdAt: z.string().min(1),
+});
+
+export const TranscriptSchema = z.object({
+  conversationId: z.string().min(1),
+  messages: z.array(TranscriptMessageSchema),
+});
+export type Transcript = z.infer<typeof TranscriptSchema>;
+
+export const TurnSchema = z.object({
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  text: z.string(),
+  toolCalls: z.number().int(),
+});
+export type Turn = z.infer<typeof TurnSchema>;
+
 export interface AssistantClient {
   analysis(accessToken: string, name: AnalysisName): Promise<AnalysisView>;
   consents(accessToken: string): Promise<string[]>;
   grantConsent(accessToken: string, scope: string): Promise<string[]>;
   revokeConsent(accessToken: string, scope: string): Promise<string[]>;
+  conversations(accessToken: string): Promise<Conversation[]>;
+  transcript(accessToken: string, conversationId: string): Promise<Transcript>;
+  startConversation(accessToken: string): Promise<Conversation>;
+  sendMessage(accessToken: string, conversationId: string, text: string): Promise<Turn>;
+  deleteConversation(accessToken: string, conversationId: string): Promise<void>;
 }
 
 type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
@@ -102,6 +143,20 @@ type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
  * field all the way to the screen (docs/01 §2.8), and a fallback that says less
  * than the service's own text is better than a UI that renders none.
  */
+/**
+ * How long the BFF waits for ONE turn, in milliseconds.
+ *
+ * Deliberately ABOVE the assistant's own per-provider-call deadline
+ * (LLM_REQUEST_TIMEOUT_MS, 60s by default) rather than below it: the service is
+ * the component that decides when a provider call has taken too long, and a BFF
+ * that gave up first would abandon a turn the assistant is still committing —
+ * with the conversation's row lock still held — and report a failure for an
+ * answer that then lands in the transcript unread. The SDK may retry inside
+ * that budget, so this leaves room for roughly two attempts plus the platform's
+ * own work.
+ */
+const TURN_TIMEOUT_MS = 150_000;
+
 const FALLBACK_DISCLAIMER =
   'This is an automated analysis for education only. It is not legal or tax advice.';
 
@@ -191,6 +246,81 @@ export class FetchAssistantClient implements AssistantClient {
     return this.consentRequest('DELETE', `/v1/consents/${encodeURIComponent(scope)}`, accessToken);
   }
 
+  /**
+   * The caller's own conversations, newest activity first (the service orders).
+   */
+  async conversations(accessToken: string): Promise<Conversation[]> {
+    const res = await this.request('GET', '/v1/conversations', accessToken);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, z.array(ConversationSchema));
+  }
+
+  /**
+   * One decrypted transcript.
+   *
+   * A 404 STAYS A 404. The service answers the same not-found for "no such
+   * conversation" and "someone else's conversation" — deliberately, so a
+   * conversation id cannot be probed to learn whether a user has the assistant
+   * (M10 PR1). Translating it into anything richer here would rebuild the
+   * oracle the service went out of its way not to be.
+   */
+  async transcript(accessToken: string, conversationId: string): Promise<Transcript> {
+    const res = await this.request(
+      'GET',
+      `/v1/conversations/${encodeURIComponent(conversationId)}`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, TranscriptSchema);
+  }
+
+  async startConversation(accessToken: string): Promise<Conversation> {
+    const res = await this.request('POST', '/v1/conversations', accessToken, { body: {} });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, ConversationSchema);
+  }
+
+  /** One turn: the user's text in, the assistant's reply out. See the deadline note. */
+  async sendMessage(accessToken: string, conversationId: string, text: string): Promise<Turn> {
+    const res = await this.request(
+      'POST',
+      `/v1/conversations/${encodeURIComponent(conversationId)}/turns`,
+      accessToken,
+      { body: { text }, timeoutMs: TURN_TIMEOUT_MS },
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, TurnSchema);
+  }
+
+  /** Soft delete downstream; 204, so there is no body to parse. */
+  async deleteConversation(accessToken: string, conversationId: string): Promise<void> {
+    const res = await this.request(
+      'DELETE',
+      `/v1/conversations/${encodeURIComponent(conversationId)}`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  private async parse<T extends z.ZodTypeAny>(res: Response, schema: T): Promise<z.infer<T>> {
+    const parsed = schema.safeParse(await this.readJson(res));
+    if (!parsed.success) {
+      // Contract drift ⇒ no data, never a guess. Field paths only, never values.
+      throw new Error('assistant response failed validation');
+    }
+    return parsed.data as z.infer<T>;
+  }
+
   private async consentRequest(
     method: 'GET' | 'PUT' | 'DELETE',
     path: string,
@@ -208,17 +338,38 @@ export class FetchAssistantClient implements AssistantClient {
   }
 
   private async request(
-    method: 'GET' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     accessToken: string,
+    options: { body?: Record<string, unknown>; timeoutMs?: number } = {},
   ): Promise<Response> {
+    const headers: Record<string, string> = { authorization: `Bearer ${accessToken}` };
+    const init: RequestInit = { method, headers };
+    if (options.body !== undefined) {
+      headers['content-type'] = 'application/json';
+      init.body = JSON.stringify(options.body);
+    }
+    /*
+     * A TURN IS THE ONE SLOW CALL IN THIS CLIENT, so it is the one that needs a
+     * deadline of its own. It waits on a real provider round trip, which the
+     * assistant bounds with LLM_REQUEST_TIMEOUT_MS (60s by default) and the SDK
+     * may retry twice inside — so a caller that gives up first turns a slow but
+     * working answer into a failure, and worse, does so while the assistant is
+     * still holding the conversation's row lock.
+     *
+     * The default undefined leaves every other call on the platform default:
+     * a list or a delete that hangs for a minute is a broken peer, not a slow
+     * one, and pretending otherwise would hide it.
+     */
+    if (options.timeoutMs !== undefined) {
+      init.signal = AbortSignal.timeout(options.timeoutMs);
+    }
     try {
-      return await this.fetchFn(`${this.baseUrl}${path}`, {
-        method,
-        headers: { authorization: `Bearer ${accessToken}` },
-      });
+      return await this.fetchFn(`${this.baseUrl}${path}`, init);
     } catch {
-      // Network/DNS failure. Plain Error ⇒ masked by yoga; cause never exposed.
+      // Network/DNS failure, or the deadline above. Plain Error ⇒ masked by
+      // yoga; the cause never reaches a client, and the UI says the answer did
+      // not arrive rather than showing an empty reply.
       throw new Error('assistant service unreachable');
     }
   }
@@ -238,6 +389,24 @@ export class FetchAssistantClient implements AssistantClient {
     }
     if (res.status === 403 && token === 'stepup_required') {
       return bffError('STEPUP_REQUIRED');
+    }
+    // The master switch being off, which the user can act on. Kept distinct
+    // from every other 403 by its token rather than by its status, so a future
+    // forbidden case does not silently inherit "turn the assistant on".
+    if (res.status === 403 && token === 'assistant_disabled') {
+      return bffError('ASSISTANT_DISABLED');
+    }
+    /*
+     * THE UNIFORM NOT-FOUND STAYS UNIFORM. The assistant answers the same 404
+     * for a conversation that does not exist and one belonging to somebody else
+     * (M10 PR1: a 403 on an id would confirm the id EXISTS, turning guessing
+     * into an oracle for whether someone uses the assistant). Mapping it to a
+     * code is fine — the client has to say "that conversation is gone" — but
+     * the two cases must remain indistinguishable, which is why there is
+     * exactly one code here and no attempt to enrich it.
+     */
+    if (res.status === 404) {
+      return bffError('NOT_FOUND');
     }
     if (res.status === 400 || res.status === 422) {
       return bffError('INVALID_REQUEST');

