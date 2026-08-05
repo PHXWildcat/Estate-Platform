@@ -11,7 +11,13 @@ describe('the template registry (docs/03 §5.4 — content-free pointers)', () =
     }
   });
 
-  it('uses ONE subject for everything — a mailbox observer learns nothing about which control fired', () => {
+  it('uses ONE subject for every kind — a subject-line observer cannot tell them apart', () => {
+    // Retitled by the M9 security review: this asserts subject uniformity and
+    // nothing else. The old name claimed "a mailbox observer learns nothing
+    // about which control fired", which the BODIES falsify — they name their
+    // control deliberately, so that a notification is actionable. A test name
+    // asserting a property the test does not check is how a false claim
+    // survives review (the M8 vacuous anti-drop check, same class).
     for (const kind of NOTIFICATION_KINDS) {
       expect(render(kind, DEADLINE).subject).toBe(SUBJECT);
     }

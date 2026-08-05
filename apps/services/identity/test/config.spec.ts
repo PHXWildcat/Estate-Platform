@@ -62,7 +62,7 @@ describe('config validation', () => {
     AWS_REGION: 'us-east-1',
     IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
     NOTIFICATIONS_URL: 'https://notifications.internal',
-    NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(48),
+    NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: 'n'.repeat(48),
   };
 
   it('production REQUIRES the notifications feed (M9) and refuses credential aliasing', () => {
@@ -70,7 +70,7 @@ describe('config validation', () => {
     expect(() =>
       loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...withoutUrl })),
     ).toThrow(ConfigError);
-    const { NOTIFICATIONS_INTERNAL_TOKEN: _t, ...withoutToken } = PROD_EXTRAS;
+    const { NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: _t, ...withoutToken } = PROD_EXTRAS;
     expect(() =>
       loadConfig(validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...withoutToken })),
     ).toThrow(ConfigError);
@@ -81,7 +81,7 @@ describe('config validation', () => {
           NODE_ENV: 'production',
           KAFKA_BROKERS: 'k1:9092',
           ...PROD_EXTRAS,
-          NOTIFICATIONS_INTERNAL_TOKEN: PROD_EXTRAS.IDENTITY_INTERNAL_TOKEN,
+          NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: PROD_EXTRAS.IDENTITY_INTERNAL_TOKEN,
         }),
       ),
     ).toThrow(/must differ from IDENTITY_INTERNAL_TOKEN/);

@@ -113,11 +113,19 @@ function toDto(row: CaseRow, now: Date): CaseDto {
  *    is accepted and bounded by the lock routes' triviality; the identity
  *    side is idempotent, so a commit failure after a successful lock is
  *    healed by retry.
- *  - The estate-wide legal hold (M9 PR2) rides the SAME rule, paired with the
- *    lock at every site: set with deceased_pending at review-approve,
- *    re-asserted with the terminal lock at verification (catching documents
- *    uploaded during the wait), cleared with every restore to active. Same
- *    fail-closed rollback, same idempotent re-drive on the documents side.
+ *  - The estate-wide legal hold (M9 PR2) is paired with the lock at every
+ *    site: set with deceased_pending at review-approve, re-asserted with the
+ *    terminal lock at verification (catching documents uploaded during the
+ *    wait), cleared with every restore to active. Same fail-closed rollback,
+ *    same idempotent re-drive on the documents side.
+ *  - ORDER WITHIN A TRANSITION IS ITSELF A CONTROL, and it differs by site.
+ *    Where the identity state is REVERSIBLE (approve), the lock goes first, so
+ *    a failed hold cannot strand a hold on a living owner whose reject path
+ *    would not clear it. Where it is IRREVERSIBLE (verification's terminal
+ *    `settlement`), the hold goes first, so a failed hold cannot leave an
+ *    account terminally locked under a case that rolled back. The rule is:
+ *    the step that cannot be undone runs LAST. The M9 security review found
+ *    verification had it backwards.
  *  - Intake and review-approve REFUSE in production while only the stub
  *    notifier is wired (M6 precedent): a waiting period nobody can be told
  *    about is not a control.
@@ -492,6 +500,32 @@ export class SettlementService {
           // platform does not record a date of death.
           taskCount = await this.tasks.insertMany(tx, caseId, generateTasks(now));
           try {
+            // ORDER IS A CONTROL HERE, and it is the opposite of the approve
+            // site's. The identity call below is the one IRREVERSIBLE step in
+            // the whole machine — `settlement` has no transition back to
+            // `active` (identity's ALLOWED_TRANSITIONS), and it revokes every
+            // session. So the fallible-but-reversible call goes FIRST: if the
+            // hold cannot be confirmed we roll back having changed nothing
+            // durable, and the operator retries. Were it the other way round,
+            // a documents blip after a successful lock would leave the case
+            // rolled back to waiting_period while the account sat terminally
+            // in `settlement` — and every restore path (reject, owner void,
+            // liveness void) calls setState('active'), which from `settlement`
+            // is an invalid transition surfacing as a transient-looking 503.
+            // A LIVING owner would be locked out permanently, with the only
+            // unblocked move being to finish settling their estate: docs/03
+            // §5.1's Critical outcome reached by a third service hiccuping.
+            // (Found by the M9 security review; the M9 PR2 claim that the hold
+            // "rides the SAME rule" as the lock was derived when setState was
+            // the last statement before COMMIT.)
+            //
+            // Re-asserting the hold set at approval is idempotent, and it
+            // catches documents the owner uploaded DURING the waiting period
+            // (their login stays alive in deceased_pending — the rescue path),
+            // so the invariant at verification is "every live document of a
+            // verified estate is held", not "every document that existed at
+            // approval".
+            await this.documentsHold.setHold(locked.decedent_user_id, true, caseId);
             // The watermark restates the liveness predicate INSIDE identity's
             // status write, closing the window between the read above and this
             // commit: a step-up landing in between refuses the lock rather
@@ -502,13 +536,6 @@ export class SettlementService {
               caseId,
               locked.created_at,
             );
-            // Re-assert the hold set at approval: idempotent, and it catches
-            // documents the owner uploaded DURING the waiting period (their
-            // login stays alive in deceased_pending — the rescue path), so
-            // the invariant at verification is "every live document of a
-            // verified estate is held", not "every document that existed at
-            // approval".
-            await this.documentsHold.setHold(locked.decedent_user_id, true, caseId);
             const row = (await this.cases.findById(tx, caseId)) as CaseRow;
             return { row, voided: false };
           } catch (err) {

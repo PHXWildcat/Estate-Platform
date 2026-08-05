@@ -344,11 +344,17 @@ rest on. Controls shipped, each mapped to what this document demanded:
   a user id, a requested channel, an optional deadline — so a compromised
   caller can trigger a template, never author a message. The template
   registry carries no user data beyond the deadline DATE, uses ONE uniform
-  subject for every kind (a mailbox observer or lock-screen shoulder-surfer
-  learns that Estate wants attention, never WHICH control fired — the M6
-  review's delivery-channel-leakage item), and contains NO links of any kind.
-  The production e2e asserts all three properties on a real delivered
-  message.
+  SUBJECT for every kind, and contains NO links of any kind. The production
+  e2e asserts all three properties on a real delivered message.
+  SCOPED PRECISELY (M9 security review): the uniform subject means a mailbox
+  observer who sees only subject lines cannot tell which control fired, but
+  the BODY names it in its first clause ("…asked for emergency access to your
+  Estate vault", "A report was filed on your Estate account"). That is
+  deliberate — an actionable body is what makes the notification a control
+  rather than a curiosity — but it means a lock-screen preview and the
+  carrier both learn the EVENT CLASS. See the residual below; the earlier
+  claim that an observer "never learns WHICH control fired" was true of the
+  subject only and is corrected here.
 - **Recipient addresses never cross a cluster boundary (§5.3).** The service
   keeps its own store, AEAD under its own `notifications/kek` (core
   co-tenants cannot unwrap it), fed by identity at the two plaintext moments
@@ -360,9 +366,19 @@ rest on. Controls shipped, each mapped to what this document demanded:
   `EMAIL_MODE=ses`), and now emit `vault.emergency.notifications_refused` /
   `settlement.notifications_refused` — a control firing must be
   distinguishable from an outage in the stream operators watch.
-- **The credential is scoped (§6b's rule).** `NOTIFICATIONS_INTERNAL_TOKEN`
-  opens send + recipient-upsert and nothing else; holders are identity,
-  settlement, vault; pairwise aliasing refusals extend to it in every holder.
+- **The credentials are scoped (§6b's rule), and there are TWO.** Corrected by
+  the M9 security review, which found ONE credential opening both surfaces:
+  `NOTIFICATIONS_INTERNAL_TOKEN` opens SEND only (holders settlement, vault),
+  and `NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN` opens the recipient upsert
+  and is held by IDENTITY ALONE. The split matters because the two
+  capabilities have different blast radii: sending is bounded spam, while
+  deciding where a user's notifications GO is the power to silence the §5.1
+  contact sweep and the §5.2 waiting-period alerts. Merged, vault's copy
+  could silence settlement's death-case alerts and settlement's could silence
+  vault's emergency-access alerts — cross-domain, and exactly what one secret
+  per callee exists to prevent. Enforced by two guards binding two DI tokens;
+  the service refuses to boot in production if the two values are equal, and
+  pairwise aliasing refusals extend to both in every holder.
 
 **Residuals, accepted and recorded:**
 
@@ -374,20 +390,57 @@ rest on. Controls shipped, each mapped to what this document demanded:
   Estate app"); an email-borne deny capability needs the vault UI's isolated
   origin to exist and its own token design + review. Until then the
   notification shortens discovery time but not the deny path.
-- *A stale or attacker-fed recipient address.* The store trusts identity's
-  word at registration/login; recipient changes are versioned and audited
-  (`notification.recipient.updated`), and pointing a victim's notifications
-  elsewhere requires identity-level compromise, at which point notifications
-  are not the interesting target. Recorded, not defended beyond that.
-- *The carrier sees addresses and timing (TB5).* Inherent to email; the
-  content-free doctrine is the mitigation. SES supply-chain posture rides the
-  existing AWS SDK pinning.
+- *Repointing an EXISTING user's address needs identity's credential.* Since
+  the M9 review's split this is true as written: only
+  `NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN`, held by identity alone, can
+  change where a user's alerts go. (Before the split it was false — vault's
+  and settlement's copies sufficed, and this document said otherwise.)
+  Recipient changes are versioned and audited, but see the next residual.
+- *The recipient-change audit cannot ATTRIBUTE.* `notification.recipient.updated`
+  carries `actorId: null`, `actorType: 'service'` and an empty detail, the
+  versions trigger stamps the system sentinel, and identity emits the same
+  event on EVERY successful login — so the trail proves that an address
+  changed and preserves the prior ciphertext, but cannot distinguish a
+  legitimate login-time refresh from a malicious repoint. It is evidence for
+  after-the-fact recovery, NOT a detection control, and should not be cited
+  as one. Closing it means recording the calling service, which the static
+  shared-secret model cannot do — it arrives with the mesh's peer identity.
+- *Users' addresses are UNVERIFIED.* Registration is unauthenticated and
+  performs no ownership proof, and identity feeds whatever the user typed
+  into the delivery store; `users.email_verified_at` exists in the schema and
+  is never written or read. So "identity's word" means the address was
+  TYPED, not that it is OWNED, and an attacker can register a third party's
+  address and stand the account up far enough to make the platform mail them.
+  Bounded today: no notification kind fires at registration, addresses that
+  already belong to an account cannot be taken, and every message is
+  content-free and link-free, so the phishing value is low and the real risk
+  is sender-reputation damage degrading everyone's alerts. A confirm-token
+  flow is the fix and needs its own change.
+- *The carrier sees addresses, timing, AND the event class (TB5).* Inherent
+  to email, and wider than previously recorded here: the body names which
+  control is running, so SES and the receiving provider get a per-address
+  labelled event stream ("this account is in a death-review period"). The
+  content-free doctrine bounds this to the event class — never estate
+  content, never a name, an asset, a document title or a link — but it does
+  not eliminate it. Closing it fully needs an out-of-band or encrypted push
+  channel, i.e. the vault UI's isolated origin. SES supply-chain posture
+  rides the existing AWS SDK pinning.
 - *`emergency.reminder` is declared but never emitted* (vault has no
   scheduler); the sweep-driven reminder belongs with Temporal or a later
   driver.
 
-The milestone's own security pass (owed since the M6 review, including
-delivery-channel identifier leakage) closes M9 after PR2.
+**The M6 delivery-channel identifier leakage item: PARTIALLY CLOSED.**
+Answered by the M9 security pass rather than left owed. Closed, by
+construction: no caller-authored text anywhere (the wire has no text field),
+no identifiers of any kind in a message (no name, address, asset, document
+title, case id, user id or token — the only variable is a date), no links at
+all so no per-recipient URL can re-identify a recipient to the carrier, one
+subject across all nine kinds, and addresses that never cross a cluster
+boundary. Still open, and now recorded above rather than claimed closed: the
+EVENT CLASS reaches the carrier and any body-preview observer, and that is
+accepted deliberately because an actionable body is what makes the
+notification function as a control. Fully closing it is the isolated-origin
+push channel, a later milestone.
 
 ## 7. Validation program
 

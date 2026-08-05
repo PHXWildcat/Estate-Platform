@@ -11,10 +11,21 @@ import type { NotificationKind } from '@estate/notifications-client';
  *  - NO links. Role-holder onboarding drills "we will never link you to a
  *    payment page"; the strongest form of that promise is never linking at
  *    all. Every body says "open your Estate app" and stops.
- *  - ONE subject for everything. A mailbox observer (or a shoulder-surfer at
- *    a lock screen) learns that Estate wants attention, never WHICH control is
- *    running — the delivery-channel identifier-leakage posture the M6 review
- *    asked this milestone to carry.
+ *  - ONE subject for everything. A mailbox observer scanning SUBJECT LINES
+ *    learns that Estate wants attention and nothing more.
+ *
+ * SCOPED HONESTLY (M9 security review). That third rule covers the subject,
+ * not the message. Every body below names its control in the first clause,
+ * so a lock-screen body preview and the carrier itself do learn the EVENT
+ * CLASS — "an emergency-access clock is running on this account", "a death
+ * report was filed". That is a deliberate trade, not an oversight: a
+ * context-free pointer is useless to a frightened owner who has seconds to
+ * decide whether to deny, and the notification only functions as a control
+ * if it says what to deny. What stays absent is everything that identifies a
+ * PERSON or an ESTATE. An earlier version of this comment claimed an
+ * observer never learns which control fired, which was true only of the
+ * subject; docs/03 §6c now records the event-class leak as an accepted
+ * residual instead of asserting the doctrine covers it.
  */
 
 export const SUBJECT = 'Estate — action needed';

@@ -1,5 +1,5 @@
 import {
-  inboundCredentialFor,
+  inboundCredentialsFor,
   outboundCredentialsFor,
   SERVICE_CREDENTIAL_GRAPH,
   SERVICE_NAMES,
@@ -220,22 +220,57 @@ export function diagnose(
   //    both because the rule is general and because the credential-graph fence
   //    (rightly) refuses token-shaped identifiers it has not declared.
   for (const service of SERVICE_NAMES) {
-    const inbound = inboundCredentialFor(service);
-    if (!inbound) {
-      continue;
-    }
-    const inboundValue = get(`${service.toUpperCase()}_${inbound.envVar}`);
-    if (inboundValue.length === 0) {
-      continue;
-    }
-    for (const outbound of outboundCredentialsFor(service)) {
-      if (get(`${service.toUpperCase()}_${outbound.envVar}`) === inboundValue) {
-        findings.push({
-          severity: 'error',
-          code: 'credential_aliased',
-          message: `${service}'s inbound credential equals its outbound ${outbound.envVar}. That is the M7 collapse: one value in both directions transitively hands every gate caller a key it must never hold.`,
-        });
+    for (const inbound of inboundCredentialsFor(service)) {
+      const inboundValue = get(`${service.toUpperCase()}_${inbound.envVar}`);
+      if (inboundValue.length === 0) {
+        continue;
       }
+      for (const outbound of outboundCredentialsFor(service)) {
+        if (get(`${service.toUpperCase()}_${outbound.envVar}`) === inboundValue) {
+          findings.push({
+            severity: 'error',
+            code: 'credential_aliased',
+            message: `${service}'s inbound ${inbound.envVar} equals its outbound ${outbound.envVar}. That is the M7 collapse: one value in both directions transitively hands every gate caller a key it must never hold.`,
+          });
+        }
+      }
+    }
+  }
+
+  // 4b. THE SAME RULE ACROSS CALLEES, which check 4 structurally cannot see.
+  //     Check 4 only ever compares a service's inbound value against its own
+  //     outbound ones, so two DIFFERENT callees sharing one value is invisible
+  //     to it — and that is the shape an operator produces by reusing a single
+  //     secrets-store entry. Check 3 above has already required every holder's
+  //     copy to equal its callee's, so comparing callee values pairwise
+  //     transitively covers the holder slots too.
+  //
+  //     The M9 security review found this gap: docs/04 and the compose file
+  //     both claimed the doctor enforced a "full n² loop", which only
+  //     settlement's own production config actually did. Concretely, DOCUMENTS_
+  //     and NOTIFICATIONS_INTERNAL_TOKEN sharing a value would have passed —
+  //     handing identity and vault a working key to documents' legal-hold
+  //     route, i.e. the power to LIFT the hold on an estate under
+  //     administration.
+  const byValue = new Map<string, string[]>();
+  for (const edge of SERVICE_CREDENTIAL_GRAPH) {
+    if (edge.holders.length === 0) {
+      continue;
+    }
+    const calleeVar = `${edge.callee.toUpperCase()}_${edge.envVar}`;
+    const value = get(calleeVar);
+    if (value.length === 0) {
+      continue;
+    }
+    byValue.set(value, [...(byValue.get(value) ?? []), calleeVar]);
+  }
+  for (const [, vars] of byValue) {
+    if (vars.length > 1) {
+      findings.push({
+        severity: 'error',
+        code: 'credential_aliased',
+        message: `${vars.join(' and ')} share one value. Each credential must open exactly one callee's routes: every holder of either now holds a working key to both, which is the M7 collapse across services rather than within one.`,
+      });
     }
   }
 

@@ -25,8 +25,8 @@ import { join, relative, sep } from 'node:path';
 import {
   credentialEnvVarsFor,
   credentialSentinel,
-  expectedEnvVarFor,
-  inboundCredentialFor,
+  envVarPrefixFor,
+  inboundCredentialsFor,
   SERVICE_CREDENTIAL_GRAPH,
   SERVICE_NAMES,
   type ServiceName,
@@ -115,8 +115,29 @@ describe('the credential graph is internally coherent', () => {
 
   it.each(SERVICE_CREDENTIAL_GRAPH)('$envVar is named for its callee', (edge) => {
     // Rule 1. The name is the control: a credential named for its CALLER is
-    // how M7 ended up with one secret opening four services.
-    expect(edge.envVar).toBe(expectedEnvVarFor(edge.callee));
+    // how M7 ended up with one secret opening four services. A callee with
+    // more than one internal surface qualifies the middle of the name, so the
+    // rule is prefix + suffix rather than exact equality.
+    expect(edge.envVar.startsWith(envVarPrefixFor(edge.callee))).toBe(true);
+    expect(edge.envVar.endsWith('_INTERNAL_TOKEN')).toBe(true);
+  });
+
+  it('never declares the same env var twice', () => {
+    // Two edges sharing a variable would be the split-in-name-only failure:
+    // separate holders on paper, one secret in every deployment.
+    const vars = SERVICE_CREDENTIAL_GRAPH.map((edge) => edge.envVar);
+    expect(new Set(vars).size).toBe(vars.length);
+  });
+
+  it.each(SERVICE_NAMES)('%s has at most one credential per guard token', (service) => {
+    // A guard binds exactly ONE token, so two edges on one callee are only
+    // really separate if they are enforced by different guards. Same token on
+    // two edges would mean one guard admitting both credentials' holders —
+    // the over-grant this split exists to remove, wearing a disguise.
+    const tokens = inboundCredentialsFor(service).map((edge) => edge.guard.token);
+    expect(new Set(tokens).size).toBe(tokens.length);
+    const classes = inboundCredentialsFor(service).map((edge) => edge.guard.className);
+    expect(new Set(classes).size).toBe(classes.length);
   });
 
   it.each(SERVICE_CREDENTIAL_GRAPH)('$envVar is not held by its own callee', (edge) => {
@@ -209,38 +230,56 @@ describe('no credential is mentioned anywhere the graph does not allow', () => {
 });
 
 describe('the guard mechanism agrees with the graph', () => {
-  /** Services whose app.module binds the shared SERVICE_CREDENTIAL token. */
+  /** Every credential DI token any edge names, e.g. SERVICE_CREDENTIAL. */
+  const GUARD_TOKENS = [...new Set(SERVICE_CREDENTIAL_GRAPH.map((e) => e.guard.token))];
+
+  /** Services whose app.module binds ANY credential token. */
   const providers = SERVICE_NAMES.filter((service) =>
-    /provide:\s*SERVICE_CREDENTIAL\b/.test(read(serviceSrc(service, 'app.module.ts'))),
+    GUARD_TOKENS.some((token) =>
+      new RegExp(`provide:\\s*${token}\\b`).test(read(serviceSrc(service, 'app.module.ts'))),
+    ),
   );
 
   it('is anchored on something that exists', () => {
     expect(providers.length).toBeGreaterThanOrEqual(3);
+    expect(GUARD_TOKENS).toContain('SERVICE_CREDENTIAL');
   });
 
   it('lets exactly the callees expect a credential', () => {
     // Anchored on the MECHANISM, not on variable names: a new internal route
-    // authenticated by a differently-named secret still has to bind
-    // SERVICE_CREDENTIAL, and is caught here even though no *_INTERNAL_TOKEN
+    // authenticated by a differently-named secret still has to bind one of
+    // these tokens, and is caught here even though no *_INTERNAL_TOKEN
     // variable was ever added.
-    const callees = SERVICE_CREDENTIAL_GRAPH.map((edge) => edge.callee).sort();
+    const callees = [...new Set(SERVICE_CREDENTIAL_GRAPH.map((edge) => edge.callee))].sort();
     expect([...providers].sort()).toEqual(callees);
   });
 
-  it.each(SERVICE_CREDENTIAL_GRAPH.map((edge) => edge.callee))(
-    '%s expects exactly one credential, its own',
-    (service) => {
-      const module = read(serviceSrc(service, 'app.module.ts'));
-      // A second binding would be a second inbound credential hiding behind
-      // the first — the same aliasing shape as M7, one level down.
-      expect(module.match(/provide:\s*SERVICE_CREDENTIAL\b/g)).toHaveLength(1);
+  it.each(SERVICE_CREDENTIAL_GRAPH)(
+    '$callee binds $envVar exactly once, under its own guard token',
+    (edge) => {
+      const module = read(serviceSrc(edge.callee, 'app.module.ts'));
+      // A second binding of the SAME token would be a second inbound
+      // credential hiding behind the first — the M7 aliasing shape, one level
+      // down. (Two bindings of DIFFERENT tokens is the legitimate split, and
+      // the per-service token-uniqueness check above keeps it honest.)
+      const binding = new RegExp(`provide:\\s*${edge.guard.token}\\b`, 'g');
+      expect(module.match(binding)).toHaveLength(1);
 
-      const factory = /provide:\s*SERVICE_CREDENTIAL\b[\s\S]{0,400}?config\.(\w+)/.exec(module);
+      const factory = new RegExp(
+        `provide:\\s*${edge.guard.token}\\b[\\s\\S]{0,400}?config\\.(\\w+)`,
+      ).exec(module);
       expect(factory).not.toBeNull();
       const field = (factory as RegExpExecArray)[1] as string;
-      expect(configFieldToEnvVar(service)[field]).toBe(expectedEnvVarFor(service));
+      expect(configFieldToEnvVar(edge.callee)[field]).toBe(edge.envVar);
     },
   );
+
+  it.each(SERVICE_CREDENTIAL_GRAPH)('$callee provides the guard class $envVar names', (edge) => {
+    // The class must actually be a provider, or Nest cannot construct it and
+    // the route would fail closed at runtime rather than at build time.
+    const module = read(serviceSrc(edge.callee, 'app.module.ts'));
+    expect(new RegExp(`\\b${edge.guard.className}\\b`).test(module)).toBe(true);
+  });
 
   it.each(SERVICE_NAMES)('%s presents only credentials the graph grants it', (service) => {
     // Outbound side: every `credential:`/`serviceCredential:` construction site
@@ -250,12 +289,12 @@ describe('the guard mechanism agrees with the graph', () => {
     const module = read(serviceSrc(service, 'app.module.ts'));
     const fieldToEnv = configFieldToEnvVar(service);
     const granted = credentialEnvVarsFor(service);
-    const inboundVar = inboundCredentialFor(service)?.envVar;
+    const inboundVars = inboundCredentialsFor(service).map((edge) => edge.envVar);
 
     for (const match of module.matchAll(/(?:serviceCredential|credential)\s*:\s*config\.(\w+)/g)) {
       const envVar = fieldToEnv[match[1] as string];
       expect(granted).toContain(envVar);
-      expect(envVar).not.toBe(inboundVar);
+      expect(inboundVars).not.toContain(envVar);
     }
   });
 });
@@ -263,19 +302,27 @@ describe('the guard mechanism agrees with the graph', () => {
 describe('every guarded route is declared in the graph', () => {
   /**
    * Routes of controller classes carrying a class-level
-   * `@UseGuards(ServiceCredentialGuard)`. Split per `@Controller(...)` because
-   * one file can hold both a bearer-guarded and a credential-guarded
-   * controller — settlement's admin.controller.ts does exactly that.
+   * `@UseGuards(<guardClass>)`. Split per `@Controller(...)` because one file
+   * can hold both a bearer-guarded and a credential-guarded controller —
+   * settlement's admin.controller.ts does exactly that, and since the M9
+   * review notifications' internal.controller.ts holds two controllers under
+   * two DIFFERENT credential guards.
+   *
+   * `guardClass` is a parameter rather than a constant because the guard class
+   * is what partitions a callee's routes between its credentials: attributing
+   * every guarded route to one edge would let the recipient route be
+   * re-merged under the send credential without any check firing.
    */
-  function guardedRoutes(service: ServiceName): string[] {
+  function guardedRoutes(service: ServiceName, guardClass: string): string[] {
     const dir = join(SERVICES_DIR, service, 'src');
     const routes: string[] = [];
+    const guarded = new RegExp(`@UseGuards\\([^)]*\\b${guardClass}\\b`);
     for (const file of walk(dir)) {
       const source = read(file);
       const chunks = source.split(/(?=@Controller\()/).slice(1);
       for (const chunk of chunks) {
         const header = chunk.slice(0, chunk.indexOf('export class'));
-        if (!/@UseGuards\([^)]*\bServiceCredentialGuard\b/.test(header)) {
+        if (!guarded.test(header)) {
           continue;
         }
         const prefix = /@Controller\(\s*'([^']*)'/.exec(chunk)?.[1] ?? '';
@@ -288,21 +335,38 @@ describe('every guarded route is declared in the graph', () => {
     return routes.sort();
   }
 
+  /** Every credential-guarded route of a service, whichever guard carries it. */
+  function allGuardedRoutes(service: ServiceName): string[] {
+    const classes = [...new Set(SERVICE_CREDENTIAL_GRAPH.map((e) => e.guard.className))];
+    return [...new Set(classes.flatMap((cls) => guardedRoutes(service, cls)))].sort();
+  }
+
   it('finds the guarded controllers it is meant to be checking', () => {
-    const total = SERVICE_NAMES.flatMap(guardedRoutes);
+    const total = SERVICE_NAMES.flatMap(allGuardedRoutes);
     expect(total.length).toBeGreaterThanOrEqual(4);
   });
 
   it.each(SERVICE_CREDENTIAL_GRAPH)('$callee opens exactly what $envVar says', (edge) => {
     // Keeps `opens` — and so the `grants` sentence a reviewer judges `holders`
     // by — from going stale the moment someone adds a route to an existing
-    // internal controller.
-    expect(guardedRoutes(edge.callee)).toEqual([...edge.opens].sort());
+    // internal controller. Scoped to THIS edge's guard, so moving a route
+    // between a callee's two credentials is a visible change to both lists.
+    expect(guardedRoutes(edge.callee, edge.guard.className)).toEqual([...edge.opens].sort());
+  });
+
+  it('declares every credential-guarded route in the repo exactly once', () => {
+    // Cross-check against the per-edge assertion above: a route guarded by a
+    // class no edge names would be invisible to it, and a route claimed by two
+    // edges would mean two credentials opening one capability.
+    const declared = SERVICE_CREDENTIAL_GRAPH.flatMap((edge) => [...edge.opens]).sort();
+    const found = SERVICE_NAMES.flatMap(allGuardedRoutes).sort();
+    expect(found).toEqual([...new Set(declared)].sort());
+    expect(declared.length).toBe(new Set(declared).size);
   });
 
   it.each(SERVICE_NAMES)('%s has no guarded route unless the graph says so', (service) => {
-    if (!inboundCredentialFor(service)) {
-      expect(guardedRoutes(service)).toEqual([]);
+    if (inboundCredentialsFor(service).length === 0) {
+      expect(allGuardedRoutes(service)).toEqual([]);
     }
   });
 });

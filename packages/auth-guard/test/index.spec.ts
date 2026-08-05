@@ -29,8 +29,8 @@ describe('@estate/auth-guard public surface', () => {
       authGuard.credentialSentinel,
       authGuard.credentialSentinelEnv,
       authGuard.credentialsHeldIn,
-      authGuard.expectedEnvVarFor,
-      authGuard.inboundCredentialFor,
+      authGuard.envVarPrefixFor,
+      authGuard.inboundCredentialsFor,
       authGuard.outboundCredentialsFor,
     ]) {
       expect(fn).toBeInstanceOf(Function);

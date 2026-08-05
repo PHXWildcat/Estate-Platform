@@ -175,8 +175,8 @@ jobs:
             const production = process.env.MATRIX_PROFILE === "production";
             // M9 PR2 added the dev-journey legal-hold round trip: dev gains a
             // pass, production gains its skip.
-            const expectedPassed = production ? 9 : 14;
-            const expectedPending = production ? 9 : 4;
+            const expectedPassed = production ? 9 : 15;
+            const expectedPending = production ? 10 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
             if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {

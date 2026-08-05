@@ -148,6 +148,23 @@ describe('the credential graph, restated against the file', () => {
     env.set('IDENTITY_IDENTITY_INTERNAL_TOKEN', shared);
     expect(codesOf(env)).toContain('credential_aliased');
   });
+
+  it('catches one value shared by two different CALLEES (M9 review)', () => {
+    // The gap the M9 security review found: check 4 compares a service's
+    // inbound value against its own outbounds, so a collision between two
+    // callees — the shape an operator produces by reusing one secrets-store
+    // entry — was invisible, while docs/04 and the compose file both claimed
+    // the doctor enforced a full pairwise loop. Here identity and vault would
+    // end up holding a working key to documents' legal-hold route.
+    const env = generatedEnv();
+    const shared = env.get('NOTIFICATIONS_NOTIFICATIONS_INTERNAL_TOKEN')!;
+    env.set('DOCUMENTS_DOCUMENTS_INTERNAL_TOKEN', shared);
+    env.set('SETTLEMENT_DOCUMENTS_INTERNAL_TOKEN', shared);
+    // Every holder copy still matches its callee, so check 3 is satisfied and
+    // the ONLY thing that can catch this is the cross-callee comparison.
+    expect(codesOf(env)).not.toContain('credential_mismatch');
+    expect(codesOf(env)).toContain('credential_aliased');
+  });
 });
 
 describe('dependencies the stack must really provide', () => {

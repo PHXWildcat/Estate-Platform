@@ -559,6 +559,68 @@ describeIfStack('the running stack', () => {
       );
     });
 
+    it('keeps the two notification surfaces on two credentials, live (M9 review)', async () => {
+      // The M9 security review's load-bearing finding, pinned against the
+      // running stack: one credential used to open BOTH send and
+      // recipient-upsert, so vault's copy — the Zone A service, deliberately
+      // holding no key material — could silently repoint any owner's address
+      // and silence SETTLEMENT's §5.1 death-case alerts. Each credential must
+      // now open exactly its own surface, and be REFUSED on the other.
+      if (!existsSync(ENV_FILE)) {
+        throw new Error(`stack env file not found at ${ENV_FILE}`);
+      }
+      const stackEnv = parseEnvFile(readFileSync(ENV_FILE, 'utf8'));
+      const vaultSend = stackEnv.get('VAULT_NOTIFICATIONS_INTERNAL_TOKEN');
+      const identityRecipients = stackEnv.get('IDENTITY_NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN');
+      if (!vaultSend || !identityRecipients) {
+        throw new Error('notification credentials missing from the stack env');
+      }
+      // The generator must never mint one value for both surfaces.
+      expect(vaultSend).not.toBe(identityRecipients);
+
+      const NOTIFICATIONS = process.env['STACK_NOTIFICATIONS_URL'] ?? 'http://localhost:3008';
+      const recipientsPath = '/internal/v1/notifications/recipients';
+      const sendPath = '/internal/v1/notifications/send';
+      const asService = (credential: string): Record<string, string> => ({
+        'x-estate-service-credential': credential,
+      });
+
+      // THE FIX: the send credential is refused on the recipient route.
+      const hijack = await api(NOTIFICATIONS, 'PUT', recipientsPath, {
+        headers: asService(vaultSend),
+        body: { userId: owner.userId, email: 'attacker@evil.test' },
+      });
+      expect(hijack.status).toBe(401);
+
+      // ...and the recipient credential is refused on the send route, so the
+      // split constrains identity too rather than just widening its reach.
+      const speak = await api(NOTIFICATIONS, 'POST', sendPath, {
+        headers: asService(identityRecipients),
+        body: { userId: owner.userId, kind: 'vault.reset', channel: 'email' },
+      });
+      expect(speak.status).toBe(401);
+
+      // Each still works on its own surface — otherwise the two assertions
+      // above would pass just as well against a service that refuses
+      // everything (the vacuity failure this repo keeps catching).
+      expect(
+        (
+          await api(NOTIFICATIONS, 'POST', sendPath, {
+            headers: asService(vaultSend),
+            body: { userId: owner.userId, kind: 'vault.reset', channel: 'email' },
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await api(NOTIFICATIONS, 'PUT', recipientsPath, {
+            headers: asService(identityRecipients),
+            body: { userId: owner.userId, email: owner.email },
+          })
+        ).status,
+      ).toBe(200);
+    });
+
     it('assembled every event into a VERIFIED hash chain across the real broker', async () => {
       const db = new Client({ connectionString: AUDIT_DB });
       await db.connect();

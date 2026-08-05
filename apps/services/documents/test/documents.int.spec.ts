@@ -537,6 +537,20 @@ describeIfPg('document service end to end', () => {
       .filter((e) => e.action === 'document.legal_hold.set');
     expect(audited.length).toBeGreaterThanOrEqual(2);
     expect(audited[0]!.detail).toEqual({ hold: true, changed: 2, caseId });
+    expect(audited[0]!.actorType).toBe('service');
+    expect(audited[0]!.actorId).toBeNull();
+
+    // ...and the VERSION HISTORY agrees with the audit event: a hold the
+    // platform imposed is attributed to the system, never to the owner, who
+    // could not have performed it. In a §5.1 fraud investigation this history
+    // is evidence — it must not read as though the decedent froze their own
+    // documents. (M9 security review.)
+    const { rows: heldVersions } = await admin.query<{ actor_id: string | null }>(
+      `SELECT actor_id FROM documents_versions WHERE row_id = $1 ORDER BY version_seq DESC LIMIT 1`,
+      [heldDocA],
+    );
+    expect(heldVersions[0]!.actor_id).toBe('00000000-0000-0000-0000-000000000000');
+    expect(heldVersions[0]!.actor_id).not.toBe(estateOwner);
 
     // Clearing restores deletability — the reject/void path.
     const cleared = await request(server)

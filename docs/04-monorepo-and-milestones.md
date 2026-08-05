@@ -1375,8 +1375,12 @@ those flows rest on only become real when the owner can actually be told.
   deny capability tokens are recorded follow-ups.
 - **Trust machinery.** Fourth credential-graph edge
   (`NOTIFICATIONS_INTERNAL_TOKEN` — callee notifications; holders identity,
-  settlement, vault; opens send + recipient-upsert and nothing else), with
-  every fence updated and the generator minting it automatically. Production
+  settlement, vault; opens send + recipient-upsert), with every fence updated
+  and the generator minting it automatically. **CORRECTED by the M9 security
+  review:** one credential opening both surfaces was an over-grant — vault and
+  settlement only ever send, so bundling the recipient-upsert route handed
+  them the power to repoint any owner's alerts. Split into two edges; see the
+  review record below. Production
   PINS the real adapters (`NOTIFY_MODE=http`, `EMAIL_MODE=ses` — the
   KMS/clamd/OCR rule); aliasing refusals extend pairwise to the new secret;
   the per-route 503 gates REMAIN as defense in depth and now AUDIT their
@@ -1424,7 +1428,9 @@ those flows rest on only become real when the owner can actually be told.
   ['settlement']` in the same change as the client (the rule the graph
   comment mandated); `DOCUMENTS_INTERNAL_TOKEN` becomes production-required
   (≥ 32 chars) on BOTH sides; settlement's pairwise-distinctness refusal now
-  covers all FOUR credentials it touches (full n² loop, config and doctor);
+  covers all FOUR credentials it touches (full n² loop in settlement's own
+  config; the DOCTOR's coverage was narrower than this line claimed until the
+  M9 review widened it — see the review record);
   settlement config gains `DOCUMENTS_URL` (production-required). Generator,
   doctor, service-env mapping and compose all follow the graph automatically;
   the zero-holder subtraction machinery stays for the next holder-less edge.
@@ -1457,8 +1463,106 @@ those flows rest on only become real when the owner can actually be told.
   and the floor RATCHETED UP to just under the new measured 68.89/67.2/70.76/
   67.61.
 
-The milestone closes with its own security pass including delivery-channel
-identifier leakage (owed since the M6 review).
+**M9 security review (2026-08-05).** Structured review of the whole merged M9
+range (`8aba7c7..03126c9`, PR1 #20 + PR2 #21): seven parallel discovery
+lenses — the carrier boundary and the content-free doctrine, the recipient
+store's crypto and the Zone B boundary, the credential graph and its fences,
+the PR2 legal-hold caller and case-transition integrity, the M6/M7 flows M9
+un-gated, fail-open hunting across the new production pins, and the
+audit/PII firewall plus new attack surface — with every candidate then put
+through TWO adversarial verifiers on different angles (is it reachable in a
+real production config; is it actually a documented decision), both
+instructed to default to REFUTED. 24 raw, 24 unique, 26 verified including
+the completeness critic's, 8 confirmed collapsing to **6 distinct defects**
+(three lenses independently found the credential one). No zone boundary
+weakened, no production fail-fast relaxed — M9 only ADDED pins — and no
+credential reaching a service the graph forbids. The recurring pattern held
+for the fourth milestone running and should now be treated as expected: five
+of six sit in machinery M9 itself introduced, and four falsify a claim M9
+made in its own docs or comments. All six fixed in-branch:
+
+1. **The notifications credential bundled two capabilities** (the load-bearing
+   one). `NOTIFICATIONS_INTERNAL_TOKEN` opened both `POST /send` and
+   `PUT /recipients`, and was held by identity, settlement AND vault — though
+   identity only ever upserts and the other two only ever send. So a holder of
+   vault's or settlement's copy could silently repoint any user's notification
+   address, and the damage is CROSS-DOMAIN: vault's copy silences settlement's
+   §5.1 death-case alerts, settlement's silences vault's §5.2 emergency-access
+   alerts. Both waiting periods rest on the owner being told. docs/03 §6c,
+   written in this same milestone, asserted the opposite ("requires
+   identity-level compromise"). Split into two edges with two guards binding
+   two DI tokens — send (settlement, vault) and recipients (identity ALONE) —
+   with the service refusing to boot in production if the values are equal.
+   The credential-graph fence gained a `guard` descriptor per edge and now
+   attributes routes per guard CLASS, so re-merging the surfaces cannot pass:
+   its "one credential per callee" checks became "one per edge, with distinct
+   guards per callee", plus a new cross-check that every guarded route in the
+   repo is declared exactly once.
+2. **Verification ran the irreversible lock before the fallible hold.** In
+   `confirmVerification`, `identity.setState('settlement')` — which has NO
+   transition back to `active` and revokes every session — executed BEFORE
+   `documentsHold.setHold(true)`. A documents blip (cheapest trigger: its
+   post-commit audit emit throwing on a Kafka hiccup, returning 500 with the
+   hold already applied) rolled the case back to `waiting_period` while the
+   account stayed terminally in `settlement`; every restore path then calls
+   `setState('active')`, which from `settlement` is an invalid transition
+   surfacing as a transient-looking 503. A LIVING owner would be permanently
+   locked out with the only unblocked move being to finish settling their
+   estate — §5.1's Critical outcome reached by a third service hiccuping, and
+   flatly contradicting `documents-hold.ts`'s own "a case transition whose
+   legal-hold effect cannot be confirmed does not happen". Fixed by swapping
+   two calls, and the rule is now stated where it can be reused: **the step
+   that cannot be undone runs LAST**, which makes the ordering differ by site
+   (approve's identity state is reversible, so there the lock goes first —
+   reordering it would strand a hold on a living owner whose reject path does
+   not clear it). Mutation-tested.
+3. **Registration feeds an unverified third-party address into the delivery
+   store.** `POST /v1/auth/register` is unauthenticated and proves no
+   ownership, yet identity pushes whatever was typed into
+   `notification_recipients`; `users.email_verified_at` exists in the schema
+   and is never written or read. RECORDED, NOT FIXED — a confirm-token flow is
+   its own change. Bounded meanwhile: no kind fires at registration, addresses
+   already belonging to an account cannot be taken, and every message is
+   content-free and link-free. docs/03 §6c now says plainly that identity's
+   word means the address was TYPED, not OWNED.
+4. **Template bodies name the control that fired.** The uniform-SUBJECT
+   property is real, but every body states its control in the first clause, so
+   a lock-screen preview and the carrier learn the event class — which three
+   places claimed they could not. Prose-only fix: the bodies stay actionable
+   (a context-free pointer is useless to an owner deciding whether to deny),
+   the claims are narrowed to the subject line, and the event-class leak is
+   recorded as an accepted residual. Also retitled `templates.spec.ts`'s
+   subject test, whose name asserted a property it never checked — the M8
+   vacuous-assertion class.
+5. **The legal hold attributed itself to the estate owner.** `setEstateLegalHold`
+   opened its transaction as the owner, so the `documents_versions` trigger
+   recorded the DECEDENT as the actor of a platform-imposed freeze they could
+   not have performed — while the audit event for the same operation correctly
+   said `actorType: 'service'`. In a §5.1 fraud investigation that history is
+   evidence. Now `SYSTEM_ACTOR_ID`, pinned by an int test and mutation-tested.
+   (M7-vintage line; M9 PR2 made it live by giving the route its first caller.)
+6. **The doctor's aliasing check was inbound-vs-outbound only.** It never
+   compared two callees' values, so one secret provisioned for two different
+   callees passed — the shape an operator produces by reusing one
+   secrets-store entry — while docs/04 and the compose file both claimed a
+   "full n² loop" and that "the doctor refuses it in every mode". Widened to a
+   real cross-callee comparison; both overclaims corrected.
+
+**The M6 delivery-channel identifier leakage item is ANSWERED: partially
+closed.** Closed by construction for identifiers — no caller-authored text,
+no name/address/asset/document/case/user id in any message, no links at all
+so no per-recipient URL can re-identify a recipient to the carrier, one
+subject across all nine kinds, addresses never crossing a cluster boundary.
+Open, and now recorded as an accepted residual rather than claimed closed:
+the EVENT CLASS reaches the carrier and any body-preview observer, deliberately,
+because an actionable body is what makes the notification a control. Fully
+closing it needs the isolated-origin push channel — a later milestone.
+
+Residuals added to docs/03 §6c rather than fixed: the unverified-address gap
+(3 above), the recipient-change audit's inability to ATTRIBUTE (it emits a null
+actor and identity fires the same event on every login, so it is evidence for
+recovery, not a detection control — closing it needs the mesh's peer identity),
+and the carrier's event-class visibility.
 
 ### Later milestones (rough order, one per bounded context)
 AI assistant (privacy proxy) · then referral, search · the M5 cloud

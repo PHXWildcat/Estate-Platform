@@ -841,3 +841,52 @@ deviating from them, stop and propose the change with rationale — do not silen
   GENERATED (`PLAID_PROFILE`), so the production profile omits the container
   instead of crash-looping one that cannot boot without live credentials —
   matching what `plannedServices` already did for host mode.
+- 2026-08-05 — M9 security review (seven parallel discovery lenses over the
+  merged range `8aba7c7..03126c9` + TWO adversarial verifiers per candidate on
+  different angles — reachability in a real production config, and
+  is-it-a-documented-decision — both told to default to refuted; 24 raw, 24
+  unique, 26 verified, 8 confirmed collapsing to SIX distinct defects). No zone
+  boundary weakened, no production fail-fast relaxed (M9 only ADDED pins), no
+  credential reaching a service the graph forbids. The M6/M7/M8 pattern held a
+  fourth time and is now the expectation, not a surprise: five of six sit in
+  machinery M9 introduced, four falsify a claim M9 made about itself. Two are
+  load-bearing. (1) ONE CREDENTIAL, TWO CAPABILITIES:
+  `NOTIFICATIONS_INTERNAL_TOKEN` opened send AND recipient-upsert with holders
+  identity+settlement+vault, though identity only upserts and the other two only
+  send — so vault's copy could repoint any owner's address and silence
+  SETTLEMENT's §5.1 death-case alerts, and settlement's could silence VAULT's
+  §5.2 emergency alerts. Cross-domain, and docs/03 §6c claimed in the same
+  milestone that this "requires identity-level compromise". Split into two edges
+  / two guards / two DI tokens (send: settlement+vault; recipients: identity
+  ALONE), config refuses equal values in production, and the credential-graph
+  fence moved from "one credential per callee" to "one per EDGE with distinct
+  guards per callee" — routes now attribute per guard CLASS, plus a new
+  cross-check that every guarded route in the repo is declared exactly once.
+  (2) ORDER WITHIN A TRANSITION IS A CONTROL: confirmVerification ran the
+  IRREVERSIBLE `setState('settlement')` (no path back to active; revokes every
+  session) BEFORE the fallible `setHold(true)`, so a documents blip rolled the
+  case back to waiting_period while the account stayed terminally locked — and
+  every restore path then 503s on an invalid transition, permanently entombing a
+  LIVING owner with only "finish settling the estate" unblocked. Fixed by
+  swapping two calls; the rule is now written down as THE STEP THAT CANNOT BE
+  UNDONE RUNS LAST, which is why the ordering deliberately DIFFERS at the
+  approve site (reversible identity state ⇒ lock first, or a failed hold strands
+  a hold whose reject path never clears it). Also fixed: the legal hold
+  attributed itself to the DECEDENT in `documents_versions` while its own audit
+  event said `service` (evidence integrity in exactly the §5.1 investigation
+  cases are kept for); the stack doctor's aliasing check never compared two
+  CALLEES, so one secret reused across two of them passed while docs/04 and the
+  compose file claimed a "full n² loop"; and templates' "an observer never
+  learns WHICH control fired" was true of the SUBJECT only — the bodies name
+  their control deliberately, so the claim was narrowed rather than the bodies
+  gutted (an unactionable notification is not a control). RECORDED NOT FIXED,
+  in docs/03 §6c: registration feeds an UNVERIFIED address into the delivery
+  store (`users.email_verified_at` is dead schema — identity's word means the
+  address was TYPED, not OWNED; a confirm-token flow is its own change), and
+  `notification.recipient.updated` cannot ATTRIBUTE a change (null actor, and
+  identity emits it on every login), so it is evidence for recovery, never a
+  detection control — closing that needs the mesh's peer identity. The M6
+  delivery-channel identifier-leakage item is ANSWERED as PARTIALLY CLOSED:
+  identifiers are closed by construction, the EVENT CLASS reaching the carrier
+  is an accepted residual, and fully closing it is the isolated-origin push
+  channel. Full record in docs/04 M9 review.
