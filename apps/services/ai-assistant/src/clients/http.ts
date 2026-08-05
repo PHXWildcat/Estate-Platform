@@ -52,6 +52,45 @@ export async function readJson<T extends z.ZodTypeAny>(
   bearer: string,
   schema: T,
 ): Promise<z.infer<T> | null> {
+  const result = await readJsonOrAbsent(fetchImpl, url, bearer, schema);
+  // Callers of THIS function have no absent case, so the peer's "no such row"
+  // collapses back into the uniform refusal — exactly the pre-M10-PR3 shape.
+  return result === ABSENT ? null : result;
+}
+
+/**
+ * The peer answered, in its own application vocabulary, that the resource does
+ * not exist. A DISTINCT value from null because the two mean opposite things:
+ * null is "this read did not happen" and must fail closed; ABSENT is a real
+ * answer ("there is no profile row") that a caller may legitimately render as
+ * an empty view.
+ */
+export const ABSENT: unique symbol = Symbol('peer answered: no such resource');
+
+/**
+ * `readJson`, except the peer's own not-found token is surfaced as `ABSENT`
+ * instead of being folded into the refusal.
+ *
+ * THE DISCRIMINATOR IS THE PEER'S APPLICATION-LEVEL BODY TOKEN, NOT A STATUS
+ * CODE. `FetchLike` deliberately cannot see a status (the type is the rule), and
+ * that stays true here: what this matches is a non-ok response whose body is the
+ * `{error: 'not_found'}` object this repo's services throw for a row that does
+ * not exist. A route-level 404 — a wrong URL, a misdeployed peer — carries
+ * Nest's default body instead, does not match, and stays a fail-closed null.
+ * That asymmetry is the point: "the peer looked and found nothing" is a real
+ * answer, while "something answered 404" is not evidence of anything.
+ *
+ * Exists for exactly one consumer today (`ProfileClient.facts` — a user who
+ * never completed profile onboarding has no row, and the M10 PR3 stack run
+ * proved that reading that as an outage turns three analyses and one tool into
+ * a permanent 503 for them). Every other read keeps the flat taxonomy.
+ */
+export async function readJsonOrAbsent<T extends z.ZodTypeAny>(
+  fetchImpl: FetchLike,
+  url: string,
+  bearer: string,
+  schema: T,
+): Promise<z.infer<T> | typeof ABSENT | null> {
   if (!bearer) {
     return null;
   }
@@ -65,7 +104,19 @@ export async function readJson<T extends z.ZodTypeAny>(
     return null; // network/DNS failure ⇒ no data
   }
   if (!response.ok) {
-    return null; // 401, 403, 404, 5xx — all the same answer, deliberately
+    // 401, 403, 5xx and unfamiliar 404s all stay the same answer, deliberately.
+    // Only the peer's own "no such row" token is allowed to mean more.
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return null;
+    }
+    const isNotFoundToken =
+      typeof body === 'object' &&
+      body !== null &&
+      (body as Record<string, unknown>)['error'] === 'not_found';
+    return isNotFoundToken ? ABSENT : null;
   }
   let body: unknown;
   try {

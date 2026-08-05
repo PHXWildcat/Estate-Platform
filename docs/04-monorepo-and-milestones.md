@@ -1564,7 +1564,7 @@ actor and identity fires the same event on every login, so it is evidence for
 recovery, not a detection control — closing it needs the mesh's peer identity),
 and the carrier's event-class visibility.
 
-### M10 — AI estate assistant (PR2 in progress)
+### M10 — AI estate assistant (PR3 in progress)
 
 The milestone docs/04 always had next, arriving on a platform that can now
 deploy and notify — the two reasons M8 displaced it (see M8's opening note).
@@ -1808,6 +1808,83 @@ call: its entire spec runs against a fake transport (the Plaid live-client
 precedent), the local stack runs the stub, and the production rehearsal proves
 that the pin refuses to boot without a key — not that a real turn works. The
 first genuine provider call is a deployment event, not a test result.
+
+**PR3 — the deterministic analysers.**
+
+This is where the milestone's founding decision gets cashed. Funding
+recommendations, missing-document detection, beneficiary-conflict detection and
+estate-tax estimation are questions about STRUCTURE — is this asset titled in
+the trust, do these shares total 100%, is the estate above the exemption — over
+facts the platform already computes. **The analyser computes; the model
+explains.** Findings carry enum codes from closed unions, never prose, so a
+number on a user's estate-readiness panel is arithmetic rather than a token
+sampled from a distribution, an injected instruction in a deed cannot invent a
+finding, and two users with the same estate get the same answer.
+
+`src/analysis/` holds four pure functions — no I/O, no Nest, no clock — over
+views the peer clients already return:
+
+- **funding** finds the most common failure in estate planning: a trust that was
+  drafted, signed and never funded, which controls nothing. Conditional on a
+  trust EXISTING (telling a user without one that their assets are not in it is a
+  product opinion, not a finding), and it respects `funding_status = na` as the
+  owner's own decision.
+- **missing documents** separates ABSENT from PRESENT-BUT-NOT-IN-FORCE, because
+  a generated unsigned will is the more dangerous of the two — it looks like a
+  plan and directs nothing. A revoked or superseded document counts as absent.
+- **beneficiary conflicts** finds the one the feature is named for: an asset held
+  in trust that ALSO names beneficiaries directly, so the designation passes it
+  outside the instrument the owner believes controls their estate. Invisible in
+  either place alone; visible only by comparing them.
+- **estate tax** reports a GROSS estate against federal and state thresholds, and
+  says what it left out (debts, prior gifts, DSUE, trust structures). In an
+  inheritance-tax state it reports that exposure exists rather than a number,
+  because the rate turns on each recipient's relationship and this platform holds
+  beneficiaries as contact ids with no relationship attached.
+
+**The reference-data review gate is the M4 template rule applied to tax law.**
+`analysis/reference/estate-tax.ts` states the law — a threshold, a rate — on the
+platform's authority, so it carries a sign-off block and the analyser built on it
+REFUSES in production while that block holds the `unreviewed-exemplar` sentinel
+(the M6/M7 pattern: a capability that cannot be exercised safely answers with a
+control firing, not with a plausible number). It runs fully everywhere else,
+which is what makes it testable. The missing-document matrix deliberately has NO
+such gate, and the line between them is the point: it conditions only on
+structure the platform can see and phrases every finding as a fact about the
+user's own account. A rule needing a statute to justify it — a state execution
+formality, a filing deadline — belongs in reviewed data with the tax table.
+
+**Two surfaces, one core, and a deliberate asymmetry in their consent gates.**
+Each analyser is exposed as a model-callable tool AND as a `GET /v1/analysis/*`
+route the UI can read with no model involved. The tools require EVERY scope the
+analysis touches — they are the first multi-scope tools, so `AssistantTool.scope`
+became `scopes` and the executor requires all of them, because an analysis
+reading two domains discloses both and a partial run would answer "no conflicts"
+from data nobody agreed to share. The routes require only the master switch:
+consent scopes gate EGRESS to a third-party provider, and this path sends nothing
+anywhere — it fetches on the caller's own bearer, computes in-process, and
+returns the result to that same caller, who can already read every input
+directly. Requiring the capability scopes there would teach users to grant
+provider egress in order to see their own document checklist.
+
+Supporting changes worth recording: `assistant_tool_calls.scope` now stores the
+sorted scope SET joined with `:` (one TEXT column, and `SAFE_TOKEN_PATTERN`
+admits ':' but not ',' — an array column would have meant backfilling an
+append-only table whose UPDATE is revoked); a denial now names the missing
+scopes, which are closed-vocabulary constants, so the assistant can say which
+switch to turn on; `assistant.analysis.completed` / `.refused` are new audit
+actions, because a route-driven analysis has no conversation to anchor a tool
+event to and persists nothing; and `packages/money` was EXTRACTED from the assets
+service when the analysers became the second consumer of exact decimal
+arithmetic — the extraction also fixed a latent sign bug (`moneyToCents('-12.34')`
+returned −1166n, unreachable through `MoneySchema` but not through a subtraction).
+
+Proven end to end in the stack: the dev journey grants consent over a real
+step-up, reads a live funding analysis and a live estate-tax estimate, sees
+`assistant.analysis.completed` land in the verified audit hash chain, and watches
+a revoke switch the routes off again. The assistant runs only in the development
+profile, so the workflow's exact counts moved 15/4 → 16/4 (dev) and 9/10 → 9/11
+(production).
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.

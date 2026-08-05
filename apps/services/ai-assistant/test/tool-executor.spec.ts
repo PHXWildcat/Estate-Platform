@@ -109,7 +109,7 @@ function makeTool(
   calls: Harness['calls'],
   over: {
     name?: string;
-    scope?: ConsentScope;
+    scopes?: ConsentScope[];
     input?: z.ZodObject<z.ZodRawShape>;
     outcome?: ToolOutcome;
     throws?: Error;
@@ -119,7 +119,7 @@ function makeTool(
   return {
     name,
     description: 'test double',
-    scope: over.scope ?? 'assistant.assets',
+    scopes: over.scopes ?? ['assistant.assets'],
     input: over.input ?? z.object({}),
     execute: (_ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutcome> => {
       calls.push({ tool: name, input });
@@ -198,14 +198,24 @@ describe('consent is checked BEFORE the tool runs', () => {
 
     const outcome = await run(h, 'get_estate_summary', {});
 
-    expect(outcome).toEqual({ outcome: 'denied_no_consent' });
+    // The denial NAMES what is missing (M10 PR3), so the turn can tell the user
+    // which switch to turn on instead of "something was denied". These are
+    // compile-time constants from the closed scope vocabulary, never user text.
+    expect(outcome).toEqual({
+      outcome: 'denied_no_consent',
+      missing: ['assistant.assets', 'assistant.enabled'],
+    });
     expect(h.calls).toEqual([]);
   });
 
   it('denies a granted capability while the master switch is off', async () => {
     const h = harness({ granted: ['assistant.assets'] });
+    // Only the master switch is missing, and only it is reported: the capability
+    // scope IS granted, and saying otherwise would send the user to re-grant
+    // something they already gave.
     await expect(run(h, 'get_estate_summary', {})).resolves.toEqual({
       outcome: 'denied_no_consent',
+      missing: ['assistant.enabled'],
     });
     expect(h.calls).toEqual([]);
   });
@@ -214,6 +224,7 @@ describe('consent is checked BEFORE the tool runs', () => {
     const h = harness({ granted: ['assistant.enabled', 'assistant.profile'] });
     await expect(run(h, 'get_estate_summary', {})).resolves.toEqual({
       outcome: 'denied_no_consent',
+      missing: ['assistant.assets'],
     });
     expect(h.calls).toEqual([]);
   });
@@ -228,6 +239,8 @@ describe('consent is checked BEFORE the tool runs', () => {
     expect(row).toMatchObject({
       conversationId: CONVERSATION,
       toolName: 'get_estate_summary',
+      // The joined scope TOKEN, not the array: one TEXT column, one audit-safe
+      // value (`scopeToken`). A one-element set joins to itself.
       scope: 'assistant.assets',
       outcome: 'denied_no_consent',
       // The DDL refuses a refusal that carries content; so does the executor,
@@ -376,6 +389,7 @@ describe('invalid input', () => {
 
     await expect(run(h, 'get_asset_beneficiaries', { assetId: 'nope' })).resolves.toEqual({
       outcome: 'denied_no_consent',
+      missing: ['assistant.assets', 'assistant.enabled'],
     });
   });
 });
@@ -451,7 +465,7 @@ describe('a successful retrieval', () => {
     const tool: AssistantTool = {
       name: 'get_estate_summary',
       description: 'context capture',
-      scope: 'assistant.assets',
+      scopes: ['assistant.assets'],
       input: z.object({}),
       execute: (ctx: ToolContext): Promise<ToolOutcome> => {
         seenContexts.push(ctx);

@@ -2,7 +2,7 @@
   "name": "@estate/service-ai-assistant",
   "version": "0.0.1",
   "private": true,
-  "description": "AI estate assistant (M10): the isolating boundary for model providers (docs/00 feature 6, docs/01 \u00a72.8, TB5). Retrieval is READ-ONLY tool calls over the user's own structured estate data \u2014 never a vector store, so nothing is copied into a second index whose access rules could drift from the source's. The service holds NO internal service credential in either direction and reaches its peers only by forwarding the caller's own bearer, so the process with the largest prompt-injection surface in the product can never mint authority it was not handed. Uploaded-document text and OCR output are UNTRUSTED INPUT and are never treated as instructions (docs/03 \u00a74 TB5, risk #6). PR1 shipped the spine \u2014 conversation storage, the tool surface, a deterministic stub gateway \u2014 with no model call anywhere; PR2 adds the live Anthropic adapter (the only file in the platform that may import the provider SDK, enforced by a source scan) behind a tokenizing privacy proxy that substitutes user-authored identifiers by declared field and restores them before the user or the transcript sees the reply.",
+  "description": "AI estate assistant (M10): the isolating boundary for model providers (docs/00 feature 6, docs/01 \u00a72.8, TB5). Retrieval is READ-ONLY tool calls over the user's own structured estate data \u2014 never a vector store, so nothing is copied into a second index whose access rules could drift from the source's. The service holds NO internal service credential in either direction and reaches its peers only by forwarding the caller's own bearer, so the process with the largest prompt-injection surface in the product can never mint authority it was not handed. Uploaded-document text and OCR output are UNTRUSTED INPUT and are never treated as instructions (docs/03 \u00a74 TB5, risk #6). PR1 shipped the spine \u2014 conversation storage, the tool surface, a deterministic stub gateway \u2014 with no model call anywhere; PR2 added the live Anthropic adapter (the only file in the platform that may import the provider SDK, enforced by a source scan) behind a tokenizing privacy proxy; PR3 added the deterministic analysers \u2014 funding, missing documents, beneficiary conflicts and estate tax \u2014 which COMPUTE the findings the model only explains, on two surfaces (model-callable tools, and read routes a UI can render with no model involved).",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -21,6 +21,7 @@
     "@estate/db": "workspace:*",
     "@estate/kafka": "workspace:*",
     "@estate/kms-aws": "workspace:*",
+    "@estate/money": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",

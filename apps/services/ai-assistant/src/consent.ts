@@ -61,3 +61,33 @@ export function permits(granted: ReadonlySet<ConsentScope>, required: ConsentSco
   }
   return granted.has(required);
 }
+
+/**
+ * Which of a tool's required scopes are NOT granted — empty means "run it".
+ *
+ * ALL of them are required, never any (M10 PR3): an analyser that reads the
+ * document inventory and the profile facts discloses both to the provider, so
+ * holding one of the two must not buy a partial answer. A partial answer is the
+ * more dangerous outcome here, not the safer one — "no beneficiary conflicts"
+ * computed without the designations anyone consented to share reads exactly
+ * like "your estate is fine".
+ *
+ * The master switch is reported as missing in its own right rather than
+ * collapsing every scope into one denial, so the caller can say which grant
+ * would actually change the answer. Sorted for a stable message.
+ */
+export function missingScopes(
+  granted: ReadonlySet<ConsentScope>,
+  required: readonly ConsentScope[],
+): ConsentScope[] {
+  const missing = new Set<ConsentScope>();
+  if (!granted.has('assistant.enabled')) {
+    missing.add('assistant.enabled');
+  }
+  for (const scope of required) {
+    if (!granted.has(scope)) {
+      missing.add(scope);
+    }
+  }
+  return [...missing].sort();
+}

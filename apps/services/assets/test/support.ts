@@ -4,7 +4,7 @@ import type { BeneficiaryRow } from '../src/beneficiaries.repo';
 import type { Db, Queryable } from '../src/db';
 import { FieldCipher } from '../src/field-cipher';
 import type { AppendInput, LedgerRow } from '../src/ledger.repo';
-import { pctToSql } from '../src/money';
+import { pctToSql } from '@estate/money';
 import type { AssetState } from '../src/projection';
 
 /** In-memory DekRepository for the real FieldCrypto (no Postgres needed). */

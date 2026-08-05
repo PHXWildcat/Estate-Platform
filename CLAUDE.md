@@ -1077,3 +1077,71 @@ deviating from them, stop and propose the change with rationale — do not silen
   never made a real call (its whole spec runs on a fake transport, the Plaid
   live-client precedent) — the first genuine provider call is a deployment
   event, not a test result.
+- 2026-08-05 — M10 PR3 analyser doctrine: THE ANALYSER COMPUTES, THE MODEL
+  EXPLAINS. Funding, missing-document, beneficiary-conflict and estate-tax
+  findings are deterministic code over facts the platform already holds
+  (`inTrust`, `fundingStatus`, `ownershipPct`, `designationComplete`, execution
+  status, household structure), emitted as enum CODES with structured detail —
+  never prose. Three consequences, each a reason: a number on an
+  estate-readiness panel is arithmetic rather than a sampled token; two users
+  with the same estate get the same findings, so the feature is testable; and an
+  injected instruction in an uploaded deed cannot invent a finding, only
+  describe a real one badly. Results carry `disclaimer` as a REQUIRED field
+  (docs/01 §2.8's non-legal-advice watermark — one a caller may forget to render
+  is not a warning), and `status` keeps three things apart that a single empty
+  list would merge: `ok` with no findings ("nothing found" is a real answer),
+  `unavailable` (an input read failed — never an empty estate), and `refused` (a
+  control fired). Product judgements recorded with the code: funding analysis is
+  conditional on a trust EXISTING and respects `na` as the owner's own decision;
+  missing-document detection separates ABSENT from PRESENT-BUT-NOT-IN-FORCE
+  because a generated unsigned will looks like a plan and directs nothing; the
+  beneficiary analyser's headline finding is an in-trust asset that ALSO names
+  beneficiaries directly (the designation passes it outside the instrument, and
+  it is invisible in either place alone); estate tax reports a GROSS upper bound
+  and names its exclusions, and in an inheritance-tax state reports that
+  exposure exists rather than a rate, because the rate turns on a recipient
+  relationship the platform deliberately does not hold.
+- 2026-08-05 — Legal/tax REFERENCE DATA carries the M4 template gate: a
+  `review: {reviewedBy, reviewedAt, source, effectiveYear}` block, and an
+  analyser built on unreviewed data REFUSES in production
+  (`reference_unreviewed`) while running everywhere else — an exemplar that
+  never executes is one nobody tests. The estate-tax table states the law on the
+  platform's authority, so it is gated; the missing-document matrix is NOT,
+  because it conditions only on structure the platform can see and phrases every
+  finding as a fact about the user's own account. The line: a rule that needs a
+  statute to justify it (a state execution formality, a filing deadline,
+  community-property characterization) belongs in reviewed data with the tax
+  table, and M4's sha256-pinned `execution_requirements` is where the first one
+  goes. Refusal is audited under its own reason token, distinct from a peer
+  outage — the M9 rule that a control firing must not read as an outage.
+- 2026-08-05 — The analysers ship on TWO surfaces over one core, with
+  deliberately DIFFERENT consent gates. Tools require EVERY scope the analysis
+  touches (`AssistantTool.scope` became `scopes`; `missingScopes` requires all,
+  never any) because findings rendered into a prompt disclose every domain they
+  drew on, and a partial run would answer "no conflicts" from data nobody agreed
+  to share. The `GET /v1/analysis/*` routes require only `assistant.enabled`,
+  because consent scopes gate EGRESS to a third-party provider and that path
+  sends nothing anywhere: it fetches on the caller's own forwarded bearer,
+  computes in-process, and returns the result to the same caller who could
+  already read every input. Treating the scopes as a second authorization layer
+  over the user's own data would protect nobody while teaching users to grant
+  provider egress to see their own document checklist. Route surface: 403 (not
+  the conversation surface's 404 — there is nothing to enumerate, every route is
+  about the caller themselves), `unavailable`/`refused` become 503 rather than a
+  200 carrying an empty answer, and the audit event carries a finding COUNT,
+  never the findings. Supporting shapes: `assistant_tool_calls.scope` stores the
+  sorted set joined with ':' (one TEXT column; SAFE_TOKEN_PATTERN admits ':' and
+  rejects ',', and an array column would mean backfilling an append-only table
+  whose UPDATE is revoked); denials name the missing scopes, which are
+  closed-vocabulary constants, so a refusal is actionable; `assertScoped`
+  refuses an empty scope set at boot, because "every declared scope is granted"
+  is vacuously true over one.
+- 2026-08-05 — `packages/money` extracted from the assets service (M10 PR3) when
+  the analysers became the second consumer of exact BigInt decimal arithmetic —
+  a second copy is the M8 PR2 shape where seven byte-identical audit producers
+  shared one bug. Zero runtime dependencies. The extraction FIXED a latent sign
+  bug it inherited: `moneyToCents('-12.34')` split on '.' and added the fraction
+  unsigned, returning −1166n. Unreachable through `MoneySchema` (which forbids
+  the sign) but reachable through a subtraction, which is exactly what an
+  analyser does — so the function now validates its input and throws rather than
+  answering confidently for input it cannot handle.

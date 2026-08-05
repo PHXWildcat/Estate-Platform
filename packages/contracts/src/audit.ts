@@ -144,6 +144,18 @@ export const AUDIT_ACTIONS = [
   'assistant.consent.granted',
   'assistant.consent.revoked',
   'assistant.egress.refused',
+  // The deterministic analysers (M10 PR3). Distinct from the tool actions
+  // because they are reachable WITHOUT a conversation — the read routes PR4's
+  // UI calls run the same analysis with no model involved, so there is no
+  // conversation id to anchor a tool event to, and no `assistant_tool_calls`
+  // row (that table binds a retrieval to a conversation). The audit event is
+  // therefore the whole record of a route-driven analysis.
+  'assistant.analysis.completed',
+  // Covers both a failed input read and the reference-data gate refusing an
+  // unreviewed tax table in production; the detail's `reason` token separates
+  // them, because "a control fired" and "a peer was down" call for different
+  // reactions.
+  'assistant.analysis.refused',
 ] as const;
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

@@ -270,7 +270,7 @@ class FakeExecutor implements ToolExecutorPort {
 const summaryTool: AssistantTool = {
   name: 'estate_summary',
   description: 'Totals and counts for the estate.',
-  scope: 'assistant.assets',
+  scopes: ['assistant.assets'],
   input: z.object({}),
   execute: () => Promise.resolve({ outcome: 'ok', data: null }),
 };
@@ -278,7 +278,7 @@ const summaryTool: AssistantTool = {
 const documentTool: AssistantTool = {
   name: 'document_read',
   description: 'The text of one generated document.',
-  scope: 'assistant.documents.content',
+  scopes: ['assistant.documents.content'],
   input: z.object({ documentId: z.string().describe('Which document to read') }),
   execute: () => Promise.resolve({ outcome: 'ok', data: null }),
 };
@@ -577,7 +577,7 @@ describe('takeTurn', () => {
       ],
       outcome: () => ({
         toolName: 'estate_summary',
-        outcome: { outcome: 'denied_no_consent' },
+        outcome: { outcome: 'denied_no_consent', missing: ['assistant.assets'] },
       }),
     });
     const conversationId = h.store.seedConversation(OWNER);

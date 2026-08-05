@@ -19,6 +19,8 @@ import {
 import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { AwsKmsProvider } from '@estate/kms-aws';
 import type { PoolConfig } from 'pg';
+import { AnalysisController } from './analysis.controller';
+import { AnalysisService } from './analysis.service';
 import { AssistantController } from './assistant.controller';
 import { AssistantAuthz } from './authz.service';
 import { AssetsClient, DocumentsClient, ProfileClient } from './clients';
@@ -120,7 +122,7 @@ function kmsProviderFor(config: AiAssistantConfig): KmsKeyProvider {
 }
 
 @Module({
-  controllers: [AssistantController, ConsentsController],
+  controllers: [AssistantController, AnalysisController, ConsentsController],
   providers: [
     { provide: CONFIG, useFactory: (): AiAssistantConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -212,23 +214,47 @@ function kmsProviderFor(config: AiAssistantConfig): KmsKeyProvider {
     ConversationsRepo,
     MessagesRepo,
     ConsentsRepo,
+    // The peer clients, constructed once and shared by the tools and the
+    // analysers. They hold NO credential: every method takes the caller's own
+    // bearer per invocation, so a shared instance carries no authority between
+    // requests and two consumers cannot end up addressing different peers.
+    {
+      provide: AssetsClient,
+      inject: [CONFIG],
+      useFactory: (config: AiAssistantConfig): AssetsClient => new AssetsClient(config.assetsUrl),
+    },
+    {
+      provide: DocumentsClient,
+      inject: [CONFIG],
+      useFactory: (config: AiAssistantConfig): DocumentsClient =>
+        new DocumentsClient(config.documentsUrl),
+    },
+    {
+      provide: ProfileClient,
+      inject: [CONFIG],
+      useFactory: (config: AiAssistantConfig): ProfileClient =>
+        new ProfileClient(config.profileUrl),
+    },
+    // The deterministic analysers (M10 PR3). Reachable two ways — as tools
+    // inside a turn, and as the read routes PR4's UI calls — and it is the same
+    // object both times, so a finding a user sees on screen and a finding the
+    // model explains cannot disagree.
+    AnalysisService,
     // The closed tool surface, built once at boot. `buildToolRegistry` runs the
-    // contract checks as it constructs — a duplicate name, or any tool whose
-    // input declares a subject, is a process that will not start rather than a
-    // request that quietly reads the wrong estate (tools/registry.ts).
-    //
-    // The peer clients are constructed here and hold NO credential: each method
-    // takes the caller's own bearer per invocation, so the registry is stateless
-    // with respect to authority.
+    // contract checks as it constructs — a duplicate name, any tool whose input
+    // declares a subject, and any tool that declares no consent scope are each a
+    // process that will not start rather than a request that quietly reads the
+    // wrong estate (tools/registry.ts).
     {
       provide: ToolRegistry,
-      inject: [CONFIG],
-      useFactory: (config: AiAssistantConfig): ToolRegistry => {
-        const registry = buildToolRegistry({
-          assets: new AssetsClient(config.assetsUrl),
-          documents: new DocumentsClient(config.documentsUrl),
-          profile: new ProfileClient(config.profileUrl),
-        });
+      inject: [AssetsClient, DocumentsClient, ProfileClient, AnalysisService],
+      useFactory: (
+        assets: AssetsClient,
+        documents: DocumentsClient,
+        profile: ProfileClient,
+        analysis: AnalysisService,
+      ): ToolRegistry => {
+        const registry = buildToolRegistry({ assets, documents, profile, analysis });
         /*
          * Every REAL tool either has tokenization rules or is explicitly
          * exempt, decided at boot rather than discovered in production.

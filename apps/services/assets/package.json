@@ -2,7 +2,7 @@
   "name": "@estate/service-assets",
   "version": "0.0.1",
   "private": true,
-  "description": "Asset service: event-sourced manual-asset ledger (asset_events write model, assets_view projection, beneficiary designations). Owns the financial cluster (docs/01 §2.3, docs/02 §3). CQRS because asset history is the product: 'what did the estate hold on date X'.",
+  "description": "Asset service: event-sourced manual-asset ledger (asset_events write model, assets_view projection, beneficiary designations). Owns the financial cluster (docs/01 \u00a72.3, docs/02 \u00a73). CQRS because asset history is the product: 'what did the estate hold on date X'.",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -20,6 +20,7 @@
     "@estate/db": "workspace:*",
     "@estate/kafka": "workspace:*",
     "@estate/kms-aws": "workspace:*",
+    "@estate/money": "workspace:*",
     "@estate/settlement-client": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",

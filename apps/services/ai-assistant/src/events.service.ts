@@ -179,6 +179,57 @@ export class EventsService {
   }
 
   /**
+   * A deterministic analysis ran (M10 PR3).
+   *
+   * Anchored on the USER, not on a conversation or a row: the read routes run
+   * an analysis with no conversation and no model, and they persist nothing —
+   * findings are recomputed on demand rather than stored — so this event is the
+   * entire record that the analysis happened. `analyzer` is a closed token from
+   * this service's own set, and `findingCount` is a COUNT: which gaps a user's
+   * estate has is exactly the sort of detail docs/02 §6 keeps out of the audit
+   * stream.
+   */
+  async analysisCompleted(
+    userId: string,
+    detail: { analyzer: string; findingCount: number },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'assistant.analysis.completed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'assistant_analysis',
+      // No row to reference, and inventing an id for one would put a value in
+      // the trail that resolves to nothing.
+      resourceId: null,
+      sessionId: null,
+      detail: { analyzer: detail.analyzer, findingCount: detail.findingCount },
+    });
+  }
+
+  /**
+   * An analysis did NOT run. `reason` separates a failed input read
+   * ('upstream_unavailable') from the reference-data gate refusing an
+   * unreviewed tax table in production ('reference_unreviewed') — a control
+   * firing must not read as an outage, and the two want different reactions.
+   */
+  async analysisRefused(
+    userId: string,
+    detail: { analyzer: string; reason: string },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'assistant.analysis.refused',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'assistant_analysis',
+      resourceId: null,
+      sessionId: null,
+      detail: { analyzer: detail.analyzer, reason: detail.reason },
+    });
+  }
+
+  /**
    * A consent scope was granted by the step-up-verified owner. Keyed by the
    * user (a consent is a property of the person, and the grant row's id is not
    * what anyone reviews later), with the scope as the enum that matters.

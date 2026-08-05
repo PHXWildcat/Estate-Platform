@@ -8,7 +8,7 @@ import { Db } from './db';
 import { EventsService } from './events.service';
 import { FieldCipher } from './field-cipher';
 import { LedgerRepo, type LedgerRow } from './ledger.repo';
-import { sqlToPct } from './money';
+import { sqlToPct } from '@estate/money';
 import {
   applyAssetEvent,
   applyBeneficiaryEvent,

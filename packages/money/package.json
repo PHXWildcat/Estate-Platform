@@ -1,0 +1,21 @@
+{
+  "name": "@estate/money",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Exact decimal arithmetic for money and NUMERIC(6,3) percentages, on BigInt. Extracted from the assets service in M10 PR3 when the AI assistant's analysers became the second consumer: an estate cannot be represented in binary floating point, and two services doing that arithmetic from two copies is how the copies diverge. Zero runtime dependencies — money math must not be able to pull a supply chain in behind it.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

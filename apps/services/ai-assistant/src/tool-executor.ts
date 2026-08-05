@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { permits } from './consent';
+import { missingScopes } from './consent';
 import { ConsentsRepo } from './consents.repo';
 import type {
   ExecutedToolCall,
@@ -10,7 +10,13 @@ import type {
 import type { Queryable } from './db';
 import { EventsService, type PendingAudit } from './events.service';
 import { FieldCipher, toolResultField } from './field-cipher';
-import { ToolRegistry, type AssistantTool, type ToolContext, type ToolOutcome } from './tools';
+import {
+  scopeToken,
+  ToolRegistry,
+  type AssistantTool,
+  type ToolContext,
+  type ToolOutcome,
+} from './tools';
 
 /**
  * The one path from "the model asked for a tool" to "estate data exists in this
@@ -79,6 +85,11 @@ const AUDIT_REASON_TOKENS: ReadonlySet<string> = new Set([
   'upstream_unavailable',
   'unsupported_content',
   'tool_error',
+  // M10 PR3: the estate-tax analyser's reference-data gate. Named rather than
+  // collapsed into the generic token because a control firing must not read as
+  // an outage — an operator seeing this needs to get the tax table reviewed,
+  // not to check whether a peer is up.
+  'reference_unreviewed',
 ]);
 
 /** Everything else collapses to a generic token rather than being emitted. */
@@ -149,13 +160,25 @@ export class ToolExecutor implements ToolExecutorPort {
       };
     }
 
-    // 2. CONSENT, before anything else touches the tool. `permits` requires the
-    // master switch AND this tool's specific scope; a user who has never
-    // answered and a user who has revoked produce the same empty set, so the
-    // deny-by-default posture is structural rather than conventional.
+    // 2. CONSENT, before anything else touches the tool. `missingScopes`
+    // requires the master switch AND every scope this tool declares; a user who
+    // has never answered and a user who has revoked produce the same empty set,
+    // so the deny-by-default posture is structural rather than conventional.
+    //
+    // ALL of the tool's scopes, never any: an analyser reading two domains
+    // discloses both, and a partial run would answer "no conflicts found" from
+    // data the user never agreed to have looked at.
     const granted = await this.consents.grantedScopes(ctx.userId);
-    if (!permits(granted, tool.scope)) {
-      return await this.record(tx, ctx, request, tool, { outcome: 'denied_no_consent' }, pending);
+    const missing = missingScopes(granted, tool.scopes);
+    if (missing.length > 0) {
+      return await this.record(
+        tx,
+        ctx,
+        request,
+        tool,
+        { outcome: 'denied_no_consent', missing },
+        pending,
+      );
     }
 
     // 3. Validate. The failure NEVER echoes the input: an argument may be
@@ -252,7 +275,13 @@ export class ToolExecutor implements ToolExecutorPort {
         request.conversationId,
         request.messageId,
         tool.name,
-        tool.scope,
+        // The scope SET, as one sorted token (`scopeToken`). The column is a
+        // single TEXT field and the audit detail below must match
+        // SAFE_TOKEN_PATTERN, so this is the one encoding both accept — and
+        // recording the whole set matters more than its shape: the row exists
+        // to evidence which grants admitted this retrieval, and a row naming
+        // one of two would understate the disclosure.
+        scopeToken(tool.scopes),
         outcome.outcome,
         resultCt,
         dekId,
@@ -263,11 +292,12 @@ export class ToolExecutor implements ToolExecutorPort {
     // `tool` and `scope` are taken from the RESOLVED tool — compile-time
     // constants from this service's own registry — never from the name the
     // model supplied, even when the two happen to be equal.
+    const scope = scopeToken(tool.scopes);
     if (outcome.outcome === 'ok') {
       pending.push(() =>
         this.events.toolInvoked(ctx.userId, request.conversationId, {
           tool: tool.name,
-          scope: tool.scope,
+          scope,
           toolCallId,
         }),
       );
@@ -275,7 +305,7 @@ export class ToolExecutor implements ToolExecutorPort {
       pending.push(() =>
         this.events.toolRefused(ctx.userId, request.conversationId, {
           tool: tool.name,
-          scope: tool.scope,
+          scope,
           reason:
             outcome.outcome === 'denied_no_consent' ? 'no_consent' : auditReason(outcome.reason),
         }),

@@ -174,9 +174,12 @@ jobs:
             // profile gating legitimately skips the OTHER profile'"'"'s block.
             const production = process.env.MATRIX_PROFILE === "production";
             // M9 PR2 added the dev-journey legal-hold round trip: dev gains a
-            // pass, production gains its skip.
-            const expectedPassed = production ? 9 : 15;
-            const expectedPending = production ? 10 : 4;
+            // pass, production gains its skip. M10 PR3 added the estate-analysis
+            // round trip the same way — the assistant container is absent from
+            // the production profile (LLM_MODE=anthropic, no credential), so
+            // that test can only ever run in dev.
+            const expectedPassed = production ? 9 : 16;
+            const expectedPending = production ? 11 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
             if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {

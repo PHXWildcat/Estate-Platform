@@ -8,6 +8,7 @@ import {
   Tokenizer,
   TokenizerCoverageError,
 } from '../src/privacy/tokenizer';
+import { AnalysisService } from '../src/analysis.service';
 import { buildToolRegistry } from '../src/tools';
 
 /** One asset row, in the shape `clients/assets.client.ts` actually returns. */
@@ -415,10 +416,17 @@ describe('tokenizer — no state outlives the turn', () => {
 describe('tokenizer — coverage fence', () => {
   /** The real tool surface. Clients need only a base URL to construct. */
   function realToolNames(): string[] {
+    const assets = new AssetsClient('http://assets.invalid');
+    const documents = new DocumentsClient('http://documents.invalid');
+    const profile = new ProfileClient('http://profile.invalid');
     const registry = buildToolRegistry({
-      assets: new AssetsClient('http://assets.invalid'),
-      documents: new DocumentsClient('http://documents.invalid'),
-      profile: new ProfileClient('http://profile.invalid'),
+      assets,
+      documents,
+      profile,
+      // The analysers are part of the real surface, so the coverage fence must
+      // see them: a rule missing for an analyser is the same silent leak as a
+      // rule missing for a retrieval.
+      analysis: new AnalysisService(assets, documents, profile, { nodeEnv: 'test' } as never),
     });
     return registry.list().map((tool) => tool.name);
   }
@@ -428,7 +436,10 @@ describe('tokenizer — coverage fence', () => {
     // as good as its list, so the list is checked against the real registry —
     // a new retrieval ships with a tokenization decision or this goes red.
     expect(() => assertTokenizerCoversTools(realToolNames())).not.toThrow();
-    expect(realToolNames()).toHaveLength(7);
+    // Eleven since M10 PR3 (seven retrievals + four analysers). The count is
+    // pinned so a tool that disappears from the surface — and takes its rule
+    // with it — cannot leave the fence passing over a smaller world.
+    expect(realToolNames()).toHaveLength(11);
   });
 
   it('refuses a tool with no tokenization decision', () => {
