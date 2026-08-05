@@ -10,6 +10,11 @@ import {
   type KmsKeyProvider,
 } from '@estate/crypto';
 import { AwsKmsProvider } from '@estate/kms-aws';
+import {
+  HttpNotificationsClient,
+  NOTIFICATIONS,
+  type NotificationsPort,
+} from '@estate/notifications-client';
 import type { PoolConfig } from 'pg';
 import { AuthController } from './auth.controller';
 import { AuthEventsRepo } from './auth-events.repo';
@@ -138,6 +143,19 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
       useFactory: (config: IdentityConfig): string => config.internalApiToken,
     },
     ServiceCredentialGuard,
+    {
+      // The recipient-store feed (M9). Best-effort by contract: the client
+      // never throws, so a notifications outage cannot block registration or
+      // login. The OUTBOUND credential — distinct from identity's own inbound
+      // value (config.ts refuses equality in production).
+      provide: NOTIFICATIONS,
+      inject: [CONFIG],
+      useFactory: (config: IdentityConfig): NotificationsPort =>
+        new HttpNotificationsClient({
+          notificationsUrl: config.notificationsUrl,
+          serviceCredential: config.notificationsInternalToken,
+        }),
+    },
     { provide: APP_FILTER, useClass: HttpErrorFilter },
   ],
 })

@@ -29,7 +29,8 @@ import {
 import { EmergencyAccessController } from './emergency.controller';
 import { EmergencyRepo } from './emergency.repo';
 import { EmergencyAccessService } from './emergency.service';
-import { StubNotifier, type NotificationPort } from './notifications';
+import { HttpNotificationsClient } from '@estate/notifications-client';
+import { HttpNotifier, StubNotifier, type NotificationPort } from './notifications';
 import { EventsService } from './events.service';
 import { HandshakesRepo } from './handshakes.repo';
 import { HttpErrorFilter } from './http-error.filter';
@@ -48,14 +49,30 @@ import { VaultService } from './vault.service';
  * zone moving, not a refactor.
  */
 /**
- * Only the stub exists today. Unlike the other services' mode switches, this
- * one does NOT refuse to construct in production: the vault must still serve
- * its core routes without a notification channel. The refusal is scoped to the
- * emergency-access flow, whose safety genuinely depends on reaching the owner
- * (see EmergencyAccessService.assertNotificationsUsable).
+ * Select the notifier. Exhaustive over the config union with a `never` check —
+ * a selector that could quietly fall through to the stub is the M4
+ * fail-open-in-style lesson. config.ts pins 'http' in production; the
+ * per-route capability gate (EmergencyAccessService.assertNotificationsUsable)
+ * remains as defense in depth, and the vault's core routes still serve even if
+ * the notifications service itself is down (sends record as undelivered).
  */
-function notifierFor(): NotificationPort {
-  return new StubNotifier();
+function notifierFor(config: VaultConfig): NotificationPort {
+  const notify = config.notify;
+  switch (notify.mode) {
+    case 'http':
+      return new HttpNotifier(
+        new HttpNotificationsClient({
+          notificationsUrl: config.notificationsUrl,
+          serviceCredential: config.notificationsInternalToken,
+        }),
+      );
+    case 'stub':
+      return new StubNotifier();
+    default: {
+      const exhausted: never = notify;
+      throw new Error(`unhandled NOTIFY_MODE: ${String(exhausted)}`);
+    }
+  }
 }
 
 @Module({
@@ -105,7 +122,7 @@ function notifierFor(): NotificationPort {
       useFactory: (config: VaultConfig): HttpSessionVerifier =>
         new HttpSessionVerifier({ identityUrl: config.identityUrl }),
     },
-    { provide: NOTIFIER, useFactory: (): NotificationPort => notifierFor() },
+    { provide: NOTIFIER, inject: [CONFIG], useFactory: notifierFor },
     // docs/03 §6a: emergency access is the LAST staged grant of a settlement,
     // so release consults settlement state. The client fails closed on every
     // error path — an unreachable settlement blocks Zone A rather than opening

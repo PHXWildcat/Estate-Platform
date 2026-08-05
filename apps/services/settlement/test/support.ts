@@ -445,6 +445,8 @@ export function testConfig(over: Partial<SettlementConfig> = {}): SettlementConf
     internalApiToken: 's'.repeat(32),
     identityInternalToken: 'i'.repeat(32),
     notify: { mode: 'stub' },
+    notificationsUrl: 'http://localhost:3008',
+    notificationsInternalToken: '',
     driverIntervalMs: 60_000,
     kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
     kekAlias: 'settlement/kek',

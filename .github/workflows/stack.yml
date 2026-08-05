@@ -108,8 +108,16 @@ jobs:
         run: |
           docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
             --profile bootstrap up --build --exit-code-from provision-topics provision-topics
-          for job in migrate-identity migrate-profile migrate-settlement migrate-assets \
-                     migrate-plaid migrate-documents migrate-vault migrate-audit seed-templates; do
+          # The migrate list is DERIVED from the compose file, never hand-kept:
+          # a copied list here silently omitted migrate-notifications when M9
+          # added the ninth service, so the stack came up against a core
+          # cluster missing the notifications tables and this gate failed on
+          # the chain assertion. (images.yml is immune — it brings up full
+          # profiles, where compose's depends_on graph runs every migration.)
+          migrations=$(docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
+            --profile bootstrap config --services | grep '^migrate-' | sort)
+          test -n "$migrations"
+          for job in $migrations seed-templates; do
             docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
               --profile bootstrap up --build --exit-code-from "$job" "$job"
           done

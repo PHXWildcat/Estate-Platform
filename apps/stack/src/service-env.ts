@@ -14,13 +14,14 @@ import { kmsKeyIdFor, SERVICES, serviceUrl, type Addressing, type StackService }
 
 /** Which peers each service (and the BFF) calls, hence which *_URL it gets. */
 const PEERS: Record<string, readonly string[]> = {
-  identity: [],
+  identity: ['notifications'],
   profile: ['identity'],
   assets: ['identity', 'settlement'],
   plaid: ['identity'],
   documents: ['identity', 'settlement'],
-  vault: ['identity', 'settlement'],
-  settlement: ['identity'],
+  vault: ['identity', 'settlement', 'notifications'],
+  settlement: ['identity', 'notifications'],
+  notifications: [],
   audit: [],
 };
 
@@ -110,6 +111,16 @@ export function serviceProcessEnv(
       out['CLAMD_HOST'] = fromFile(env, 'DOCUMENTS_CLAMD_HOST');
       out['OCR_MODE'] = fromFile(env, 'DOCUMENTS_OCR_MODE');
       out['OCR_URL'] = fromFile(env, 'DOCUMENTS_OCR_URL');
+      break;
+    case 'vault':
+      out['NOTIFY_MODE'] = fromFile(env, 'VAULT_NOTIFY_MODE');
+      break;
+    case 'settlement':
+      out['NOTIFY_MODE'] = fromFile(env, 'SETTLEMENT_NOTIFY_MODE');
+      break;
+    case 'notifications':
+      out['EMAIL_MODE'] = fromFile(env, 'NOTIFICATIONS_EMAIL_MODE');
+      out['SES_FROM_ADDRESS'] = fromFile(env, 'SES_FROM_ADDRESS');
       break;
     default:
       break;

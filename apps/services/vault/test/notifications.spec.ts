@@ -21,6 +21,8 @@ function configFor(nodeEnv: VaultConfig['nodeEnv']): VaultConfig {
     notify: { mode: 'stub' },
     settlementUrl: 'http://localhost:3007',
     settlementInternalToken: 's'.repeat(32),
+    notificationsUrl: 'http://localhost:3008',
+    notificationsInternalToken: '',
   };
 }
 
@@ -34,12 +36,15 @@ function serviceWith(nodeEnv: VaultConfig['nodeEnv'], notifier: NotificationPort
       },
     },
   );
+  // The gate itself AUDITS its refusal (M9), so events must accept that one
+  // emit; everything else stays unreachable.
+  const events = { audit: { emit: () => Promise.resolve() } } as unknown as EventsService;
   return new EmergencyAccessService(
     unusable as Db,
     unusable as EmergencyRepo,
     unusable as KeysetsRepo,
     { assertCan: (): void => undefined } as unknown as VaultAuthz,
-    unusable as EventsService,
+    events,
     notifier,
     // A permissive settlement gate: this suite is about the NOTIFICATION gate,
     // and the settlement gate is proven separately. Permitting here keeps the

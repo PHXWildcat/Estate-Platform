@@ -740,6 +740,59 @@ deviating from them, stop and propose the change with rationale — do not silen
   Sign-out moved from page content into the rail account section. Deliberately
   OUT of this pass (layer on next): Framer Motion, dashboard modules/charts,
   richer loading/empty states.
+- 2026-08-04 — M9 is NOTIFICATIONS, sequenced ahead of docs/04's "AI assistant ·
+  referral · notifications" ordering (user-approved reorder, the M8 precedent):
+  it is the smallest milestone that un-gates two shipped ones — M6 emergency
+  access and M7 settlement intake/review-approve deliberately answered 503
+  `notifications_unavailable` in production, and "a waiting period nobody can
+  be told about is not a control" stops being rhetoric only when something can
+  actually tell them. Bundled: the settlement→documents legal-hold caller
+  (closing the M4 zero-callers gap) ships as PR2 of the same milestone.
+- 2026-08-04 — M9 architecture, TWO approved deviations from docs/01. (1) The
+  notification service is called SYNCHRONOUSLY over HTTP (new
+  `apps/services/notifications`, ninth service, core-cluster co-tenant), not
+  docs/01 §2's Kafka-consumer placement: the M6/M7 fail-closed capability
+  gates are request/response by nature — a producer cannot know whether anyone
+  can deliver — and the per-send outcome feeds vault's `delivered_at`
+  bookkeeping. Kafka fan-in can arrive later for non-gating kinds. (2)
+  Recipient resolution is EVENT-CARRIED, not cross-cluster decryption: the
+  service keeps its own `notification_recipients` store (AEAD under its own
+  `notifications/kek` + `notification_deks`; NO blind index — lookup is by
+  user id only), fed by identity at REGISTRATION and LOGIN, the two moments
+  the user themselves supplies the plaintext address. Consequence: no service
+  anywhere needs an email-ciphertext read path (identity's `users.email_ct`
+  still has none), the docs/03 §5.3 bulk-decrypt chokepoint never forms in
+  the lowest-trust service, and the feed is fire-and-forget (an awaited call
+  on register would widen the documented enumeration timing channel;
+  self-heals at next login; gaps surface as recorded `no_recipient` outcomes).
+- 2026-08-04 — M9 content doctrine is enforced BY CONSTRUCTION, not by review:
+  the wire schema (`packages/notifications-client`, consumed by vault +
+  settlement + identity) carries userId, a CLOSED namespaced kind enum, a
+  requested channel, and an optional deadline — there is no field for text, so
+  no caller can leak estate content into a carrier message. The template
+  registry is the only source of carrier-visible words: no user data beyond
+  the deadline DATE, ONE uniform subject for every kind (a mailbox observer
+  learns that Estate wants attention, never which control fired — the M6
+  review's delivery-channel-leakage item), and NO LINKS AT ALL ("we will never
+  link you" is strongest as "we never link"). Delivery is email-only (SES v1 —
+  the API LocalStack Community also serves, so the stack proves real sends via
+  `/_aws/ses`); SMS/push/in-app and one-tap deny capability tokens are
+  recorded follow-ups (deny links need the vault UI's origin to exist).
+- 2026-08-04 — M9 trust machinery: fourth credential-graph edge
+  (`NOTIFICATIONS_INTERNAL_TOKEN`, callee notifications, holders identity +
+  settlement + vault — every route it opens is notification-domain; no
+  lock-class power leaks to holders). Production PINS the real adapters
+  (vault/settlement `NOTIFY_MODE=http`, notifications `EMAIL_MODE=ses` — the
+  KMS/clamd/OCR rule; the old "not a boot-time requirement" comments predated
+  a real adapter existing), pairwise credential-aliasing refusals extend to
+  the new secret in every holder, the per-route 503 gates REMAIN as defense
+  in depth and now AUDIT their refusal (`*.notifications_refused` — a control
+  firing must not read as an outage), and the M6 review's two recorded
+  follow-ups ship: owners are notified on vault RESET (nullable `policy_id`
+  via migration 003, kind-anchored CHECK) and when a reconfiguration retires
+  the previous grantees. Send failures never roll back state; every send is
+  an append-only `notification_sends` row + ids/enums-only audit event, and
+  every address decrypt is a logged `crypto.field.decrypted`.
 - 2026-07-30 — Also from the M8 review: the doctor's endpoint check was a PREFIX
   match, so `https://localhost:x@kms.us-east-1.amazonaws.com/` passed the one
   guard between a misconfigured stack and real AWS — it parses the URL now.

@@ -14,11 +14,15 @@ const PROD_BASE = {
   DATABASE_URL: 'postgres://prod/core',
   KAFKA_BROKERS: 'k1:9092,k2:9092',
   IDENTITY_URL: 'https://identity.internal',
-  // TWO credentials, in opposite directions and never equal: the inbound one
-  // callers present to THIS service's gate route, the outbound one this
-  // service presents to identity's account-lock API.
+  // THREE credentials, pairwise distinct: the inbound one callers present to
+  // THIS service's gate route, and the two outbound ones this service
+  // presents — identity's account-lock API and (M9) the notifications
+  // service's send/recipient surface.
   SETTLEMENT_INTERNAL_TOKEN: 's'.repeat(48),
   IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
+  NOTIFY_MODE: 'http',
+  NOTIFICATIONS_URL: 'https://notifications.internal',
+  NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(48),
   KMS_MODE: 'aws',
   AWS_KMS_KEY_ID: 'alias/estate-settlement-kek',
   AWS_REGION: 'us-east-1',
@@ -107,18 +111,41 @@ describe('settlement config', () => {
     'IDENTITY_URL',
     'SETTLEMENT_INTERNAL_TOKEN',
     'IDENTITY_INTERNAL_TOKEN',
+    'NOTIFICATIONS_INTERNAL_TOKEN',
   ])('production fails fast without %s', (key) => {
     const env: Record<string, string> = { ...PROD_BASE };
     delete env[key];
     expect(() => loadConfig(env)).toThrow(ConfigError);
   });
 
-  it.each(['SETTLEMENT_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN'])(
+  it.each(['SETTLEMENT_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN', 'NOTIFICATIONS_INTERNAL_TOKEN'])(
     'production rejects a weak (short) %s',
     (key) => {
       expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
     },
   );
+
+  it('production pins the real notifier (M9): the stub cannot run there', () => {
+    expect(() => loadConfig({ ...PROD_BASE, NOTIFY_MODE: 'stub' })).toThrow(
+      /NOTIFY_MODE must be "http"/,
+    );
+  });
+
+  it('refuses aliasing the notifications credential onto either existing one', () => {
+    for (const victim of ['SETTLEMENT_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN'] as const) {
+      expect(() =>
+        loadConfig({ ...PROD_BASE, NOTIFICATIONS_INTERNAL_TOKEN: PROD_BASE[victim] }),
+      ).toThrow(/must differ from/);
+    }
+  });
+
+  it('requires the notifications url as soon as NOTIFY_MODE is http, in any environment', () => {
+    expect(() => loadConfig({ ...DEV_BASE, NOTIFY_MODE: 'http' })).toThrow(/NOTIFICATIONS_URL/);
+    expect(
+      loadConfig({ ...DEV_BASE, NOTIFY_MODE: 'http', NOTIFICATIONS_URL: 'http://localhost:3008' })
+        .notify,
+    ).toEqual({ mode: 'http' });
+  });
 
   it('production REFUSES to boot when the two credentials are the same value', () => {
     // The M7 security review's load-bearing finding. One field used to serve

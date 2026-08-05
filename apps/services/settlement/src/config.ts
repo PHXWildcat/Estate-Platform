@@ -48,14 +48,21 @@ const EnvSchema = z
     // sides are provisioned. REQUIRED in production: docs/03 §5.1 control 4
     // must not be silently unreachable.
     IDENTITY_INTERNAL_TOKEN: z.string().optional(),
-    // Owner-contact channel (docs/03 §5.1 control 3). Only the stub exists
-    // today; real channels arrive with the notifications milestone, and a
-    // real mode joins this enum then. Deliberately NOT a boot-time production
-    // requirement — instead the intake and review-approve routes refuse in
-    // production while only the stub is wired (see SettlementService), the
-    // M6 emergency-access precedent: a waiting period nobody can be told
-    // about is not a control.
-    NOTIFY_MODE: z.enum(['stub']).default('stub'),
+    // Owner-contact channel (docs/03 §5.1 control 3). 'http' (M9) delegates
+    // to the notifications service, which owns address resolution and the
+    // closed template registry — this service keeps its no-email-lookup
+    // boundary. Production now PINS 'http': the earlier "not a boot-time
+    // requirement" stance predated a real adapter existing (the KMS/clamd/OCR
+    // rule). The per-route 503 gates REMAIN as defense in depth.
+    NOTIFY_MODE: z.enum(['stub', 'http']).default('stub'),
+    // Base URL of the notifications service; required whenever NOTIFY_MODE is
+    // 'http'.
+    NOTIFICATIONS_URL: z.string().url().optional(),
+    // OUTBOUND: presented to the notifications service's internal routes
+    // (send + recipient-upsert and nothing else; credential-graph.ts). The
+    // THIRD credential this service touches — distinct from both its own
+    // inbound value and the identity account-lock value it presents.
+    NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
     // Interval for the in-process workflow driver's contact-attempt sweep.
     // The driver never transitions case state — it only records/sends due
     // contact attempts — so this is a liveness knob, not a safety one.
@@ -183,11 +190,47 @@ const EnvSchema = z
             'IDENTITY_INTERNAL_TOKEN must differ from SETTLEMENT_INTERNAL_TOKEN (sharing one value hands every gate caller a key to the account-lock API)',
         });
       }
+      if (env.NOTIFY_MODE !== 'http') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFY_MODE'],
+          message:
+            'NOTIFY_MODE must be "http" in production (the stub notifier reaches nobody; a real adapter exists as of M9)',
+        });
+      }
+      if (!env.NOTIFICATIONS_INTERNAL_TOKEN || env.NOTIFICATIONS_INTERNAL_TOKEN.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; unreachable owner contact hollows out the §5.1 waiting period)',
+        });
+      }
+      // Three credentials touch this service; no two may share a value.
+      for (const [other, label] of [
+        ['SETTLEMENT_INTERNAL_TOKEN', 'SETTLEMENT_INTERNAL_TOKEN'],
+        ['IDENTITY_INTERNAL_TOKEN', 'IDENTITY_INTERNAL_TOKEN'],
+      ] as const) {
+        if (env.NOTIFICATIONS_INTERNAL_TOKEN && env.NOTIFICATIONS_INTERNAL_TOKEN === env[other]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+            message: `NOTIFICATIONS_INTERNAL_TOKEN must differ from ${label} (one value must never open two callees)`,
+          });
+        }
+      }
+    }
+    if (env.NOTIFY_MODE === 'http' && !env.NOTIFICATIONS_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOTIFICATIONS_URL'],
+        message: 'NOTIFICATIONS_URL is required when NOTIFY_MODE is "http"',
+      });
     }
   });
 
 /** Which adapter delivers settlement notifications to the owner. */
-export type NotifyConfig = { readonly mode: 'stub' };
+export type NotifyConfig = { readonly mode: 'stub' } | { readonly mode: 'http' };
 
 /** Which KMS backs envelope encryption (local dev/test, AWS in production). */
 export type KmsConfig =
@@ -213,6 +256,11 @@ export interface SettlementConfig {
    * ('' ⇒ those calls fail closed). Never shared with another service. */
   readonly identityInternalToken: string;
   readonly notify: NotifyConfig;
+  /** Notifications service base URL (M9). */
+  readonly notificationsUrl: string;
+  /** OUTBOUND: presented to the notifications service ('' ⇒ sends record as
+   * attempted-not-confirmed). Never either of the other two credentials. */
+  readonly notificationsInternalToken: string;
   readonly driverIntervalMs: number;
   /** Selected KMS backend (LocalKmsProvider in dev/test, AWS KMS in prod). */
   readonly kms: KmsConfig;
@@ -254,6 +302,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SettlementConf
     internalApiToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
     identityInternalToken: e.IDENTITY_INTERNAL_TOKEN ?? '',
     notify: { mode: e.NOTIFY_MODE },
+    notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
+    notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
     driverIntervalMs: e.DRIVER_INTERVAL_MS,
     // The superRefine above guarantees the required fields per environment, so
     // these non-null assertions are sound.

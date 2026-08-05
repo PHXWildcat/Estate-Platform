@@ -85,6 +85,18 @@ const EnvSchema = z
     // refuses every internal call. REQUIRED (and non-trivial) in production —
     // docs/03 §5.1's account lock must not be silently unreachable.
     IDENTITY_INTERNAL_TOKEN: z.string().optional(),
+    // Base URL of the notifications service. Identity feeds its recipient
+    // store at registration and login — the two moments the user themselves
+    // supplies the plaintext address — which is why NO service anywhere needs
+    // an email-ciphertext read path (M9). Required in production: recipients
+    // that never populate would silently starve the M6/M7 waiting-period
+    // notifications.
+    NOTIFICATIONS_URL: z.string().url().optional(),
+    // OUTBOUND: what this service PRESENTS to the notifications service's
+    // internal routes (per credential-graph.ts, held by identity, vault and
+    // settlement; it opens send + recipient-upsert and nothing else).
+    // Optional in dev/test — the client short-circuits to a no-op while unset.
+    NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -159,6 +171,37 @@ const EnvSchema = z
           'IDENTITY_INTERNAL_TOKEN is required in production (>= 32 chars; the settlement account-lock must not be unreachable or weakly guarded)',
       });
     }
+    if (env.NODE_ENV === 'production') {
+      if (!env.NOTIFICATIONS_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_URL'],
+          message:
+            'NOTIFICATIONS_URL is required in production (an unfed recipient store silently starves the M6/M7 owner notifications)',
+        });
+      }
+      if (!env.NOTIFICATIONS_INTERNAL_TOKEN || env.NOTIFICATIONS_INTERNAL_TOKEN.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; recipient upserts must not be silently unauthenticated)',
+        });
+      }
+      // One value must never authenticate both directions (the M7 collapse):
+      // splitting the fields cannot stop one value being pasted into both slots.
+      if (
+        env.IDENTITY_INTERNAL_TOKEN &&
+        env.IDENTITY_INTERNAL_TOKEN === env.NOTIFICATIONS_INTERNAL_TOKEN
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_INTERNAL_TOKEN must differ from IDENTITY_INTERNAL_TOKEN (sharing one value hands every notifications holder a key to the account-lock API)',
+        });
+      }
+    }
   });
 
 /**
@@ -195,6 +238,11 @@ export interface IdentityConfig {
   readonly rpName: string;
   /** Inbound credential for THIS service's internal routes ('' ⇒ refuse all). */
   readonly internalApiToken: string;
+  /** Notifications service base URL (recipient-store feed; M9). */
+  readonly notificationsUrl: string;
+  /** OUTBOUND: what this service presents to the notifications service
+   * ('' ⇒ the client short-circuits to a no-op). Never the inbound value. */
+  readonly notificationsInternalToken: string;
 }
 
 export class ConfigError extends Error {
@@ -246,5 +294,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     rpOrigin: e.RP_ORIGIN ?? 'http://localhost:3000',
     rpName: e.RP_NAME ?? 'Estate Platform',
     internalApiToken: e.IDENTITY_INTERNAL_TOKEN ?? '',
+    notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
+    notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
   };
 }

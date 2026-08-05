@@ -40,7 +40,7 @@ describe('topology addressing', () => {
 });
 
 describe('serviceProcessEnv', () => {
-  it('gives identity exactly its variables — and no peer URL', () => {
+  it('gives identity exactly its variables — one peer (notifications) since M9', () => {
     const env = serviceProcessEnv(svc('identity'), generated(), HOST);
     expect(Object.keys(env).sort()).toEqual([
       'AWS_ACCESS_KEY_ID',
@@ -56,12 +56,15 @@ describe('serviceProcessEnv', () => {
       'KMS_MODE',
       'NODE_ENV',
       'NODE_EXTRA_CA_CERTS',
+      'NOTIFICATIONS_INTERNAL_TOKEN',
+      'NOTIFICATIONS_URL',
       'PORT',
       'RP_ID',
       'RP_NAME',
       'RP_ORIGIN',
     ]);
     expect(env['DATABASE_URL']).toContain('@localhost:5433/auth');
+    expect(env['NOTIFICATIONS_URL']).toBe('http://localhost:3008');
   });
 
   it('maps prefixed credentials to the bare names the services read', () => {

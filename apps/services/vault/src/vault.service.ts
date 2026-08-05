@@ -16,8 +16,9 @@ import {
   verifyKeysetProof,
   type VaultKeysetPayload,
 } from '@estate/vault-crypto';
-import { CLOCK, type Clock } from './di-tokens';
+import { CLOCK, NOTIFIER, type Clock } from './di-tokens';
 import { Db, isUniqueViolation, type Queryable } from './db';
+import type { NotificationPort } from './notifications';
 import { EmergencyRepo } from './emergency.repo';
 import { EventsService } from './events.service';
 import { HandshakesRepo } from './handshakes.repo';
@@ -122,6 +123,7 @@ export class VaultService {
     private readonly authz: VaultAuthz,
     private readonly events: EventsService,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(NOTIFIER) private readonly notifier: NotificationPort,
   ) {}
 
   async keysetStatus(actorUserId: string): Promise<KeysetStatus> {
@@ -505,6 +507,24 @@ export class VaultService {
       itemsDestroyed: result.itemsDestroyed,
       revokedSessions: result.revoked,
       escrowPoliciesRetired: result.escrowRetired,
+    });
+    // The compensating control this route's docstring promised "when the
+    // notification port lands" (M9): the owner is TOLD their vault was
+    // destroyed. Best-effort with the standard bookkeeping — a failed send
+    // records delivered_at null and never unwinds the reset.
+    let deliveredAt: Date | null = null;
+    try {
+      await this.notifier.notify({ kind: 'reset', ownerUserId: actorUserId, policyId: null });
+      deliveredAt = this.clock();
+    } catch {
+      // Recorded below; the reset itself already happened.
+    }
+    await this.emergency.recordNotification(this.db, {
+      policyId: null,
+      userId: actorUserId,
+      kind: 'reset',
+      channel: this.notifier.channel,
+      deliveredAt,
     });
     return { itemsDestroyed: result.itemsDestroyed };
   }

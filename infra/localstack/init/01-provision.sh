@@ -6,12 +6,16 @@
 # against an existing bucket. Without this every key-holding service fails on
 # its first encrypt, which is its first write.
 #
-# SIX INDEPENDENT KEYS, one per service KEK, not one shared key. The alias is
+# SEVEN INDEPENDENT KEYS, one per service KEK, not one shared key. The alias is
 # baked into the KMS EncryptionContext (`estate:kek`), so a DEK wrapped for one
 # domain cannot be unwrapped under another — that binding is real here and the
 # stack test asserts it. What is NOT real here is the IAM grant that would stop
-# a service from ASKING: LocalStack Community does not enforce IAM. Six keys
+# a service from ASKING: LocalStack Community does not enforce IAM. Seven keys
 # model the boundary; they do not prove it. See the stack README's limits.
+#
+# M9 adds the SES sender identity: SendEmail refuses an unverified Source, in
+# LocalStack exactly as at real AWS, so the notifications service assumes the
+# From address is verified the same way it assumes its KMS key exists.
 #
 # Runs on every LocalStack start (the init hook is re-executed), so every step
 # must be idempotent.
@@ -86,6 +90,7 @@ ALIASES=(
   "alias/estate-plaid-kek"
   "alias/estate-documents-kek"
   "alias/estate-settlement-kek"
+  "alias/estate-notifications-kek"
 )
 
 echo "[stack-init] provisioning KMS keys in ${REGION}"
@@ -112,6 +117,12 @@ else
   awslocal s3 mb "s3://${BUCKET}" --region "${REGION}"
   echo "[stack-init]   created ${BUCKET}"
 fi
+
+# The SES sender identity (M9). verify-email-identity is idempotent; the
+# address must match the generated SES_FROM_ADDRESS.
+SES_FROM="${STACK_SES_FROM_ADDRESS:-no-reply@stack.estate.local}"
+echo "[stack-init] verifying SES sender ${SES_FROM}"
+awslocal ses verify-email-identity --email-address "${SES_FROM}" --region "${REGION}"
 
 # The epoch: written to the VOLUME (which persists) after a successful
 # provision, so the next start can tell "never provisioned" from "provisioned

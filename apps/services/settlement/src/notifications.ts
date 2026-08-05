@@ -1,3 +1,8 @@
+import type {
+  NotificationKind,
+  NotificationsPort as NotificationsClientPort,
+} from '@estate/notifications-client';
+
 /**
  * The owner-notification port for settlement (docs/03 §5.1 control 3).
  *
@@ -48,5 +53,41 @@ export class StubNotifier implements NotificationPort {
   notify(notification: SettlementNotification): Promise<void> {
     this.sent.push(notification);
     return Promise.resolve();
+  }
+}
+
+/** Wire kinds for the notifications service (closed set; content travels nowhere). */
+const WIRE_KIND: Record<SettlementNotificationKind, NotificationKind> = {
+  case_opened: 'settlement.case_opened',
+  owner_contact: 'settlement.owner_contact',
+};
+
+/**
+ * The real adapter (M9): delegates to the notifications service, which owns
+ * address resolution and the closed template registry — this service still
+ * never sees an address, preserving its no-email-lookup anti-enumeration
+ * boundary. Throws on non-delivery so notifyOwner's swallow keeps meaning
+ * "attempted, not confirmed" exactly as it did for the stub. Delivery is
+ * email-only this milestone; the contact trail's channel cycle remains the
+ * record of intent.
+ */
+export class HttpNotifier implements NotificationPort {
+  readonly channel = 'email';
+  readonly deliversToRealChannels = true;
+
+  constructor(private readonly client: NotificationsClientPort) {}
+
+  async notify(notification: SettlementNotification): Promise<void> {
+    const outcome = await this.client.send({
+      userId: notification.ownerUserId,
+      kind: WIRE_KIND[notification.kind],
+      channel: 'email',
+      ...(notification.waitingPeriodEnds !== undefined
+        ? { deadline: notification.waitingPeriodEnds }
+        : {}),
+    });
+    if (!outcome.accepted || !outcome.delivered) {
+      throw new Error('notification_not_delivered');
+    }
   }
 }

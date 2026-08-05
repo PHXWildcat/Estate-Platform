@@ -1,0 +1,24 @@
+{
+  "name": "@estate/notifications-client",
+  "version": "0.0.1",
+  "private": true,
+  "description": "HTTP client for the notifications service (M9). The wire format is content-free by construction — a send carries a user id, a closed enum kind, a requested channel and an optional deadline; there is no field for text, so no caller can leak estate content into a carrier message (docs/03 §5.4). The client never throws: every failure is an outcome the caller records (vault's delivered_at bookkeeping, settlement's contact trail). Consumers: vault + settlement (send), identity (recipient upsert at the two plaintext-email moments).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

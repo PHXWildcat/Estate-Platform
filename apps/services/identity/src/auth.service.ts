@@ -6,6 +6,7 @@ import {
   type DekRepository,
   type FieldCrypto,
 } from '@estate/crypto';
+import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { IdentityConfig } from './config';
 import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
@@ -51,7 +52,21 @@ export class AuthService {
     @Inject(DEK_REPOSITORY) private readonly deks: DekRepository,
     @Inject(CONFIG) private readonly config: IdentityConfig,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(NOTIFICATIONS) private readonly notifications: NotificationsPort,
   ) {}
+
+  /**
+   * Feed the notifications recipient store (M9) — fire-and-forget on the two
+   * paths where the USER supplied the plaintext address, so no service ever
+   * needs an email-ciphertext read path. Deliberately not awaited: the client
+   * never throws and a notifications outage must not slow or block auth (on
+   * register, an awaited call would also widen the documented enumeration
+   * timing channel). A missed upsert self-heals at the next login; the send
+   * log's no_recipient outcomes make persistent gaps visible.
+   */
+  private feedRecipientStore(userId: string, email: string): void {
+    void this.notifications.upsertRecipient({ userId, email });
+  }
 
   /**
    * Registration. The response body/status upstream is IDENTICAL for new and
@@ -98,6 +113,7 @@ export class AuthService {
 
     await this.authEvents.insert({ userId, kind: 'user.registered' });
     await this.events.userRegistered(userId);
+    this.feedRecipientStore(userId, normalized);
   }
 
   /**
@@ -151,6 +167,7 @@ export class AuthService {
 
     await this.authEvents.insert({ userId: user.id, sessionId, kind: 'login.succeeded' });
     await this.events.loginSucceeded(user.id, sessionId, 'none');
+    this.feedRecipientStore(user.id, normalizeEmail(email));
     return { accessToken, refreshToken, sessionId, userId: user.id };
   }
 

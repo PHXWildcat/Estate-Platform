@@ -283,8 +283,10 @@ describe('generateEnv', () => {
     const keyIds = SERVICES.filter((s) => s.kekAlias !== null).map((s) =>
       entries.get(`${s.name.toUpperCase()}_AWS_KMS_KEY_ID`),
     );
-    expect(keyIds).toHaveLength(6);
-    expect(new Set(keyIds).size).toBe(6);
+    // Seven since M9: notifications' recipient store gets its own alias, so
+    // the other core co-tenants can never unwrap an address.
+    expect(keyIds).toHaveLength(7);
+    expect(new Set(keyIds).size).toBe(7);
   });
 
   it('gives Zone A and audit no key material at all', () => {

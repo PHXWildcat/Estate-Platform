@@ -49,6 +49,8 @@ jobs:
             pkg: '@estate/service-vault'
           - app: settlement
             pkg: '@estate/service-settlement'
+          - app: notifications
+            pkg: '@estate/service-notifications'
           - app: bff
             pkg: '@estate/bff'
             kind: bff

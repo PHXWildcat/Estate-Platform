@@ -245,7 +245,8 @@ export class EmergencyRepo {
   async recordNotification(
     q: Queryable | Db,
     input: {
-      policyId: string;
+      /** Null for vault-level kinds ('reset') that outlive every policy. */
+      policyId: string | null;
       userId: string;
       kind: EmergencyNotificationKind;
       channel: string;

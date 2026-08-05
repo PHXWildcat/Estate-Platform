@@ -74,6 +74,7 @@ paths cannot drift.
 | Malware scan | real clamd | real clamd |
 | OCR | Tesseract sidecar | Tesseract sidecar |
 | Audit bus | Redpanda | Redpanda |
+| Notifications (M9) | real HTTP → SES v1 on LocalStack | real HTTP → SES v1 on LocalStack |
 | AWS transport | plain http | **TLS, verified** |
 | Plaid | deterministic stub | **absent** |
 | Every flow runs | yes | no — see below |
@@ -100,11 +101,15 @@ The difference is `NODE_ENV`, and therefore which fail-fast guards are armed.
 Each of these is a control firing, not a defect. None of them will be "fixed"
 by weakening the guard:
 
-- **Settlement intake and review-approve answer `503 notifications_unavailable`.**
-  So does every vault emergency-access route. Both refuse while only the stub
-  notifier is wired, because a waiting period nobody can be told about is not a
-  control (docs/03 §5.2, §5.1). The notifications milestone is what retires
-  this.
+- ~~Settlement intake and review-approve answer `503 notifications_unavailable`~~
+  **RETIRED by M9.** The notifications service runs in both profiles with the
+  real carrier path (SES v1 against LocalStack; sender identity verified at
+  bootstrap), so intake, review-approve and the vault emergency-access routes
+  now WORK in the production rehearsal — and the e2e proves it by reading the
+  owner's actual email back out of LocalStack's `/_aws/ses` store. The 503
+  gates themselves remain in the code as defense in depth (and now audit their
+  refusal); what changed is that production configuration can no longer reach
+  them, because `NOTIFY_MODE=http` / `EMAIL_MODE=ses` are production-pinned.
 - **Plaid is absent from the profile entirely.** Production requires
   `PLAID_MODE=live` with credentials that do not exist. A container that boots
   on invented credentials and fails every outbound call is worse than an

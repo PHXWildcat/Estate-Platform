@@ -1339,8 +1339,76 @@ cross-service provisioning drift for **hand**-provisioned environments, and the
 production per-service-endpoint residual above — all three close with the mesh
 or with deployment configuration management, not with code here.
 
+## M9 — Notifications (PR1 shipped; PR2 = the legal-hold caller)
+
+Sequenced AHEAD of the "AI assistant · referral · notifications" order below —
+a user-approved reorder, the M8 precedent — because it is the smallest
+milestone that un-gates two shipped ones: M6 emergency access and M7
+settlement intake/review-approve deliberately answered `503
+notifications_unavailable` in production, and the waiting-period controls
+those flows rest on only become real when the owner can actually be told.
+
+**PR1 — the notifications service and the carrier path, end to end.**
+
+- `apps/services/notifications` — the NINTH service, the isolating boundary
+  for delivery carriers (docs/01 §2.10, TB5): the SES SDK and its
+  configuration exist only here. Core-cluster co-tenant (third, after
+  profile/settlement) with disjoint tables and its OWN KEK
+  (`notifications/kek` + `notification_deks`), so the cluster's other tenants
+  can never unwrap a recipient address. Two approved docs/01 deviations,
+  recorded in the decision log: the port is SYNCHRONOUS HTTP (the M6/M7
+  fail-closed capability gates are request/response by nature), and recipient
+  resolution is EVENT-CARRIED — identity feeds `notification_recipients` at
+  registration and login, the two moments the user themselves supplies the
+  plaintext address, so no email-ciphertext read path exists anywhere and the
+  §5.3 bulk-decrypt chokepoint never forms.
+- **Content-free by construction.** The wire (`packages/notifications-client`;
+  consumers vault + settlement + identity, all landing in-milestone) has no
+  text field — a closed namespaced kind enum, userId, requested channel,
+  optional deadline, `.strict()`. The template registry is the only source of
+  carrier-visible words: no user data beyond the deadline date, ONE uniform
+  subject for every kind (the M6 review's delivery-channel-leakage item), and
+  NO links at all. Email-only this milestone (SES v1 — the API LocalStack
+  Community also serves); SMS/push/in-app, per-event preferences, and one-tap
+  deny capability tokens are recorded follow-ups.
+- **Trust machinery.** Fourth credential-graph edge
+  (`NOTIFICATIONS_INTERNAL_TOKEN` — callee notifications; holders identity,
+  settlement, vault; opens send + recipient-upsert and nothing else), with
+  every fence updated and the generator minting it automatically. Production
+  PINS the real adapters (`NOTIFY_MODE=http`, `EMAIL_MODE=ses` — the
+  KMS/clamd/OCR rule); aliasing refusals extend pairwise to the new secret;
+  the per-route 503 gates REMAIN as defense in depth and now AUDIT their
+  refusal (`vault.emergency.notifications_refused`,
+  `settlement.notifications_refused`).
+- **Bookkeeping and the M6 follow-ups.** Send failures never roll back state:
+  every send lands as an append-only `notification_sends` row (outcome ∈
+  sent/no_recipient/carrier_failure) plus an ids/enums-only audit event, and
+  every address decrypt is a logged `crypto.field.decrypted`. The two
+  recorded M6 gaps ship: owners are notified on vault RESET (migration 003
+  makes `emergency_access_notifications.policy_id` nullable with a
+  kind-anchored CHECK) and when a reconfiguration retires the previous
+  grantees.
+- **Proof.** The stack runs the real path in BOTH profiles: LocalStack
+  provisions the seventh KMS key and verifies the SES sender; the production
+  rehearsal's two 503 assertions are RETIRED and replaced 1:1 — intake now
+  opens a case and the e2e reads the owner's actual email back out of
+  LocalStack's `/_aws/ses` store (uniform subject, no links, live), and the
+  escrow configure/reconfigure pair proves the grantees_changed notification
+  the same way. The dev journey's audit-chain assertion gains
+  `notification.recipient.updated`, proving identity→notifications→broker→
+  chain end to end. Workflow exact-count gates unchanged (replacements are
+  1:1).
+
+**PR2 (next): settlement→documents legal hold** — the M4 zero-callers gap:
+graph `holders: [] → ['settlement']` in the same change as the
+`documents-hold.ts` client (identity-lock pattern, inside the review-approve
+transaction), first-ever tests for the legal-hold route, and corrections to
+the four docs that record the gap as open. The milestone closes with its own
+security pass including delivery-channel identifier leakage (owed since the
+M6 review).
+
 ### Later milestones (rough order, one per bounded context)
-AI assistant (privacy proxy) · then referral, notifications (whose SES
-adapter the local stack now gives a place to run), search · the M5 cloud
+AI assistant (privacy proxy) · then referral, search · the M5 cloud
 half, reduced by what M8 took over. Settlement came late deliberately:
-highest-risk domains land on mature primitives.
+highest-risk domains land on mature primitives. (Notifications moved up and
+shipped as M9 — see above.)
