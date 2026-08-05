@@ -66,10 +66,17 @@
 
 /**
  * Every deployable service. Not free-form: the fence asserts this equals the
- * directories under `apps/services/` that have a `src/config.ts`, so a ninth
+ * directories under `apps/services/` that have a `src/config.ts`, so a tenth
  * service cannot appear without being considered here.
+ *
+ * `ai-assistant` appears in NO edge below, in either direction, and that is
+ * deliberate rather than pending: it authenticates its callers on their own
+ * bearer and forwards that same bearer to the peers it reads, so it needs no
+ * secret and must not be handed one. Its own `test/config.spec.ts` asserts the
+ * empty holding, which is what keeps this a property rather than a comment.
  */
 export const SERVICE_NAMES = [
+  'ai-assistant',
   'assets',
   'audit',
   'documents',
@@ -233,7 +240,13 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
  * the control — a credential named for its CALLER is what rule 1 forbids.
  */
 export function envVarPrefixFor(service: ServiceName): string {
-  return `${service.toUpperCase()}_`;
+  // A service name is a directory name and may contain a hyphen; an
+  // environment-variable key may not. Normalizing here keeps the derived
+  // prefix a legal identifier for a name like `ai-assistant`, which would
+  // otherwise mandate the unusable `AI-ASSISTANT_…_INTERNAL_TOKEN`. A no-op
+  // for every single-word service, and it does not loosen the rule: the
+  // prefix is still DERIVED from the callee rather than trusted from `envVar`.
+  return `${service.toUpperCase().replace(/-/g, '_')}_`;
 }
 
 /**

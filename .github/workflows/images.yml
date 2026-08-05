@@ -29,7 +29,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
-      # One broken service image should not hide the state of the other seven.
+      # One broken service image should not hide the state of the others. (No
+      # count here on purpose — it was "seven" while the matrix held eleven.)
       fail-fast: false
       matrix:
         include:
@@ -51,6 +52,8 @@ jobs:
             pkg: '@estate/service-settlement'
           - app: notifications
             pkg: '@estate/service-notifications'
+          - app: ai-assistant
+            pkg: '@estate/service-ai-assistant'
           - app: bff
             pkg: '@estate/bff'
             kind: bff
@@ -80,8 +83,8 @@ jobs:
       # not just the exit code — is the signal, since a broken image also exits
       # non-zero.
       #
-      # The six services require real config (DATABASE_URL and friends) in every
-      # environment, so running them bare must fail. The BFF is deliberately
+      # Every service requires real config (DATABASE_URL and friends) in every
+      # environment, so running one bare must fail. The BFF is deliberately
       # different: every one of its settings has a development default, so bare
       # it would start and listen forever. Its fail-fast guard is production-only
       # (persisted operations are mandatory there), so that is what we assert.
