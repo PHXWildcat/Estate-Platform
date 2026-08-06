@@ -148,15 +148,50 @@ export function DocumentDetailPanel({ documentId }: DocumentDetailPanelProps): R
       status,
       ...(status === 'executed' ? { executedAt } : {}),
     });
-    setBusy(false);
     if (!result.ok) {
+      setBusy(false);
       setActionError(messageFor(result.code));
       return;
     }
+    /*
+     * USE THE LADDER THE TRANSITION RETURNED. The service sends the new ladder
+     * with the answer precisely so a client does not have to re-read to learn
+     * it — and the first version of this handler re-read anyway, AND cleared
+     * `busy` before awaiting, so the page rendered the PRE-transition rungs,
+     * enabled, until the round trip landed. Three places claimed the opposite
+     * property (CLAUDE.md, docs/04, and the service's own comment), which is
+     * how the M12 review found it.
+     *
+     * Version history is untouched by a status change, so there is nothing
+     * else to re-read.
+     */
+    const updated = result.data.setDocumentStatus;
+    if (
+      typeof updated?.executionStatus !== 'string' ||
+      !Array.isArray(updated.allowedTransitions)
+    ) {
+      // A response we do not understand is not data. The write landed, so
+      // re-read rather than guessing at the new state.
+      setBusy(false);
+      setExecutedAt('');
+      await load();
+      return;
+    }
+    setState((previous) =>
+      previous.kind === 'ready'
+        ? {
+            ...previous,
+            document: {
+              ...previous.document,
+              executionStatus: updated.executionStatus,
+              executedAt: updated.executedAt,
+              allowedTransitions: updated.allowedTransitions,
+            },
+          }
+        : previous,
+    );
     setExecutedAt('');
-    // Re-read rather than patching locally: the ladder changed, and the
-    // server's copy is the one that survived the transaction.
-    await load();
+    setBusy(false);
   }
 
   async function remove(): Promise<void> {
@@ -292,10 +327,19 @@ export function DocumentDetailPanel({ documentId }: DocumentDetailPanelProps): R
         <h2 id="status-heading" className="text-base font-semibold">
           Record what has happened
         </h2>
+        {/*
+          THE CAPTION HAS TO MATCH WHERE THE LADDER CAME FROM. For a generated
+          document the steps are the reviewed template's own requirements for
+          its state. For an UPLOAD there is no template at all — `template_id`
+          is null and the service applies a platform default — so claiming
+          template authority there would be a statement about the law that
+          nothing behind it supports, on a surface where the upload form itself
+          offers instrument kinds like `will`. (M12 review.)
+        */}
         <p className="mt-1 max-w-prose text-[0.8125rem] text-ink-muted">
-          The platform records the steps you have taken in the real world; it does not witness them.
-          The steps below are the ones this document’s own template requires for its state — no
-          more, and none of them skippable.
+          {document.source === 'generated'
+            ? 'The platform records the steps you have taken in the real world; it does not witness them. The steps below are the ones this document’s own template requires for its state — no more, and none of them skippable.'
+            : 'The platform records the steps you have taken in the real world; it does not witness them. This document was uploaded rather than generated here, so we have no state-specific template behind it — these are general steps, and they are not a statement of what your state requires.'}
         </p>
 
         {document.allowedTransitions.length === 0 ? (

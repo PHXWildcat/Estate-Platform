@@ -196,6 +196,20 @@ describe('a stored upload', () => {
     expect(onUploaded).toHaveBeenCalled();
   });
 
+  it('still confirms the file was kept when the reply is not understood', async () => {
+    // The bytes are already stored, so the honest answer is "kept, but we
+    // can't tell you more" — never silence, and never a thrown handler that
+    // skips clearing the form and refreshing the list (M12 review).
+    const { onUploaded } = mount({ UploadDocument: () => jsonResponse({ data: {} }) });
+    fillTitle();
+    choose(file('deed.pdf', 'application/pdf'));
+    fireEvent.click(screen.getByRole('button', { name: 'Upload' }));
+    expect(await screen.findByText(/couldn’t read the reply/i)).toBeVisible();
+    await waitFor(() => {
+      expect(onUploaded).toHaveBeenCalled();
+    });
+  });
+
   it('is honest when OCR found nothing, rather than silent', async () => {
     mount({
       UploadDocument: () =>

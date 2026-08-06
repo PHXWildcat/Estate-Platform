@@ -28,5 +28,8 @@ module.exports = createJestConfig({
   // 82.96/79.13/85.77/86.42 with upload, search and the execution ladder.
   // Measured from a local `--coverage` run, never guessed: the one time a
   // floor was invented from an unmeasured number (M10 PR3) it failed CI.
-  coverageThreshold: { global: { statements: 82, branches: 79, functions: 85, lines: 86 } },
+  // RATCHETED once more by the M12 SECURITY REVIEW, which added the binary
+  // presentation, the write-path guards and the widened embedding fence:
+  // measured 83.13/79.48/85.88/86.55.
+  coverageThreshold: { global: { statements: 83, branches: 79, functions: 85, lines: 86 } },
 });

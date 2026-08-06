@@ -298,6 +298,67 @@ describe('execution-status tracking', () => {
       h.service.transitionStatus(OWNER, documentId, { status: 'signed' }),
     ).rejects.toThrow(ConflictException);
   });
+
+  it('still lets an attested document be REVOKED when its template is unavailable', async () => {
+    /*
+     * The M12-review defect. Failing closed on an unverifiable template first
+     * withdrew EVERY transition — including `revoked`, which never read the
+     * requirements at all. That left an owner permanently stuck in an attested
+     * status with no way back, since nothing re-verifies a template that is
+     * gone, and it inverted the M6 rule that the protective action must never
+     * be harder than the permissive one.
+     */
+    const h = await build();
+    const documentId = await generate(h);
+    await h.service.transitionStatus(OWNER, documentId, { status: 'signed' });
+    h.templates.rows.get(h.template.id)!.deleted_at = new Date();
+
+    // Advancing is still refused — the formalities cannot be verified.
+    await expect(
+      h.service.transitionStatus(OWNER, documentId, { status: 'witnessed' }),
+    ).rejects.toThrow(ConflictException);
+
+    // The read offers exactly the way out, and nothing that advances.
+    const before = await h.service.get(OWNER, documentId);
+    expect(before.allowedTransitions).toEqual(['revoked']);
+
+    const after = await h.service.transitionStatus(OWNER, documentId, { status: 'revoked' });
+    expect(after.executionStatus).toBe('revoked');
+    expect(after.allowedTransitions).toEqual([]);
+  });
+
+  it('AUDITS a template integrity failure rather than swallowing it', async () => {
+    /*
+     * `body_sha256` exists to detect a substituted or corrupted template body
+     * (docs/03 TB4). The read paths degrade instead of erroring, so if the
+     * catch said nothing, the one signal that pin exists to produce would end
+     * in a bare `catch`: a 200 on the wire, nothing in the audit chain, and
+     * nothing in any log (HttpErrorFilter deliberately logs nothing, and the
+     * error never reaches it).
+     */
+    const h = await build();
+    const documentId = await generate(h);
+    // Make the pin and the body disagree. Done by moving the PIN rather than
+    // the object, because the engine caches by (id, sha) — so a body swapped
+    // under an unchanged pin is served from cache until the process restarts.
+    // That caching property is M4's and predates this milestone; what is under
+    // test here is what happens when the mismatch IS detected.
+    const row = h.templates.rows.get(h.template.id)!;
+    row.body_sha256 = Buffer.alloc(32, 0xab);
+
+    const detail = await h.service.get(OWNER, documentId);
+    // Degrades rather than erroring, and offers nothing to advance.
+    expect(detail.allowedTransitions).toEqual([]);
+
+    const integrity = h.producer.messages
+      .filter((m) => m.topic === 'estate.audit.events.v1')
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .filter((e) => e.action === 'document.template.integrity_failed');
+    expect(integrity).toHaveLength(1);
+    expect(integrity[0]?.resourceId).toBe(h.template.id);
+    // IDs only — nothing about the body or the document's content.
+    expect(integrity[0]?.detail).toEqual({ documentId });
+  });
 });
 
 describe('deletion and legal hold', () => {

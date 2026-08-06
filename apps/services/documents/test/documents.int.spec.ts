@@ -619,13 +619,18 @@ describeIfPg('document service end to end', () => {
 
     // Owner finds it; a stranger's identical query finds nothing.
     const found = (
-      await request(server).get('/v1/documents/search?q=marlow%20deed').set(asOwner()).expect(200)
+      await request(server)
+        .post('/v1/documents/search')
+        .set(asOwner())
+        .send({ query: 'marlow deed' })
+        .expect(200)
     ).body as DocumentDto[];
     expect(found.map((d) => d.documentId)).toContain(upload.documentId);
     const strangers = (
       await request(server)
-        .get('/v1/documents/search?q=marlow%20deed')
+        .post('/v1/documents/search')
         .set(asStranger())
+        .send({ query: 'marlow deed' })
         .expect(200)
     ).body as DocumentDto[];
     expect(strangers).toEqual([]);

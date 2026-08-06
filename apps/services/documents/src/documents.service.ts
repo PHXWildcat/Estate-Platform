@@ -16,7 +16,7 @@ import { Db, type Queryable } from './db';
 import { DocumentsAuthz, documentResource } from './authz.service';
 import { DocumentsRepo, type DocumentRow } from './documents.repo';
 import { EventsService } from './events.service';
-import { allowedTransitions, allowsNewVersion, isTransitionAllowed } from './execution-status';
+import { allowedTransitions, allowsNewVersion, deEscalationTransitions } from './execution-status';
 import {
   DEK_REPOSITORY,
   MALWARE_SCANNER,
@@ -32,7 +32,7 @@ import { htmlToText } from './search-index';
 import { SearchIndexer } from './search-indexer';
 import { SearchTokensRepo } from './search-tokens.repo';
 import { RenderError, renderDocument } from './renderer';
-import { TemplateEngine } from './template-engine';
+import { TemplateEngine, TemplateIntegrityError } from './template-engine';
 import { intakeSchemaFor, type ExecutionRequirements, type TemplateSource } from './template-model';
 import { TemplatesRepo, type TemplateRow } from './templates.repo';
 import { VersionsRepo, type VersionRow } from './versions.repo';
@@ -466,8 +466,16 @@ export class DocumentsService {
     const updated = await this.db.withTransaction(actor, async (tx) => {
       const locked = await this.lockLive(tx, documentId);
       this.authz.assertCan(actor, 'update', documentResource(documentId, locked.user_id));
-      const requirements = await this.requirementsFor(locked);
-      if (!isTransitionAllowed(locked.execution_status, input.status, requirements)) {
+      // The WRITE narrows the same way the read does, and for the same reason:
+      // an unverifiable template must not trap an owner in an attested status
+      // with no way back. It permits DE-ESCALATION only — never a rung that
+      // would advance the ladder on formalities nobody can verify.
+      const requirements = await this.resolveRequirements(locked);
+      const permitted =
+        requirements === null
+          ? deEscalationTransitions(locked.execution_status)
+          : allowedTransitions(locked.execution_status, requirements);
+      if (!permitted.includes(input.status)) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
       await this.documents.updateStatus(tx, documentId, input.status, input.executedAt ?? null);
@@ -517,27 +525,52 @@ export class DocumentsService {
   }
 
   /**
-   * The transitions this document may take next — FAIL CLOSED, and closed here
-   * means an EMPTY list rather than an error.
+   * The transitions this document may take next — FAIL CLOSED, where closed
+   * means REFUSING TO ASSERT A FORMALITY WE CANNOT VERIFY rather than refusing
+   * every transition.
    *
-   * `requirementsFor` refuses to guess when the ladder cannot be read from the
-   * sha256-verified template source (a soft-deleted template, an integrity
-   * mismatch), and that refusal must not be softened: offering `signed` for a
-   * will whose witness requirement is unknown is exactly the fail-open the M4
-   * review closed. But this is a READ, and failing the whole document read
-   * would make an otherwise-intact document unopenable because of its
-   * template's state. So the metadata still serves and the ladder is empty —
-   * nothing to attest, nothing guessed.
+   * `requirementsFor` will not guess when the ladder cannot be read from a
+   * sha256-verified template source (a soft-deleted template row, a body
+   * integrity mismatch), and that refusal must not be softened: offering
+   * `witnessed` for a will whose witness requirement is unknown is the
+   * fail-open the M4 review closed. But withdrawing EVERYTHING was its own
+   * defect (M12 review): `revoked` and `superseded` never depended on the
+   * formalities, so an unverifiable template was stripping the owner's only
+   * de-escalation, permanently — inverting the M6 rule that the protective
+   * action must never be harder than the permissive one. What survives is
+   * `deEscalationTransitions` — revoke and supersede, a strict subset of the
+   * real ladder under every profile. Advancing is still withheld.
    *
-   * This is advisory only: `transitionStatus` re-resolves the requirements
-   * inside its own transaction and refuses there too, so a client that ignores
-   * this list gains nothing.
+   * This is a READ, so it degrades rather than erroring: failing the whole
+   * document read would make an otherwise-intact document unopenable because
+   * of its template's state.
    */
   private async allowedTransitionsFor(doc: DocumentRow): Promise<ExecutionStatus[]> {
+    const requirements = await this.resolveRequirements(doc);
+    return requirements === null
+      ? deEscalationTransitions(doc.execution_status)
+      : allowedTransitions(doc.execution_status, requirements);
+  }
+
+  /**
+   * The document's formalities, or null when they cannot be verified.
+   *
+   * A TEMPLATE INTEGRITY FAILURE IS AUDITED HERE, because here is where it is
+   * caught. `body_sha256` exists to detect a substituted or corrupted template
+   * body (docs/03 TB4), and both callers of this method degrade rather than
+   * erroring — so without this emit, the one signal that pin exists to produce
+   * would end in a bare `catch` and leave no trace in the audit chain, no log,
+   * and a 200 on the wire. Absence of a template row is NOT audited as tamper:
+   * it is an ordinary consequence of a soft-deleted template.
+   */
+  private async resolveRequirements(doc: DocumentRow): Promise<ExecutionRequirements | null> {
     try {
-      return allowedTransitions(doc.execution_status, await this.requirementsFor(doc));
-    } catch {
-      return [];
+      return await this.requirementsFor(doc);
+    } catch (err) {
+      if (err instanceof TemplateIntegrityError) {
+        await this.events.templateIntegrityFailed(doc.user_id, doc.id, doc.template_id);
+      }
+      return null;
     }
   }
 

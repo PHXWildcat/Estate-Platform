@@ -6,7 +6,6 @@ import {
   HttpCode,
   Param,
   Post,
-  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -25,7 +24,7 @@ import {
   IfMatchSchema,
   NewVersionSchema,
   parse,
-  SearchQuerySchema,
+  SearchRequestSchema,
   StatusTransitionSchema,
   UploadDocumentSchema,
   UuidSchema,
@@ -76,10 +75,16 @@ export class DocumentsController {
     return this.documents.list(requireCaller(req).userId);
   }
 
-  @Get('documents/search')
+  /**
+   * Encrypted search. A POST because the TERM IS PII: query strings are the
+   * part of a request intermediaries log by default, and a search over one's
+   * own documents is by construction a word out of that estate (M12 review).
+   * It reads rather than writes — hence 200, not 201.
+   */
+  @Post('documents/search')
   @HttpCode(200)
-  search(@Req() req: CallerRequest, @Query('q') q: string): Promise<DocumentDto[]> {
-    return this.documents.search(requireCaller(req).userId, parse(SearchQuerySchema, q));
+  search(@Req() req: CallerRequest, @Body() body: unknown): Promise<DocumentDto[]> {
+    return this.documents.search(requireCaller(req).userId, parse(SearchRequestSchema, body).query);
   }
 
   @Get('documents/:documentId')

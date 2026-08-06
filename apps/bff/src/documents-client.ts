@@ -270,13 +270,15 @@ export class FetchDocumentsClient implements DocumentsClient {
    * and matched ciphertext-side, so NOTHING IS DECRYPTED to serve it and there
    * is no decrypt audit event by design. Results are the caller's own documents
    * by construction (per-user key + user_id join).
+   *
+   * A POST, and the method is the point: the term is a word out of the user's
+   * own estate, and a query string is the one part of a request that
+   * intermediaries log by default (M12 review). It reads rather than writes.
    */
   async search(accessToken: string, query: string): Promise<Document[]> {
-    const res = await this.request(
-      'GET',
-      `/v1/documents/search?q=${encodeURIComponent(query)}`,
-      accessToken,
-    );
+    const res = await this.request('POST', '/v1/documents/search', accessToken, {
+      body: { query },
+    });
     if (!res.ok) {
       throw await this.mapError(res);
     }

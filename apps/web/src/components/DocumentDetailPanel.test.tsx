@@ -194,7 +194,11 @@ describe('the execution ladder is the server’s, not this page’s', () => {
     expect(operations(requests)).not.toContain('SetDocumentStatus');
   });
 
-  it('sends the attestation and re-reads rather than patching locally', async () => {
+  it('renders the ladder the transition RETURNED, without a second read', async () => {
+    // The service sends the new ladder with the answer so a client never has
+    // to re-read to learn it. The first version re-read anyway — and cleared
+    // `busy` before awaiting — so the pre-transition rungs stayed on screen,
+    // enabled, until the round trip landed (M12 review).
     const requests = mount({
       SetDocumentStatus: () =>
         jsonResponse({
@@ -209,11 +213,22 @@ describe('the execution ladder is the server’s, not this page’s', () => {
         }),
     });
     fireEvent.click(await screen.findByRole('button', { name: 'I signed it' }));
+    expect(await screen.findByRole('button', { name: 'It was witnessed' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'I signed it' })).not.toBeInTheDocument();
+    // Exactly one Document read — the one on mount.
+    expect(operations(requests).filter((op) => op === 'Document')).toHaveLength(1);
+    const sent = requests.find((r) => r.body.query?.includes('SetDocumentStatus'));
+    expect(sent?.body.variables).toEqual({ documentId: DOCUMENT_ID, status: 'signed' });
+  });
+
+  it('falls back to a re-read when the transition reply is not understood', async () => {
+    // The write landed, so guessing at the new state is the one thing that
+    // must not happen — re-read instead.
+    const requests = mount({ SetDocumentStatus: () => jsonResponse({ data: {} }) });
+    fireEvent.click(await screen.findByRole('button', { name: 'I signed it' }));
     await waitFor(() => {
       expect(operations(requests).filter((op) => op === 'Document')).toHaveLength(2);
     });
-    const sent = requests.find((r) => r.body.query?.includes('SetDocumentStatus'));
-    expect(sent?.body.variables).toEqual({ documentId: DOCUMENT_ID, status: 'signed' });
   });
 
   it('says why an EMPTY ladder is empty, without pretending it is finished', async () => {
@@ -227,6 +242,21 @@ describe('the execution ladder is the server’s, not this page’s', () => {
   it('says a terminal document is finished', async () => {
     mount({}, { ...DOCUMENT, executionStatus: 'revoked', allowedTransitions: [] });
     expect(await screen.findByText(/nothing further to record/i)).toBeVisible();
+  });
+
+  it('does not claim TEMPLATE authority for an uploaded document', async () => {
+    // An upload has no template — `template_id` is null and the service
+    // applies a platform default — so "this document's own template requires"
+    // would be a statement about the law with nothing behind it, on a page
+    // whose upload form offers instrument kinds like `will` (M12 review).
+    mount({}, { ...DOCUMENT, source: 'uploaded', templateId: null });
+    expect(await screen.findByText(/not a statement of what your state requires/i)).toBeVisible();
+    expect(screen.queryByText(/this document’s own template requires/i)).not.toBeInTheDocument();
+  });
+
+  it('does claim it for a generated one, where it is true', async () => {
+    mount();
+    expect(await screen.findByText(/this document’s own template requires/i)).toBeVisible();
   });
 });
 

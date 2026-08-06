@@ -340,10 +340,13 @@ describe('status and deletion', () => {
 });
 
 describe('search', () => {
-  it('encodes the query and returns the caller’s own matches', async () => {
-    const seen: string[] = [];
-    const spy = ((url: string) => {
-      seen.push(url);
+  it('sends the term in the BODY, never in the URL', async () => {
+    // The term is a word out of the user's own estate, and a query string is
+    // the one part of a request intermediaries log by default — CloudFront and
+    // WAF access logs capture full request URIs (M12 review).
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const spy = ((url: string, init: RequestInit) => {
+      seen.push({ url, init });
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -351,7 +354,12 @@ describe('search', () => {
       });
     }) as unknown as typeof globalThis.fetch;
     const hits = await client(spy).search(TOKEN, 'lake house & co');
-    expect(seen[0]).toBe('http://documents.test/v1/documents/search?q=lake%20house%20%26%20co');
+    expect(seen[0]?.url).toBe('http://documents.test/v1/documents/search');
+    expect(seen[0]?.url).not.toContain('lake');
+    expect(seen[0]?.init.method).toBe('POST');
+    expect(JSON.parse((seen[0]?.init.body as string | undefined) ?? '{}')).toEqual({
+      query: 'lake house & co',
+    });
     expect(hits).toHaveLength(1);
   });
 });

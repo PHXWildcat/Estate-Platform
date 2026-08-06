@@ -156,10 +156,16 @@ export function DocumentUpload({ onUploaded }: DocumentUploadProps): ReactElemen
       setError(messageFor(result.code));
       return;
     }
+    // A response missing its field is not data — and the file is already
+    // stored, so the honest answer is "kept, but we can't tell you more",
+    // never silence and never a thrown handler that skips every step below.
+    const uploaded = result.data.uploadDocument;
     setStored(
-      result.data.uploadDocument.ocrIndexed
-        ? 'Stored and encrypted. We read the text so you can search for it.'
-        : 'Stored and encrypted. We couldn’t read any text from it, so search will only match the title.',
+      typeof uploaded?.ocrIndexed !== 'boolean'
+        ? 'Stored and encrypted. We couldn’t read the reply, so open your list to confirm it is there.'
+        : uploaded.ocrIndexed
+          ? 'Stored and encrypted. We read the text so you can search for it.'
+          : 'Stored and encrypted. We couldn’t read any text from it, so search will only match the title.',
     );
     setTitle('');
     setFile(null);

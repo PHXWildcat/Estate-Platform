@@ -248,11 +248,28 @@ export function DocumentGenerator({ revise }: DocumentGeneratorProps): ReactElem
     setBusy(false);
     if (result.ok) {
       setStepUpNeeded(false);
+      /*
+       * A RESPONSE MISSING ITS FIELD IS NOT DATA — and on a WRITE path that
+       * matters more than on a read, because the side effect already happened.
+       * `gqlRequest` answers `ok` for any `data` object, so a version skew
+       * arrives as `{"data":{}}`; dereferencing it threw inside a `void`-ed
+       * handler after `setBusy(false)` had run, leaving the form idle with no
+       * error and no navigation for a document that HAD been generated —
+       * inviting a second press and a second legal instrument. Every read path
+       * in this milestone applies this guard; the M12 review found the two
+       * write paths did not.
+       */
       const data = result.data;
       const documentId =
         'generateDocument' in data
-          ? data.generateDocument.documentId
-          : data.regenerateDocument.documentId;
+          ? data.generateDocument?.documentId
+          : data.regenerateDocument?.documentId;
+      if (typeof documentId !== 'string') {
+        setError(
+          'Your document was created, but we couldn’t read the reply. Open your documents list to find it — don’t create it again.',
+        );
+        return;
+      }
       router.push(`/documents/${documentId}`);
       return;
     }

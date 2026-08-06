@@ -554,9 +554,12 @@ rendered that way and still be a document, so `DocumentViewer`
 (`apps/web/src/components/DocumentViewer.tsx`) substitutes CONTAINMENT: the
 bytes go into a `srcdoc` iframe with `sandbox=""` — the empty value, which
 grants nothing: no scripts, no same-origin, no forms, no popups, no top-level
-navigation. The component reads nothing and parses nothing; there is still no
-`dangerouslySetInnerHTML` anywhere in the app, and the M11 source scan covers
-the new files unchanged.
+navigation. The component reads nothing and parses nothing, and it adds no
+`dangerouslySetInnerHTML`: the M11 source scan covers the new files unchanged
+and still allows exactly one use, `app/layout.tsx`'s theme script, which M11
+declared as data. (An earlier draft of this paragraph said "anywhere in the
+app" and dropped that declared exemption — corrected in the M12 review, since
+a doc that overstates a control is the defect class this repo keeps finding.)
 
 Three layers hold it, and only the first two are relied on:
 
@@ -640,6 +643,30 @@ service. So the service returns `allowedTransitions` from its own
 sha256-verified template source, the UI renders exactly that, and the write
 path re-resolves the requirements inside its own transaction regardless. An
 unverifiable template yields an EMPTY ladder, not a guessed one.
+
+*Presenting an uploaded binary — the decision PR1 deferred.* Images render
+INLINE from a `data:` URI: the page CSP already allows `img-src 'self' data:`,
+the bytes reach the browser's image decoder (the same exposure any image on any
+page carries), and a `data:` URI cannot reach the network. The mime is the
+SERVICE's sniffed value, not the uploader's claim, and it is checked against a
+closed set before it is interpolated, so no attacker-chosen string becomes the
+type of a URI this page constructs. PDFs and TIFFs DOWNLOAD instead: a framed
+PDF is the browser's PDF engine — a large parser — invoked on attacker-supplied
+bytes inside our own frame tree, whereas a download hands the file to whatever
+the user already trusts. The filename is generated from ids, never from
+`documents.title`, because a filename is where user text ends up in a shell, a
+sync client, or a mail header. Leaving this deferred a second time had a cost
+the M12 review named: `Read` was offered for versions the viewer then refused,
+so an audited decrypt was spent to display nothing.
+
+*The search term left the URL.* `GET /v1/documents/search?q=` was M4's shape,
+and M12 was its first caller. The term is by construction a word out of the
+user's own estate — a beneficiary's name, a property address — and a query
+string is the one part of a request intermediaries record by default; the
+topology docs/01 §2 describes puts CloudFront and WAF access logs in that path.
+It is a POST with the term in the body now. Nothing else changed: the term is
+still reduced to per-user HMAC tokens and matched ciphertext-side, and no
+decrypt happens to serve a search.
 
 *Deletion.* Step-up gated per docs/01 §5, and the legal hold wins over the
 owner. Running the real app exposed an ordering seam worth recording: the
