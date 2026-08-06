@@ -1624,3 +1624,77 @@ deviating from them, stop and propose the change with rationale — do not silen
   redemption REFUSES in production behind a stub notifier, because a claim the
   owner never hears about is how a mis-delivered code becomes an invisible
   authorization edge.
+- 2026-08-06 — M13 security review (five discovery lenses over the three-PR range
+  + TWO adversarial verifiers per candidate on different angles, both defaulting
+  to refuted; 21 raw, 21 unique, 6 confirmed, 10 refuted, 7 dropped under the
+  cap and hand-verified). The first fan-out LOST FOUR LENSES to stalled agents —
+  a whole-range `git diff` is 9.5k lines and the agents hung on it — so they were
+  re-run with FILE-SCOPED prompts; the loss is recorded in docs/04 rather than
+  papered over, and the lesson is that a review prompt must name files, not
+  ranges. SEVENTH milestone running where every confirmed finding sits in
+  machinery the milestone introduced, and most falsify a claim it made about
+  itself. Two were load-bearing. (1) THE STEP-UP RETRY RAN THE WRONG ACTION: a
+  refused permission widen folded into the role-grant variant, so after a genuine
+  TOTP challenge the app called `grantRole()` from the picker's current state —
+  minting an `executor`/`on_death_verified` designation the owner never chose onto
+  the §5.1 executor-resolution chain, audited as theirs, while silently dropping
+  the permission they clicked. THREE claims said otherwise (the in-code "Elevate,
+  then retry", StepUpPrompt's "re-run the action that was refused", the M13 PR2
+  log entry) and the one existing test asserted only that the prompt OPENED, so
+  the suite was green over it. Fixed with a discriminated union that CARRIES every
+  argument the retry needs, plus per-action wording — the consent ceremony was
+  also mis-stating what it authorized. (2) THE OWNER NOTIFICATION OF A CLAIMED
+  LINK COULD VANISH: the audit emit ran before the notify and propagates broker
+  failures by design (M8), so a blip after the commit left the link standing, the
+  owner untold, and no retry able to tell them; and the notify's empty catch
+  cited "the claim event above" when that event carried no delivery fact, while
+  notifications.ts claimed "the caller records the failure" and no caller did.
+  Fixed: notify FIRST (an audit hiccup must not cancel the control that makes the
+  ceremony's out-of-band trust anchor auditable by the owner), and the outcome
+  rides the claim event as `ownerNotified: delivered|failed` — the vault
+  delivered_at-NULL precedent.
+- 2026-08-06 — Also from the M13 review, three fixes whose shape generalizes.
+  (1) PROMPT-AND-RETRY WAS A CLAIM THE PLATFORM COULD NOT KEEP: every service
+  builds `HttpSessionVerifier` with the 30s default positive cache, so after a
+  genuine elevation the peer still answers from the cached un-elevated session and
+  a single-shot retry leaves the prompt doing nothing — exactly what happened the
+  first time this surface was driven in a browser. The TTL is a recorded
+  trade-off (2026-07-23); what M13 got wrong was promising a retry that always
+  works. Made true rather than narrowed: `onElevated` now reports
+  `applied | stale` and the prompt POLLS to a documented deadline, the contract
+  the stack e2e already treats as a contract rather than a flake. The window is
+  pinned to auth-guard's own constant by a spec that READS that file — the
+  compose-parity mechanism, because the web app cannot import a Nest package and
+  a duplicated number drifts. (2) `contact_in_use` WAS CHECK-THEN-ACT: a
+  `grantRole` committing between the service's check and the soft delete would
+  delete a contact that had just acquired a designation — the fail-open §6f
+  declares Closed. The predicate moved into the UPDATE's own WHERE with a
+  discriminated outcome, and the now-callerless helper was deleted rather than
+  left as dead code. (3) `grantRole` accepted ANY contact id (the FK proves
+  existence, not ownership): refuted as an escalation because every resolver
+  scopes by owner, fixed anyway because a cross-owner designation resurrects the
+  silent-retirement shape PR1 closed — the other owner's `contact_in_use` check is
+  owner-scoped and would never see it.
+- 2026-08-06 — RE-DRIVING THE LIVE STACK FOUND WHAT NO LENS DID: `role_assignments`
+  had no uniqueness of any kind, so two clicks minted two identical live executor
+  designations. Nothing downstream breaks — every resolver uses `EXISTS`/`LIMIT 1`
+  — which is precisely why it would have gone unnoticed, and precisely why it
+  matters: revoking "the" designation leaves the duplicate conferring everything
+  it conferred before, and on the docs/03 §5.1 executor chain "revoked" has to
+  mean revoked. Closed with a partial unique index over (owner, contact, role,
+  scope_type, COALESCE(scope_id, nil-uuid), effective_condition) WHERE deleted_at
+  IS NULL — the COALESCE because SQL uniqueness treats NULLs as distinct and
+  `scope_id IS NULL` (the whole estate) is the commonest case, so without it the
+  constraint would have permitted unlimited duplicates of exactly the broadest
+  designation — plus a `409 role_already_granted` so a double click is an ordinary
+  refusal rather than a 500 or a silent second write.
+- 2026-08-06 — The link code's ALPHABET WAS HALF-IMPLEMENTED, and the fix is worth
+  the entry because the reasoning recurs: the mint avoids I, L, O and U so a code
+  can be read down a phone line, but redemption hashed the RAW submission — so
+  lowercase, dropped grouping dashes, or a typed O-for-zero all failed with the
+  uniform `invalid_code` and the owner's only remedy was minting a fresh code. A
+  security property (uniform refusals) was hiding a usability defect the design
+  had already promised to handle. `canonicalCode` folds onto the minted alphabet
+  before hashing on BOTH sides; because the fold only maps characters the
+  generator never emits, it cannot make two mintable codes collide, and
+  case-folding costs no entropy since the mint is uppercase-only.

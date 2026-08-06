@@ -2532,6 +2532,93 @@ A spend with no link would lock that contact out of ever being linked.
 Mutation-proven: dropping the self-redemption refusal, storing the code in
 plaintext, and dropping the mint's step-up each turn the suite red.
 
+#### M13 security review (2026-08-06)
+
+Five discovery lenses over the three-PR range plus TWO adversarial verifiers per
+candidate on different angles — reachability in a real production config, and
+is-it-already-a-documented-decision — both told to default to refuted. Run in two
+passes: the first fan-out lost four lenses to stalled agents (a whole-range
+`git diff` over 9.5k lines), so they were re-run with FILE-SCOPED prompts and the
+loss is recorded here rather than papered over. 21 raw findings, 21 unique, 6
+confirmed, 10 refuted, 7 dropped under the verification cap and hand-verified —
+each dropped one logged by name, the M12 rule.
+
+**Seventh milestone running where every confirmed finding sits in machinery the
+milestone itself introduced, and most falsify a claim it made about itself.**
+
+1. *An owner notification of a claimed link could be skipped or swallowed with no
+   record (medium, both verifiers confirmed).* The audit emit ran BEFORE the
+   notify and propagates broker failures by design (the M8 loudness rule), so an
+   MSK blip after the commit exited `redeem()` with the link standing, the owner
+   untold, and — the code being spent — no retry that could ever tell them. The
+   notify's empty catch cited "the claim event above" as the record when that
+   event carried no delivery fact; `notifications.ts` claimed "the caller records
+   the failure" and no caller did; and a network-level failure reached no
+   notifications-service row either, so nothing anywhere knew. FIXED: the notify
+   runs FIRST (an audit hiccup must not cancel the control that makes the
+   ceremony's trust anchor auditable by the owner; the invitation row is the
+   durable claim record), and the outcome rides the claim event as
+   `ownerNotified: delivered|failed` — the vault delivered_at-NULL precedent, so a
+   failure is an operator's re-drive signal instead of silence.
+2. *The step-up retry ran the WRONG ACTION (high).* When a permission widen was
+   refused, the post-elevation retry called `grantRole()` from the picker's
+   current state: a genuine TOTP challenge minted an `executor` /
+   `on_death_verified` designation the owner never chose — onto the §5.1
+   executor-resolution chain, fully audited as theirs — and silently dropped the
+   permission they had clicked. Three claims said otherwise (the in-code "Elevate,
+   then retry", `StepUpPrompt`'s "re-run the action that was refused", and the M13
+   PR2 log entry), and the one existing test asserted only that the prompt
+   OPENED, so the suite was green over it. FIXED with a discriminated union that
+   CARRIES every argument the retry needs, plus per-action wording — the consent
+   ceremony was also mis-stating what it authorized.
+3. *Prompt-and-retry was defeated for up to 30s by the session verifier's positive
+   cache (medium).* Every service uses the 30s default, so after a genuine
+   elevation the peer still answered from a cached un-elevated session and the
+   single-shot retry left the prompt sitting there doing nothing — which is
+   exactly what happened when this surface was first driven in a browser. The
+   platform-wide TTL is a recorded trade-off (2026-07-23); what M13 got wrong was
+   claiming a retry that always works. FIXED by making it true: `onElevated`
+   reports `applied | stale` and the prompt polls to a documented deadline, the
+   same contract the stack e2e already treats as the contract rather than a flake.
+   The window is pinned to `auth-guard`'s own constant by a spec that READS that
+   file — the compose-parity mechanism, because the web app cannot import a Nest
+   package and a duplicated number drifts.
+4. *`contact_in_use` was check-then-act (medium).* A `grantRole` committing between
+   the service's check and the soft delete would delete a contact that had just
+   acquired a designation — the exact fail-open §6f declares Closed. FIXED by
+   moving the predicate into the UPDATE's own `WHERE` and returning a
+   discriminated outcome, so "nothing to delete" (404) stays apart from "a
+   designation stands in the way" (409). The now-callerless
+   `hasLiveAssignmentsForContact` was deleted rather than left as dead code.
+5. *`grantRole` never checked the contact (refuted as escalation, fixed as
+   hardening).* The FK proves existence, not ownership or liveness. Every
+   consequence was self-inflicted — all resolvers scope by owner — but a
+   cross-owner designation resurrected the silent-retirement shape PR1 closed: the
+   OTHER owner's `contact_in_use` check is owner-scoped and would never see the
+   assignment, so their delete silently un-resolved it. Now a uniform not-found.
+6. *Two doc/comment mismatches and a half-implemented alphabet (low).* The
+   migration said the code carries 128 bits when it delivers 160; redemption
+   hashed the RAW submission although the alphabet exists to be read aloud, so
+   lowercase, dropped dashes, or a typed O-for-zero all failed with the uniform
+   refusal and the owner's only remedy was a fresh code. FIXED: the bit count, and
+   a `canonicalCode` fold that is strict onto the minted alphabet (so it cannot
+   make two mintable codes collide) applied on BOTH sides of the hash.
+
+**Found while re-driving the live stack, not by a lens:** `role_assignments` had
+no uniqueness of any kind, so two clicks minted two identical live executor
+designations. Nothing downstream breaks (every resolver uses `EXISTS`), which is
+precisely why it would have gone unnoticed — but revoking "the" designation would
+leave the duplicate conferring everything, and on the §5.1 chain "revoked" must
+mean revoked. Closed with a partial unique index (COALESCE'd scope, because SQL
+uniqueness treats NULLs as distinct and whole-estate is the commonest case) and a
+`409 role_already_granted`.
+
+Every fix is mutation-proven: restoring the old notify ordering, folding the
+permission retry back into the role variant, dropping the atomic `NOT EXISTS`,
+and dropping the unique index each turn the suite red. Docs/03 §6f and §6g
+updated, including the family-list narrowing recorded as a deliberate scope-down
+rather than an omission.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

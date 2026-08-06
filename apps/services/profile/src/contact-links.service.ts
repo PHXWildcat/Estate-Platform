@@ -103,7 +103,9 @@ export class ContactLinksService {
     await this.links.insert({
       ownerUserId: callerUserId,
       contactId,
-      codeSha256: sha256(code),
+      // The CANONICAL form is what is hashed, so redemption can accept the code
+      // as a human actually retypes it (see `canonicalCode`).
+      codeSha256: sha256(canonicalCode(code)),
       expiresAt,
     });
     await this.events.contactLinkInvited(callerUserId, contactId);
@@ -144,7 +146,7 @@ export class ContactLinksService {
       throw new ServiceUnavailableException({ error: 'notifications_unavailable' });
     }
 
-    const invitation = await this.links.findByCode(sha256(code));
+    const invitation = await this.links.findByCode(sha256(canonicalCode(code)));
     const now = this.clock();
     if (
       invitation === null ||
@@ -244,6 +246,30 @@ export class ContactLinksService {
 
 function sha256(value: string): Buffer {
   return createHash('sha256').update(value, 'utf8').digest();
+}
+
+/**
+ * Reduce a code to the one form that gets hashed.
+ *
+ * THE ALPHABET IS CHOSEN FOR BEING READ ALOUD, and the M13 review found that
+ * choice half-implemented: the mint avoided I, L, O and U so a person reading a
+ * code down a phone line could not produce an ambiguous character, but redemption
+ * hashed the raw submission — so the very confusions the alphabet exists to
+ * survive (lowercase, a typed "O" for zero, a stray space, the grouping dashes
+ * dropped) all failed with the uniform `invalid_code`, and the owner's only
+ * remedy was a fresh code. Canonicalizing closes that without widening anything:
+ * this is a strict fold onto the minted alphabet, so it cannot make two DIFFERENT
+ * codes collide — Crockford's rule, applied where it was already assumed.
+ *
+ * Case-folding does not cost entropy either: the generator only ever emits
+ * uppercase, so the fold has no preimages the mint could have produced.
+ */
+export function canonicalCode(code: string): string {
+  return code
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, '')
+    .replace(/[IL]/g, '1')
+    .replace(/O/g, '0');
 }
 
 /**

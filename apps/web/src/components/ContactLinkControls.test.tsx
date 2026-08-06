@@ -149,3 +149,31 @@ describe('refusals', () => {
     expect(await screen.findByText(/haven’t made the change/)).toBeInTheDocument();
   });
 });
+
+describe('the remaining paths', () => {
+  it('surfaces a non-step-up refusal on the mint without opening the prompt', async () => {
+    mount(false, { InviteContactLink: () => graphqlError('UNKNOWN') });
+    fireEvent.click(screen.getByRole('button', { name: 'Create an invitation code' }));
+    expect(await screen.findByText(/went wrong on our side/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a refused withdrawal and leaves the code on screen', async () => {
+    mount(false, {
+      RevokeContactLinkInvitation: () => graphqlError('NOT_FOUND'),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create an invitation code' }));
+    await screen.findByText(CODE);
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw this code' }));
+    expect(await screen.findByText('That isn’t available.')).toBeInTheDocument();
+    // A failed withdrawal must not imply the code is dead — it still works.
+    expect(screen.getByText(CODE)).toBeInTheDocument();
+  });
+
+  it('cancelling the step-up prompt closes it', async () => {
+    mount(false, { InviteContactLink: () => graphqlError('STEPUP_REQUIRED') });
+    fireEvent.click(screen.getByRole('button', { name: 'Create an invitation code' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+  });
+});

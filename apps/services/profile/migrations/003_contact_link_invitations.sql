@@ -40,9 +40,15 @@ CREATE TABLE contact_link_invitations (
   -- and the owner is told once and only once.
   code_sha256   BYTEA NOT NULL,
   expires_at    TIMESTAMPTZ NOT NULL,
-  -- Per-invitation attempt cap. The code carries 128 bits, so this is not the
-  -- control that makes guessing infeasible — it bounds an online attack against
-  -- a code that really exists, and it is the counter an alert would watch.
+  -- Per-invitation attempt cap. The code carries 160 bits (20 random bytes at 5
+  -- bits per base32 character — asserted in the generator and in its spec), so
+  -- this is NOT the control that makes guessing infeasible. What it bounds is
+  -- narrower than it looks and worth stating exactly: presentations of a code
+  -- that really exists. An unknown code matches no row, so there is nothing to
+  -- count against and no cap applies to blind guessing — the entropy is the only
+  -- thing standing there, and general per-caller rate limiting is edge work
+  -- (docs/03 §4 TB1). This counter's real job is to be the number an alert
+  -- watches when somebody IS presenting a real code repeatedly.
   attempts      INT NOT NULL DEFAULT 0,
   redeemed_at   TIMESTAMPTZ,
   redeemed_by   UUID,
@@ -58,10 +64,38 @@ CREATE UNIQUE INDEX ux_contact_link_invitations_code
   ON contact_link_invitations (code_sha256);
 
 -- At most one LIVE invitation per contact, so "the code I sent you" is never
--- ambiguous. Re-issuing revokes the previous one in the same transaction.
+-- ambiguous. Re-issuing revokes the previous one FIRST and then inserts; the two
+-- statements are not wrapped in a transaction, and the consequence is bounded and
+-- deliberate: if the insert fails the owner is left with no live code and must
+-- ask again, which is the safe direction (a retired code stays retired). It is
+-- the partial index, not the ordering, that guarantees "at most one".
 CREATE UNIQUE INDEX ux_contact_link_invitations_live
   ON contact_link_invitations (contact_id)
   WHERE redeemed_at IS NULL AND revoked_at IS NULL;
 
 CREATE INDEX ix_contact_link_invitations_owner
   ON contact_link_invitations (owner_user_id);
+
+-- ---------------------------------------------------------------------------
+-- One live designation per (owner, contact, role, scope, condition).
+--
+-- `role_assignments` had no uniqueness of any kind, so two clicks — or one click
+-- and one retry — minted two identical live executor designations. Nothing
+-- downstream breaks (every resolver uses EXISTS/LIMIT 1), which is exactly why it
+-- would have gone unnoticed: the owner's own People page would show the same
+-- fiduciary twice, and revoking "the" designation would leave the duplicate
+-- conferring everything it conferred before. For a record on the docs/03 §5.1
+-- executor-resolution chain, "revoked" must mean revoked.
+--
+-- COALESCE on the nullable scope, because SQL uniqueness treats NULLs as
+-- distinct and `scope_id IS NULL` (the whole estate) is the commonest case —
+-- without it the constraint would permit unlimited duplicates of precisely the
+-- broadest designation.
+-- ---------------------------------------------------------------------------
+CREATE UNIQUE INDEX ux_role_assignments_live
+  ON role_assignments (
+    owner_user_id, contact_id, role, scope_type,
+    COALESCE(scope_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    effective_condition
+  )
+  WHERE deleted_at IS NULL;

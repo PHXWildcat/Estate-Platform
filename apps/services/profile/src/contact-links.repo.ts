@@ -107,12 +107,19 @@ export class ContactLinksRepo {
    * Inside one transaction, because the halves must not come apart: an
    * invitation marked spent with no link written locks that contact out of ever
    * being linked, and a link written from an invitation still live is
-   * replayable. Each statement also RESTATES its own preconditions in its
-   * `WHERE` rather than trusting the service's earlier read — two concurrent
-   * redemptions of the same code therefore produce exactly one link, and the
-   * loser rolls back rather than overwriting. That is the CAS shape M7's
-   * owner-liveness interlock uses, for the same reason: a read and a commit
-   * separated by anything at all is a race unless the commit re-checks.
+   * replayable. Each statement also RESTATES THE PRECONDITIONS THAT DECIDE
+   * WHETHER THE LINK MAY EXIST — live, unrevoked, unexpired, contact unlinked
+   * and undeleted — rather than trusting the service's earlier read, so two
+   * concurrent redemptions of the same code produce exactly one link and the
+   * loser rolls back. That is the CAS shape M7's owner-liveness interlock uses,
+   * for the same reason: a read and a commit separated by anything at all is a
+   * race unless the commit re-checks.
+   *
+   * The ATTEMPT CAP is deliberately not restated here, and the asymmetry is the
+   * point: the cap bounds presentations of a wrong code, and this statement only
+   * ever runs for the RIGHT one. Racing it could at most let a correct code
+   * succeed on the same tick its counter crossed the threshold — which is the
+   * outcome the holder of a correct code is entitled to anyway.
    *
    * The version-capture trigger on `contacts` records the REDEEMER as the actor,
    * which is what the trail should say about who caused the link.

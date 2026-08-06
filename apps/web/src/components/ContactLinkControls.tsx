@@ -3,6 +3,7 @@
 import { useState, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
 import { messageFor } from '../lib/copy';
+import type { StepUpRetryOutcome } from '../lib/step-up';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
 
@@ -47,7 +48,7 @@ export function ContactLinkControls({
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  async function invite(): Promise<void> {
+  async function invite(): Promise<StepUpRetryOutcome> {
     setError(null);
     setNote(null);
     setBusy(true);
@@ -57,13 +58,16 @@ export function ContactLinkControls({
       setStepUpNeeded(false);
       setCode(result.data.inviteContactLink.code);
       setExpiresAt(result.data.inviteContactLink.expiresAt);
-      return;
+      return 'applied';
     }
     if (result.code === 'STEPUP_REQUIRED') {
       setStepUpNeeded(true);
-      return;
+      // The peer may still be answering from its cached un-elevated session;
+      // the prompt polls to the documented deadline (lib/step-up.ts).
+      return 'stale';
     }
     setError(messageFor(result.code));
+    return 'applied';
   }
 
   async function withdraw(): Promise<void> {

@@ -1,4 +1,8 @@
-import { ContactLinksService, INVITATION_TTL_MS } from '../src/contact-links.service';
+import {
+  canonicalCode,
+  ContactLinksService,
+  INVITATION_TTL_MS,
+} from '../src/contact-links.service';
 import { CODE_RANDOM_BYTES } from '../src/contact-links.service';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { ProfileAuthz } from '../src/authz.service';
@@ -173,5 +177,35 @@ describe('a claimed link is never silently unnotified', () => {
     const { service, notified } = buildRedeem({ auditFails: true });
     await expect(service.redeem(REDEEMER, 'ESL1-GOOD')).rejects.toThrow('broker down');
     expect(notified).toEqual([OWNER]);
+  });
+});
+
+/**
+ * The alphabet is chosen for being read aloud (no I, L, O, U). The M13 review
+ * found redemption hashing the RAW submission, so every confusion the alphabet
+ * exists to survive still failed with the uniform refusal.
+ */
+describe('a code survives being retyped by a human', () => {
+  const MINTED = 'ESL1-V0GN-0G4N-BEZB-4WN3-100G-GM2H-SVJM-1R5T';
+
+  it.each([
+    ['lowercase', MINTED.toLowerCase()],
+    ['no dashes', MINTED.replace(/-/g, '')],
+    ['stray spaces', ` ${MINTED.replace(/-/g, ' ')} `],
+    ['letter O typed for zero', MINTED.replace(/0/g, 'O')],
+    ['letter l typed for one', MINTED.replace(/1/g, 'l')],
+    ['letter I typed for one', MINTED.replace(/1/g, 'I')],
+  ])('canonicalizes %s to the same value as the minted form', (_label, typed) => {
+    expect(canonicalCode(typed)).toBe(canonicalCode(MINTED));
+  });
+
+  it('is a strict fold onto the minted alphabet — different codes never collide', () => {
+    // The fold only maps characters the generator NEVER emits (I, L, O and case)
+    // onto ones it does, so it cannot merge two codes the mint could produce.
+    const a = 'ESL1-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAB';
+    const b = 'ESL1-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAC';
+    expect(canonicalCode(a)).not.toBe(canonicalCode(b));
+    // And the canonical form of a minted code contains nothing outside it.
+    expect(canonicalCode(MINTED)).toMatch(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ]+$/);
   });
 });

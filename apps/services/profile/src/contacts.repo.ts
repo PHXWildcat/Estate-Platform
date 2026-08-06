@@ -89,14 +89,53 @@ export class ContactsRepo {
     return rows.length > 0;
   }
 
-  async softDelete(id: string, ownerUserId: string): Promise<boolean> {
+  /**
+   * Soft-delete, REFUSING IN THE SAME STATEMENT if a live role assignment names
+   * this contact.
+   *
+   * The predicate is here rather than only in the service because the service's
+   * version was check-then-act: a `grantRole` committing between the check and
+   * this UPDATE would delete a contact that had just acquired a designation,
+   * recreating the exact fail-open docs/03 §6f declares Closed — the executor
+   * stops resolving, every grant stops being effective, the assignment is still
+   * listed, and no `role.revoked` is emitted. Restating the precondition in the
+   * WHERE makes the two atomic against each other, which is the same CAS
+   * discipline the link redemption and M7's owner-liveness interlock use.
+   *
+   * Returning a discriminated outcome rather than a boolean keeps "nothing to
+   * delete" (404) apart from "a designation stands in the way" (409): they are
+   * different facts with different remedies.
+   */
+  async softDelete(id: string, ownerUserId: string): Promise<'deleted' | 'in_use' | 'not_found'> {
     const rows = await this.db.query<{ id: string }>(
       `UPDATE contacts SET deleted_at = now()
         WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM role_assignments ra
+             WHERE ra.contact_id = contacts.id
+               AND ra.owner_user_id = $2
+               AND ra.deleted_at IS NULL
+          )
         RETURNING id`,
       [id, ownerUserId],
     );
-    return rows.length > 0;
+    if (rows.length > 0) {
+      return 'deleted';
+    }
+    // Nothing changed: distinguish the two reasons for the caller's error code.
+    const live = await this.db.query<{ in_use: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM role_assignments ra
+          WHERE ra.contact_id = $1 AND ra.owner_user_id = $2 AND ra.deleted_at IS NULL
+       ) AS in_use
+        FROM contacts c
+       WHERE c.id = $1 AND c.owner_user_id = $2 AND c.deleted_at IS NULL`,
+      [id, ownerUserId],
+    );
+    if (live.length === 0) {
+      return 'not_found';
+    }
+    return live[0]?.in_use === true ? 'in_use' : 'not_found';
   }
 
   async findById(id: string): Promise<ContactRow | null> {

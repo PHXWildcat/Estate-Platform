@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { coreResource, ProfileAuthz } from './authz.service';
 import { ContactsRepo } from './contacts.repo';
+import { isUniqueViolation } from './db';
 import { EventsService } from './events.service';
 import { PermissionGrantsRepo, RolesRepo, type RoleAssignmentRow } from './roles.repo';
 import type { PermissionGrantInput, RoleAssignmentInput } from './schemas';
@@ -59,16 +60,28 @@ export class RolesService {
     if (!contact || contact.owner_user_id !== callerUserId) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    const id = await this.roles.insert({
-      ownerUserId: callerUserId,
-      contactId: input.contactId,
-      role: input.role,
-      scopeType: input.scopeType,
-      scopeId: input.scopeId ?? null,
-      effectiveCondition: input.effectiveCondition,
-      startsAt: input.startsAt ? new Date(input.startsAt) : null,
-      endsAt: input.endsAt ? new Date(input.endsAt) : null,
-    });
+    let id: string;
+    try {
+      id = await this.roles.insert({
+        ownerUserId: callerUserId,
+        contactId: input.contactId,
+        role: input.role,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId ?? null,
+        effectiveCondition: input.effectiveCondition,
+        startsAt: input.startsAt ? new Date(input.startsAt) : null,
+        endsAt: input.endsAt ? new Date(input.endsAt) : null,
+      });
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        // The partial unique index refusing a second identical live designation.
+        // A 409 rather than a 500 because it is an ordinary outcome of a double
+        // click or a retry, and rather than a silent success because the caller
+        // asked to create something and nothing was created.
+        throw new ConflictException({ error: 'role_already_granted' });
+      }
+      throw err;
+    }
     await this.events.roleGranted(callerUserId, id, {
       role: input.role,
       scopeType: input.scopeType,

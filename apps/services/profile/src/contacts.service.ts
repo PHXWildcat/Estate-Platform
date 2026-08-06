@@ -166,14 +166,20 @@ export class ContactsService {
    * the two acts stay distinct and separately audited. The count is not
    * returned: the owner can list their own assignments, and the refusal itself
    * is the actionable part.
+   *
+   * THE CHECK LIVES IN THE UPDATE'S OWN `WHERE`, not here. The M13 review found
+   * this as check-then-act: a `grantRole` committing between a service-level
+   * check and the delete would have deleted a contact that had just acquired a
+   * designation — the very fail-open §6f declares Closed. See
+   * `ContactsRepo.softDelete`.
    */
   async remove(callerUserId: string, id: string): Promise<void> {
     this.authz.assertCan(callerUserId, 'delete', coreResource('Contact', id, callerUserId));
-    if (await this.roles.hasLiveAssignmentsForContact(callerUserId, id)) {
+    const outcome = await this.repo.softDelete(id, callerUserId);
+    if (outcome === 'in_use') {
       throw new ConflictException({ error: 'contact_in_use' });
     }
-    const ok = await this.repo.softDelete(id, callerUserId);
-    if (!ok) {
+    if (outcome === 'not_found') {
       throw new NotFoundException({ error: 'not_found' });
     }
     await this.events.contactDeleted(callerUserId, id);

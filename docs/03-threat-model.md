@@ -743,6 +743,16 @@ control. PR1 does not change it; PR2 owes a narrowed list projection under M12's
 audited-decrypt-volume rule, and this paragraph is the requirement, not an
 observation.
 
+*DISCHARGED FOR CONTACTS, DELIBERATELY NOT FOR FAMILY (PR2).* The contact list
+now spends one audited decrypt per row and the values have no field on the wire
+at all. The FAMILY list still decrypts every field it stores, and that is a
+scope-down with a reason rather than an oversight: the household panel RENDERS
+name, date of birth, minority and notes, so there is nothing to narrow — four of
+five contact fields were unused by a list, and zero of four family fields are.
+The volume differs by an order of magnitude too (a household is a handful of
+rows; an address book is not). If a future surface lists family members without
+showing them, it inherits this requirement.
+
 ## 6g. Threat-model delta — M13 the contact link ceremony (2026-08-06)
 
 `contacts.linked_user_id` had no write path anywhere in the platform until this

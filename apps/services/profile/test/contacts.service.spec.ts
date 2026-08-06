@@ -61,28 +61,31 @@ class FakeContactsRepo {
     this.rows[i] = { ...(this.rows[i] as ContactRow), ...fields };
     return Promise.resolve(true);
   }
-  softDelete(id: string): Promise<boolean> {
+  /**
+   * Faithful to the real one since the M13 review: the in-use predicate lives in
+   * the UPDATE's own WHERE, so this fake evaluates it here rather than letting
+   * the service check separately — a fake that split them would let the
+   * check-then-act defect back in unnoticed.
+   */
+  assignedContactIds = new Set<string>();
+  softDelete(id: string): Promise<'deleted' | 'in_use' | 'not_found'> {
     const i = this.rows.findIndex((r) => r.id === id);
-    if (i < 0) return Promise.resolve(false);
+    if (i < 0) return Promise.resolve('not_found');
+    if (this.assignedContactIds.has(id)) return Promise.resolve('in_use');
     this.rows.splice(i, 1);
-    return Promise.resolve(true);
+    return Promise.resolve('deleted');
   }
 }
 
 /** Fake roles repo returning pre-configured effective grants for GRANTEE only. */
 class FakeRolesRepo {
   grants: EffectiveGrant[] = [];
-  /** Contact ids a live role assignment names (guards contact deletion). */
-  assignedContactIds = new Set<string>();
   effectiveContactReadGrants(
     _owner: string,
     caller: string,
     _now: Date,
   ): Promise<EffectiveGrant[]> {
     return Promise.resolve(caller === GRANTEE ? this.grants : []);
-  }
-  hasLiveAssignmentsForContact(_owner: string, contactId: string): Promise<boolean> {
-    return Promise.resolve(this.assignedContactIds.has(contactId));
   }
 }
 
@@ -257,16 +260,16 @@ describe('the contact link survives ordinary edits (M13 PR1)', () => {
   });
 
   it('refuses to delete a contact a live role assignment still names', async () => {
-    const { service, repo, roles } = build();
+    const { service, repo } = build();
     const a = await service.create(OWNER, { name: 'Trustee Person' });
-    roles.assignedContactIds.add(a.id);
+    repo.assignedContactIds.add(a.id);
 
     await expect(service.remove(OWNER, a.id)).rejects.toBeInstanceOf(ConflictException);
     // Nothing was deleted: retiring a fiduciary is its own step-up-gated act.
     expect(repo.rows.some((r) => r.id === a.id)).toBe(true);
 
     // Once the assignment is revoked, the contact deletes normally.
-    roles.assignedContactIds.delete(a.id);
+    repo.assignedContactIds.delete(a.id);
     await service.remove(OWNER, a.id);
     expect(repo.rows.some((r) => r.id === a.id)).toBe(false);
   });

@@ -18,6 +18,7 @@ import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@es
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { canonicalCode } from '../src/contact-links.service';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
@@ -256,6 +257,62 @@ describeIfPg('profile & contacts service end to end', () => {
     expect(perm.status).toBe(201);
   });
 
+  it('refuses a SECOND identical live designation (M13 review)', async () => {
+    // Two clicks, or a click and a retry, used to mint two identical live
+    // executor designations: harmless to every resolver (they all use EXISTS),
+    // which is why it would have gone unnoticed — but revoking "the" designation
+    // would leave the duplicate conferring everything, and on the docs/03 §5.1
+    // executor chain "revoked" has to mean revoked.
+    const again = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({
+        contactId: linkedContactId,
+        role: 'beneficiary',
+        scopeType: 'asset',
+        scopeId: namedId,
+      });
+    expect(again.status).toBe(409);
+    expect(again.body).toEqual({ error: 'role_already_granted' });
+
+    // A DIFFERENT condition on the same contact and role is a different
+    // designation, and still allowed.
+    const different = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({
+        contactId: linkedContactId,
+        role: 'beneficiary',
+        scopeType: 'asset',
+        scopeId: namedId,
+        effectiveCondition: 'on_death_verified',
+      });
+    expect(different.status).toBe(201);
+    await request(server)
+      .delete(`/v1/role-assignments/${(different.body as { id: string }).id}`)
+      .set('authorization', asElevated(OWNER))
+      .expect(204);
+
+    // ...and once revoked, the original shape can be granted again — the index is
+    // partial on deleted_at, so a soft delete really does free the slot.
+    const revocableId = (
+      await request(server)
+        .post('/v1/role-assignments')
+        .set('authorization', asElevated(OWNER))
+        .send({ contactId: otherId, role: 'viewer', scopeType: 'estate' })
+        .expect(201)
+    ).body as { id: string };
+    await request(server)
+      .delete(`/v1/role-assignments/${revocableId.id}`)
+      .set('authorization', asElevated(OWNER))
+      .expect(204);
+    await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({ contactId: otherId, role: 'viewer', scopeType: 'estate' })
+      .expect(201);
+  });
+
   it('§5.5: the grant-holder reads ONLY the named contact; the other is denied', async () => {
     const allowed = await request(server)
       .get(`/v1/profiles/${OWNER}/contacts/${namedId}`)
@@ -377,6 +434,30 @@ describeIfPg('profile & contacts service end to end', () => {
     expect(refused.status).toBe(409);
     expect(refused.body).toEqual({ error: 'contact_in_use' });
 
+    // ATOMIC, not check-then-act: the predicate is in the UPDATE's own WHERE, so
+    // a designation committed a microsecond earlier still blocks the delete. The
+    // review found the service-level check racing exactly here.
+    const raced = await request(server)
+      .post('/v1/contacts')
+      .set('authorization', asUser(OWNER))
+      .send({ name: 'Raced Contact' });
+    const racedId = (raced.body as { id: string }).id;
+    const racedRole = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({ contactId: racedId, role: 'trustee', scopeType: 'estate' });
+    expect(racedRole.status).toBe(201);
+    const blocked = await request(server)
+      .delete(`/v1/contacts/${racedId}`)
+      .set('authorization', asUser(OWNER));
+    expect(blocked.status).toBe(409);
+    // ...and the contact is untouched, so no query silently loses its designation.
+    const { rows: stillThere } = await admin.query(
+      `SELECT deleted_at FROM ${schema}.contacts WHERE id = $1`,
+      [racedId],
+    );
+    expect((stillThere[0] as { deleted_at: Date | null }).deleted_at).toBeNull();
+
     // An unencumbered contact still deletes normally.
     const spare = await request(server)
       .post('/v1/contacts')
@@ -461,7 +542,13 @@ describeIfPg('profile & contacts service end to end', () => {
       const row = rows[0] as { code_sha256: Buffer; live: boolean };
       expect(row.live).toBe(true);
       expect(row.code_sha256.toString('utf8')).not.toContain(code);
-      expect(row.code_sha256).toEqual(createHash('sha256').update(code, 'utf8').digest());
+      // The CANONICAL form is hashed, so a code retyped in lowercase or without
+      // its grouping dashes still redeems (the alphabet exists to be read aloud).
+      // Using the real function rather than re-deriving it: a second copy of a
+      // hashing rule is a copy that drifts.
+      expect(row.code_sha256).toEqual(
+        createHash('sha256').update(canonicalCode(code), 'utf8').digest(),
+      );
     });
 
     it('refuses every bad code with the SAME answer, and counts the attempt', async () => {
@@ -495,7 +582,10 @@ describeIfPg('profile & contacts service end to end', () => {
       const redeemed = await request(server)
         .post('/v1/contact-links/redeem')
         .set('authorization', asUser(STRANGER))
-        .send({ code });
+        // Retyped the way a person would: lowercase, dashes dropped. The
+        // alphabet is chosen for being read aloud, so redemption folds to the
+        // canonical form rather than refusing.
+        .send({ code: code.toLowerCase().replace(/-/g, '') });
       expect(redeemed.status).toBe(200);
       // NOTHING about the estate comes back — not the owner, not the contact.
       expect(redeemed.body).toEqual({ status: 'ok' });

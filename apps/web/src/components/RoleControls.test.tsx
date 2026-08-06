@@ -133,7 +133,7 @@ describe('the three-way step-up asymmetry', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Name to this role' }));
     expect(
-      await screen.findByText(/Changing who holds a role in your estate needs a fresh check/),
+      await screen.findByText(/Naming someone to a role in your estate needs a fresh check/),
     ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Confirm it’s you'), { target: { value: '123456' } });
@@ -261,6 +261,44 @@ describe('read failures never read as an empty estate', () => {
     expect(await screen.findByLabelText('Confirm it’s you')).toBeInTheDocument();
   });
 
+  /**
+   * The M13 review's high-severity finding. The refused action was a PERMISSION
+   * widen; the retry after elevation used to call grantRole() from the picker's
+   * current state, so a genuine TOTP challenge minted an executor designation the
+   * owner never chose — onto the settlement/§5.1 executor-resolution chain — and
+   * silently dropped the permission they had clicked.
+   */
+  it('retries THE PERMISSION after elevation, and never mints a role assignment', async () => {
+    let attempts = 0;
+    const requests = mount([EXECUTOR], [], {
+      GrantRolePermission: () => {
+        attempts += 1;
+        return attempts === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { grantRolePermission: [CONTACT_GRANT] } });
+      },
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      // Deliberately present: if the retry dispatched to the wrong action the
+      // handler would answer and the assertion below would catch the write.
+      GrantRole: () => jsonResponse({ data: { grantRole: [EXECUTOR] } }),
+    });
+    await screen.findByText(/Without a permission here/);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow: Your estate contacts' }));
+
+    // The prompt's words follow the ACTION, not the other branch's.
+    expect(
+      await screen.findByText(/Allowing a role to read part of your estate/),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Confirm it’s you'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and allow' }));
+
+    // The permission landed...
+    expect(await screen.findByText(/Your estate contacts — Read/)).toBeInTheDocument();
+    expect(opNames(requests).filter((n) => n === 'GrantRolePermission')).toHaveLength(2);
+    // ...and NO designation was written.
+    expect(opNames(requests)).not.toContain('GrantRole');
+  });
+
   it('cancelling the code prompt leaves everything as it was', async () => {
     mount([], [], { GrantRole: () => graphqlError('STEPUP_REQUIRED') });
     await screen.findByText(/No role recorded/);
@@ -287,5 +325,44 @@ describe('read failures never read as an empty estate', () => {
     await screen.findByText(/No role recorded/);
     fireEvent.change(screen.getByLabelText('When it applies'), { target: { value: 'immediate' } });
     expect(screen.getByText(/only for what you separately allow below/)).toBeInTheDocument();
+  });
+});
+
+describe('the retry outcome is reported, not guessed', () => {
+  it('clears the prompt once a permission actually applies', async () => {
+    let attempts = 0;
+    mount([EXECUTOR], [], {
+      GrantRolePermission: () => {
+        attempts += 1;
+        return attempts === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { grantRolePermission: [CONTACT_GRANT] } });
+      },
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+    });
+    await screen.findByText(/Without a permission here/);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow: Your estate contacts' }));
+    fireEvent.change(await screen.findByLabelText('Confirm it’s you'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and allow' }));
+
+    await screen.findByText(/Your estate contacts — Read/);
+    // The prompt goes away on success — it used to linger because only the role
+    // paths cleared it.
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+    });
+  });
+
+  it('reports a non-step-up permission failure without retrying', async () => {
+    const requests = mount([EXECUTOR], [], {
+      GrantRolePermission: () => graphqlError('INVALID_REQUEST'),
+    });
+    await screen.findByText(/Without a permission here/);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow: Your assets' }));
+    expect(await screen.findByText(/wasn’t right/)).toBeInTheDocument();
+    expect(opNames(requests).filter((n) => n === 'GrantRolePermission')).toHaveLength(1);
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
   });
 });

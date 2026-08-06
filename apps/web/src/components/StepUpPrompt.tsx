@@ -3,6 +3,11 @@
 import { useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
 import { stepUpMessageFor } from '../lib/copy';
+import {
+  STEP_UP_PROPAGATION_BUDGET_MS,
+  STEP_UP_RETRY_INTERVAL_MS,
+  type StepUpRetryOutcome,
+} from '../lib/step-up';
 import { validateTotpCode } from '../lib/validation';
 
 /**
@@ -20,7 +25,17 @@ import { validateTotpCode } from '../lib/validation';
  * that to be right.
  *
  * `onElevated` runs after identity accepts the code, and is expected to re-run
- * the action that was refused. This component owns no knowledge of what that is.
+ * THE ACTION THAT WAS REFUSED — this component owns no knowledge of what that
+ * is, but the M13 review found a caller retrying a DIFFERENT action, so the
+ * contract is worth restating: whatever the server refused is what must run.
+ *
+ * IT MAY HAVE TO RUN MORE THAN ONCE, and that is not a flake. Peer services
+ * learn about the elevation by introspecting the token through a short-TTL
+ * POSITIVE cache, so for up to one TTL after a genuine step-up the peer still
+ * answers from a cached un-elevated session. A single-shot retry therefore left
+ * the prompt sitting there doing nothing for a user whose code was accepted —
+ * the review's finding. `onElevated` reports `stale` for exactly that case and
+ * the prompt polls to the documented deadline (see lib/step-up.ts).
  *
  * WHAT IT DOES NOT COVER, stated rather than left to be discovered: the two
  * earlier callers keep their own copies. `ConsentControls` could adopt this
@@ -36,8 +51,12 @@ export interface StepUpPromptProps {
   /** Why the check is needed, in this surface's own words. */
   hint: string;
   submitLabel: string;
-  /** Retry the refused action. The prompt stays open if it fails again. */
-  onElevated: () => Promise<void> | void;
+  /**
+   * Retry the refused action. Return `stale` when the server STILL answers
+   * `stepup_required` — the prompt then waits for the peer's session cache to
+   * expire and tries again, up to `STEP_UP_PROPAGATION_BUDGET_MS`.
+   */
+  onElevated: () => Promise<StepUpRetryOutcome>;
   onCancel: () => void;
   /** Distinguishes the field ids when more than one prompt can exist on a page. */
   idPrefix: string;
@@ -53,6 +72,7 @@ export function StepUpPrompt({
   const [code, setCode] = useState('');
   const [codeError, setCodeError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -69,9 +89,24 @@ export function StepUpPrompt({
       return;
     }
     setCode('');
-    // Fresh for five minutes: retry whatever was refused.
-    await onElevated();
+
+    // Fresh for five minutes — but the PEER may not know yet. Retry to the
+    // documented deadline rather than once, and say so while waiting: a silent
+    // prompt after an accepted code reads as "nothing happened".
+    const deadline = Date.now() + STEP_UP_PROPAGATION_BUDGET_MS;
+    let outcome = await onElevated();
+    while (outcome === 'stale' && Date.now() < deadline) {
+      setWaiting(true);
+      await new Promise((resolve) => setTimeout(resolve, STEP_UP_RETRY_INTERVAL_MS));
+      outcome = await onElevated();
+    }
+    setWaiting(false);
     setBusy(false);
+    if (outcome === 'stale') {
+      // Past the deadline and still refused. Honest, and actionable: nothing was
+      // lost, and pressing again is the remedy.
+      setCodeError('That took longer than expected. Your check went through — try that again.');
+    }
   }
 
   return (
@@ -104,7 +139,7 @@ export function StepUpPrompt({
       </div>
       <div className="mt-3 flex gap-3">
         <button type="submit" className="btn btn-primary" disabled={busy}>
-          {busy ? 'Checking…' : submitLabel}
+          {waiting ? 'Applying…' : busy ? 'Checking…' : submitLabel}
         </button>
         <button type="button" className="btn btn-secondary" onClick={onCancel}>
           Cancel

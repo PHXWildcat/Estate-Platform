@@ -108,21 +108,6 @@ export class RolesRepo {
     return rows[0] ?? null;
   }
 
-  /**
-   * Does a live role assignment of `ownerUserId` name `contactId`? Guards
-   * contact deletion — see the rationale on `ContactsService.remove`.
-   */
-  async hasLiveAssignmentsForContact(ownerUserId: string, contactId: string): Promise<boolean> {
-    const rows = await this.db.query<{ ok: number }>(
-      `SELECT 1 AS ok
-         FROM role_assignments
-        WHERE owner_user_id = $1 AND contact_id = $2 AND deleted_at IS NULL
-        LIMIT 1`,
-      [ownerUserId, contactId],
-    );
-    return rows.length > 0;
-  }
-
   async revoke(id: string, ownerUserId: string): Promise<boolean> {
     const rows = await this.db.query<{ id: string }>(
       `UPDATE role_assignments SET deleted_at = now()
