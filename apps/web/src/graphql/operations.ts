@@ -182,6 +182,102 @@ export const DELETE_CONVERSATION_MUTATION = `mutation DeleteConversation($conver
   }
 }`;
 
+export const DOCUMENT_TEMPLATES_QUERY = `query DocumentTemplates($state: String!) {
+  documentTemplates(state: $state) {
+    templateId
+    docType
+    state
+    version
+    legalReviewAt
+    executionRequirements {
+      witnesses
+      notarization
+      selfProvingAffidavit
+    }
+    variables {
+      name
+      kind
+      label
+      required
+      maxLength
+      options
+    }
+  }
+}`;
+
+export const DOCUMENTS_QUERY = `query Documents {
+  documents {
+    documentId
+    docType
+    source
+    title
+    currentVersion
+    executionStatus
+    executedAt
+    legalHold
+    sealed
+    templateId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const DOCUMENT_QUERY = `query Document($documentId: ID!) {
+  document(documentId: $documentId) {
+    documentId
+    docType
+    source
+    title
+    currentVersion
+    executionStatus
+    executedAt
+    legalHold
+    sealed
+    templateId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const DOCUMENT_VERSIONS_QUERY = `query DocumentVersions($documentId: ID!) {
+  documentVersions(documentId: $documentId) {
+    version
+    contentSha256
+    sizeBytes
+    mime
+    createdAt
+  }
+}`;
+
+export const DOCUMENT_CONTENT_QUERY = `query DocumentContent($documentId: ID!, $version: Int!) {
+  documentContent(documentId: $documentId, version: $version) {
+    documentId
+    version
+    mime
+    contentSha256
+    encoding
+    content
+  }
+}`;
+
+export const GENERATE_DOCUMENT_MUTATION = `mutation GenerateDocument($docType: String!, $state: String!, $templateId: ID, $title: String, $variables: [DocumentVariableInput!]!) {
+  generateDocument(docType: $docType, state: $state, templateId: $templateId, title: $title, variables: $variables) {
+    documentId
+    version
+    contentSha256
+    executionStatus
+  }
+}`;
+
+export const REGENERATE_DOCUMENT_MUTATION = `mutation RegenerateDocument($documentId: ID!, $templateId: ID, $title: String, $variables: [DocumentVariableInput!]!) {
+  regenerateDocument(documentId: $documentId, templateId: $templateId, title: $title, variables: $variables) {
+    documentId
+    version
+    contentSha256
+    executionStatus
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -204,6 +300,13 @@ export const operations = {
   StartConversation: START_CONVERSATION_MUTATION,
   SendMessage: SEND_MESSAGE_MUTATION,
   DeleteConversation: DELETE_CONVERSATION_MUTATION,
+  DocumentTemplates: DOCUMENT_TEMPLATES_QUERY,
+  Documents: DOCUMENTS_QUERY,
+  Document: DOCUMENT_QUERY,
+  DocumentVersions: DOCUMENT_VERSIONS_QUERY,
+  DocumentContent: DOCUMENT_CONTENT_QUERY,
+  GenerateDocument: GENERATE_DOCUMENT_MUTATION,
+  RegenerateDocument: REGENERATE_DOCUMENT_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

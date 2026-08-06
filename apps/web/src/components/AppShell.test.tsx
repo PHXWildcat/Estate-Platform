@@ -64,9 +64,15 @@ describe('AppShell', () => {
       </AppShell>,
     );
 
-    for (const label of ['Documents', 'People', 'Vault']) {
+    // Documents left this list in M12, when its surface shipped. What remains
+    // is the set whose backends exist with no UI yet.
+    for (const label of ['People', 'Vault']) {
       expect(screen.getByText(label)).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: new RegExp(label) })).not.toBeInTheDocument();
+    }
+    // …and Documents is now a real destination in both navigations.
+    for (const link of screen.getAllByRole('link', { name: 'Documents' })) {
+      expect(link).toHaveAttribute('href', '/documents');
     }
     await screen.findByText('Signed in');
   });

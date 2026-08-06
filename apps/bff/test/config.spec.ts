@@ -15,8 +15,16 @@ describe('loadConfig', () => {
       // M10 PR4: the assistant's port (3009), same fail-closed posture as the
       // assets URL — a wrong value is refused downstream, never widened.
       aiAssistantUrl: 'http://localhost:3009',
+      // M12: the document service (3005). Same posture again.
+      documentsUrl: 'http://localhost:3005',
       persistedManifestPath: null,
     });
+  });
+
+  it('trims trailing slashes off DOCUMENTS_URL', () => {
+    expect(loadConfig({ DOCUMENTS_URL: 'http://documents.internal//' }).documentsUrl).toBe(
+      'http://documents.internal',
+    );
   });
 
   it('trims trailing slashes off ASSETS_URL', () => {

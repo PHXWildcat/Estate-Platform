@@ -23,6 +23,14 @@ export const GQL_ERROR_CODES = [
   'NOT_FOUND',
   /** The `assistant.enabled` master switch is off, and the user can fix it. */
   'ASSISTANT_DISABLED',
+  /** No reviewed template exists for that instrument in that state (M12). */
+  'TEMPLATE_NOT_FOUND',
+  /** The content DEK was destroyed. Permanent — never offer a retry (M12). */
+  'CONTENT_ERASED',
+  /** The document moved on between read and write. Reload, then retry (M12). */
+  'VERSION_CONFLICT',
+  /** Signing has started, so the content is a legal record now (M12). */
+  'DOCUMENT_NOT_EDITABLE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -117,6 +125,100 @@ export interface TurnInfo {
   toolCalls: number;
 }
 
+/**
+ * One declared intake variable of a template (M12). The QUESTIONNAIRE IS THE
+ * TEMPLATE'S, not this app's: a state-specific instrument asks for what its
+ * reviewed source declares, so the form is built from these rather than from a
+ * hand-written field list that would drift from the legal document.
+ */
+export interface TemplateVariableInfo {
+  name: string;
+  kind: 'text' | 'boolean' | 'date' | 'enum';
+  label: string | null;
+  required: boolean;
+  /** Text variables only. */
+  maxLength: number | null;
+  /** Enum variables only. */
+  options: string[] | null;
+}
+
+export interface ExecutionRequirementsInfo {
+  witnesses: number;
+  notarization: boolean;
+  selfProvingAffidavit: boolean;
+}
+
+export interface DocumentTemplateInfo {
+  templateId: string;
+  docType: string;
+  state: string;
+  version: number;
+  legalReviewAt: string;
+  executionRequirements: ExecutionRequirementsInfo;
+  variables: TemplateVariableInfo[];
+}
+
+export interface DocumentInfo {
+  documentId: string;
+  docType: string;
+  source: 'generated' | 'uploaded';
+  /**
+   * The one plaintext, user-authored label in the documents cluster (accepted
+   * low-sensitivity metadata). Rendered as data, never as markup.
+   */
+  title: string;
+  currentVersion: number;
+  executionStatus: string;
+  executedAt: string | null;
+  legalHold: boolean;
+  sealed: boolean;
+  templateId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentVersionInfo {
+  version: number;
+  contentSha256: string;
+  sizeBytes: number;
+  mime: string;
+  createdAt: string;
+}
+
+/**
+ * One version's decrypted content. ASKING FOR THIS IS AN AUDITED DECRYPT on the
+ * user's own trail, so it is fetched on an explicit action and never as part of
+ * loading a list.
+ *
+ * `content` is UNTRUSTED INPUT (docs/03 risk #6): for a generated instrument it
+ * is HTML the platform rendered, for an upload it is base64 of a file somebody
+ * scanned. Nothing in this app interprets it — the HTML case goes to
+ * `DocumentViewer`, which hands it to a sandboxed iframe and never to the app's
+ * own DOM.
+ */
+export interface DocumentContentInfo {
+  documentId: string;
+  version: number;
+  mime: string;
+  contentSha256: string;
+  encoding: 'utf8' | 'base64';
+  content: string;
+}
+
+export interface GeneratedDocumentInfo {
+  documentId: string;
+  version: number;
+  contentSha256: string;
+  executionStatus: string;
+}
+
+/** One intake answer: exactly one of `text` and `boolean` (the BFF refuses both/neither). */
+export interface DocumentVariableInput {
+  name: string;
+  text?: string;
+  boolean?: boolean;
+}
+
 export interface ReadinessInfo {
   funding: AnalysisInfo;
   missingDocuments: AnalysisInfo;
@@ -169,6 +271,39 @@ interface OperationSignatures {
   DeleteConversation: {
     variables: { conversationId: string };
     data: { deleteConversation: { ok: boolean } };
+  };
+  DocumentTemplates: {
+    variables: { state: string };
+    data: { documentTemplates: DocumentTemplateInfo[] };
+  };
+  Documents: { variables: EmptyVariables; data: { documents: DocumentInfo[] } };
+  Document: { variables: { documentId: string }; data: { document: DocumentInfo } };
+  DocumentVersions: {
+    variables: { documentId: string };
+    data: { documentVersions: DocumentVersionInfo[] };
+  };
+  DocumentContent: {
+    variables: { documentId: string; version: number };
+    data: { documentContent: DocumentContentInfo };
+  };
+  GenerateDocument: {
+    variables: {
+      docType: string;
+      state: string;
+      templateId?: string;
+      title?: string;
+      variables: DocumentVariableInput[];
+    };
+    data: { generateDocument: GeneratedDocumentInfo };
+  };
+  RegenerateDocument: {
+    variables: {
+      documentId: string;
+      templateId?: string;
+      title?: string;
+      variables: DocumentVariableInput[];
+    };
+    data: { regenerateDocument: GeneratedDocumentInfo };
   };
   Consents: { variables: EmptyVariables; data: { consents: string[] } };
   GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };

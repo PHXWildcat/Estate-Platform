@@ -540,6 +540,82 @@ harder than the permissive one.
   numbers, which are the PR2 tokenizer's job. A gate that fires on ordinary
   estate traffic is one people route around.
 
+## 6e. Threat-model delta — M12 documents surface PR1 (2026-08-06)
+
+M4 built the document service; nothing rendered a document until now. The new
+surface is a place where **stored document content reaches a screen**, which
+puts risk #6 (LLM prompt injection via uploaded docs, H/M) next to a second,
+older question this repo had not yet had to answer: what happens when the
+browser is handed a document's own markup.
+
+**The renderer, and why it differs from `MessageText`.** §6d's answer for model
+output was an ABSENCE — text nodes, no parser, no sink. A document cannot be
+rendered that way and still be a document, so `DocumentViewer`
+(`apps/web/src/components/DocumentViewer.tsx`) substitutes CONTAINMENT: the
+bytes go into a `srcdoc` iframe with `sandbox=""` — the empty value, which
+grants nothing: no scripts, no same-origin, no forms, no popups, no top-level
+navigation. The component reads nothing and parses nothing; there is still no
+`dangerouslySetInnerHTML` anywhere in the app, and the M11 source scan covers
+the new files unchanged.
+
+Three layers hold it, and only the first two are relied on:
+
+1. **The sandbox.** No script executes, and the frame is in an opaque origin
+   with no access to the app's DOM, storage or cookies. `allow-scripts` and
+   `allow-same-origin` TOGETHER would undo the whole thing, so the exact value
+   is asserted in the component's spec rather than matched as a substring.
+2. **The page CSP.** A `srcdoc` frame inherits the embedding document's policy,
+   so `img-src 'self' data:` and `connect-src 'self'` apply INSIDE the frame:
+   a remote image smuggled into document text is refused by the browser, not by
+   anything we wrote. This is the same CSP §6d describes, doing a second job.
+3. **The `csp` attribute** (`default-src 'none'`), Chromium-only and stated
+   here as defence in depth rather than as the control.
+
+**Verified against a hostile document in a real browser**, not only in jsdom: a
+payload carrying a remote `<img>`, an inline `<script>` writing to the parent, an
+`onerror` handler, an off-origin `<form>`, a `target="_top"` link and a nested
+remote iframe was substituted into the content response and rendered through the
+real component. Result: zero network requests to the payload's host, the script
+probe never fired, no element from the payload entered the parent DOM, and
+`contentDocument` was unreachable from the page.
+
+**A SECOND FENCE ships with it**, because the realistic regression is not an
+edit to the viewer: a source scan asserts that `DocumentViewer.tsx` is the ONLY
+file in the app that renders an `<iframe>`. A frame added elsewhere for a
+preview or an embed would reopen the channel from a file nobody thought of as a
+renderer — the credential-graph habit of stating the exception as data.
+
+**What is NOT framed.** Only `text/html` with `encoding: utf8` reaches an
+iframe, which is generated content — platform-rendered from a sha256-pinned
+template with every substituted value HTML-escaped by the service. An upload can
+never be `text/html` (the ingest sniff admits pdf/png/jpeg/tiff only), and the
+component checks rather than trusting that invariant from a distance. Presenting
+uploaded binaries is PR2's problem and gets its own decision.
+
+**Audited-decrypt volume is a design constraint on this surface, not a
+side effect.** Every content read emits `crypto.field.decrypted` +
+`document.content.viewed` and consumes a KMS operation, so a list that
+previewed content would convert one page load into N events on the user's own
+trail and blunt exactly the per-principal decrypt-rate baseline §4 TB4 calls the
+single most important insider control. Hence: metadata-only lists, no content
+field on the document type, no prefetch, and no cache that would make a repeat
+read invisible. Proven live against the stack — two Read presses produced
+exactly two decrypt pairs, and loading the list and detail pages produced none.
+
+**Recorded, not fixed.**
+- *The 404-vs-403 oracle is narrowed at the edge, not closed.* The BFF answers
+  the uniform not-found for a plain downstream 403, so browser traffic cannot
+  tell "no such document" from "someone else's". The service still
+  distinguishes them for any other caller — the M4 review's open follow-up,
+  unchanged, and the real fix belongs there.
+- *`documents.title` remains plaintext* (the M4 decision, on the
+  `assets_view.title` precedent). The generate form now says so where the field
+  is, rather than leaving users to infer that the title is protected like the
+  contents.
+- *`script-src` is still not locked down*, exactly as §6d states. The sandbox
+  does not depend on it: `sandbox=""` blocks script execution inside the frame
+  whatever the page policy permits outside it.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

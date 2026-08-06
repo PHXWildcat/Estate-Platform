@@ -22,5 +22,10 @@ module.exports = createJestConfig({
   // RATCHETED again at M11 (the conversation surface): measured
   // 80.71/75.32/84.66/84.55 with the chat panel and the message renderer under
   // test. Never lowered.
-  coverageThreshold: { global: { statements: 80, branches: 75, functions: 84, lines: 84 } },
+  // RATCHETED again at M12 (the documents surface): measured
+  // 82.26/78.88/85.65/85.90 — the viewer, the two panels, the generator, the
+  // revise gate and the copy table all arrived with tests. Measured from a
+  // local `--coverage` run, never guessed: the one time a floor was invented
+  // from an unmeasured number (M10 PR3) it failed CI.
+  coverageThreshold: { global: { statements: 82, branches: 78, functions: 85, lines: 85 } },
 });

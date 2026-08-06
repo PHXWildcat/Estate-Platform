@@ -245,6 +245,10 @@ export function bffProcessEnv(
     // exists), so this URL points at nothing there and the readiness page
     // reads UNAVAILABLE — the stack's shape, not the product's.
     AI_ASSISTANT_URL: serviceUrl('ai-assistant', options.addressing),
+    // M12: the documents surface. Present in BOTH profiles, unlike the
+    // assistant — the document service runs in the production rehearsal too,
+    // because nothing about it needs a third-party credential.
+    DOCUMENTS_URL: serviceUrl('documents', options.addressing),
   };
   if (options.manifestPath) {
     out['PERSISTED_MANIFEST_PATH'] = options.manifestPath;

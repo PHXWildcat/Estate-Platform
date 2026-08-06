@@ -69,7 +69,34 @@ export type BffErrorCode =
    * is the difference between a feature that looks broken and one that looks
    * gated.
    */
-  | 'ASSISTANT_DISABLED';
+  | 'ASSISTANT_DISABLED'
+  /**
+   * No reviewed template exists for that instrument in that state (M12). A 404
+   * like NOT_FOUND, and deliberately not folded into it: one is a fact about
+   * the platform's catalog, the other a fact about the caller's own documents,
+   * and only one of them is worth telling someone to pick a different state
+   * over.
+   */
+  | 'TEMPLATE_NOT_FOUND'
+  /**
+   * The version's content DEK was crypto-shredded, so the ciphertext can never
+   * be opened again (M12). Its own code because the answer is PERMANENT —
+   * rendering it as a transient failure would have someone retry forever
+   * against a key destroyed on purpose.
+   */
+  | 'CONTENT_ERASED'
+  /**
+   * Someone else advanced the document between read and write (M12). Distinct
+   * from DOCUMENT_NOT_EDITABLE because the remedy is different: reload, then
+   * try again.
+   */
+  | 'VERSION_CONFLICT'
+  /**
+   * Regeneration refused because signing has started (M12). A signed or
+   * executed instrument's content is a legal record; the way forward is to
+   * revoke or supersede it, not to rewrite it underneath the signatures.
+   */
+  | 'DOCUMENT_NOT_EDITABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -78,6 +105,10 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   INVALID_CREDENTIALS: 'Invalid credentials',
   NOT_FOUND: 'Not found',
   ASSISTANT_DISABLED: 'The assistant is switched off',
+  TEMPLATE_NOT_FOUND: 'No template available',
+  CONTENT_ERASED: 'This content has been erased',
+  VERSION_CONFLICT: 'This document changed since it was loaded',
+  DOCUMENT_NOT_EDITABLE: 'This document can no longer be regenerated',
 };
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */

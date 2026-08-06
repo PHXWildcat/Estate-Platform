@@ -229,12 +229,14 @@ describe('bffProcessEnv', () => {
       // M10 PR4: the BFF's second non-identity downstream, same posture as the
       // first — the caller's own bearer is forwarded, no credential is held.
       AI_ASSISTANT_URL: 'http://localhost:3009',
+      // M12: the third, same posture again.
+      DOCUMENTS_URL: 'http://localhost:3005',
       PERSISTED_MANIFEST_PATH: '/repo/m.json',
     });
   });
 
   it('gives the BFF no credential of any kind', () => {
-    // It forwards the caller's bearer to both downstreams and holds nothing —
+    // It forwards the caller's bearer to every downstream and holds nothing —
     // the property the whole edge design rests on, asserted rather than
     // assumed now that a second downstream exists.
     const env = bffProcessEnv(generated(), { addressing: 'host' });
