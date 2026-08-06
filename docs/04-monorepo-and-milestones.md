@@ -2295,10 +2295,31 @@ CloudFront and WAF log by default — so the route became a POST with the term i
 the body.
 
 *Corrected rather than fixed:* docs/03 §6e claimed `dangerouslySetInnerHTML` was
-absent "anywhere in the app", dropping M11's one declared exemption. *Noted, not
-changed:* `TemplateEngine` caches a parsed source by (id, sha), so a body
-swapped under an unchanged pin is served from cache until the process restarts —
-M4's caching property, predating this milestone.
+absent "anywhere in the app", dropping M11's one declared exemption.
+
+*Noted, then closed:* `TemplateEngine` cached a parsed source by (id, sha) with
+no expiry, so a body swapped under an unchanged pin was served from cache until
+the process restarted — M4's caching property, predating this milestone, and
+first recorded here as a follow-up. It was closed immediately after, because
+the framing that made it look minor stopped being true in this milestone. The
+key COMMITS TO THE CONTENT (an entry can only be a parse whose bytes hashed to
+the sha in its own key, and a published version is immutable), so a warm cache
+never could serve a tampered parse — this was never a correctness hole. What it
+cost was DETECTION: the process stopped looking at the object, and M12 had just
+given that check an audit event. An alarm wired to a check that only runs on
+cold starts is an alarm that mostly does not run. Entries now expire after
+`TEMPLATE_CACHE_TTL_MS` (5 minutes, a reviewed constant because it is a
+detection-latency parameter rather than a performance knob), and the map is
+bounded at `TEMPLATE_CACHE_MAX_ENTRIES` because publishing a version mints a NEW
+ROW, so the key space grows for the life of the process. The consequence is MORE
+fail-closed, not less: past the TTL a tampered body makes `load` throw where it
+used to serve the good cached parse, and all three callers were already built
+for that throw. Still not closed, stated rather than implied: within one TTL a
+warm process neither serves nor notices a swap; closing that means verifying on
+every load, which is N object-store reads per catalog request on a user-facing
+route. A cold replica still detects immediately. Both halves are
+mutation-tested — removing the TTL turns three specs red, removing the bound
+turns a fourth red.
 
 *Proven live against the stack, through the browser:* real clamd refused the
 signature-carrying PNG with nothing stored (`document.scan.rejected`), a clean
