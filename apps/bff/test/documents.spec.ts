@@ -363,6 +363,29 @@ describe('intake collapsing', () => {
     expect(documents.generateCalls).toEqual([]);
   });
 
+  it('treats a prototype-shaped name like any other name', async () => {
+    // On a plain object, `__proto__` goes through the inherited setter: the
+    // duplicate check misses it and the answer vanishes before it is
+    // serialized. The record is null-prototype, so it is an ordinary key —
+    // caught as a duplicate here, and refused downstream as undeclared.
+    const first = await generate([
+      { name: '__proto__', text: 'a' },
+      { name: '__proto__', text: 'b' },
+    ]);
+    expect(first.errors?.[0]?.extensions?.code).toBe('INVALID_REQUEST');
+    expect(documents.generateCalls).toEqual([]);
+
+    const second = await generate([{ name: '__proto__', text: 'a' }]);
+    expect(second.errors).toBeUndefined();
+    // It REACHES the service (which refuses it as undeclared) rather than
+    // being silently dropped on the way. Asserted through
+    // getOwnPropertyNames because an expectation written as `{ __proto__: 'a' }`
+    // has the very problem this test is about.
+    const sent = documents.generateCalls[0]?.input.variables ?? {};
+    expect(Object.getOwnPropertyNames(sent)).toEqual(['__proto__']);
+    expect(Object.getOwnPropertyDescriptor(sent, '__proto__')?.value).toBe('a');
+  });
+
   it('accepts an empty answer set and lets the TEMPLATE decide it is incomplete', async () => {
     // What a variable may contain is the template's declaration to enforce; a
     // second copy of that gate here would drift from the legal one.

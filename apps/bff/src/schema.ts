@@ -539,7 +539,15 @@ interface DocumentVariableInput {
  * a legal gate.
  */
 function intakeRecord(inputs: readonly DocumentVariableInput[]): Record<string, IntakeValue> {
-  const record: Record<string, IntakeValue> = {};
+  // A NULL-PROTOTYPE object, so every name behaves like every other name.
+  // On a plain `{}`, `__proto__` goes through the inherited setter instead of
+  // becoming an own property: the duplicate check silently misses it and the
+  // answer silently vanishes before `JSON.stringify`. Nothing is exploitable
+  // there (no template can declare that name — VARIABLE_NAME requires a
+  // lowercase first character — and the value never reaches the wire), but a
+  // key whose behaviour differs from its neighbours' is exactly the kind of
+  // exception that outlives the reasoning that made it safe.
+  const record: Record<string, IntakeValue> = Object.create(null) as Record<string, IntakeValue>;
   for (const input of inputs) {
     const { text, boolean } = input;
     const hasText = typeof text === 'string';
