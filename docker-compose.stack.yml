@@ -740,6 +740,10 @@ services:
       # what it still cannot reach: documents' two internal routes are
       # service-credential guarded, and the BFF holds no such credential.
       DOCUMENTS_URL: http://documents:3005
+      # Fourth one (M13, the people surface), same posture again. Profile has no
+      # service-credential routes at all, so there is nothing behind this URL
+      # that a bearer token could not have opened anyway.
+      PROFILE_URL: http://profile:3002
       PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
     volumes:
       # The web bundle sends hash-only GraphQL bodies (its client inlines

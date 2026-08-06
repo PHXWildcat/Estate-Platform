@@ -321,6 +321,201 @@ export const REGENERATE_DOCUMENT_MUTATION = `mutation RegenerateDocument($docume
   }
 }`;
 
+export const PROFILE_QUERY = `query Profile {
+  profile {
+    userId
+    legalName
+    dob
+    ssnLast4
+    address
+    phone
+    occupation
+    maritalStatus
+    stateOfResidence
+  }
+}`;
+
+export const SAVE_PROFILE_MUTATION = `mutation SaveProfile($legalName: String!, $dob: String, $address: String, $phone: String, $occupation: String, $maritalStatus: String, $stateOfResidence: String) {
+  saveProfile(legalName: $legalName, dob: $dob, address: $address, phone: $phone, occupation: $occupation, maritalStatus: $maritalStatus, stateOfResidence: $stateOfResidence) {
+    userId
+    legalName
+    dob
+    ssnLast4
+    address
+    phone
+    occupation
+    maritalStatus
+    stateOfResidence
+  }
+}`;
+
+export const FAMILY_MEMBERS_QUERY = `query FamilyMembers {
+  familyMembers {
+    id
+    relation
+    name
+    dob
+    isMinor
+    notes
+  }
+}`;
+
+export const ADD_FAMILY_MEMBER_MUTATION = `mutation AddFamilyMember($relation: String!, $name: String!, $dob: String, $isMinor: Boolean, $notes: String) {
+  addFamilyMember(relation: $relation, name: $name, dob: $dob, isMinor: $isMinor, notes: $notes) {
+    id
+    relation
+    name
+    dob
+    isMinor
+    notes
+  }
+}`;
+
+export const DELETE_FAMILY_MEMBER_MUTATION = `mutation DeleteFamilyMember($id: ID!) {
+  deleteFamilyMember(id: $id) {
+    id
+    relation
+    name
+    dob
+    isMinor
+    notes
+  }
+}`;
+
+export const CONTACTS_QUERY = `query Contacts {
+  contacts {
+    id
+    name
+    relationship
+    professionalKind
+    hasEmail
+    hasPhone
+    hasAddress
+    hasNotes
+    linked
+  }
+}`;
+
+export const CONTACT_QUERY = `query Contact($contactId: ID!) {
+  contact(contactId: $contactId) {
+    id
+    name
+    email
+    phone
+    address
+    relationship
+    professionalKind
+    notes
+  }
+}`;
+
+export const ADD_CONTACT_MUTATION = `mutation AddContact($name: String!, $email: String, $phone: String, $address: String, $relationship: String, $professionalKind: String, $notes: String) {
+  addContact(name: $name, email: $email, phone: $phone, address: $address, relationship: $relationship, professionalKind: $professionalKind, notes: $notes) {
+    id
+    name
+    relationship
+    professionalKind
+    hasEmail
+    hasPhone
+    hasAddress
+    hasNotes
+    linked
+  }
+}`;
+
+export const UPDATE_CONTACT_MUTATION = `mutation UpdateContact($contactId: ID!, $name: String!, $email: String, $phone: String, $address: String, $relationship: String, $professionalKind: String, $notes: String) {
+  updateContact(contactId: $contactId, name: $name, email: $email, phone: $phone, address: $address, relationship: $relationship, professionalKind: $professionalKind, notes: $notes) {
+    id
+    name
+    email
+    phone
+    address
+    relationship
+    professionalKind
+    notes
+  }
+}`;
+
+export const DELETE_CONTACT_MUTATION = `mutation DeleteContact($contactId: ID!) {
+  deleteContact(contactId: $contactId) {
+    id
+    name
+    relationship
+    professionalKind
+    hasEmail
+    hasPhone
+    hasAddress
+    hasNotes
+    linked
+  }
+}`;
+
+export const ROLE_ASSIGNMENTS_QUERY = `query RoleAssignments {
+  roleAssignments {
+    id
+    contactId
+    role
+    scopeType
+    scopeId
+    effectiveCondition
+    startsAt
+    endsAt
+  }
+}`;
+
+export const GRANT_ROLE_MUTATION = `mutation GrantRole($contactId: ID!, $role: String!, $scopeType: String!, $effectiveCondition: String) {
+  grantRole(contactId: $contactId, role: $role, scopeType: $scopeType, effectiveCondition: $effectiveCondition) {
+    id
+    contactId
+    role
+    scopeType
+    scopeId
+    effectiveCondition
+    startsAt
+    endsAt
+  }
+}`;
+
+export const REVOKE_ROLE_MUTATION = `mutation RevokeRole($roleAssignmentId: ID!) {
+  revokeRole(roleAssignmentId: $roleAssignmentId) {
+    id
+    contactId
+    role
+    scopeType
+    scopeId
+    effectiveCondition
+    startsAt
+    endsAt
+  }
+}`;
+
+export const ROLE_PERMISSIONS_QUERY = `query RolePermissions($roleAssignmentId: ID!) {
+  rolePermissions(roleAssignmentId: $roleAssignmentId) {
+    id
+    resource
+    action
+    createdAt
+  }
+}`;
+
+export const GRANT_ROLE_PERMISSION_MUTATION = `mutation GrantRolePermission($roleAssignmentId: ID!, $resource: String!, $action: String!) {
+  grantRolePermission(roleAssignmentId: $roleAssignmentId, resource: $resource, action: $action) {
+    id
+    resource
+    action
+    createdAt
+  }
+}`;
+
+export const REVOKE_ROLE_PERMISSION_MUTATION = `mutation RevokeRolePermission($roleAssignmentId: ID!, $grantId: ID!) {
+  revokeRolePermission(roleAssignmentId: $roleAssignmentId, grantId: $grantId) {
+    id
+    resource
+    action
+    createdAt
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -354,6 +549,22 @@ export const operations = {
   UploadDocument: UPLOAD_DOCUMENT_MUTATION,
   SetDocumentStatus: SET_DOCUMENT_STATUS_MUTATION,
   DeleteDocument: DELETE_DOCUMENT_MUTATION,
+  Profile: PROFILE_QUERY,
+  SaveProfile: SAVE_PROFILE_MUTATION,
+  FamilyMembers: FAMILY_MEMBERS_QUERY,
+  AddFamilyMember: ADD_FAMILY_MEMBER_MUTATION,
+  DeleteFamilyMember: DELETE_FAMILY_MEMBER_MUTATION,
+  Contacts: CONTACTS_QUERY,
+  Contact: CONTACT_QUERY,
+  AddContact: ADD_CONTACT_MUTATION,
+  UpdateContact: UPDATE_CONTACT_MUTATION,
+  DeleteContact: DELETE_CONTACT_MUTATION,
+  RoleAssignments: ROLE_ASSIGNMENTS_QUERY,
+  GrantRole: GRANT_ROLE_MUTATION,
+  RevokeRole: REVOKE_ROLE_MUTATION,
+  RolePermissions: ROLE_PERMISSIONS_QUERY,
+  GrantRolePermission: GRANT_ROLE_PERMISSION_MUTATION,
+  RevokeRolePermission: REVOKE_ROLE_PERMISSION_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

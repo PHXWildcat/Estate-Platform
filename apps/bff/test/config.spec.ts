@@ -17,6 +17,10 @@ describe('loadConfig', () => {
       aiAssistantUrl: 'http://localhost:3009',
       // M12: the document service (3005). Same posture again.
       documentsUrl: 'http://localhost:3005',
+      // M13: the profile & contacts service (3002). Same posture again, and it
+      // has no service-credential routes at all — nothing here that a bearer
+      // token could not have opened anyway.
+      profileUrl: 'http://localhost:3002',
       persistedManifestPath: null,
     });
   });

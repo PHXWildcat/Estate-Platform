@@ -10,6 +10,7 @@ import type { BffConfig } from './config';
 import type { DocumentsClient } from './documents-client';
 import type { IdentityClient } from './identity-client';
 import { loadPersistedManifest, type PersistedOperationsManifest } from './persisted';
+import type { ProfileClient } from './profile-client';
 import { createBffSchema, type RequestContext } from './schema';
 
 /**
@@ -78,6 +79,7 @@ export interface BffAppOptions {
   assets: AssetsClient;
   assistant: AssistantClient;
   documents: DocumentsClient;
+  profile: ProfileClient;
   /** Injectable for tests; defaults to loading from PERSISTED_MANIFEST_PATH. */
   persistedOperations?: PersistedOperationsManifest;
   /** Nest logger override (tests pass false). */
@@ -90,13 +92,20 @@ export interface BffAppOptions {
  * call `app.listen(port)` (main.ts) or `app.init()` (tests/supertest).
  */
 export async function createBffApp(options: BffAppOptions): Promise<INestApplication> {
-  const { config, identity, assets, assistant, documents } = options;
+  const { config, identity, assets, assistant, documents, profile } = options;
   const production = config.nodeEnv === 'production';
   const manifest =
     options.persistedOperations ?? loadPersistedManifest(config.persistedManifestPath);
 
   const yoga = createYoga<RequestContext>({
-    schema: createBffSchema({ identity, assets, assistant, documents, secureCookies: production }),
+    schema: createBffSchema({
+      identity,
+      assets,
+      assistant,
+      documents,
+      profile,
+      secureCookies: production,
+    }),
     graphqlEndpoint: '/graphql',
     // POST-only mount + no GraphiQL/landing page: nothing to render in a browser.
     graphiql: false,

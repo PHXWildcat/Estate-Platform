@@ -31,5 +31,7 @@ module.exports = createJestConfig({
   // RATCHETED once more by the M12 SECURITY REVIEW, which added the binary
   // presentation, the write-path guards and the widened embedding fence:
   // measured 83.13/79.48/85.88/86.55.
-  coverageThreshold: { global: { statements: 83, branches: 79, functions: 85, lines: 86 } },
+  // M13 PR2 re-measured with the people surface: 85.36/82.08/87.13/88.74.
+  // Ratcheted up from 83/79/85/86 — never down.
+  coverageThreshold: { global: { statements: 85, branches: 82, functions: 87, lines: 88 } },
 });

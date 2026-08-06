@@ -41,6 +41,11 @@ export const errorCopy: Record<GqlFailureCode, string> = {
     'We couldn’t accept that file. We take PDFs and scans (PNG, JPEG, TIFF) up to 10 MB, and the file has to genuinely be one of those. Nothing was stored.',
   SCAN_UNAVAILABLE:
     'We couldn’t check that file for malware, so we didn’t store it. Please try again in a few minutes.',
+  // M13. Actionable, and deliberately not softened into a generic conflict:
+  // the person needs to know that a designation stands in the way, because
+  // deleting a contact used to retire its fiduciary roles silently.
+  CONTACT_IN_USE:
+    'This person still holds a role in your estate. Remove their roles first, then you can delete them.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

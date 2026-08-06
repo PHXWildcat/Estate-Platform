@@ -40,6 +40,20 @@ import type {
   TotpEnrollment,
 } from '../src/identity-client';
 import type { PersistedOperationsManifest } from '../src/persisted';
+import type {
+  ContactDetail,
+  ContactInput,
+  ContactSummary,
+  FamilyMember,
+  FamilyMemberInput,
+  PermissionGrant,
+  PermissionGrantInput,
+  Profile,
+  ProfileClient,
+  RoleAssignment,
+  RoleAssignmentInput,
+  SaveProfileInput,
+} from '../src/profile-client';
 
 export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
   return {
@@ -49,6 +63,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     assetsUrl: 'http://assets.test',
     aiAssistantUrl: 'http://assistant.test',
     documentsUrl: 'http://documents.test',
+    profileUrl: 'http://profile.test',
     persistedManifestPath: null,
     ...overrides,
   };
@@ -513,12 +528,206 @@ export class FakeDocumentsClient implements DocumentsClient {
   }
 }
 
+export const PROFILE: Profile = {
+  userId: 'a1111111-1111-4111-8111-111111111111',
+  legalName: 'Jane Quincy Public',
+  dob: '1950-04-02',
+  ssnLast4: '6789',
+  address: '1 Main St',
+  phone: '555-0100',
+  occupation: 'Architect',
+  maritalStatus: 'married',
+  stateOfResidence: 'AZ',
+};
+
+export const FAMILY_MEMBER: FamilyMember = {
+  id: 'c0000000-0000-4000-8000-000000000001',
+  relation: 'child',
+  name: 'Kiddo Public',
+  dob: '2015-06-01',
+  isMinor: true,
+  notes: null,
+};
+
+export const CONTACT_SUMMARY: ContactSummary = {
+  id: 'f0000000-0000-4000-8000-000000000001',
+  ownerUserId: PROFILE.userId,
+  name: 'Alice Attorney',
+  relationship: 'friend',
+  professionalKind: 'attorney',
+  hasEmail: true,
+  hasPhone: false,
+  hasAddress: false,
+  hasNotes: false,
+  linked: false,
+};
+
+export const CONTACT_DETAIL: ContactDetail = {
+  id: CONTACT_SUMMARY.id,
+  ownerUserId: PROFILE.userId,
+  name: 'Alice Attorney',
+  email: 'alice@law.example',
+  phone: null,
+  address: null,
+  relationship: 'friend',
+  professionalKind: 'attorney',
+  notes: null,
+};
+
+export const ROLE_ASSIGNMENT: RoleAssignment = {
+  id: 'e0000000-0000-4000-8000-000000000001',
+  contactId: CONTACT_SUMMARY.id,
+  role: 'executor',
+  scopeType: 'estate',
+  scopeId: null,
+  effectiveCondition: 'on_death_verified',
+  startsAt: null,
+  endsAt: null,
+};
+
+export const PERMISSION_GRANT: PermissionGrant = {
+  id: 'g0000000-0000-4000-8000-000000000001',
+  resource: 'contact',
+  action: 'read',
+  createdAt: '2026-08-06T00:00:00.000Z',
+};
+
+export class FakeProfileClient implements ProfileClient {
+  profileCalls: string[] = [];
+  saveProfileCalls: Array<{ accessToken: string; input: SaveProfileInput }> = [];
+  familyCalls: string[] = [];
+  createFamilyCalls: Array<{ accessToken: string; input: FamilyMemberInput }> = [];
+  updateFamilyCalls: Array<{ accessToken: string; id: string; input: FamilyMemberInput }> = [];
+  deleteFamilyCalls: Array<{ accessToken: string; id: string }> = [];
+  contactsCalls: string[] = [];
+  contactCalls: Array<{ accessToken: string; contactId: string }> = [];
+  createContactCalls: Array<{ accessToken: string; input: ContactInput }> = [];
+  updateContactCalls: Array<{ accessToken: string; contactId: string; input: ContactInput }> = [];
+  deleteContactCalls: Array<{ accessToken: string; contactId: string }> = [];
+  roleAssignmentsCalls: string[] = [];
+  grantRoleCalls: Array<{ accessToken: string; input: RoleAssignmentInput }> = [];
+  revokeRoleCalls: Array<{ accessToken: string; roleAssignmentId: string }> = [];
+  permissionsCalls: Array<{ accessToken: string; roleAssignmentId: string }> = [];
+  grantPermissionCalls: Array<{
+    accessToken: string;
+    roleAssignmentId: string;
+    input: PermissionGrantInput;
+  }> = [];
+  revokePermissionCalls: Array<{
+    accessToken: string;
+    roleAssignmentId: string;
+    grantId: string;
+  }> = [];
+
+  profileResult: Profile | null = PROFILE;
+  familyResult: FamilyMember[] = [FAMILY_MEMBER];
+  contactsResult: ContactSummary[] = [CONTACT_SUMMARY];
+  contactResult: ContactDetail = CONTACT_DETAIL;
+  roleAssignmentsResult: RoleAssignment[] = [ROLE_ASSIGNMENT];
+  permissionsResult: PermissionGrant[] = [PERMISSION_GRANT];
+  profileError: Error | null = null;
+
+  profile(accessToken: string): Promise<Profile | null> {
+    this.profileCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.profileResult);
+  }
+
+  saveProfile(accessToken: string, input: SaveProfileInput): Promise<void> {
+    this.saveProfileCalls.push({ accessToken, input });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  family(accessToken: string): Promise<FamilyMember[]> {
+    this.familyCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.familyResult);
+  }
+
+  createFamilyMember(accessToken: string, input: FamilyMemberInput): Promise<string> {
+    this.createFamilyCalls.push({ accessToken, input });
+    return this.reject() ?? Promise.resolve(FAMILY_MEMBER.id);
+  }
+
+  updateFamilyMember(accessToken: string, id: string, input: FamilyMemberInput): Promise<void> {
+    this.updateFamilyCalls.push({ accessToken, id, input });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  deleteFamilyMember(accessToken: string, id: string): Promise<void> {
+    this.deleteFamilyCalls.push({ accessToken, id });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  contacts(accessToken: string): Promise<ContactSummary[]> {
+    this.contactsCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.contactsResult);
+  }
+
+  contact(accessToken: string, contactId: string): Promise<ContactDetail> {
+    this.contactCalls.push({ accessToken, contactId });
+    return this.reject() ?? Promise.resolve(this.contactResult);
+  }
+
+  createContact(accessToken: string, input: ContactInput): Promise<string> {
+    this.createContactCalls.push({ accessToken, input });
+    return this.reject() ?? Promise.resolve(CONTACT_SUMMARY.id);
+  }
+
+  updateContact(accessToken: string, contactId: string, input: ContactInput): Promise<void> {
+    this.updateContactCalls.push({ accessToken, contactId, input });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  deleteContact(accessToken: string, contactId: string): Promise<void> {
+    this.deleteContactCalls.push({ accessToken, contactId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  roleAssignments(accessToken: string): Promise<RoleAssignment[]> {
+    this.roleAssignmentsCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.roleAssignmentsResult);
+  }
+
+  grantRole(accessToken: string, input: RoleAssignmentInput): Promise<string> {
+    this.grantRoleCalls.push({ accessToken, input });
+    return this.reject() ?? Promise.resolve(ROLE_ASSIGNMENT.id);
+  }
+
+  revokeRole(accessToken: string, roleAssignmentId: string): Promise<void> {
+    this.revokeRoleCalls.push({ accessToken, roleAssignmentId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  permissions(accessToken: string, roleAssignmentId: string): Promise<PermissionGrant[]> {
+    this.permissionsCalls.push({ accessToken, roleAssignmentId });
+    return this.reject() ?? Promise.resolve(this.permissionsResult);
+  }
+
+  grantPermission(
+    accessToken: string,
+    roleAssignmentId: string,
+    input: PermissionGrantInput,
+  ): Promise<string> {
+    this.grantPermissionCalls.push({ accessToken, roleAssignmentId, input });
+    return this.reject() ?? Promise.resolve(PERMISSION_GRANT.id);
+  }
+
+  revokePermission(accessToken: string, roleAssignmentId: string, grantId: string): Promise<void> {
+    this.revokePermissionCalls.push({ accessToken, roleAssignmentId, grantId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  private reject<T>(): Promise<T> | null {
+    return this.profileError === null ? null : Promise.reject(this.profileError);
+  }
+}
+
 export interface TestAppOptions {
   config?: BffConfig;
   identity?: IdentityClient;
   assets?: AssetsClient;
   assistant?: AssistantClient;
   documents?: DocumentsClient;
+  profile?: ProfileClient;
   manifest?: PersistedOperationsManifest;
 }
 
@@ -529,6 +738,7 @@ export async function makeApp(options: TestAppOptions = {}): Promise<INestApplic
     assets: options.assets ?? new FakeAssetsClient(),
     assistant: options.assistant ?? new FakeAssistantClient(),
     documents: options.documents ?? new FakeDocumentsClient(),
+    profile: options.profile ?? new FakeProfileClient(),
     persistedOperations: options.manifest ?? new Map(),
     logger: false,
   });

@@ -231,6 +231,8 @@ describe('bffProcessEnv', () => {
       AI_ASSISTANT_URL: 'http://localhost:3009',
       // M12: the third, same posture again.
       DOCUMENTS_URL: 'http://localhost:3005',
+      // M13: the fourth. Profile has no service-credential routes at all.
+      PROFILE_URL: 'http://localhost:3002',
       PERSISTED_MANIFEST_PATH: '/repo/m.json',
     });
   });

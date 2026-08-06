@@ -249,6 +249,11 @@ export function bffProcessEnv(
     // assistant — the document service runs in the production rehearsal too,
     // because nothing about it needs a third-party credential.
     DOCUMENTS_URL: serviceUrl('documents', options.addressing),
+    // M13: the people surface. Present in BOTH profiles for the same reason as
+    // documents — the profile service needs no third-party credential, and it
+    // holds no service credential in either direction, so this URL can only ever
+    // open what the caller's own bearer already opens.
+    PROFILE_URL: serviceUrl('profile', options.addressing),
   };
   if (options.manifestPath) {
     out['PERSISTED_MANIFEST_PATH'] = options.manifestPath;

@@ -123,7 +123,14 @@ export type BffErrorCode =
    * The malware scanner could not be reached (M12 PR2). FAIL CLOSED: nothing
    * was stored, and the honest answer is "we could not check it".
    */
-  | 'SCAN_UNAVAILABLE';
+  | 'SCAN_UNAVAILABLE'
+  /**
+   * A contact still named by a live role assignment. Actionable and deliberately
+   * distinct: deleting such a contact used to silently retire its fiduciary
+   * designations (M13 PR1), so the refusal has to say what to do about it —
+   * revoke the roles naming this person first.
+   */
+  | 'CONTACT_IN_USE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -141,6 +148,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   MALWARE_DETECTED: 'That file was refused by the malware scanner',
   UNSUPPORTED_CONTENT: 'That file type is not accepted',
   SCAN_UNAVAILABLE: 'That file could not be checked for malware',
+  CONTACT_IN_USE: 'This person still holds a role in your estate',
 };
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */
