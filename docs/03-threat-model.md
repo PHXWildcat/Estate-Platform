@@ -616,6 +616,41 @@ exactly two decrypt pairs, and loading the list and detail pages produced none.
   does not depend on it: `sandbox=""` blocks script execution inside the frame
   whatever the page policy permits outside it.
 
+**PR2 addendum — ingest, the ladder, and deletion (2026-08-06).**
+
+*The upload gate is the SERVER's, and the client is built not to have an
+opinion.* Magic-byte sniffing against the declared mime is the control against
+polyglot mislabeling, and the malware scan is fail-closed and pre-storage, so
+every refusal means the bytes reached no disk. A client-side type check would
+be a second opinion that can disagree with the one that matters — so there is
+none: `accept` is a picker hint, `file.type` is forwarded as a declaration, and
+the only local check is the size cap, mirroring the server's own number. The
+three refusals are kept apart to the last layer (`MALWARE_DETECTED`,
+`UNSUPPORTED_CONTENT`, `SCAN_UNAVAILABLE`) because softening a positive scanner
+finding into "unsupported file type" would withhold the one thing a user needs
+to know about a file somebody sent them. Verified live against real clamd
+through the browser: the signature-carrying PNG was refused and nothing stored.
+
+*The execution ladder is computed where the requirements are verified.* Risk #8
+is a legal/compliance failure in a state template, treated by "attorney-gated
+template releases; per-state execution-requirement engine". A UI that hardcoded
+the ladder would be a second copy of that engine, drifting toward the weakest
+rung — which is precisely the fail-open the M4 review closed inside the
+service. So the service returns `allowedTransitions` from its own
+sha256-verified template source, the UI renders exactly that, and the write
+path re-resolves the requirements inside its own transaction regardless. An
+unverifiable template yields an EMPTY ladder, not a guessed one.
+
+*Deletion.* Step-up gated per docs/01 §5, and the legal hold wins over the
+owner. Running the real app exposed an ordering seam worth recording: the
+step-up guard sits at the controller and the hold check inside the handler, so
+a stale session is told `stepup_required` first and the hold only after. That
+ordering is fine as defence in depth, but the UI must not send someone to find
+an authenticator for an action that will be refused either way — a held
+document is now not offered for deletion at all. RECORDED, NOT CHANGED: the
+service's ordering, since moving the hold check ahead of the guard would put an
+unauthenticated-for-this-action read of estate state before the gate.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

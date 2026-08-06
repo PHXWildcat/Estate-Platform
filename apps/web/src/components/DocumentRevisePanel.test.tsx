@@ -26,6 +26,7 @@ const DOCUMENT = {
   templateId: 't0000000-0000-4000-8000-00000000000a',
   createdAt: '2026-08-01T10:00:00.000Z',
   updatedAt: '2026-08-01T10:00:00.000Z',
+  allowedTransitions: ['signed'],
 };
 
 function mount(document: unknown, overrides: Partial<Record<string, OperationHandler>> = {}): void {

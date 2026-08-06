@@ -14,11 +14,13 @@ import type {
 import type {
   Document,
   DocumentContent,
+  DocumentDetail,
   DocumentTemplate,
   DocumentVersion,
   DocumentsClient,
   GenerateResult,
   IntakeValue,
+  UploadResult,
 } from './documents-client';
 import {
   ACCESS_COOKIE,
@@ -235,6 +237,39 @@ export const typeDefs = /* GraphQL */ `
     updatedAt: String!
   }
 
+  """
+  One document plus the execution transitions IT may take next — computed by
+  the service from the template's own sha256-verified execution_requirements,
+  so a client renders the attestations this instrument in this state actually
+  requires rather than a hardcoded ladder. An EMPTY list is the service's
+  fail-closed answer when it cannot resolve the ladder from a verified
+  template, not an error.
+  """
+  type DocumentDetail {
+    documentId: ID!
+    docType: String!
+    source: String!
+    title: String!
+    currentVersion: Int!
+    executionStatus: String!
+    executedAt: String
+    legalHold: Boolean!
+    sealed: Boolean!
+    templateId: ID
+    createdAt: String!
+    updatedAt: String!
+    allowedTransitions: [String!]!
+  }
+
+  type UploadedDocument {
+    documentId: ID!
+    version: Int!
+    contentSha256: String!
+    executionStatus: String!
+    "Whether OCR text made it into the encrypted index. Best-effort, never a gate."
+    ocrIndexed: Boolean!
+  }
+
   type DocumentVersion {
     version: Int!
     contentSha256: String!
@@ -310,7 +345,14 @@ export const typeDefs = /* GraphQL */ `
     documentTemplates(state: String!): [DocumentTemplate!]!
     "The caller's own documents — metadata only, no content is decrypted."
     documents: [Document!]!
-    document(documentId: ID!): Document!
+    document(documentId: ID!): DocumentDetail!
+    """
+    Encrypted search over the caller's own documents. The query becomes
+    per-user HMAC tokens downstream and matches ciphertext-side, so NOTHING is
+    decrypted to serve it — which is also why there is no decrypt audit event
+    on this path. Minimum 3 characters (the service's own bound).
+    """
+    documentSearch(query: String!): [Document!]!
     documentVersions(documentId: ID!): [DocumentVersion!]!
     """
     One version's content. Each call is an audited decrypt downstream, so ask
@@ -391,6 +433,38 @@ export const typeDefs = /* GraphQL */ `
       title: String
       variables: [DocumentVariableInput!]!
     ): GeneratedDocument!
+    """
+    Uploads a document. NOT step-up gated (docs/01 §5 covers generation, export
+    and deletion; adding content is not on that list) — the gate is the
+    service's pipeline: size cap, magic-byte sniff against the declared mime,
+    and a FAIL-CLOSED malware scan, with nothing written anywhere unless all
+    three pass. So MALWARE_DETECTED, UNSUPPORTED_CONTENT and SCAN_UNAVAILABLE
+    all mean the same thing about storage — nothing was stored — and are kept
+    apart because they mean different things to the person holding the file.
+
+    'mime' is what the client CLAIMS. The service sniffs the bytes and decides;
+    a mismatch is refused.
+    """
+    uploadDocument(
+      kind: String!
+      title: String!
+      mime: String!
+      contentBase64: String!
+    ): UploadedDocument!
+    """
+    Attests one rung of the execution ladder. The platform RECORDS a real-world
+    act; it does not witness one. 'executedAt' accompanies exactly the
+    'executed' attestation, and the service refuses a skipped formality against
+    the template's own requirements.
+    """
+    setDocumentStatus(documentId: ID!, status: String!, executedAt: String): DocumentDetail!
+    """
+    Soft delete: the row and its version history survive, and erasure is a
+    separate act. STEP-UP GATED downstream (docs/01 §5), and refused outright
+    with LEGAL_HOLD while the estate is preserved for a settlement matter —
+    the one refusal here that authenticating harder cannot resolve.
+    """
+    deleteDocument(documentId: ID!): Ok!
   }
 `;
 
@@ -496,6 +570,17 @@ const MFA_LEVEL_GQL: Record<MfaLevel, SessionPayload['mfaLevel']> = {
 };
 
 const OK = { ok: true } as const;
+
+/** The document service's own minimum (SearchQuerySchema). */
+const DOCUMENT_SEARCH_MIN_LENGTH = 3;
+
+/**
+ * Base64 length of the service's 10 MiB decoded upload cap, with padding slack
+ * — the same arithmetic the service does, for the same number. It bounds what
+ * this process will hold in memory on the way to a request that would be
+ * refused anyway; the service remains the authority on size.
+ */
+const UPLOAD_MAX_BASE64_CHARS = Math.ceil((10 * 1024 * 1024) / 3) * 4 + 4;
 
 function cookieValue(ctx: RequestContext, name: string): string | null {
   return parseCookies(ctx.req.headers.cookie).get(name) ?? null;
@@ -603,7 +688,21 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           _parent: unknown,
           args: DocumentArgs,
           ctx: RequestContext,
-        ): Promise<Document> => documents.get(requireAccessToken(ctx), args.documentId),
+        ): Promise<DocumentDetail> => documents.get(requireAccessToken(ctx), args.documentId),
+        // The 3-character minimum is the SERVICE's bound, checked here only so
+        // a too-short query is a stable INVALID_REQUEST rather than a masked
+        // downstream 400 — the createAsset partial-valuation precedent.
+        documentSearch: async (
+          _parent: unknown,
+          args: { readonly query: string },
+          ctx: RequestContext,
+        ): Promise<Document[]> => {
+          const query = args.query.trim();
+          if (query.length < DOCUMENT_SEARCH_MIN_LENGTH) {
+            throw bffError('INVALID_REQUEST');
+          }
+          return documents.search(requireAccessToken(ctx), query);
+        },
         documentVersions: async (
           _parent: unknown,
           args: DocumentArgs,
@@ -775,6 +874,49 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
               : {}),
             variables: intakeRecord(args.variables),
           }),
+        uploadDocument: async (
+          _parent: unknown,
+          args: { kind: string; title: string; mime: string; contentBase64: string },
+          ctx: RequestContext,
+        ): Promise<UploadResult> => {
+          // A DECODED-SIZE CEILING AT THE EDGE, matching the service's own cap.
+          // The service enforces it again and is the authority; refusing here
+          // means an oversized body is not proxied through the BFF's memory to
+          // be rejected downstream. Stated rather than implied: this is not a
+          // request-size limit — the BFF has none, and bounding request bodies
+          // at the edge is CloudFront/WAF's job in the deployed topology
+          // (docs/01 §2), which does not exist yet.
+          if (args.contentBase64.length > UPLOAD_MAX_BASE64_CHARS) {
+            throw bffError('UNSUPPORTED_CONTENT');
+          }
+          return documents.upload(requireAccessToken(ctx), {
+            kind: args.kind,
+            title: args.title,
+            mime: args.mime,
+            contentBase64: args.contentBase64,
+          });
+        },
+        setDocumentStatus: async (
+          _parent: unknown,
+          args: DocumentArgs & { status: string; executedAt?: string | null },
+          ctx: RequestContext,
+        ): Promise<DocumentDetail> =>
+          documents.setStatus(
+            requireAccessToken(ctx),
+            args.documentId,
+            args.status,
+            typeof args.executedAt === 'string' && args.executedAt.length > 0
+              ? args.executedAt
+              : undefined,
+          ),
+        deleteDocument: async (
+          _parent: unknown,
+          args: DocumentArgs,
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await documents.remove(requireAccessToken(ctx), args.documentId);
+          return OK;
+        },
         grantConsent: async (
           _parent: unknown,
           args: ScopeArgs,

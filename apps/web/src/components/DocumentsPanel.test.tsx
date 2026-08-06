@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   graphqlError,
   installGraphqlFetchMock,
   jsonResponse,
+  type OperationHandler,
   type RecordedRequest,
 } from '../test-utils/graphql-fetch-mock';
 import { DocumentsPanel } from './DocumentsPanel';
@@ -36,12 +37,22 @@ const POA = {
   updatedAt: '2026-08-04T10:00:00.000Z',
 };
 
-function mount(documents: unknown): RecordedRequest[] {
+function mount(
+  documents: unknown,
+  overrides: Partial<Record<string, OperationHandler>> = {},
+): RecordedRequest[] {
   const { requests } = installGraphqlFetchMock({
     Documents: () => jsonResponse({ data: { documents } }),
+    DocumentSearch: () => jsonResponse({ data: { documentSearch: [POA] } }),
+    ...overrides,
   });
   render(<DocumentsPanel />);
   return requests;
+}
+
+function runSearch(term: string): void {
+  fireEvent.change(screen.getByLabelText('Search your documents'), { target: { value: term } });
+  fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 }
 
 describe('the list is metadata only', () => {
@@ -87,6 +98,59 @@ describe('the list is metadata only', () => {
     })();
     await screen.findByText('<img src=x onerror=alert(1)>My will');
     expect(container.querySelectorAll('img')).toHaveLength(0);
+  });
+});
+
+describe('encrypted search', () => {
+  it('sends the trimmed query and shows only the matches', async () => {
+    const requests = mount([WILL, POA]);
+    await screen.findByText('Last Will and Testament');
+    runSearch('  power  ');
+    await waitFor(() => {
+      expect(screen.getByText(/Matches for/)).toBeInTheDocument();
+    });
+    const sent = requests.find((r) => r.body.query?.includes('DocumentSearch'));
+    expect(sent?.body.variables).toEqual({ query: 'power' });
+    // By LINK, not by text: the upload form's kind picker also contains the
+    // words "Durable power of attorney" as an option.
+    expect(screen.getByRole('link', { name: 'Durable power of attorney' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Last Will and Testament' })).not.toBeInTheDocument();
+  });
+
+  it('refuses a too-short query with the server’s own bound, before sending', async () => {
+    const requests = mount([WILL]);
+    await screen.findByText('Last Will and Testament');
+    runSearch('ab');
+    expect(await screen.findByText(/at least 3 characters/i)).toBeVisible();
+    expect(requests.filter((r) => r.body.query?.includes('DocumentSearch'))).toHaveLength(0);
+  });
+
+  it('says a search matched nothing WITHOUT the empty-estate copy', async () => {
+    // "You have no documents" is a claim about the account; "nothing matched"
+    // is a fact about the query. Conflating them would tell someone their
+    // estate is empty because they misspelled a word.
+    mount([WILL], { DocumentSearch: () => jsonResponse({ data: { documentSearch: [] } }) });
+    await screen.findByText('Last Will and Testament');
+    runSearch('lake');
+    expect(await screen.findByText(/Nothing matched/i)).toBeVisible();
+    expect(screen.queryByText(/Nothing on file yet/i)).not.toBeInTheDocument();
+  });
+
+  it('restores the full list when the search is cleared', async () => {
+    mount([WILL, POA]);
+    await screen.findByText('Last Will and Testament');
+    runSearch('power');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Clear' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(await screen.findByText('Last Will and Testament')).toBeInTheDocument();
+  });
+
+  it('explains why a partial word finds nothing, where the user meets it', async () => {
+    // The accepted cost of matching ciphertext-side: whole indexed words only.
+    mount([WILL]);
+    expect(await screen.findByText(/matches encrypted keywords/i)).toBeVisible();
   });
 });
 

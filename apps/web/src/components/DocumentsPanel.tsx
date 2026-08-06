@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type DocumentInfo } from '../graphql/client';
+import { messageFor } from '../lib/copy';
 import {
   documentKindLabel,
   documentSourceLabel,
@@ -12,6 +13,7 @@ import {
   formatDateTime,
   sortDocuments,
 } from '../lib/documents';
+import { DocumentUpload } from './DocumentUpload';
 
 /**
  * The document list (M12) — the first consumer of routes the service has had
@@ -87,8 +89,29 @@ function DocumentRow({ document }: { document: DocumentInfo }): ReactElement {
   );
 }
 
+/**
+ * Encrypted search (M12 PR2), and it is worth knowing what it is not.
+ *
+ * The query becomes per-user HMAC tokens and matches ciphertext-side, so
+ * NOTHING IS DECRYPTED to answer it — which is why searching, unlike reading,
+ * produces no decrypt event. The cost of that design is stated where a user
+ * meets it: matching is by whole indexed word, so "lake" finds the lake house
+ * and "lak" finds nothing. There is no semantic search and no fuzzy match to
+ * add later without an embedding index, which the platform deliberately does
+ * not have (M10).
+ */
+const SEARCH_MIN_LENGTH = 3;
+
+type SearchState =
+  | { kind: 'off' }
+  | { kind: 'searching' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'results'; query: string; documents: DocumentInfo[] };
+
 export function DocumentsPanel(): ReactElement {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState<SearchState>({ kind: 'off' });
 
   const load = useCallback(async (): Promise<void> => {
     const result = await gqlRequest('Documents', {});
@@ -114,6 +137,34 @@ export function DocumentsPanel(): ReactElement {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function runSearch(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      setSearch({ kind: 'off' });
+      return;
+    }
+    if (trimmed.length < SEARCH_MIN_LENGTH) {
+      // The server's own bound, said before the request rather than after.
+      setSearch({
+        kind: 'failed',
+        message: `Search needs at least ${SEARCH_MIN_LENGTH} characters.`,
+      });
+      return;
+    }
+    setSearch({ kind: 'searching' });
+    const result = await gqlRequest('DocumentSearch', { query: trimmed });
+    if (!result.ok) {
+      setSearch({ kind: 'failed', message: messageFor(result.code) });
+      return;
+    }
+    if (!Array.isArray(result.data.documentSearch)) {
+      setSearch({ kind: 'failed', message: messageFor('UNKNOWN') });
+      return;
+    }
+    setSearch({ kind: 'results', query: trimmed, documents: result.data.documentSearch });
+  }
 
   if (state.kind === 'loading') {
     return (
@@ -169,25 +220,102 @@ export function DocumentsPanel(): ReactElement {
       <section aria-labelledby="documents-heading" className="card p-5 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h2 id="documents-heading" className="text-base font-semibold">
-            Your documents
+            {search.kind === 'results' ? `Matches for “${search.query}”` : 'Your documents'}
           </h2>
           <Link className="btn btn-primary" href="/documents/new">
             Create a document
           </Link>
         </div>
-        {documents.length === 0 ? (
-          <p className="mt-3 max-w-prose text-[0.8125rem] text-ink-muted">
-            Nothing on file yet. Documents you create here are encrypted with a key of their own,
-            and only you can read them.
-          </p>
-        ) : (
-          <ul className="mt-3">
-            {documents.map((document) => (
-              <DocumentRow key={document.documentId} document={document} />
-            ))}
-          </ul>
-        )}
+
+        <form
+          className="mt-3 flex flex-wrap gap-2"
+          noValidate
+          onSubmit={(event) => {
+            void runSearch(event);
+          }}
+        >
+          <label className="sr-only" htmlFor="document-search">
+            Search your documents
+          </label>
+          <input
+            id="document-search"
+            className="field-input max-w-[18rem] flex-1"
+            placeholder="Search your documents"
+            value={query}
+            aria-describedby="document-search-hint"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              if (event.target.value.trim().length === 0) {
+                setSearch({ kind: 'off' });
+              }
+            }}
+          />
+          <button
+            type="submit"
+            className="btn btn-secondary"
+            disabled={search.kind === 'searching'}
+          >
+            {search.kind === 'searching' ? 'Searching…' : 'Search'}
+          </button>
+          {search.kind === 'results' ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => {
+                setQuery('');
+                setSearch({ kind: 'off' });
+              }}
+            >
+              Clear
+            </button>
+          ) : null}
+        </form>
+        <p id="document-search-hint" className="field-hint">
+          Searching never decrypts anything — it matches encrypted keywords, so it finds whole words
+          rather than parts of them.
+        </p>
+
+        <div role="status" aria-live="polite">
+          {search.kind === 'failed' ? (
+            <p className="mt-2 text-sm text-danger">{search.message}</p>
+          ) : null}
+        </div>
+
+        {renderList(search.kind === 'results' ? search.documents : documents, search)}
       </section>
+
+      <DocumentUpload
+        onUploaded={() => {
+          // Re-read from the server rather than appending locally: what the
+          // service stored is the record, and an upload can change the list in
+          // ways this component did not predict.
+          void load();
+        }}
+      />
     </div>
+  );
+}
+
+/**
+ * The list body, for both the full list and a result set. A search that matched
+ * nothing says exactly that — never the empty-estate copy, which would be a
+ * claim about the account rather than about the query.
+ */
+function renderList(documents: readonly DocumentInfo[], search: SearchState): ReactElement {
+  if (documents.length === 0) {
+    return (
+      <p className="mt-3 max-w-prose text-[0.8125rem] text-ink-muted">
+        {search.kind === 'results'
+          ? 'Nothing matched. Encrypted search matches whole words, so try a different one.'
+          : 'Nothing on file yet. Documents you create here are encrypted with a key of their own, and only you can read them.'}
+      </p>
+    );
+  }
+  return (
+    <ul className="mt-3">
+      {documents.map((document) => (
+        <DocumentRow key={document.documentId} document={document} />
+      ))}
+    </ul>
   );
 }

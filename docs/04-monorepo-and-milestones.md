@@ -2180,6 +2180,68 @@ standing this repo gives the M8 PR5, M10 PR4 and M11 UI work. Coverage floors
 were RATCHETED from a measured run (82.26/78.88/85.65/85.90 → 82/78/85/85),
 never lowered.
 
+**PR2 — upload, search, the execution ladder, deletion.**
+
+*The one service change, and why it is not scope creep.* The execution ladder
+is parameterized by the template's `execution_requirements`, which live in the
+sha256-verified template SOURCE — so only the document service can compute what
+a given instrument in a given state may do next. A UI that hardcoded the ladder
+would be a second copy of a legal gate (docs/03 risk #8), and it would drift
+toward offering a will a no-witness path. So `GET /v1/documents/:id` gained
+`allowedTransitions`, computed by the service's own `allowedTransitions()` from
+its own `requirementsFor()`. It FAILS CLOSED as an EMPTY LIST rather than an
+error: `requirementsFor` refuses to guess when the template cannot be verified,
+and that refusal must not be softened — but failing the whole READ would make
+an intact document unopenable because of its template's state. The empty list
+is advisory anyway; `transitionStatus` re-resolves the requirements inside its
+own transaction and refuses there too. Not on the LIST DTO: it costs a template
+load per document, and a list is not where anyone attests anything. The
+transition's own response carries the NEW ladder, so a client never renders a
+stale one for a round trip.
+
+*Upload keeps three refusals apart.* `malware_detected`, `unsupported_content`
+and `scan_unavailable` all mean the same thing about storage — the pipeline is
+pre-storage and fail-closed, so nothing was written anywhere — and three
+different things to the person holding the file. The malware one is never
+softened into "that file type isn't supported": the user may be holding
+something somebody sent them. The client invents NO type check of its own
+(the server's magic-byte sniff is the control against polyglot mislabeling, and
+a second opinion could disagree with it); `accept` is a picker hint, `file.type`
+is forwarded as a DECLARATION, and the only local check is the size cap, which
+mirrors the server's number rather than adding a rule.
+
+*Search says what it is not.* Nothing is decrypted to answer a query — it is
+per-user HMAC tokens matched ciphertext-side, which is why searching produces
+no decrypt event where reading produces one. The cost is stated where the user
+meets it: whole indexed words only, no semantic match, because there is
+deliberately no embedding index (M10). A search that matched nothing says
+"nothing matched", never the empty-estate copy — one is a fact about the query,
+the other a claim about the account.
+
+*Driving the real app found a fourth browser-only defect, and a fifth in the
+same pass.* (1) The step-up guard runs at documents' CONTROLLER while the legal
+hold is checked inside the handler, so a stale session gets `stepup_required`
+FIRST and the hold only after — the page dutifully walked someone through
+finding their authenticator to be told, correctly, that the document could not
+be deleted anyway. The server ordering is fine as defence in depth; offering
+the action was not, and the page already knows the document is held. Deletion
+is now not offered at all for a held document, on the same rule the revise link
+follows. (2) The panel dereferenced `allowedTransitions` before checking it, so
+a BFF that predates the field would have white-screened the page — the M11
+shape for the third time. It now reads a missing ladder as NO DATA rather than
+as an empty one, because an empty ladder is a REAL answer (fail-closed) and a
+skew must not be indistinguishable from it.
+
+*Proven live against the stack, through the browser:* real clamd refused the
+signature-carrying PNG with nothing stored (`document.scan.rejected`), a clean
+scan stored and OCR-indexed (`document.uploaded` + `document.ocr.indexed`),
+encrypted search found it by a word that appears only in the image, the CA
+ladder walked generated → signed → witnessed → executed with the date field
+appearing at exactly the last rung (three `document.status.changed`), and
+deletion took a real step-up (`auth.stepup.granted` → `document.deleted`) and
+left the row soft-deleted rather than gone. Coverage floors ratcheted again
+from measured runs: web 82/79/85/86, bff 88/85/88/88.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

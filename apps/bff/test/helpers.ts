@@ -23,12 +23,15 @@ import type { BffConfig } from '../src/config';
 import type {
   Document,
   DocumentContent,
+  DocumentDetail,
   DocumentTemplate,
   DocumentVersion,
   DocumentsClient,
   GenerateInput,
   GenerateResult,
   RegenerateInput,
+  UploadInput,
+  UploadResult,
 } from '../src/documents-client';
 import type {
   IdentityClient,
@@ -360,6 +363,13 @@ export const DOCUMENT: Document = {
   updatedAt: '2026-08-05T10:00:00.000Z',
 };
 
+/**
+ * The single-document read, carrying the ladder THIS document may climb. CA's
+ * will template requires two witnesses and no notary, so from `generated` the
+ * only rung is `signed` — computed by the service, never by a client.
+ */
+export const DOCUMENT_DETAIL: DocumentDetail = { ...DOCUMENT, allowedTransitions: ['signed'] };
+
 export const DOCUMENT_VERSION: DocumentVersion = {
   version: 1,
   contentSha256: 'a'.repeat(64),
@@ -395,9 +405,27 @@ export class FakeDocumentsClient implements DocumentsClient {
   generateCalls: Array<{ accessToken: string; input: GenerateInput }> = [];
   regenerateCalls: Array<{ accessToken: string; documentId: string; input: RegenerateInput }> = [];
 
+  searchCalls: Array<{ accessToken: string; query: string }> = [];
+  uploadCalls: Array<{ accessToken: string; input: UploadInput }> = [];
+  statusCalls: Array<{
+    accessToken: string;
+    documentId: string;
+    status: string;
+    executedAt?: string;
+  }> = [];
+  removeCalls: Array<{ accessToken: string; documentId: string }> = [];
+
   templatesResult: DocumentTemplate[] = [TEMPLATE];
   listResult: Document[] = [DOCUMENT];
-  getResult: Document = DOCUMENT;
+  getResult: DocumentDetail = DOCUMENT_DETAIL;
+  searchResult: Document[] = [DOCUMENT];
+  uploadResult: UploadResult = {
+    documentId: 'd0000000-0000-4000-8000-00000000000u',
+    version: 1,
+    contentSha256: 'e'.repeat(64),
+    executionStatus: 'draft',
+    ocrIndexed: true,
+  };
   versionsResult: DocumentVersion[] = [DOCUMENT_VERSION];
   contentResult: DocumentContent = DOCUMENT_CONTENT;
   generateResult: GenerateResult = {
@@ -418,9 +446,42 @@ export class FakeDocumentsClient implements DocumentsClient {
     return this.reject() ?? Promise.resolve(this.listResult);
   }
 
-  get(accessToken: string, documentId: string): Promise<Document> {
+  get(accessToken: string, documentId: string): Promise<DocumentDetail> {
     this.getCalls.push({ accessToken, documentId });
     return this.reject() ?? Promise.resolve(this.getResult);
+  }
+
+  search(accessToken: string, query: string): Promise<Document[]> {
+    this.searchCalls.push({ accessToken, query });
+    return this.reject() ?? Promise.resolve(this.searchResult);
+  }
+
+  upload(accessToken: string, input: UploadInput): Promise<UploadResult> {
+    this.uploadCalls.push({ accessToken, input });
+    return this.reject() ?? Promise.resolve(this.uploadResult);
+  }
+
+  setStatus(
+    accessToken: string,
+    documentId: string,
+    status: string,
+    executedAt?: string,
+  ): Promise<DocumentDetail> {
+    this.statusCalls.push({
+      accessToken,
+      documentId,
+      status,
+      ...(executedAt === undefined ? {} : { executedAt }),
+    });
+    return (
+      this.reject() ??
+      Promise.resolve({ ...this.getResult, executionStatus: status, allowedTransitions: [] })
+    );
+  }
+
+  remove(accessToken: string, documentId: string): Promise<void> {
+    this.removeCalls.push({ accessToken, documentId });
+    return this.reject() ?? Promise.resolve();
   }
 
   versions(accessToken: string, documentId: string): Promise<DocumentVersion[]> {

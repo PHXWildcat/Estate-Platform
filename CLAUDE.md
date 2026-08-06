@@ -1365,4 +1365,46 @@ deviating from them, stop and propose the change with rationale — do not silen
   `stepUpMessageFor`, used by both surfaces; only that one code changes meaning
   with the surface. Every unit test passed over it because the copy table was
   correct in isolation — the defect lived in which entry a surface chose.
+- 2026-08-06 — M12 PR2 makes ONE service change, and it is the only honest
+  option: `GET /v1/documents/:id` gains `allowedTransitions`, computed by the
+  document service's own `allowedTransitions()` over its own
+  `requirementsFor()`. The ladder is parameterized by the template's
+  `execution_requirements`, which live in the sha256-VERIFIED template source,
+  so only that service can compute it — and a UI that hardcoded the ladder
+  would be a second copy of docs/03 risk #8's per-state engine, drifting toward
+  offering a will a no-witness path. It FAILS CLOSED AS AN EMPTY LIST rather
+  than an error: `requirementsFor` refuses to guess for an unverifiable
+  template and that refusal must not be softened, but failing the whole READ
+  would make an intact document unopenable because of its template's state.
+  The list is advisory anyway — `transitionStatus` re-resolves the requirements
+  inside its own transaction. Deliberately NOT on the list DTO (a template load
+  per document, and a list is not where anyone attests anything), and the
+  transition's own response carries the NEW ladder so no client renders a stale
+  one for a round trip.
+- 2026-08-06 — The upload client is built NOT TO HAVE AN OPINION about file
+  types. Magic-byte sniffing against the declared mime is the server's control
+  against polyglot mislabeling; a client-side check is a second opinion that
+  can disagree with the one that matters, refusing what the platform would
+  accept or promising what it will not. So `accept` is a picker hint,
+  `file.type` is forwarded as a DECLARATION, and the only local check is the
+  size cap, which mirrors the server's own number rather than adding a rule.
+  The three refusals stay apart to the last layer — all three mean "nothing was
+  stored" (the pipeline is pre-storage and fail-closed) and three different
+  things to the person holding the file; softening `malware_detected` into
+  "unsupported file type" would withhold the one thing they need to know about
+  a file somebody sent them.
+- 2026-08-06 — Driving the real app found the fourth and fifth browser-only
+  defects of the milestone. (1) documents' StepUpGuard sits at the CONTROLLER
+  and the legal-hold check inside the handler, so a stale session is answered
+  `stepup_required` FIRST and `legal_hold` only after — the page walked someone
+  through finding their authenticator to be told, correctly, that the document
+  could not be deleted anyway. The server ordering is kept (moving the hold
+  check ahead of the guard would put a read of estate state before the gate);
+  the UI stopped OFFERING deletion for a held document, on the same rule the
+  revise link follows: never offer what the server would refuse. (2) The detail
+  panel dereferenced `allowedTransitions` before checking it, so a BFF
+  predating the field white-screened the page — the M11 shape a third time. It
+  now reads a missing ladder as NO DATA rather than as an empty one, because
+  an empty ladder is a REAL answer (fail-closed) and a version skew must not be
+  indistinguishable from it.
 

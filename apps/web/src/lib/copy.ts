@@ -28,6 +28,19 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   VERSION_CONFLICT: 'This document changed since you opened it. Reload and try again.',
   DOCUMENT_NOT_EDITABLE:
     'This document has been signed, so its wording is now a legal record. Revoke or supersede it before creating a replacement.',
+  // M12 PR2. The three upload refusals all mean the same thing about storage —
+  // nothing was written anywhere — and three different things to the person
+  // holding the file, which is why they are three sentences and not one.
+  LEGAL_HOLD:
+    'This document is being preserved as part of an estate matter, so it can’t be deleted right now.',
+  INVALID_TRANSITION:
+    'That isn’t the next step for this document. Refresh to see where it currently stands.',
+  MALWARE_DETECTED:
+    'Our scanner flagged that file as malicious, so we didn’t store it. If someone sent it to you, treat it with suspicion.',
+  UNSUPPORTED_CONTENT:
+    'We couldn’t accept that file. We take PDFs and scans (PNG, JPEG, TIFF) up to 10 MB, and the file has to genuinely be one of those. Nothing was stored.',
+  SCAN_UNAVAILABLE:
+    'We couldn’t check that file for malware, so we didn’t store it. Please try again in a few minutes.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

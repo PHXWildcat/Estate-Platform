@@ -151,6 +151,26 @@ export function executionStatusTone(status: string): string {
   return 'chip chip-warn';
 }
 
+/**
+ * The verb for attesting a rung. Phrased as something the OWNER DID, because
+ * that is what the platform is recording: it does not witness a signing, it
+ * notes that one happened.
+ */
+const TRANSITION_LABEL: Record<ExecutionStatus, string> = {
+  draft: 'Return to draft',
+  generated: 'Mark as generated',
+  signed: 'I signed it',
+  witnessed: 'It was witnessed',
+  notarized: 'It was notarized',
+  executed: 'Record it as executed',
+  revoked: 'Revoke it',
+  superseded: 'Mark it superseded',
+};
+
+export function transitionLabel(status: string): string {
+  return TRANSITION_LABEL[status as ExecutionStatus] ?? humanize(status);
+}
+
 export function documentSourceLabel(source: string): string {
   return source === 'generated' ? 'Generated here' : source === 'uploaded' ? 'Uploaded' : '';
 }

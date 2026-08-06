@@ -14,6 +14,7 @@ import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@es
 import {
   DocumentsService,
   type ContentDto,
+  type DocumentDetailDto,
   type DocumentDto,
   type GenerateResult,
   type UploadResult,
@@ -83,7 +84,10 @@ export class DocumentsController {
 
   @Get('documents/:documentId')
   @HttpCode(200)
-  get(@Req() req: CallerRequest, @Param('documentId') documentId: string): Promise<DocumentDto> {
+  get(
+    @Req() req: CallerRequest,
+    @Param('documentId') documentId: string,
+  ): Promise<DocumentDetailDto> {
     return this.documents.get(requireCaller(req).userId, parse(UuidSchema, documentId));
   }
 
@@ -132,7 +136,7 @@ export class DocumentsController {
     @Req() req: CallerRequest,
     @Param('documentId') documentId: string,
     @Body() body: unknown,
-  ): Promise<DocumentDto> {
+  ): Promise<DocumentDetailDto> {
     return this.documents.transitionStatus(
       requireCaller(req).userId,
       parse(UuidSchema, documentId),

@@ -39,6 +39,7 @@ import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 import type {
   ContentDto,
+  DocumentDetailDto,
   DocumentDto,
   GenerateResult,
   UploadResult,
@@ -400,6 +401,16 @@ describeIfPg('document service end to end', () => {
 
   it('walks the execution ladder per CA requirements; refuses skips and regeneration', async () => {
     // CA will: witnesses 2, no notarization ⇒ signed → witnessed → executed.
+    // The document READ advertises exactly that ladder, one rung at a time,
+    // from the template's own sha256-verified requirements — so a client
+    // renders the attestations this instrument in this state needs rather than
+    // a hardcoded ladder that could offer a will a no-witness path (M12 PR2).
+    const rungs = async (): Promise<string[]> =>
+      (
+        (await request(server).get(`/v1/documents/${documentId}`).set(asOwner()).expect(200))
+          .body as DocumentDetailDto
+      ).allowedTransitions;
+    expect(await rungs()).toEqual(['signed']);
     await request(server)
       .post(`/v1/documents/${documentId}/status`)
       .set(asOwner())
@@ -426,14 +437,20 @@ describeIfPg('document service end to end', () => {
       .set(asOwner())
       .send({ status: 'witnessed' })
       .expect(200);
+    // 'notarized' is NOT offered: CA's will template requires no notary, so
+    // that rung does not exist for this document.
+    expect(await rungs()).toEqual(['executed', 'revoked']);
     const res = await request(server)
       .post(`/v1/documents/${documentId}/status`)
       .set(asOwner())
       .send({ status: 'executed', executedAt: '2026-07-23' })
       .expect(200);
-    const dto = res.body as DocumentDto;
+    const dto = res.body as DocumentDetailDto;
     expect(dto.executionStatus).toBe('executed');
     expect(dto.executedAt).toBe('2026-07-23');
+    // The transition's own answer carries the NEW ladder, so a client never
+    // renders a stale one for a round trip.
+    expect(dto.allowedTransitions).toEqual(['revoked', 'superseded']);
   });
 
   it('legal hold blocks deletion; without it, deletion is step-up gated and soft', async () => {

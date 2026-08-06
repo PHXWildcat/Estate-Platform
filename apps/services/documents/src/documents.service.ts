@@ -16,7 +16,7 @@ import { Db, type Queryable } from './db';
 import { DocumentsAuthz, documentResource } from './authz.service';
 import { DocumentsRepo, type DocumentRow } from './documents.repo';
 import { EventsService } from './events.service';
-import { allowsNewVersion, isTransitionAllowed } from './execution-status';
+import { allowedTransitions, allowsNewVersion, isTransitionAllowed } from './execution-status';
 import {
   DEK_REPOSITORY,
   MALWARE_SCANNER,
@@ -57,6 +57,24 @@ export interface DocumentDto {
   templateId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * One document, plus the execution transitions THIS document may take next.
+ *
+ * The ladder is parameterized by the template's `execution_requirements`
+ * (docs/02 §4), which live in the sha256-verified template SOURCE — so only
+ * this service can compute it. Returning it on the single-document read means a
+ * client renders the attestations this instrument in this state actually
+ * requires, instead of a hardcoded ladder that would silently offer a
+ * will-with-no-witnesses path (docs/03 risk #8: the per-state
+ * execution-requirement engine is a legal gate).
+ *
+ * Deliberately NOT on the list DTO: computing it costs a template load per
+ * document, and a list is not where anyone attests anything.
+ */
+export interface DocumentDetailDto extends DocumentDto {
+  allowedTransitions: ExecutionStatus[];
 }
 
 export interface VersionDto {
@@ -440,7 +458,7 @@ export class DocumentsService {
     actor: string,
     documentId: string,
     input: StatusTransitionInput,
-  ): Promise<DocumentDto> {
+  ): Promise<DocumentDetailDto> {
     if ((input.status === 'executed') !== (input.executedAt !== undefined)) {
       // executedAt accompanies exactly the `executed` attestation.
       throw new UnprocessableEntityException({ error: 'invalid_transition' });
@@ -465,8 +483,11 @@ export class DocumentsService {
       from: updated.execution_status,
       to: input.status,
     });
+    // The NEXT rung comes back with the answer: after an attestation the
+    // remaining formalities have changed, and a client that had to re-read to
+    // learn that would render a stale ladder for one round trip.
     const fresh = await this.requireLive(documentId);
-    return toDto(fresh);
+    return { ...toDto(fresh), allowedTransitions: await this.allowedTransitionsFor(fresh) };
   }
 
   /**
@@ -489,10 +510,35 @@ export class DocumentsService {
 
   // ------------------------------------------------------------------- queries
 
-  async get(actor: string, documentId: string): Promise<DocumentDto> {
+  async get(actor: string, documentId: string): Promise<DocumentDetailDto> {
     const doc = await this.requireLive(documentId);
     this.authz.assertCan(actor, 'read', documentResource(documentId, doc.user_id));
-    return toDto(doc);
+    return { ...toDto(doc), allowedTransitions: await this.allowedTransitionsFor(doc) };
+  }
+
+  /**
+   * The transitions this document may take next — FAIL CLOSED, and closed here
+   * means an EMPTY list rather than an error.
+   *
+   * `requirementsFor` refuses to guess when the ladder cannot be read from the
+   * sha256-verified template source (a soft-deleted template, an integrity
+   * mismatch), and that refusal must not be softened: offering `signed` for a
+   * will whose witness requirement is unknown is exactly the fail-open the M4
+   * review closed. But this is a READ, and failing the whole document read
+   * would make an otherwise-intact document unopenable because of its
+   * template's state. So the metadata still serves and the ladder is empty —
+   * nothing to attest, nothing guessed.
+   *
+   * This is advisory only: `transitionStatus` re-resolves the requirements
+   * inside its own transaction and refuses there too, so a client that ignores
+   * this list gains nothing.
+   */
+  private async allowedTransitionsFor(doc: DocumentRow): Promise<ExecutionStatus[]> {
+    try {
+      return allowedTransitions(doc.execution_status, await this.requirementsFor(doc));
+    } catch {
+      return [];
+    }
   }
 
   async list(actor: string): Promise<DocumentDto[]> {

@@ -236,6 +236,49 @@ export const DOCUMENT_QUERY = `query Document($documentId: ID!) {
     templateId
     createdAt
     updatedAt
+    allowedTransitions
+  }
+}`;
+
+export const DOCUMENT_SEARCH_QUERY = `query DocumentSearch($query: String!) {
+  documentSearch(query: $query) {
+    documentId
+    docType
+    source
+    title
+    currentVersion
+    executionStatus
+    executedAt
+    legalHold
+    sealed
+    templateId
+    createdAt
+    updatedAt
+  }
+}`;
+
+export const UPLOAD_DOCUMENT_MUTATION = `mutation UploadDocument($kind: String!, $title: String!, $mime: String!, $contentBase64: String!) {
+  uploadDocument(kind: $kind, title: $title, mime: $mime, contentBase64: $contentBase64) {
+    documentId
+    version
+    contentSha256
+    executionStatus
+    ocrIndexed
+  }
+}`;
+
+export const SET_DOCUMENT_STATUS_MUTATION = `mutation SetDocumentStatus($documentId: ID!, $status: String!, $executedAt: String) {
+  setDocumentStatus(documentId: $documentId, status: $status, executedAt: $executedAt) {
+    documentId
+    executionStatus
+    executedAt
+    allowedTransitions
+  }
+}`;
+
+export const DELETE_DOCUMENT_MUTATION = `mutation DeleteDocument($documentId: ID!) {
+  deleteDocument(documentId: $documentId) {
+    ok
   }
 }`;
 
@@ -307,6 +350,10 @@ export const operations = {
   DocumentContent: DOCUMENT_CONTENT_QUERY,
   GenerateDocument: GENERATE_DOCUMENT_MUTATION,
   RegenerateDocument: REGENERATE_DOCUMENT_MUTATION,
+  DocumentSearch: DOCUMENT_SEARCH_QUERY,
+  UploadDocument: UPLOAD_DOCUMENT_MUTATION,
+  SetDocumentStatus: SET_DOCUMENT_STATUS_MUTATION,
+  DeleteDocument: DELETE_DOCUMENT_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;
