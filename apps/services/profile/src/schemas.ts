@@ -96,6 +96,17 @@ export const RoleAssignmentSchema = z.object({
 });
 export type RoleAssignmentInput = z.infer<typeof RoleAssignmentSchema>;
 
+/**
+ * A link-redemption body. The code is the WHOLE request — no owner id, no contact
+ * id — which is what leaves no parameter in which to name an account (docs/03
+ * §6b). Bounded in length so an oversized body is refused before any hashing,
+ * and validated only for shape: the value is a secret and is never echoed.
+ */
+export const RedeemLinkSchema = z.object({
+  code: z.string().min(8).max(128),
+});
+export type RedeemLinkInput = z.infer<typeof RedeemLinkSchema>;
+
 export const PermissionGrantSchema = z.object({
   resource: z.string().regex(/^[a-z][a-z0-9_.]{0,63}$/, 'resource must be a lowercase token'),
   action: z.enum(['read', 'download', 'manage']),

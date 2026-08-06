@@ -199,14 +199,17 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     envVar: 'NOTIFICATIONS_INTERNAL_TOKEN',
     callee: 'notifications',
     // SEND ONLY. Vault and settlement send their M6/M7 waiting-period
-    // notifications and do nothing else to this service; identity is
+    // notifications; profile joined in M13 to tell an owner that somebody
+    // CLAIMED a link to one of their contacts (docs/03 §6g — a claim is the
+    // moment that person becomes able to open a death case, so a silent claim
+    // is the failure this notification exists to prevent). Identity is
     // deliberately NOT here — it never sends, it only feeds the recipient
     // store, which is the separate edge below.
-    holders: ['settlement', 'vault'],
+    holders: ['profile', 'settlement', 'vault'],
     guard: SHARED_GUARD,
     opens: ['POST /internal/v1/notifications/send'],
     grants:
-      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of nine notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address, no estate data, and cannot redirect delivery.',
+      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of ten notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address, no estate data, and cannot redirect delivery.',
   },
   {
     envVar: 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',

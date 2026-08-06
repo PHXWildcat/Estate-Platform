@@ -743,6 +743,94 @@ control. PR1 does not change it; PR2 owes a narrowed list projection under M12's
 audited-decrypt-volume rule, and this paragraph is the requirement, not an
 observation.
 
+## 6g. Threat-model delta — M13 the contact link ceremony (2026-08-06)
+
+`contacts.linked_user_id` had no write path anywhere in the platform until this
+change. That is why §6b could credit the linked-contact gate for intake being
+unable to enumerate while nobody could actually become a linked contact: the
+control was real and the capability behind it was unreachable. M13 PR3 makes it
+reachable, which activates every consequence §6b described.
+
+**What a link confers, stated in one place.** Being the linked user of a
+contact means: eligibility to open a settlement case against that owner (§5.1
+control 1's reporter test), resolvability as their executor when a case is
+verified (§5.1 control 5), and effectiveness of any `permission_grant` attached
+to a role assignment naming that contact (§5.5). None of those is granted by the
+link alone — each needs its own separate step — but none of them is reachable
+without it.
+
+**The ceremony.** Owner mints a 160-bit single-use code under step-up; the
+server stores only its sha256; the owner is shown it ONCE and delivers it out of
+band; the contact redeems it while authenticated on their own existing account.
+Three properties are load-bearing:
+
+- *No address is handled anywhere.* M9's shipped doctrine gives the notification
+  wire no content field and forbids links, so an emailed invitation would have
+  contradicted a decision made one milestone earlier. It also means this flow
+  adds no second home for a contact's email address.
+- *The code is the ONLY selector on redemption.* The route takes no owner id and
+  no contact id — there is no parameter in which to name an account, so
+  redemption cannot become an oracle for whether one exists. This is the same
+  property §6b credits intake with, preserved rather than re-argued.
+- *The redeemer must already have an account.* Not an invite-to-register flow,
+  and it cannot be used to create one.
+
+**Uniform refusal.** Unknown, expired, spent, revoked, self-directed and
+raced-away codes all answer `invalid_code`, byte-identical. Distinguishing them
+would tell whoever holds a guess that the guess named something real. Accepted
+cost: a legitimate user gets a vaguer message, paid down by letting the owner
+re-issue freely (which retires the previous code and audits the retirement).
+
+**Gate asymmetry, in both directions.** Minting is step-up gated — it hands out a
+capability on the §5.1 chain, so it sits with naming a fiduciary. Withdrawing an
+unused code and removing a live link are `CallerGuard` only, on the M6 rule that
+the protective action must never be harder than the permissive one. Redemption is
+`CallerGuard` only because the authority is the code.
+
+**FLAGGED DEVIATION: redemption takes no Cedar decision.** Every other route in
+this service passes a PEP first. Redemption cannot: the redeemer has no
+relationship to the estate until it succeeds, so every attribute a policy could
+match on is precisely what the code stands in for, and a decision there would
+read `deny` until the moment it read `allow` for reasons the policy could not
+see. The authority is a bearer capability. Recorded here rather than disguised.
+
+**Notifications are a PRECONDITION in production.** Redemption refuses (503
+`notifications_unavailable`, separately audited) behind an adapter that reaches
+nobody — the M6/M7/M9 rule. The reason is specific: a claim the owner never
+hears about is how a code that went to the wrong person becomes an invisible
+authorization edge, and the owner's out-of-band channel is this ceremony's trust
+anchor, so their after-the-fact visibility is what makes the anchor auditable.
+Profile therefore becomes the third holder of the notifications SEND credential —
+and deliberately not of the RECIPIENTS credential, so it can never repoint where
+anyone's alerts go (the M9 review's split, applied to a new holder).
+
+**Atomicity is a control, not hygiene.** Spending the invitation and writing the
+link happen in one transaction with each statement restating its own
+preconditions. A spend with no link would lock that contact out of ever being
+linked; a link from an invitation still live would be replayable. Two concurrent
+redemptions of one code therefore produce exactly one link and the loser rolls
+back — the CAS shape §6b's owner-liveness interlock uses, for the same reason.
+
+**ACCEPTED RESIDUALS, stated rather than implied.**
+
+- *The owner's channel is the trust anchor.* An owner who sends the code to the
+  wrong person links the wrong person. Detected rather than prevented: audited on
+  both sides with the redeemer as actor, notified to the owner, visible in their
+  contact list, and removable in one click. Identical in kind to M6's
+  grantee-fingerprint confirmation.
+- *The attempt cap bounds an online attack on a REAL code only.* An unknown code
+  leaves no row to count against, by construction. 160 bits is what makes
+  guessing infeasible; the counter is what an alert would watch. General
+  per-caller rate limiting on the redeem route is edge work (§4 TB1).
+- *A code lives in the owner's session response and wherever they put it next.*
+  It is not stored recoverably server-side, but it is a secret in a browser for
+  as long as that page is open, and in whatever channel the owner chooses. That
+  is inherent to an out-of-band ceremony.
+- *Unlinking does not revoke what the link already enabled.* A settlement case
+  the linked contact opened before being unlinked stays open — cases are evidence
+  and have no soft delete (§5.1 c6) — and is stopped by the owner's own
+  step-up-gated void route, not by unlinking.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

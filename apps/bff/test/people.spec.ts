@@ -390,6 +390,90 @@ describe('people resolvers', () => {
     );
   });
 
+  describe('the contact link ceremony (PR3)', () => {
+    it('mints a code and forwards the caller’s own bearer', async () => {
+      const res = await gql(
+        app,
+        {
+          query:
+            'mutation InviteContactLink($contactId: ID!) { inviteContactLink(contactId: $contactId) { code expiresAt } }',
+          variables: { contactId: CONTACT_SUMMARY.id },
+        },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors).toBeUndefined();
+      expect(gqlBody(res).data?.['inviteContactLink']).toEqual(profile.inviteLinkResult);
+      expect(profile.inviteLinkCalls).toEqual([
+        { accessToken: TOKENS.accessToken, contactId: CONTACT_SUMMARY.id },
+      ]);
+    });
+
+    it('withdraws a code and removes a link', async () => {
+      for (const [query, calls] of [
+        [
+          'mutation RevokeContactLinkInvitation($contactId: ID!) { revokeContactLinkInvitation(contactId: $contactId) { ok } }',
+          () => profile.revokeLinkInvitationCalls,
+        ],
+        [
+          'mutation UnlinkContact($contactId: ID!) { unlinkContact(contactId: $contactId) { ok } }',
+          () => profile.unlinkCalls,
+        ],
+      ] as const) {
+        const res = await gql(
+          app,
+          { query, variables: { contactId: CONTACT_SUMMARY.id } },
+          { cookie: COOKIE },
+        );
+        expect(gqlBody(res).errors).toBeUndefined();
+        expect(calls()).toHaveLength(1);
+      }
+    });
+
+    it('redeems by CODE ALONE — the mutation has no id to give it', async () => {
+      const res = await gql(
+        app,
+        {
+          query:
+            'mutation RedeemContactLink($code: String!) { redeemContactLink(code: $code) { ok } }',
+          variables: { code: 'ESL1-ABCD' },
+        },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors).toBeUndefined();
+      expect(profile.redeemLinkCalls).toEqual([
+        { accessToken: TOKENS.accessToken, code: 'ESL1-ABCD' },
+      ]);
+
+      // Not merely unused: there is no such argument, so no client can name an
+      // account here (docs/03 §6b's anti-enumeration property).
+      const bad = await gql(
+        app,
+        {
+          query:
+            'mutation Bad($code: String!, $ownerUserId: ID) { redeemContactLink(code: $code, ownerUserId: $ownerUserId) { ok } }',
+          variables: { code: 'ESL1-ABCD', ownerUserId: PROFILE.userId },
+        },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(bad).errors?.[0]?.message).toMatch(/Unknown argument "ownerUserId"/);
+    });
+
+    it('forwards STEPUP_REQUIRED on the mint without minting anything', async () => {
+      profile.profileError = bffError('STEPUP_REQUIRED');
+      const res = await gql(
+        app,
+        {
+          query:
+            'mutation InviteContactLink($contactId: ID!) { inviteContactLink(contactId: $contactId) { code } }',
+          variables: { contactId: CONTACT_SUMMARY.id },
+        },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors?.[0]?.extensions?.code).toBe('STEPUP_REQUIRED');
+      expect(gqlBody(res).data?.['inviteContactLink']).toBeUndefined();
+    });
+  });
+
   it('never invents a profile row when a save reads back as absent', async () => {
     // A save that reports success and then reads back nothing is a skew, and the
     // one thing it must not do is manufacture a row to return.

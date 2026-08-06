@@ -2462,6 +2462,76 @@ TOTP enrollment is now cached per user, because `enrollTotp` only revokes
 UNVERIFIED methods and enrolling twice would leave a user with two verified
 secrets and make `findActiveTotp`'s choice decide whether a later step-up works.
 
+#### PR2 — the surface (BFF's fourth non-identity downstream)
+
+`/people` becomes a real destination and the "Soon" preview retires. The
+load-bearing decision is the DECRYPT BUDGET: contact PII lives under the owner's
+DEK and every field read is one audited `crypto.field.decrypted`, so the list
+route was narrowed to a summary — one decrypt per row plus two plaintext columns,
+with `has*` flags derived from column nullity so a row says WHAT is on file
+without reading it. Email/phone/address/notes have no field on the GraphQL
+summary type at all, so no query can ask incidentally. Narrowing the SHARED route
+also tightens §5.5 for a grant-holder, which is why there is one projection and
+not two. Proven against the live stack's audit chain: `contact_list` decrypted
+only `contact.name` across five page loads.
+
+THE SSN IS DISPLAYED AND NEVER COLLECTED, by construction. No `ssn` argument on
+the mutation, no field in the BFF client, no input in the app — only `ssnLast4`,
+read-only, so an owner can see whether we hold one. With PR1's merge semantics
+that makes the column safe from this direction: a browser edit changing state
+CA→AZ left `ssn_ct`, `ssn_last4_ct` and `dob_ct` intact, and `profile.ssn` never
+appears in the decrypt trail at all — the carry moves ciphertext, so the full
+number was not decrypted even while saving.
+
+A DESIGNATION IS NOT ACCESS, said out loud: each condition carries its own
+sentence, `on_death_verified` states that a death must be reported, reviewed and
+confirmed after a waiting period, and a role with no permission says it reads
+none of the estate. Whether a contact has an account is shown too, as THREE
+values — a failed read passes null, not false, because "no account yet" is a
+claim about someone's estate.
+
+Three-way step-up asymmetry in one component: naming a role prompts inline and
+retries; REMOVING one prompts too (equal, never harder — revoking destroys the
+executor-resolution path); withdrawing a permission is one click. `StepUpPrompt`
+extracted at its third caller, with the two earlier ones left alone and the
+reason recorded (DocumentGenerator's prompt is inside a form; this renders one).
+
+Two service changes, both narrowings: the list projection, and owner-relative
+`GET /v1/contacts` + `/v1/contacts/:id` (the `/v1/profiles/:ownerUserId` routes
+are the cross-owner ABAC boundary and always were).
+
+#### PR3 — the contact link ceremony
+
+`contacts.linked_user_id` had no write path in the platform. Four test files set
+it with raw SQL and said so, which is why nobody could report a death, exercise a
+granted read, or be resolved as an executor. The ceremony: owner mints a 160-bit
+single-use code under step-up, the server stores only its sha256, the owner is
+shown it ONCE and delivers it out of band (the M6 grantee-fingerprint
+precedent), and the contact redeems it while authenticated on their own existing
+account.
+
+Shape forced by two shipped decisions and one threat: M9's notification doctrine
+has no content field and forbids links, so an emailed invite would contradict it;
+§6b's anti-enumeration property must survive, so the code is the ONLY selector on
+redemption and the route takes no id of any kind; and the redeemer must already
+have an account, so this cannot become an invite-to-register flow.
+
+Full record in docs/03 §6g, including the flagged deviation (redemption takes no
+Cedar decision — the authority is the capability, because the redeemer has no
+relationship to the estate until it succeeds) and four accepted residuals.
+Profile becomes the third holder of the notifications SEND credential and
+deliberately not of the RECIPIENTS one, so it can never repoint where alerts go.
+Redemption REFUSES in production behind a stub notifier: a claim the owner never
+hears about is how a mis-delivered code becomes an invisible authorization edge.
+
+Atomicity is a control here, not hygiene — spending the invitation and writing
+the link share one transaction with each statement restating its preconditions,
+so two concurrent redemptions produce exactly one link and the loser rolls back.
+A spend with no link would lock that contact out of ever being linked.
+
+Mutation-proven: dropping the self-redemption refusal, storing the code in
+plaintext, and dropping the mint's step-up each turn the suite red.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

@@ -8,7 +8,7 @@
  */
 import 'reflect-metadata';
 import type { Server } from 'node:http';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
@@ -89,6 +89,7 @@ describeIfPg('profile & contacts service end to end', () => {
       const { applied } = await migrator.migrate();
       expect(applied).toContain('001_core_schema.sql');
       expect(applied).toContain('002_dek_unique_active.sql');
+      expect(applied).toContain('003_contact_link_invitations.sql');
     } finally {
       await migrClient.end();
     }
@@ -424,6 +425,176 @@ describeIfPg('profile & contacts service end to end', () => {
     ).toMatchObject({ ssnLast4: '6789', stateOfResidence: 'AZ' });
   });
 
+  describe('the contact link ceremony (M13 PR3)', () => {
+    let inviteeId: string;
+    let code: string;
+
+    it('mints a code under step-up, and refuses without one', async () => {
+      const contact = await request(server)
+        .post('/v1/contacts')
+        .set('authorization', asUser(OWNER))
+        .send({ name: 'Invitee Person' });
+      inviteeId = (contact.body as { id: string }).id;
+
+      // Minting hands out a capability whose endpoint is an authorization edge
+      // on the docs/03 §5.1 chain, so it is gated like naming a fiduciary.
+      const refused = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asUser(OWNER));
+      expect(refused.status).toBe(403);
+      expect(refused.body).toEqual({ error: 'stepup_required' });
+
+      const minted = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      expect(minted.status).toBe(201);
+      code = (minted.body as { code: string }).code;
+      expect(code).toMatch(/^ESL1-/);
+
+      // ONLY THE HASH IS STORED. A database read — the docs/03 §5.3 insider, a
+      // leaked backup — must not yield a usable capability.
+      const { rows } = await admin.query(
+        `SELECT code_sha256, expires_at > now() AS live FROM ${schema}.contact_link_invitations
+          WHERE contact_id = $1`,
+        [inviteeId],
+      );
+      const row = rows[0] as { code_sha256: Buffer; live: boolean };
+      expect(row.live).toBe(true);
+      expect(row.code_sha256.toString('utf8')).not.toContain(code);
+      expect(row.code_sha256).toEqual(createHash('sha256').update(code, 'utf8').digest());
+    });
+
+    it('refuses every bad code with the SAME answer, and counts the attempt', async () => {
+      const wrong = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(GRANTEE))
+        .send({ code: 'ESL1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000' });
+      expect(wrong.status).toBe(400);
+      expect(wrong.body).toEqual({ error: 'invalid_code' });
+
+      // The OWNER cannot redeem their own invitation: they would become their
+      // own linked contact and so eligible to report their own death.
+      const selfDirected = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(OWNER))
+        .send({ code });
+      expect(selfDirected.status).toBe(400);
+      // Byte-identical to the unknown-code answer, so a refusal never reveals
+      // that the code was real.
+      expect(selfDirected.body).toEqual(wrong.body);
+
+      // ...but the attempt against a REAL invitation is counted.
+      const { rows } = await admin.query(
+        `SELECT attempts FROM ${schema}.contact_link_invitations WHERE contact_id = $1`,
+        [inviteeId],
+      );
+      expect((rows[0] as { attempts: number }).attempts).toBe(1);
+    });
+
+    it('links the redeemer, spends the code, and says nothing about the estate', async () => {
+      const redeemed = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(STRANGER))
+        .send({ code });
+      expect(redeemed.status).toBe(200);
+      // NOTHING about the estate comes back — not the owner, not the contact.
+      expect(redeemed.body).toEqual({ status: 'ok' });
+
+      const { rows } = await admin.query(
+        `SELECT c.linked_user_id, i.redeemed_by, i.redeemed_at IS NOT NULL AS spent
+           FROM ${schema}.contacts c
+           JOIN ${schema}.contact_link_invitations i ON i.contact_id = c.id
+          WHERE c.id = $1`,
+        [inviteeId],
+      );
+      expect(rows[0]).toMatchObject({
+        linked_user_id: STRANGER,
+        redeemed_by: STRANGER,
+        spent: true,
+      });
+
+      // The list now says the contact has an account, which is what decides
+      // whether any designation on them can be exercised.
+      const list = await request(server).get('/v1/contacts').set('authorization', asUser(OWNER));
+      expect(
+        (list.body as Array<{ id: string; linked: boolean }>).find((c) => c.id === inviteeId),
+      ).toMatchObject({ linked: true });
+    });
+
+    it('is ONE-SHOT: the same code cannot be used twice', async () => {
+      const replay = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(GRANTEE))
+        .send({ code });
+      expect(replay.status).toBe(400);
+      expect(replay.body).toEqual({ error: 'invalid_code' });
+    });
+
+    it('refuses to invite a contact that is already linked', async () => {
+      const again = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      expect(again.status).toBe(409);
+      expect(again.body).toEqual({ error: 'already_linked' });
+    });
+
+    it('unlinks WITHOUT a step-up — the protective direction stays easy', async () => {
+      const removed = await request(server)
+        .delete(`/v1/contacts/${inviteeId}/link`)
+        .set('authorization', asUser(OWNER));
+      expect(removed.status).toBe(204);
+      const { rows } = await admin.query(
+        `SELECT linked_user_id FROM ${schema}.contacts WHERE id = $1`,
+        [inviteeId],
+      );
+      expect((rows[0] as { linked_user_id: string | null }).linked_user_id).toBeNull();
+      // Idempotent-free: nothing to remove is a not-found, not a silent success.
+      expect(
+        (
+          await request(server)
+            .delete(`/v1/contacts/${inviteeId}/link`)
+            .set('authorization', asUser(OWNER))
+        ).status,
+      ).toBe(404);
+    });
+
+    it('re-issuing retires the previous code rather than refusing', async () => {
+      const first = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      const firstCode = (first.body as { code: string }).code;
+      const second = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      expect(second.status).toBe(201);
+
+      // The owner was told the first code once and may have lost it; the
+      // partial unique index would otherwise make re-issuing an error.
+      const stale = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(GRANTEE))
+        .send({ code: firstCode });
+      expect(stale.status).toBe(400);
+
+      // And withdrawing the live one needs no step-up either.
+      expect(
+        (
+          await request(server)
+            .delete(`/v1/contacts/${inviteeId}/link-invitation`)
+            .set('authorization', asUser(OWNER))
+        ).status,
+      ).toBe(204);
+    });
+
+    it('a stranger cannot invite on someone else’s contact', async () => {
+      const foreign = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(STRANGER));
+      // The owner cross-check turns a foreign id into a uniform not-found.
+      expect(foreign.status).toBe(404);
+    });
+  });
+
   it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {
     const newUser = randomUUID();
     const results = await Promise.all(
@@ -472,6 +643,10 @@ describeIfPg('profile & contacts service end to end', () => {
         'role.granted',
         'permission.granted',
         'permission.revoked',
+        'contact.link.invited',
+        'contact.link.claimed',
+        'contact.link.invitation_revoked',
+        'contact.link.removed',
         'crypto.field.decrypted', // every read decrypts through FieldCrypto
       ]),
     );

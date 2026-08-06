@@ -328,16 +328,19 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
   /**
    * Seed the decedent's estate through profile's REAL owner-authenticated API,
    * so the contact row carries genuine envelope-encrypted fields and a real
-   * DEK (the reporter later READS these contacts, which decrypts them). Only
-   * `linked_user_id` is set directly: it is unencrypted metadata normally set
-   * when a contact accepts an invite, and no invite flow exists yet.
+   * DEK (the reporter later READS these contacts, which decrypts them). Since
+   * M13 PR3 the link itself goes through the REAL ceremony too — the owner
+   * mints a code under step-up and the reporter redeems it on their own
+   * bearer — so the §5.1 chain this file proves now starts from the platform's
+   * actual write path for `linked_user_id`, not from raw SQL standing in for a
+   * flow that did not exist yet.
    *
    * The contact gets two designations: an executor role effective
    * on_death_verified (what makes the reporter a plausible settlement
    * reporter) and an immediate viewer role with a contact-read grant (the
    * live non-owner read path whose freeze this test asserts).
    */
-  async function seedEstate(owner: User, linkedUserId: string): Promise<void> {
+  async function seedEstate(owner: User, reporter: User): Promise<void> {
     const profile = supertest(profileApp.getHttpServer() as Parameters<typeof supertest>[0]);
     const created = await profile
       .post('/v1/contacts')
@@ -345,15 +348,21 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       .send({ name: 'Estate Contact', relationship: 'child' })
       .expect(201);
     const contactId = (created.body as { id: string }).id;
-    await coreAdmin.query(`UPDATE contacts SET linked_user_id = $2 WHERE id = $1`, [
-      contactId,
-      linkedUserId,
-    ]);
 
     // Naming a fiduciary is a docs/01 §5 step-up action (M13 PR1), so seeding
     // uses a separate elevated session — see `elevatedBearer` for why it must
-    // not be the owner's primary one.
+    // not be the owner's primary one. Minting a link code (M13 PR3) is gated
+    // the same way and shares the session.
     const elevated = await elevatedBearer(owner);
+    const minted = await profile
+      .post(`/v1/contacts/${contactId}/link-invitation`)
+      .set(elevated)
+      .expect(201);
+    await profile
+      .post('/v1/contact-links/redeem')
+      .set(reporter.bearer)
+      .send({ code: (minted.body as { code: string }).code })
+      .expect(200);
     await profile
       .post('/v1/role-assignments')
       .set(elevated)
@@ -384,7 +393,7 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     const owner = await registerAndLogin('owner');
     const reporter = await registerAndLogin('reporter');
     const operator = await registerAndLogin('operator');
-    await seedEstate(owner, reporter.userId);
+    await seedEstate(owner, reporter);
     // The operator allowlist has no runtime grant API; this INSERT is the
     // ops-CLI write path.
     await admin.query(`INSERT INTO ${coreSchema}.settlement_operators (user_id) VALUES ($1)`, [
@@ -550,7 +559,7 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     const settlement = supertest(settlementApp.getHttpServer() as Parameters<typeof supertest>[0]);
     const owner2 = await registerAndLogin('owner2');
     const reporter2 = await registerAndLogin('reporter2');
-    await seedEstate(owner2, reporter2.userId);
+    await seedEstate(owner2, reporter2);
 
     const reported = await settlement
       .post('/v1/settlement/cases')

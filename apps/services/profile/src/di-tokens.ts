@@ -6,6 +6,8 @@ export const FIELD_CRYPTO = Symbol('FIELD_CRYPTO');
 export const DEK_REPOSITORY = Symbol('DEK_REPOSITORY');
 export const POLICY_DECISION_POINT = Symbol('POLICY_DECISION_POINT');
 export const CLOCK = Symbol('CLOCK');
+/** The owner-notification adapter for the M13 contact link ceremony. */
+export const LINK_NOTIFIER = Symbol('LINK_NOTIFIER');
 
 /** Injectable clock so grant-freshness math is testable without real time. */
 export type Clock = () => Date;

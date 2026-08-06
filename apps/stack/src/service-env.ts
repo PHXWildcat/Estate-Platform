@@ -26,7 +26,10 @@ import {
 /** Which peers each service (and the BFF) calls, hence which *_URL it gets. */
 const PEERS: Record<string, readonly string[]> = {
   identity: ['notifications'],
-  profile: ['identity'],
+  // M13: profile tells an owner when somebody claimed a link to one of their
+  // contacts. Send-only — it holds the SEND credential and not the recipients
+  // one, so it cannot repoint where anybody's notifications go.
+  profile: ['identity', 'notifications'],
   assets: ['identity', 'settlement'],
   plaid: ['identity'],
   documents: ['identity', 'settlement'],
@@ -117,6 +120,7 @@ export function serviceProcessEnv(
       break;
     case 'profile':
       out['EMAIL_INDEX_KEY_HEX'] = fromFile(env, 'PROFILE_EMAIL_INDEX_KEY_HEX');
+      out['NOTIFY_MODE'] = fromFile(env, 'PROFILE_NOTIFY_MODE');
       break;
     case 'plaid':
       out['ITEM_INDEX_KEY_HEX'] = fromFile(env, 'PLAID_ITEM_INDEX_KEY_HEX');

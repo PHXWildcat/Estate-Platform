@@ -46,6 +46,7 @@ import type {
   ContactSummary,
   FamilyMember,
   FamilyMemberInput,
+  LinkInvitation,
   PermissionGrant,
   PermissionGrantInput,
   Profile,
@@ -713,6 +714,36 @@ export class FakeProfileClient implements ProfileClient {
 
   revokePermission(accessToken: string, roleAssignmentId: string, grantId: string): Promise<void> {
     this.revokePermissionCalls.push({ accessToken, roleAssignmentId, grantId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  inviteLinkCalls: Array<{ accessToken: string; contactId: string }> = [];
+  revokeLinkInvitationCalls: Array<{ accessToken: string; contactId: string }> = [];
+  unlinkCalls: Array<{ accessToken: string; contactId: string }> = [];
+  redeemLinkCalls: Array<{ accessToken: string; code: string }> = [];
+
+  inviteLinkResult: LinkInvitation = {
+    code: 'ESL1-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345-6789-ABCD',
+    expiresAt: '2026-08-13T00:00:00.000Z',
+  };
+
+  inviteLink(accessToken: string, contactId: string): Promise<LinkInvitation> {
+    this.inviteLinkCalls.push({ accessToken, contactId });
+    return this.reject() ?? Promise.resolve(this.inviteLinkResult);
+  }
+
+  revokeLinkInvitation(accessToken: string, contactId: string): Promise<void> {
+    this.revokeLinkInvitationCalls.push({ accessToken, contactId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  unlink(accessToken: string, contactId: string): Promise<void> {
+    this.unlinkCalls.push({ accessToken, contactId });
+    return this.reject() ?? Promise.resolve();
+  }
+
+  redeemLink(accessToken: string, code: string): Promise<void> {
+    this.redeemLinkCalls.push({ accessToken, code });
     return this.reject() ?? Promise.resolve();
   }
 

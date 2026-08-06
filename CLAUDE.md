@@ -1557,3 +1557,70 @@ deviating from them, stop and propose the change with rationale — do not silen
   is cached per user because `enrollTotp` only revokes UNVERIFIED methods, so
   enrolling twice would leave two verified secrets and make `findActiveTotp`'s
   choice decide whether a later step-up works.
+- 2026-08-06 — M13 PR2 (the people surface): the BFF's FOURTH non-identity
+  downstream on the established terms, and /people stops being a "Soon" preview.
+  THE DECRYPT BUDGET IS THE DESIGN: contact PII is under the owner's DEK and
+  every field read is one audited `crypto.field.decrypted`, so the list route was
+  NARROWED to a summary — one decrypt per row (the name) plus two plaintext
+  columns, with `has*` flags from column nullity so a row says WHAT is on file
+  without reading it, and NO email/phone/address/notes field on the GraphQL
+  summary type so no query can ask incidentally. Narrowing the SHARED route also
+  tightens §5.5 for a grant-holder (details now cost them one audited read each),
+  which is why there is ONE projection rather than two branched by audience.
+  Verified against the live stack's audit chain: `contact_list` decrypted only
+  `contact.name` across five page loads. THE SSN IS DISPLAYED AND NEVER
+  COLLECTED — no `ssn` argument on the mutation, no field in the BFF client, no
+  input in the app, only read-only `ssnLast4` so an owner can see whether we hold
+  one; with PR1's merge semantics a real browser edit (CA→AZ) left ssn_ct,
+  ssn_last4_ct and dob_ct intact AND `profile.ssn` never appeared in the decrypt
+  trail, because the carry moves ciphertext. A DESIGNATION IS NOT ACCESS is said
+  out loud per condition, and `linked` is THREE-VALUED (a failed read passes
+  null, never false — "no account yet" is a claim about someone's estate).
+  Three-way step-up asymmetry: name a role → prompt + retry; REMOVE a role →
+  prompt too (equal, never harder); withdraw a permission → one click.
+  `StepUpPrompt` extracted at its third caller; the two earlier callers stay as
+  they are and the reason is recorded in the component (DocumentGenerator's
+  prompt is INSIDE a form and this renders one, and an "actually a div" mode
+  would put the branch back inside the shared thing).
+- 2026-08-06 — M13 PR3, THE CONTACT LINK CEREMONY. `contacts.linked_user_id` had
+  no write path anywhere: four test files set it in raw SQL and said so, which is
+  why §6b's linked-contact gate was a real control guarding an unreachable
+  capability. Owner mints a 160-bit single-use code under STEP-UP; the server
+  stores only sha256(code); the owner is shown it ONCE and delivers it OUT OF
+  BAND (the M6 grantee-fingerprint precedent); the contact redeems it while
+  authenticated on THEIR OWN existing account. The shape is forced, not chosen:
+  M9's notification doctrine has no content field and forbids links, so an
+  emailed invite would contradict a decision one milestone old; §6b's
+  anti-enumeration property survives only if the CODE IS THE ONLY SELECTOR, so
+  the redeem route takes no owner id and no contact id and there is nowhere in it
+  to name an account; and requiring an existing account keeps this from becoming
+  an invite-to-register flow. EVERY REDEMPTION FAILURE IS ONE ANSWER
+  (`invalid_code`) — unknown, expired, spent, revoked, self-directed, raced —
+  because distinguishing them tells whoever holds a guess that it named something
+  real; the cost is a vaguer message for an honest user, paid down by free
+  re-issue (which retires the previous code and audits the retirement).
+  ASYMMETRIC IN BOTH DIRECTIONS: minting is step-up gated (it hands out a
+  capability on the §5.1 chain), while withdrawing a code and removing a live
+  link are CallerGuard only (M6 — the protective action must never be harder).
+  Self-redemption is refused because linking yourself to your own contact would
+  make you eligible to report your own death.
+- 2026-08-06 — Two pieces of M13 PR3 machinery worth their own entries. (1)
+  ATOMICITY IS THE CONTROL: spending the invitation and writing the link share
+  ONE transaction, each statement restating its own preconditions, because a
+  spend with no link locks that contact out of ever being linked and a link from
+  a still-live invitation is replayable. A data-modifying CTE cannot express
+  that — its UPDATE commits even when the outer statement matches nothing — so
+  profile adopted the assets service's `withTransaction` chokepoint, and the
+  version-capture trigger records the REDEEMER as actor, which is what the trail
+  should say. Two concurrent redemptions produce exactly one link and the loser
+  rolls back (the M7 owner-liveness CAS shape). (2) REDEMPTION TAKES NO CEDAR
+  DECISION, and it is flagged in docs/03 §6g rather than disguised: every other
+  route in the service passes a PEP, but the redeemer has no relationship to the
+  estate until redemption succeeds, so every attribute a policy could match on is
+  exactly what the code stands in for — the authority is a bearer capability.
+  Also: profile becomes the THIRD holder of the notifications SEND credential and
+  deliberately NOT of the RECIPIENTS one (the M9 review's split applied to a new
+  holder — profile has no business repointing where anyone's alerts go), and
+  redemption REFUSES in production behind a stub notifier, because a claim the
+  owner never hears about is how a mis-delivered code becomes an invisible
+  authorization edge.

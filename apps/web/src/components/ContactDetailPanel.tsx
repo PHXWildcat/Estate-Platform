@@ -7,6 +7,7 @@ import { gqlRequest, type ContactDetailInfo, type ContactSummaryInfo } from '../
 import { messageFor } from '../lib/copy';
 import { professionalLabel, PROFESSIONAL_KINDS } from '../lib/people';
 import { FormStatus } from './FormStatus';
+import { ContactLinkControls } from './ContactLinkControls';
 import { RoleControls } from './RoleControls';
 
 /**
@@ -364,6 +365,13 @@ export function ContactDetailPanel({ contactId }: ContactDetailPanelProps): Reac
        * their estate, on the strength of a failed request. Same shape as the
        * version-skew defects M11 and M12 each found by running the real app.
        */}
+      <ContactLinkControls
+        contactId={contactId}
+        contactName={contact.name}
+        linked={summary === null ? null : summary.linked}
+        onChanged={load}
+      />
+
       <RoleControls
         contactId={contactId}
         contactName={contact.name}

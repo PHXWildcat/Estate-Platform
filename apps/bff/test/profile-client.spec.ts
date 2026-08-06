@@ -237,6 +237,37 @@ describe('FetchProfileClient', () => {
         reply: [],
       },
       {
+        name: 'inviteLink',
+        call: (c) => c.inviteLink(TOKEN, 'f1'),
+        method: 'POST',
+        path: '/v1/contacts/f1/link-invitation',
+        reply: { code: 'ESL1-ABCD-EFGH', expiresAt: '2026-08-13T00:00:00.000Z' },
+      },
+      {
+        name: 'revokeLinkInvitation',
+        call: (c) => c.revokeLinkInvitation(TOKEN, 'f1'),
+        method: 'DELETE',
+        path: '/v1/contacts/f1/link-invitation',
+        reply: {},
+      },
+      {
+        name: 'unlink',
+        call: (c) => c.unlink(TOKEN, 'f1'),
+        method: 'DELETE',
+        path: '/v1/contacts/f1/link',
+        reply: {},
+      },
+      {
+        name: 'redeemLink',
+        call: (c) => c.redeemLink(TOKEN, 'ESL1-ABCD'),
+        method: 'POST',
+        path: '/v1/contact-links/redeem',
+        // The code is the WHOLE body: no owner id, no contact id, nothing in
+        // which to name an account (docs/03 §6b).
+        body: { code: 'ESL1-ABCD' },
+        reply: { status: 'ok' },
+      },
+      {
         name: 'grantPermission',
         call: (c) => c.grantPermission(TOKEN, 'e1', { resource: 'contact', action: 'read' }),
         method: 'POST',
@@ -289,6 +320,17 @@ describe('FetchProfileClient', () => {
     ])('maps %i %s to %s', async (status, token, code) => {
       const fetchFn = jest.fn().mockResolvedValue(response(status, { error: token }));
       await expect(client(fetchFn).contacts(TOKEN)).rejects.toMatchObject({
+        extensions: { code },
+      });
+    });
+
+    it.each([
+      [409, 'already_linked', 'ALREADY_LINKED'],
+      [400, 'invalid_code', 'INVALID_LINK_CODE'],
+      [503, 'notifications_unavailable', 'NOTIFICATIONS_UNAVAILABLE'],
+    ])('maps the ceremony refusal %i %s to %s', async (status, token, code) => {
+      const fetchFn = jest.fn().mockResolvedValue(response(status, { error: token }));
+      await expect(client(fetchFn).redeemLink(TOKEN, 'ESL1-X')).rejects.toMatchObject({
         extensions: { code },
       });
     });

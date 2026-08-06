@@ -124,7 +124,11 @@ describe('graph lookup helpers', () => {
     // notify this user" must not also mean "may decide where their alerts go".
     const inbound = inboundCredentialsFor('notifications');
     expect(inbound.map((e) => e.envVar)).toEqual([NOTIFICATIONS, NOTIFICATIONS_RECIPIENTS]);
+    // M13 added profile: it tells an owner when somebody CLAIMED a link to one
+    // of their contacts. Send-only, like the other two — profile has no business
+    // deciding where anybody's notifications go.
     expect(inbound.find((e) => e.envVar === NOTIFICATIONS)?.holders).toEqual([
+      'profile',
       'settlement',
       'vault',
     ]);
@@ -151,7 +155,8 @@ describe('graph lookup helpers', () => {
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([
       NOTIFICATIONS_RECIPIENTS,
     ]);
-    expect(outboundCredentialsFor('profile')).toEqual([]);
+    // M13: profile's first outbound credential, and the SEND one only.
+    expect(outboundCredentialsFor('profile').map((e) => e.envVar)).toEqual([NOTIFICATIONS]);
   });
 
   it('grants settlement four distinct variables, never the same one twice', () => {
@@ -171,9 +176,14 @@ describe('graph lookup helpers', () => {
   });
 
   it('grants nothing to services with no service-to-service reach', () => {
-    for (const service of ['profile', 'assets', 'plaid', 'audit'] as const) {
+    // Profile left this list in M13 when it gained the notifications SEND
+    // credential — and gained nothing else: it holds no inbound credential, so
+    // no peer can address it with anything but a user's own bearer.
+    for (const service of ['assets', 'plaid', 'audit'] as const) {
       expect(credentialEnvVarsFor(service)).toEqual([]);
     }
+    expect(credentialEnvVarsFor('profile')).toEqual([NOTIFICATIONS]);
+    expect(inboundCredentialsFor('profile')).toEqual([]);
   });
 
   it('grants documents its own inbound credential and no outbound one', () => {

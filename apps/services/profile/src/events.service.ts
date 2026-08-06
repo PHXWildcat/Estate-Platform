@@ -137,6 +137,71 @@ export class EventsService {
   }
 
   /**
+   * The contact link ceremony (M13 PR3). Four events, because four different
+   * things happen to an authorization edge and an investigation of a docs/03
+   * §5.1 report needs each of them separately: a code was offered, a code was
+   * used, a code was retired unused, a live link was removed.
+   *
+   * `resourceId` is the CONTACT throughout, so the whole life of one link reads
+   * as one thread. The actor differs by event and that difference is the point —
+   * the owner invites and removes, the REDEEMER claims.
+   */
+  async contactLinkInvited(actorId: string, contactId: string): Promise<void> {
+    await this.contactLink('contact.link.invited', actorId, contactId);
+  }
+
+  async contactLinkClaimed(actorId: string, contactId: string): Promise<void> {
+    await this.contactLink('contact.link.claimed', actorId, contactId);
+  }
+
+  async contactLinkInvitationRevoked(actorId: string, contactId: string): Promise<void> {
+    await this.contactLink('contact.link.invitation_revoked', actorId, contactId);
+  }
+
+  async contactLinkRemoved(actorId: string, contactId: string): Promise<void> {
+    await this.contactLink('contact.link.removed', actorId, contactId);
+  }
+
+  private async contactLink(
+    action:
+      | 'contact.link.invited'
+      | 'contact.link.claimed'
+      | 'contact.link.invitation_revoked'
+      | 'contact.link.removed',
+    actorId: string,
+    contactId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action,
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'contact',
+      resourceId: contactId,
+      sessionId: null,
+    });
+  }
+
+  /**
+   * The production notifications precondition refusing a redemption. Recorded
+   * because a control firing must not be indistinguishable from an outage in the
+   * very stream operators watch (the M9 rule). No resource: the refusal happens
+   * before any invitation is looked up, so there is nothing yet to name — and
+   * looking one up first would make the refusal depend on the code.
+   */
+  async contactLinkNotificationsRefused(actorId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'contact.link.notifications_refused',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'contact',
+      resourceId: null,
+      sessionId: null,
+    });
+  }
+
+  /**
    * A grant withdrawn. No `detail`: the resource/action pair is already on the
    * `permission.granted` event for this same id, and the grant row survives with
    * its `revoked_at` set, so repeating it here would add nothing an

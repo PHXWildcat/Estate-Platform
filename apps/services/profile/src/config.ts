@@ -70,8 +70,51 @@ const EnvSchema = z
     // (CallerGuard introspects the caller's token). Required IN production; dev
     // defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
+    /*
+     * OWNER NOTIFICATIONS for the M13 contact link ceremony. Profile's first
+     * outbound service credential, and its first peer of any kind.
+     *
+     * Production PINS the real adapter by NAMING THE STUB, so a third mode
+     * cannot be silently admitted (the M10 rule). The reason it is a hard
+     * requirement rather than a preference: redemption REFUSES in production
+     * behind an adapter that reaches nobody, because a link claimed silently is
+     * how somebody who obtained a code acquires a docs/03 §5.1 reporter
+     * capability with the owner never hearing about it.
+     */
+    NOTIFY_MODE: z.enum(['stub', 'http']).default('stub'),
+    NOTIFICATIONS_URL: z.string().url().optional(),
+    // OUTBOUND: presented to the notifications service's SEND route and nothing
+    // else (credential-graph.ts). Profile is deliberately NOT a holder of the
+    // recipients credential — it has no business repointing where anybody's
+    // notifications go, which is the split the M9 review forced.
+    NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production' && env.NOTIFY_MODE === 'stub') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOTIFY_MODE'],
+        message:
+          'NOTIFY_MODE must not be "stub" in production (the stub notifier reaches nobody, and link redemption refuses behind it)',
+      });
+    }
+    if (env.NOTIFY_MODE === 'http' && !env.NOTIFICATIONS_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOTIFICATIONS_URL'],
+        message: 'NOTIFICATIONS_URL is required when NOTIFY_MODE is "http"',
+      });
+    }
+    if (env.NODE_ENV === 'production') {
+      if (!env.NOTIFICATIONS_INTERNAL_TOKEN || env.NOTIFICATIONS_INTERNAL_TOKEN.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; an owner who is never told a link was claimed cannot remove it)',
+        });
+      }
+    }
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -159,6 +202,11 @@ export interface ProfileConfig {
   readonly kekAlias: string;
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
+  /** Owner-notification adapter selection (M13 link ceremony). */
+  readonly notify: { readonly mode: 'stub' | 'http' };
+  readonly notificationsUrl: string;
+  /** Empty ⇒ the client short-circuits and every send records as undelivered. */
+  readonly notificationsInternalToken: string;
 }
 
 export class ConfigError extends Error {
@@ -206,5 +254,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProfileConfig 
     kekAlias: 'core/kek',
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
+    notify: { mode: e.NOTIFY_MODE },
+    notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
+    notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
   };
 }

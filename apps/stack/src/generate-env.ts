@@ -207,6 +207,11 @@ export function generateEnv(
       // production rehearsal's 503 notifications_unavailable answers.
       ['VAULT_NOTIFY_MODE', 'http'],
       ['SETTLEMENT_NOTIFY_MODE', 'http'],
+      // M13: profile joined the same carrier path to tell an owner when
+      // somebody claimed a link to one of their contacts. Real in BOTH modes for
+      // the same reason as the other two — nothing about it needs a third-party
+      // credential, so the stack can prove the whole path.
+      ['PROFILE_NOTIFY_MODE', 'http'],
       ['NOTIFICATIONS_EMAIL_MODE', 'ses'],
       ['SES_FROM_ADDRESS', 'no-reply@stack.estate.local'],
       ['PLAID_MODE', production ? 'live' : 'stub'],

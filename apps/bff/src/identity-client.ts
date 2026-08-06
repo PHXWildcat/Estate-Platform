@@ -130,7 +130,21 @@ export type BffErrorCode =
    * designations (M13 PR1), so the refusal has to say what to do about it —
    * revoke the roles naming this person first.
    */
-  | 'CONTACT_IN_USE';
+  | 'CONTACT_IN_USE'
+  /** The contact already has a platform user linked to it (M13). */
+  | 'ALREADY_LINKED'
+  /**
+   * A link code was refused. ONE code for every reason — unknown, expired,
+   * spent, revoked, self-directed — because distinguishing them tells whoever is
+   * holding a guess that it named something real (M13).
+   */
+  | 'INVALID_LINK_CODE'
+  /**
+   * Redemption refused because the owner could not be told about it. Not an
+   * outage to work around: the notification IS the control that makes a claimed
+   * link visible to the person whose estate it opens (M13).
+   */
+  | 'NOTIFICATIONS_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -149,6 +163,9 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNSUPPORTED_CONTENT: 'That file type is not accepted',
   SCAN_UNAVAILABLE: 'That file could not be checked for malware',
   CONTACT_IN_USE: 'This person still holds a role in your estate',
+  ALREADY_LINKED: 'This person already has an account linked',
+  INVALID_LINK_CODE: 'That invitation code was not accepted',
+  NOTIFICATIONS_UNAVAILABLE: 'We cannot notify the account owner right now',
 };
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */

@@ -846,6 +846,47 @@ describeIfStack('the running stack', () => {
       expect(refusedDelete.status).toBe(409);
       expect(refusedDelete.body).toEqual({ error: 'contact_in_use' });
 
+      // THE LINK CEREMONY (PR3), over the live stack: the owner mints a code
+      // (step-up-gated; `owner` is already elevated), a SECOND real user
+      // redeems it on their own bearer, and the platform tells the owner
+      // through the REAL carrier path. The code is the only selector — the
+      // redeem body has no id in it anywhere.
+      const minted = expectStatus(
+        await api(PROFILE_URL, 'POST', `/v1/contacts/${contact.id}/link-invitation`, {
+          token: owner.token,
+        }),
+        201,
+        'mint link code',
+      ) as { code: string };
+      // 160 bits: ESL1- plus 32 base32 characters (the M6 fingerprint-width
+      // lesson — the width IS the security parameter, so the live artifact is
+      // where it gets checked).
+      expect(minted.code.replace(/^ESL1-/, '').replace(/-/g, '')).toHaveLength(32);
+
+      const redeemer = await registerAndLogin();
+      expectStatus(
+        await api(PROFILE_URL, 'POST', '/v1/contact-links/redeem', {
+          token: redeemer.token,
+          body: { code: minted.code },
+        }),
+        200,
+        'redeem link code',
+      );
+      // One-shot: the same code answers the uniform refusal now.
+      const replay = await api(PROFILE_URL, 'POST', '/v1/contact-links/redeem', {
+        token: redeemer.token,
+        body: { code: minted.code },
+      });
+      expect(replay.status).toBe(400);
+      expect(replay.body).toEqual({ error: 'invalid_code' });
+      // The list shows the link — the fact that decides whether designations work.
+      const linkedList = expectStatus(
+        await api(PROFILE_URL, 'GET', '/v1/contacts', { token: owner.token }),
+        200,
+        'list after link',
+      ) as Array<{ id: string; linked: boolean }>;
+      expect(linkedList.find((entry) => entry.id === contact.id)).toMatchObject({ linked: true });
+
       // Grants can now be read AND withdrawn — M2 shipped only the write.
       const grant = expectStatus(
         await api(PROFILE_URL, 'POST', `/v1/role-assignments/${assignment.id}/permissions`, {
@@ -906,6 +947,8 @@ describeIfStack('the running stack', () => {
           // without — an owner could widen a role-holder's reach and never
           // narrow it, and nothing recorded the narrowing when they could.
           'permission.revoked',
+          // M13 PR3: the claim, audited with the REDEEMER as actor.
+          'contact.link.claimed',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(
