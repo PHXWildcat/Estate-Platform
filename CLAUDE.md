@@ -1454,4 +1454,26 @@ deviating from them, stop and propose the change with rationale — do not silen
   PDF parser on attacker bytes inside our frame tree; filenames from ids, never
   from the user-authored title) — without which `Read` was spending an audited
   decrypt to display nothing.
+- 2026-08-06 — `TemplateEngine`'s cache EXPIRES, and the reason is detection
+  rather than correctness. The key `(row id, sha)` COMMITS TO THE CONTENT — an
+  entry can only be a parse whose bytes hashed to the sha in its own key, and a
+  published version is immutable — so a warm cache never could serve a tampered
+  parse; swap the object-store body and a warm process kept serving the
+  legitimate one. What it cost was that the process STOPPED LOOKING, so a swap
+  went unremarked for the process's lifetime. That was tolerable while nothing
+  acted on the signal and stopped being so the moment M12 gave the check an
+  audit event: an alarm wired to a check that only runs on cold starts is an
+  alarm that mostly does not run. `TEMPLATE_CACHE_TTL_MS` (5 min) is a reviewed
+  CONSTANT, not config, because it is a detection-latency parameter — the
+  longest a swapped body can sit in front of a replica unreported;
+  `TEMPLATE_CACHE_MAX_ENTRIES` bounds a key space that grows with every
+  republication (a new version is a new ROW) for the life of the process.
+  Consequence is MORE fail-closed: past the TTL a tampered body makes `load`
+  throw where it used to serve the cached parse, and all three callers were
+  already built for that throw (generation refuses, the ladder degrades to
+  de-escalation and audits, the catalog omits the template). Accepted residual,
+  stated rather than implied: within one TTL a warm process neither serves nor
+  notices a swap, and closing that means verifying on every load — N
+  object-store reads per catalog request on a user-facing route — for a
+  detector whose job is to raise an alarm, not to gate each read.
 
