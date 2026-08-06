@@ -7,5 +7,8 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // M11 measured 86.13/84.55/86.20/86.68 with the conversation resolvers and
   // their client under test. Set just below, never above a measured run — the
   // M10 PR3 lesson about a floor nobody had run.
-  coverageThreshold: { global: { statements: 86, branches: 84, functions: 86, lines: 86 } },
+  // RATCHETED at M12 (the documents surface): measured 88.04/85.93/88.07/88.68
+  // with the documents client, its error mapping and the intake collapsing
+  // under test.
+  coverageThreshold: { global: { statements: 88, branches: 85, functions: 88, lines: 88 } },
 });

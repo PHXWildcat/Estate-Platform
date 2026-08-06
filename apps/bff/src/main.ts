@@ -3,6 +3,7 @@ import { createBffApp } from './app';
 import { FetchAssetsClient } from './assets-client';
 import { FetchAssistantClient } from './assistant-client';
 import { loadConfig } from './config';
+import { FetchDocumentsClient } from './documents-client';
 import { FetchIdentityClient } from './identity-client';
 
 async function bootstrap(): Promise<void> {
@@ -14,6 +15,7 @@ async function bootstrap(): Promise<void> {
     identity: new FetchIdentityClient(config.identityUrl),
     assets: new FetchAssetsClient(config.assetsUrl),
     assistant: new FetchAssistantClient(config.aiAssistantUrl),
+    documents: new FetchDocumentsClient(config.documentsUrl),
   });
   app.enableShutdownHooks();
   await app.listen(config.port);

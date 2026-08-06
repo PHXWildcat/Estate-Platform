@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
-import { messageFor } from '../lib/copy';
+import { messageFor, stepUpMessageFor } from '../lib/copy';
 import { validateTotpCode } from '../lib/validation';
 import { FormStatus } from './FormStatus';
 
@@ -128,7 +128,10 @@ export function ConsentControls({ granted, onChanged }: ConsentControlsProps): R
     const stepUp = await gqlRequest('StepUp', { code });
     setStepUpBusy(false);
     if (!stepUp.ok) {
-      setCodeError(messageFor(stepUp.code));
+      // Corrected in M12, which found the same bug on its own step-up prompt:
+      // a rejected TOTP code came back as the login copy ("that email and
+      // password combination didn't work") on a form with neither on it.
+      setCodeError(stepUpMessageFor(stepUp.code));
       return;
     }
     setCode('');

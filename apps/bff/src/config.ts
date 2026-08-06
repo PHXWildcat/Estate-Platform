@@ -26,6 +26,15 @@ const EnvSchema = z
      */
     AI_ASSISTANT_URL: z.string().url().default('http://localhost:3009'),
     /**
+     * Base URL of the document service (M12, the third non-identity
+     * downstream). Same posture again — the caller's own bearer is forwarded
+     * and no credential is held, so a wrong value fails closed. Note what is
+     * NOT reachable from here whatever this points at: documents' two internal
+     * routes are service-credential guarded, and the BFF holds no such
+     * credential in either direction.
+     */
+    DOCUMENTS_URL: z.string().url().default('http://localhost:3005'),
+    /**
      * Path to the persisted-operations manifest (JSON: sha256 hex → GraphQL
      * document). Optional in dev/test (empty manifest ⇒ arbitrary operations
      * are still allowed there); REQUIRED in production, where only manifest
@@ -51,6 +60,7 @@ export interface BffConfig {
   readonly identityUrl: string;
   readonly assetsUrl: string;
   readonly aiAssistantUrl: string;
+  readonly documentsUrl: string;
   /** null means "no manifest" (never allowed in production). */
   readonly persistedManifestPath: string | null;
 }
@@ -77,6 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BffConfig {
     identityUrl: e.IDENTITY_URL.replace(/\/+$/, ''),
     assetsUrl: e.ASSETS_URL.replace(/\/+$/, ''),
     aiAssistantUrl: e.AI_ASSISTANT_URL.replace(/\/+$/, ''),
+    documentsUrl: e.DOCUMENTS_URL.replace(/\/+$/, ''),
     persistedManifestPath: e.PERSISTED_MANIFEST_PATH ?? null,
   };
 }

@@ -2101,6 +2101,84 @@ environment while the rationale justified only inline hydration — a directive
 nobody had explained, which is how a relaxation outlives its reason. It is
 development-only now, and `csp.test.ts` pins the whole policy including the
 sentence admitting what it does NOT do.
+### M12 — the documents surface (PR1 in progress)
+
+M4 shipped the document service complete: eleven owner-facing routes, a
+template matrix, a generation pipeline, an upload gate, an encrypted search
+index. Nothing has ever called any of them. That is the zero-callers shape this
+repo has now been bitten by three times (M4's own legal hold, M10 PR3's
+analysis routes, M11's conversation routes), and M10/M11 made it incoherent
+from the user's side as well: the readiness page tells someone "no guardian
+designation on file" or "your will has not been executed" and the product gives
+them no way to act on either.
+
+**Two PRs.** PR1 is read + generate (the template catalog, the list, one
+document with its version history, reading a version, generating, revising).
+PR2 is upload + search + the execution ladder + deletion — everything that
+changes an existing document or admits new bytes.
+
+**The viewer is the load-bearing decision, and it is CONTAINMENT rather than
+absence.** M11 settled that model output renders as text nodes with no parser;
+a document cannot be a document under that rule, so `DocumentViewer` hands the
+stored bytes to a `srcdoc` iframe with `sandbox=""` — the strictest value,
+granting no scripts, no same-origin, no forms, no navigation — and lets three
+layers hold it: the sandbox, the page's own CSP (a `srcdoc` frame inherits it,
+so `img-src 'self' data:` applies inside), and the Chromium-only `csp`
+attribute as defence in depth that is explicitly not the thing being relied on.
+The component reads nothing; there is no `dangerouslySetInnerHTML` (the M11
+source scan still passes over the new files) and no parser to misconfigure.
+What it costs is stated where it lands: the document renders with default
+styling in a fixed-height scrolling region, because neither a stylesheet nor
+self-sizing can cross the boundary without loosening it. A SECOND FENCE ships
+with it — a source scan asserting `DocumentViewer.tsx` is the only file in the
+app that renders an `<iframe>` — because the way this regresses is not an edit
+to the viewer, it is a second frame added elsewhere for a preview.
+
+**Nothing on this surface prefetches content.** Every content read is an
+audited decrypt downstream (`crypto.field.decrypted` plus
+`document.content.viewed`) and a KMS operation. So the list is metadata only,
+the detail page loads metadata and history but never opens a version, there is
+no field on `Document` that resolves content, and pressing Read again asks
+again rather than serving a cache — when the event IS the record of who looked
+at what, a "free" second read is a lie about the audit trail. Asserted, not
+just intended: the panel specs check that listing issues no content call.
+
+**Three BFF mappings carry meaning.** `template_not_found` is kept apart from a
+missing document (both 404s, opposite facts: one is about the catalog, the
+other about the caller's own account). `content_erased` gets its own code
+because the answer is permanent and a retry affordance would have someone
+pressing it forever against a key destroyed on purpose. And the two 409s stay
+separate — "revoke or supersede first" and "reload, this moved" have different
+remedies. A plain 403 is additionally NARROWED to the uniform not-found at this
+edge: the service answers 404 for a document that does not exist and 403 for
+one that exists and is somebody else's, which is its own M4-review 404-vs-403
+follow-up; collapsing them here helps browser traffic and does NOT close the
+service-level finding, which stands for every other caller.
+
+**Intake is a typed GraphQL input, not the JSON scalar.** The readiness surface
+uses `JSON` for a finding's detail, but that is an OUTPUT of data the service
+already validated. Putting an untyped shape on the one mutation that reaches a
+legal instrument's renderer would be the opposite trade, so `generateDocument`
+takes `[DocumentVariableInput!]!` and the BFF refuses a variable carrying
+neither value or both, and refuses a duplicate name rather than letting
+last-write-wins decide which answer reaches the document. What a variable may
+CONTAIN is deliberately not re-checked there: that is the template's
+declaration to enforce, and a second copy of a legal gate is a copy that
+drifts.
+
+**Answers are not persisted, and revision inherits that.** M4's decision is
+that the encrypted rendered artifact is the record and the intake variables are
+not kept, so creating a new version means filling the form again. The revise
+route says so in as many words rather than letting it read as a bug — keeping a
+plaintext copy of the answers would create a second, unencrypted home for
+exactly the facts the document exists to protect.
+
+**No new stack e2e, deliberately, and the counts stay 16/4 and 9/11.** PR1 adds
+no service behaviour — every route it calls has been under e2e since M4. What
+is new is a consumer, and the consumer's proof is the browser, the same
+standing this repo gives the M8 PR5, M10 PR4 and M11 UI work. Coverage floors
+were RATCHETED from a measured run (82.26/78.88/85.65/85.90 → 82/78/85/85),
+never lowered.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.

@@ -9,18 +9,21 @@ import { Icon, type IconName } from './icons';
  * Navigation for the Evergreen-rail shell (2026-07-30 decision). One config
  * drives both the desktop rail and the mobile bottom tab bar.
  *
- * "Soon" entries are surfaces whose BACKENDS already shipped (documents M4,
- * vault M6, people/roles M7) without a UI — they render as inert previews, not
- * links, so the shell shows the product's shape without dead ends. Vault will
+ * "Soon" entries are surfaces whose BACKENDS already shipped (vault M6,
+ * people/roles M7) without a UI — they render as inert previews, not links, so
+ * the shell shows the product's shape without dead ends. Vault will
  * additionally live on an ISOLATED ORIGIN (docs/03 TB6), so when it goes live
  * its entry becomes an outbound link, never an in-app route.
+ *
+ * Documents stopped being a preview in M12, when the surface for the M4 service
+ * landed.
  */
 
 interface NavItem {
   label: string;
   icon: IconName;
   /** Absent for "Soon" entries — they are previews, not destinations. */
-  href?: '/' | '/assets' | '/assistant' | '/security';
+  href?: '/' | '/assets' | '/assistant' | '/documents' | '/security';
   /** Active only on exact match (the Overview item, so "/" ≠ everything). */
   exact?: boolean;
 }
@@ -31,7 +34,7 @@ export const NAV_GROUPS: ReadonlyArray<{ label: string; items: readonly NavItem[
     items: [
       { label: 'Overview', icon: 'overview', href: '/', exact: true },
       { label: 'Assets', icon: 'assets', href: '/assets' },
-      { label: 'Documents', icon: 'documents' },
+      { label: 'Documents', icon: 'documents', href: '/documents' },
       { label: 'People', icon: 'people' },
       // M10 PR4: the readiness surface. A real destination, not a "Soon"
       // preview — its backend (the deterministic analysers) ships with it.

@@ -736,6 +736,10 @@ services:
       # Second one (M10 PR4), same posture. Absent from the production profile,
       # where the assistant itself is omitted for want of a provider credential.
       AI_ASSISTANT_URL: http://ai-assistant:3009
+      # Third one (M12, the documents surface), same posture again — and note
+      # what it still cannot reach: documents' two internal routes are
+      # service-credential guarded, and the BFF holds no such credential.
+      DOCUMENTS_URL: http://documents:3005
       PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
     volumes:
       # The web bundle sends hash-only GraphQL bodies (its client inlines

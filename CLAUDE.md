@@ -1300,4 +1300,69 @@ deviating from them, stop and propose the change with rationale — do not silen
   build does not) and `csp.test.ts` pins the policy — including the sentence
   admitting what it does not do, because an honest partial CSP only stays honest
   while the honesty is written next to it.
+- 2026-08-06 — M12 is THE DOCUMENTS SURFACE, in two PRs: PR1 read + generate,
+  PR2 upload + search + the execution ladder + deletion. It closes the biggest
+  remaining zero-callers gap in the repo — apps/services/documents has exposed
+  eleven owner-facing routes since M4 with no consumer anywhere — and the
+  incoherence M10/M11 created, where the readiness page says "your will has not
+  been executed" and the product offers no way to act on it. The BFF gains its
+  THIRD non-identity downstream on the assets/assistant terms (forwards the
+  caller's own bearer, holds no credential), and still cannot reach documents'
+  two service-credential-guarded internal routes.
+- 2026-08-06 — The document viewer is CONTAINMENT, not absence, and that is the
+  one place M12 knowingly departs from M11's renderer rule. `MessageText` can
+  build text nodes because model output is prose; a will rendered that way is
+  not a will. So `DocumentViewer` hands the stored bytes to a `srcdoc` iframe
+  with `sandbox=""` — the EMPTY value, granting no scripts, no same-origin, no
+  forms, no navigation — and three layers hold it: the sandbox, the page CSP
+  (a srcdoc frame INHERITS it, so `img-src 'self' data:` applies inside the
+  frame), and the Chromium-only `csp` attribute, explicitly named as defence in
+  depth rather than as the control. The component still reads and parses
+  nothing, and `dangerouslySetInnerHTML` remains absent app-wide. Because the
+  sandbox VALUE is the security parameter, its spec asserts the exact string:
+  `allow-scripts allow-same-origin` also contains "allow-scripts" and is the
+  combination that undoes everything. A SECOND FENCE ships with it — a source
+  scan asserting `DocumentViewer.tsx` is the only file in the app rendering an
+  `<iframe>` — because the realistic regression is a second frame added
+  elsewhere for a preview, not an edit to the viewer. Only `text/html` + utf8
+  is framed (an upload can never be text/html; the component checks anyway).
+  Proven in a real browser against a hostile document substituted into the
+  content response: zero requests to the payload's host, the script probe never
+  fired, nothing entered the parent DOM, `contentDocument` unreachable.
+- 2026-08-06 — AUDITED-DECRYPT VOLUME IS A UI CONSTRAINT. Each content read
+  emits `crypto.field.decrypted` + `document.content.viewed` and spends a KMS
+  operation, so a list that previewed content would turn one page load into N
+  events on the user's own trail — and blunt the per-principal decrypt-rate
+  baseline docs/03 §4 TB4 calls the single most important insider control.
+  Hence metadata-only lists, NO content field on the GraphQL `Document` type
+  (so no query can ask for it incidentally), no prefetch, and no cache that
+  would make a repeat read invisible. Asserted in the panel specs and proven
+  live: two Read presses produced exactly two decrypt pairs; loading the list
+  and the detail page produced none.
+- 2026-08-06 — Intake crosses GraphQL as a TYPED input
+  (`[DocumentVariableInput!]!`), not the `JSON` scalar the readiness surface
+  uses — that scalar is an OUTPUT of data the service already validated, and
+  putting an untyped shape on the one mutation reaching a legal instrument's
+  renderer is the opposite trade. The BFF refuses a variable carrying neither
+  value or both (a silently-chosen answer is the one thing that must never
+  happen to a will) and refuses a DUPLICATE name rather than letting
+  last-write-wins decide, which would let the value on screen differ from the
+  value rendered. What a variable may CONTAIN is deliberately not re-checked
+  there: that is the template's declaration to enforce, and a second copy of a
+  legal gate is a copy that drifts. Three error mappings likewise stay
+  separate because their remedies differ: `template_not_found` vs a missing
+  document (both 404s, opposite facts), `content_erased` (permanent — never
+  offer a retry against a key destroyed on purpose), and the two 409s. A plain
+  403 is narrowed to the uniform not-found AT THE EDGE ONLY; the service's
+  404-vs-403 oracle stays open as M4's review recorded it.
+- 2026-08-06 — Driving the real app found a defect for the fourth milestone
+  running, and this one was PRE-EXISTING: identity answers
+  `invalid_credentials` for a rejected TOTP code exactly as for a rejected
+  password, so every inline step-up prompt — the M10 consent controls, and M12's
+  generator — told the user "that email and password combination didn't work"
+  about a form with neither on it, implying a remedy that is not the problem
+  while the real cause (codes last 30 seconds) went unsaid. Fixed with
+  `stepUpMessageFor`, used by both surfaces; only that one code changes meaning
+  with the surface. Every unit test passed over it because the copy table was
+  correct in isolation — the defect lived in which entry a surface chose.
 
