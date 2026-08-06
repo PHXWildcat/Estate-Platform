@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
-import { ContactsService, type ContactView } from './contacts.service';
+import { ContactsService, type ContactSummary, type ContactView } from './contacts.service';
 import { ContactSchema, parse, UuidSchema } from './schemas';
 
 /**
@@ -29,6 +29,32 @@ export class ContactsController {
   @HttpCode(201)
   createContact(@Req() req: CallerRequest, @Body() body: unknown): Promise<{ id: string }> {
     return this.contacts.create(requireCaller(req).userId, parse(ContactSchema, body));
+  }
+
+  /**
+   * The caller's OWN contacts, owner-relative — no id in the path.
+   *
+   * `/v1/profiles/:ownerUserId/contacts` below is the CROSS-owner ABAC route and
+   * always was; using it for "my contacts" would make every client discover and
+   * send its own user id to ask a question that is only ever about itself. The
+   * rest of this service is already owner-relative (`GET /v1/profile`,
+   * `GET /v1/profile/family`, `GET /v1/role-assignments`, and the `/v1/contacts`
+   * writes right here) — contacts was the odd one out because one route doubled
+   * as the §5.5 demonstrator. Same service method, same PEP, caller as owner.
+   */
+  @Get('contacts')
+  @HttpCode(200)
+  listOwnContacts(@Req() req: CallerRequest): Promise<ContactSummary[]> {
+    const { userId } = requireCaller(req);
+    return this.contacts.listForOwner(userId, userId);
+  }
+
+  /** One of the caller's own contacts, decrypted in full. An audited decrypt. */
+  @Get('contacts/:id')
+  @HttpCode(200)
+  getOwnContact(@Req() req: CallerRequest, @Param('id') id: string): Promise<ContactView> {
+    const { userId } = requireCaller(req);
+    return this.contacts.getOne(userId, userId, parse(UuidSchema, id));
   }
 
   @Put('contacts/:id')
@@ -52,13 +78,19 @@ export class ContactsController {
     await this.contacts.remove(requireCaller(req).userId, parse(UuidSchema, id));
   }
 
-  /** ABAC list: owner sees all; a grant-holder sees only granted contacts. */
+  /**
+   * ABAC list: owner sees all; a grant-holder sees only granted contacts.
+   *
+   * SUMMARIES, not full contacts — one audited decrypt per row instead of five.
+   * See `ContactSummary`; the per-contact detail read below is where email,
+   * phone, address and notes come from, one deliberate read at a time.
+   */
   @Get('profiles/:ownerUserId/contacts')
   @HttpCode(200)
   listOwnerContacts(
     @Req() req: CallerRequest,
     @Param('ownerUserId') ownerUserId: string,
-  ): Promise<ContactView[]> {
+  ): Promise<ContactSummary[]> {
     return this.contacts.listForOwner(requireCaller(req).userId, parse(UuidSchema, ownerUserId));
   }
 

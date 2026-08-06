@@ -105,7 +105,15 @@ function build() {
   const crypto = new FieldCrypto(LocalKmsProvider.generate(), deks, () => undefined, {
     kekAlias: 'core/kek',
   });
+  // Every decrypt is one audited `crypto.field.decrypted`; recording the AAD
+  // field lets a test assert how many a route spends (docs/03 §6f).
+  const decrypted: string[] = [];
   const cipher = new FieldCipher(crypto);
+  const realDecrypt = cipher.decrypt.bind(cipher);
+  cipher.decrypt = (input): Promise<string | null> => {
+    decrypted.push(input.field);
+    return realDecrypt(input);
+  };
   const repo = new FakeContactsRepo();
   const roles = new FakeRolesRepo();
   const events = new FakeEvents();
@@ -120,7 +128,7 @@ function build() {
     config,
     () => new Date(),
   );
-  return { service, repo, roles, events };
+  return { service, repo, roles, events, decrypted };
 }
 
 describe('ContactsService ABAC boundary (docs/03 §5.5)', () => {
@@ -158,6 +166,44 @@ describe('ContactsService ABAC boundary (docs/03 §5.5)', () => {
     // The list is filtered to only the named contact — no enumeration of others.
     const list = await service.listForOwner(GRANTEE, OWNER);
     expect(list.map((c) => c.id)).toEqual([a.id]);
+  });
+
+  it('the LIST decrypts one field per row, the detail read decrypts all of them', async () => {
+    // docs/03 §6f / M12's audited-decrypt-volume rule. A twenty-contact page
+    // must not spend a hundred decrypt events on the owner's own trail.
+    const { service, decrypted } = build();
+    await service.create(OWNER, {
+      name: 'Alice Attorney',
+      email: 'alice@law.example',
+      phone: '555-0100',
+      address: '1 Main St',
+      notes: 'lead counsel',
+    });
+
+    decrypted.length = 0;
+    const list = await service.listForOwner(OWNER, OWNER);
+    expect(decrypted).toEqual(['contact.name']);
+    expect(list[0]).toMatchObject({
+      name: 'Alice Attorney',
+      hasEmail: true,
+      hasPhone: true,
+      hasAddress: true,
+      hasNotes: true,
+      linked: false,
+    });
+    // The summary has no field for the values themselves.
+    expect(Object.keys(list[0] as object)).not.toContain('email');
+
+    decrypted.length = 0;
+    const one = await service.getOne(OWNER, OWNER, (list[0] as { id: string }).id);
+    expect(decrypted.sort()).toEqual([
+      'contact.address',
+      'contact.email',
+      'contact.name',
+      'contact.notes',
+      'contact.phone',
+    ]);
+    expect(one.email).toBe('alice@law.example');
   });
 
   it('an estate-wide grant exposes all contacts; a stranger gets nothing', async () => {

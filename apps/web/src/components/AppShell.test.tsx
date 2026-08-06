@@ -64,15 +64,24 @@ describe('AppShell', () => {
       </AppShell>,
     );
 
-    // Documents left this list in M12, when its surface shipped. What remains
-    // is the set whose backends exist with no UI yet.
-    for (const label of ['People', 'Vault']) {
+    // Documents left this list in M12 and People in M13, each when the surface
+    // for its long-shipped service landed. Vault is the last preview, and it
+    // stays one until the docs/03 TB6 isolated origin exists — at which point it
+    // becomes an OUTBOUND link, never an in-app route.
+    for (const label of ['Vault']) {
       expect(screen.getByText(label)).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: new RegExp(label) })).not.toBeInTheDocument();
     }
-    // …and Documents is now a real destination in both navigations.
-    for (const link of screen.getAllByRole('link', { name: 'Documents' })) {
-      expect(link).toHaveAttribute('href', '/documents');
+    // …and Documents and People are real destinations in both navigations.
+    for (const [label, href] of [
+      ['Documents', '/documents'],
+      ['People', '/people'],
+    ] as const) {
+      const links = screen.getAllByRole('link', { name: label });
+      expect(links.length).toBeGreaterThan(0);
+      for (const link of links) {
+        expect(link).toHaveAttribute('href', href);
+      }
     }
     await screen.findByText('Signed in');
   });

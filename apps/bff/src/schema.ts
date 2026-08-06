@@ -22,6 +22,18 @@ import type {
   IntakeValue,
   UploadResult,
 } from './documents-client';
+import type {
+  ContactDetail,
+  ContactInput,
+  ContactSummary,
+  FamilyMember,
+  FamilyMemberInput,
+  PermissionGrant,
+  Profile,
+  ProfileClient,
+  RoleAssignment,
+  SaveProfileInput,
+} from './profile-client';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -319,6 +331,115 @@ export const typeDefs = /* GraphQL */ `
     boolean: Boolean
   }
 
+  """
+  The caller's own profile.
+
+  'ssnLast4' is the ONLY SSN-shaped value that crosses this boundary, and it is
+  read-only everywhere: the service derives it from the full value and there is
+  no mutation on this schema that can write an SSN at all. M13's decision is to
+  display whether one is on file and never to collect one — nothing shipped
+  reads the full value, and an SSN input on a web surface is a phishing
+  template.
+  """
+  type Profile {
+    userId: ID!
+    legalName: String!
+    dob: String
+    "Last four digits only. There is no field, anywhere, for the whole number."
+    ssnLast4: String
+    address: String
+    phone: String
+    occupation: String
+    maritalStatus: String
+    "Two-letter code. Drives document template selection."
+    stateOfResidence: String
+  }
+
+  "A household member: who is in the family, and whether a child is still a minor."
+  type FamilyMember {
+    id: ID!
+    "spouse | child | parent | sibling | other."
+    relation: String!
+    name: String!
+    dob: String
+    "Null when the date of birth is unknown, so minority is unknown too."
+    isMinor: Boolean
+    notes: String
+  }
+
+  """
+  A contact as a LIST returns it: one audited decrypt per row, not five.
+
+  The 'has' flags come from column nullity downstream, so a list can say what is
+  on file without decrypting it. There is deliberately no email, phone, address
+  or notes field here — those arrive only from 'contact(contactId:)', one
+  explicit read at a time, because each is an audited decrypt on the owner's own
+  trail and a list that fetched them would turn one page load into dozens
+  (docs/03 §6f, and §4 TB4's per-principal decrypt-rate baseline).
+  """
+  type ContactSummary {
+    id: ID!
+    name: String!
+    relationship: String
+    "attorney | cpa | financial_advisor | doctor | other."
+    professionalKind: String
+    hasEmail: Boolean!
+    hasPhone: Boolean!
+    hasAddress: Boolean!
+    hasNotes: Boolean!
+    """
+    Whether this person has a platform account. Without a link a designation
+    still records the owner's intent but nobody can exercise it — no role-holder
+    read, no executor resolution, no death report — so a surface that hid this
+    would show designations that silently do nothing.
+    """
+    linked: Boolean!
+  }
+
+  "One contact, decrypted in full. Every field here cost an audited decrypt."
+  type ContactDetail {
+    id: ID!
+    name: String!
+    email: String
+    phone: String
+    address: String
+    relationship: String
+    professionalKind: String
+    notes: String
+  }
+
+  """
+  Who is trustee/executor/beneficiary/guardian/agent of what.
+
+  'effectiveCondition' is load-bearing and must never be rendered as access:
+  'immediate' means the holder can act now (if a permission grant says so),
+  while 'on_incapacity' and 'on_death_verified' are DESIGNATIONS that confer
+  nothing at all until settlement resolves them. Designation alone grants
+  nothing (M7).
+  """
+  type RoleAssignment {
+    id: ID!
+    contactId: ID!
+    role: String!
+    "estate | trust | document | asset | account."
+    scopeType: String!
+    "Null means the whole estate."
+    scopeId: ID
+    "immediate | on_incapacity | on_death_verified."
+    effectiveCondition: String!
+    startsAt: String
+    endsAt: String
+  }
+
+  "One live permission grant attached to a role assignment."
+  type PermissionGrant {
+    id: ID!
+    resource: String!
+    "read | download | manage."
+    action: String!
+    createdAt: String!
+  }
+
   type Query {
     "Current session, or null when unauthenticated."
     session: Session
@@ -359,6 +480,25 @@ export const typeDefs = /* GraphQL */ `
     for it only when someone has asked to read that exact version.
     """
     documentContent(documentId: ID!, version: Int!): DocumentContent!
+    """
+    The caller's own profile, or NULL when they have never saved one. Null is a
+    real answer — "nothing on file" — and distinct from an error, which is what
+    lets the household surface invite a first save instead of showing a failure.
+    """
+    profile: Profile
+    "The caller's household members."
+    familyMembers: [FamilyMember!]!
+    "The caller's estate contacts — summaries only, one decrypt per row."
+    contacts: [ContactSummary!]!
+    """
+    One contact in full. Each call is several audited decrypts downstream, so ask
+    only when someone has opened that exact person.
+    """
+    contact(contactId: ID!): ContactDetail!
+    "The caller's role assignments. Contact names come from 'contacts'."
+    roleAssignments: [RoleAssignment!]!
+    "The live permission grants on one of the caller's role assignments."
+    rolePermissions(roleAssignmentId: ID!): [PermissionGrant!]!
   }
 
   type Mutation {
@@ -465,6 +605,113 @@ export const typeDefs = /* GraphQL */ `
     the one refusal here that authenticating harder cannot resolve.
     """
     deleteDocument(documentId: ID!): Ok!
+    """
+    Saves the caller's profile. A MERGE, not a replace: an omitted argument
+    leaves that field as it was and an explicit null clears it, which is what
+    lets a form that holds six fields write six fields.
+
+    NOTE WHAT IS ABSENT: there is no 'ssn' argument. Nothing reachable from a
+    browser can set or clear the full number — see the Profile type.
+    """
+    saveProfile(
+      legalName: String!
+      dob: String
+      address: String
+      phone: String
+      occupation: String
+      maritalStatus: String
+      stateOfResidence: String
+    ): Profile!
+    """
+    EVERY MUTATION BELOW RETURNS WHAT THE SURFACE MUST RE-RENDER, AND NOTHING
+    MORE. Rendering the server's answer rather than a local guess is the M10
+    consent rule (absence is denial, so an optimistic toggle can show a grant
+    that was refused); returning no more than that is the decrypt-volume rule,
+    since every contact field in a response cost an audited decrypt. So the
+    household and role mutations return their list — which is what the panel
+    shows, and for roles is free, being all plaintext columns — while a contact
+    EDIT returns the one record whose panel the user is looking at.
+    """
+    addFamilyMember(
+      relation: String!
+      name: String!
+      dob: String
+      isMinor: Boolean
+      notes: String
+    ): [FamilyMember!]!
+    "Replaces the member's fields (its read returns all of them, so it can round-trip)."
+    updateFamilyMember(
+      id: ID!
+      relation: String!
+      name: String!
+      dob: String
+      isMinor: Boolean
+      notes: String
+    ): [FamilyMember!]!
+    deleteFamilyMember(id: ID!): [FamilyMember!]!
+    addContact(
+      name: String!
+      email: String
+      phone: String
+      address: String
+      relationship: String
+      professionalKind: String
+      notes: String
+    ): [ContactSummary!]!
+    "Replaces the contact's fields. The platform link is untouched by any edit."
+    updateContact(
+      contactId: ID!
+      name: String!
+      email: String
+      phone: String
+      address: String
+      relationship: String
+      professionalKind: String
+      notes: String
+    ): ContactDetail!
+    """
+    Soft delete. Refused with CONTACT_IN_USE while a live role assignment names
+    this person: retiring a fiduciary is a separate, step-up-gated act, and it
+    must not happen as a side effect of tidying an address book.
+    """
+    deleteContact(contactId: ID!): [ContactSummary!]!
+    """
+    Names someone to a role over a scope. STEP-UP GATED downstream (docs/01 §5
+    names trustee/executor and beneficiary changes), so this can fail with
+    STEPUP_REQUIRED and the client is expected to collect a code and retry.
+
+    A designation is not access: with 'effectiveCondition' other than
+    'immediate' nothing is conferred until settlement resolves it, and even
+    'immediate' confers nothing without a permission grant.
+    """
+    grantRole(
+      contactId: ID!
+      role: String!
+      scopeType: String!
+      scopeId: ID
+      effectiveCondition: String
+    ): [RoleAssignment!]!
+    """
+    Retires a designation. ALSO step-up gated, and that is not a contradiction of
+    the rule that protective actions stay easy: revoking here destroys the
+    executor-resolution path and can strip the last linked contact able to report
+    a death, so it is not purely protective.
+    """
+    revokeRole(roleAssignmentId: ID!): [RoleAssignment!]!
+    """
+    Widens what a role-holder may read. STEP-UP GATED downstream.
+    Returns the assignment's full live grant set so a client never guesses.
+    """
+    grantRolePermission(
+      roleAssignmentId: ID!
+      resource: String!
+      action: String!
+    ): [PermissionGrant!]!
+    """
+    Narrows it again. Deliberately NOT step-up gated — the protective action must
+    never be harder than the permissive one. Returns the remaining grants.
+    """
+    revokeRolePermission(roleAssignmentId: ID!, grantId: ID!): [PermissionGrant!]!
   }
 `;
 
@@ -479,6 +726,7 @@ export interface SchemaDeps {
   assets: AssetsClient;
   assistant: AssistantClient;
   documents: DocumentsClient;
+  profile: ProfileClient;
   /** Adds the Secure attribute to session cookies (production). */
   secureCookies: boolean;
   /** Clock override for tests. */
@@ -602,8 +850,113 @@ function requireAccessToken(ctx: RequestContext): string {
   return token;
 }
 
+/**
+ * Profile save arguments. Every optional field is three-valued and the three
+ * values mean three different things — ABSENT is "leave it alone", `null` is
+ * "clear it", a string is "set it".
+ */
+interface SaveProfileArgs {
+  readonly legalName: string;
+  readonly dob?: string | null;
+  readonly address?: string | null;
+  readonly phone?: string | null;
+  readonly occupation?: string | null;
+  readonly maritalStatus?: string | null;
+  readonly stateOfResidence?: string | null;
+}
+
+/**
+ * Carry the caller's three-way distinction through to the service unflattened.
+ *
+ * graphql-js omits an argument key entirely when the operation did not supply
+ * it, and sets it to `null` when the operation passed an explicit null — so
+ * `in` is the only thing that can tell "don't touch my SSN's neighbours" from
+ * "clear this field". Collapsing the two (`args.dob ?? null`) is precisely the
+ * defect M13 PR1 fixed one layer down: it would turn every partial save into a
+ * wipe of everything the form did not hold.
+ */
+const PROFILE_MERGE_FIELDS = [
+  'dob',
+  'address',
+  'phone',
+  'occupation',
+  'maritalStatus',
+  'stateOfResidence',
+] as const;
+
+function saveProfileInput(args: SaveProfileArgs): SaveProfileInput {
+  const out: Record<string, string | null> = {};
+  for (const key of PROFILE_MERGE_FIELDS) {
+    if (key in args) {
+      out[key] = args[key] ?? null;
+    }
+  }
+  return { legalName: args.legalName, ...out };
+}
+
+interface ContactArgs {
+  readonly name: string;
+  readonly email?: string | null;
+  readonly phone?: string | null;
+  readonly address?: string | null;
+  readonly relationship?: string | null;
+  readonly professionalKind?: string | null;
+  readonly notes?: string | null;
+}
+
+/**
+ * Contacts keep REPLACE semantics downstream (their read returns every field
+ * they store, so a client can round-trip them), which is why absent and null are
+ * treated alike here and both mean "not set". Only non-empty strings travel: the
+ * service's schema requires `min(1)` on every optional text field, so forwarding
+ * a blank one would be a 400 for something the user expressed as "leave empty".
+ */
+const CONTACT_TEXT_FIELDS = [
+  'email',
+  'phone',
+  'address',
+  'relationship',
+  'professionalKind',
+  'notes',
+] as const;
+
+function contactInput(args: ContactArgs): ContactInput {
+  const out: Record<string, string> = {};
+  for (const key of CONTACT_TEXT_FIELDS) {
+    const value = args[key];
+    if (typeof value === 'string' && value.length > 0) {
+      out[key] = value;
+    }
+  }
+  return { name: args.name, ...out };
+}
+
+interface FamilyMemberArgs {
+  readonly relation: string;
+  readonly name: string;
+  readonly dob?: string | null;
+  readonly isMinor?: boolean | null;
+  readonly notes?: string | null;
+}
+
+function familyInput(args: FamilyMemberArgs): FamilyMemberInput {
+  const text: Record<string, string> = {};
+  if (typeof args.dob === 'string' && args.dob.length > 0) {
+    text['dob'] = args.dob;
+  }
+  if (typeof args.notes === 'string' && args.notes.length > 0) {
+    text['notes'] = args.notes;
+  }
+  return {
+    relation: args.relation,
+    name: args.name,
+    ...text,
+    ...(typeof args.isMinor === 'boolean' ? { isMinor: args.isMinor } : {}),
+  };
+}
+
 export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
-  const { identity, assets, assistant, documents, secureCookies } = deps;
+  const { identity, assets, assistant, documents, profile, secureCookies } = deps;
   const now = deps.now ?? ((): number => Date.now());
 
   return createSchema<RequestContext>({
@@ -727,6 +1080,37 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<DocumentContent> =>
           documents.content(requireAccessToken(ctx), args.documentId, args.version),
+        profile: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<Profile | null> => profile.profile(requireAccessToken(ctx)),
+        familyMembers: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<FamilyMember[]> => profile.family(requireAccessToken(ctx)),
+        contacts: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<ContactSummary[]> => profile.contacts(requireAccessToken(ctx)),
+        contact: async (
+          _parent: unknown,
+          args: { contactId: string },
+          ctx: RequestContext,
+        ): Promise<ContactDetail> => profile.contact(requireAccessToken(ctx), args.contactId),
+        roleAssignments: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<RoleAssignment[]> => profile.roleAssignments(requireAccessToken(ctx)),
+        rolePermissions: async (
+          _parent: unknown,
+          args: { roleAssignmentId: string },
+          ctx: RequestContext,
+        ): Promise<PermissionGrant[]> =>
+          profile.permissions(requireAccessToken(ctx), args.roleAssignmentId),
       },
       Mutation: {
         register: async (
@@ -924,6 +1308,130 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         ): Promise<typeof OK> => {
           await documents.remove(requireAccessToken(ctx), args.documentId);
           return OK;
+        },
+        saveProfile: async (
+          _parent: unknown,
+          args: SaveProfileArgs,
+          ctx: RequestContext,
+        ): Promise<Profile> => {
+          const token = requireAccessToken(ctx);
+          await profile.saveProfile(token, saveProfileInput(args));
+          const saved = await profile.profile(token);
+          if (saved === null) {
+            // A save that reports success and then reads back nothing is a skew
+            // we must not paper over with an invented row.
+            throw new Error('profile save did not persist');
+          }
+          return saved;
+        },
+        addFamilyMember: async (
+          _parent: unknown,
+          args: FamilyMemberArgs,
+          ctx: RequestContext,
+        ): Promise<FamilyMember[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.createFamilyMember(token, familyInput(args));
+          return profile.family(token);
+        },
+        updateFamilyMember: async (
+          _parent: unknown,
+          args: FamilyMemberArgs & { id: string },
+          ctx: RequestContext,
+        ): Promise<FamilyMember[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.updateFamilyMember(token, args.id, familyInput(args));
+          return profile.family(token);
+        },
+        deleteFamilyMember: async (
+          _parent: unknown,
+          args: { id: string },
+          ctx: RequestContext,
+        ): Promise<FamilyMember[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.deleteFamilyMember(token, args.id);
+          return profile.family(token);
+        },
+        addContact: async (
+          _parent: unknown,
+          args: ContactArgs,
+          ctx: RequestContext,
+        ): Promise<ContactSummary[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.createContact(token, contactInput(args));
+          return profile.contacts(token);
+        },
+        updateContact: async (
+          _parent: unknown,
+          args: ContactArgs & { contactId: string },
+          ctx: RequestContext,
+        ): Promise<ContactDetail> => {
+          const token = requireAccessToken(ctx);
+          await profile.updateContact(token, args.contactId, contactInput(args));
+          // Re-read the one record whose panel the user is on, so what they see
+          // is the stored row and not an echo of what they typed.
+          return profile.contact(token, args.contactId);
+        },
+        deleteContact: async (
+          _parent: unknown,
+          args: { contactId: string },
+          ctx: RequestContext,
+        ): Promise<ContactSummary[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.deleteContact(token, args.contactId);
+          return profile.contacts(token);
+        },
+        grantRole: async (
+          _parent: unknown,
+          args: {
+            contactId: string;
+            role: string;
+            scopeType: string;
+            scopeId?: string | null;
+            effectiveCondition?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<RoleAssignment[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.grantRole(token, {
+            contactId: args.contactId,
+            role: args.role,
+            scopeType: args.scopeType,
+            ...(typeof args.scopeId === 'string' ? { scopeId: args.scopeId } : {}),
+            ...(typeof args.effectiveCondition === 'string'
+              ? { effectiveCondition: args.effectiveCondition }
+              : {}),
+          });
+          return profile.roleAssignments(token);
+        },
+        revokeRole: async (
+          _parent: unknown,
+          args: { roleAssignmentId: string },
+          ctx: RequestContext,
+        ): Promise<RoleAssignment[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.revokeRole(token, args.roleAssignmentId);
+          return profile.roleAssignments(token);
+        },
+        grantRolePermission: async (
+          _parent: unknown,
+          args: { roleAssignmentId: string; resource: string; action: string },
+          ctx: RequestContext,
+        ): Promise<PermissionGrant[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.grantPermission(token, args.roleAssignmentId, {
+            resource: args.resource,
+            action: args.action,
+          });
+          return profile.permissions(token, args.roleAssignmentId);
+        },
+        revokeRolePermission: async (
+          _parent: unknown,
+          args: { roleAssignmentId: string; grantId: string },
+          ctx: RequestContext,
+        ): Promise<PermissionGrant[]> => {
+          const token = requireAccessToken(ctx);
+          await profile.revokePermission(token, args.roleAssignmentId, args.grantId);
+          return profile.permissions(token, args.roleAssignmentId);
         },
         grantConsent: async (
           _parent: unknown,

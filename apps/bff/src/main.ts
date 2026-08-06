@@ -5,6 +5,7 @@ import { FetchAssistantClient } from './assistant-client';
 import { loadConfig } from './config';
 import { FetchDocumentsClient } from './documents-client';
 import { FetchIdentityClient } from './identity-client';
+import { FetchProfileClient } from './profile-client';
 
 async function bootstrap(): Promise<void> {
   // Fail fast on bad configuration (and a bad/missing persisted-operations
@@ -16,6 +17,7 @@ async function bootstrap(): Promise<void> {
     assets: new FetchAssetsClient(config.assetsUrl),
     assistant: new FetchAssistantClient(config.aiAssistantUrl),
     documents: new FetchDocumentsClient(config.documentsUrl),
+    profile: new FetchProfileClient(config.profileUrl),
   });
   app.enableShutdownHooks();
   await app.listen(config.port);

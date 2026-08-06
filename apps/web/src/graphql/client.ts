@@ -41,6 +41,8 @@ export const GQL_ERROR_CODES = [
   'UNSUPPORTED_CONTENT',
   /** The scanner was unreachable, so nothing was stored — fail closed (M12). */
   'SCAN_UNAVAILABLE',
+  /** A live role assignment still names this contact. Revoke it first (M13). */
+  'CONTACT_IN_USE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -258,6 +260,78 @@ export interface ReadinessInfo {
   estateTax: AnalysisInfo;
 }
 
+/**
+ * The caller's own profile. `ssnLast4` is the only SSN-shaped value that ever
+ * reaches the browser, and there is no mutation that can write the full number
+ * — see the BFF's Profile type. Null fields mean "not on file".
+ */
+export interface ProfileInfo {
+  userId: string;
+  legalName: string;
+  dob: string | null;
+  ssnLast4: string | null;
+  address: string | null;
+  phone: string | null;
+  occupation: string | null;
+  maritalStatus: string | null;
+  stateOfResidence: string | null;
+}
+
+export interface FamilyMemberInfo {
+  id: string;
+  relation: string;
+  name: string;
+  dob: string | null;
+  /** Null when the date of birth is unknown, so minority is unknown too. */
+  isMinor: boolean | null;
+  notes: string | null;
+}
+
+/**
+ * A contact as the list gives it: one audited decrypt per row downstream. The
+ * `has` flags are what let a row say what is on file without decrypting it.
+ */
+export interface ContactSummaryInfo {
+  id: string;
+  name: string;
+  relationship: string | null;
+  professionalKind: string | null;
+  hasEmail: boolean;
+  hasPhone: boolean;
+  hasAddress: boolean;
+  hasNotes: boolean;
+  linked: boolean;
+}
+
+export interface ContactDetailInfo {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  relationship: string | null;
+  professionalKind: string | null;
+  notes: string | null;
+}
+
+export interface RoleAssignmentInfo {
+  id: string;
+  contactId: string;
+  role: string;
+  scopeType: string;
+  scopeId: string | null;
+  effectiveCondition: string;
+  startsAt: string | null;
+  endsAt: string | null;
+}
+
+export interface PermissionGrantInfo {
+  id: string;
+  resource: string;
+  action: string;
+  createdAt: string;
+}
+
 type EmptyVariables = Record<string, never>;
 
 interface OperationSignatures {
@@ -322,6 +396,93 @@ interface OperationSignatures {
   DeleteDocument: {
     variables: { documentId: string };
     data: { deleteDocument: { ok: boolean } };
+  };
+  Profile: { variables: EmptyVariables; data: { profile: ProfileInfo | null } };
+  SaveProfile: {
+    /**
+     * ABSENT and `null` mean DIFFERENT THINGS all the way down: omit a key to
+     * leave that field alone, pass null to clear it. There is deliberately no
+     * `ssn` — nothing here can set or clear the full number.
+     */
+    variables: {
+      legalName: string;
+      dob?: string | null;
+      address?: string | null;
+      phone?: string | null;
+      occupation?: string | null;
+      maritalStatus?: string | null;
+      stateOfResidence?: string | null;
+    };
+    data: { saveProfile: ProfileInfo };
+  };
+  FamilyMembers: { variables: EmptyVariables; data: { familyMembers: FamilyMemberInfo[] } };
+  AddFamilyMember: {
+    variables: { relation: string; name: string; dob?: string; isMinor?: boolean; notes?: string };
+    data: { addFamilyMember: FamilyMemberInfo[] };
+  };
+  DeleteFamilyMember: {
+    variables: { id: string };
+    data: { deleteFamilyMember: FamilyMemberInfo[] };
+  };
+  Contacts: { variables: EmptyVariables; data: { contacts: ContactSummaryInfo[] } };
+  Contact: { variables: { contactId: string }; data: { contact: ContactDetailInfo } };
+  AddContact: {
+    variables: {
+      name: string;
+      email?: string;
+      phone?: string;
+      address?: string;
+      relationship?: string;
+      professionalKind?: string;
+      notes?: string;
+    };
+    data: { addContact: ContactSummaryInfo[] };
+  };
+  UpdateContact: {
+    variables: {
+      contactId: string;
+      name: string;
+      email?: string;
+      phone?: string;
+      address?: string;
+      relationship?: string;
+      professionalKind?: string;
+      notes?: string;
+    };
+    data: { updateContact: ContactDetailInfo };
+  };
+  DeleteContact: {
+    variables: { contactId: string };
+    data: { deleteContact: ContactSummaryInfo[] };
+  };
+  RoleAssignments: {
+    variables: EmptyVariables;
+    data: { roleAssignments: RoleAssignmentInfo[] };
+  };
+  GrantRole: {
+    variables: {
+      contactId: string;
+      role: string;
+      scopeType: string;
+      effectiveCondition?: string;
+    };
+    data: { grantRole: RoleAssignmentInfo[] };
+  };
+  RevokeRole: {
+    variables: { roleAssignmentId: string };
+    data: { revokeRole: RoleAssignmentInfo[] };
+  };
+  RolePermissions: {
+    variables: { roleAssignmentId: string };
+    data: { rolePermissions: PermissionGrantInfo[] };
+  };
+  GrantRolePermission: {
+    variables: { roleAssignmentId: string; resource: string; action: string };
+    data: { grantRolePermission: PermissionGrantInfo[] };
+  };
+  RevokeRolePermission: {
+    variables: { roleAssignmentId: string; grantId: string };
+    data: { revokeRolePermission: PermissionGrantInfo[] };
   };
   DocumentVersions: {
     variables: { documentId: string };

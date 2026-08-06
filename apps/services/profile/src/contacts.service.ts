@@ -28,6 +28,49 @@ export interface ContactView {
 }
 
 /**
+ * What a LIST returns: one decrypted field per row, not five.
+ *
+ * AUDITED-DECRYPT VOLUME IS AN API CONSTRAINT (M12's rule, docs/03 §6f).
+ * `FieldCipher` emits one `crypto.field.decrypted` per non-null field, so the
+ * full view over twenty contacts is ~100 events on the owner's own trail for one
+ * page load — and it blunts the per-principal decrypt-rate baseline docs/03 §4
+ * TB4 calls the single most important insider control. A list needs a name to
+ * render a row; email, phone, address and notes are four fields nothing on a
+ * list reads, so they are not fetched. `relationship` and `professionalKind`
+ * are plaintext columns and cost nothing.
+ *
+ * The `has*` flags let a list say "3 fields on file" without decrypting them —
+ * derived from column nullity, so they are free.
+ *
+ * ONE projection serves BOTH audiences, deliberately. Narrowing this route also
+ * narrows what a §5.5 grant-holder sees in a list, which is strictly better:
+ * details now cost them one explicit, separately audited read per contact,
+ * which is exactly the accounting docs/03 §5.5 wants for rapid enumeration.
+ * Branching the shape by audience is how two projections drift apart.
+ */
+export interface ContactSummary {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  relationship: string | null;
+  professionalKind: string | null;
+  hasEmail: boolean;
+  hasPhone: boolean;
+  hasAddress: boolean;
+  hasNotes: boolean;
+  /**
+   * Whether this contact is a platform user. The owner's own signal — it decides
+   * whether a role-holder can actually exercise a grant, whether an executor
+   * resolves (M7) and whether anyone could report a death (docs/03 §6b), so a
+   * People surface that hid it would show designations that silently do nothing.
+   * A grant-holder reading someone else's list sees it too, which adds nothing
+   * material: they already see that contact's name and relationship, and this
+   * says only "has an account".
+   */
+  linked: boolean;
+}
+
+/**
  * Estate contact repository operations + the docs/03 §5.5 ABAC read boundary.
  *
  * Writes are owner-only (owner.cedar). Reads go through the PEP with a resolved
@@ -160,7 +203,7 @@ export class ContactsService {
    * effective grants name (or all under an estate-wide grant). A caller with no
    * effective grant and who is not the owner gets a generic 403 — nothing leaks.
    */
-  async listForOwner(callerUserId: string, ownerUserId: string): Promise<ContactView[]> {
+  async listForOwner(callerUserId: string, ownerUserId: string): Promise<ContactSummary[]> {
     const isOwner = callerUserId === ownerUserId;
     const grants = isOwner
       ? []
@@ -185,7 +228,7 @@ export class ContactsService {
         coreResource('Contact', row.id, ownerUserId, grantees),
       );
     });
-    return Promise.all(visible.map((row) => this.toView(callerUserId, row)));
+    return Promise.all(visible.map((row) => this.toSummary(callerUserId, row)));
   }
 
   /** Resolve whether `callerUserId` holds an effective read grant over `contactId`. */
@@ -206,6 +249,30 @@ export class ContactsService {
       (g) => (g.scope_type === 'estate' && g.scope_id === null) || g.scope_id === contactId,
     );
     return named ? [callerUserId] : [];
+  }
+
+  /** ONE decrypt (the name). Everything else here is a plaintext column or nullity. */
+  private async toSummary(callerUserId: string, row: ContactRow): Promise<ContactSummary> {
+    const name = await this.cipher.decrypt({
+      ownerUserId: row.owner_user_id,
+      dekId: row.dek_id,
+      field: 'contact.name',
+      ciphertext: row.name_ct,
+      actorId: callerUserId,
+      purpose: 'contact_list',
+    });
+    return {
+      id: row.id,
+      ownerUserId: row.owner_user_id,
+      name: name as string,
+      relationship: row.relationship,
+      professionalKind: row.professional_kind,
+      hasEmail: row.email_ct !== null,
+      hasPhone: row.phone_ct !== null,
+      hasAddress: row.address_ct !== null,
+      hasNotes: row.notes_ct !== null,
+      linked: row.linked_user_id !== null,
+    };
   }
 
   private async toView(callerUserId: string, row: ContactRow): Promise<ContactView> {

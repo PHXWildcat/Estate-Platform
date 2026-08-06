@@ -751,6 +751,134 @@ describeIfStack('the running stack', () => {
       ).toBe(403);
     });
 
+    it('runs the people surface live: step-up on a role, and a profile edit that keeps the SSN (M13)', async () => {
+      // The two PR1 fixes, over real HTTP against a real Postgres.
+      const contact = expectStatus(
+        await api(PROFILE_URL, 'POST', '/v1/contacts', {
+          token: owner.token,
+          body: { name: 'Stack Probe Executor', email: 'probe-exec@example.com' },
+        }),
+        201,
+        'create contact',
+      ) as { id: string };
+
+      // THE LIST IS A SUMMARY: one decrypted field per row, and no field at all
+      // for the values a list does not render (docs/03 §6f).
+      const list = expectStatus(
+        await api(PROFILE_URL, 'GET', '/v1/contacts', { token: owner.token }),
+        200,
+        'list contacts',
+      ) as Array<Record<string, unknown>>;
+      const row = list.find((entry) => entry['id'] === contact.id);
+      expect(row).toMatchObject({ name: 'Stack Probe Executor', hasEmail: true, linked: false });
+      expect(row).not.toHaveProperty('email');
+
+      // A profile with an SSN, set through the API — the UI deliberately has no
+      // field for one in either direction.
+      expectStatus(
+        await api(PROFILE_URL, 'PUT', '/v1/profile', {
+          token: owner.token,
+          body: {
+            legalName: 'Stack Probe Owner',
+            ssn: '123456789',
+            dob: '1950-04-02',
+            stateOfResidence: 'CA',
+          },
+        }),
+        200,
+        'seed profile',
+      );
+
+      // Now the edit the people surface actually sends: the fields it holds, and
+      // nothing about the SSN. Under the replace semantics this route shipped
+      // with, this call NULLed ssn_ct and ssn_last4_ct.
+      expectStatus(
+        await api(PROFILE_URL, 'PUT', '/v1/profile', {
+          token: owner.token,
+          body: { legalName: 'Stack Probe Owner', stateOfResidence: 'AZ' },
+        }),
+        200,
+        'edit profile',
+      );
+      const after = expectStatus(
+        await api(PROFILE_URL, 'GET', '/v1/profile', { token: owner.token }),
+        200,
+        'read profile',
+      ) as Record<string, unknown>;
+      expect(after['stateOfResidence']).toBe('AZ');
+      expect(after['ssnLast4']).toBe('6789'); // carried, as ciphertext
+      expect(after['dob']).toBe('1950-04-02');
+      // The full number is never on the wire, in either direction.
+      expect(after).not.toHaveProperty('ssn');
+
+      // Naming a fiduciary is step-up gated (docs/01 §5) — M2 shipped this route
+      // with CallerGuard only. `owner` is already elevated by the beneficiary
+      // test above, so a role grant is admitted while a FRESH session is not.
+      const stranger = await registerAndLogin();
+      expect(
+        (
+          await api(PROFILE_URL, 'POST', '/v1/role-assignments', {
+            token: stranger.token,
+            body: { contactId: contact.id, role: 'executor', scopeType: 'estate' },
+          })
+        ).status,
+      ).toBe(403);
+
+      const assignment = expectStatus(
+        await api(PROFILE_URL, 'POST', '/v1/role-assignments', {
+          token: owner.token,
+          body: {
+            contactId: contact.id,
+            role: 'executor',
+            scopeType: 'estate',
+            effectiveCondition: 'on_death_verified',
+          },
+        }),
+        201,
+        'grant role',
+      ) as { id: string };
+
+      // Deleting a contact a live designation names is REFUSED, so retiring a
+      // fiduciary cannot happen as a side effect of tidying an address book.
+      const refusedDelete = await api(PROFILE_URL, 'DELETE', `/v1/contacts/${contact.id}`, {
+        token: owner.token,
+      });
+      expect(refusedDelete.status).toBe(409);
+      expect(refusedDelete.body).toEqual({ error: 'contact_in_use' });
+
+      // Grants can now be read AND withdrawn — M2 shipped only the write.
+      const grant = expectStatus(
+        await api(PROFILE_URL, 'POST', `/v1/role-assignments/${assignment.id}/permissions`, {
+          token: owner.token,
+          body: { resource: 'contact', action: 'read' },
+        }),
+        201,
+        'grant permission',
+      ) as { id: string };
+      expect(
+        (
+          (await api(PROFILE_URL, 'GET', `/v1/role-assignments/${assignment.id}/permissions`, {
+            token: owner.token,
+          })) as { body: unknown }
+        ).body,
+      ).toEqual([expect.objectContaining({ id: grant.id, resource: 'contact', action: 'read' })]);
+      expect(
+        (
+          await api(
+            PROFILE_URL,
+            'DELETE',
+            `/v1/role-assignments/${assignment.id}/permissions/${grant.id}`,
+            { token: owner.token },
+          )
+        ).status,
+      ).toBe(204);
+      expect(
+        (await api(PROFILE_URL, 'GET', `/v1/role-assignments/${assignment.id}/permissions`, {
+          token: owner.token,
+        })) as { body: unknown },
+      ).toMatchObject({ body: [] });
+    });
+
     it('assembled every event into a VERIFIED hash chain across the real broker', async () => {
       const db = new Client({ connectionString: AUDIT_DB });
       await db.connect();
@@ -774,6 +902,10 @@ describeIfStack('the running stack', () => {
           'assistant.analysis.completed',
           // M11: a real turn crossed the platform and was recorded.
           'assistant.turn.completed',
+          // M13: the withdrawal half of a permission grant, which M2 shipped
+          // without — an owner could widen a role-holder's reach and never
+          // narrow it, and nothing recorded the narrowing when they could.
+          'permission.revoked',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(

@@ -10,5 +10,7 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // RATCHETED at M12 (the documents surface): measured 88.04/85.93/88.07/88.68
   // with the documents client, its error mapping and the intake collapsing
   // under test.
-  coverageThreshold: { global: { statements: 88, branches: 85, functions: 88, lines: 88 } },
+  // M13 PR2 re-measured after the profile client + people resolvers:
+  // 89.94/87.03/90.12/90.55. Ratcheted up from 88/85/88/88 — never down.
+  coverageThreshold: { global: { statements: 89, branches: 86, functions: 90, lines: 90 } },
 });
