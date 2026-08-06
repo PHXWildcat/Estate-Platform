@@ -150,8 +150,30 @@ export class EventsService {
     await this.contactLink('contact.link.invited', actorId, contactId);
   }
 
-  async contactLinkClaimed(actorId: string, contactId: string): Promise<void> {
-    await this.contactLink('contact.link.claimed', actorId, contactId);
+  /**
+   * The claim, with the notification's fate riding along. `ownerNotified` is an
+   * enum, never free text (docs/02 §6), and it exists because the M13 review
+   * found the delivery outcome recorded NOWHERE when a send failed at the
+   * network: the notifications service only logs sends that reach it, and the
+   * empty catch at the call site cited "the claim event above" — which carried
+   * no such fact. 'failed' is an operator's re-drive signal, the vault
+   * delivered_at-NULL precedent.
+   */
+  async contactLinkClaimed(
+    actorId: string,
+    contactId: string,
+    ownerNotified: 'delivered' | 'failed',
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'contact.link.claimed',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'contact',
+      resourceId: contactId,
+      sessionId: null,
+      detail: { ownerNotified },
+    });
   }
 
   async contactLinkInvitationRevoked(actorId: string, contactId: string): Promise<void> {
@@ -163,11 +185,7 @@ export class EventsService {
   }
 
   private async contactLink(
-    action:
-      | 'contact.link.invited'
-      | 'contact.link.claimed'
-      | 'contact.link.invitation_revoked'
-      | 'contact.link.removed',
+    action: 'contact.link.invited' | 'contact.link.invitation_revoked' | 'contact.link.removed',
     actorId: string,
     contactId: string,
   ): Promise<void> {

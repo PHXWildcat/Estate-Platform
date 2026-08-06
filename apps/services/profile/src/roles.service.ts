@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { coreResource, ProfileAuthz } from './authz.service';
+import { ContactsRepo } from './contacts.repo';
 import { EventsService } from './events.service';
 import { PermissionGrantsRepo, RolesRepo, type RoleAssignmentRow } from './roles.repo';
 import type { PermissionGrantInput, RoleAssignmentInput } from './schemas';
@@ -34,6 +35,7 @@ export class RolesService {
   constructor(
     private readonly roles: RolesRepo,
     private readonly grants: PermissionGrantsRepo,
+    private readonly contacts: ContactsRepo,
     private readonly authz: ProfileAuthz,
     private readonly events: EventsService,
   ) {}
@@ -45,6 +47,18 @@ export class RolesService {
       'manage',
       coreResource('RoleAssignment', callerUserId, callerUserId),
     );
+    // The named contact must be the CALLER'S, and live. The FK proves only that
+    // some contact exists; without this check an owner could hang a designation
+    // on another owner's contact id (self-inflicted — every resolver scopes by
+    // owner — but it resurrects the silent-retirement shape PR1 closed: the
+    // OTHER owner's `contact_in_use` check is owner-scoped and would never see
+    // this assignment, so their delete would silently un-resolve it) or on a
+    // soft-deleted one, minting a designation that never resolves anywhere.
+    // Uniform not_found: a foreign contact id must read exactly like a wrong one.
+    const contact = await this.contacts.findById(input.contactId);
+    if (!contact || contact.owner_user_id !== callerUserId) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
     const id = await this.roles.insert({
       ownerUserId: callerUserId,
       contactId: input.contactId,

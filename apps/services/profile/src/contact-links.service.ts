@@ -186,18 +186,39 @@ export class ContactLinksService {
       throw new BadRequestException({ error: 'invalid_code' });
     }
 
-    // AUDITED ON BOTH SIDES: the owner's trail records that their contact was
-    // claimed, and the actor recorded is the redeemer, so "who linked
-    // themselves to whose estate" is answerable from either end.
-    await this.events.contactLinkClaimed(callerUserId, invitation.contact_id);
-    // A notification failure must never roll back the state change it describes
-    // (the M6 design); the production gate above is what makes the channel's
-    // existence a precondition, so by here the send is best-effort.
+    // THE NOTIFY RUNS FIRST, AND ITS OUTCOME IS RECORDED — both halves are the
+    // M13 security review's confirmed finding, fixed here.
+    //
+    // First, because the audit emit below PROPAGATES broker failures (the M8
+    // rule: a dead audit trail must be loud), and the original ordering let
+    // exactly that loudness skip the owner notification: a broker blip after
+    // the commit exited this method with the link standing, the owner untold,
+    // and — the code being spent — no retry that would ever tell them. The
+    // notification is the control that makes the ceremony's out-of-band trust
+    // anchor auditable BY THE OWNER (docs/03 §6g), so an audit hiccup must not
+    // be able to cancel it. The invitation row itself (redeemed_by/redeemed_at)
+    // is the durable record of the claim; the audit event mirrors it.
+    //
+    // Second, the outcome: a notification failure still never rolls back the
+    // link (the M6 design), but it is no longer silent — `ownerNotified` rides
+    // the claim event as an enum, the M6/M9 precedent of vault recording
+    // delivered_at NULL per send. A 'failed' here is the operator's signal to
+    // re-drive the notification; without it, a mis-delivered code becoming an
+    // invisible authorization edge — the outcome §6g's production precondition
+    // exists to prevent — left no record anywhere when the send failed at the
+    // network rather than at the carrier.
+    let ownerNotified: 'delivered' | 'failed' = 'failed';
     try {
       await this.notifier.notify({ ownerUserId: invitation.owner_user_id });
+      ownerNotified = 'delivered';
     } catch {
-      // Recorded by the claim event above; the link stands either way.
+      // Recorded on the claim event below; the link stands either way.
     }
+    // AUDITED ON BOTH SIDES: the owner's trail records that their contact was
+    // claimed, the actor recorded is the redeemer, and the delivery outcome
+    // rides along — so "who linked themselves to whose estate, and was the
+    // owner told" is answerable from either end.
+    await this.events.contactLinkClaimed(callerUserId, invitation.contact_id, ownerNotified);
   }
 
   /**

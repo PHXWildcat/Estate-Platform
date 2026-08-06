@@ -87,10 +87,22 @@ class RecordingEvents {
   }
 }
 
+/** Contacts fake: CONTACT belongs to OWNER and is live; everything else is unknown. */
+const fakeContacts = {
+  findById: (id: string) =>
+    Promise.resolve(id === CONTACT ? { id, owner_user_id: OWNER, linked_user_id: null } : null),
+};
+
 function build() {
   const roles = new FakeRolesRepo();
   const grants = new FakeGrantsRepo();
-  const service = new RolesService(roles as never, grants as never, authz, noopEvents);
+  const service = new RolesService(
+    roles as never,
+    grants as never,
+    fakeContacts as never,
+    authz,
+    noopEvents,
+  );
   return { roles, grants, service };
 }
 
@@ -98,7 +110,13 @@ function buildWithEvents() {
   const roles = new FakeRolesRepo();
   const grants = new FakeGrantsRepo();
   const events = new RecordingEvents();
-  const service = new RolesService(roles as never, grants as never, authz, events as never);
+  const service = new RolesService(
+    roles as never,
+    grants as never,
+    fakeContacts as never,
+    authz,
+    events as never,
+  );
   return { roles, grants, events, service };
 }
 
@@ -148,6 +166,21 @@ describe('RolesService (owner-managed grants)', () => {
     const { service } = build();
     await expect(
       service.revoke(OWNER, 'e0000000-0000-4000-8000-000000000098'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('refuses a role over a contact that is not the caller’s, uniformly (M13 review)', async () => {
+    const { service } = build();
+    // A foreign (or deleted, or simply wrong) contact id is one uniform 404 —
+    // the FK proves existence only, and every consequence of a cross-owner
+    // designation is a dangling edge some later query silently drops.
+    await expect(
+      service.grantRole(OWNER, {
+        contactId: 'd4444444-4444-4444-8444-444444444445',
+        role: 'executor',
+        scopeType: 'estate',
+        effectiveCondition: 'immediate',
+      }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 

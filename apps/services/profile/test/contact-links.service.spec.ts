@@ -36,6 +36,7 @@ describe('the invitation code', () => {
     const events = {
       contactLinkInvited: () => Promise.resolve(),
       contactLinkInvitationRevoked: () => Promise.resolve(),
+      contactLinkClaimed: () => Promise.resolve(),
     };
     const service = new ContactLinksService(
       links as never,
@@ -82,5 +83,95 @@ describe('the invitation code', () => {
     expect(new Date(expiresAt).getTime() - new Date('2026-08-06T00:00:00Z').getTime()).toBe(
       INVITATION_TTL_MS,
     );
+  });
+});
+
+/**
+ * The M13 security review's confirmed finding, pinned: the owner notification
+ * must not be skippable by an audit failure, and its outcome must be recorded.
+ */
+describe('a claimed link is never silently unnotified', () => {
+  const CONTACT = 'f0000000-0000-4000-8000-000000000001';
+
+  function buildRedeem(options: { notifyFails?: boolean; auditFails?: boolean }): {
+    service: ContactLinksService;
+    notified: string[];
+    claims: Array<{ actor: string; ownerNotified: string }>;
+  } {
+    const invitation = {
+      id: 'i-1',
+      owner_user_id: OWNER,
+      contact_id: CONTACT,
+      expires_at: new Date('2026-08-13T00:00:00Z'),
+      attempts: 0,
+      redeemed_at: null,
+      revoked_at: null,
+    };
+    const links = {
+      findByCode: () => Promise.resolve(invitation),
+      countAttempt: () => Promise.resolve(),
+      redeem: () => Promise.resolve(true),
+    };
+    const notified: string[] = [];
+    const notifier = {
+      channel: 'stub',
+      deliversToRealChannels: false,
+      notify: (n: { ownerUserId: string }) => {
+        if (options.notifyFails === true) {
+          return Promise.reject(new Error('carrier down'));
+        }
+        notified.push(n.ownerUserId);
+        return Promise.resolve();
+      },
+    };
+    const claims: Array<{ actor: string; ownerNotified: string }> = [];
+    const events = {
+      contactLinkClaimed: (actor: string, _contact: string, ownerNotified: string) => {
+        if (options.auditFails === true) {
+          return Promise.reject(new Error('broker down'));
+        }
+        claims.push({ actor, ownerNotified });
+        return Promise.resolve();
+      },
+      contactLinkNotificationsRefused: () => Promise.resolve(),
+    };
+    const service = new ContactLinksService(
+      links as never,
+      { findById: () => Promise.resolve(null) } as never,
+      new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+      events as never,
+      notifier,
+      { nodeEnv: 'test' } as ProfileConfig,
+      () => new Date('2026-08-06T00:00:00Z'),
+    );
+    return { service, notified, claims };
+  }
+
+  const REDEEMER = 'b2222222-2222-4222-8222-222222222222';
+
+  it('records delivered on the claim event when the owner was told', async () => {
+    const { service, notified, claims } = buildRedeem({});
+    await service.redeem(REDEEMER, 'ESL1-GOOD');
+    expect(notified).toEqual([OWNER]);
+    expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'delivered' }]);
+  });
+
+  it('records FAILED on the claim event when the send did not happen — never silence', async () => {
+    const { service, claims } = buildRedeem({ notifyFails: true });
+    await service.redeem(REDEEMER, 'ESL1-GOOD'); // the link stands (M6 rule)...
+    // ...and the non-delivery is a recorded fact an operator can re-drive from,
+    // not an empty catch. The finding: a network-level failure previously left
+    // NO record anywhere — no notifications-service row (never reached it), no
+    // profile-side fact, nothing.
+    expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'failed' }]);
+  });
+
+  it('notifies the owner even when the audit broker is down', async () => {
+    // The ordering half: the audit emit propagates broker failures LOUDLY (the
+    // M8 rule) — but it must not be able to cancel the owner notification,
+    // because the code is spent and no retry will ever re-send it.
+    const { service, notified } = buildRedeem({ auditFails: true });
+    await expect(service.redeem(REDEEMER, 'ESL1-GOOD')).rejects.toThrow('broker down');
+    expect(notified).toEqual([OWNER]);
   });
 });

@@ -62,9 +62,12 @@ const WIRE_KIND: NotificationKind = 'contact.link_claimed';
 /**
  * The real adapter: delegates to the notifications service, which owns address
  * resolution and the closed template registry — this service still never sees an
- * address. Throws on non-delivery so the caller records the failure; it never
- * rolls the link back, because a notification failure must not undo the state
- * change it describes (the M6 design).
+ * address. Throws on non-delivery — including a network-level failure the
+ * notifications service never saw, which `outcome.accepted === false` encodes —
+ * and the caller records that outcome on the claim's audit event
+ * (`ownerNotified: 'failed'`, the vault delivered_at-NULL precedent). It never
+ * rolls the link back: a notification failure must not undo the state change it
+ * describes (the M6 design), it must be VISIBLE instead.
  */
 export class HttpLinkNotifier implements LinkNotificationPort {
   readonly channel = 'email';
