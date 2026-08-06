@@ -12,23 +12,41 @@ export const UuidSchema = z.string().uuid();
 const OptionalText = (max: number): z.ZodOptional<z.ZodString> =>
   z.string().min(1).max(max).optional();
 
+/**
+ * A field that may be left alone or explicitly cleared.
+ *
+ * ABSENT means UNCHANGED; `null` means CLEAR. The distinction is what makes
+ * `PUT /v1/profile` safe to call from a form that does not hold every field.
+ * Under the old "absent ⇒ NULL" replace semantics the SSN could not survive a
+ * round trip at all: `GET /v1/profile` returns `ssnLast4` and never `ssn` (by
+ * design — the full value is the most sensitive column in the product), so no
+ * client could echo it back, and any edit to any other field silently destroyed
+ * `ssn_ct` and `ssn_last4_ct`. Applied to every optional field OF THE PROFILE
+ * rather than special-cased for the SSN, because a special case is the thing
+ * that drifts.
+ *
+ * Contacts and family members deliberately KEEP replace semantics: their reads
+ * return every field they store, so a client can round-trip them, and absent
+ * genuinely can mean "the owner removed this". The profile is the one row with a
+ * field it will never hand back, which is exactly why it is the one row that
+ * cannot be replaced wholesale.
+ */
+const Clearable = <T extends z.ZodTypeAny>(schema: T): z.ZodOptional<z.ZodNullable<T>> =>
+  schema.nullable().optional();
+
 export const ProfileUpsertSchema = z.object({
   legalName: z.string().min(1).max(200),
-  dob: z.string().min(1).max(40).optional(),
-  ssn: z
-    .string()
-    .regex(/^\d{9}$/, 'ssn must be 9 digits')
-    .optional(),
-  address: OptionalText(500),
-  phone: OptionalText(40),
-  occupation: OptionalText(120),
-  maritalStatus: z
-    .enum(['single', 'married', 'domestic_partnership', 'divorced', 'widowed'])
-    .optional(),
-  stateOfResidence: z
-    .string()
-    .regex(/^[A-Z]{2}$/, 'stateOfResidence must be a 2-letter code')
-    .optional(),
+  dob: Clearable(z.string().min(1).max(40)),
+  ssn: Clearable(z.string().regex(/^\d{9}$/, 'ssn must be 9 digits')),
+  address: Clearable(z.string().min(1).max(500)),
+  phone: Clearable(z.string().min(1).max(40)),
+  occupation: Clearable(z.string().min(1).max(120)),
+  maritalStatus: Clearable(
+    z.enum(['single', 'married', 'domestic_partnership', 'divorced', 'widowed']),
+  ),
+  stateOfResidence: Clearable(
+    z.string().regex(/^[A-Z]{2}$/, 'stateOfResidence must be a 2-letter code'),
+  ),
 });
 export type ProfileUpsertInput = z.infer<typeof ProfileUpsertSchema>;
 

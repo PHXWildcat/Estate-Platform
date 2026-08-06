@@ -42,9 +42,48 @@ class FakeRolesRepo {
 
 class FakeGrantsRepo {
   readonly inserted: Array<{ raId: string; resource: string; action: string }> = [];
+  readonly rows: Array<{
+    id: string;
+    raId: string;
+    resource: string;
+    action: string;
+    created_at: Date;
+    revoked: boolean;
+  }> = [];
+  private seq = 0;
   insert(raId: string, resource: string, action: string): Promise<string> {
     this.inserted.push({ raId, resource, action });
-    return Promise.resolve('g0000000-0000-4000-8000-000000000001');
+    const id = `g0000000-0000-4000-8000-00000000000${++this.seq}`;
+    this.rows.push({ id, raId, resource, action, created_at: new Date(0), revoked: false });
+    return Promise.resolve(id);
+  }
+  listByRoleAssignment(
+    raId: string,
+  ): Promise<Array<{ id: string; resource: string; action: string; created_at: Date }>> {
+    return Promise.resolve(this.rows.filter((r) => r.raId === raId && !r.revoked));
+  }
+  revoke(raId: string, grantId: string): Promise<boolean> {
+    const row = this.rows.find((r) => r.id === grantId && r.raId === raId && !r.revoked);
+    if (!row) return Promise.resolve(false);
+    row.revoked = true;
+    return Promise.resolve(true);
+  }
+}
+
+class RecordingEvents {
+  readonly revoked: string[] = [];
+  permissionGranted(): Promise<void> {
+    return Promise.resolve();
+  }
+  permissionRevoked(_actor: string, grantId: string): Promise<void> {
+    this.revoked.push(grantId);
+    return Promise.resolve();
+  }
+  roleGranted(): Promise<void> {
+    return Promise.resolve();
+  }
+  roleRevoked(): Promise<void> {
+    return Promise.resolve();
   }
 }
 
@@ -53,6 +92,14 @@ function build() {
   const grants = new FakeGrantsRepo();
   const service = new RolesService(roles as never, grants as never, authz, noopEvents);
   return { roles, grants, service };
+}
+
+function buildWithEvents() {
+  const roles = new FakeRolesRepo();
+  const grants = new FakeGrantsRepo();
+  const events = new RecordingEvents();
+  const service = new RolesService(roles as never, grants as never, authz, events as never);
+  return { roles, grants, events, service };
 }
 
 describe('RolesService (owner-managed grants)', () => {
@@ -108,5 +155,70 @@ describe('RolesService (owner-managed grants)', () => {
     expect(() =>
       authz.assertCan(OTHER, 'manage', coreResource('RoleAssignment', OWNER, OWNER)),
     ).toThrow(ForbiddenException);
+  });
+});
+
+/**
+ * M2 shipped `addPermission` with no read and no withdrawal: `listByRoleAssignment`
+ * had zero callers, there was no revoke route, and `permission.revoked` was not
+ * in the audit catalog. An owner could widen a role-holder's reach and then
+ * neither see nor undo it — the inverse of the M6 rule that the protective action
+ * must never be harder than the permissive one.
+ */
+describe('permission grants can be read and withdrawn (M13 PR1)', () => {
+  async function withGrant() {
+    const built = buildWithEvents();
+    const ra = await built.service.grantRole(OWNER, {
+      contactId: CONTACT,
+      role: 'beneficiary',
+      scopeType: 'estate',
+      effectiveCondition: 'immediate',
+    });
+    const grant = await built.service.addPermission(OWNER, ra.id, {
+      resource: 'contact',
+      action: 'read',
+    });
+    return { ...built, raId: ra.id, grantId: grant.id };
+  }
+
+  it('lists the live grants on an assignment, without echoing constraint_expr', async () => {
+    const { service, raId, grantId } = await withGrant();
+    const list = await service.listPermissions(OWNER, raId);
+    expect(list).toEqual([
+      { id: grantId, resource: 'contact', action: 'read', createdAt: new Date(0).toISOString() },
+    ]);
+    // The stored Cedar condition is operator-authored JSON; no surface renders it
+    // and the view type has no field for it.
+    expect(Object.keys(list[0] as object)).not.toContain('constraintExpr');
+  });
+
+  it('revokes a grant, audits it, and drops it from the list', async () => {
+    const { service, events, raId, grantId } = await withGrant();
+    await expect(service.revokePermission(OWNER, raId, grantId)).resolves.toBeUndefined();
+    expect(events.revoked).toEqual([grantId]);
+    expect(await service.listPermissions(OWNER, raId)).toEqual([]);
+  });
+
+  it('revoking twice 404s rather than reporting a second success', async () => {
+    const { service, events, raId, grantId } = await withGrant();
+    await service.revokePermission(OWNER, raId, grantId);
+    await expect(service.revokePermission(OWNER, raId, grantId)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    // ...and no second audit event claims a revocation that did not happen.
+    expect(events.revoked).toEqual([grantId]);
+  });
+
+  it('404s for a grant reached through an assignment that is not the caller"s', async () => {
+    const { service, raId, grantId } = await withGrant();
+    // A foreign caller never gets past the owner cross-check, so a grant id from
+    // one estate cannot be revoked through another's assignment.
+    await expect(service.revokePermission(OTHER, raId, grantId)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(service.listPermissions(OTHER, raId)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.revokePermission(OWNER, 'e0000000-0000-4000-8000-000000000097', grantId),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

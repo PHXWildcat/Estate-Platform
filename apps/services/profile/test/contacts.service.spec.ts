@@ -1,10 +1,10 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { FieldCrypto, LocalKmsProvider, type DekRecord, type DekRepository } from '@estate/crypto';
 import { ProfileAuthz } from '../src/authz.service';
 import type { ProfileConfig } from '../src/config';
 import { ContactsService } from '../src/contacts.service';
-import type { ContactInsert, ContactRow } from '../src/contacts.repo';
+import type { ContactFields, ContactInsert, ContactRow } from '../src/contacts.repo';
 import { FieldCipher } from '../src/field-cipher';
 import type { EffectiveGrant } from '../src/roles.repo';
 
@@ -35,13 +35,18 @@ class MemoryDeks implements DekRepository {
   }
 }
 
-/** In-memory contacts repo. */
+/**
+ * In-memory contacts repo, faithful to the real one in the one respect this
+ * suite turns on: `update` applies only the `ContactFields` it is handed, so a
+ * service that stopped sending `linked_user_id` (or started sending it as null)
+ * shows up here exactly as it would in Postgres.
+ */
 class FakeContactsRepo {
   readonly rows: ContactRow[] = [];
   private seq = 0;
   insert(row: ContactInsert): Promise<string> {
     const id = `f0000000-0000-4000-8000-00000000000${++this.seq}`;
-    this.rows.push({ ...row, id });
+    this.rows.push({ ...row, id, linked_user_id: null });
     return Promise.resolve(id);
   }
   findById(id: string): Promise<ContactRow | null> {
@@ -50,10 +55,16 @@ class FakeContactsRepo {
   listByOwner(ownerUserId: string): Promise<ContactRow[]> {
     return Promise.resolve(this.rows.filter((r) => r.owner_user_id === ownerUserId));
   }
-  update(): Promise<boolean> {
+  update(id: string, ownerUserId: string, fields: ContactFields): Promise<boolean> {
+    const i = this.rows.findIndex((r) => r.id === id && r.owner_user_id === ownerUserId);
+    if (i < 0) return Promise.resolve(false);
+    this.rows[i] = { ...(this.rows[i] as ContactRow), ...fields };
     return Promise.resolve(true);
   }
-  softDelete(): Promise<boolean> {
+  softDelete(id: string): Promise<boolean> {
+    const i = this.rows.findIndex((r) => r.id === id);
+    if (i < 0) return Promise.resolve(false);
+    this.rows.splice(i, 1);
     return Promise.resolve(true);
   }
 }
@@ -61,12 +72,17 @@ class FakeContactsRepo {
 /** Fake roles repo returning pre-configured effective grants for GRANTEE only. */
 class FakeRolesRepo {
   grants: EffectiveGrant[] = [];
+  /** Contact ids a live role assignment names (guards contact deletion). */
+  assignedContactIds = new Set<string>();
   effectiveContactReadGrants(
     _owner: string,
     caller: string,
     _now: Date,
   ): Promise<EffectiveGrant[]> {
     return Promise.resolve(caller === GRANTEE ? this.grants : []);
+  }
+  hasLiveAssignmentsForContact(_owner: string, contactId: string): Promise<boolean> {
+    return Promise.resolve(this.assignedContactIds.has(contactId));
   }
 }
 
@@ -161,5 +177,51 @@ describe('ContactsService ABAC boundary (docs/03 §5.5)', () => {
     const { service } = build();
     const a = await service.create(OWNER, { name: 'Private' });
     await expect(service.getOne(STRANGER, OWNER, a.id)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('the contact link survives ordinary edits (M13 PR1)', () => {
+  /**
+   * The link is an authorization edge, not a profile field: it is what makes
+   * someone able to open a death case (docs/03 §6b) and what makes an executor
+   * resolvable (M7). `encryptRow` used to hardcode `linked_user_id: null` and
+   * feed it to BOTH insert and update, and the UPDATE wrote the column — so
+   * changing a phone number revoked a §5.1 control with no audit event.
+   *
+   * The type system now makes that unrepresentable (`ContactFields` has no such
+   * key), which is why this test asserts the OUTCOME rather than the shape: a
+   * future edit that reintroduces the column has to make this red.
+   */
+  it('an update leaves linked_user_id exactly as it was', async () => {
+    const { service, repo } = build();
+    const a = await service.create(OWNER, { name: 'Grantee Person', phone: '555-0100' });
+
+    // Stand in for the link ceremony (PR3), which is the only writer of this
+    // column — the four existing test files that set it in raw SQL say the same.
+    const row = repo.rows.find((r) => r.id === a.id) as ContactRow;
+    row.linked_user_id = GRANTEE;
+
+    await service.update(OWNER, a.id, { name: 'Grantee Person', phone: '555-0199' });
+
+    const after = repo.rows.find((r) => r.id === a.id) as ContactRow;
+    expect(after.linked_user_id).toBe(GRANTEE);
+    // ...and the edit itself still landed.
+    const view = await service.getOne(OWNER, OWNER, a.id);
+    expect(view.phone).toBe('555-0199');
+  });
+
+  it('refuses to delete a contact a live role assignment still names', async () => {
+    const { service, repo, roles } = build();
+    const a = await service.create(OWNER, { name: 'Trustee Person' });
+    roles.assignedContactIds.add(a.id);
+
+    await expect(service.remove(OWNER, a.id)).rejects.toBeInstanceOf(ConflictException);
+    // Nothing was deleted: retiring a fiduciary is its own step-up-gated act.
+    expect(repo.rows.some((r) => r.id === a.id)).toBe(true);
+
+    // Once the assignment is revoked, the contact deletes normally.
+    roles.assignedContactIds.delete(a.id);
+    await service.remove(OWNER, a.id);
+    expect(repo.rows.some((r) => r.id === a.id)).toBe(false);
   });
 });

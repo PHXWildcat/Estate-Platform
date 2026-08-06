@@ -12,7 +12,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
-import { TOPICS } from '@estate/contracts';
+import { TOPICS, type MfaLevel } from '@estate/contracts';
 import { DekConflictError } from '@estate/crypto';
 import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
 import { Client } from 'pg';
@@ -25,23 +25,26 @@ import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
 /**
- * Stands in for real identity introspection: a bearer token `mfa:<userId>`
+ * Stands in for real identity introspection: a bearer token `<level>:<userId>`
  * verifies to that session (what CallerGuard would get from HttpSessionVerifier
  * → identity's /v1/auth/session); a malformed token verifies to null (⇒ 401).
- * Profile has no step-up routes. The real cross-service path is proven in the
- * session-verification e2e.
+ * The real cross-service path is proven in the session-verification e2e.
+ *
+ * `stepup` is now meaningful here: M13 PR1 put StepUpGuard on the
+ * role-assignment mutations (docs/01 §5), which M2 shipped without.
  */
 const fakeVerifier: SessionVerifier = {
   verify: (token) => {
-    const m = /^mfa:([0-9a-f-]{36})$/.exec(token);
+    const m = /^(mfa|stepup):([0-9a-f-]{36})$/.exec(token);
     if (!m) {
       return Promise.resolve(null);
     }
+    const [, level, userId] = m;
     const ctx: SessionContext = {
-      userId: m[1]!,
+      userId: userId!,
       sessionId: '00000000-0000-4000-8000-000000000000',
-      mfaLevel: 'mfa',
-      stepupExpiresAt: null,
+      mfaLevel: level as MfaLevel,
+      stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
     };
     return Promise.resolve(ctx);
   },
@@ -122,6 +125,8 @@ describeIfPg('profile & contacts service end to end', () => {
   // The gateway-injected `x-estate-user-id` header is replaced by the caller's
   // bearer token; asUser now yields the Authorization header value.
   const asUser = (id: string): string => `Bearer mfa:${id}`;
+  /** A session with a fresh step-up — required by the role-assignment mutations. */
+  const asElevated = (id: string): string => `Bearer stepup:${id}`;
 
   it('rejects a request without the gateway-injected user header (401)', async () => {
     const res = await request(server).get('/v1/profile');
@@ -202,10 +207,38 @@ describeIfPg('profile & contacts service end to end', () => {
     expect((rows[0] as { n: number }).n).toBe(1);
   });
 
+  it('the edit above did NOT clear the contact link (raw SQL, M13 PR1)', async () => {
+    // The link is the authorization edge behind docs/03 §6b and M7's executor
+    // resolution. Asserted here rather than only in the service unit test
+    // because the defect lived in the repo's UPDATE statement, which a fake
+    // repo cannot see: a `linked_user_id = ...` reappearing in that SQL has to
+    // turn THIS red.
+    const upd = await request(server)
+      .put(`/v1/contacts/${linkedContactId}`)
+      .set('authorization', asUser(OWNER))
+      .send({ name: 'Grantee Person', phone: '555-0142' });
+    expect(upd.status).toBe(200);
+
+    const { rows } = await admin.query(
+      `SELECT linked_user_id FROM ${schema}.contacts WHERE id = $1`,
+      [linkedContactId],
+    );
+    expect((rows[0] as { linked_user_id: string | null }).linked_user_id).toBe(GRANTEE);
+  });
+
+  it('role-assignment mutations require a fresh step-up (docs/01 §5)', async () => {
+    const denied = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asUser(OWNER)) // authenticated, but no step-up
+      .send({ contactId: linkedContactId, role: 'trustee', scopeType: 'estate' });
+    expect(denied.status).toBe(403);
+    expect(denied.body).toEqual({ error: 'stepup_required' });
+  });
+
   it('owner grants GRANTEE a scope naming ONLY the named contact', async () => {
     const ra = await request(server)
       .post('/v1/role-assignments')
-      .set('authorization', asUser(OWNER))
+      .set('authorization', asElevated(OWNER))
       .send({
         contactId: linkedContactId,
         role: 'beneficiary',
@@ -217,7 +250,7 @@ describeIfPg('profile & contacts service end to end', () => {
 
     const perm = await request(server)
       .post(`/v1/role-assignments/${roleAssignmentId}/permissions`)
-      .set('authorization', asUser(OWNER))
+      .set('authorization', asElevated(OWNER))
       .send({ resource: 'contact', action: 'read' });
     expect(perm.status).toBe(201);
   });
@@ -262,6 +295,133 @@ describeIfPg('profile & contacts service end to end', () => {
       .set('authorization', asUser(OWNER));
     expect(list.status).toBe(200);
     expect((list.body as unknown[]).length).toBe(3);
+  });
+
+  it('an owner can read and withdraw a permission grant (M13 PR1)', async () => {
+    // A second grant, so withdrawing one leaves the §5.5 fixture above intact.
+    const extra = await request(server)
+      .post(`/v1/role-assignments/${roleAssignmentId}/permissions`)
+      .set('authorization', asElevated(OWNER))
+      .send({ resource: 'document', action: 'read' });
+    expect(extra.status).toBe(201);
+    const extraId = (extra.body as { id: string }).id;
+
+    const list = await request(server)
+      .get(`/v1/role-assignments/${roleAssignmentId}/permissions`)
+      .set('authorization', asUser(OWNER));
+    expect(list.status).toBe(200);
+    expect((list.body as Array<{ resource: string }>).map((g) => g.resource).sort()).toEqual([
+      'contact',
+      'document',
+    ]);
+
+    // Withdrawal needs NO step-up: the protective act must never be harder than
+    // the permissive one (the M6 rule).
+    const del = await request(server)
+      .delete(`/v1/role-assignments/${roleAssignmentId}/permissions/${extraId}`)
+      .set('authorization', asUser(OWNER));
+    expect(del.status).toBe(204);
+
+    const again = await request(server)
+      .delete(`/v1/role-assignments/${roleAssignmentId}/permissions/${extraId}`)
+      .set('authorization', asUser(OWNER));
+    expect(again.status).toBe(404);
+
+    const after = await request(server)
+      .get(`/v1/role-assignments/${roleAssignmentId}/permissions`)
+      .set('authorization', asUser(OWNER));
+    expect((after.body as Array<{ resource: string }>).map((g) => g.resource)).toEqual(['contact']);
+    // revoked_at is the history — the row survives (no soft delete on this table).
+    const { rows } = await admin.query(
+      `SELECT revoked_at FROM ${schema}.permission_grants WHERE id = $1`,
+      [extraId],
+    );
+    expect((rows[0] as { revoked_at: Date | null }).revoked_at).not.toBeNull();
+  });
+
+  it('a grant cannot be revoked through a DIFFERENT assignment (real SQL scoping)', async () => {
+    // `role_assignment_id` is in the revoke predicate because it is the only
+    // thing tying a grant row to an owner. A second assignment of the SAME owner
+    // is the sharpest case: the owner check passes, so only the SQL stands
+    // between a grant id and the wrong parent.
+    const second = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({ contactId: namedId, role: 'viewer', scopeType: 'estate' });
+    const secondRaId = (second.body as { id: string }).id;
+    const grant = await request(server)
+      .post(`/v1/role-assignments/${secondRaId}/permissions`)
+      .set('authorization', asElevated(OWNER))
+      .send({ resource: 'asset', action: 'read' });
+    const grantId = (grant.body as { id: string }).id;
+
+    const wrongParent = await request(server)
+      .delete(`/v1/role-assignments/${roleAssignmentId}/permissions/${grantId}`)
+      .set('authorization', asUser(OWNER));
+    expect(wrongParent.status).toBe(404);
+
+    // Still live under its real parent.
+    const list = await request(server)
+      .get(`/v1/role-assignments/${secondRaId}/permissions`)
+      .set('authorization', asUser(OWNER));
+    expect((list.body as Array<{ id: string }>).map((g) => g.id)).toEqual([grantId]);
+  });
+
+  it('refuses to delete a contact a live role assignment names (M13 PR1)', async () => {
+    // linkedContactId carries the beneficiary assignment granted above. Deleting
+    // it would silently un-resolve every query that joins `deleted_at IS NULL`.
+    const refused = await request(server)
+      .delete(`/v1/contacts/${linkedContactId}`)
+      .set('authorization', asUser(OWNER));
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ error: 'contact_in_use' });
+
+    // An unencumbered contact still deletes normally.
+    const spare = await request(server)
+      .post('/v1/contacts')
+      .set('authorization', asUser(OWNER))
+      .send({ name: 'Spare Contact' });
+    const spareId = (spare.body as { id: string }).id;
+    const ok = await request(server)
+      .delete(`/v1/contacts/${spareId}`)
+      .set('authorization', asUser(OWNER));
+    expect(ok.status).toBe(204);
+  });
+
+  it('a profile edit does not destroy the SSN it never received (M13 PR1)', async () => {
+    const { rows: before } = await admin.query(
+      `SELECT ssn_ct, ssn_last4_ct FROM ${schema}.profiles WHERE user_id = $1`,
+      [OWNER],
+    );
+    const ssnCtBefore = (before[0] as { ssn_ct: Buffer }).ssn_ct;
+    expect(ssnCtBefore).not.toBeNull();
+
+    // What an edit form sends: the one field being changed, plus the required name.
+    // `GET /v1/profile` never returns `ssn`, so no client can echo it back.
+    const put = await request(server)
+      .put('/v1/profile')
+      .set('authorization', asUser(OWNER))
+      .send({ legalName: LEGAL_NAME, stateOfResidence: 'AZ' });
+    expect(put.status).toBe(200);
+
+    const { rows: after } = await admin.query(
+      `SELECT ssn_ct, ssn_last4_ct, state_of_residence, marital_status
+         FROM ${schema}.profiles WHERE user_id = $1`,
+      [OWNER],
+    );
+    const row = after[0] as {
+      ssn_ct: Buffer;
+      ssn_last4_ct: Buffer;
+      state_of_residence: string;
+      marital_status: string;
+    };
+    expect(row.state_of_residence).toBe('AZ');
+    expect(row.ssn_ct).toEqual(ssnCtBefore); // carried as bytes, never re-encrypted
+    expect(row.ssn_last4_ct).not.toBeNull();
+    expect(row.marital_status).toBe('married'); // set by the first test, untouched
+    expect(
+      (await request(server).get('/v1/profile').set('authorization', asUser(OWNER))).body,
+    ).toMatchObject({ ssnLast4: '6789', stateOfResidence: 'AZ' });
   });
 
   it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {
@@ -311,6 +471,7 @@ describeIfPg('profile & contacts service end to end', () => {
         'contact.updated',
         'role.granted',
         'permission.granted',
+        'permission.revoked',
         'crypto.field.decrypted', // every read decrypts through FieldCrypto
       ]),
     );

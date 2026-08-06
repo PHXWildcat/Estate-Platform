@@ -15,6 +15,14 @@ export interface RoleAssignmentView {
   endsAt: string | null;
 }
 
+/** A live permission grant, as the owner sees it. */
+export interface PermissionGrantView {
+  id: string;
+  resource: string;
+  action: string;
+  createdAt: string;
+}
+
 /**
  * Role assignments and permission grants — the owner-managed authorization
  * objects that later drive the ABAC read boundary. Every mutation is owner-only
@@ -79,6 +87,61 @@ export class RolesService {
       action: input.action,
     });
     return { id };
+  }
+
+  /**
+   * The grants attached to one role assignment — the read half M2 never shipped.
+   *
+   * Authorization is the same `manage` check the write path uses plus the same
+   * owner cross-check, so a grant id belonging to another estate is a uniform
+   * `not_found`. `constraint_expr` is deliberately NOT projected: it is
+   * operator-authored JSON that no surface renders, and echoing arbitrary stored
+   * JSON back through an API is how a column becomes an exfiltration channel.
+   */
+  async listPermissions(
+    callerUserId: string,
+    roleAssignmentId: string,
+  ): Promise<PermissionGrantView[]> {
+    this.authz.assertCan(
+      callerUserId,
+      'read',
+      coreResource('RoleAssignment', roleAssignmentId, callerUserId),
+    );
+    const ra = await this.roles.findById(roleAssignmentId);
+    if (!ra || ra.owner_user_id !== callerUserId) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    const rows = await this.grants.listByRoleAssignment(roleAssignmentId);
+    return rows.map((row) => ({
+      id: row.id,
+      resource: row.resource,
+      action: row.action,
+      createdAt: row.created_at.toISOString(),
+    }));
+  }
+
+  /**
+   * Withdraw one grant. NOT step-up gated, deliberately — see the controller.
+   */
+  async revokePermission(
+    callerUserId: string,
+    roleAssignmentId: string,
+    grantId: string,
+  ): Promise<void> {
+    this.authz.assertCan(
+      callerUserId,
+      'manage',
+      coreResource('RoleAssignment', roleAssignmentId, callerUserId),
+    );
+    const ra = await this.roles.findById(roleAssignmentId);
+    if (!ra || ra.owner_user_id !== callerUserId) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    const ok = await this.grants.revoke(roleAssignmentId, grantId);
+    if (!ok) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    await this.events.permissionRevoked(callerUserId, grantId);
   }
 
   async list(callerUserId: string): Promise<RoleAssignmentView[]> {

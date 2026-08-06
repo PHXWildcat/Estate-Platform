@@ -678,6 +678,71 @@ document is now not offered for deletion at all. RECORDED, NOT CHANGED: the
 service's ordering, since moving the hold check ahead of the guard would put an
 unauthenticated-for-this-action read of estate state before the gate.
 
+## 6f. Threat-model delta — M13 people surface PR1 (2026-08-06)
+
+M13 gives the M2 profile & contacts service its first consumer. PR1 hardens what
+was already deployed, before anything is built on top; the surface itself (PR2)
+and the contact-link ceremony (PR3) extend this section.
+
+**TB8 (role-holders → owner's estate data) had no step-up gate on its own
+control objects.** §5.5's boundary is enforced by `role_assignments` and
+`permission_grants` — they are the data that decides what a beneficiary can
+read. Creating one is a docs/01 §5 step-up action in terms ("trustee/executor
+changes, beneficiary changes"), and M2 shipped all three mutation routes under
+`CallerGuard` alone because it predates `@estate/auth-guard`; the sibling
+beneficiary route in the asset service complied. So a bearer token stolen from a
+live session was sufficient to name a trustee over an entire estate. Closed:
+grant, revoke and permission-attach all require a step-up fresh within 5
+minutes, uniformly across all twelve roles.
+
+*Why revoke is gated and permission-withdrawal is not.* The M6 rule is that the
+protective action must never be HARDER than the permissive one — equal is
+allowed. Revoking an assignment is not purely protective in this domain: it
+destroys the executor-resolution path M7 depends on and can strip the last
+linked contact able to report a death or rescue a §5.1 case, so an attacker who
+revokes is isolating the owner, not protecting them. Withdrawing one permission
+grant genuinely only narrows, so it is `CallerGuard`-only — an owner who can see
+a grant they regret must be able to pull it without first finding their
+authenticator.
+
+**A §5.1 control was revocable by accident, twice.** `contacts.linked_user_id`
+is the anti-enumeration gate this document credits (§6b: intake "cannot
+enumerate" *because* reporters must already be named by the decedent's contact
+repository). Two ordinary, unaudited operations silently removed it:
+
+- Editing any field of a contact cleared the column, because one encrypt helper
+  hardcoded it null and fed both the insert and the update. Closed by type: the
+  shape both statements are built from has no such key.
+- Soft-deleting a contact left its `role_assignments` live while every
+  role-holder query joins `contacts ... AND deleted_at IS NULL`, so an executor
+  stopped resolving and every grant stopped being effective with the assignment
+  still listed and no `role.revoked` emitted. Closed with `409 contact_in_use`:
+  retiring a fiduciary is a separate, step-up-gated, audited act.
+
+Both are the same class as the M7/M9 findings — a control that stops working
+without saying so, indistinguishable from one that is working.
+
+**A Zone B write path destroyed the most sensitive column in the product.**
+`PUT /v1/profile` was a full replace while `GET /v1/profile` returns `ssnLast4`
+and never `ssn`, so any edit through any client wrote NULL over `ssn_ct` and
+`ssn_last4_ct`. Now absent means unchanged. The preservation deliberately copies
+CIPHERTEXT: decrypt-and-re-encrypt would put the full SSN through the service on
+every unrelated edit and emit a `crypto.field.decrypted` on `profile.ssn` each
+time — pure added exposure on the §5.3 bulk-decrypt path in exchange for
+nothing. A row whose `dek_id` is no longer the owner's active DEK (crypto-shred)
+is refused rather than re-stamped, so an erased record cannot be made to look
+intact.
+
+**RECORDED, OWED BY PR2 (§4 TB4).** Contact and family-member reads decrypt
+every field, one audited `crypto.field.decrypted` each, so a list view is a
+bulk-decrypt surface: twenty contacts is roughly a hundred events on the owner's
+own trail per page load, and it blunts the per-principal decrypt-rate baseline
+this document calls the single most important insider control. The DEK cache
+means it is not a hundred KMS operations, which is the weaker half of the
+control. PR1 does not change it; PR2 owes a narrowed list projection under M12's
+audited-decrypt-volume rule, and this paragraph is the requirement, not an
+observation.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

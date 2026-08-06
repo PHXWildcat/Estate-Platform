@@ -135,4 +135,22 @@ export class EventsService {
       detail: { resource: detail.resource, action: detail.action },
     });
   }
+
+  /**
+   * A grant withdrawn. No `detail`: the resource/action pair is already on the
+   * `permission.granted` event for this same id, and the grant row survives with
+   * its `revoked_at` set, so repeating it here would add nothing an
+   * investigator does not have and widen what the audit payload carries.
+   */
+  async permissionRevoked(actorId: string, grantId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'permission.revoked',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'permission_grant',
+      resourceId: grantId,
+      sessionId: null,
+    });
+  }
 }

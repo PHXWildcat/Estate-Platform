@@ -29,6 +29,13 @@ export const AUDIT_ACTIONS = [
   'role.granted',
   'role.revoked',
   'permission.granted',
+  // The withdrawal half of a permission grant. M2 shipped `permission.granted`
+  // with no counterpart and no revoke route at all, so an owner could widen a
+  // role-holder's reach and never narrow it — the inverse of the M6 rule that
+  // the protective action must never be harder than the permissive one. A
+  // revocation that leaves no trace is also the one an owner most needs to
+  // prove later ("I took that access away on the 14th").
+  'permission.revoked',
   // Asset service (financial cluster).
   'asset.created',
   'asset.updated',

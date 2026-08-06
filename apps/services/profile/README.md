@@ -87,13 +87,15 @@ their grant names — never enumerate the rest.
 | `DELETE /v1/profile/family/:id` | Soft-delete family member | owner |
 | `POST /v1/contacts` | Create own contact | owner |
 | `PUT /v1/contacts/:id` | Update own contact | owner |
-| `DELETE /v1/contacts/:id` | Soft-delete own contact | owner |
+| `DELETE /v1/contacts/:id` | Soft-delete own contact (`409 contact_in_use` while a live role assignment names it) | owner |
 | `GET /v1/profiles/:ownerUserId/contacts` | **ABAC list** | owner or grant-holder |
 | `GET /v1/profiles/:ownerUserId/contacts/:contactId` | **ABAC single read** | owner or named grant-holder |
-| `POST /v1/role-assignments` | Grant a contact a role over a scope | owner |
+| `POST /v1/role-assignments` | Grant a contact a role over a scope | owner + **step-up** |
 | `GET /v1/role-assignments` | List own role assignments | owner |
-| `POST /v1/role-assignments/:id/permissions` | Attach a permission grant | owner |
-| `DELETE /v1/role-assignments/:id` | Revoke (soft-delete) a role assignment | owner |
+| `POST /v1/role-assignments/:id/permissions` | Attach a permission grant | owner + **step-up** |
+| `GET /v1/role-assignments/:id/permissions` | List live grants on an assignment | owner |
+| `DELETE /v1/role-assignments/:id/permissions/:grantId` | Withdraw one grant | owner |
+| `DELETE /v1/role-assignments/:id` | Revoke (soft-delete) a role assignment | owner + **step-up** |
 
 The two `GET /v1/profiles/:ownerUserId/contacts...` routes are the ABAC
 demonstrator: the owner sees all their contacts; a role-holder sees only the
@@ -102,6 +104,47 @@ caller with no grant gets a generic `403`.
 
 All bodies are zod-validated (shape + length only); a parse failure is a
 generic `400 { "error": "invalid_request" }` with field names withheld.
+
+### Step-up, and where it deliberately stops (M13 PR1)
+
+Role-assignment mutations are on docs/01 §5's mandatory step-up list
+("trustee/executor changes, beneficiary changes"). M2 shipped them before
+`@estate/auth-guard` existed and they stayed `CallerGuard`-only, while the
+sibling route in assets complied — so `StepUpGuard` now covers **grant, revoke,
+and permission-attach**, uniformly across all twelve roles rather than by a
+"which role is sensitive" table that would drift.
+
+Withdrawing a **permission grant** is deliberately *not* gated. That is the M6
+emergency-access-denial rule: the protective action must never be harder than
+the permissive one. Revoking the whole **assignment** stays gated because it is
+not purely protective here — it destroys the executor-resolution path (M7) and
+can strip the last linked contact able to report a death or rescue a docs/03
+§5.1 case.
+
+### `PUT /v1/profile` is a merge, not a replace
+
+An absent optional field is left unchanged; an explicit `null` clears it.
+This is forced rather than stylistic: `GET /v1/profile` returns `ssnLast4` and
+never `ssn`, so no client can round-trip the row, and under replace semantics any
+edit silently wrote NULL over `ssn_ct` and `ssn_last4_ct`. Preserved values are
+carried as **ciphertext** — decrypt-and-re-encrypt would put the full SSN through
+the process and emit a `crypto.field.decrypted` on every unrelated edit. If the
+stored row's `dek_id` is no longer the owner's active DEK (i.e. a crypto-shred),
+the write is refused with `409 profile_key_retired` rather than stamping
+unreadable bytes with a live key id.
+
+Contacts and family members keep replace semantics: their reads return every
+field they store, so a client can round-trip them.
+
+### The contact link has no write path here
+
+`contacts.linked_user_id` is an authorization edge — it is what makes someone
+able to open a death case (docs/03 §6b) and what makes an executor resolvable
+(M7) — and this service's ordinary write path cannot touch it. `ContactFields`,
+the type both the INSERT and the UPDATE are built from, has no such key. Before
+M13 PR1 one `encryptRow` hardcoded `linked_user_id: null` and fed both
+statements, so editing a phone number revoked a §5.1 control with no audit event
+and no owner decision.
 
 ## Environment variables
 
