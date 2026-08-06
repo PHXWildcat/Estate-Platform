@@ -2339,6 +2339,129 @@ bff 88/85/88/88. Stack e2e test COUNTS are unchanged (16/4 and 9/11) — the
 search calls in `apps/e2e` changed shape with the route, but no test was added
 or removed.
 
+### M13 — the people surface (PR1 shipped)
+
+M2 shipped the profile & contacts service complete: fifteen owner-facing routes
+across three controllers, field-encrypted profiles, family members, contacts,
+role assignments, permission grants, and the platform's first Cedar PEP. Nothing
+has ever called any of them. That is a LARGER zero-callers gap than the one M12
+just closed, and the fourth instance of the shape (M4's legal hold, M10 PR3's
+analysis routes, M11's conversation routes, M12's whole reason for existing).
+The BFF has no `PROFILE_URL` and no profile client; `AppNav.tsx` renders People
+as an inert "Soon" span.
+
+It is incoherent from the user's side in exactly M12's way. The readiness page
+emits `state_of_residence_unknown` and `minor_status_unknown` — the product
+telling someone "we don't know a fact about you" with no way to tell us — and
+M12's generator asks the user to pick a state by hand, a workaround introduced
+*because* the BFF has no profile downstream.
+
+**Three PRs, and the order is the point.** PR1 hardens the shipped service with
+no new surface. PR2 is the UI over the hardened service. PR3 is the contact-link
+ceremony, alone, with its own docs/03 delta.
+
+#### PR1 — harden the shipped service (six defects, not the three that were known)
+
+Three were known going in. Three more came out of reading the service against
+the docs, and two of those are the SAME SHAPE as the first — a write path that
+destroys data it was never given.
+
+1. **No `StepUpGuard` anywhere in profile.** `POST /v1/role-assignments` granted
+   trustee/executor/beneficiary with `CallerGuard` only, while docs/01 §5 names
+   "trustee/executor changes, beneficiary changes" as mandatory step-up and the
+   sibling route in assets (`beneficiaries.controller.ts`) already complied. M2
+   shipped this before `@estate/auth-guard` existed and nothing revisited it; no
+   decision-log entry ever exempted it. The gate now covers grant, revoke and
+   permission-attach, UNIFORMLY across all twelve roles — a guard cannot branch
+   on the body without becoming a weaker copy of the schema, and a table of
+   "which roles are sensitive" is a table that drifts (`agent_financial` is a
+   power of attorney; `viewer` still reads an estate).
+2. **Editing a contact cleared its platform link.** `contacts.service.ts`
+   hardcoded `linked_user_id: null` in the one `encryptRow` feeding BOTH insert
+   and update, and the repo's UPDATE wrote that column. The link is an
+   authorization EDGE — being a linked contact is what makes someone able to open
+   a death case (docs/03 §6b) and what makes an executor resolvable (M7) — so
+   changing a phone number revoked a §5.1 control with no audit event and no
+   owner decision. Fixed by TYPE: `ContactFields`, the shape both statements are
+   built from, has no such key, so the ordinary write path has no field in which
+   to say anything about the link.
+3. **Permission grants were write-only.** `POST .../permissions` existed with no
+   GET, no revoke, `listByRoleAssignment` at zero callers, and no
+   `permission.revoked` in the audit catalog. An owner could widen a
+   role-holder's reach and never see or withdraw it — the inverse of the M6 rule
+   that the protective action must never be harder than the permissive one. Now
+   a list route, a revoke route, and the audit action. Revoke is
+   `CallerGuard`-ONLY while granting is gated, deliberately: that asymmetry IS
+   the M6 rule. Revoking the whole ASSIGNMENT stays gated, because that destroys
+   a designation the estate depends on rather than narrowing one.
+4. **`PUT /v1/profile` silently destroyed the SSN on any edit (new).** The upsert
+   was a full replace and `ssn` was optional, but `GET /v1/profile` returns
+   `ssnLast4` and NEVER `ssn` — by design, since the full value is the most
+   sensitive column in the product. So no client could round-trip the row:
+   read the profile, change one field, PUT it back, and `ssn_ct` and
+   `ssn_last4_ct` both went NULL. `dob`/`address`/`phone`/`occupation` share the
+   replace semantics but ARE returned, so they survive a round trip; the SSN
+   structurally cannot. Latent for the same reason as (2) — nothing called the
+   route — and PR2's whole purpose is a form over it. Absent now means unchanged
+   and explicit `null` means clear, applied to every optional field of the
+   profile rather than special-cased for the SSN.
+   **The carry moves CIPHERTEXT, never plaintext.** Decrypting the untouched
+   fields to re-encrypt them would put the full SSN through the process on every
+   unrelated edit and emit a `crypto.field.decrypted` on `profile.ssn` each
+   time, turning a change of address into a logged read of that value. Copying
+   stored bytes is both cheaper and strictly less disclosure. It is sound only
+   while carried and new bytes share one key, which a single `dek_id` column
+   plus the partial unique index guarantee; a row written under a retired DEK
+   (i.e. crypto-shredded) is REFUSED with `409 profile_key_retired` rather than
+   stamped with a live key id, on the M4 rule that a shredded record is Gone,
+   not a fresh live key.
+5. **Deleting a contact silently retired its fiduciary designations (new).**
+   Every query that resolves a role holder joins `contacts ... AND c.deleted_at
+   IS NULL` — profile's `effectiveContactReadGrants`, settlement's
+   `isLinkedContact` / `isExecutorOf` / `reportableEstates` — but the
+   `role_assignments` rows have their own `deleted_at` and were untouched. So one
+   contact delete un-resolved an executor on the §5.1 chain and disabled every
+   grant it carried, while `GET /v1/role-assignments` kept listing the
+   assignment and no `role.revoked` was emitted anywhere. Both halves are wrong:
+   retiring a fiduciary is a deliberate, step-up-gated, separately audited act
+   and must not be reachable as a side effect of tidying an address book, and a
+   control that stops working without saying so is the fail-open this repo keeps
+   finding. Now `409 contact_in_use` until the roles are revoked.
+6. **Recorded, not a defect:** contact and family-member reads decrypt every
+   field, and `FieldCipher` emits one `crypto.field.decrypted` per non-null
+   field, so a twenty-contact list is ~100 audit events on the owner's own trail
+   per page load. The DEK cache means it is not 100 KMS calls, but it is exactly
+   the per-principal decrypt-rate baseline docs/03 §4 TB4 calls the single most
+   important insider control. This is PR2's design constraint (M12's
+   audited-decrypt-volume rule, stricter here), not something PR1 changes.
+
+**Every fix is mutation-proven, and one mutation exposed a vacuous test.** The
+service-level unit test for (2) PASSED with `linked_user_id = NULL` put back into
+the repo's UPDATE, because it fakes the repo and so cannot see SQL — the defect
+lived in a statement no unit test observes. The assertion moved to
+`profile.int.spec.ts` against real Postgres, where reintroducing the column
+turns two tests red. All six were then re-mutated against the database
+(re-add the column; drop the guard; restore absent-means-NULL; skip the
+in-use check; drop the revoke audit event; widen the revoke predicate to ignore
+`role_assignment_id`) and each is confirmed to fail.
+
+Coverage floors re-measured and ratcheted up, never lowered: profile
+62/58/40/60 → 72/70/49/70 (local, no PG: 73.44/71.47/50.34/71.17; with PG the
+same suites reach 87/77/85/86). The floors stay satisfiable without Postgres so
+local runs are honest, which is the existing convention.
+
+**The new gate broke the settlement e2e, which is the gate working.**
+`seedEstate` named an executor and a viewer on the owner's ordinary session.
+Rather than weaken the seed to raw SQL, it now seeds through a SECOND,
+step-up-elevated session: step-up freshness is a property of a session
+(identity's `grantStepUp` takes a `sessionId`), so the owner's primary session
+stays un-elevated and the owner-void test still observes `stepup_required` on it
+— and the seeding step-up stays strictly OLDER than any case reported
+afterwards, which is what keeps it clear of the M7 owner-liveness interlock.
+TOTP enrollment is now cached per user, because `enrollTotp` only revokes
+UNVERIFIED methods and enrolling twice would leave a user with two verified
+secrets and make `findActiveTotp`'s choice decide whether a later step-up works.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

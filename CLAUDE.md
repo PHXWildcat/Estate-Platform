@@ -1477,3 +1477,83 @@ deviating from them, stop and propose the change with rationale — do not silen
   object-store reads per catalog request on a user-facing route — for a
   detector whose job is to raise an alarm, not to gate each read.
 
+- 2026-08-06 — M13 is THE PEOPLE SURFACE, in three PRs: PR1 hardens the shipped
+  profile service (no new surface), PR2 is the UI, PR3 is the contact-link
+  ceremony alone. It closes the LARGEST remaining zero-callers gap in the repo —
+  apps/services/profile has exposed fifteen owner-facing routes across three
+  controllers since M2 with no consumer anywhere — and the M12-shaped
+  incoherence where the readiness page emits `state_of_residence_unknown` and
+  `minor_status_unknown` at a user who has no way to tell us, while M12's
+  generator asks for a state by hand *because* the BFF has no profile
+  downstream. ORDER IS THE POINT: three defects were verified in shipped code
+  before any UI was designed, and reading for more found three additional ones,
+  two of the same destroy-what-you-were-not-given shape.
+- 2026-08-06 — M13 PR1, the two load-bearing fixes. (1) NO STEP-UP EXISTED
+  ANYWHERE IN PROFILE: `POST /v1/role-assignments` granted trustee/executor/
+  beneficiary under CallerGuard alone, though docs/01 §5 names exactly those
+  changes and assets' sibling route already complied — M2 predates
+  @estate/auth-guard and nothing revisited it. The gate now covers grant,
+  revoke AND permission-attach, uniform across all twelve roles rather than a
+  "which role is sensitive" table that drifts (`agent_financial` is a power of
+  attorney; `viewer` still reads an estate), and gating REVOKE is not an M6
+  violation because the rule forbids the protective action being HARDER, not
+  equal — revoking here destroys the executor-resolution path (M7) and can
+  strip the last linked contact able to report a death, so a stolen bearer that
+  revokes is running an isolation attack. Withdrawing a PERMISSION GRANT is
+  ungated, and that asymmetry IS the M6 rule. (2) EDITING A CONTACT CLEARED ITS
+  PLATFORM LINK: one `encryptRow` hardcoded `linked_user_id: null` and fed both
+  the insert and the update, whose SQL wrote the column — so changing a phone
+  number revoked a docs/03 §6b control (the linked-contact gate is the whole
+  reason intake "cannot enumerate and cannot trigger") with no audit event and
+  no owner decision. Fixed BY TYPE, not by review note: `ContactFields`, the
+  shape both statements are built from, has no such key, so the ordinary write
+  path has no field in which to say anything about the link — PR3's ceremony
+  gets its own statement.
+- 2026-08-06 — Reading the shipped service for more defects found THREE, two
+  being the same shape as the link bug — a write path destroying data it was
+  never handed. (1) `PUT /v1/profile` SILENTLY DESTROYED THE SSN on any edit:
+  the upsert was a full replace, `ssn` was optional, and `GET /v1/profile`
+  returns `ssnLast4` and never `ssn`, so NO CLIENT COULD ROUND-TRIP THE ROW —
+  read it, change a field, PUT it back, and `ssn_ct` + `ssn_last4_ct` went NULL.
+  dob/address/phone/occupation share the semantics but are returned, so they
+  survive; the SSN structurally cannot. Absent now means unchanged, explicit
+  `null` means clear, and THE CARRY MOVES CIPHERTEXT: decrypting untouched
+  fields to re-encrypt them would put the full SSN through the process on every
+  unrelated edit and emit a `crypto.field.decrypted` on `profile.ssn` each time,
+  turning a change of address into a logged read of the most sensitive value we
+  hold. Sound only while carried and new bytes share one key (one `dek_id`
+  column + the partial unique index), so a row under a RETIRED DEK is refused
+  `409 profile_key_retired` rather than stamped with a live key id — the M4 rule
+  that a shredded record is Gone, not a fresh live key. Contacts and family
+  KEEP replace semantics: their reads return every field they store, so they can
+  be round-tripped, and the profile is the one row with a field it will never
+  hand back. (2) DELETING A CONTACT SILENTLY RETIRED ITS DESIGNATIONS: every
+  role-holder query joins `contacts ... AND c.deleted_at IS NULL` (profile's
+  grant resolution, settlement's isLinkedContact/isExecutorOf/reportableEstates)
+  while `role_assignments` rows were untouched, so one delete un-resolved an
+  executor on the §5.1 chain and disabled every grant, with the assignment still
+  listed and no `role.revoked` anywhere — now `409 contact_in_use`. (3) Recorded
+  rather than fixed: contact/family reads decrypt every field and FieldCipher
+  emits one audit event per field, so a 20-contact list is ~100 events on the
+  owner's own trail — the TB4 decrypt-rate baseline, and PR2's design
+  constraint.
+- 2026-08-06 — A MUTATION EXPOSED A VACUOUS TEST, and the lesson generalizes:
+  the service-level unit test for the contact-link fix PASSED with
+  `linked_user_id = NULL` put back into the repo's UPDATE, because it fakes the
+  repo and a fake repo cannot see SQL — the defect lived in a statement no unit
+  test observes. The assertion moved to the Postgres-backed int spec, where
+  reintroducing the column turns two tests red. All six PR1 fixes were then
+  mutated against a real database and each confirmed to fail. Corollary for this
+  repo: a fix whose defect lived in SQL must be pinned by a test that runs SQL,
+  and "the unit test is green" is not evidence about a repo layer.
+- 2026-08-06 — Adding the step-up gate BROKE THE SETTLEMENT E2E, which is the
+  gate working. `seedEstate` named an executor and a viewer on the owner's
+  ordinary session; rather than weaken the seed to raw SQL, it seeds through a
+  SECOND step-up-elevated session — step-up freshness is a property of a SESSION
+  (identity's `grantStepUp` takes a `sessionId`), so the owner's primary session
+  stays un-elevated and the owner-void test still observes `stepup_required` on
+  it, while the seeding step-up stays strictly OLDER than any case reported
+  afterwards and so cannot trip the M7 owner-liveness interlock. TOTP enrollment
+  is cached per user because `enrollTotp` only revokes UNVERIFIED methods, so
+  enrolling twice would leave two verified secrets and make `findActiveTotp`'s
+  choice decide whether a later step-up works.

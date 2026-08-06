@@ -236,6 +236,8 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     bearer: { authorization: string };
     email: string;
     password: string;
+    /** Cached after the first enrollment so a user is never enrolled twice. */
+    totpSecret?: string;
   }
 
   async function registerAndLogin(label: string): Promise<User> {
@@ -254,22 +256,73 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     };
   }
 
-  async function stepUp(user: User): Promise<void> {
+  /**
+   * Enroll TOTP once per user and remember the secret. A second `enrollTotp`
+   * only revokes UNVERIFIED methods, so enrolling twice would leave a user with
+   * two verified secrets and make which one `findActiveTotp` returns decide
+   * whether a later step-up works.
+   */
+  async function totpSecretFor(
+    user: User,
+    bearer: { authorization: string } = user.bearer,
+  ): Promise<string> {
+    if (user.totpSecret !== undefined) {
+      return user.totpSecret;
+    }
     const identity = supertest(identityApp.getHttpServer() as Parameters<typeof supertest>[0]);
-    const enroll = await identity.post('/v1/auth/totp/enroll').set(user.bearer).expect(201);
+    const enroll = await identity.post('/v1/auth/totp/enroll').set(bearer).expect(201);
     const secret = new URL((enroll.body as { otpauthUri: string }).otpauthUri).searchParams.get(
       'secret',
     )!;
     await identity
       .post('/v1/auth/totp/verify')
-      .set(user.bearer)
+      .set(bearer)
       .send({ code: currentTotpCode(secret) })
       .expect(200);
+    user.totpSecret = secret;
+    return secret;
+  }
+
+  /** Elevate the user's PRIMARY session. */
+  async function stepUp(user: User): Promise<void> {
+    const identity = supertest(identityApp.getHttpServer() as Parameters<typeof supertest>[0]);
+    const secret = await totpSecretFor(user);
     await identity
       .post('/v1/auth/stepup')
       .set(user.bearer)
       .send({ code: currentTotpCode(secret) })
       .expect(200);
+  }
+
+  /**
+   * A SECOND, step-up-elevated session for the same user.
+   *
+   * Step-up freshness is a property of a SESSION — identity's `grantStepUp`
+   * takes a `sessionId` — so elevating a fresh login leaves `user.bearer`
+   * un-elevated. That matters here: M13 PR1 put `StepUpGuard` on profile's
+   * role-assignment mutations (docs/01 §5), so seeding an estate now requires an
+   * elevated session, while the owner-void test below must still observe
+   * `stepup_required` on the owner's ordinary session. Seeding through this
+   * separate session keeps both facts true, and keeps the seeding step-up
+   * strictly OLDER than any case reported afterwards — which is what stops it
+   * tripping the M7 owner-liveness interlock.
+   */
+  async function elevatedBearer(user: User): Promise<{ authorization: string }> {
+    const identity = supertest(identityApp.getHttpServer() as Parameters<typeof supertest>[0]);
+    const login = await identity
+      .post('/v1/auth/login')
+      .send({ email: user.email, password: user.password })
+      .expect(200);
+    const bearer = {
+      authorization: `Bearer ${(login.body as { accessToken: string }).accessToken}`,
+    };
+    const secret = await totpSecretFor(user, bearer);
+    await identity
+      .post('/v1/auth/stepup')
+      .set(bearer)
+      .send({ code: currentTotpCode(secret) })
+      .expect(200);
+    return bearer;
   }
 
   /**
@@ -296,9 +349,14 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       contactId,
       linkedUserId,
     ]);
+
+    // Naming a fiduciary is a docs/01 §5 step-up action (M13 PR1), so seeding
+    // uses a separate elevated session — see `elevatedBearer` for why it must
+    // not be the owner's primary one.
+    const elevated = await elevatedBearer(owner);
     await profile
       .post('/v1/role-assignments')
-      .set(owner.bearer)
+      .set(elevated)
       .send({
         contactId,
         role: 'executor',
@@ -308,12 +366,12 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       .expect(201);
     const viewer = await profile
       .post('/v1/role-assignments')
-      .set(owner.bearer)
+      .set(elevated)
       .send({ contactId, role: 'viewer', scopeType: 'estate', effectiveCondition: 'immediate' })
       .expect(201);
     await profile
       .post(`/v1/role-assignments/${(viewer.body as { id: string }).id}/permissions`)
-      .set(owner.bearer)
+      .set(elevated)
       .send({ resource: 'contact', action: 'read' })
       .expect(201);
   }

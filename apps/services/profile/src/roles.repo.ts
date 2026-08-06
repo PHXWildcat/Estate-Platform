@@ -108,6 +108,21 @@ export class RolesRepo {
     return rows[0] ?? null;
   }
 
+  /**
+   * Does a live role assignment of `ownerUserId` name `contactId`? Guards
+   * contact deletion — see the rationale on `ContactsService.remove`.
+   */
+  async hasLiveAssignmentsForContact(ownerUserId: string, contactId: string): Promise<boolean> {
+    const rows = await this.db.query<{ ok: number }>(
+      `SELECT 1 AS ok
+         FROM role_assignments
+        WHERE owner_user_id = $1 AND contact_id = $2 AND deleted_at IS NULL
+        LIMIT 1`,
+      [ownerUserId, contactId],
+    );
+    return rows.length > 0;
+  }
+
   async revoke(id: string, ownerUserId: string): Promise<boolean> {
     const rows = await this.db.query<{ id: string }>(
       `UPDATE role_assignments SET deleted_at = now()
@@ -168,6 +183,14 @@ export class RolesRepo {
   }
 }
 
+/** A live permission grant attached to a role assignment. */
+export interface PermissionGrantRow {
+  id: string;
+  resource: string;
+  action: string;
+  created_at: Date;
+}
+
 @Injectable()
 export class PermissionGrantsRepo {
   constructor(private readonly db: Db) {}
@@ -192,15 +215,38 @@ export class PermissionGrantsRepo {
     return (rows[0] as { id: string }).id;
   }
 
-  async listByRoleAssignment(
-    roleAssignmentId: string,
-  ): Promise<Array<{ id: string; resource: string; action: string }>> {
-    return this.db.query<{ id: string; resource: string; action: string }>(
-      `SELECT id, resource, action
+  async listByRoleAssignment(roleAssignmentId: string): Promise<PermissionGrantRow[]> {
+    return this.db.query<PermissionGrantRow>(
+      `SELECT id, resource, action, created_at
          FROM permission_grants
         WHERE role_assignment_id = $1 AND revoked_at IS NULL
         ORDER BY created_at`,
       [roleAssignmentId],
     );
+  }
+
+  /**
+   * Revoke one grant, scoped to its role assignment.
+   *
+   * `role_assignment_id` is in the WHERE clause deliberately: it is the only
+   * thing tying this row to an owner, so passing the assignment the caller has
+   * already been authorized for is what stops a grant id from one estate being
+   * revoked through another's assignment. Already-revoked rows return false
+   * (`revoked_at IS NULL`), so revocation is not an idempotent no-op that
+   * reports success — the caller can tell "there was nothing to revoke" from
+   * "revoked", and an audit event is emitted only when something changed.
+   *
+   * `permission_grants` has no `_versions` shadow table and no `deleted_at` by
+   * design (migration 001): `revoked_at` IS the history, which is why this is an
+   * UPDATE rather than a soft delete.
+   */
+  async revoke(roleAssignmentId: string, grantId: string): Promise<boolean> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE permission_grants SET revoked_at = now()
+        WHERE id = $1 AND role_assignment_id = $2 AND revoked_at IS NULL
+        RETURNING id`,
+      [grantId, roleAssignmentId],
+    );
+    return rows.length > 0;
   }
 }

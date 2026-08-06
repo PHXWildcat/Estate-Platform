@@ -1,11 +1,17 @@
-import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { emailBlindIndex } from '@estate/crypto';
 import { coreResource, ProfileAuthz } from './authz.service';
 import { CLOCK, CONFIG, type Clock } from './di-tokens';
 import type { ProfileConfig } from './config';
 import { EventsService } from './events.service';
 import { FieldCipher } from './field-cipher';
-import { ContactsRepo, type ContactInsert, type ContactRow } from './contacts.repo';
+import { ContactsRepo, type ContactFields, type ContactRow } from './contacts.repo';
 import { RolesRepo } from './roles.repo';
 import type { ContactInput } from './schemas';
 
@@ -42,7 +48,12 @@ export class ContactsService {
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
-  private async encryptRow(ownerUserId: string, input: ContactInput): Promise<ContactInsert> {
+  /**
+   * Encrypt the owner-editable fields. The return type is `ContactFields`, which
+   * has no `linked_user_id`, so this function — shared by create and update —
+   * cannot say anything about the link either way (see contacts.repo.ts).
+   */
+  private async encryptRow(ownerUserId: string, input: ContactInput): Promise<ContactFields> {
     // Materialize the owner's DEK first: concurrent getOrCreateDek calls would
     // otherwise race and mint several DEKs, encrypting fields under different
     // keys within one row. After this, every parallel encrypt shares one DEK.
@@ -55,7 +66,6 @@ export class ContactsService {
       this.cipher.encrypt(ownerUserId, 'contact.notes', input.notes),
     ]);
     return {
-      owner_user_id: ownerUserId,
       name_ct: name.ciphertext as Buffer,
       email_ct: email.ciphertext,
       // Blind index only when an email exists; enables per-owner dedupe/lookup
@@ -65,7 +75,6 @@ export class ContactsService {
       address_ct: address.ciphertext,
       relationship: input.relationship ?? null,
       professional_kind: input.professionalKind ?? null,
-      linked_user_id: null,
       notes_ct: notes.ciphertext,
       dek_id: name.dekId,
     };
@@ -77,7 +86,10 @@ export class ContactsService {
       'create',
       coreResource('Contact', callerUserId, callerUserId),
     );
-    const id = await this.repo.insert(await this.encryptRow(callerUserId, input));
+    const id = await this.repo.insert({
+      owner_user_id: callerUserId,
+      ...(await this.encryptRow(callerUserId, input)),
+    });
     await this.events.contactCreated(callerUserId, id);
     return { id };
   }
@@ -91,8 +103,32 @@ export class ContactsService {
     await this.events.contactUpdated(callerUserId, id);
   }
 
+  /**
+   * Soft-delete a contact — REFUSED while a live role assignment names it.
+   *
+   * Every query that resolves a role holder joins `contacts ... AND
+   * c.deleted_at IS NULL`: this service's `effectiveContactReadGrants`, and
+   * settlement's `isLinkedContact` / `isExecutorOf` / `reportableEstates`. The
+   * `role_assignments` rows, though, have their own `deleted_at` and are
+   * untouched here — so deleting a contact used to retire its designations
+   * SILENTLY: an executor stopped resolving on the docs/03 §5.1 chain, every
+   * grant it carried stopped being effective, `GET /v1/role-assignments` kept
+   * listing the assignment, and no `role.revoked` was emitted anywhere. Both
+   * halves of that are wrong. Retiring a fiduciary is a deliberate act with its
+   * own step-up gate and its own audit event, so it must not be reachable as a
+   * side effect of tidying an address book; and a control that stops working
+   * without saying so is the fail-open this repo keeps finding.
+   *
+   * So the owner is told to revoke the roles first (`409 contact_in_use`) and
+   * the two acts stay distinct and separately audited. The count is not
+   * returned: the owner can list their own assignments, and the refusal itself
+   * is the actionable part.
+   */
   async remove(callerUserId: string, id: string): Promise<void> {
     this.authz.assertCan(callerUserId, 'delete', coreResource('Contact', id, callerUserId));
+    if (await this.roles.hasLiveAssignmentsForContact(callerUserId, id)) {
+      throw new ConflictException({ error: 'contact_in_use' });
+    }
     const ok = await this.repo.softDelete(id, callerUserId);
     if (!ok) {
       throw new NotFoundException({ error: 'not_found' });
