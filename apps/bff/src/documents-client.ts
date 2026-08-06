@@ -102,6 +102,42 @@ export const DocumentSchema = z.object({
 });
 export type Document = z.infer<typeof DocumentSchema>;
 
+/**
+ * One document plus the execution transitions IT may take next (M12 PR2).
+ *
+ * `allowedTransitions` is computed by the service from the template's own
+ * sha256-verified `execution_requirements`, so the client renders the
+ * attestations this instrument in this state actually needs. A hardcoded ladder
+ * here would be a second copy of a legal gate (docs/03 risk #8) and would drift
+ * — and it would drift toward offering, say, a will a no-witness path.
+ *
+ * An EMPTY list is meaningful: the service answers that when it cannot resolve
+ * the ladder from a verified template, which is its fail-closed answer, not an
+ * error to work around.
+ */
+export const DocumentDetailSchema = DocumentSchema.extend({
+  allowedTransitions: z.array(z.string().min(1)),
+});
+export type DocumentDetail = z.infer<typeof DocumentDetailSchema>;
+
+/** What an upload answers. `ocrIndexed` is best-effort — never a gate. */
+export const UploadResultSchema = z.object({
+  documentId: z.string().min(1),
+  version: z.number().int(),
+  contentSha256: z.string().min(1),
+  executionStatus: z.string().min(1),
+  ocrIndexed: z.boolean(),
+});
+export type UploadResult = z.infer<typeof UploadResultSchema>;
+
+export interface UploadInput {
+  readonly kind: string;
+  readonly title: string;
+  /** DECLARED mime, never trusted: the service sniffs magic bytes and decides. */
+  readonly mime: string;
+  readonly contentBase64: string;
+}
+
 export const DocumentVersionSchema = z.object({
   version: z.number().int(),
   contentSha256: z.string().min(1),
@@ -160,7 +196,7 @@ export interface RegenerateInput {
 export interface DocumentsClient {
   templates(accessToken: string, state: string): Promise<DocumentTemplate[]>;
   list(accessToken: string): Promise<Document[]>;
-  get(accessToken: string, documentId: string): Promise<Document>;
+  get(accessToken: string, documentId: string): Promise<DocumentDetail>;
   versions(accessToken: string, documentId: string): Promise<DocumentVersion[]>;
   content(accessToken: string, documentId: string, version: number): Promise<DocumentContent>;
   generate(accessToken: string, input: GenerateInput): Promise<GenerateResult>;
@@ -169,6 +205,15 @@ export interface DocumentsClient {
     documentId: string,
     input: RegenerateInput,
   ): Promise<GenerateResult>;
+  search(accessToken: string, query: string): Promise<Document[]>;
+  upload(accessToken: string, input: UploadInput): Promise<UploadResult>;
+  setStatus(
+    accessToken: string,
+    documentId: string,
+    status: string,
+    executedAt?: string,
+  ): Promise<DocumentDetail>;
+  remove(accessToken: string, documentId: string): Promise<void>;
 }
 
 type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
@@ -208,7 +253,7 @@ export class FetchDocumentsClient implements DocumentsClient {
     return this.parse(res, z.array(DocumentSchema));
   }
 
-  async get(accessToken: string, documentId: string): Promise<Document> {
+  async get(accessToken: string, documentId: string): Promise<DocumentDetail> {
     const res = await this.request(
       'GET',
       `/v1/documents/${encodeURIComponent(documentId)}`,
@@ -217,7 +262,90 @@ export class FetchDocumentsClient implements DocumentsClient {
     if (!res.ok) {
       throw await this.mapError(res);
     }
-    return this.parse(res, DocumentSchema);
+    return this.parse(res, DocumentDetailSchema);
+  }
+
+  /**
+   * Encrypted search. The query is reduced to per-user HMAC tokens downstream
+   * and matched ciphertext-side, so NOTHING IS DECRYPTED to serve it and there
+   * is no decrypt audit event by design. Results are the caller's own documents
+   * by construction (per-user key + user_id join).
+   *
+   * A POST, and the method is the point: the term is a word out of the user's
+   * own estate, and a query string is the one part of a request that
+   * intermediaries log by default (M12 review). It reads rather than writes.
+   */
+  async search(accessToken: string, query: string): Promise<Document[]> {
+    const res = await this.request('POST', '/v1/documents/search', accessToken, {
+      body: { query },
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, z.array(DocumentSchema));
+  }
+
+  /**
+   * Upload ingest. NOT step-up gated (docs/01 §5's list covers generation,
+   * export and deletion — adding content is not on it); the gate is the
+   * service's pipeline: size cap → magic-byte sniff against the declared mime →
+   * FAIL-CLOSED malware scan, with nothing written anywhere unless all three
+   * pass. So a refusal here means the bytes were never stored, and this client
+   * keeps the three refusals apart because they say different things to a
+   * person.
+   */
+  async upload(accessToken: string, input: UploadInput): Promise<UploadResult> {
+    const res = await this.request('POST', '/v1/documents/upload', accessToken, {
+      body: {
+        kind: input.kind,
+        title: input.title,
+        mime: input.mime,
+        contentBase64: input.contentBase64,
+      },
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, UploadResultSchema);
+  }
+
+  /**
+   * Attest one rung of the execution ladder. The service validates against the
+   * template's own requirements, so a skipped formality is refused there —
+   * this is a forward of an attestation, not a second gate.
+   */
+  async setStatus(
+    accessToken: string,
+    documentId: string,
+    status: string,
+    executedAt?: string,
+  ): Promise<DocumentDetail> {
+    const res = await this.request(
+      'POST',
+      `/v1/documents/${encodeURIComponent(documentId)}/status`,
+      accessToken,
+      { body: { status, ...(executedAt === undefined ? {} : { executedAt }) } },
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parse(res, DocumentDetailSchema);
+  }
+
+  /**
+   * Soft delete — step-up gated downstream (docs/01 §5), and refused outright
+   * for a document under legal hold, which is the one refusal here that the
+   * owner cannot resolve by authenticating harder.
+   */
+  async remove(accessToken: string, documentId: string): Promise<void> {
+    const res = await this.request(
+      'DELETE',
+      `/v1/documents/${encodeURIComponent(documentId)}`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
   }
 
   async versions(accessToken: string, documentId: string): Promise<DocumentVersion[]> {
@@ -297,7 +425,7 @@ export class FetchDocumentsClient implements DocumentsClient {
   }
 
   private async request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     accessToken: string,
     options: { body?: Record<string, unknown> } = {},
@@ -375,6 +503,35 @@ export class FetchDocumentsClient implements DocumentsClient {
     }
     if (res.status === 409 && token === 'invalid_status') {
       return bffError('DOCUMENT_NOT_EDITABLE');
+    }
+    if (res.status === 409 && token === 'legal_hold') {
+      return bffError('LEGAL_HOLD');
+    }
+    if (res.status === 409 && token === 'invalid_transition') {
+      return bffError('INVALID_TRANSITION');
+    }
+    /*
+     * THE THREE UPLOAD REFUSALS STAY APART, because a person acts on each
+     * differently and because collapsing them would let the worst of the three
+     * read as the mildest. All of them mean the same thing about storage — the
+     * bytes were never written anywhere — and none of them is a retry-in-a-
+     * moment situation except the last.
+     *
+     * `malware_detected` is a positive finding from a real scanner. It is the
+     * one message that must not be softened into "that file type isn't
+     * supported": the user is holding a file somebody sent them and needs to
+     * know why it was refused.
+     */
+    if (res.status === 422 && token === 'malware_detected') {
+      return bffError('MALWARE_DETECTED');
+    }
+    if (res.status === 422 && token === 'unsupported_content') {
+      return bffError('UNSUPPORTED_CONTENT');
+    }
+    // Scanner unavailable. FAIL CLOSED downstream: nothing was stored, and the
+    // honest answer is "we could not check it", never "we accepted it".
+    if (res.status === 503 && token === 'scan_unavailable') {
+      return bffError('SCAN_UNAVAILABLE');
     }
     if (res.status === 400 || res.status === 422) {
       return bffError('INVALID_REQUEST');

@@ -282,7 +282,10 @@ describeIfStack('the running stack', () => {
       // 'probe' appears only in the scanned IMAGE, never in the title — a
       // search hit proves OCR text became per-user HMAC tokens and matched.
       const hits = expectStatus(
-        await api(DOCUMENTS, 'GET', '/v1/documents/search?q=probe', { token: owner.token }),
+        await api(DOCUMENTS, 'POST', '/v1/documents/search', {
+          token: owner.token,
+          body: { query: 'probe' },
+        }),
         200,
         'search by OCR content',
       ) as Array<{ documentId: string }>;

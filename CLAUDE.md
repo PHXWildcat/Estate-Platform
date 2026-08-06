@@ -1365,4 +1365,93 @@ deviating from them, stop and propose the change with rationale — do not silen
   `stepUpMessageFor`, used by both surfaces; only that one code changes meaning
   with the surface. Every unit test passed over it because the copy table was
   correct in isolation — the defect lived in which entry a surface chose.
+- 2026-08-06 — M12 PR2 makes ONE service change, and it is the only honest
+  option: `GET /v1/documents/:id` gains `allowedTransitions`, computed by the
+  document service's own `allowedTransitions()` over its own
+  `requirementsFor()`. The ladder is parameterized by the template's
+  `execution_requirements`, which live in the sha256-VERIFIED template source,
+  so only that service can compute it — and a UI that hardcoded the ladder
+  would be a second copy of docs/03 risk #8's per-state engine, drifting toward
+  offering a will a no-witness path. It FAILS CLOSED AS AN EMPTY LIST rather
+  than an error: `requirementsFor` refuses to guess for an unverifiable
+  template and that refusal must not be softened, but failing the whole READ
+  would make an intact document unopenable because of its template's state.
+  The list is advisory anyway — `transitionStatus` re-resolves the requirements
+  inside its own transaction. Deliberately NOT on the list DTO (a template load
+  per document, and a list is not where anyone attests anything), and the
+  transition's own response carries the NEW ladder so no client renders a stale
+  one for a round trip.
+- 2026-08-06 — The upload client is built NOT TO HAVE AN OPINION about file
+  types. Magic-byte sniffing against the declared mime is the server's control
+  against polyglot mislabeling; a client-side check is a second opinion that
+  can disagree with the one that matters, refusing what the platform would
+  accept or promising what it will not. So `accept` is a picker hint,
+  `file.type` is forwarded as a DECLARATION, and the only local check is the
+  size cap, which mirrors the server's own number rather than adding a rule.
+  The three refusals stay apart to the last layer — all three mean "nothing was
+  stored" (the pipeline is pre-storage and fail-closed) and three different
+  things to the person holding the file; softening `malware_detected` into
+  "unsupported file type" would withhold the one thing they need to know about
+  a file somebody sent them.
+- 2026-08-06 — Driving the real app found the fourth and fifth browser-only
+  defects of the milestone. (1) documents' StepUpGuard sits at the CONTROLLER
+  and the legal-hold check inside the handler, so a stale session is answered
+  `stepup_required` FIRST and `legal_hold` only after — the page walked someone
+  through finding their authenticator to be told, correctly, that the document
+  could not be deleted anyway. The server ordering is kept (moving the hold
+  check ahead of the guard would put a read of estate state before the gate);
+  the UI stopped OFFERING deletion for a held document, on the same rule the
+  revise link follows: never offer what the server would refuse. (2) The detail
+  panel dereferenced `allowedTransitions` before checking it, so a BFF
+  predating the field white-screened the page — the M11 shape a third time. It
+  now reads a missing ladder as NO DATA rather than as an empty one, because
+  an empty ladder is a REAL answer (fail-closed) and a version skew must not be
+  indistinguishable from it.
+- 2026-08-06 — M12 security review (five discovery lenses over `f06a157..HEAD`
+  + TWO adversarial verifiers per candidate on different angles, both
+  defaulting to refuted; 17 raw, 10 verified under the fan-out cap with the 7
+  dropped LOGGED BY NAME, 4 confirmed — and the capped 7 were each verified by
+  hand and fixed too). No zone boundary weakened, no production fail-fast
+  relaxed, no credential reaching a service the graph forbids. Sixth milestone
+  running where every finding sits in machinery the milestone introduced, and
+  four falsify a claim it made about itself.
+- 2026-08-06 — FAILING CLOSED IS NOT "REFUSE EVERYTHING": the line is ADVANCE
+  vs DE-ESCALATE. M12 PR2's unverifiable-template fallback withdrew the whole
+  transition set, but `allowedTransitions` computes `revoked` and `superseded`
+  without ever reading the requirements — so a soft-deleted or integrity-failed
+  template permanently stripped the owner's only way out of an attested status,
+  in the read AND the write, with regeneration already barred past `generated`.
+  That inverts the M6 rule that the protective action must never be harder than
+  the permissive one. `deEscalationTransitions` is the fallback now, and
+  `signed` stays withheld even though it is technically requirement-independent:
+  advancing asserts something about the world on a template nobody can vouch
+  for, which is what the M4 review closed. Asserted as a strict subset of the
+  real ladder under every profile, not argued for in a comment.
+- 2026-08-06 — A TAMPER DETECTOR THAT PRODUCES NOTHING IS NOT A CONTROL. The
+  same bare `catch` swallowed `TemplateIntegrityError` — the signal
+  `body_sha256` exists to raise (docs/03 TB4) — identically to a transient DB
+  error, on read paths that answer 200 and log nothing by design. New audit
+  action `document.template.integrity_failed`, emitted where the failure is
+  CAUGHT because that is the only place it exists. And the TEMPLATE CATALOG now
+  serves `TemplateEngine.load`'s sha256-verified parse rather than the
+  `templates.variables` / `execution_requirements` COLUMNS: two lenses
+  independently found that the generator's docstring claimed the questionnaire
+  was "content-pinned by sha256" while the route read the row, so a tampered
+  column could put different questions and a different statement of what a will
+  requires in front of an owner. M4 made the verified source authoritative for
+  the formalities GATE; the DISPLAY had been left behind. A template that fails
+  verification is omitted from the catalog, never degraded.
+- 2026-08-06 — The search term moved OFF THE URL. `GET
+  /v1/documents/search?q=` was M4's shape and M12 was its first caller, so M12
+  is what made the exposure real: the term is by construction a word out of the
+  user's estate, and a query string is the one part of a request intermediaries
+  log by default (CloudFront + WAF, docs/01 §2). Now a POST with the term in
+  the body; nothing else about the design changes, since the term is still
+  reduced to per-user HMAC tokens and no decrypt serves a search. Also from the
+  review: uploaded binaries finally get the presentation PR1 promised and PR2
+  forgot (images inline from a `data:` URI whose mime is checked against a
+  closed set; PDFs and TIFFs download, because a framed PDF is the browser's
+  PDF parser on attacker bytes inside our frame tree; filenames from ids, never
+  from the user-authored title) — without which `Read` was spending an audited
+  decrypt to display nothing.
 

@@ -82,6 +82,24 @@ export type UploadDocumentInput = z.infer<typeof UploadDocumentSchema>;
 
 export const SearchQuerySchema = z.string().min(3).max(200);
 
+/**
+ * The search term travels in a POST BODY, not a query string.
+ *
+ * A query string is the one part of an HTTP request intermediaries record by
+ * default — CloudFront and WAF access logs capture the full request URI in the
+ * topology docs/01 §2 describes — and this term is by construction a word out
+ * of the user's own estate: a beneficiary's name, a property address, an
+ * account nickname. That is plaintext PII on a logging path, which this repo
+ * forbids everywhere else. The route was a GET from M4, when nothing called
+ * it; M12 is its first caller, so this is the change that makes the exposure
+ * real, and the moment to close it (M12 review).
+ *
+ * Nothing else about the design changes: the term is still reduced to per-user
+ * HMAC tokens and matched ciphertext-side, and no decrypt happens to serve it.
+ */
+export const SearchRequestSchema = z.object({ query: SearchQuerySchema }).strict();
+export type SearchRequestInput = z.infer<typeof SearchRequestSchema>;
+
 export const VersionParamSchema = z.coerce.number().int().positive().max(1_000_000);
 
 /** Optional If-Match version token (the document's current_version). */

@@ -169,6 +169,23 @@ describe('what gets submitted', () => {
     expect(sent.map((entry) => entry.name)).not.toContain('alternateExecutorName');
   });
 
+  it('says the document EXISTS when the reply is not understood, rather than going quiet', async () => {
+    /*
+     * The M12-review defect: a write path with no "a response missing its
+     * field is not data" guard. A version skew arrives as {"data":{}}, the
+     * dereference threw inside a void-ed handler after busy had cleared, and
+     * the form sat idle with no error and no navigation — for a document that
+     * HAD been generated. The next thing a user does is press the button
+     * again, which mints a second legal instrument.
+     */
+    mount({ GenerateDocument: () => jsonResponse({ data: {} }) });
+    await chooseWill();
+    fireEvent.change(screen.getByLabelText('Full legal name'), { target: { value: 'Ada' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate document' }));
+    expect(await screen.findByText(/don’t create it again/i)).toBeVisible();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
   it('names the missing required answers instead of submitting a blank one', async () => {
     const requests = mount();
     await chooseWill();

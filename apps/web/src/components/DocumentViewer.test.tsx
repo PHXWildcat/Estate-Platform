@@ -89,6 +89,7 @@ describe('containment', () => {
 describe('what is NOT framed', () => {
   it.each([
     ['a PDF upload', { mime: 'application/pdf', encoding: 'base64' as const }],
+    ['a TIFF scan no browser decodes', { mime: 'image/tiff', encoding: 'base64' as const }],
     ['a scanned image', { mime: 'image/png', encoding: 'base64' as const }],
     // Defence against the invariant being wrong rather than against a case that
     // exists: the ingest pipeline's magic-byte sniff admits pdf/png/jpeg/tiff
@@ -96,20 +97,72 @@ describe('what is NOT framed', () => {
     // still refuses to trust that from a distance.
     ['HTML claiming to be base64', { mime: 'text/html', encoding: 'base64' as const }],
     ['a utf8 body that is not HTML', { mime: 'text/plain', encoding: 'utf8' as const }],
-  ])('refuses to frame %s', (_name, overrides) => {
+  ])('never frames %s', (_name, overrides) => {
     const { container } = render(
       <DocumentViewer content={{ ...HTML_CONTENT, ...overrides, content: 'JVBERi0=' }} />,
     );
+    // The frame is for our own canonical HTML and nothing else. In particular
+    // a PDF is never handed to the browser's PDF engine inside this origin.
     expect(container.querySelectorAll('iframe')).toHaveLength(0);
-    expect(screen.getByText(/can’t be shown here yet/i)).toBeInTheDocument();
   });
 
-  it('does not echo the unshowable content itself', () => {
+  it('offers a PDF as a save rather than opening it in this origin', () => {
     const { container } = render(
       <DocumentViewer
         content={{
           ...HTML_CONTENT,
           mime: 'application/pdf',
+          encoding: 'base64',
+          content: 'JVBERi0=',
+        }}
+      />,
+    );
+    const link = container.querySelector('a[download]');
+    expect(link?.getAttribute('href')).toBe('data:application/pdf;base64,JVBERi0=');
+    // The filename comes from ids, never from the user-authored title.
+    expect(link?.getAttribute('download')).toBe(
+      `document-${HTML_CONTENT.documentId}-v${HTML_CONTENT.version}.pdf`,
+    );
+    expect(container.querySelectorAll('iframe')).toHaveLength(0);
+  });
+
+  it('renders a scanned image inline, from a data URI that cannot reach the network', () => {
+    const { container } = render(
+      <DocumentViewer
+        content={{ ...HTML_CONTENT, mime: 'image/png', encoding: 'base64', content: 'iVBORw0K' }}
+      />,
+    );
+    const img = container.querySelector('img');
+    expect(img?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0K');
+    expect(img?.getAttribute('alt')).toContain('Scanned document');
+  });
+
+  it('builds a data URI only from a CLOSED set of types, never from the peer’s string', () => {
+    // The mime is the service's sniffed value, but the URI is constructed here
+    // — so an unexpected string must not become the type of a URI this page
+    // emits, nor produce a download with an invented extension.
+    const { container } = render(
+      <DocumentViewer
+        content={{
+          ...HTML_CONTENT,
+          mime: 'image/svg+xml',
+          encoding: 'base64',
+          content: 'PHN2Zz4=',
+        }}
+      />,
+    );
+    expect(container.querySelectorAll('img')).toHaveLength(0);
+    expect(container.querySelectorAll('a[download]')).toHaveLength(0);
+    expect(container.querySelectorAll('iframe')).toHaveLength(0);
+    expect(screen.getByText(/a file rather than a page/i)).toBeInTheDocument();
+  });
+
+  it('does not echo an unshowable body as text', () => {
+    const { container } = render(
+      <DocumentViewer
+        content={{
+          ...HTML_CONTENT,
+          mime: 'application/x-unknown',
           encoding: 'base64',
           content: 'SECRETBASE64PAYLOAD',
         }}
@@ -130,7 +183,17 @@ describe('what is NOT framed', () => {
  * viewer is asserted to be the only source of one, in the credential-graph
  * habit of stating the exception as data rather than as a convention.
  */
-const IFRAME_ALLOWED = ['components/DocumentViewer.tsx'];
+const EMBED_ALLOWED = ['components/DocumentViewer.tsx'];
+
+/**
+ * Every way a React tree can embed a nested browsing context or an external
+ * plugin. The first version of this fence matched `/<iframe[\s>]/` only, which
+ * the M12 review showed was narrower than the property it claimed to enforce:
+ * it missed the self-closing `<iframe/>` (no whitespace before the slash),
+ * `React.createElement('iframe')`, and `<object>`/`<embed>` entirely — the very
+ * sinks the deferred binary-presentation work would have reached for.
+ */
+const EMBED_SINKS = /<(iframe|object|embed)[\s/>]|createElement\(\s*['"](iframe|object|embed)['"]/;
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -147,14 +210,33 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-describe('the sandboxed frame is the only frame', () => {
-  it('renders an iframe in exactly the one declared place', () => {
+describe('the sandboxed frame is the only embedding sink', () => {
+  it('embeds in exactly the one declared place', () => {
     const root = join(__dirname, '..');
     const files = sourceFiles(root);
     expect(files.length).toBeGreaterThan(15);
     const users = files
-      .filter((file) => /<iframe[\s>]/.test(readFileSync(file, 'utf8')))
+      .filter((file) => EMBED_SINKS.test(readFileSync(file, 'utf8')))
       .map((file) => relative(root, file).split(sep).join('/'));
-    expect(users.sort()).toEqual(IFRAME_ALLOWED);
+    expect(users.sort()).toEqual(EMBED_ALLOWED);
+  });
+
+  it('catches the evasions the first version of this fence missed', () => {
+    // The pattern IS the control here, so it is tested rather than trusted.
+    for (const evasion of [
+      '<iframe/>',
+      '<iframe src="x"/>',
+      '<iframe\n  sandbox="">',
+      "React.createElement('iframe', props)",
+      'React.createElement("object", props)',
+      '<object data="x">',
+      '<embed src="x"/>',
+    ]) {
+      expect(EMBED_SINKS.test(evasion)).toBe(true);
+    }
+    // …without flagging ordinary prose or unrelated identifiers.
+    for (const benign of ['the iframe is sandboxed', 'objectStore.get(key)', 'embedded fonts']) {
+      expect(EMBED_SINKS.test(benign)).toBe(false);
+    }
   });
 });

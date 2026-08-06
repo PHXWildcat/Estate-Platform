@@ -27,6 +27,9 @@ const DOCUMENT = {
   templateId: 't0000000-0000-4000-8000-00000000000a',
   createdAt: '2026-08-01T10:00:00.000Z',
   updatedAt: '2026-08-04T10:00:00.000Z',
+  // CA's will template: two witnesses, no notary — so from `generated` the
+  // only rung is `signed`. Computed by the service, carried by this app.
+  allowedTransitions: ['signed'],
 };
 
 const VERSIONS = [
@@ -151,6 +154,162 @@ describe('what the page offers matches what the server would allow', () => {
   });
 });
 
+describe('the execution ladder is the server’s, not this page’s', () => {
+  it('offers exactly the rungs the service returned', async () => {
+    mount(
+      {},
+      { ...DOCUMENT, executionStatus: 'signed', allowedTransitions: ['witnessed', 'revoked'] },
+    );
+    expect(await screen.findByRole('button', { name: 'It was witnessed' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Revoke it' })).toBeInTheDocument();
+    // CA's will template needs no notary, so that rung does not exist here —
+    // and this page derives nothing, so it cannot invent one.
+    expect(screen.queryByRole('button', { name: 'It was notarized' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Record it as executed' })).not.toBeInTheDocument();
+  });
+
+  it('reveals the date field for the executed attestation ONLY', async () => {
+    mount(
+      {},
+      { ...DOCUMENT, executionStatus: 'witnessed', allowedTransitions: ['executed', 'revoked'] },
+    );
+    expect(await screen.findByLabelText('Date signed')).toBeInTheDocument();
+  });
+
+  it('hides the date field for every other rung', async () => {
+    mount();
+    await screen.findByRole('button', { name: 'I signed it' });
+    expect(screen.queryByLabelText('Date signed')).not.toBeInTheDocument();
+  });
+
+  it('refuses to record "executed" with no date, without calling the server', async () => {
+    // executedAt accompanies exactly that attestation; the service refuses the
+    // pairing either way round, and saying so here beats a masked 422.
+    const requests = mount(
+      {},
+      { ...DOCUMENT, executionStatus: 'witnessed', allowedTransitions: ['executed'] },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Record it as executed' }));
+    expect(await screen.findByText(/Enter the date it was signed/i)).toBeVisible();
+    expect(operations(requests)).not.toContain('SetDocumentStatus');
+  });
+
+  it('renders the ladder the transition RETURNED, without a second read', async () => {
+    // The service sends the new ladder with the answer so a client never has
+    // to re-read to learn it. The first version re-read anyway — and cleared
+    // `busy` before awaiting — so the pre-transition rungs stayed on screen,
+    // enabled, until the round trip landed (M12 review).
+    const requests = mount({
+      SetDocumentStatus: () =>
+        jsonResponse({
+          data: {
+            setDocumentStatus: {
+              documentId: DOCUMENT_ID,
+              executionStatus: 'signed',
+              executedAt: null,
+              allowedTransitions: ['witnessed', 'revoked'],
+            },
+          },
+        }),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'I signed it' }));
+    expect(await screen.findByRole('button', { name: 'It was witnessed' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'I signed it' })).not.toBeInTheDocument();
+    // Exactly one Document read — the one on mount.
+    expect(operations(requests).filter((op) => op === 'Document')).toHaveLength(1);
+    const sent = requests.find((r) => r.body.query?.includes('SetDocumentStatus'));
+    expect(sent?.body.variables).toEqual({ documentId: DOCUMENT_ID, status: 'signed' });
+  });
+
+  it('falls back to a re-read when the transition reply is not understood', async () => {
+    // The write landed, so guessing at the new state is the one thing that
+    // must not happen — re-read instead.
+    const requests = mount({ SetDocumentStatus: () => jsonResponse({ data: {} }) });
+    fireEvent.click(await screen.findByRole('button', { name: 'I signed it' }));
+    await waitFor(() => {
+      expect(operations(requests).filter((op) => op === 'Document')).toHaveLength(2);
+    });
+  });
+
+  it('says why an EMPTY ladder is empty, without pretending it is finished', async () => {
+    // The service answers an empty list when it cannot resolve the formalities
+    // from a verified template — fail closed. That is not the same as a
+    // finished document, and the page must not say it is.
+    mount({}, { ...DOCUMENT, allowedTransitions: [] });
+    expect(await screen.findByText(/can’t confirm the signing steps/i)).toBeVisible();
+  });
+
+  it('says a terminal document is finished', async () => {
+    mount({}, { ...DOCUMENT, executionStatus: 'revoked', allowedTransitions: [] });
+    expect(await screen.findByText(/nothing further to record/i)).toBeVisible();
+  });
+
+  it('does not claim TEMPLATE authority for an uploaded document', async () => {
+    // An upload has no template — `template_id` is null and the service
+    // applies a platform default — so "this document's own template requires"
+    // would be a statement about the law with nothing behind it, on a page
+    // whose upload form offers instrument kinds like `will` (M12 review).
+    mount({}, { ...DOCUMENT, source: 'uploaded', templateId: null });
+    expect(await screen.findByText(/not a statement of what your state requires/i)).toBeVisible();
+    expect(screen.queryByText(/this document’s own template requires/i)).not.toBeInTheDocument();
+  });
+
+  it('does claim it for a generated one, where it is true', async () => {
+    mount();
+    expect(await screen.findByText(/this document’s own template requires/i)).toBeVisible();
+  });
+});
+
+describe('deletion', () => {
+  it('collects a step-up code inline and retries the same deletion', async () => {
+    let attempts = 0;
+    mount({
+      DeleteDocument: () => {
+        attempts += 1;
+        return attempts === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { deleteDocument: { ok: true } } });
+      },
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete this document' }));
+    const code = await screen.findByLabelText('Confirm it’s you');
+    fireEvent.change(code, { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and delete' }));
+    await waitFor(() => {
+      expect(attempts).toBe(2);
+    });
+  });
+
+  it('does not OFFER deletion at all for a held document', async () => {
+    /*
+     * Found by driving the real app. The service runs its step-up guard at the
+     * controller and checks the hold inside the handler, so a stale session
+     * gets `stepup_required` first and the hold only after — and the page
+     * dutifully walked someone through finding their authenticator to be told
+     * the document could not be deleted anyway. The page already knows it is
+     * held, so it must not ask.
+     */
+    mount({}, { ...DOCUMENT, legalHold: true });
+    await screen.findByText('Last Will and Testament');
+    expect(screen.queryByRole('button', { name: 'Delete this document' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+    // Explained where the button was, not only as a badge at the top.
+    expect(screen.getAllByText(/preserved as part of an estate matter/i).length).toBeGreaterThan(0);
+    // Everything else on the page still works — a hold is not a freeze.
+    expect(screen.getByRole('button', { name: 'I signed it' })).toBeInTheDocument();
+  });
+
+  it('still handles a hold applied between page load and the click', async () => {
+    // The hold can arrive from settlement at any moment, so the code path
+    // stays: a 409 answers with its own sentence and no code prompt.
+    mount({ DeleteDocument: () => graphqlError('LEGAL_HOLD') });
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete this document' }));
+    expect(await screen.findByText(/preserved as part of an estate matter/i)).toBeVisible();
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+  });
+});
+
 describe('failure states', () => {
   it('answers a not-found uniformly, with no hint about whose it is', async () => {
     mount({ Document: () => graphqlError('NOT_FOUND') });
@@ -162,6 +321,17 @@ describe('failure states', () => {
     // arrives as {"data":{}} and must not white-screen or read as a document
     // with no history.
     mount({ Document: () => jsonResponse({ data: {} }) });
+    expect(await screen.findByText(/couldn’t load this document/i)).toBeVisible();
+  });
+
+  it('treats a MISSING LADDER as no data, not as a fail-closed empty one', async () => {
+    // Found by this suite: the page dereferenced allowedTransitions before it
+    // was checked, and a peer that predates the field white-screened it — the
+    // same shape for the third time. Reading it as an empty list would be
+    // worse than the crash: empty is a REAL answer (the service cannot resolve
+    // the formalities), so a skew would be indistinguishable from it.
+    const { allowedTransitions: _omitted, ...withoutLadder } = DOCUMENT;
+    mount({}, withoutLadder);
     expect(await screen.findByText(/couldn’t load this document/i)).toBeVisible();
   });
 

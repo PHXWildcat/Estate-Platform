@@ -16,7 +16,7 @@ import { Db, type Queryable } from './db';
 import { DocumentsAuthz, documentResource } from './authz.service';
 import { DocumentsRepo, type DocumentRow } from './documents.repo';
 import { EventsService } from './events.service';
-import { allowsNewVersion, isTransitionAllowed } from './execution-status';
+import { allowedTransitions, allowsNewVersion, deEscalationTransitions } from './execution-status';
 import {
   DEK_REPOSITORY,
   MALWARE_SCANNER,
@@ -32,7 +32,7 @@ import { htmlToText } from './search-index';
 import { SearchIndexer } from './search-indexer';
 import { SearchTokensRepo } from './search-tokens.repo';
 import { RenderError, renderDocument } from './renderer';
-import { TemplateEngine } from './template-engine';
+import { TemplateEngine, TemplateIntegrityError } from './template-engine';
 import { intakeSchemaFor, type ExecutionRequirements, type TemplateSource } from './template-model';
 import { TemplatesRepo, type TemplateRow } from './templates.repo';
 import { VersionsRepo, type VersionRow } from './versions.repo';
@@ -57,6 +57,24 @@ export interface DocumentDto {
   templateId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * One document, plus the execution transitions THIS document may take next.
+ *
+ * The ladder is parameterized by the template's `execution_requirements`
+ * (docs/02 §4), which live in the sha256-verified template SOURCE — so only
+ * this service can compute it. Returning it on the single-document read means a
+ * client renders the attestations this instrument in this state actually
+ * requires, instead of a hardcoded ladder that would silently offer a
+ * will-with-no-witnesses path (docs/03 risk #8: the per-state
+ * execution-requirement engine is a legal gate).
+ *
+ * Deliberately NOT on the list DTO: computing it costs a template load per
+ * document, and a list is not where anyone attests anything.
+ */
+export interface DocumentDetailDto extends DocumentDto {
+  allowedTransitions: ExecutionStatus[];
 }
 
 export interface VersionDto {
@@ -440,7 +458,7 @@ export class DocumentsService {
     actor: string,
     documentId: string,
     input: StatusTransitionInput,
-  ): Promise<DocumentDto> {
+  ): Promise<DocumentDetailDto> {
     if ((input.status === 'executed') !== (input.executedAt !== undefined)) {
       // executedAt accompanies exactly the `executed` attestation.
       throw new UnprocessableEntityException({ error: 'invalid_transition' });
@@ -448,8 +466,16 @@ export class DocumentsService {
     const updated = await this.db.withTransaction(actor, async (tx) => {
       const locked = await this.lockLive(tx, documentId);
       this.authz.assertCan(actor, 'update', documentResource(documentId, locked.user_id));
-      const requirements = await this.requirementsFor(locked);
-      if (!isTransitionAllowed(locked.execution_status, input.status, requirements)) {
+      // The WRITE narrows the same way the read does, and for the same reason:
+      // an unverifiable template must not trap an owner in an attested status
+      // with no way back. It permits DE-ESCALATION only — never a rung that
+      // would advance the ladder on formalities nobody can verify.
+      const requirements = await this.resolveRequirements(locked);
+      const permitted =
+        requirements === null
+          ? deEscalationTransitions(locked.execution_status)
+          : allowedTransitions(locked.execution_status, requirements);
+      if (!permitted.includes(input.status)) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
       await this.documents.updateStatus(tx, documentId, input.status, input.executedAt ?? null);
@@ -465,8 +491,11 @@ export class DocumentsService {
       from: updated.execution_status,
       to: input.status,
     });
+    // The NEXT rung comes back with the answer: after an attestation the
+    // remaining formalities have changed, and a client that had to re-read to
+    // learn that would render a stale ladder for one round trip.
     const fresh = await this.requireLive(documentId);
-    return toDto(fresh);
+    return { ...toDto(fresh), allowedTransitions: await this.allowedTransitionsFor(fresh) };
   }
 
   /**
@@ -489,10 +518,60 @@ export class DocumentsService {
 
   // ------------------------------------------------------------------- queries
 
-  async get(actor: string, documentId: string): Promise<DocumentDto> {
+  async get(actor: string, documentId: string): Promise<DocumentDetailDto> {
     const doc = await this.requireLive(documentId);
     this.authz.assertCan(actor, 'read', documentResource(documentId, doc.user_id));
-    return toDto(doc);
+    return { ...toDto(doc), allowedTransitions: await this.allowedTransitionsFor(doc) };
+  }
+
+  /**
+   * The transitions this document may take next — FAIL CLOSED, where closed
+   * means REFUSING TO ASSERT A FORMALITY WE CANNOT VERIFY rather than refusing
+   * every transition.
+   *
+   * `requirementsFor` will not guess when the ladder cannot be read from a
+   * sha256-verified template source (a soft-deleted template row, a body
+   * integrity mismatch), and that refusal must not be softened: offering
+   * `witnessed` for a will whose witness requirement is unknown is the
+   * fail-open the M4 review closed. But withdrawing EVERYTHING was its own
+   * defect (M12 review): `revoked` and `superseded` never depended on the
+   * formalities, so an unverifiable template was stripping the owner's only
+   * de-escalation, permanently — inverting the M6 rule that the protective
+   * action must never be harder than the permissive one. What survives is
+   * `deEscalationTransitions` — revoke and supersede, a strict subset of the
+   * real ladder under every profile. Advancing is still withheld.
+   *
+   * This is a READ, so it degrades rather than erroring: failing the whole
+   * document read would make an otherwise-intact document unopenable because
+   * of its template's state.
+   */
+  private async allowedTransitionsFor(doc: DocumentRow): Promise<ExecutionStatus[]> {
+    const requirements = await this.resolveRequirements(doc);
+    return requirements === null
+      ? deEscalationTransitions(doc.execution_status)
+      : allowedTransitions(doc.execution_status, requirements);
+  }
+
+  /**
+   * The document's formalities, or null when they cannot be verified.
+   *
+   * A TEMPLATE INTEGRITY FAILURE IS AUDITED HERE, because here is where it is
+   * caught. `body_sha256` exists to detect a substituted or corrupted template
+   * body (docs/03 TB4), and both callers of this method degrade rather than
+   * erroring — so without this emit, the one signal that pin exists to produce
+   * would end in a bare `catch` and leave no trace in the audit chain, no log,
+   * and a 200 on the wire. Absence of a template row is NOT audited as tamper:
+   * it is an ordinary consequence of a soft-deleted template.
+   */
+  private async resolveRequirements(doc: DocumentRow): Promise<ExecutionRequirements | null> {
+    try {
+      return await this.requirementsFor(doc);
+    } catch (err) {
+      if (err instanceof TemplateIntegrityError) {
+        await this.events.templateIntegrityFailed(doc.user_id, doc.id, doc.template_id);
+      }
+      return null;
+    }
   }
 
   async list(actor: string): Promise<DocumentDto[]> {

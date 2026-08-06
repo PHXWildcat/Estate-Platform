@@ -31,6 +31,16 @@ export const GQL_ERROR_CODES = [
   'VERSION_CONFLICT',
   /** Signing has started, so the content is a legal record now (M12). */
   'DOCUMENT_NOT_EDITABLE',
+  /** Preserved for an estate matter — the one refusal step-up cannot fix (M12). */
+  'LEGAL_HOLD',
+  /** Not the next rung of THIS document's ladder (M12). */
+  'INVALID_TRANSITION',
+  /** A real scanner matched a signature. Nothing was stored (M12). */
+  'MALWARE_DETECTED',
+  /** Not an accepted format, or the bytes contradicted the declared type (M12). */
+  'UNSUPPORTED_CONTENT',
+  /** The scanner was unreachable, so nothing was stored — fail closed (M12). */
+  'SCAN_UNAVAILABLE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -177,6 +187,28 @@ export interface DocumentInfo {
   updatedAt: string;
 }
 
+/**
+ * One document plus the transitions IT may take next (M12 PR2).
+ *
+ * The ladder is the SERVICE's computation from the template's own
+ * sha256-verified `execution_requirements`, so this app renders the
+ * attestations this instrument in this state requires and derives nothing. An
+ * empty list is a real answer — the service's fail-closed one when it cannot
+ * read the ladder from a verified template.
+ */
+export interface DocumentDetailInfo extends DocumentInfo {
+  allowedTransitions: string[];
+}
+
+export interface UploadedDocumentInfo {
+  documentId: string;
+  version: number;
+  contentSha256: string;
+  executionStatus: string;
+  /** Best-effort: OCR failing is never a reason to refuse a clean upload. */
+  ocrIndexed: boolean;
+}
+
 export interface DocumentVersionInfo {
   version: number;
   contentSha256: string;
@@ -277,7 +309,20 @@ interface OperationSignatures {
     data: { documentTemplates: DocumentTemplateInfo[] };
   };
   Documents: { variables: EmptyVariables; data: { documents: DocumentInfo[] } };
-  Document: { variables: { documentId: string }; data: { document: DocumentInfo } };
+  Document: { variables: { documentId: string }; data: { document: DocumentDetailInfo } };
+  DocumentSearch: { variables: { query: string }; data: { documentSearch: DocumentInfo[] } };
+  UploadDocument: {
+    variables: { kind: string; title: string; mime: string; contentBase64: string };
+    data: { uploadDocument: UploadedDocumentInfo };
+  };
+  SetDocumentStatus: {
+    variables: { documentId: string; status: string; executedAt?: string };
+    data: { setDocumentStatus: DocumentDetailInfo };
+  };
+  DeleteDocument: {
+    variables: { documentId: string };
+    data: { deleteDocument: { ok: boolean } };
+  };
   DocumentVersions: {
     variables: { documentId: string };
     data: { documentVersions: DocumentVersionInfo[] };

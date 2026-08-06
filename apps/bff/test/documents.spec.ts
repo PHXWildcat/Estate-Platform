@@ -134,6 +134,175 @@ describe('documents resolvers', () => {
   });
 });
 
+describe('manage: search, upload, status, delete', () => {
+  let app: INestApplication;
+  let documents: FakeDocumentsClient;
+
+  const SEARCH_QUERY =
+    'query DocumentSearch($query: String!) { documentSearch(query: $query) { documentId title } }';
+  const UPLOAD_MUTATION =
+    'mutation UploadDocument($kind: String!, $title: String!, $mime: String!, $contentBase64: String!) { uploadDocument(kind: $kind, title: $title, mime: $mime, contentBase64: $contentBase64) { documentId version ocrIndexed } }';
+  const STATUS_MUTATION =
+    'mutation SetDocumentStatus($documentId: ID!, $status: String!, $executedAt: String) { setDocumentStatus(documentId: $documentId, status: $status, executedAt: $executedAt) { documentId executionStatus allowedTransitions } }';
+  const DELETE_MUTATION =
+    'mutation DeleteDocument($documentId: ID!) { deleteDocument(documentId: $documentId) { ok } }';
+
+  beforeEach(async () => {
+    documents = new FakeDocumentsClient();
+    app = await makeApp({ documents });
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('returns the document’s own ladder, computed by the service', async () => {
+    const res = await gql(
+      app,
+      {
+        query:
+          'query Document($documentId: ID!) { document(documentId: $documentId) { allowedTransitions } }',
+        variables: { documentId: DOCUMENT.documentId },
+      },
+      { cookie: COOKIE },
+    );
+    // Nothing in this layer derives a ladder — a second copy of a legal gate
+    // (docs/03 risk #8) is a copy that drifts.
+    expect(gqlBody(res).data?.['document']).toEqual({ allowedTransitions: ['signed'] });
+  });
+
+  it('refuses a too-short search instead of forwarding a downstream 400', async () => {
+    const res = await gql(
+      app,
+      { query: SEARCH_QUERY, variables: { query: '  ab  ' } },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(res).errors?.[0]?.extensions?.code).toBe('INVALID_REQUEST');
+    expect(documents.searchCalls).toEqual([]);
+  });
+
+  it('trims a search before forwarding it', async () => {
+    const res = await gql(
+      app,
+      { query: SEARCH_QUERY, variables: { query: '  lake house  ' } },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(res).errors).toBeUndefined();
+    expect(documents.searchCalls).toEqual([
+      { accessToken: TOKENS.accessToken, query: 'lake house' },
+    ]);
+  });
+
+  it('forwards an upload with its DECLARED mime, unmodified', async () => {
+    const res = await gql(
+      app,
+      {
+        query: UPLOAD_MUTATION,
+        variables: {
+          kind: 'legal',
+          title: 'a scan',
+          mime: 'application/pdf',
+          contentBase64: 'JVBERi0=',
+        },
+      },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(res).errors).toBeUndefined();
+    // The BFF invents NO client-side type check: the service's magic-byte
+    // sniff is the authority, and a second opinion here could disagree with it.
+    expect(documents.uploadCalls[0]?.input).toEqual({
+      kind: 'legal',
+      title: 'a scan',
+      mime: 'application/pdf',
+      contentBase64: 'JVBERi0=',
+    });
+  });
+
+  it('refuses an oversized upload without proxying it downstream', async () => {
+    const res = await gql(
+      app,
+      {
+        query: UPLOAD_MUTATION,
+        variables: {
+          kind: 'legal',
+          title: 'huge',
+          mime: 'application/pdf',
+          contentBase64: 'A'.repeat(14 * 1024 * 1024),
+        },
+      },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(res).errors?.[0]?.extensions?.code).toBe('UNSUPPORTED_CONTENT');
+    expect(documents.uploadCalls).toEqual([]);
+  });
+
+  it('sends executedAt only with the executed attestation', async () => {
+    await gql(
+      app,
+      {
+        query: STATUS_MUTATION,
+        variables: { documentId: DOCUMENT.documentId, status: 'signed' },
+      },
+      { cookie: COOKIE },
+    );
+    await gql(
+      app,
+      {
+        query: STATUS_MUTATION,
+        variables: {
+          documentId: DOCUMENT.documentId,
+          status: 'executed',
+          executedAt: '2026-07-04',
+        },
+      },
+      { cookie: COOKIE },
+    );
+    expect(documents.statusCalls).toEqual([
+      { accessToken: TOKENS.accessToken, documentId: DOCUMENT.documentId, status: 'signed' },
+      {
+        accessToken: TOKENS.accessToken,
+        documentId: DOCUMENT.documentId,
+        status: 'executed',
+        executedAt: '2026-07-04',
+      },
+    ]);
+  });
+
+  it('treats an EMPTY executedAt as absent rather than forwarding it', async () => {
+    await gql(
+      app,
+      {
+        query: STATUS_MUTATION,
+        variables: { documentId: DOCUMENT.documentId, status: 'signed', executedAt: '' },
+      },
+      { cookie: COOKIE },
+    );
+    expect(documents.statusCalls[0]?.executedAt).toBeUndefined();
+  });
+
+  it('surfaces a legal hold as its own code, not as something step-up would fix', async () => {
+    documents.documentsError = bffError('LEGAL_HOLD');
+    const res = await gql(
+      app,
+      { query: DELETE_MUTATION, variables: { documentId: DOCUMENT.documentId } },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(res).errors?.[0]?.extensions?.code).toBe('LEGAL_HOLD');
+  });
+
+  it('deletes on the caller’s own bearer', async () => {
+    const res = await gql(
+      app,
+      { query: DELETE_MUTATION, variables: { documentId: DOCUMENT.documentId } },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(res).errors).toBeUndefined();
+    expect(documents.removeCalls).toEqual([
+      { accessToken: TOKENS.accessToken, documentId: DOCUMENT.documentId },
+    ]);
+  });
+});
+
 describe('intake collapsing', () => {
   let app: INestApplication;
   let documents: FakeDocumentsClient;
@@ -192,6 +361,29 @@ describe('intake collapsing', () => {
     ]);
     expect(body.errors?.[0]?.extensions?.code).toBe('INVALID_REQUEST');
     expect(documents.generateCalls).toEqual([]);
+  });
+
+  it('treats a prototype-shaped name like any other name', async () => {
+    // On a plain object, `__proto__` goes through the inherited setter: the
+    // duplicate check misses it and the answer vanishes before it is
+    // serialized. The record is null-prototype, so it is an ordinary key —
+    // caught as a duplicate here, and refused downstream as undeclared.
+    const first = await generate([
+      { name: '__proto__', text: 'a' },
+      { name: '__proto__', text: 'b' },
+    ]);
+    expect(first.errors?.[0]?.extensions?.code).toBe('INVALID_REQUEST');
+    expect(documents.generateCalls).toEqual([]);
+
+    const second = await generate([{ name: '__proto__', text: 'a' }]);
+    expect(second.errors).toBeUndefined();
+    // It REACHES the service (which refuses it as undeclared) rather than
+    // being silently dropped on the way. Asserted through
+    // getOwnPropertyNames because an expectation written as `{ __proto__: 'a' }`
+    // has the very problem this test is about.
+    const sent = documents.generateCalls[0]?.input.variables ?? {};
+    expect(Object.getOwnPropertyNames(sent)).toEqual(['__proto__']);
+    expect(Object.getOwnPropertyDescriptor(sent, '__proto__')?.value).toBe('a');
   });
 
   it('accepts an empty answer set and lets the TEMPLATE decide it is incomplete', async () => {

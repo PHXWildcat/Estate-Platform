@@ -57,6 +57,12 @@ export const AUDIT_ACTIONS = [
   'document.scan.rejected',
   'document.ocr.indexed',
   'document.evidence.accessed',
+  // The body_sha256 pin failed, or a template body disagreed with its own row
+  // (docs/03 TB4 tamper adversary). Emitted where the failure is CAUGHT rather
+  // than where it is thrown: the read paths degrade instead of erroring, so
+  // without this the one signal that pin exists to produce would leave no
+  // trace anywhere (M12 review).
+  'document.template.integrity_failed',
   // Vault service (vault cluster, Zone A). These record that something
   // happened and to which entity - never what was in it. The server cannot
   // read vault contents even to log them, which is the point.

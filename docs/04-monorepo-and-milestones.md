@@ -2180,6 +2180,144 @@ standing this repo gives the M8 PR5, M10 PR4 and M11 UI work. Coverage floors
 were RATCHETED from a measured run (82.26/78.88/85.65/85.90 → 82/78/85/85),
 never lowered.
 
+**PR2 — upload, search, the execution ladder, deletion.**
+
+*The one service change, and why it is not scope creep.* The execution ladder
+is parameterized by the template's `execution_requirements`, which live in the
+sha256-verified template SOURCE — so only the document service can compute what
+a given instrument in a given state may do next. A UI that hardcoded the ladder
+would be a second copy of a legal gate (docs/03 risk #8), and it would drift
+toward offering a will a no-witness path. So `GET /v1/documents/:id` gained
+`allowedTransitions`, computed by the service's own `allowedTransitions()` from
+its own `requirementsFor()`. It FAILS CLOSED as an EMPTY LIST rather than an
+error: `requirementsFor` refuses to guess when the template cannot be verified,
+and that refusal must not be softened — but failing the whole READ would make
+an intact document unopenable because of its template's state. The empty list
+is advisory anyway; `transitionStatus` re-resolves the requirements inside its
+own transaction and refuses there too. Not on the LIST DTO: it costs a template
+load per document, and a list is not where anyone attests anything. The
+transition's own response carries the NEW ladder, so a client never renders a
+stale one for a round trip.
+
+*Upload keeps three refusals apart.* `malware_detected`, `unsupported_content`
+and `scan_unavailable` all mean the same thing about storage — the pipeline is
+pre-storage and fail-closed, so nothing was written anywhere — and three
+different things to the person holding the file. The malware one is never
+softened into "that file type isn't supported": the user may be holding
+something somebody sent them. The client invents NO type check of its own
+(the server's magic-byte sniff is the control against polyglot mislabeling, and
+a second opinion could disagree with it); `accept` is a picker hint, `file.type`
+is forwarded as a DECLARATION, and the only local check is the size cap, which
+mirrors the server's number rather than adding a rule.
+
+*Search says what it is not.* Nothing is decrypted to answer a query — it is
+per-user HMAC tokens matched ciphertext-side, which is why searching produces
+no decrypt event where reading produces one. The cost is stated where the user
+meets it: whole indexed words only, no semantic match, because there is
+deliberately no embedding index (M10). A search that matched nothing says
+"nothing matched", never the empty-estate copy — one is a fact about the query,
+the other a claim about the account.
+
+*Driving the real app found a fourth browser-only defect, and a fifth in the
+same pass.* (1) The step-up guard runs at documents' CONTROLLER while the legal
+hold is checked inside the handler, so a stale session gets `stepup_required`
+FIRST and the hold only after — the page dutifully walked someone through
+finding their authenticator to be told, correctly, that the document could not
+be deleted anyway. The server ordering is fine as defence in depth; offering
+the action was not, and the page already knows the document is held. Deletion
+is now not offered at all for a held document, on the same rule the revise link
+follows. (2) The panel dereferenced `allowedTransitions` before checking it, so
+a BFF that predates the field would have white-screened the page — the M11
+shape for the third time. It now reads a missing ladder as NO DATA rather than
+as an empty one, because an empty ladder is a REAL answer (fail-closed) and a
+skew must not be indistinguishable from it.
+
+**M12 security review** (five focused discovery lenses over `f06a157..HEAD`,
+then TWO adversarial verifiers per candidate on different angles —
+reachability in a real production config, and is-it-already-a-documented-
+decision — both told to default to refuted; 17 raw, 17 unique, 10 verified
+under the run's fan-out cap, 4 confirmed, and the 7 the cap dropped were
+logged by name rather than silently truncated). No zone boundary weakened, no
+production fail-fast relaxed, no credential reaching a service the credential
+graph forbids. The M6–M11 pattern held a sixth time: every finding sits in
+machinery M12 introduced, and four of them falsify a claim M12 made about
+itself.
+
+*The load-bearing one inverted a rule this repo wrote down.* Failing closed on
+an unverifiable template withdrew the WHOLE transition set — but
+`allowedTransitions` computes `revoked` and `superseded` without ever reading
+the requirements, so a soft-deleted or integrity-failed template stripped the
+owner's only de-escalation, permanently, in both the read and the write. A
+signed will could then never be revoked, never superseded, and never
+regenerated (`allowsNewVersion` is false past `generated`). That is the M6 rule
+— the protective action must never be harder than the permissive one — turned
+upside down by a fix meant to be conservative. `deEscalationTransitions` is now
+the fallback, and THE LINE IS ADVANCE vs DE-ESCALATE rather than
+requirement-dependent vs not: `signed` is technically requirement-independent
+and is still withheld, because advancing asserts something about the world on a
+template nobody can vouch for. The set is asserted to be a strict subset of the
+real ladder under every profile.
+
+*A tamper detector that produced nothing.* The same bare `catch` swallowed
+`TemplateIntegrityError` — the signal `body_sha256` exists to raise (docs/03
+TB4) — identically to a transient DB error, on a read path that answers 200 and
+logs nothing by design. It is now audited under its own action,
+`document.template.integrity_failed`, emitted where it is CAUGHT because that is
+the only place it exists.
+
+*The questionnaire and the formalities came from unverified columns.* Two lenses
+independently found that `GET /v1/templates` served `templates.variables` and
+`templates.execution_requirements` straight off the row with a shape-only
+re-validation, while the generator's docstring claimed they were "content-pinned
+by sha256" and the copy table called the formalities "the attorney-signed-off
+column". The M4 review made the verified SOURCE authoritative for the
+formalities GATE; the DISPLAY had been left behind, so a tampered row could put
+a different set of questions and a different statement of what a will requires
+in front of an owner. The catalog now serves `TemplateEngine.load`'s verified
+parse, and a template that fails verification is OMITTED rather than degraded.
+
+*Also fixed:* the three write paths (generate, regenerate, upload) lacked the
+"a response missing its field is not data" guard every read path in the same
+milestone applies — so a version skew after a real side effect left the form
+idle with no error, inviting a second press and a second legal instrument;
+`Read` was offered for versions the viewer would then refuse to display,
+manufacturing audited decrypts that produced nothing (and leaving PR1's promise
+that "presenting uploaded binaries is PR2's problem and gets its own decision"
+undischarged — images now render inline from a `data:` URI, PDFs and TIFFs
+download, and the decision is written down); the ladder caption claimed
+template authority for uploaded documents, which have no template at all; the
+transition's returned ladder was discarded in favour of a re-read that three
+separate places claimed did not happen; the embedding fence matched
+`/<iframe[\s>]/` only, missing `<iframe/>`, `React.createElement('iframe')`,
+`<object>` and `<embed>`; and the SEARCH TERM travelled in a query string —
+by construction a word out of the user's estate, on the one part of a request
+CloudFront and WAF log by default — so the route became a POST with the term in
+the body.
+
+*Corrected rather than fixed:* docs/03 §6e claimed `dangerouslySetInnerHTML` was
+absent "anywhere in the app", dropping M11's one declared exemption. *Noted, not
+changed:* `TemplateEngine` caches a parsed source by (id, sha), so a body
+swapped under an unchanged pin is served from cache until the process restarts —
+M4's caching property, predating this milestone.
+
+*Proven live against the stack, through the browser:* real clamd refused the
+signature-carrying PNG with nothing stored (`document.scan.rejected`), a clean
+scan stored and OCR-indexed (`document.uploaded` + `document.ocr.indexed`),
+encrypted search found it by a word that appears only in the image, the CA
+ladder walked generated → signed → witnessed → executed with the date field
+appearing at exactly the last rung (three `document.status.changed`), and
+deletion took a real step-up (`auth.stepup.granted` → `document.deleted`) and
+left the row soft-deleted rather than gone. The review's fixes were re-driven
+the same way: an uploaded scan now renders inline from a `data:` URI with a
+`Save a copy` whose filename comes from ids, the uploaded document's caption
+no longer claims template authority, POST search still finds it, and the audit
+chain shows exactly one decrypt pair for the one Read and none for the search.
+
+Coverage floors ratcheted from measured runs, never lowered: web 83/79/85/86,
+bff 88/85/88/88. Stack e2e test COUNTS are unchanged (16/4 and 9/11) — the
+search calls in `apps/e2e` changed shape with the route, but no test was added
+or removed.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

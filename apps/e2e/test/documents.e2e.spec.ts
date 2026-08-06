@@ -234,18 +234,27 @@ describeIfPg('documents: generate/upload/search/delete → audit chain + domain 
 
     // Encrypted search: the owner finds both documents through the per-user
     // index; a stranger's identical queries find nothing.
-    const byOcr = await http.get('/v1/documents/search?q=windmere%20deed').set(owner).expect(200);
+    const byOcr = await http
+      .post('/v1/documents/search')
+      .set(owner)
+      .send({ query: 'windmere deed' })
+      .expect(200);
     expect((byOcr.body as Array<{ documentId: string }>).map((d) => d.documentId)).toEqual([
       deedId,
     ]);
     const byRendered = await http
-      .get('/v1/documents/search?q=emery%20executor')
+      .post('/v1/documents/search')
       .set(owner)
+      .send({ query: 'emery executor' })
       .expect(200);
     expect((byRendered.body as Array<{ documentId: string }>).map((d) => d.documentId)).toEqual([
       willId,
     ]);
-    await http.get('/v1/documents/search?q=windmere%20deed').set(stranger).expect(200, []);
+    await http
+      .post('/v1/documents/search')
+      .set(stranger)
+      .send({ query: 'windmere deed' })
+      .expect(200, []);
 
     // Execution attestation + step-up-gated deletion of the upload.
     await http
@@ -255,7 +264,11 @@ describeIfPg('documents: generate/upload/search/delete → audit chain + domain 
       .expect(200);
     await http.delete(`/v1/documents/${deedId}`).set(owner).expect(403);
     await http.delete(`/v1/documents/${deedId}`).set(stepUp).expect(200);
-    await http.get('/v1/documents/search?q=windmere%20deed').set(owner).expect(200, []);
+    await http
+      .post('/v1/documents/search')
+      .set(owner)
+      .send({ query: 'windmere deed' })
+      .expect(200, []);
 
     // --- bridge: exact produced audit bytes → audit ingestor → verified chain ---
     const auditMessages = producer.messages.filter((m) => m.topic === TOPICS.auditEvents);

@@ -96,7 +96,34 @@ export type BffErrorCode =
    * executed instrument's content is a legal record; the way forward is to
    * revoke or supersede it, not to rewrite it underneath the signatures.
    */
-  | 'DOCUMENT_NOT_EDITABLE';
+  | 'DOCUMENT_NOT_EDITABLE'
+  /**
+   * The document is preserved as part of an estate matter (M12 PR2). The one
+   * refusal on this surface the owner cannot resolve by authenticating harder,
+   * so it must not look like one that step-up would fix.
+   */
+  | 'LEGAL_HOLD'
+  /**
+   * The attested status is not the next rung of THIS document's ladder (M12
+   * PR2) — a skipped witness or notary step, or a move from a terminal status.
+   */
+  | 'INVALID_TRANSITION'
+  /**
+   * A real scanner found a signature match (M12 PR2). Deliberately its own
+   * code: it must never be softened into "unsupported file", because the user
+   * is holding a file somebody sent them and needs to know why.
+   */
+  | 'MALWARE_DETECTED'
+  /**
+   * The bytes are not a format this platform accepts, or the declared type did
+   * not match the magic bytes (M12 PR2). Nothing was stored.
+   */
+  | 'UNSUPPORTED_CONTENT'
+  /**
+   * The malware scanner could not be reached (M12 PR2). FAIL CLOSED: nothing
+   * was stored, and the honest answer is "we could not check it".
+   */
+  | 'SCAN_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -109,6 +136,11 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   CONTENT_ERASED: 'This content has been erased',
   VERSION_CONFLICT: 'This document changed since it was loaded',
   DOCUMENT_NOT_EDITABLE: 'This document can no longer be regenerated',
+  LEGAL_HOLD: 'This document is under legal hold',
+  INVALID_TRANSITION: 'That is not the next step for this document',
+  MALWARE_DETECTED: 'That file was refused by the malware scanner',
+  UNSUPPORTED_CONTENT: 'That file type is not accepted',
+  SCAN_UNAVAILABLE: 'That file could not be checked for malware',
 };
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */

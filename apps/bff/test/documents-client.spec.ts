@@ -110,9 +110,13 @@ describe('reads', () => {
     expect(content).toEqual(CONTENT_BODY);
   });
 
-  it('passes one document and its version history through', async () => {
-    const document = await client(respond(200, DOCUMENT_BODY)).get(TOKEN, DOCUMENT_BODY.documentId);
-    expect(document).toEqual(DOCUMENT_BODY);
+  it('passes one document, its LADDER and its version history through', async () => {
+    // `allowedTransitions` is the service's own computation from the template's
+    // sha256-verified requirements. This client carries it and never derives
+    // one — a second copy of a legal gate is a copy that drifts.
+    const detail = { ...DOCUMENT_BODY, allowedTransitions: ['witnessed', 'revoked'] };
+    const document = await client(respond(200, detail)).get(TOKEN, DOCUMENT_BODY.documentId);
+    expect(document).toEqual(detail);
     const versions = await client(
       respond(200, [
         {
@@ -245,6 +249,118 @@ describe('error mapping', () => {
       .catch((e: unknown) => e);
     expect(codeOf(err)).toBe('INVALID_REQUEST');
     expect((err as Error).message).toBe('Invalid request');
+  });
+});
+
+describe('the three upload refusals stay apart', () => {
+  /**
+   * All three mean the same thing about STORAGE — the bytes were never written
+   * anywhere, because the service's pipeline is pre-storage and fail-closed —
+   * and they mean three different things to the person holding the file.
+   * Collapsing them would let the most serious one read as the mildest.
+   */
+  const UPLOAD = { kind: 'legal', title: 'a scan', mime: 'application/pdf', contentBase64: 'JVBE' };
+
+  it.each([
+    [422, 'malware_detected', 'MALWARE_DETECTED'],
+    [422, 'unsupported_content', 'UNSUPPORTED_CONTENT'],
+    [503, 'scan_unavailable', 'SCAN_UNAVAILABLE'],
+  ])('maps %i %s to %s', async (status, token, code) => {
+    const err = await client(respond(status, { error: token }))
+      .upload(TOKEN, UPLOAD)
+      .catch((e: unknown) => e);
+    expect(codeOf(err)).toBe(code);
+  });
+
+  it('sends the DECLARED mime and lets the service decide', async () => {
+    const seen: RequestInit[] = [];
+    const spy = ((_url: string, init: RequestInit) => {
+      seen.push(init);
+      return Promise.resolve({
+        ok: true,
+        status: 201,
+        json: () =>
+          Promise.resolve({
+            documentId: DOCUMENT_BODY.documentId,
+            version: 1,
+            contentSha256: 'f'.repeat(64),
+            executionStatus: 'draft',
+            ocrIndexed: false,
+          }),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const result = await client(spy).upload(TOKEN, UPLOAD);
+    expect(JSON.parse((seen[0]?.body as string | undefined) ?? '{}')).toEqual(UPLOAD);
+    expect(result.ocrIndexed).toBe(false);
+  });
+});
+
+describe('status and deletion', () => {
+  const DETAIL = { ...DOCUMENT_BODY, allowedTransitions: ['witnessed', 'revoked'] };
+
+  it('sends executedAt only with the executed attestation', async () => {
+    const seen: RequestInit[] = [];
+    const spy = ((_url: string, init: RequestInit) => {
+      seen.push(init);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(DETAIL) });
+    }) as unknown as typeof globalThis.fetch;
+    await client(spy).setStatus(TOKEN, DOCUMENT_BODY.documentId, 'signed');
+    await client(spy).setStatus(TOKEN, DOCUMENT_BODY.documentId, 'executed', '2026-07-04');
+    expect(JSON.parse((seen[0]?.body as string | undefined) ?? '{}')).toEqual({ status: 'signed' });
+    expect(JSON.parse((seen[1]?.body as string | undefined) ?? '{}')).toEqual({
+      status: 'executed',
+      executedAt: '2026-07-04',
+    });
+  });
+
+  it('maps a refused rung to INVALID_TRANSITION', async () => {
+    const err = await client(respond(409, { error: 'invalid_transition' }))
+      .setStatus(TOKEN, DOCUMENT_BODY.documentId, 'executed', '2026-07-04')
+      .catch((e: unknown) => e);
+    expect(codeOf(err)).toBe('INVALID_TRANSITION');
+  });
+
+  it('maps a held document to LEGAL_HOLD, not to something step-up would fix', async () => {
+    const err = await client(respond(409, { error: 'legal_hold' }))
+      .remove(TOKEN, DOCUMENT_BODY.documentId)
+      .catch((e: unknown) => e);
+    expect(codeOf(err)).toBe('LEGAL_HOLD');
+  });
+
+  it('deletes on the document’s own path and reads no body', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const spy = ((url: string, init: RequestInit) => {
+      seen.push({ url, init });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    }) as unknown as typeof globalThis.fetch;
+    await expect(client(spy).remove(TOKEN, DOCUMENT_BODY.documentId)).resolves.toBeUndefined();
+    expect(seen[0]?.init.method).toBe('DELETE');
+    expect(seen[0]?.url).toBe(`http://documents.test/v1/documents/${DOCUMENT_BODY.documentId}`);
+  });
+});
+
+describe('search', () => {
+  it('sends the term in the BODY, never in the URL', async () => {
+    // The term is a word out of the user's own estate, and a query string is
+    // the one part of a request intermediaries log by default — CloudFront and
+    // WAF access logs capture full request URIs (M12 review).
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const spy = ((url: string, init: RequestInit) => {
+      seen.push({ url, init });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve([DOCUMENT_BODY]),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const hits = await client(spy).search(TOKEN, 'lake house & co');
+    expect(seen[0]?.url).toBe('http://documents.test/v1/documents/search');
+    expect(seen[0]?.url).not.toContain('lake');
+    expect(seen[0]?.init.method).toBe('POST');
+    expect(JSON.parse((seen[0]?.init.body as string | undefined) ?? '{}')).toEqual({
+      query: 'lake house & co',
+    });
+    expect(hits).toHaveLength(1);
   });
 });
 

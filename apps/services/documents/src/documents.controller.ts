@@ -6,7 +6,6 @@ import {
   HttpCode,
   Param,
   Post,
-  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -14,6 +13,7 @@ import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@es
 import {
   DocumentsService,
   type ContentDto,
+  type DocumentDetailDto,
   type DocumentDto,
   type GenerateResult,
   type UploadResult,
@@ -24,7 +24,7 @@ import {
   IfMatchSchema,
   NewVersionSchema,
   parse,
-  SearchQuerySchema,
+  SearchRequestSchema,
   StatusTransitionSchema,
   UploadDocumentSchema,
   UuidSchema,
@@ -75,15 +75,24 @@ export class DocumentsController {
     return this.documents.list(requireCaller(req).userId);
   }
 
-  @Get('documents/search')
+  /**
+   * Encrypted search. A POST because the TERM IS PII: query strings are the
+   * part of a request intermediaries log by default, and a search over one's
+   * own documents is by construction a word out of that estate (M12 review).
+   * It reads rather than writes — hence 200, not 201.
+   */
+  @Post('documents/search')
   @HttpCode(200)
-  search(@Req() req: CallerRequest, @Query('q') q: string): Promise<DocumentDto[]> {
-    return this.documents.search(requireCaller(req).userId, parse(SearchQuerySchema, q));
+  search(@Req() req: CallerRequest, @Body() body: unknown): Promise<DocumentDto[]> {
+    return this.documents.search(requireCaller(req).userId, parse(SearchRequestSchema, body).query);
   }
 
   @Get('documents/:documentId')
   @HttpCode(200)
-  get(@Req() req: CallerRequest, @Param('documentId') documentId: string): Promise<DocumentDto> {
+  get(
+    @Req() req: CallerRequest,
+    @Param('documentId') documentId: string,
+  ): Promise<DocumentDetailDto> {
     return this.documents.get(requireCaller(req).userId, parse(UuidSchema, documentId));
   }
 
@@ -132,7 +141,7 @@ export class DocumentsController {
     @Req() req: CallerRequest,
     @Param('documentId') documentId: string,
     @Body() body: unknown,
-  ): Promise<DocumentDto> {
+  ): Promise<DocumentDetailDto> {
     return this.documents.transitionStatus(
       requireCaller(req).userId,
       parse(UuidSchema, documentId),

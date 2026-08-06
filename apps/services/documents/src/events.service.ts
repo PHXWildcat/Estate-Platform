@@ -178,6 +178,35 @@ export class EventsService {
     await this.document('document.deleted', actorId, documentId);
   }
 
+  /**
+   * A template body failed its `body_sha256` pin, or disagreed with its own row
+   * (docs/03 TB4). IDs only — the template id is an identifier, and nothing
+   * about the body or the document's content appears.
+   *
+   * Emitted from the READ paths, which degrade rather than erroring, so this is
+   * the only place the signal exists. Detection matters more than the request
+   * that noticed it: the same pin protects every document generated from that
+   * template.
+   */
+  async templateIntegrityFailed(
+    actorId: string,
+    documentId: string | null,
+    templateId: string | null,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'document.template.integrity_failed',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'document_template',
+      resourceId: templateId,
+      sessionId: null,
+      // No document when the catalog noticed it: the template is the subject
+      // either way, and the document is context.
+      detail: documentId === null ? {} : { documentId },
+    });
+  }
+
   async documentUploaded(
     actorId: string,
     documentId: string,
