@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
 import { stepUpMessageFor } from '../lib/copy';
 import {
@@ -36,6 +36,18 @@ import { validateTotpCode } from '../lib/validation';
  * the prompt sitting there doing nothing for a user whose code was accepted —
  * the review's finding. `onElevated` reports `stale` for exactly that case and
  * the prompt polls to the documented deadline (see lib/step-up.ts).
+ *
+ * CANCEL ABORTS THE LOOP, AND SO DOES UNMOUNTING. That is the fix for the worst
+ * defect in this component's own short history: the retry loop had no abort, and
+ * Cancel only asked the parent to hide the prompt — so for up to the whole
+ * propagation budget after the owner declined, the loop kept retrying and could
+ * still APPLY the action they had just cancelled. Measured, not theorised: a
+ * probe against the real RoleControls issued a third `GrantRole` after Cancel,
+ * it succeeded, and an `executor`/`on_death_verified` designation appeared on the
+ * §5.1 executor-resolution chain with no UI signal at all (React 19 makes the
+ * post-unmount `setState` a silent no-op, so even the give-up message went
+ * nowhere). A step-up prompt is a CONSENT ceremony; an action that proceeds after
+ * consent is withdrawn is the one thing it must never do.
  *
  * WHAT IT DOES NOT COVER, stated rather than left to be discovered: the two
  * earlier callers keep their own copies. `ConsentControls` could adopt this
@@ -73,6 +85,27 @@ export function StepUpPrompt({
   const [codeError, setCodeError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  /**
+   * Set the moment consent is withdrawn — by Cancel, or by this component going
+   * away. A ref rather than state because the running loop needs to read the
+   * CURRENT value, and a state variable captured in its closure would be forever
+   * false.
+   */
+  const abandoned = useRef(false);
+
+  // Unmounting is withdrawal too: a user who navigates away has not consented to
+  // whatever the loop was still about to try.
+  useEffect(
+    () => () => {
+      abandoned.current = true;
+    },
+    [],
+  );
+
+  function abandon(): void {
+    abandoned.current = true;
+    onCancel();
+  }
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -81,8 +114,18 @@ export function StepUpPrompt({
     if (validation !== null) {
       return;
     }
+    // A fresh submission re-arms: Cancel on a PREVIOUS attempt must not veto this
+    // one. Set before the first await, so a double submit cannot interleave.
+    abandoned.current = false;
     setBusy(true);
     const stepUp = await gqlRequest('StepUp', { code });
+    if (abandoned.current) {
+      // Cancelled while identity was deciding. The elevation may well have been
+      // granted — that is harmless, it grants no action by itself — but the
+      // action the owner declined must not run.
+      setBusy(false);
+      return;
+    }
     if (!stepUp.ok) {
       setBusy(false);
       setCodeError(stepUpMessageFor(stepUp.code));
@@ -95,13 +138,21 @@ export function StepUpPrompt({
     // prompt after an accepted code reads as "nothing happened".
     const deadline = Date.now() + STEP_UP_PROPAGATION_BUDGET_MS;
     let outcome = await onElevated();
-    while (outcome === 'stale' && Date.now() < deadline) {
+    while (outcome === 'stale' && Date.now() < deadline && !abandoned.current) {
       setWaiting(true);
       await new Promise((resolve) => setTimeout(resolve, STEP_UP_RETRY_INTERVAL_MS));
+      // Checked AFTER the wait as well as in the condition: the whole point is
+      // that Cancel lands while we are sleeping.
+      if (abandoned.current) {
+        break;
+      }
       outcome = await onElevated();
     }
     setWaiting(false);
     setBusy(false);
+    if (abandoned.current) {
+      return;
+    }
     if (outcome === 'stale') {
       // Past the deadline and still refused. Honest, and actionable: nothing was
       // lost, and pressing again is the remedy.
@@ -141,7 +192,7 @@ export function StepUpPrompt({
         <button type="submit" className="btn btn-primary" disabled={busy}>
           {waiting ? 'Applying…' : busy ? 'Checking…' : submitLabel}
         </button>
-        <button type="button" className="btn btn-secondary" onClick={onCancel}>
+        <button type="button" className="btn btn-secondary" onClick={abandon}>
           Cancel
         </button>
       </div>

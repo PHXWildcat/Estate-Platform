@@ -56,6 +56,10 @@ export const errorCopy: Record<GqlFailureCode, string> = {
     'That code wasn’t accepted. Codes are single-use and expire after seven days — ask for a fresh one.',
   NOTIFICATIONS_UNAVAILABLE:
     'We can’t reach the owner to tell them about this right now, so we haven’t made the change. Please try again shortly.',
+  // The two "already done" conflicts. Neither is the user's mistake — a double
+  // click or a retry reaches them — so the copy states the outcome and stops.
+  ROLE_ALREADY_GRANTED: 'This person already holds that exact role in your estate.',
+  PERMISSION_ALREADY_GRANTED: 'That role is already allowed to read that.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

@@ -147,6 +147,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       // migration landing is exactly what it should notice.
       '003_contact_link_invitations.sql',
       '004_role_assignments_unique.sql',
+      '005_permission_grants_unique.sql',
     ]);
   });
 

@@ -24,6 +24,18 @@ export interface RoleAssignmentInsert {
   endsAt: Date | null;
 }
 
+/**
+ * The named contact is not the caller's, or is soft-deleted. Raised from inside
+ * the insert transaction so the caller answers a uniform not-found without ever
+ * having read anything about the contact.
+ */
+export class ContactUnavailableError extends Error {
+  constructor() {
+    super('contact unavailable for a role assignment');
+    this.name = 'ContactUnavailableError';
+  }
+}
+
 /** An effective grant row: the scope of a role_assignment carrying a read grant. */
 export interface EffectiveGrant {
   scope_type: string;
@@ -66,24 +78,44 @@ export class RolesRepo {
     return this.settlementCasesPresent;
   }
 
-  async insert(input: RoleAssignmentInsert): Promise<string> {
-    const rows = await this.db.query<{ id: string }>(
-      `INSERT INTO role_assignments
-         (owner_user_id, contact_id, role, scope_type, scope_id, effective_condition, starts_at, ends_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       RETURNING id`,
-      [
-        input.ownerUserId,
-        input.contactId,
-        input.role,
-        input.scopeType,
-        input.scopeId,
-        input.effectiveCondition,
-        input.startsAt,
-        input.endsAt,
-      ],
-    );
-    return (rows[0] as { id: string }).id;
+  /**
+   * Insert a designation while HOLDING THE CONTACT ROW.
+   *
+   * The lock is the point, not the check: `ContactsRepo.softDelete` takes the
+   * same `FOR UPDATE` on the same row, so a delete and a grant for one contact
+   * order against each other instead of interleaving. Without it this was
+   * check-then-act and left a live designation on a deleted contact — the
+   * docs/03 §6f fail-open, which three places claimed was closed.
+   */
+  async insertForLockedContact(input: RoleAssignmentInsert): Promise<string> {
+    return this.db.withTransaction(input.ownerUserId, async (tx) => {
+      const locked = await tx.query<{ id: string }>(
+        `SELECT id FROM contacts
+          WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+          FOR UPDATE`,
+        [input.contactId, input.ownerUserId],
+      );
+      if (locked.length === 0) {
+        throw new ContactUnavailableError();
+      }
+      const rows = await tx.query<{ id: string }>(
+        `INSERT INTO role_assignments
+           (owner_user_id, contact_id, role, scope_type, scope_id, effective_condition, starts_at, ends_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         RETURNING id`,
+        [
+          input.ownerUserId,
+          input.contactId,
+          input.role,
+          input.scopeType,
+          input.scopeId,
+          input.effectiveCondition,
+          input.startsAt,
+          input.endsAt,
+        ],
+      );
+      return (rows[0] as { id: string }).id;
+    });
   }
 
   async listByOwner(ownerUserId: string): Promise<RoleAssignmentRow[]> {

@@ -2,7 +2,11 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { coreResource, ProfileAuthz } from '../src/authz.service';
 import { RolesService } from '../src/roles.service';
-import type { RoleAssignmentInsert, RoleAssignmentRow } from '../src/roles.repo';
+import {
+  ContactUnavailableError,
+  type RoleAssignmentInsert,
+  type RoleAssignmentRow,
+} from '../src/roles.repo';
 import { noopEvents } from './support';
 
 const OWNER = 'a1111111-1111-4111-8111-111111111111';
@@ -13,7 +17,20 @@ const authz = new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies()));
 
 class FakeRolesRepo {
   readonly rows: RoleAssignmentRow[] = [];
+  /**
+   * Contacts this fake will "lock". The real
+   * `insertForLockedContact` takes `FOR UPDATE` on the contact row and raises
+   * ContactUnavailableError when it is not the caller's or is deleted — the fake
+   * models the refusal, because that refusal IS the ownership check now.
+   */
+  lockableContacts = new Set<string>([CONTACT]);
   private seq = 0;
+  insertForLockedContact(input: RoleAssignmentInsert): Promise<string> {
+    if (!this.lockableContacts.has(input.contactId)) {
+      return Promise.reject(new ContactUnavailableError());
+    }
+    return this.insert(input);
+  }
   insert(input: RoleAssignmentInsert): Promise<string> {
     const id = `e0000000-0000-4000-8000-00000000000${++this.seq}`;
     this.rows.push({
@@ -87,22 +104,10 @@ class RecordingEvents {
   }
 }
 
-/** Contacts fake: CONTACT belongs to OWNER and is live; everything else is unknown. */
-const fakeContacts = {
-  findById: (id: string) =>
-    Promise.resolve(id === CONTACT ? { id, owner_user_id: OWNER, linked_user_id: null } : null),
-};
-
 function build() {
   const roles = new FakeRolesRepo();
   const grants = new FakeGrantsRepo();
-  const service = new RolesService(
-    roles as never,
-    grants as never,
-    fakeContacts as never,
-    authz,
-    noopEvents,
-  );
+  const service = new RolesService(roles as never, grants as never, authz, noopEvents);
   return { roles, grants, service };
 }
 
@@ -110,13 +115,7 @@ function buildWithEvents() {
   const roles = new FakeRolesRepo();
   const grants = new FakeGrantsRepo();
   const events = new RecordingEvents();
-  const service = new RolesService(
-    roles as never,
-    grants as never,
-    fakeContacts as never,
-    authz,
-    events as never,
-  );
+  const service = new RolesService(roles as never, grants as never, authz, events as never);
   return { roles, grants, events, service };
 }
 
@@ -171,9 +170,10 @@ describe('RolesService (owner-managed grants)', () => {
 
   it('refuses a role over a contact that is not the caller’s, uniformly (M13 review)', async () => {
     const { service } = build();
-    // A foreign (or deleted, or simply wrong) contact id is one uniform 404 —
-    // the FK proves existence only, and every consequence of a cross-owner
-    // designation is a dangling edge some later query silently drops.
+    // A foreign (or deleted, or simply wrong) contact id is one uniform 404. The
+    // check is now the LOCK itself — `insertForLockedContact` raises when the
+    // contact row cannot be locked as the caller's live contact — so it cannot
+    // come apart from the insert the way a separate findById could.
     await expect(
       service.grantRole(OWNER, {
         contactId: 'd4444444-4444-4444-8444-444444444445',

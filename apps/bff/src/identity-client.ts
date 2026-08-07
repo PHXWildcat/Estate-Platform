@@ -144,7 +144,11 @@ export type BffErrorCode =
    * outage to work around: the notification IS the control that makes a claimed
    * link visible to the person whose estate it opens (M13).
    */
-  | 'NOTIFICATIONS_UNAVAILABLE';
+  | 'NOTIFICATIONS_UNAVAILABLE'
+  /** That exact designation is already live on that contact (M13, migration 004). */
+  | 'ROLE_ALREADY_GRANTED'
+  /** That exact permission is already live on that role (M13, migration 005). */
+  | 'PERMISSION_ALREADY_GRANTED';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -166,6 +170,8 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   ALREADY_LINKED: 'This person already has an account linked',
   INVALID_LINK_CODE: 'That invitation code was not accepted',
   NOTIFICATIONS_UNAVAILABLE: 'We cannot notify the account owner right now',
+  ROLE_ALREADY_GRANTED: 'That role is already recorded for this person',
+  PERMISSION_ALREADY_GRANTED: 'That permission is already allowed for this role',
 };
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */

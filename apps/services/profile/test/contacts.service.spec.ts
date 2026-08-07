@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { FieldCrypto, LocalKmsProvider, type DekRecord, type DekRepository } from '@estate/crypto';
 import { ProfileAuthz } from '../src/authz.service';
@@ -68,8 +68,11 @@ class FakeContactsRepo {
    * check-then-act defect back in unnoticed.
    */
   assignedContactIds = new Set<string>();
-  softDelete(id: string): Promise<'deleted' | 'in_use' | 'not_found'> {
-    const i = this.rows.findIndex((r) => r.id === id);
+  softDelete(id: string, ownerUserId: string): Promise<'deleted' | 'in_use' | 'not_found'> {
+    // ownerUserId is honoured because in the real repo it is the ONLY access
+    // control on this path — the service's PEP call cannot see whose contact an
+    // id names. A fake that ignored it left that check unmodelled and untested.
+    const i = this.rows.findIndex((r) => r.id === id && r.owner_user_id === ownerUserId);
     if (i < 0) return Promise.resolve('not_found');
     if (this.assignedContactIds.has(id)) return Promise.resolve('in_use');
     this.rows.splice(i, 1);
@@ -257,6 +260,23 @@ describe('the contact link survives ordinary edits (M13 PR1)', () => {
     // ...and the edit itself still landed.
     const view = await service.getOne(OWNER, OWNER, a.id);
     expect(view.phone).toBe('555-0199');
+  });
+
+  it('refuses to delete another owner’s contact, as a uniform not-found', async () => {
+    const { service, repo } = build();
+    const a = await service.create(OWNER, { name: 'Owner’s Contact' });
+    /*
+     * NOT-FOUND, not forbidden, and the distinction is the control. `remove` is
+     * caller-relative — the PEP models the resource owner AS the caller, so it
+     * always permits and the repo's `owner_user_id` predicate is the entire access
+     * check on this path. That is deliberate: a 403 would confirm the id names a
+     * real contact belonging to somebody, turning delete into the enumeration
+     * oracle the read paths are careful not to be. A fake repo that dropped
+     * `ownerUserId` left this untested, which is how a repo edit could have
+     * removed the predicate with every spec still green.
+     */
+    await expect(service.remove(STRANGER, a.id)).rejects.toBeInstanceOf(NotFoundException);
+    expect(repo.rows.some((r) => r.id === a.id)).toBe(true);
   });
 
   it('refuses to delete a contact a live role assignment still names', async () => {

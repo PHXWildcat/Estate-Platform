@@ -2626,10 +2626,18 @@ not, and a doc claiming evidence it does not have is the defect class this repo
 treats as real.
 
 **And the duplicate-designation fix produced a second finding on its own.** The
-index was first APPENDED TO 003, a migration the migrator had already recorded —
-and it keys on FILENAME, so the edit silently never runs. Proven rather than
-reasoned about: the local stack had 003 applied, the duplicate rows still sitting
-there, and no index. It is `004_role_assignments_unique.sql` now, with a
+index was first APPENDED TO 003, a migration the migrator had already recorded.
+That is wrong, but CORRECTED AS TO WHY — the first version of this paragraph said
+the migrator "keys on FILENAME, so the edit silently never runs", and that is
+false. `packages/db/src/migrator.ts` records a sha256 CHECKSUM alongside every
+applied name and raises `MigrationDriftError` on a mismatch, so appending to 003
+fails LOUDLY on the next run rather than doing nothing: even editing a comment in
+an applied file blocks the next migration until the file is restored. What was
+actually observed was a container still running the pre-edit 003 — the second time
+in that session a stale image was mistaken for evidence about the code, which is
+worth recording as its own recurring mistake. The conclusion survives (migrations
+are append-only) and its enforcement is stronger than the doc credited it with.
+It is `004_role_assignments_unique.sql` now, with a
 pre-flight that RAISES over pre-existing duplicates and retires nothing — the
 `002_dek_unique_active` rule, for the same reason: duplicates are identical as
 designations but not as rows, and `permission_grants.role_assignment_id`
@@ -2652,6 +2660,68 @@ dropping the unique index, dropping the COALESCE, removing the pre-flight, and
 re-appending the index to 003 each turn the suite red. Docs/03 §6f and §6g
 updated, including the family-list narrowing recorded as a deliberate scope-down
 rather than an omission.
+
+#### M13 review round 3 — the fixes themselves (2026-08-06)
+
+A third pass was run over ROUND 2's OWN FIXES, on the repo's five-for-five
+expectation that new trust machinery is defective. It was justified: two HIGH
+defects, both in code written to close a finding.
+
+1. **CANCEL DID NOT CANCEL.** Round 2 made the step-up prompt POLL — peers learn
+   about an elevation through a 30-second positive session cache, so a single-shot
+   retry left the prompt idle after an accepted code. The retry loop had no abort,
+   and `Cancel` only asked the parent to hide the prompt: for up to the whole
+   propagation budget after the owner declined, the loop kept retrying and could
+   still APPLY the action. Measured against the real component — a third
+   `GrantRole` was issued after Cancel, it succeeded, and an
+   `executor`/`on_death_verified` designation landed on the §5.1
+   executor-resolution chain with no UI signal at all, because React 19 makes the
+   post-unmount `setState` a silent no-op. A step-up prompt is a consent ceremony;
+   proceeding after consent is withdrawn is the one thing it must never do. FIXED
+   with an `abandoned` ref set by Cancel AND by unmount, checked in the loop
+   condition, after the sleep, and around the identity round trip; re-armed on a
+   fresh submit so cancelling one attempt cannot veto the next.
+
+2. **THE DELETE/GRANT RACE WAS STILL A RACE.** Round 2 replaced contact deletion's
+   check-then-act with a single `UPDATE … WHERE NOT EXISTS (SELECT … FROM
+   role_assignments)`, which reads atomically but locks the CONTACTS row, not the
+   assignments it consulted — and `grantRole` was itself a check-then-act on the
+   contact's existence. Two concurrent statements could therefore delete a contact
+   and name it to a role, leaving a designation pointing at a deleted contact: the
+   in-use refusal M13 PR1 added, defeated. FIXED by making the contact row the
+   serialization point for both paths — `softDelete` takes `SELECT … FOR UPDATE` on
+   it inside a transaction, and `RolesRepo.insertForLockedContact` takes the same
+   lock before inserting (the plain `insert` is deleted, so no caller can skip it).
+   A five-iteration concurrent race test asserts the impossible pair never occurs
+   and fails 3/3 runs with the `FOR UPDATE` removed.
+
+Three further items from the same pass, each real and none of them a vulnerability
+on its own:
+
+- `permission_grants` had no uniqueness either, and `grantPermission` was the ONE
+  retried action with no in-flight guard — its buttons stayed live during a write.
+  Two clicks wrote two grants, of which withdrawing the visible one left the other
+  conferring the read. Closed at both levels: migration
+  `005_permission_grants_unique.sql` plus a `409 permission_already_granted`, and a
+  `busy` guard with a test that clicks twice against a held-open response.
+- Neither new 409 had a BFF mapping, so the "ordinary refusal" the migrations
+  promised surfaced as a masked server error. Mapped, with copy that states the
+  outcome and offers no remedy — neither conflict is the user's mistake.
+- `FakeContactsRepo.softDelete` dropped its `ownerUserId` argument, leaving the
+  delete path's ONLY access control unmodelled — the real repo's `owner_user_id`
+  predicate is the whole check there, since the PEP models the resource owner as
+  the caller. Made faithful, with a test asserting another owner's contact is a
+  uniform not-found (never a 403, which would confirm the id names something).
+- The redeem schema's `min(8)` measured the RAW submission, so a body of pure
+  separators satisfied it and folded to the empty string. Redemption now measures
+  the CANONICAL form against a `CANONICAL_CODE_LENGTH` derived from the mint, and
+  answers the same uniform `invalid_code` so the shape check is not an oracle for
+  the format.
+- Two error-path bugs in `004`'s `RAISE`, found only by making the branch fire:
+  plpgsql's placeholder is a bare `%`, so the original `%s%s` wedged stray "s"
+  characters into the duplicate list, and the first correction to `%%` — an escaped
+  percent, zero placeholders — made the branch a hard error. An exception nobody
+  triggers in a test is an exception nobody has read.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.

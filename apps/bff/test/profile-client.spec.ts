@@ -315,6 +315,12 @@ describe('FetchProfileClient', () => {
       [401, 'unauthorized', 'UNAUTHENTICATED'],
       [403, 'stepup_required', 'STEPUP_REQUIRED'],
       [409, 'contact_in_use', 'CONTACT_IN_USE'],
+      // The two uniqueness conflicts migrations 004 and 005 introduced. Without a
+      // mapping each fell through to a bare Error, which yoga masks — so a double
+      // click on a designation read as "something went wrong on our side" for
+      // something the user did nothing wrong to cause.
+      [409, 'role_already_granted', 'ROLE_ALREADY_GRANTED'],
+      [409, 'permission_already_granted', 'PERMISSION_ALREADY_GRANTED'],
       [409, 'profile_key_retired', 'CONTENT_ERASED'],
       [400, 'invalid_request', 'INVALID_REQUEST'],
     ])('maps %i %s to %s', async (status, token, code) => {

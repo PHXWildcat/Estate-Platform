@@ -804,9 +804,16 @@ match on is precisely what the code stands in for, and a decision there would
 read `deny` until the moment it read `allow` for reasons the policy could not
 see. The authority is a bearer capability. Recorded here rather than disguised.
 
-**Notifications are a PRECONDITION in production.** Redemption refuses (503
-`notifications_unavailable`, separately audited) behind an adapter that reaches
-nobody — the M6/M7/M9 rule. The reason is specific: a claim the owner never
+**Notifications are a PRECONDITION in production, and the send's OUTCOME is
+recorded.** Redemption refuses (503 `notifications_unavailable`, separately
+audited) behind an adapter that reaches nobody — the M6/M7/M9 rule. Behind a real
+adapter the send is best-effort by design (a notification failure must never roll
+back the state change it describes), but never silent: the claim's audit event
+carries `ownerNotified: delivered|failed`, the vault delivered_at-NULL precedent,
+so a non-delivery is a recorded fact rather than an absence. The notify also runs
+BEFORE the audit emit, because the emit propagates broker failures by design and
+must not be able to cancel the notification — the code is spent by then and no
+retry would ever re-send it. The reason is specific: a claim the owner never
 hears about is how a code that went to the wrong person becomes an invisible
 authorization edge, and the owner's out-of-band channel is this ceremony's trust
 anchor, so their after-the-fact visibility is what makes the anchor auditable.

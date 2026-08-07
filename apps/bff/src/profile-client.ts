@@ -484,6 +484,19 @@ export class FetchProfileClient implements ProfileClient {
     if (res.status === 409 && token === 'contact_in_use') {
       return bffError('CONTACT_IN_USE');
     }
+    /*
+     * The two "you already did that" conflicts. Migration 004 and 005 promised
+     * these would surface as ORDINARY REFUSALS rather than a 500 — a promise this
+     * mapping is what keeps: without a case here they fall through to a plain
+     * Error, yoga masks it, and a double click reads as "something went wrong on
+     * our side" for something the user did nothing wrong to cause.
+     */
+    if (res.status === 409 && token === 'role_already_granted') {
+      return bffError('ROLE_ALREADY_GRANTED');
+    }
+    if (res.status === 409 && token === 'permission_already_granted') {
+      return bffError('PERMISSION_ALREADY_GRANTED');
+    }
     if (res.status === 409 && token === 'already_linked') {
       return bffError('ALREADY_LINKED');
     }

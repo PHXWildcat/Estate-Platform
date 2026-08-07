@@ -3,7 +3,7 @@ import {
   ContactLinksService,
   INVITATION_TTL_MS,
 } from '../src/contact-links.service';
-import { CODE_RANDOM_BYTES } from '../src/contact-links.service';
+import { CANONICAL_CODE_LENGTH, CODE_RANDOM_BYTES } from '../src/contact-links.service';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { ProfileAuthz } from '../src/authz.service';
 import type { ProfileConfig } from '../src/config';
@@ -22,11 +22,16 @@ describe('the invitation code', () => {
   function build() {
     const inserted: Array<{ codeSha256: Buffer }> = [];
     const codes: string[] = [];
+    const lookups: Buffer[] = [];
     const links = {
       revokeLive: () => Promise.resolve(null),
       insert: (input: { codeSha256: Buffer }) => {
         inserted.push(input);
         return Promise.resolve('i-1');
+      },
+      findByCode: (codeSha256: Buffer) => {
+        lookups.push(codeSha256);
+        return Promise.resolve(null);
       },
     };
     const contacts = {
@@ -51,7 +56,7 @@ describe('the invitation code', () => {
       { nodeEnv: 'test' } as ProfileConfig,
       () => new Date('2026-08-06T00:00:00Z'),
     );
-    return { service, inserted, codes };
+    return { service, inserted, codes, lookups };
   }
 
   it('carries exactly 160 bits: 32 base32 characters from 20 random bytes', async () => {
@@ -101,7 +106,9 @@ describe('a claimed link is never silently unnotified', () => {
     service: ContactLinksService;
     notified: string[];
     claims: Array<{ actor: string; ownerNotified: string }>;
+    lookups: number[];
   } {
+    const lookups: number[] = [];
     const invitation = {
       id: 'i-1',
       owner_user_id: OWNER,
@@ -112,7 +119,10 @@ describe('a claimed link is never silently unnotified', () => {
       revoked_at: null,
     };
     const links = {
-      findByCode: () => Promise.resolve(invitation),
+      findByCode: () => {
+        lookups.push(1);
+        return Promise.resolve(invitation);
+      },
       countAttempt: () => Promise.resolve(),
       redeem: () => Promise.resolve(true),
     };
@@ -148,21 +158,47 @@ describe('a claimed link is never silently unnotified', () => {
       { nodeEnv: 'test' } as ProfileConfig,
       () => new Date('2026-08-06T00:00:00Z'),
     );
-    return { service, notified, claims };
+    return { service, notified, claims, lookups };
   }
 
   const REDEEMER = 'b2222222-2222-4222-8222-222222222222';
+  /**
+   * A WELL-SHAPED code, because redemption now checks the canonical length before
+   * it looks anything up. The old fixture was 'ESL1-GOOD', which the guard refuses
+   * — and the three tests below going red on that is the guard working: a fake
+   * repo will hand back an invitation for any string you ask it about, so a test
+   * that submits an implausible code proves the notify/audit ordering against a
+   * request the real service would have refused two steps earlier.
+   */
+  const CODE = 'ESL1-V0GN-0G4N-BEZB-4WN3-100G-GM2H-SVJM-1R5T';
+
+  it('refuses a wrongly-shaped submission before it looks anything up', async () => {
+    const { service, lookups, notified, claims } = buildRedeem({});
+    // 'ESL1-GOOD' is what this fixture used to submit: short enough that no mint
+    // could have produced it. The guard measures the CANONICAL form, so a body of
+    // pure separators — which satisfies RedeemLinkSchema's raw min(8) and folds to
+    // the empty string — is refused on the same terms.
+    for (const submitted of ['ESL1-GOOD', '--------']) {
+      await expect(service.redeem(REDEEMER, submitted)).rejects.toMatchObject({
+        response: { error: 'invalid_code' },
+      });
+    }
+    // Nothing was queried, nobody was notified, nothing was audited as a claim.
+    expect(lookups).toEqual([]);
+    expect(notified).toEqual([]);
+    expect(claims).toEqual([]);
+  });
 
   it('records delivered on the claim event when the owner was told', async () => {
     const { service, notified, claims } = buildRedeem({});
-    await service.redeem(REDEEMER, 'ESL1-GOOD');
+    await service.redeem(REDEEMER, CODE);
     expect(notified).toEqual([OWNER]);
     expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'delivered' }]);
   });
 
   it('records FAILED on the claim event when the send did not happen — never silence', async () => {
     const { service, claims } = buildRedeem({ notifyFails: true });
-    await service.redeem(REDEEMER, 'ESL1-GOOD'); // the link stands (M6 rule)...
+    await service.redeem(REDEEMER, CODE); // the link stands (M6 rule)...
     // ...and the non-delivery is a recorded fact an operator can re-drive from,
     // not an empty catch. The finding: a network-level failure previously left
     // NO record anywhere — no notifications-service row (never reached it), no
@@ -175,7 +211,7 @@ describe('a claimed link is never silently unnotified', () => {
     // M8 rule) — but it must not be able to cancel the owner notification,
     // because the code is spent and no retry will ever re-send it.
     const { service, notified } = buildRedeem({ auditFails: true });
-    await expect(service.redeem(REDEEMER, 'ESL1-GOOD')).rejects.toThrow('broker down');
+    await expect(service.redeem(REDEEMER, CODE)).rejects.toThrow('broker down');
     expect(notified).toEqual([OWNER]);
   });
 });
@@ -199,9 +235,27 @@ describe('a code survives being retyped by a human', () => {
     expect(canonicalCode(typed)).toBe(canonicalCode(MINTED));
   });
 
+  it('the minted code folds to exactly CANONICAL_CODE_LENGTH', () => {
+    expect(canonicalCode(MINTED)).toHaveLength(CANONICAL_CODE_LENGTH);
+    // Derived from the mint, never a hand-counted 36.
+    expect(CANONICAL_CODE_LENGTH).toBe(canonicalCode('ESL1-').length + 32);
+  });
+
+  it('submissions that fold to the wrong length are not codes at all', () => {
+    // Each satisfies RedeemLinkSchema's raw min(8) while carrying no code —
+    // separators only folds to the empty string. Redemption measures the CANONICAL
+    // form for exactly this reason, and answers the uniform `invalid_code` so the
+    // shape check is not a free oracle for the format.
+    for (const submitted of ['--------', '- - - - - - - -', 'ESL1-K7MN-QRST']) {
+      expect(canonicalCode(submitted).length).not.toBe(CANONICAL_CODE_LENGTH);
+    }
+  });
+
   it('is a strict fold onto the minted alphabet — different codes never collide', () => {
-    // The fold only maps characters the generator NEVER emits (I, L, O and case)
-    // onto ones it does, so it cannot merge two codes the mint could produce.
+    // The fold is INJECTIVE ON MINTED CODES: the `ESL1-` prefix is constant, so it
+    // folds identically for every code and distinguishes nothing, and within the
+    // 32-character body the alphabet excludes I, L, O and U so the fold is the
+    // identity. Two minted codes therefore differ in their bodies either way.
     const a = 'ESL1-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAB';
     const b = 'ESL1-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAC';
     expect(canonicalCode(a)).not.toBe(canonicalCode(b));

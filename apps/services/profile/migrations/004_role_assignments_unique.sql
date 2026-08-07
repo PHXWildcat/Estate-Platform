@@ -1,12 +1,16 @@
 -- ---------------------------------------------------------------------------
 -- 004 — one live designation per (owner, contact, role, scope, condition).
 --
--- WHY THIS IS ITS OWN FILE. It was first appended to 003, which is wrong for a
--- reason worth writing down: the migrator keys on FILENAME, so editing a file it
--- has already recorded is a change that silently never runs. Proven rather than
--- reasoned about — the local stack had 003 applied and never grew the index, so
--- a claim that the constraint was live would have been false. Migrations are
--- append-only for the same reason event tables are.
+-- WHY THIS IS ITS OWN FILE. It was first appended to 003, which is wrong — but
+-- not for the reason first written here. The migrator CHECKSUMS every applied
+-- file and raises MigrationDriftError on an edit (packages/db/src/migrator.ts),
+-- so appending to 003 fails LOUDLY on the next run rather than silently doing
+-- nothing. The original claim ("silently never runs") came from watching a
+-- container whose image still held the pre-edit 003, which is the second time in
+-- that session a stale image was mistaken for evidence. Either way migrations are
+-- append-only, and here the enforcement is real rather than conventional: even
+-- editing a COMMENT in an applied file changes its checksum and blocks the next
+-- migration until the file is restored.
 --
 -- WHAT IT FIXES. `role_assignments` had no uniqueness of any kind, so two clicks
 -- (or one click and a retry) minted two identical live designations. Nothing
@@ -19,7 +23,18 @@
 -- COALESCE on the nullable scope, because SQL uniqueness treats NULLs as
 -- distinct and `scope_id IS NULL` (the whole estate) is the commonest case —
 -- without it the constraint would permit unlimited duplicates of precisely the
--- broadest designation.
+-- broadest designation. The sentinel is the nil UUID, which no `gen_random_uuid`
+-- ever produces, so it cannot collide with a real scope.
+--
+-- THE KEY DELIBERATELY OMITS starts_at/ends_at. Two designations differing only
+-- by a time window are refused as "already granted", which is a real cost: an
+-- owner cannot pre-schedule a successor window today. That is the conservative
+-- direction — it refuses rather than permitting a shape whose overlap semantics
+-- nothing in the platform yet interprets (no resolver reads these columns except
+-- `effectiveContactReadGrants`'s single-window check). Adding windows to the key
+-- would let two OVERLAPPING windows coexist, which is worse than refusing both;
+-- proper support wants an exclusion constraint over a tstzrange, and that is a
+-- schema change with its own reasoning, not a widening of this index.
 -- ---------------------------------------------------------------------------
 
 -- PRE-FLIGHT: refuse rather than choose. The `002_dek_unique_active.sql`
@@ -49,9 +64,15 @@ BEGIN
     ) dupes;
 
   IF offending IS NOT NULL THEN
-    RAISE EXCEPTION
-      'duplicate live role_assignments exist; consolidate permission_grants onto one assignment and revoke the others through the API, then re-run:%s%s',
-      E'\n', offending;
+    -- plpgsql's placeholder is a bare `%`, not C's `%s`. The first version wrote
+    -- `%s%s` with two arguments, which plpgsql reads as placeholder-then-literal-s
+    -- twice: the list came through with stray "s" characters wedged into it. And
+    -- `%%` is an ESCAPED percent — zero placeholders — which is a hard error
+    -- ("too many parameters specified for RAISE") the moment the branch fires.
+    -- Both were caught by making the branch actually fire in a test, which is the
+    -- only way to find a bug in an error path.
+    RAISE EXCEPTION 'duplicate live role_assignments exist; consolidate permission_grants onto one assignment and revoke the others through the API, then re-run:%',
+      E'\n' || offending;
   END IF;
 END $$;
 

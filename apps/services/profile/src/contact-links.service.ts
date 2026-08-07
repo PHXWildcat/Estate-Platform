@@ -146,7 +146,14 @@ export class ContactLinksService {
       throw new ServiceUnavailableException({ error: 'notifications_unavailable' });
     }
 
-    const invitation = await this.links.findByCode(sha256(canonicalCode(code)));
+    const canonical = canonicalCode(code);
+    if (canonical.length !== CANONICAL_CODE_LENGTH) {
+      // Same uniform refusal as a wrong code, deliberately: "that is not the
+      // right SHAPE" and "that is not a live code" must stay indistinguishable,
+      // or the shape check becomes a free oracle for the format.
+      throw new BadRequestException({ error: 'invalid_code' });
+    }
+    const invitation = await this.links.findByCode(sha256(canonical));
     const now = this.clock();
     if (
       invitation === null ||
@@ -261,8 +268,17 @@ function sha256(value: string): Buffer {
  * this is a strict fold onto the minted alphabet, so it cannot make two DIFFERENT
  * codes collide — Crockford's rule, applied where it was already assumed.
  *
- * Case-folding does not cost entropy either: the generator only ever emits
- * uppercase, so the fold has no preimages the mint could have produced.
+ * PRECISELY WHY IT CANNOT COLLIDE, since an earlier version of this comment
+ * overstated it as "only maps characters the generator never emits" — false, the
+ * constant `ESL1-` prefix contains an L that the fold rewrites to 1. The correct
+ * argument is that the fold is INJECTIVE ON MINTED CODES: the prefix is the same
+ * for every code, so it folds the same way for every code and distinguishes
+ * nothing; and the 32-character body is drawn from an alphabet that excludes I,
+ * L, O and U, so within the body the fold is the identity. Two different minted
+ * codes therefore differ in their bodies before and after folding.
+ *
+ * Case-folding costs no entropy either: the generator only ever emits uppercase,
+ * so the fold has no preimages the mint could have produced.
  */
 export function canonicalCode(code: string): string {
   return code
@@ -288,6 +304,21 @@ export function canonicalCode(code: string): string {
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 export const CODE_RANDOM_BYTES = 20;
+
+/**
+ * What a minted code folds to: the constant prefix plus the derived body, both
+ * measured rather than counted by hand, and pinned by a spec against a real mint.
+ *
+ * Redemption checks THIS rather than trusting `RedeemLinkSchema`'s `min(8)`, which
+ * measures the RAW submission — so a body of nothing but separators ("--------")
+ * satisfied the schema and folded to the empty string before reaching the lookup.
+ * Not exploitable (no invitation can store an empty code, so it could never
+ * match), but a length guard that a caller can satisfy with zero characters of
+ * code is not the guard it appears to be, and the honest place to measure a
+ * canonical form is after canonicalizing.
+ */
+export const CANONICAL_CODE_LENGTH =
+  canonicalCode('ESL1-').length + (CODE_RANDOM_BYTES * 8) / 5;
 
 function readableCode(): string {
   const bytes = randomBytes(CODE_RANDOM_BYTES);

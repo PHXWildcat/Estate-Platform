@@ -1710,11 +1710,17 @@ deviating from them, stop and propose the change with rationale — do not silen
   before hashing on BOTH sides; because the fold only maps characters the
   generator never emits, it cannot make two mintable codes collide, and
   case-folding costs no entropy since the mint is uppercase-only.
-- 2026-08-06 — MIGRATIONS ARE APPEND-ONLY, PROVEN THE HARD WAY. The M13
-  duplicate-designation index was first appended to `003_contact_link_invitations.sql`,
-  a file the migrator had already recorded — and the migrator keys on FILENAME,
-  so the edit silently never runs. Caught by checking the live stack rather than
-  reasoning: 003 applied, the duplicate rows still there, no index. It is
+- 2026-08-06 — MIGRATIONS ARE APPEND-ONLY, and the enforcement is real rather
+  than conventional. The M13 duplicate-designation index was first appended to
+  `003_contact_link_invitations.sql`, a file the migrator had already recorded.
+  CORRECTED as to why that is wrong: `packages/db/src/migrator.ts` records a
+  sha256 CHECKSUM alongside every applied name and raises `MigrationDriftError`
+  on a mismatch, so appending to 003 fails LOUDLY on the next run — even editing
+  a comment in an applied file blocks the next migration until it is restored.
+  The original claim here ("keys on FILENAME, so the edit silently never runs")
+  was drawn from a container still running the pre-edit 003, the second time in
+  that session a stale image was mistaken for evidence about the code. The
+  conclusion survives; the mechanism is stricter than the doc credited. It is
   `004_role_assignments_unique.sql` now, with a pre-flight that RAISES over
   pre-existing duplicates and retires NOTHING — the `002_dek_unique_active` rule
   restated for a new case, because duplicates are identical as DESIGNATIONS but
@@ -1726,6 +1732,15 @@ deviating from them, stop and propose the change with rationale — do not silen
   and one case exists purely to catch the appended-to-003 mistake — it asserts
   the file appears in `applied` AND that the index actually exists, which is the
   pair of facts an edited-in-place migration separates.
+- 2026-08-06 — STALE ARTIFACTS ARE NOT EVIDENCE ABOUT SOURCE. Twice in the M13
+  session a conclusion about the code was drawn from something built earlier: a
+  stale `@estate/contracts` `dist` produced nine phantom test failures, and a
+  container still running a pre-edit migration produced a false claim about how
+  the migrator behaves (recorded above). Both times the artifact was the bug.
+  The rule: before believing an observation that contradicts the source, rebuild
+  or recreate the thing that produced it — `pnpm build --filter=…` for a package
+  under test, `stack:reset` for the compose stack (never `stack:down`, per the
+  2026-07-30 LocalStack entry).
 - 2026-08-06 — A TEST OF MINE WAS NAMED FOR A PROPERTY IT NEVER TOUCHED, and
   only mutation testing found it. The case "the COALESCE matters" seeded two
   whole-estate duplicates and asserted the migration refused — which passes with
@@ -1736,3 +1751,44 @@ deviating from them, stop and propose the change with rationale — do not silen
   predicate. The general rule this repo keeps relearning: when a guard exists at
   two layers, a test must say WHICH layer it is proving, and mutating that layer
   alone is how you find out whether it does.
+- 2026-08-06 — M13 review ROUND 3 ran over round 2's OWN FIXES, on the repo's
+  five-for-five expectation that new trust machinery is defective — and found
+  TWO HIGH defects, both in code written to close a finding. (1) CANCEL DID NOT
+  CANCEL: round 2 made the step-up prompt POLL (peers learn of an elevation
+  through a 30s positive session cache, so a single-shot retry left the prompt
+  idle after an accepted code), but the loop had no abort and `Cancel` only asked
+  the parent to hide it — so for up to the whole propagation budget after the
+  owner declined, the loop kept retrying and could still APPLY the action.
+  Measured, not theorised: a third `GrantRole` landed after Cancel and put an
+  `executor`/`on_death_verified` designation on the §5.1 executor-resolution
+  chain with no UI signal, because React 19 makes the post-unmount `setState` a
+  silent no-op. A step-up prompt is a CONSENT ceremony; proceeding after consent
+  is withdrawn is the one thing it must never do. Fixed with an `abandoned` ref
+  set by Cancel AND by unmount, checked in the loop condition, after the sleep,
+  and around the identity round trip, re-armed on a fresh submit. (2) THE
+  DELETE/GRANT RACE WAS STILL A RACE: round 2's single `UPDATE … WHERE NOT
+  EXISTS (…role_assignments)` reads atomically but locks the CONTACTS row, not
+  the assignments it consulted, and `grantRole` was itself check-then-act — so
+  two statements could delete a contact and name it to a role, defeating the
+  in-use refusal PR1 added. The contact row is the serialization point for both
+  paths now (`softDelete` takes `FOR UPDATE`; `RolesRepo.insertForLockedContact`
+  takes the same lock and the unlocked `insert` is deleted so nothing can skip
+  it), proven by a 5-iteration concurrent race test that fails 3/3 runs without
+  the lock. Round 3's smaller items: `permission_grants` had no uniqueness and
+  `grantPermission` was the one retried action with no in-flight guard (two
+  clicks wrote two grants, and withdrawing the visible one left the other
+  conferring the read) — closed by migration `005` plus a `busy` guard; neither
+  new 409 had a BFF mapping, so the "ordinary refusal" the migrations promised
+  surfaced as a masked server error; `FakeContactsRepo.softDelete` dropped its
+  `ownerUserId`, leaving the delete path's ONLY access control unmodelled (the
+  PEP models the resource owner as the caller there, so the repo predicate is
+  the whole check — and it must answer a uniform not-found, never a 403 that
+  would confirm the id names something); `RedeemLinkSchema`'s `min(8)` measured
+  the RAW submission, so separators alone satisfied it and folded to empty —
+  redemption measures the CANONICAL form against a length DERIVED from the mint
+  now, refusing before any lookup and with the same uniform `invalid_code`; and
+  `004`'s `RAISE` carried two bugs reachable only by making the branch fire
+  (plpgsql's placeholder is a bare `%`, so `%s%s` wedged stray "s" characters
+  into the duplicate list, and the first correction to `%%` — zero placeholders
+  — turned the branch into a hard error). AN EXCEPTION NOBODY TRIGGERS IN A
+  TEST IS AN EXCEPTION NOBODY HAS READ.

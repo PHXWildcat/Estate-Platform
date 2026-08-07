@@ -49,6 +49,10 @@ export const GQL_ERROR_CODES = [
   'INVALID_LINK_CODE',
   /** Redemption refused because the owner could not be told (M13). */
   'NOTIFICATIONS_UNAVAILABLE',
+  /** That designation is already live on that contact (M13). */
+  'ROLE_ALREADY_GRANTED',
+  /** That permission is already live on that role (M13). */
+  'PERMISSION_ALREADY_GRANTED',
 ] as const;
 
 /** Error codes the BFF contract defines. */

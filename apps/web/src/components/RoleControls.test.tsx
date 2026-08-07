@@ -299,6 +299,37 @@ describe('read failures never read as an empty estate', () => {
     expect(opNames(requests)).not.toContain('GrantRole');
   });
 
+  /**
+   * The M13 review's third round, on the fixes themselves: `grantPermission` was
+   * the one retried action with no in-flight guard, so its buttons stayed live
+   * while a request was open. Two clicks issued two writes — and before migration
+   * 005 gave `permission_grants` a uniqueness constraint, two GRANTS, of which
+   * withdrawing the one on screen left the other still conferring the read.
+   */
+  it('a second click cannot widen the same permission twice', async () => {
+    let release: () => void = () => undefined;
+    const requests = mount([EXECUTOR], [], {
+      GrantRolePermission: () =>
+        new Promise<Response>((resolve) => {
+          release = () => resolve(jsonResponse({ data: { grantRolePermission: [CONTACT_GRANT] } }));
+        }),
+    });
+    await screen.findByText(/Without a permission here/);
+    const allow = screen.getByRole('button', { name: 'Allow: Your estate contacts' });
+    fireEvent.click(allow);
+
+    // While the write is open the control is disabled, so the second click — the
+    // impatient one this defect was actually about — cannot reach the server.
+    await waitFor(() => {
+      expect(allow).toBeDisabled();
+    });
+    fireEvent.click(allow);
+    release();
+
+    expect(await screen.findByText(/Your estate contacts — Read/)).toBeInTheDocument();
+    expect(opNames(requests).filter((n) => n === 'GrantRolePermission')).toHaveLength(1);
+  });
+
   it('cancelling the code prompt leaves everything as it was', async () => {
     mount([], [], { GrantRole: () => graphqlError('STEPUP_REQUIRED') });
     await screen.findByText(/No role recorded/);

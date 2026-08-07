@@ -434,9 +434,10 @@ describeIfPg('profile & contacts service end to end', () => {
     expect(refused.status).toBe(409);
     expect(refused.body).toEqual({ error: 'contact_in_use' });
 
-    // ATOMIC, not check-then-act: the predicate is in the UPDATE's own WHERE, so
-    // a designation committed a microsecond earlier still blocks the delete. The
-    // review found the service-level check racing exactly here.
+    // SERIALIZED, not merely re-checked: both paths take `FOR UPDATE` on the
+    // contact row. The review found the previous version still racy — a
+    // `WHERE NOT EXISTS` over role_assignments locks the CONTACTS row, not the
+    // assignments it reads, and grantRole was itself check-then-act.
     const raced = await request(server)
       .post('/v1/contacts')
       .set('authorization', asUser(OWNER))
@@ -457,6 +458,35 @@ describeIfPg('profile & contacts service end to end', () => {
       [racedId],
     );
     expect((stillThere[0] as { deleted_at: Date | null }).deleted_at).toBeNull();
+
+    // THE RACE ITSELF, fired concurrently. Whichever wins, the invariant holds:
+    // never a live designation on a deleted contact. Before the lock, this
+    // interleaving produced exactly that — the docs/03 §6f fail-open.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const victim = await request(server)
+        .post('/v1/contacts')
+        .set('authorization', asUser(OWNER))
+        .send({ name: `Race Victim ${attempt}` });
+      const victimId = (victim.body as { id: string }).id;
+      await Promise.all([
+        request(server)
+          .post('/v1/role-assignments')
+          .set('authorization', asElevated(OWNER))
+          .send({ contactId: victimId, role: 'guardian', scopeType: 'estate' }),
+        request(server).delete(`/v1/contacts/${victimId}`).set('authorization', asUser(OWNER)),
+      ]);
+      const { rows } = await admin.query(
+        `SELECT c.deleted_at IS NOT NULL AS contact_gone,
+                EXISTS (SELECT 1 FROM ${schema}.role_assignments ra
+                         WHERE ra.contact_id = c.id AND ra.deleted_at IS NULL) AS has_live_role
+           FROM ${schema}.contacts c WHERE c.id = $1`,
+        [victimId],
+      );
+      const state = rows[0] as { contact_gone: boolean; has_live_role: boolean };
+      // The forbidden combination: a designation nothing can resolve, still
+      // listed, never revoked.
+      expect(state.contact_gone && state.has_live_role).toBe(false);
+    }
 
     // An unencumbered contact still deletes normally.
     const spare = await request(server)

@@ -199,11 +199,17 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
     action: string,
   ): Promise<StepUpRetryOutcome> {
     setError(null);
+    // IN-FLIGHT GUARD. This was the one retried action without one: its buttons
+    // stayed enabled, so two clicks issued two POSTs and — before migration 005 —
+    // wrote two grants, of which withdrawing the visible one left the other
+    // conferring everything.
+    setBusy(true);
     const result = await gqlRequest('GrantRolePermission', {
       roleAssignmentId,
       resource,
       action,
     });
+    setBusy(false);
     if (result.ok) {
       setStepUp(null);
       setPermissions((current) => ({
@@ -224,7 +230,9 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
 
   async function revokePermission(roleAssignmentId: string, grantId: string): Promise<void> {
     setError(null);
+    setBusy(true);
     const result = await gqlRequest('RevokeRolePermission', { roleAssignmentId, grantId });
+    setBusy(false);
     if (result.ok) {
       setPermissions((current) => ({
         ...current,
@@ -323,6 +331,7 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
                           <button
                             type="button"
                             className="btn btn-secondary"
+                            disabled={busy}
                             onClick={() => {
                               void revokePermission(entry.id, grant.id);
                             }}
@@ -341,6 +350,7 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
                         key={resource.resource}
                         type="button"
                         className="btn btn-secondary"
+                        disabled={busy}
                         onClick={() => {
                           void grantPermission(entry.id, resource.resource, 'read');
                         }}
