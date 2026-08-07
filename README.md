@@ -19,7 +19,11 @@ features, velocity, and convenience.** Start with the source-of-truth docs:
 - `packages/*` — shared internals: `crypto` (server-side envelope encryption),
   `vault-crypto` (client-side Zone A — deliberately separate), `contracts`, `db`,
   `audit-emitter`, `config`, …
-- `infra/` — Terraform, Helm, ArgoCD.
+- `infra/` — container builds and the local stack's supporting images: one
+  parameterized `node-service.Dockerfile` for every Node service plus a separate
+  `web.Dockerfile`, and the clamd signature, LocalStack provisioning and TLS
+  terminator `docker-compose.stack.yml` runs on. Terraform, Helm and ArgoCD land
+  with the deferred cloud half of M5 (see docs/04) — they are not here yet.
 
 ## Getting started
 

@@ -116,7 +116,22 @@ describe('what a linked contact can do is stated plainly', () => {
   it('says a linked person can report a death, and how to stop it', () => {
     mount(true);
     expect(screen.getByText(/able to report a death on your account/)).toBeInTheDocument();
-    expect(screen.getByText(/you can stop by signing in/)).toBeInTheDocument();
+    expect(screen.getByText(/verifying your identity from/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Security' })).toHaveAttribute('href', '/security');
+  });
+
+  /*
+   * A REGRESSION PIN, NOT A COPY TEST. Settlement reads owner liveness from
+   * identity's append-only step-up ledger, which only a verified authenticator
+   * code writes — so an ordinary sign-in does not void a death case. This copy
+   * said "a review you can stop by signing in" until 2026-08-06, which named a
+   * remedy that leaves the owner locked out on the one docs/03 §5.1 path where
+   * the copy is the whole instruction. Assert the wrong remedy is gone, so a
+   * later edit reaching for the shorter sentence fails here.
+   */
+  it('never tells the owner that signing in stops a death case', () => {
+    mount(true);
+    expect(screen.queryByText(/signing in/i)).not.toBeInTheDocument();
   });
 
   it('says an unlinked person cannot use anything granted to them', () => {

@@ -1,0 +1,72 @@
+// Renovate configuration.
+//
+// JSON5 rather than JSON so the reasoning lives next to the setting, as it does
+// everywhere else in this repo.
+//
+// This file does nothing until the Renovate GitHub App is installed on the
+// repository — adding it is the code half of a decision that also needs an
+// install. See the PR that introduced it.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  extends: [
+    'config:recommended',
+
+    // BASE-IMAGE DIGEST PINNING — the follow-up named in
+    // .github/scripts/gate-image-scan.mjs, and the resolution of the M5
+    // decision that bases are tag-pinned "because an unrefreshable
+    // hand-written digest rots into an unpatchable base". The objection was
+    // never to digests; it was to digests nobody refreshes.
+    //
+    // Enabling it here is SAFE BY CONSTRUCTION: a digest can only appear via a
+    // Renovate PR, which means Renovate is running, which means the digest is
+    // being refreshed. It is not possible for this setting to strand a pinned
+    // digest behind an absent bot — the floating tag survives until the day
+    // something is actively maintaining the pin.
+    'docker:pinDigests',
+  ],
+
+  // One weekly window, ahead of the scheduled image rebuild in
+  // .github/workflows/images.yml (Mondays 09:17 UTC) so a base bump merged from
+  // the dashboard is picked up by that same day's rebuild.
+  schedule: ['before 6am on monday'],
+  timezone: 'Etc/UTC',
+
+  // Nothing automerges. Every dependency change is a reviewed commit here, and
+  // that includes the ones a bot proposes.
+  automerge: false,
+  prConcurrentLimit: 5,
+  labels: ['dependencies'],
+
+  // A published advisory is not a weekly-cadence event.
+  vulnerabilityAlerts: {
+    enabled: true,
+    schedule: ['at any time'],
+    labels: ['dependencies', 'security'],
+  },
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ['before 6am on the first day of the month'],
+  },
+
+  packageRules: [
+    {
+      // One PR for all container bases, because they are reviewed and rebuilt
+      // together: a bump is only meaningful once the images.yml matrix has
+      // rebuilt and re-scanned every image against it.
+      matchManagers: ['dockerfile', 'docker-compose'],
+      groupName: 'container base images',
+    },
+    {
+      // Held back deliberately: the runtime is pinned to Node 22 across the
+      // Dockerfiles, package.json engines and the CI setup-node steps, and
+      // moving it is a decision with an ABI dimension — @node-rs/argon2 ships a
+      // prebuilt binary whose glibc/ABI must match the distroless base (M5).
+      // Patch and minor bumps are welcome; a major is a task, not a PR to merge.
+      matchPackageNames: ['node', 'gcr.io/distroless/nodejs22-debian12'],
+      matchUpdateTypes: ['major'],
+      enabled: false,
+    },
+  ],
+}

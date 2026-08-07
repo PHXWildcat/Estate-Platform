@@ -17,12 +17,31 @@ on:
   push:
     branches: [main, 'claude/**']
   pull_request:
+  # THE MISSING HALF OF THE SCAN GATE'S COMPENSATING CONTROL.
+  #
+  # .github/scripts/gate-image-scan.mjs deliberately does NOT block on
+  # base-image findings — a distroless image has no package manager, so the fix
+  # belongs to the base vendor and blocking on their cadence yields a
+  # permanently red pipeline people learn to ignore. What it names in exchange
+  # is that "images rebuild from a floating patch tag on every CI run", which on
+  # a week with no pushes means never. This rebuilds from the current base tags
+  # and re-scans on a schedule, so a patched base lands — and a newly disclosed
+  # base CVE appears in the job summary — without waiting for someone to commit.
+  schedule:
+    - cron: '17 9 * * 1'
+  # So the rebuild can also be triggered by hand after an advisory, rather than
+  # by pushing an empty commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: images-${{ github.ref }}
+  # Keyed by EVENT as well as ref. The weekly rebuild and a push to main share
+  # `refs/heads/main`, so with cancel-in-progress a coinciding push would
+  # silently kill the scheduled run — the one nobody is watching for, and the
+  # only one that exists to catch a base-image CVE on a quiet week.
+  group: images-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
