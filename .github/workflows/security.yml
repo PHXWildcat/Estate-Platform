@@ -6,6 +6,27 @@ on:
   pull_request:
   schedule:
     - cron: '0 6 * * *' # daily sweep so new advisories surface without a push
+  # The scheduled sweep is a DIFFERENT SCAN from the push one (see
+  # .gitleaksignore's header for the mechanism), and until this trigger existed
+  # it could only be exercised by waiting for 06:00 UTC. That latency is how the
+  # sweep came to fail SEVENTEEN CONSECUTIVE RUNS — every scheduled run that has
+  # ever executed, 2026-07-22 through 2026-08-07, never once green — on a finding
+  # remediated in the tree the day after it was introduced.
+  #
+  # DISPATCH ON `main` IS THE REHEARSAL; a dispatch on any other ref is not.
+  # The scan walks the SELECTED ref's history and reads the SELECTED ref's
+  # `.gitleaksignore`, while the schedule only ever runs on main — so a green
+  # dispatch on a feature branch is evidence about that branch and nothing else.
+  # Also note this trigger is inert until it is on the DEFAULT branch, so the
+  # commit that adds it cannot verify itself: merge, then dispatch against main,
+  # then read the result.
+  #
+  # WHY THIS FILE HAS NO `concurrency:` BLOCK, unlike the other three workflows:
+  # a dispatch and the nightly schedule both resolve to refs/heads/main, so
+  # copying ci.yml's `cancel-in-progress: true` here would let a coinciding push
+  # silently kill a full-history scan — the failure images.yml wrote its own
+  # comment to prevent. The absence is deliberate.
+  workflow_dispatch:
 
 permissions:
   contents: read
