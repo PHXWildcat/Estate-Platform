@@ -378,3 +378,21 @@ jobs:
         run: |
           docker compose --env-file .env.stack -f docker-compose.stack.yml \
             --profile bootstrap --profile services --profile plaid --profile edge down -v || true
+
+  # Same reasoning as security.yml: the weekly rebuild exists precisely so a
+  # patched base image lands without anyone pushing, which means nobody is
+  # watching when it breaks.
+  notify-on-failure:
+    needs: [build, stack-from-images]
+    if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/notify-failure.yml
+    permissions:
+      issues: write
+    with:
+      workflow: Images
+      details: >-
+        The weekly rebuild re-pulls the floating base tags and re-scans, so a
+        failure here is usually either a newly disclosed CVE in our own npm tree
+        (the only class that blocks — base-image findings go to the job summary)
+        or the stack failing to come up from the built images. The Diagnostics
+        step dumps every exited container in full; start there.
