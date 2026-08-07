@@ -1698,3 +1698,29 @@ deviating from them, stop and propose the change with rationale — do not silen
   before hashing on BOTH sides; because the fold only maps characters the
   generator never emits, it cannot make two mintable codes collide, and
   case-folding costs no entropy since the mint is uppercase-only.
+- 2026-08-06 — MIGRATIONS ARE APPEND-ONLY, PROVEN THE HARD WAY. The M13
+  duplicate-designation index was first appended to `003_contact_link_invitations.sql`,
+  a file the migrator had already recorded — and the migrator keys on FILENAME,
+  so the edit silently never runs. Caught by checking the live stack rather than
+  reasoning: 003 applied, the duplicate rows still there, no index. It is
+  `004_role_assignments_unique.sql` now, with a pre-flight that RAISES over
+  pre-existing duplicates and retires NOTHING — the `002_dek_unique_active` rule
+  restated for a new case, because duplicates are identical as DESIGNATIONS but
+  not as ROWS: `permission_grants.role_assignment_id` references the row, so
+  retiring the spare would silently revoke every grant hanging off it, and a
+  migration must never choose which access dies. The runbook is in the file:
+  consolidate the grants, revoke the other assignment through the API (which
+  audits it), re-run. `role-unique-migration.int.spec.ts` pins both properties,
+  and one case exists purely to catch the appended-to-003 mistake — it asserts
+  the file appears in `applied` AND that the index actually exists, which is the
+  pair of facts an edited-in-place migration separates.
+- 2026-08-06 — A TEST OF MINE WAS NAMED FOR A PROPERTY IT NEVER TOUCHED, and
+  only mutation testing found it. The case "the COALESCE matters" seeded two
+  whole-estate duplicates and asserted the migration refused — which passes with
+  or without the COALESCE, because the pre-flight's `GROUP BY` treats NULLs as
+  equal while a `UNIQUE INDEX` does not. Two mechanisms, one test, wrong one
+  exercised. Rewritten to migrate a CLEAN database and then ask Postgres to
+  accept the duplicate, which is the only path through the index's own
+  predicate. The general rule this repo keeps relearning: when a guard exists at
+  two layers, a test must say WHICH layer it is proving, and mutating that layer
+  alone is how you find out whether it does.

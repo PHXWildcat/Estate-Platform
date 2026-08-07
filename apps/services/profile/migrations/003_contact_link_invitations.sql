@@ -75,27 +75,3 @@ CREATE UNIQUE INDEX ux_contact_link_invitations_live
 
 CREATE INDEX ix_contact_link_invitations_owner
   ON contact_link_invitations (owner_user_id);
-
--- ---------------------------------------------------------------------------
--- One live designation per (owner, contact, role, scope, condition).
---
--- `role_assignments` had no uniqueness of any kind, so two clicks — or one click
--- and one retry — minted two identical live executor designations. Nothing
--- downstream breaks (every resolver uses EXISTS/LIMIT 1), which is exactly why it
--- would have gone unnoticed: the owner's own People page would show the same
--- fiduciary twice, and revoking "the" designation would leave the duplicate
--- conferring everything it conferred before. For a record on the docs/03 §5.1
--- executor-resolution chain, "revoked" must mean revoked.
---
--- COALESCE on the nullable scope, because SQL uniqueness treats NULLs as
--- distinct and `scope_id IS NULL` (the whole estate) is the commonest case —
--- without it the constraint would permit unlimited duplicates of precisely the
--- broadest designation.
--- ---------------------------------------------------------------------------
-CREATE UNIQUE INDEX ux_role_assignments_live
-  ON role_assignments (
-    owner_user_id, contact_id, role, scope_type,
-    COALESCE(scope_id, '00000000-0000-0000-0000-000000000000'::uuid),
-    effective_condition
-  )
-  WHERE deleted_at IS NULL;

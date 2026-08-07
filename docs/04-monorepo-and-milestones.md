@@ -2613,9 +2613,31 @@ mean revoked. Closed with a partial unique index (COALESCE'd scope, because SQL
 uniqueness treats NULLs as distinct and whole-estate is the commonest case) and a
 `409 role_already_granted`.
 
+**And the duplicate-designation fix produced a second finding on its own.** The
+index was first APPENDED TO 003, a migration the migrator had already recorded —
+and it keys on FILENAME, so the edit silently never runs. Proven rather than
+reasoned about: the local stack had 003 applied, the duplicate rows still sitting
+there, and no index. It is `004_role_assignments_unique.sql` now, with a
+pre-flight that RAISES over pre-existing duplicates and retires nothing — the
+`002_dek_unique_active` rule, for the same reason: duplicates are identical as
+designations but not as rows, and `permission_grants.role_assignment_id`
+references the row, so retiring the spare would silently revoke every grant
+hanging off it. `role-unique-migration.int.spec.ts` covers both properties, and
+one of its cases exists specifically to catch the appended-to-003 mistake (it
+asserts the file appears in `applied` AND that the index really exists).
+
+**One of those tests was itself vacuous, and mutation caught it.** A case named
+"the COALESCE matters" seeded two whole-estate duplicates and asserted the
+migration refused — which passes with or without the COALESCE, because the
+pre-flight's `GROUP BY` treats NULLs as equal while a `UNIQUE INDEX` does not. It
+was named for a property it never touched. Rewritten to migrate a CLEAN database
+and then ask Postgres to accept the duplicate, which is the only way to exercise
+the index's own predicate.
+
 Every fix is mutation-proven: restoring the old notify ordering, folding the
 permission retry back into the role variant, dropping the atomic `NOT EXISTS`,
-and dropping the unique index each turn the suite red. Docs/03 §6f and §6g
+dropping the unique index, dropping the COALESCE, removing the pre-flight, and
+re-appending the index to 003 each turn the suite red. Docs/03 §6f and §6g
 updated, including the family-list narrowing recorded as a deliberate scope-down
 rather than an omission.
 
