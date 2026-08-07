@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
 import { messageFor } from '../lib/copy';
@@ -106,10 +107,23 @@ export function ContactLinkControls({
 
       {linked === true ? (
         <>
+          {/*
+           * SAFETY COPY ABOUT THE §5.1 RESCUE PATH, so it has to name the action
+           * that actually works. Signing in does NOT stop a death case: liveness
+           * is read from identity's append-only step-up ledger, and only a
+           * verified authenticator code writes `stepup.granted` there. An
+           * ordinary session — however fresh — proves nothing, and a case
+           * survives it. Step-up verification is on the Security page, so point
+           * there rather than implying a remedy that leaves the owner locked out.
+           */}
           <p className="mt-1 max-w-prose text-sm text-ink-muted">
             {contactName} has an account linked, so any role you give them can actually be used —
-            and they are able to report a death on your account, which starts a review you can stop
-            by signing in.
+            and they are able to report a death on your account. That starts a review with a waiting
+            period, and verifying your identity from{' '}
+            <Link href="/security" className="text-accent underline underline-offset-2">
+              Security
+            </Link>{' '}
+            cancels it.
           </p>
           <div className="mt-3">
             <button
