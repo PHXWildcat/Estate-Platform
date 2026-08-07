@@ -89,14 +89,56 @@ export class ContactsRepo {
     return rows.length > 0;
   }
 
-  async softDelete(id: string, ownerUserId: string): Promise<boolean> {
-    const rows = await this.db.query<{ id: string }>(
-      `UPDATE contacts SET deleted_at = now()
-        WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
-        RETURNING id`,
-      [id, ownerUserId],
-    );
-    return rows.length > 0;
+  /**
+   * Soft-delete, REFUSING if a live role assignment names this contact — and
+   * serialized against `grantRole` on the CONTACT ROW.
+   *
+   * TWO WRONG VERSIONS PRECEDED THIS ONE, which is why the reasoning is spelled
+   * out. First the check lived in the service, plainly check-then-act. Then it
+   * moved into this UPDATE's `WHERE` and was declared atomic — but a `WHERE NOT
+   * EXISTS` over `role_assignments` locks the CONTACTS row, not the assignments
+   * it reads, and the counterparty (`RolesService.grantRole`) was itself
+   * check-then-act across two autocommit statements. Under concurrency the
+   * interleaving still deleted a contact that had just acquired a designation:
+   * the docs/03 §6f fail-open, with three places claiming it was closed.
+   *
+   * So both paths now take the same lock: `SELECT ... FOR UPDATE` on the contact
+   * row inside one transaction. `grantRole` locks it before inserting an
+   * assignment; this locks it before checking for assignments and deleting. Two
+   * writers contending for one row is the only thing that actually orders them —
+   * the same reason M7's owner-liveness interlock takes the users row lock.
+   *
+   * The discriminated outcome keeps "nothing to delete" (404) apart from "a
+   * designation stands in the way" (409): different facts, different remedies.
+   * Both are now decided INSIDE the transaction, so the answer cannot describe a
+   * world that stopped existing between two statements.
+   */
+  async softDelete(id: string, ownerUserId: string): Promise<'deleted' | 'in_use' | 'not_found'> {
+    return this.db.withTransaction(ownerUserId, async (tx) => {
+      // The lock. A concurrent grantRole for this contact blocks here (or we
+      // block on it), so exactly one of the two decides first and the other sees
+      // the committed result.
+      const locked = await tx.query<{ id: string }>(
+        `SELECT id FROM contacts
+          WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+          FOR UPDATE`,
+        [id, ownerUserId],
+      );
+      if (locked.length === 0) {
+        return 'not_found';
+      }
+      const live = await tx.query<{ id: string }>(
+        `SELECT 1 AS id FROM role_assignments
+          WHERE contact_id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+          LIMIT 1`,
+        [id, ownerUserId],
+      );
+      if (live.length > 0) {
+        return 'in_use';
+      }
+      await tx.query(`UPDATE contacts SET deleted_at = now() WHERE id = $1`, [id]);
+      return 'deleted';
+    });
   }
 
   async findById(id: string): Promise<ContactRow | null> {

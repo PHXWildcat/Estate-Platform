@@ -136,7 +136,7 @@ unreadable bytes with a live key id.
 Contacts and family members keep replace semantics: their reads return every
 field they store, so a client can round-trip them.
 
-### The contact link has no write path here
+### The contact link has exactly ONE write path (M13 PR3)
 
 `contacts.linked_user_id` is an authorization edge — it is what makes someone
 able to open a death case (docs/03 §6b) and what makes an executor resolvable
@@ -145,6 +145,28 @@ the type both the INSERT and the UPDATE are built from, has no such key. Before
 M13 PR1 one `encryptRow` hardcoded `linked_user_id: null` and fed both
 statements, so editing a phone number revoked a §5.1 control with no audit event
 and no owner decision.
+
+The one writer is the **link ceremony** (`contact-links.*`): the owner mints a
+single-use 160-bit code under step-up, the server keeps only its sha256, the
+owner delivers it out of band, and the contact redeems it on their own existing
+account. Nothing here ever handles an address (M9's doctrine), the code is the
+only selector on redemption (docs/03 §6b's anti-enumeration property), and every
+failed redemption is one uniform `invalid_code`. Full rationale and the accepted
+residuals: docs/03 §6g.
+
+| Method & path | Purpose | AuthZ |
+| --- | --- | --- |
+| `POST /v1/contacts/:id/link-invitation` | Mint a single-use code (returned ONCE) | owner + **step-up** |
+| `DELETE /v1/contacts/:id/link-invitation` | Withdraw an unredeemed code | owner |
+| `DELETE /v1/contacts/:id/link` | Remove a live link | owner |
+| `POST /v1/contact-links/redeem` | Redeem, as the person being linked | the CODE (see §6g) |
+
+`POST /v1/contact-links/redeem` is the one route in this service that takes no
+Cedar decision — a flagged deviation, not an omission: the redeemer has no
+relationship to the estate until it succeeds, so the authority is the capability.
+It also refuses in production behind a notifier that reaches nobody (503
+`notifications_unavailable`), because a claim the owner never hears about is how
+a mis-delivered code becomes an invisible authorization edge.
 
 ## Environment variables
 

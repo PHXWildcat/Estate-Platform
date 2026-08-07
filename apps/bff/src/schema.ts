@@ -27,6 +27,7 @@ import type {
   ContactInput,
   ContactSummary,
   FamilyMember,
+  LinkInvitation,
   FamilyMemberInput,
   PermissionGrant,
   Profile,
@@ -431,6 +432,18 @@ export const typeDefs = /* GraphQL */ `
     endsAt: String
   }
 
+  """
+  A minted link invitation.
+
+  'code' is the ONLY time this value exists outside the owner's own head: the
+  service keeps its sha256 and cannot re-show it. A client that loses it must
+  mint another, which retires this one.
+  """
+  type LinkInvitation {
+    code: String!
+    expiresAt: String!
+  }
+
   "One live permission grant attached to a role assignment."
   type PermissionGrant {
     id: ID!
@@ -712,6 +725,26 @@ export const typeDefs = /* GraphQL */ `
     never be harder than the permissive one. Returns the remaining grants.
     """
     revokeRolePermission(roleAssignmentId: ID!, grantId: ID!): [PermissionGrant!]!
+    """
+    Mint a single-use code that lets one person link their existing account to
+    this contact. STEP-UP GATED downstream: a linked contact can open a death
+    case against the owner (docs/03 §6b), so handing out the capability is in the
+    same class as naming a fiduciary.
+
+    The owner delivers the code out of band — the platform never emails it, and
+    nothing here handles an address.
+    """
+    inviteContactLink(contactId: ID!): LinkInvitation!
+    "Withdraw an unredeemed code. No step-up: it only takes capability away."
+    revokeContactLinkInvitation(contactId: ID!): Ok!
+    "Remove a live link. No step-up, for the same reason."
+    unlinkContact(contactId: ID!): Ok!
+    """
+    Redeem a code, as the person being linked. Takes NO id of any kind — the code
+    is the whole request, so there is no parameter in which to name an account
+    and therefore no way to learn whether one exists. Every failure is one code.
+    """
+    redeemContactLink(code: String!): Ok!
   }
 `;
 
@@ -1423,6 +1456,35 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
             action: args.action,
           });
           return profile.permissions(token, args.roleAssignmentId);
+        },
+        inviteContactLink: async (
+          _parent: unknown,
+          args: { contactId: string },
+          ctx: RequestContext,
+        ): Promise<LinkInvitation> => profile.inviteLink(requireAccessToken(ctx), args.contactId),
+        revokeContactLinkInvitation: async (
+          _parent: unknown,
+          args: { contactId: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await profile.revokeLinkInvitation(requireAccessToken(ctx), args.contactId);
+          return OK;
+        },
+        unlinkContact: async (
+          _parent: unknown,
+          args: { contactId: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await profile.unlink(requireAccessToken(ctx), args.contactId);
+          return OK;
+        },
+        redeemContactLink: async (
+          _parent: unknown,
+          args: { code: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await profile.redeemLink(requireAccessToken(ctx), args.code);
+          return OK;
         },
         revokeRolePermission: async (
           _parent: unknown,

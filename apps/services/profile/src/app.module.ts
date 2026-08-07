@@ -13,16 +13,21 @@ import { AwsKmsProvider } from '@estate/kms-aws';
 import { CallerGuard, HttpSessionVerifier, SESSION_VERIFIER } from '@estate/auth-guard';
 import type { PoolConfig } from 'pg';
 import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
+import { HttpNotificationsClient } from '@estate/notifications-client';
 import { ProfileAuthz } from './authz.service';
 import { loadConfig, type ProfileConfig } from './config';
 import { ContactsController } from './contacts.controller';
 import { ContactsRepo } from './contacts.repo';
 import { ContactsService } from './contacts.service';
+import { ContactLinksController } from './contact-links.controller';
+import { ContactLinksRepo } from './contact-links.repo';
+import { ContactLinksService } from './contact-links.service';
 import { Db } from './db';
 import { PgDekRepository } from './dek.repository';
 import {
   AUDIT_PRODUCER,
   CLOCK,
+  LINK_NOTIFIER,
   CONFIG,
   DEK_REPOSITORY,
   FIELD_CRYPTO,
@@ -30,6 +35,7 @@ import {
   POLICY_DECISION_POINT,
 } from './di-tokens';
 import { EventsService } from './events.service';
+import { HttpLinkNotifier, StubLinkNotifier, type LinkNotificationPort } from './notifications';
 import { FamilyRepo } from './family.repo';
 import { FamilyService } from './family.service';
 import { FieldCipher } from './field-cipher';
@@ -58,7 +64,7 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
 }
 
 @Module({
-  controllers: [ProfileController, ContactsController, RolesController],
+  controllers: [ProfileController, ContactsController, RolesController, ContactLinksController],
   providers: [
     { provide: CONFIG, useFactory: (): ProfileConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -71,6 +77,28 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
     },
     Db,
     PgDekRepository,
+    ContactLinksRepo,
+    ContactLinksService,
+    /*
+     * The owner-notification adapter for the link ceremony. Production pins
+     * 'http' in config, so the stub can never be selected there — and the
+     * redemption route additionally refuses behind an adapter whose
+     * `deliversToRealChannels` is false, which is what makes the notification a
+     * precondition rather than a side effect (the M6/M9 rule).
+     */
+    {
+      provide: LINK_NOTIFIER,
+      inject: [CONFIG],
+      useFactory: (config: ProfileConfig): LinkNotificationPort =>
+        config.notify.mode === 'http'
+          ? new HttpLinkNotifier(
+              new HttpNotificationsClient({
+                notificationsUrl: config.notificationsUrl,
+                serviceCredential: config.notificationsInternalToken,
+              }),
+            )
+          : new StubLinkNotifier(),
+    },
     { provide: DEK_REPOSITORY, useExisting: PgDekRepository },
     {
       provide: AUDIT_PRODUCER,

@@ -46,6 +46,20 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // deleting a contact used to retire its fiduciary roles silently.
   CONTACT_IN_USE:
     'This person still holds a role in your estate. Remove their roles first, then you can delete them.',
+  ALREADY_LINKED:
+    'This person already has an account linked to them. Remove that link first if you need to invite someone else.',
+  // ONE sentence for every reason a code fails — unknown, expired, already used,
+  // withdrawn. Telling them apart would confirm to whoever is holding a guess
+  // that it named something real, so the remedy offered is the safe one: ask
+  // for a new code. The cost is a vaguer message for an honest user.
+  INVALID_LINK_CODE:
+    'That code wasn’t accepted. Codes are single-use and expire after seven days — ask for a fresh one.',
+  NOTIFICATIONS_UNAVAILABLE:
+    'We can’t reach the owner to tell them about this right now, so we haven’t made the change. Please try again shortly.',
+  // The two "already done" conflicts. Neither is the user's mistake — a double
+  // click or a retry reaches them — so the copy states the outcome and stops.
+  ROLE_ALREADY_GRANTED: 'This person already holds that exact role in your estate.',
+  PERMISSION_ALREADY_GRANTED: 'That role is already allowed to read that.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

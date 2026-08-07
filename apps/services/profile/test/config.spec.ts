@@ -56,6 +56,11 @@ describe('config validation', () => {
     AWS_KMS_KEY_ID: 'alias/estate-core-kek',
     AWS_REGION: 'us-east-1',
     IDENTITY_URL: 'https://identity.internal',
+    // M13: production pins the real notification adapter, because link
+    // redemption refuses behind one that reaches nobody.
+    NOTIFY_MODE: 'http',
+    NOTIFICATIONS_URL: 'https://notifications.internal',
+    NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(32),
   };
 
   it('production REQUIRES IDENTITY_URL (cross-service session verification)', () => {
@@ -152,6 +157,47 @@ describe('config validation', () => {
       endpoint: null,
     });
     expect(config.identityUrl).toBe('https://identity.internal');
+    expect(config.notify.mode).toBe('http');
+  });
+
+  describe('the M13 notification precondition', () => {
+    it('refuses the stub notifier in production, by NAMING it', () => {
+      // Naming the stub rather than requiring 'http' is the M10 rule: a third
+      // mode added later must not be silently admitted to production.
+      expect(() =>
+        loadConfig(
+          validEnv({
+            ...PROD_KMS,
+            NODE_ENV: 'production',
+            KAFKA_BROKERS: 'k1:9092',
+            NOTIFY_MODE: 'stub',
+          }),
+        ),
+      ).toThrow(ConfigError);
+    });
+
+    it('requires a URL whenever the http adapter is selected, in ANY environment', () => {
+      expect(() => loadConfig(validEnv({ NOTIFY_MODE: 'http' }))).toThrow(ConfigError);
+    });
+
+    it('requires a real-length credential in production', () => {
+      expect(() =>
+        loadConfig(
+          validEnv({
+            ...PROD_KMS,
+            NODE_ENV: 'production',
+            KAFKA_BROKERS: 'k1:9092',
+            NOTIFICATIONS_INTERNAL_TOKEN: 'too-short',
+          }),
+        ),
+      ).toThrow(ConfigError);
+    });
+
+    it('defaults to the stub outside production, with no credential needed', () => {
+      const config = loadConfig(validEnv());
+      expect(config.notify.mode).toBe('stub');
+      expect(config.notificationsInternalToken).toBe('');
+    });
   });
 
   it('error messages carry issue paths, never env values', () => {

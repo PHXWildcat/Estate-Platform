@@ -2,7 +2,7 @@
   "name": "@estate/service-profile",
   "version": "0.0.1",
   "private": true,
-  "description": "Profile & Contacts service: user profile PII, estate contacts, relationship graph, role assignments + granular permission grants. Owns the core cluster; first Cedar PEP wiring (docs/01 §2.2, §5). Field-level encrypted, deny-by-default.",
+  "description": "Profile & Contacts service: user profile PII, estate contacts, relationship graph, role assignments + granular permission grants. Owns the core cluster; first Cedar PEP wiring (docs/01 \u00a72.2, \u00a75). Field-level encrypted, deny-by-default.",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -20,6 +20,7 @@
     "@estate/db": "workspace:*",
     "@estate/kafka": "workspace:*",
     "@estate/kms-aws": "workspace:*",
+    "@estate/notifications-client": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",

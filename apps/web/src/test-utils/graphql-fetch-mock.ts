@@ -18,7 +18,13 @@ export function jsonResponse(payload: unknown, ok = true): Response {
   return { ok, json: () => Promise.resolve(payload) } as unknown as Response;
 }
 
-export type OperationHandler = (variables: unknown) => Response;
+/**
+ * A handler may return a PROMISE, which is how a test holds a request open: an
+ * in-flight guard only exists between dispatch and resolution, so proving one
+ * needs a response the test releases itself. `Promise.resolve` below already
+ * accepted either; only the type was narrower than the mock.
+ */
+export type OperationHandler = (variables: unknown) => Response | Promise<Response>;
 
 /**
  * Installs a fetch mock that dispatches to per-operation handlers

@@ -436,6 +436,13 @@ services:
       EMAIL_INDEX_KEY_HEX: ${PROFILE_EMAIL_INDEX_KEY_HEX}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
+      # M13: profile's FIRST outbound credential and first non-identity peer. It
+      # tells an owner when somebody claimed a link to one of their contacts —
+      # the SEND surface only, so it can never repoint where alerts go (the M9
+      # review's split).
+      NOTIFY_MODE: ${PROFILE_NOTIFY_MODE}
+      NOTIFICATIONS_URL: http://notifications:3008
+      NOTIFICATIONS_INTERNAL_TOKEN: ${PROFILE_NOTIFICATIONS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck

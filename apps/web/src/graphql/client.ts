@@ -43,6 +43,16 @@ export const GQL_ERROR_CODES = [
   'SCAN_UNAVAILABLE',
   /** A live role assignment still names this contact. Revoke it first (M13). */
   'CONTACT_IN_USE',
+  /** The contact already has an account linked (M13). */
+  'ALREADY_LINKED',
+  /** A link code was refused — one code for every reason, by design (M13). */
+  'INVALID_LINK_CODE',
+  /** Redemption refused because the owner could not be told (M13). */
+  'NOTIFICATIONS_UNAVAILABLE',
+  /** That designation is already live on that contact (M13). */
+  'ROLE_ALREADY_GRANTED',
+  /** That permission is already live on that role (M13). */
+  'PERMISSION_ALREADY_GRANTED',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -483,6 +493,22 @@ interface OperationSignatures {
   RevokeRolePermission: {
     variables: { roleAssignmentId: string; grantId: string };
     data: { revokeRolePermission: PermissionGrantInfo[] };
+  };
+  InviteContactLink: {
+    variables: { contactId: string };
+    data: { inviteContactLink: { code: string; expiresAt: string } };
+  };
+  RevokeContactLinkInvitation: {
+    variables: { contactId: string };
+    data: { revokeContactLinkInvitation: { ok: boolean } };
+  };
+  UnlinkContact: {
+    variables: { contactId: string };
+    data: { unlinkContact: { ok: boolean } };
+  };
+  RedeemContactLink: {
+    variables: { code: string };
+    data: { redeemContactLink: { ok: boolean } };
   };
   DocumentVersions: {
     variables: { documentId: string };

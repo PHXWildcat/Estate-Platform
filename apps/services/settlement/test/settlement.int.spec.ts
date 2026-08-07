@@ -141,6 +141,13 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       '001_settlement_schema.sql',
       '002_dek_unique_active.sql',
       '002_settlement_admin.sql',
+      // Profile's M13 migrations. Listed here because the two co-tenants SHARE
+      // `schema_migrations` (the 2026-07-22 Plaid-precedent decision): this
+      // assertion is what proves the sharing still works, so a co-owner's
+      // migration landing is exactly what it should notice.
+      '003_contact_link_invitations.sql',
+      '004_role_assignments_unique.sql',
+      '005_permission_grants_unique.sql',
     ]);
   });
 

@@ -1,7 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { coreResource, ProfileAuthz } from './authz.service';
+import { isUniqueViolation } from './db';
 import { EventsService } from './events.service';
-import { PermissionGrantsRepo, RolesRepo, type RoleAssignmentRow } from './roles.repo';
+import {
+  ContactUnavailableError,
+  PermissionGrantsRepo,
+  RolesRepo,
+  type RoleAssignmentRow,
+} from './roles.repo';
 import type { PermissionGrantInput, RoleAssignmentInput } from './schemas';
 
 export interface RoleAssignmentView {
@@ -45,16 +51,42 @@ export class RolesService {
       'manage',
       coreResource('RoleAssignment', callerUserId, callerUserId),
     );
-    const id = await this.roles.insert({
-      ownerUserId: callerUserId,
-      contactId: input.contactId,
-      role: input.role,
-      scopeType: input.scopeType,
-      scopeId: input.scopeId ?? null,
-      effectiveCondition: input.effectiveCondition,
-      startsAt: input.startsAt ? new Date(input.startsAt) : null,
-      endsAt: input.endsAt ? new Date(input.endsAt) : null,
-    });
+    // THE CONTACT CHECK AND THE INSERT SHARE ONE TRANSACTION AND ONE LOCK. The
+    // named contact must be the CALLER'S and live — the FK proves only that some
+    // contact exists — and without holding the contact row while inserting, this
+    // is check-then-act: a concurrent `remove` could soft-delete the contact
+    // between the two, leaving a live designation on a deleted contact, which is
+    // exactly the docs/03 §6f fail-open (the executor stops resolving, grants
+    // stop being effective, the assignment is still listed, no `role.revoked` is
+    // emitted). `ContactsRepo.softDelete` takes the same lock, so the two order
+    // against each other rather than racing.
+    //
+    // Uniform not_found: a foreign contact id must read exactly like a wrong one.
+    let id: string;
+    try {
+      id = await this.roles.insertForLockedContact({
+        ownerUserId: callerUserId,
+        contactId: input.contactId,
+        role: input.role,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId ?? null,
+        effectiveCondition: input.effectiveCondition,
+        startsAt: input.startsAt ? new Date(input.startsAt) : null,
+        endsAt: input.endsAt ? new Date(input.endsAt) : null,
+      });
+    } catch (err) {
+      if (err instanceof ContactUnavailableError) {
+        throw new NotFoundException({ error: 'not_found' });
+      }
+      if (isUniqueViolation(err)) {
+        // The partial unique index refusing a second identical live designation.
+        // A 409 rather than a 500 because it is an ordinary outcome of a double
+        // click or a retry, and rather than a silent success because the caller
+        // asked to create something and nothing was created.
+        throw new ConflictException({ error: 'role_already_granted' });
+      }
+      throw err;
+    }
     await this.events.roleGranted(callerUserId, id, {
       role: input.role,
       scopeType: input.scopeType,
@@ -76,12 +108,23 @@ export class RolesService {
     if (!ra || ra.owner_user_id !== callerUserId) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    const id = await this.grants.insert(
-      roleAssignmentId,
-      input.resource,
-      input.action,
-      input.constraintExpr ?? null,
-    );
+    let id: string;
+    try {
+      id = await this.grants.insert(
+        roleAssignmentId,
+        input.resource,
+        input.action,
+        input.constraintExpr ?? null,
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        // Migration 005's partial unique index. A double click is an ordinary
+        // refusal, not a 500 and not a silent second row that would survive the
+        // owner withdrawing the grant they can see.
+        throw new ConflictException({ error: 'permission_already_granted' });
+      }
+      throw err;
+    }
     await this.events.permissionGranted(callerUserId, id, {
       resource: input.resource,
       action: input.action,

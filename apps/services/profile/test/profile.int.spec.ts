@@ -8,7 +8,7 @@
  */
 import 'reflect-metadata';
 import type { Server } from 'node:http';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
@@ -18,6 +18,7 @@ import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@es
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { canonicalCode } from '../src/contact-links.service';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
@@ -89,6 +90,7 @@ describeIfPg('profile & contacts service end to end', () => {
       const { applied } = await migrator.migrate();
       expect(applied).toContain('001_core_schema.sql');
       expect(applied).toContain('002_dek_unique_active.sql');
+      expect(applied).toContain('003_contact_link_invitations.sql');
     } finally {
       await migrClient.end();
     }
@@ -255,6 +257,62 @@ describeIfPg('profile & contacts service end to end', () => {
     expect(perm.status).toBe(201);
   });
 
+  it('refuses a SECOND identical live designation (M13 review)', async () => {
+    // Two clicks, or a click and a retry, used to mint two identical live
+    // executor designations: harmless to every resolver (they all use EXISTS),
+    // which is why it would have gone unnoticed — but revoking "the" designation
+    // would leave the duplicate conferring everything, and on the docs/03 §5.1
+    // executor chain "revoked" has to mean revoked.
+    const again = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({
+        contactId: linkedContactId,
+        role: 'beneficiary',
+        scopeType: 'asset',
+        scopeId: namedId,
+      });
+    expect(again.status).toBe(409);
+    expect(again.body).toEqual({ error: 'role_already_granted' });
+
+    // A DIFFERENT condition on the same contact and role is a different
+    // designation, and still allowed.
+    const different = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({
+        contactId: linkedContactId,
+        role: 'beneficiary',
+        scopeType: 'asset',
+        scopeId: namedId,
+        effectiveCondition: 'on_death_verified',
+      });
+    expect(different.status).toBe(201);
+    await request(server)
+      .delete(`/v1/role-assignments/${(different.body as { id: string }).id}`)
+      .set('authorization', asElevated(OWNER))
+      .expect(204);
+
+    // ...and once revoked, the original shape can be granted again — the index is
+    // partial on deleted_at, so a soft delete really does free the slot.
+    const revocableId = (
+      await request(server)
+        .post('/v1/role-assignments')
+        .set('authorization', asElevated(OWNER))
+        .send({ contactId: otherId, role: 'viewer', scopeType: 'estate' })
+        .expect(201)
+    ).body as { id: string };
+    await request(server)
+      .delete(`/v1/role-assignments/${revocableId.id}`)
+      .set('authorization', asElevated(OWNER))
+      .expect(204);
+    await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({ contactId: otherId, role: 'viewer', scopeType: 'estate' })
+      .expect(201);
+  });
+
   it('§5.5: the grant-holder reads ONLY the named contact; the other is denied', async () => {
     const allowed = await request(server)
       .get(`/v1/profiles/${OWNER}/contacts/${namedId}`)
@@ -376,6 +434,60 @@ describeIfPg('profile & contacts service end to end', () => {
     expect(refused.status).toBe(409);
     expect(refused.body).toEqual({ error: 'contact_in_use' });
 
+    // SERIALIZED, not merely re-checked: both paths take `FOR UPDATE` on the
+    // contact row. The review found the previous version still racy — a
+    // `WHERE NOT EXISTS` over role_assignments locks the CONTACTS row, not the
+    // assignments it reads, and grantRole was itself check-then-act.
+    const raced = await request(server)
+      .post('/v1/contacts')
+      .set('authorization', asUser(OWNER))
+      .send({ name: 'Raced Contact' });
+    const racedId = (raced.body as { id: string }).id;
+    const racedRole = await request(server)
+      .post('/v1/role-assignments')
+      .set('authorization', asElevated(OWNER))
+      .send({ contactId: racedId, role: 'trustee', scopeType: 'estate' });
+    expect(racedRole.status).toBe(201);
+    const blocked = await request(server)
+      .delete(`/v1/contacts/${racedId}`)
+      .set('authorization', asUser(OWNER));
+    expect(blocked.status).toBe(409);
+    // ...and the contact is untouched, so no query silently loses its designation.
+    const { rows: stillThere } = await admin.query(
+      `SELECT deleted_at FROM ${schema}.contacts WHERE id = $1`,
+      [racedId],
+    );
+    expect((stillThere[0] as { deleted_at: Date | null }).deleted_at).toBeNull();
+
+    // THE RACE ITSELF, fired concurrently. Whichever wins, the invariant holds:
+    // never a live designation on a deleted contact. Before the lock, this
+    // interleaving produced exactly that — the docs/03 §6f fail-open.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const victim = await request(server)
+        .post('/v1/contacts')
+        .set('authorization', asUser(OWNER))
+        .send({ name: `Race Victim ${attempt}` });
+      const victimId = (victim.body as { id: string }).id;
+      await Promise.all([
+        request(server)
+          .post('/v1/role-assignments')
+          .set('authorization', asElevated(OWNER))
+          .send({ contactId: victimId, role: 'guardian', scopeType: 'estate' }),
+        request(server).delete(`/v1/contacts/${victimId}`).set('authorization', asUser(OWNER)),
+      ]);
+      const { rows } = await admin.query(
+        `SELECT c.deleted_at IS NOT NULL AS contact_gone,
+                EXISTS (SELECT 1 FROM ${schema}.role_assignments ra
+                         WHERE ra.contact_id = c.id AND ra.deleted_at IS NULL) AS has_live_role
+           FROM ${schema}.contacts c WHERE c.id = $1`,
+        [victimId],
+      );
+      const state = rows[0] as { contact_gone: boolean; has_live_role: boolean };
+      // The forbidden combination: a designation nothing can resolve, still
+      // listed, never revoked.
+      expect(state.contact_gone && state.has_live_role).toBe(false);
+    }
+
     // An unencumbered contact still deletes normally.
     const spare = await request(server)
       .post('/v1/contacts')
@@ -422,6 +534,185 @@ describeIfPg('profile & contacts service end to end', () => {
     expect(
       (await request(server).get('/v1/profile').set('authorization', asUser(OWNER))).body,
     ).toMatchObject({ ssnLast4: '6789', stateOfResidence: 'AZ' });
+  });
+
+  describe('the contact link ceremony (M13 PR3)', () => {
+    let inviteeId: string;
+    let code: string;
+
+    it('mints a code under step-up, and refuses without one', async () => {
+      const contact = await request(server)
+        .post('/v1/contacts')
+        .set('authorization', asUser(OWNER))
+        .send({ name: 'Invitee Person' });
+      inviteeId = (contact.body as { id: string }).id;
+
+      // Minting hands out a capability whose endpoint is an authorization edge
+      // on the docs/03 §5.1 chain, so it is gated like naming a fiduciary.
+      const refused = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asUser(OWNER));
+      expect(refused.status).toBe(403);
+      expect(refused.body).toEqual({ error: 'stepup_required' });
+
+      const minted = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      expect(minted.status).toBe(201);
+      code = (minted.body as { code: string }).code;
+      expect(code).toMatch(/^ESL1-/);
+
+      // ONLY THE HASH IS STORED. A database read — the docs/03 §5.3 insider, a
+      // leaked backup — must not yield a usable capability.
+      const { rows } = await admin.query(
+        `SELECT code_sha256, expires_at > now() AS live FROM ${schema}.contact_link_invitations
+          WHERE contact_id = $1`,
+        [inviteeId],
+      );
+      const row = rows[0] as { code_sha256: Buffer; live: boolean };
+      expect(row.live).toBe(true);
+      expect(row.code_sha256.toString('utf8')).not.toContain(code);
+      // The CANONICAL form is hashed, so a code retyped in lowercase or without
+      // its grouping dashes still redeems (the alphabet exists to be read aloud).
+      // Using the real function rather than re-deriving it: a second copy of a
+      // hashing rule is a copy that drifts.
+      expect(row.code_sha256).toEqual(
+        createHash('sha256').update(canonicalCode(code), 'utf8').digest(),
+      );
+    });
+
+    it('refuses every bad code with the SAME answer, and counts the attempt', async () => {
+      const wrong = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(GRANTEE))
+        .send({ code: 'ESL1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000' });
+      expect(wrong.status).toBe(400);
+      expect(wrong.body).toEqual({ error: 'invalid_code' });
+
+      // The OWNER cannot redeem their own invitation: they would become their
+      // own linked contact and so eligible to report their own death.
+      const selfDirected = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(OWNER))
+        .send({ code });
+      expect(selfDirected.status).toBe(400);
+      // Byte-identical to the unknown-code answer, so a refusal never reveals
+      // that the code was real.
+      expect(selfDirected.body).toEqual(wrong.body);
+
+      // ...but the attempt against a REAL invitation is counted.
+      const { rows } = await admin.query(
+        `SELECT attempts FROM ${schema}.contact_link_invitations WHERE contact_id = $1`,
+        [inviteeId],
+      );
+      expect((rows[0] as { attempts: number }).attempts).toBe(1);
+    });
+
+    it('links the redeemer, spends the code, and says nothing about the estate', async () => {
+      const redeemed = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(STRANGER))
+        // Retyped the way a person would: lowercase, dashes dropped. The
+        // alphabet is chosen for being read aloud, so redemption folds to the
+        // canonical form rather than refusing.
+        .send({ code: code.toLowerCase().replace(/-/g, '') });
+      expect(redeemed.status).toBe(200);
+      // NOTHING about the estate comes back — not the owner, not the contact.
+      expect(redeemed.body).toEqual({ status: 'ok' });
+
+      const { rows } = await admin.query(
+        `SELECT c.linked_user_id, i.redeemed_by, i.redeemed_at IS NOT NULL AS spent
+           FROM ${schema}.contacts c
+           JOIN ${schema}.contact_link_invitations i ON i.contact_id = c.id
+          WHERE c.id = $1`,
+        [inviteeId],
+      );
+      expect(rows[0]).toMatchObject({
+        linked_user_id: STRANGER,
+        redeemed_by: STRANGER,
+        spent: true,
+      });
+
+      // The list now says the contact has an account, which is what decides
+      // whether any designation on them can be exercised.
+      const list = await request(server).get('/v1/contacts').set('authorization', asUser(OWNER));
+      expect(
+        (list.body as Array<{ id: string; linked: boolean }>).find((c) => c.id === inviteeId),
+      ).toMatchObject({ linked: true });
+    });
+
+    it('is ONE-SHOT: the same code cannot be used twice', async () => {
+      const replay = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(GRANTEE))
+        .send({ code });
+      expect(replay.status).toBe(400);
+      expect(replay.body).toEqual({ error: 'invalid_code' });
+    });
+
+    it('refuses to invite a contact that is already linked', async () => {
+      const again = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      expect(again.status).toBe(409);
+      expect(again.body).toEqual({ error: 'already_linked' });
+    });
+
+    it('unlinks WITHOUT a step-up — the protective direction stays easy', async () => {
+      const removed = await request(server)
+        .delete(`/v1/contacts/${inviteeId}/link`)
+        .set('authorization', asUser(OWNER));
+      expect(removed.status).toBe(204);
+      const { rows } = await admin.query(
+        `SELECT linked_user_id FROM ${schema}.contacts WHERE id = $1`,
+        [inviteeId],
+      );
+      expect((rows[0] as { linked_user_id: string | null }).linked_user_id).toBeNull();
+      // Idempotent-free: nothing to remove is a not-found, not a silent success.
+      expect(
+        (
+          await request(server)
+            .delete(`/v1/contacts/${inviteeId}/link`)
+            .set('authorization', asUser(OWNER))
+        ).status,
+      ).toBe(404);
+    });
+
+    it('re-issuing retires the previous code rather than refusing', async () => {
+      const first = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      const firstCode = (first.body as { code: string }).code;
+      const second = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(OWNER));
+      expect(second.status).toBe(201);
+
+      // The owner was told the first code once and may have lost it; the
+      // partial unique index would otherwise make re-issuing an error.
+      const stale = await request(server)
+        .post('/v1/contact-links/redeem')
+        .set('authorization', asUser(GRANTEE))
+        .send({ code: firstCode });
+      expect(stale.status).toBe(400);
+
+      // And withdrawing the live one needs no step-up either.
+      expect(
+        (
+          await request(server)
+            .delete(`/v1/contacts/${inviteeId}/link-invitation`)
+            .set('authorization', asUser(OWNER))
+        ).status,
+      ).toBe(204);
+    });
+
+    it('a stranger cannot invite on someone else’s contact', async () => {
+      const foreign = await request(server)
+        .post(`/v1/contacts/${inviteeId}/link-invitation`)
+        .set('authorization', asElevated(STRANGER));
+      // The owner cross-check turns a foreign id into a uniform not-found.
+      expect(foreign.status).toBe(404);
+    });
   });
 
   it('concurrent first-writes cannot mint two active DEKs (unique index + adoption)', async () => {
@@ -472,6 +763,10 @@ describeIfPg('profile & contacts service end to end', () => {
         'role.granted',
         'permission.granted',
         'permission.revoked',
+        'contact.link.invited',
+        'contact.link.claimed',
+        'contact.link.invitation_revoked',
+        'contact.link.removed',
         'crypto.field.decrypted', // every read decrypts through FieldCrypto
       ]),
     );

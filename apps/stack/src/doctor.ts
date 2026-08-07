@@ -307,6 +307,10 @@ export function diagnose(
     // be replaced by sends into a void.
     ['VAULT_NOTIFY_MODE', 'http', 'the stub owner notifier'],
     ['SETTLEMENT_NOTIFY_MODE', 'http', 'the stub owner notifier'],
+    // M13: profile joined the same carrier path (a claimed contact link tells
+    // the owner). Listed here for the same reason as its two peers — a stub
+    // would make the ceremony's notification precondition decoration.
+    ['PROFILE_NOTIFY_MODE', 'http', 'the stub owner notifier'],
     ['NOTIFICATIONS_EMAIL_MODE', 'ses', 'the stub email carrier'],
   ];
   for (const [key, expected, what] of stubbed) {

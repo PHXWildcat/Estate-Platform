@@ -1557,3 +1557,238 @@ deviating from them, stop and propose the change with rationale — do not silen
   is cached per user because `enrollTotp` only revokes UNVERIFIED methods, so
   enrolling twice would leave two verified secrets and make `findActiveTotp`'s
   choice decide whether a later step-up works.
+- 2026-08-06 — M13 PR2 (the people surface): the BFF's FOURTH non-identity
+  downstream on the established terms, and /people stops being a "Soon" preview.
+  THE DECRYPT BUDGET IS THE DESIGN: contact PII is under the owner's DEK and
+  every field read is one audited `crypto.field.decrypted`, so the list route was
+  NARROWED to a summary — one decrypt per row (the name) plus two plaintext
+  columns, with `has*` flags from column nullity so a row says WHAT is on file
+  without reading it, and NO email/phone/address/notes field on the GraphQL
+  summary type so no query can ask incidentally. Narrowing the SHARED route also
+  tightens §5.5 for a grant-holder (details now cost them one audited read each),
+  which is why there is ONE projection rather than two branched by audience.
+  Verified against the live stack's audit chain: `contact_list` decrypted only
+  `contact.name` across five page loads. THE SSN IS DISPLAYED AND NEVER
+  COLLECTED — no `ssn` argument on the mutation, no field in the BFF client, no
+  input in the app, only read-only `ssnLast4` so an owner can see whether we hold
+  one; with PR1's merge semantics a real browser edit (CA→AZ) left ssn_ct,
+  ssn_last4_ct and dob_ct intact AND `profile.ssn` never appeared in the decrypt
+  trail, because the carry moves ciphertext. A DESIGNATION IS NOT ACCESS is said
+  out loud per condition, and `linked` is THREE-VALUED (a failed read passes
+  null, never false — "no account yet" is a claim about someone's estate).
+  Three-way step-up asymmetry: name a role → prompt + retry; REMOVE a role →
+  prompt too (equal, never harder); withdraw a permission → one click.
+  `StepUpPrompt` extracted at its third caller; the two earlier callers stay as
+  they are and the reason is recorded in the component (DocumentGenerator's
+  prompt is INSIDE a form and this renders one, and an "actually a div" mode
+  would put the branch back inside the shared thing).
+- 2026-08-06 — M13 PR3, THE CONTACT LINK CEREMONY. `contacts.linked_user_id` had
+  no write path anywhere: four test files set it in raw SQL and said so, which is
+  why §6b's linked-contact gate was a real control guarding an unreachable
+  capability. Owner mints a 160-bit single-use code under STEP-UP; the server
+  stores only sha256(code); the owner is shown it ONCE and delivers it OUT OF
+  BAND (the M6 grantee-fingerprint precedent); the contact redeems it while
+  authenticated on THEIR OWN existing account. The shape is forced, not chosen:
+  M9's notification doctrine has no content field and forbids links, so an
+  emailed invite would contradict a decision one milestone old; §6b's
+  anti-enumeration property survives only if the CODE IS THE ONLY SELECTOR, so
+  the redeem route takes no owner id and no contact id and there is nowhere in it
+  to name an account; and requiring an existing account keeps this from becoming
+  an invite-to-register flow. EVERY REDEMPTION FAILURE IS ONE ANSWER
+  (`invalid_code`) — unknown, expired, spent, revoked, self-directed, raced —
+  because distinguishing them tells whoever holds a guess that it named something
+  real; the cost is a vaguer message for an honest user, paid down by free
+  re-issue (which retires the previous code and audits the retirement).
+  ASYMMETRIC IN BOTH DIRECTIONS: minting is step-up gated (it hands out a
+  capability on the §5.1 chain), while withdrawing a code and removing a live
+  link are CallerGuard only (M6 — the protective action must never be harder).
+  Self-redemption is refused because linking yourself to your own contact would
+  make you eligible to report your own death.
+- 2026-08-06 — Two pieces of M13 PR3 machinery worth their own entries. (1)
+  ATOMICITY IS THE CONTROL: spending the invitation and writing the link share
+  ONE transaction, each statement restating its own preconditions, because a
+  spend with no link locks that contact out of ever being linked and a link from
+  a still-live invitation is replayable. A data-modifying CTE cannot express
+  that — its UPDATE commits even when the outer statement matches nothing — so
+  profile adopted the assets service's `withTransaction` chokepoint, and the
+  version-capture trigger records the REDEEMER as actor, which is what the trail
+  should say. Two concurrent redemptions produce exactly one link and the loser
+  rolls back (the M7 owner-liveness CAS shape). (2) REDEMPTION TAKES NO CEDAR
+  DECISION, and it is flagged in docs/03 §6g rather than disguised: every other
+  route in the service passes a PEP, but the redeemer has no relationship to the
+  estate until redemption succeeds, so every attribute a policy could match on is
+  exactly what the code stands in for — the authority is a bearer capability.
+  Also: profile becomes the THIRD holder of the notifications SEND credential and
+  deliberately NOT of the RECIPIENTS one (the M9 review's split applied to a new
+  holder — profile has no business repointing where anyone's alerts go), and
+  redemption REFUSES in production behind a stub notifier, because a claim the
+  owner never hears about is how a mis-delivered code becomes an invisible
+  authorization edge.
+- 2026-08-06 — M13 security review (five discovery lenses over the three-PR range
+  + TWO adversarial verifiers per candidate on different angles, both defaulting
+  to refuted; 21 raw, 21 unique, 6 confirmed, 10 refuted, 7 dropped under the
+  cap and hand-verified). The first fan-out LOST FOUR LENSES to stalled agents —
+  a whole-range `git diff` is 9.5k lines and the agents hung on it — so they were
+  re-run with FILE-SCOPED prompts; the loss is recorded in docs/04 rather than
+  papered over, and the lesson is that a review prompt must name files, not
+  ranges. SEVENTH milestone running where every confirmed finding sits in
+  machinery the milestone introduced, and most falsify a claim it made about
+  itself. Two were load-bearing. (1) THE STEP-UP RETRY RAN THE WRONG ACTION: a
+  refused permission widen folded into the role-grant variant, so after a genuine
+  TOTP challenge the app called `grantRole()` from the picker's current state —
+  minting an `executor`/`on_death_verified` designation the owner never chose onto
+  the §5.1 executor-resolution chain, audited as theirs, while silently dropping
+  the permission they clicked. THREE claims said otherwise (the in-code "Elevate,
+  then retry", StepUpPrompt's "re-run the action that was refused", the M13 PR2
+  log entry) and the one existing test asserted only that the prompt OPENED, so
+  the suite was green over it. Fixed with a discriminated union that CARRIES every
+  argument the retry needs, plus per-action wording — the consent ceremony was
+  also mis-stating what it authorized. (2) THE OWNER NOTIFICATION OF A CLAIMED
+  LINK COULD VANISH: the audit emit ran before the notify and propagates broker
+  failures by design (M8), so a blip after the commit left the link standing, the
+  owner untold, and no retry able to tell them; and the notify's empty catch
+  cited "the claim event above" when that event carried no delivery fact, while
+  notifications.ts claimed "the caller records the failure" and no caller did.
+  Fixed: notify FIRST (an audit hiccup must not cancel the control that makes the
+  ceremony's out-of-band trust anchor auditable by the owner), and the outcome
+  rides the claim event as `ownerNotified: delivered|failed` — the vault
+  delivered_at-NULL precedent.
+- 2026-08-06 — Also from the M13 review, three fixes whose shape generalizes.
+  (1) PROMPT-AND-RETRY WAS A CLAIM THE PLATFORM COULD NOT KEEP: every service
+  builds `HttpSessionVerifier` with the 30s default positive cache, so after a
+  genuine elevation the peer still answers from the cached un-elevated session and
+  a single-shot retry leaves the prompt doing nothing — exactly what happened the
+  first time this surface was driven in a browser. The TTL is a recorded
+  trade-off (2026-07-23); what M13 got wrong was promising a retry that always
+  works. Made true rather than narrowed: `onElevated` now reports
+  `applied | stale` and the prompt POLLS to a documented deadline, the contract
+  the stack e2e already treats as a contract rather than a flake. The window is
+  pinned to auth-guard's own constant by a spec that READS that file — the
+  compose-parity mechanism, because the web app cannot import a Nest package and
+  a duplicated number drifts. (2) `contact_in_use` WAS CHECK-THEN-ACT: a
+  `grantRole` committing between the service's check and the soft delete would
+  delete a contact that had just acquired a designation — the fail-open §6f
+  declares Closed. The predicate moved into the UPDATE's own WHERE with a
+  discriminated outcome, and the now-callerless helper was deleted rather than
+  left as dead code. (3) `grantRole` accepted ANY contact id (the FK proves
+  existence, not ownership): refuted as an escalation because every resolver
+  scopes by owner, fixed anyway because a cross-owner designation resurrects the
+  silent-retirement shape PR1 closed — the other owner's `contact_in_use` check is
+  owner-scoped and would never see it.
+- 2026-08-06 — `role_assignments` HAD NO UNIQUENESS OF ANY KIND — hardening, and
+  the entry is worth keeping mostly for how it was nearly mis-recorded. Nothing in
+  the schema, the repo or the service stopped a double-submit or a retry from
+  minting two identical live designations, and revoking "the" designation would
+  leave the duplicate conferring everything it conferred before; on the docs/03
+  §5.1 executor chain "revoked" has to mean revoked. Closed with a partial unique
+  index over (owner, contact, role, scope_type, COALESCE(scope_id, nil-uuid),
+  effective_condition) WHERE deleted_at IS NULL — the COALESCE because SQL
+  uniqueness treats NULLs as distinct and `scope_id IS NULL` (the whole estate) is
+  the commonest case, so without it the constraint would permit unlimited
+  duplicates of exactly the broadest designation — plus a `409
+  role_already_granted` so a double click is an ordinary refusal rather than a 500
+  or a silent second write.
+  CORRECTED IN THE SAME SESSION: this was first written up as a defect the live
+  stack had EXHIBITED ("two clicks minted two identical designations"). It had
+  not. Two `executor`/`on_death_verified` rows were read as a duplicate pair off a
+  two-line `SELECT role, effective_condition` listing — while a
+  `GROUP BY owner_user_id, contact_id, role` run minutes earlier had already
+  returned nothing, which was the right answer; the rows belonged to two different
+  owners and two different contacts. The migration's own pre-flight then settled
+  it independently: run against that database it APPLIED instead of refusing,
+  which is only possible with no duplicate group present. THE LESSON IS THE
+  GENERAL ONE THIS REPO KEEPS RESTATING, turned on myself: a listing that LOOKS
+  like duplicates is not a grouping query, and a doc that claims evidence it does
+  not have is a defect even when the fix it justifies is sound.
+- 2026-08-06 — The link code's ALPHABET WAS HALF-IMPLEMENTED, and the fix is worth
+  the entry because the reasoning recurs: the mint avoids I, L, O and U so a code
+  can be read down a phone line, but redemption hashed the RAW submission — so
+  lowercase, dropped grouping dashes, or a typed O-for-zero all failed with the
+  uniform `invalid_code` and the owner's only remedy was minting a fresh code. A
+  security property (uniform refusals) was hiding a usability defect the design
+  had already promised to handle. `canonicalCode` folds onto the minted alphabet
+  before hashing on BOTH sides; because the fold only maps characters the
+  generator never emits, it cannot make two mintable codes collide, and
+  case-folding costs no entropy since the mint is uppercase-only.
+- 2026-08-06 — MIGRATIONS ARE APPEND-ONLY, and the enforcement is real rather
+  than conventional. The M13 duplicate-designation index was first appended to
+  `003_contact_link_invitations.sql`, a file the migrator had already recorded.
+  CORRECTED as to why that is wrong: `packages/db/src/migrator.ts` records a
+  sha256 CHECKSUM alongside every applied name and raises `MigrationDriftError`
+  on a mismatch, so appending to 003 fails LOUDLY on the next run — even editing
+  a comment in an applied file blocks the next migration until it is restored.
+  The original claim here ("keys on FILENAME, so the edit silently never runs")
+  was drawn from a container still running the pre-edit 003, the second time in
+  that session a stale image was mistaken for evidence about the code. The
+  conclusion survives; the mechanism is stricter than the doc credited. It is
+  `004_role_assignments_unique.sql` now, with a pre-flight that RAISES over
+  pre-existing duplicates and retires NOTHING — the `002_dek_unique_active` rule
+  restated for a new case, because duplicates are identical as DESIGNATIONS but
+  not as ROWS: `permission_grants.role_assignment_id` references the row, so
+  retiring the spare would silently revoke every grant hanging off it, and a
+  migration must never choose which access dies. The runbook is in the file:
+  consolidate the grants, revoke the other assignment through the API (which
+  audits it), re-run. `role-unique-migration.int.spec.ts` pins both properties,
+  and one case exists purely to catch the appended-to-003 mistake — it asserts
+  the file appears in `applied` AND that the index actually exists, which is the
+  pair of facts an edited-in-place migration separates.
+- 2026-08-06 — STALE ARTIFACTS ARE NOT EVIDENCE ABOUT SOURCE. Twice in the M13
+  session a conclusion about the code was drawn from something built earlier: a
+  stale `@estate/contracts` `dist` produced nine phantom test failures, and a
+  container still running a pre-edit migration produced a false claim about how
+  the migrator behaves (recorded above). Both times the artifact was the bug.
+  The rule: before believing an observation that contradicts the source, rebuild
+  or recreate the thing that produced it — `pnpm build --filter=…` for a package
+  under test, `stack:reset` for the compose stack (never `stack:down`, per the
+  2026-07-30 LocalStack entry).
+- 2026-08-06 — A TEST OF MINE WAS NAMED FOR A PROPERTY IT NEVER TOUCHED, and
+  only mutation testing found it. The case "the COALESCE matters" seeded two
+  whole-estate duplicates and asserted the migration refused — which passes with
+  or without the COALESCE, because the pre-flight's `GROUP BY` treats NULLs as
+  equal while a `UNIQUE INDEX` does not. Two mechanisms, one test, wrong one
+  exercised. Rewritten to migrate a CLEAN database and then ask Postgres to
+  accept the duplicate, which is the only path through the index's own
+  predicate. The general rule this repo keeps relearning: when a guard exists at
+  two layers, a test must say WHICH layer it is proving, and mutating that layer
+  alone is how you find out whether it does.
+- 2026-08-06 — M13 review ROUND 3 ran over round 2's OWN FIXES, on the repo's
+  five-for-five expectation that new trust machinery is defective — and found
+  TWO HIGH defects, both in code written to close a finding. (1) CANCEL DID NOT
+  CANCEL: round 2 made the step-up prompt POLL (peers learn of an elevation
+  through a 30s positive session cache, so a single-shot retry left the prompt
+  idle after an accepted code), but the loop had no abort and `Cancel` only asked
+  the parent to hide it — so for up to the whole propagation budget after the
+  owner declined, the loop kept retrying and could still APPLY the action.
+  Measured, not theorised: a third `GrantRole` landed after Cancel and put an
+  `executor`/`on_death_verified` designation on the §5.1 executor-resolution
+  chain with no UI signal, because React 19 makes the post-unmount `setState` a
+  silent no-op. A step-up prompt is a CONSENT ceremony; proceeding after consent
+  is withdrawn is the one thing it must never do. Fixed with an `abandoned` ref
+  set by Cancel AND by unmount, checked in the loop condition, after the sleep,
+  and around the identity round trip, re-armed on a fresh submit. (2) THE
+  DELETE/GRANT RACE WAS STILL A RACE: round 2's single `UPDATE … WHERE NOT
+  EXISTS (…role_assignments)` reads atomically but locks the CONTACTS row, not
+  the assignments it consulted, and `grantRole` was itself check-then-act — so
+  two statements could delete a contact and name it to a role, defeating the
+  in-use refusal PR1 added. The contact row is the serialization point for both
+  paths now (`softDelete` takes `FOR UPDATE`; `RolesRepo.insertForLockedContact`
+  takes the same lock and the unlocked `insert` is deleted so nothing can skip
+  it), proven by a 5-iteration concurrent race test that fails 3/3 runs without
+  the lock. Round 3's smaller items: `permission_grants` had no uniqueness and
+  `grantPermission` was the one retried action with no in-flight guard (two
+  clicks wrote two grants, and withdrawing the visible one left the other
+  conferring the read) — closed by migration `005` plus a `busy` guard; neither
+  new 409 had a BFF mapping, so the "ordinary refusal" the migrations promised
+  surfaced as a masked server error; `FakeContactsRepo.softDelete` dropped its
+  `ownerUserId`, leaving the delete path's ONLY access control unmodelled (the
+  PEP models the resource owner as the caller there, so the repo predicate is
+  the whole check — and it must answer a uniform not-found, never a 403 that
+  would confirm the id names something); `RedeemLinkSchema`'s `min(8)` measured
+  the RAW submission, so separators alone satisfied it and folded to empty —
+  redemption measures the CANONICAL form against a length DERIVED from the mint
+  now, refusing before any lookup and with the same uniform `invalid_code`; and
+  `004`'s `RAISE` carried two bugs reachable only by making the branch fire
+  (plpgsql's placeholder is a bare `%`, so `%s%s` wedged stray "s" characters
+  into the duplicate list, and the first correction to `%%` — zero placeholders
+  — turned the branch into a hard error). AN EXCEPTION NOBODY TRIGGERS IN A
+  TEST IS AN EXCEPTION NOBODY HAS READ.

@@ -30,6 +30,9 @@ export const NOTIFICATION_KINDS = [
   'vault.grantees_changed',
   'settlement.case_opened',
   'settlement.owner_contact',
+  // M13: somebody claimed a link to this owner's estate contact, which is the
+  // moment they become able to open a death case against them (docs/03 §6b).
+  'contact.link_claimed',
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 

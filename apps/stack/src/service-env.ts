@@ -26,7 +26,10 @@ import {
 /** Which peers each service (and the BFF) calls, hence which *_URL it gets. */
 const PEERS: Record<string, readonly string[]> = {
   identity: ['notifications'],
-  profile: ['identity'],
+  // M13: profile tells an owner when somebody claimed a link to one of their
+  // contacts. Send-only — it holds the SEND credential and not the recipients
+  // one, so it cannot repoint where anybody's notifications go.
+  profile: ['identity', 'notifications'],
   assets: ['identity', 'settlement'],
   plaid: ['identity'],
   documents: ['identity', 'settlement'],
@@ -117,6 +120,7 @@ export function serviceProcessEnv(
       break;
     case 'profile':
       out['EMAIL_INDEX_KEY_HEX'] = fromFile(env, 'PROFILE_EMAIL_INDEX_KEY_HEX');
+      out['NOTIFY_MODE'] = fromFile(env, 'PROFILE_NOTIFY_MODE');
       break;
     case 'plaid':
       out['ITEM_INDEX_KEY_HEX'] = fromFile(env, 'PLAID_ITEM_INDEX_KEY_HEX');
@@ -250,9 +254,12 @@ export function bffProcessEnv(
     // because nothing about it needs a third-party credential.
     DOCUMENTS_URL: serviceUrl('documents', options.addressing),
     // M13: the people surface. Present in BOTH profiles for the same reason as
-    // documents — the profile service needs no third-party credential, and it
-    // holds no service credential in either direction, so this URL can only ever
-    // open what the caller's own bearer already opens.
+    // documents — the profile service needs no third-party credential. The BFF
+    // holds NO credential for it, and profile exposes no internal routes at all,
+    // so this URL can only ever open what the caller's own bearer already opens.
+    // (Profile does hold ONE OUTBOUND credential since M13 PR3 — the
+    // notifications SEND key — which is invisible from here and unreachable
+    // through this URL.)
     PROFILE_URL: serviceUrl('profile', options.addressing),
   };
   if (options.manifestPath) {

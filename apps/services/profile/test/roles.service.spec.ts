@@ -2,7 +2,11 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { coreResource, ProfileAuthz } from '../src/authz.service';
 import { RolesService } from '../src/roles.service';
-import type { RoleAssignmentInsert, RoleAssignmentRow } from '../src/roles.repo';
+import {
+  ContactUnavailableError,
+  type RoleAssignmentInsert,
+  type RoleAssignmentRow,
+} from '../src/roles.repo';
 import { noopEvents } from './support';
 
 const OWNER = 'a1111111-1111-4111-8111-111111111111';
@@ -13,7 +17,20 @@ const authz = new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies()));
 
 class FakeRolesRepo {
   readonly rows: RoleAssignmentRow[] = [];
+  /**
+   * Contacts this fake will "lock". The real
+   * `insertForLockedContact` takes `FOR UPDATE` on the contact row and raises
+   * ContactUnavailableError when it is not the caller's or is deleted — the fake
+   * models the refusal, because that refusal IS the ownership check now.
+   */
+  lockableContacts = new Set<string>([CONTACT]);
   private seq = 0;
+  insertForLockedContact(input: RoleAssignmentInsert): Promise<string> {
+    if (!this.lockableContacts.has(input.contactId)) {
+      return Promise.reject(new ContactUnavailableError());
+    }
+    return this.insert(input);
+  }
   insert(input: RoleAssignmentInsert): Promise<string> {
     const id = `e0000000-0000-4000-8000-00000000000${++this.seq}`;
     this.rows.push({
@@ -148,6 +165,22 @@ describe('RolesService (owner-managed grants)', () => {
     const { service } = build();
     await expect(
       service.revoke(OWNER, 'e0000000-0000-4000-8000-000000000098'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('refuses a role over a contact that is not the caller’s, uniformly (M13 review)', async () => {
+    const { service } = build();
+    // A foreign (or deleted, or simply wrong) contact id is one uniform 404. The
+    // check is now the LOCK itself — `insertForLockedContact` raises when the
+    // contact row cannot be locked as the caller's live contact — so it cannot
+    // come apart from the insert the way a separate findById could.
+    await expect(
+      service.grantRole(OWNER, {
+        contactId: 'd4444444-4444-4444-8444-444444444445',
+        role: 'executor',
+        scopeType: 'estate',
+        effectiveCondition: 'immediate',
+      }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 

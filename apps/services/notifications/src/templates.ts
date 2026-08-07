@@ -57,6 +57,10 @@ const BODIES: Record<NotificationKind, (deadline: Date | null) => string> = {
     `A report was filed on your Estate account. If you are reading this, open your Estate app and verify your identity — that stops the process immediately.${UNTIL(d)}`,
   'settlement.owner_contact': (d) =>
     `Your Estate account is in a review period. Open your Estate app and verify your identity to stop it.${UNTIL(d)}`,
+  // M13. Names its control in the first clause like every body here, and no
+  // more: not who claimed it, not which contact, not which estate.
+  'contact.link_claimed': () =>
+    'Someone used an invitation code to link themselves to a contact in your Estate account. If you did not send that code to them, open your Estate app and remove the link.',
 };
 
 export interface RenderedNotification {

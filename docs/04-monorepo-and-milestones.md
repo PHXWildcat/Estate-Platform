@@ -2462,6 +2462,267 @@ TOTP enrollment is now cached per user, because `enrollTotp` only revokes
 UNVERIFIED methods and enrolling twice would leave a user with two verified
 secrets and make `findActiveTotp`'s choice decide whether a later step-up works.
 
+#### PR2 — the surface (BFF's fourth non-identity downstream)
+
+`/people` becomes a real destination and the "Soon" preview retires. The
+load-bearing decision is the DECRYPT BUDGET: contact PII lives under the owner's
+DEK and every field read is one audited `crypto.field.decrypted`, so the list
+route was narrowed to a summary — one decrypt per row plus two plaintext columns,
+with `has*` flags derived from column nullity so a row says WHAT is on file
+without reading it. Email/phone/address/notes have no field on the GraphQL
+summary type at all, so no query can ask incidentally. Narrowing the SHARED route
+also tightens §5.5 for a grant-holder, which is why there is one projection and
+not two. Proven against the live stack's audit chain: `contact_list` decrypted
+only `contact.name` across five page loads.
+
+THE SSN IS DISPLAYED AND NEVER COLLECTED, by construction. No `ssn` argument on
+the mutation, no field in the BFF client, no input in the app — only `ssnLast4`,
+read-only, so an owner can see whether we hold one. With PR1's merge semantics
+that makes the column safe from this direction: a browser edit changing state
+CA→AZ left `ssn_ct`, `ssn_last4_ct` and `dob_ct` intact, and `profile.ssn` never
+appears in the decrypt trail at all — the carry moves ciphertext, so the full
+number was not decrypted even while saving.
+
+A DESIGNATION IS NOT ACCESS, said out loud: each condition carries its own
+sentence, `on_death_verified` states that a death must be reported, reviewed and
+confirmed after a waiting period, and a role with no permission says it reads
+none of the estate. Whether a contact has an account is shown too, as THREE
+values — a failed read passes null, not false, because "no account yet" is a
+claim about someone's estate.
+
+Three-way step-up asymmetry in one component: naming a role prompts inline and
+retries; REMOVING one prompts too (equal, never harder — revoking destroys the
+executor-resolution path); withdrawing a permission is one click. `StepUpPrompt`
+extracted at its third caller, with the two earlier ones left alone and the
+reason recorded (DocumentGenerator's prompt is inside a form; this renders one).
+
+Two service changes, both narrowings: the list projection, and owner-relative
+`GET /v1/contacts` + `/v1/contacts/:id` (the `/v1/profiles/:ownerUserId` routes
+are the cross-owner ABAC boundary and always were).
+
+#### PR3 — the contact link ceremony
+
+`contacts.linked_user_id` had no write path in the platform. Four test files set
+it with raw SQL and said so, which is why nobody could report a death, exercise a
+granted read, or be resolved as an executor. The ceremony: owner mints a 160-bit
+single-use code under step-up, the server stores only its sha256, the owner is
+shown it ONCE and delivers it out of band (the M6 grantee-fingerprint
+precedent), and the contact redeems it while authenticated on their own existing
+account.
+
+Shape forced by two shipped decisions and one threat: M9's notification doctrine
+has no content field and forbids links, so an emailed invite would contradict it;
+§6b's anti-enumeration property must survive, so the code is the ONLY selector on
+redemption and the route takes no id of any kind; and the redeemer must already
+have an account, so this cannot become an invite-to-register flow.
+
+Full record in docs/03 §6g, including the flagged deviation (redemption takes no
+Cedar decision — the authority is the capability, because the redeemer has no
+relationship to the estate until it succeeds) and four accepted residuals.
+Profile becomes the third holder of the notifications SEND credential and
+deliberately not of the RECIPIENTS one, so it can never repoint where alerts go.
+Redemption REFUSES in production behind a stub notifier: a claim the owner never
+hears about is how a mis-delivered code becomes an invisible authorization edge.
+
+Atomicity is a control here, not hygiene — spending the invitation and writing
+the link share one transaction with each statement restating its preconditions,
+so two concurrent redemptions produce exactly one link and the loser rolls back.
+A spend with no link would lock that contact out of ever being linked.
+
+Mutation-proven: dropping the self-redemption refusal, storing the code in
+plaintext, and dropping the mint's step-up each turn the suite red.
+
+#### M13 security review (2026-08-06)
+
+Five discovery lenses over the three-PR range plus TWO adversarial verifiers per
+candidate on different angles — reachability in a real production config, and
+is-it-already-a-documented-decision — both told to default to refuted. Run in two
+passes: the first fan-out lost four lenses to stalled agents (a whole-range
+`git diff` over 9.5k lines), so they were re-run with FILE-SCOPED prompts and the
+loss is recorded here rather than papered over. 21 raw findings, 21 unique, 6
+confirmed, 10 refuted, 7 dropped under the verification cap and hand-verified —
+each dropped one logged by name, the M12 rule.
+
+**Seventh milestone running where every confirmed finding sits in machinery the
+milestone itself introduced, and most falsify a claim it made about itself.**
+
+1. *An owner notification of a claimed link could be skipped or swallowed with no
+   record (medium, both verifiers confirmed).* The audit emit ran BEFORE the
+   notify and propagates broker failures by design (the M8 loudness rule), so an
+   MSK blip after the commit exited `redeem()` with the link standing, the owner
+   untold, and — the code being spent — no retry that could ever tell them. The
+   notify's empty catch cited "the claim event above" as the record when that
+   event carried no delivery fact; `notifications.ts` claimed "the caller records
+   the failure" and no caller did; and a network-level failure reached no
+   notifications-service row either, so nothing anywhere knew. FIXED: the notify
+   runs FIRST (an audit hiccup must not cancel the control that makes the
+   ceremony's trust anchor auditable by the owner; the invitation row is the
+   durable claim record), and the outcome rides the claim event as
+   `ownerNotified: delivered|failed` — the vault delivered_at-NULL precedent, so a
+   failure is an operator's re-drive signal instead of silence.
+2. *The step-up retry ran the WRONG ACTION (high).* When a permission widen was
+   refused, the post-elevation retry called `grantRole()` from the picker's
+   current state: a genuine TOTP challenge minted an `executor` /
+   `on_death_verified` designation the owner never chose — onto the §5.1
+   executor-resolution chain, fully audited as theirs — and silently dropped the
+   permission they had clicked. Three claims said otherwise (the in-code "Elevate,
+   then retry", `StepUpPrompt`'s "re-run the action that was refused", and the M13
+   PR2 log entry), and the one existing test asserted only that the prompt
+   OPENED, so the suite was green over it. FIXED with a discriminated union that
+   CARRIES every argument the retry needs, plus per-action wording — the consent
+   ceremony was also mis-stating what it authorized.
+3. *Prompt-and-retry was defeated for up to 30s by the session verifier's positive
+   cache (medium).* Every service uses the 30s default, so after a genuine
+   elevation the peer still answered from a cached un-elevated session and the
+   single-shot retry left the prompt sitting there doing nothing — which is
+   exactly what happened when this surface was first driven in a browser. The
+   platform-wide TTL is a recorded trade-off (2026-07-23); what M13 got wrong was
+   claiming a retry that always works. FIXED by making it true: `onElevated`
+   reports `applied | stale` and the prompt polls to a documented deadline, the
+   same contract the stack e2e already treats as the contract rather than a flake.
+   The window is pinned to `auth-guard`'s own constant by a spec that READS that
+   file — the compose-parity mechanism, because the web app cannot import a Nest
+   package and a duplicated number drifts.
+4. *`contact_in_use` was check-then-act (medium).* A `grantRole` committing between
+   the service's check and the soft delete would delete a contact that had just
+   acquired a designation — the exact fail-open §6f declares Closed. FIXED by
+   moving the predicate into the UPDATE's own `WHERE` and returning a
+   discriminated outcome, so "nothing to delete" (404) stays apart from "a
+   designation stands in the way" (409). The now-callerless
+   `hasLiveAssignmentsForContact` was deleted rather than left as dead code.
+5. *`grantRole` never checked the contact (refuted as escalation, fixed as
+   hardening).* The FK proves existence, not ownership or liveness. Every
+   consequence was self-inflicted — all resolvers scope by owner — but a
+   cross-owner designation resurrected the silent-retirement shape PR1 closed: the
+   OTHER owner's `contact_in_use` check is owner-scoped and would never see the
+   assignment, so their delete silently un-resolved it. Now a uniform not-found.
+6. *Two doc/comment mismatches and a half-implemented alphabet (low).* The
+   migration said the code carries 128 bits when it delivers 160; redemption
+   hashed the RAW submission although the alphabet exists to be read aloud, so
+   lowercase, dropped dashes, or a typed O-for-zero all failed with the uniform
+   refusal and the owner's only remedy was a fresh code. FIXED: the bit count, and
+   a `canonicalCode` fold that is strict onto the minted alphabet (so it cannot
+   make two mintable codes collide) applied on BOTH sides of the hash.
+
+**Hardening, not an observed defect — and the distinction is the point.**
+`role_assignments` had no uniqueness of any kind: nothing in the schema, the repo
+or the service stopped a double-submit or a retry from minting two identical live
+designations, which is a real gap and is now closed with a partial unique index
+(COALESCE'd scope, because SQL uniqueness treats NULLs as distinct and
+whole-estate is the commonest case) plus a `409 role_already_granted`. Revoking
+"the" designation would otherwise leave a duplicate conferring everything it
+conferred before, and on the §5.1 chain "revoked" has to mean revoked.
+
+CORRECTED, because the first version of this entry claimed the live stack had
+EXHIBITED the bug. It had not. Two `executor` / `on_death_verified` rows in the
+stack's core database were read as a duplicate pair from a two-line
+`SELECT role, effective_condition` listing — while the
+`GROUP BY owner_user_id, contact_id, role` query run minutes earlier had already
+returned nothing, which was the correct answer. They belonged to two different
+owners and two different contacts. The migration's own pre-flight settled it
+independently: run against that database it APPLIED rather than refusing, which
+is only possible if no duplicate group existed. The gap is real; the sighting was
+not, and a doc claiming evidence it does not have is the defect class this repo
+treats as real.
+
+**And the duplicate-designation fix produced a second finding on its own.** The
+index was first APPENDED TO 003, a migration the migrator had already recorded.
+That is wrong, but CORRECTED AS TO WHY — the first version of this paragraph said
+the migrator "keys on FILENAME, so the edit silently never runs", and that is
+false. `packages/db/src/migrator.ts` records a sha256 CHECKSUM alongside every
+applied name and raises `MigrationDriftError` on a mismatch, so appending to 003
+fails LOUDLY on the next run rather than doing nothing: even editing a comment in
+an applied file blocks the next migration until the file is restored. What was
+actually observed was a container still running the pre-edit 003 — the second time
+in that session a stale image was mistaken for evidence about the code, which is
+worth recording as its own recurring mistake. The conclusion survives (migrations
+are append-only) and its enforcement is stronger than the doc credited it with.
+It is `004_role_assignments_unique.sql` now, with a
+pre-flight that RAISES over pre-existing duplicates and retires nothing — the
+`002_dek_unique_active` rule, for the same reason: duplicates are identical as
+designations but not as rows, and `permission_grants.role_assignment_id`
+references the row, so retiring the spare would silently revoke every grant
+hanging off it. `role-unique-migration.int.spec.ts` covers both properties, and
+one of its cases exists specifically to catch the appended-to-003 mistake (it
+asserts the file appears in `applied` AND that the index really exists).
+
+**One of those tests was itself vacuous, and mutation caught it.** A case named
+"the COALESCE matters" seeded two whole-estate duplicates and asserted the
+migration refused — which passes with or without the COALESCE, because the
+pre-flight's `GROUP BY` treats NULLs as equal while a `UNIQUE INDEX` does not. It
+was named for a property it never touched. Rewritten to migrate a CLEAN database
+and then ask Postgres to accept the duplicate, which is the only way to exercise
+the index's own predicate.
+
+Every fix is mutation-proven: restoring the old notify ordering, folding the
+permission retry back into the role variant, dropping the atomic `NOT EXISTS`,
+dropping the unique index, dropping the COALESCE, removing the pre-flight, and
+re-appending the index to 003 each turn the suite red. Docs/03 §6f and §6g
+updated, including the family-list narrowing recorded as a deliberate scope-down
+rather than an omission.
+
+#### M13 review round 3 — the fixes themselves (2026-08-06)
+
+A third pass was run over ROUND 2's OWN FIXES, on the repo's five-for-five
+expectation that new trust machinery is defective. It was justified: two HIGH
+defects, both in code written to close a finding.
+
+1. **CANCEL DID NOT CANCEL.** Round 2 made the step-up prompt POLL — peers learn
+   about an elevation through a 30-second positive session cache, so a single-shot
+   retry left the prompt idle after an accepted code. The retry loop had no abort,
+   and `Cancel` only asked the parent to hide the prompt: for up to the whole
+   propagation budget after the owner declined, the loop kept retrying and could
+   still APPLY the action. Measured against the real component — a third
+   `GrantRole` was issued after Cancel, it succeeded, and an
+   `executor`/`on_death_verified` designation landed on the §5.1
+   executor-resolution chain with no UI signal at all, because React 19 makes the
+   post-unmount `setState` a silent no-op. A step-up prompt is a consent ceremony;
+   proceeding after consent is withdrawn is the one thing it must never do. FIXED
+   with an `abandoned` ref set by Cancel AND by unmount, checked in the loop
+   condition, after the sleep, and around the identity round trip; re-armed on a
+   fresh submit so cancelling one attempt cannot veto the next.
+
+2. **THE DELETE/GRANT RACE WAS STILL A RACE.** Round 2 replaced contact deletion's
+   check-then-act with a single `UPDATE … WHERE NOT EXISTS (SELECT … FROM
+   role_assignments)`, which reads atomically but locks the CONTACTS row, not the
+   assignments it consulted — and `grantRole` was itself a check-then-act on the
+   contact's existence. Two concurrent statements could therefore delete a contact
+   and name it to a role, leaving a designation pointing at a deleted contact: the
+   in-use refusal M13 PR1 added, defeated. FIXED by making the contact row the
+   serialization point for both paths — `softDelete` takes `SELECT … FOR UPDATE` on
+   it inside a transaction, and `RolesRepo.insertForLockedContact` takes the same
+   lock before inserting (the plain `insert` is deleted, so no caller can skip it).
+   A five-iteration concurrent race test asserts the impossible pair never occurs
+   and fails 3/3 runs with the `FOR UPDATE` removed.
+
+Three further items from the same pass, each real and none of them a vulnerability
+on its own:
+
+- `permission_grants` had no uniqueness either, and `grantPermission` was the ONE
+  retried action with no in-flight guard — its buttons stayed live during a write.
+  Two clicks wrote two grants, of which withdrawing the visible one left the other
+  conferring the read. Closed at both levels: migration
+  `005_permission_grants_unique.sql` plus a `409 permission_already_granted`, and a
+  `busy` guard with a test that clicks twice against a held-open response.
+- Neither new 409 had a BFF mapping, so the "ordinary refusal" the migrations
+  promised surfaced as a masked server error. Mapped, with copy that states the
+  outcome and offers no remedy — neither conflict is the user's mistake.
+- `FakeContactsRepo.softDelete` dropped its `ownerUserId` argument, leaving the
+  delete path's ONLY access control unmodelled — the real repo's `owner_user_id`
+  predicate is the whole check there, since the PEP models the resource owner as
+  the caller. Made faithful, with a test asserting another owner's contact is a
+  uniform not-found (never a 403, which would confirm the id names something).
+- The redeem schema's `min(8)` measured the RAW submission, so a body of pure
+  separators satisfied it and folded to the empty string. Redemption now measures
+  the CANONICAL form against a `CANONICAL_CODE_LENGTH` derived from the mint, and
+  answers the same uniform `invalid_code` so the shape check is not an oracle for
+  the format.
+- Two error-path bugs in `004`'s `RAISE`, found only by making the branch fire:
+  plpgsql's placeholder is a bare `%`, so the original `%s%s` wedged stray "s"
+  characters into the duplicate list, and the first correction to `%%` — an escaped
+  percent, zero placeholders — made the branch a hard error. An exception nobody
+  triggers in a test is an exception nobody has read.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

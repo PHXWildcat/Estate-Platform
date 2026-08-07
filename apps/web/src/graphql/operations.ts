@@ -516,6 +516,31 @@ export const REVOKE_ROLE_PERMISSION_MUTATION = `mutation RevokeRolePermission($r
   }
 }`;
 
+export const INVITE_CONTACT_LINK_MUTATION = `mutation InviteContactLink($contactId: ID!) {
+  inviteContactLink(contactId: $contactId) {
+    code
+    expiresAt
+  }
+}`;
+
+export const REVOKE_CONTACT_LINK_INVITATION_MUTATION = `mutation RevokeContactLinkInvitation($contactId: ID!) {
+  revokeContactLinkInvitation(contactId: $contactId) {
+    ok
+  }
+}`;
+
+export const UNLINK_CONTACT_MUTATION = `mutation UnlinkContact($contactId: ID!) {
+  unlinkContact(contactId: $contactId) {
+    ok
+  }
+}`;
+
+export const REDEEM_CONTACT_LINK_MUTATION = `mutation RedeemContactLink($code: String!) {
+  redeemContactLink(code: $code) {
+    ok
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -565,6 +590,10 @@ export const operations = {
   RolePermissions: ROLE_PERMISSIONS_QUERY,
   GrantRolePermission: GRANT_ROLE_PERMISSION_MUTATION,
   RevokeRolePermission: REVOKE_ROLE_PERMISSION_MUTATION,
+  InviteContactLink: INVITE_CONTACT_LINK_MUTATION,
+  RevokeContactLinkInvitation: REVOKE_CONTACT_LINK_INVITATION_MUTATION,
+  UnlinkContact: UNLINK_CONTACT_MUTATION,
+  RedeemContactLink: REDEEM_CONTACT_LINK_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

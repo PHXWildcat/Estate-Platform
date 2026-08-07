@@ -177,6 +177,17 @@ export interface PermissionGrantInput {
   readonly action: string;
 }
 
+/**
+ * A minted link invitation. `code` is the ONLY time this value exists outside
+ * the owner's own head: the service stores its sha256 and cannot re-show it, so
+ * a client that discards it has to mint another.
+ */
+export const LinkInvitationSchema = z.object({
+  code: z.string().min(8),
+  expiresAt: z.string().min(1),
+});
+export type LinkInvitation = z.infer<typeof LinkInvitationSchema>;
+
 export interface ProfileClient {
   /** The caller's own profile, or null when they have never saved one. */
   profile(accessToken: string): Promise<Profile | null>;
@@ -200,6 +211,12 @@ export interface ProfileClient {
     input: PermissionGrantInput,
   ): Promise<string>;
   revokePermission(accessToken: string, roleAssignmentId: string, grantId: string): Promise<void>;
+  /** Mint a single-use link code. STEP-UP GATED downstream. */
+  inviteLink(accessToken: string, contactId: string): Promise<LinkInvitation>;
+  revokeLinkInvitation(accessToken: string, contactId: string): Promise<void>;
+  unlink(accessToken: string, contactId: string): Promise<void>;
+  /** Redeem a code as the person being linked. Takes NO id — see the service. */
+  redeemLink(accessToken: string, code: string): Promise<void>;
 }
 
 type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
@@ -360,6 +377,39 @@ export class FetchProfileClient implements ProfileClient {
     );
   }
 
+  async inviteLink(accessToken: string, contactId: string): Promise<LinkInvitation> {
+    const res = await this.request(
+      'POST',
+      `/v1/contacts/${encodeURIComponent(contactId)}/link-invitation`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, LinkInvitationSchema);
+  }
+
+  async revokeLinkInvitation(accessToken: string, contactId: string): Promise<void> {
+    await this.send(
+      'DELETE',
+      `/v1/contacts/${encodeURIComponent(contactId)}/link-invitation`,
+      accessToken,
+    );
+  }
+
+  async unlink(accessToken: string, contactId: string): Promise<void> {
+    await this.send('DELETE', `/v1/contacts/${encodeURIComponent(contactId)}/link`, accessToken);
+  }
+
+  /**
+   * The code is the whole request: no owner id, no contact id, nothing to name
+   * an account with (docs/03 §6b). The response carries no estate data either,
+   * so a stolen code cannot become a read.
+   */
+  async redeemLink(accessToken: string, code: string): Promise<void> {
+    await this.send('POST', '/v1/contact-links/redeem', accessToken, { code });
+  }
+
   private async created(
     method: Method,
     path: string,
@@ -433,6 +483,34 @@ export class FetchProfileClient implements ProfileClient {
      */
     if (res.status === 409 && token === 'contact_in_use') {
       return bffError('CONTACT_IN_USE');
+    }
+    /*
+     * The two "you already did that" conflicts. Migration 004 and 005 promised
+     * these would surface as ORDINARY REFUSALS rather than a 500 — a promise this
+     * mapping is what keeps: without a case here they fall through to a plain
+     * Error, yoga masks it, and a double click reads as "something went wrong on
+     * our side" for something the user did nothing wrong to cause.
+     */
+    if (res.status === 409 && token === 'role_already_granted') {
+      return bffError('ROLE_ALREADY_GRANTED');
+    }
+    if (res.status === 409 && token === 'permission_already_granted') {
+      return bffError('PERMISSION_ALREADY_GRANTED');
+    }
+    if (res.status === 409 && token === 'already_linked') {
+      return bffError('ALREADY_LINKED');
+    }
+    /*
+     * `invalid_code` is the service's ONE answer for every failed redemption —
+     * unknown, expired, spent, revoked, self-directed. It is forwarded as one
+     * code for the same reason: distinguishing them would tell whoever is
+     * holding a guess that their guess named something real.
+     */
+    if (res.status === 400 && token === 'invalid_code') {
+      return bffError('INVALID_LINK_CODE');
+    }
+    if (res.status === 503 && token === 'notifications_unavailable') {
+      return bffError('NOTIFICATIONS_UNAVAILABLE');
     }
     if (res.status === 409 && token === 'profile_key_retired') {
       return bffError('CONTENT_ERASED');

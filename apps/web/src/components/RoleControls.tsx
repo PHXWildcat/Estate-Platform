@@ -10,6 +10,7 @@ import {
   EFFECTIVE_CONDITIONS,
   ROLES,
 } from '../lib/people';
+import type { StepUpRetryOutcome } from '../lib/step-up';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
 
@@ -73,7 +74,39 @@ const ACTIONS: ReadonlyArray<{ action: string; label: string }> = [
   { action: 'download', label: 'Read and download' },
 ];
 
-type PendingStepUp = { kind: 'grant' } | { kind: 'revoke'; roleAssignmentId: string } | null;
+/**
+ * The action a step-up is being collected FOR — carried in full, because the
+ * prompt's whole contract is that it retries THE ACTION THAT WAS REFUSED.
+ *
+ * The M13 review found the permission-widen path folding into `{kind:'grant'}`,
+ * the role-grant variant: after a genuine TOTP challenge the app then ran
+ * `grantRole()` from the picker's current state, writing an executor designation
+ * the owner never chose onto the settlement/§5.1 executor-resolution chain, and
+ * silently dropping the permission they had actually clicked. A discriminated
+ * union that carries every argument the retry needs is what makes that class of
+ * mix-up unrepresentable rather than merely absent.
+ */
+type PendingStepUp =
+  | { kind: 'grantRole' }
+  | { kind: 'revokeRole'; roleAssignmentId: string }
+  | { kind: 'grantPermission'; roleAssignmentId: string; resource: string; action: string }
+  | null;
+
+/** TOTAL over the union, so a new pending action cannot inherit another's words. */
+const STEP_UP_HINT: Record<NonNullable<PendingStepUp>['kind'], string> = {
+  grantRole:
+    'Naming someone to a role in your estate needs a fresh check. Enter the six-digit code from your authenticator.',
+  revokeRole:
+    'Removing a role needs a fresh check too — it takes away an executor’s route into your estate, so it is protected the same way naming one is.',
+  grantPermission:
+    'Allowing a role to read part of your estate needs a fresh check. Enter the six-digit code from your authenticator — we will then apply exactly the permission you chose.',
+};
+
+const STEP_UP_LABEL: Record<NonNullable<PendingStepUp>['kind'], string> = {
+  grantRole: 'Confirm and save',
+  revokeRole: 'Confirm and remove',
+  grantPermission: 'Confirm and allow',
+};
 
 export function RoleControls({ contactId, contactName, linked }: RoleControlsProps): ReactElement {
   const [roles, setRoles] = useState<RoleAssignmentInfo[] | null>(null);
@@ -117,7 +150,7 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
     setRoles(next.filter((entry) => entry.contactId === contactId));
   }
 
-  async function grantRole(): Promise<void> {
+  async function grantRole(): Promise<StepUpRetryOutcome> {
     setError(null);
     setBusy(true);
     const result = await gqlRequest('GrantRole', {
@@ -130,16 +163,19 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
     if (result.ok) {
       setStepUp(null);
       applyRoles(result.data.grantRole);
-      return;
+      return 'applied';
     }
     if (result.code === 'STEPUP_REQUIRED') {
-      setStepUp({ kind: 'grant' });
-      return;
+      setStepUp({ kind: 'grantRole' });
+      // 'stale' so an OPEN prompt keeps retrying while the peer's session cache
+      // expires; the first refusal (no prompt yet) simply opens one.
+      return 'stale';
     }
     setError(messageFor(result.code));
+    return 'applied';
   }
 
-  async function revokeRole(roleAssignmentId: string): Promise<void> {
+  async function revokeRole(roleAssignmentId: string): Promise<StepUpRetryOutcome> {
     setError(null);
     setBusy(true);
     const result = await gqlRequest('RevokeRole', { roleAssignmentId });
@@ -147,44 +183,56 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
     if (result.ok) {
       setStepUp(null);
       applyRoles(result.data.revokeRole);
-      return;
+      return 'applied';
     }
     if (result.code === 'STEPUP_REQUIRED') {
-      setStepUp({ kind: 'revoke', roleAssignmentId });
-      return;
+      setStepUp({ kind: 'revokeRole', roleAssignmentId });
+      return 'stale';
     }
     setError(messageFor(result.code));
+    return 'applied';
   }
 
   async function grantPermission(
     roleAssignmentId: string,
     resource: string,
     action: string,
-  ): Promise<void> {
+  ): Promise<StepUpRetryOutcome> {
     setError(null);
+    // IN-FLIGHT GUARD. This was the one retried action without one: its buttons
+    // stayed enabled, so two clicks issued two POSTs and — before migration 005 —
+    // wrote two grants, of which withdrawing the visible one left the other
+    // conferring everything.
+    setBusy(true);
     const result = await gqlRequest('GrantRolePermission', {
       roleAssignmentId,
       resource,
       action,
     });
+    setBusy(false);
     if (result.ok) {
+      setStepUp(null);
       setPermissions((current) => ({
         ...current,
         [roleAssignmentId]: result.data.grantRolePermission,
       }));
-      return;
+      return 'applied';
     }
     if (result.code === 'STEPUP_REQUIRED') {
-      // Widening a grant is gated like naming a role. Elevate, then retry.
-      setStepUp({ kind: 'grant' });
-      return;
+      // Widening a grant is gated like naming a role — but the RETRY must be
+      // this permission, not a role. Carry every argument it needs.
+      setStepUp({ kind: 'grantPermission', roleAssignmentId, resource, action });
+      return 'stale';
     }
     setError(messageFor(result.code));
+    return 'applied';
   }
 
   async function revokePermission(roleAssignmentId: string, grantId: string): Promise<void> {
     setError(null);
+    setBusy(true);
     const result = await gqlRequest('RevokeRolePermission', { roleAssignmentId, grantId });
+    setBusy(false);
     if (result.ok) {
       setPermissions((current) => ({
         ...current,
@@ -283,6 +331,7 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
                           <button
                             type="button"
                             className="btn btn-secondary"
+                            disabled={busy}
                             onClick={() => {
                               void revokePermission(entry.id, grant.id);
                             }}
@@ -301,6 +350,7 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
                         key={resource.resource}
                         type="button"
                         className="btn btn-secondary"
+                        disabled={busy}
                         onClick={() => {
                           void grantPermission(entry.id, resource.resource, 'read');
                         }}
@@ -376,15 +426,22 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
       {stepUp !== null ? (
         <StepUpPrompt
           idPrefix="role-stepup"
-          hint={
-            stepUp.kind === 'grant'
-              ? 'Changing who holds a role in your estate needs a fresh check. Enter the six-digit code from your authenticator.'
-              : 'Removing a role needs a fresh check too — it takes away an executor’s route into your estate, so it is protected the same way naming one is.'
-          }
-          submitLabel={stepUp.kind === 'grant' ? 'Confirm and save' : 'Confirm and remove'}
-          onElevated={() =>
-            stepUp.kind === 'grant' ? grantRole() : revokeRole(stepUp.roleAssignmentId)
-          }
+          /*
+           * The wording follows the ACTION, because this prompt is where someone
+           * consents to it: a hint about role changes over a retry that widens a
+           * permission would be the ceremony mis-stating what it authorizes.
+           */
+          hint={STEP_UP_HINT[stepUp.kind]}
+          submitLabel={STEP_UP_LABEL[stepUp.kind]}
+          onElevated={() => {
+            if (stepUp.kind === 'grantRole') {
+              return grantRole();
+            }
+            if (stepUp.kind === 'revokeRole') {
+              return revokeRole(stepUp.roleAssignmentId);
+            }
+            return grantPermission(stepUp.roleAssignmentId, stepUp.resource, stepUp.action);
+          }}
           onCancel={() => {
             setStepUp(null);
           }}

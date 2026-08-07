@@ -17,6 +17,8 @@ describe('package surface', () => {
       'vault.grantees_changed',
       'settlement.case_opened',
       'settlement.owner_contact',
+      // M13: somebody claimed a link to an owner's estate contact.
+      'contact.link_claimed',
     ]);
     expect(api.NOTIFICATION_CHANNELS).toEqual(['email', 'push', 'sms', 'voice']);
   });

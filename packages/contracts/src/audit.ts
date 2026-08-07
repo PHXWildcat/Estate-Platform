@@ -36,6 +36,19 @@ export const AUDIT_ACTIONS = [
   // revocation that leaves no trace is also the one an owner most needs to
   // prove later ("I took that access away on the 14th").
   'permission.revoked',
+  // The contact link ceremony (M13 PR3). `contacts.linked_user_id` is an
+  // authorization edge — being a linked contact is what makes someone able to
+  // open a death case (docs/03 §6b) and what makes an executor resolvable — so
+  // every step of acquiring, retiring and removing one is recorded. The claim
+  // is audited with the REDEEMER as actor, so "who linked themselves to whose
+  // estate" is answerable from either end of the trail.
+  'contact.link.invited',
+  'contact.link.claimed',
+  'contact.link.invitation_revoked',
+  'contact.link.removed',
+  // The production notifications precondition firing. A control refusing must
+  // never read as an outage (the M9 rule).
+  'contact.link.notifications_refused',
   // Asset service (financial cluster).
   'asset.created',
   'asset.updated',
