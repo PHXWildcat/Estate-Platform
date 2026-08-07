@@ -193,17 +193,53 @@ jobs:
         env:
           MATRIX_PROFILE: ${{ matrix.profile }}
 
+      # Same derivation as images.yml, and needed here for a reason that is not
+      # obvious. The migrate loop above runs each job ATTACHED, so a job NAMED on
+      # the command line streams its own failure — but its DEPENDENCIES do not.
+      # That list is sorted, so it starts at migrate-ai-assistant, which pulls
+      # migrate-notifications -> migrate-settlement -> migrate-profile in as
+      # unattached prerequisites: a failure in any of those three prints the same
+      # content-free `didn't complete successfully: exit 1` that images.yml hit,
+      # and the hand-written list this replaces held five infra containers — no
+      # migrator, and not one of the six pg-* containers. `--profile bootstrap`
+      # alone is right here: services run on the host under the supervisor, whose
+      # log is dumped first, which is why that group stays.
       - name: Diagnostics
         if: failure()
         run: |
-          echo '--- supervisor ---'; cat stack.log || true
-          echo '--- compose ps ---'
-          docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
-            --profile bootstrap ps -a || true
-          for svc in localstack aws-tls clamav tesseract redpanda; do
-            echo "--- $svc ---"
-            docker compose --env-file .env.stack.compose -f docker-compose.stack.yml logs --tail 60 "$svc" || true
+          compose() {
+            docker compose --env-file .env.stack.compose -f docker-compose.stack.yml \
+              --profile bootstrap "$@"
+          }
+          echo '::group::supervisor'
+          cat stack.log || true
+          echo '::endgroup::'
+
+          if [ ! -f .env.stack.compose ]; then
+            echo 'no .env.stack.compose — the failure is before the stack was configured'
+            exit 0
+          fi
+
+          # Load-bearing: a container left in `created` by a failed dependency
+          # writes no log line at all, so this is what separates it from one that
+          # started and said nothing.
+          echo '::group::compose ps -a'
+          compose ps -a || true
+          echo '::endgroup::'
+
+          # Exited containers first and in full — a migrator's whole output is
+          # one `err.message` with no stack, so this is the one place a tail
+          # could remove the answer.
+          exited=$(compose ps -a --status exited --services || true)
+          for svc in $(echo "$exited" | sort); do
+            echo "::group::${svc} — exited, full log"
+            compose logs --no-color "$svc" || true
+            echo '::endgroup::'
           done
+
+          echo '::group::every container, tail 80'
+          compose logs --no-color --timestamps --tail 80 || true
+          echo '::endgroup::'
 
       - name: Stop
         if: always()
