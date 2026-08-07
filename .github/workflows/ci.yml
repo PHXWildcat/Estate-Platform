@@ -58,6 +58,18 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The CI helper scripts under .github/scripts are plain node, outside every
+      # workspace jest project, so `pnpm test` cannot see them — which is how
+      # `gate-image-scan.mjs`, the script that decides whether a vulnerability
+      # blocks a merge, has never had a test. `node --test` needs no dependency
+      # and no project wiring, so there is no excuse for the next one either.
+      # The glob is named explicitly because `node --test` does not walk a
+      # DOT-directory: given `.github/scripts/` it hands the path to the module
+      # loader and dies with MODULE_NOT_FOUND, which would have looked like a
+      # broken test rather than a discovery quirk.
+      - name: Test the CI helper scripts
+        run: node --test .github/scripts/*.test.mjs
+
       # --coverage makes the per-package coverage tables visible in CI logs;
       # thresholds (95 backend / 90 frontend target) get enabled once real
       # CI-measured numbers exist — integration suites only run here, so local

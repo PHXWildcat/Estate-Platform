@@ -1,25 +1,16 @@
 name: Notify failure
 
-# WHY THIS EXISTS: an unwatched red gate is not a gate.
+# Called by the two workflows that have SCHEDULES — Security's nightly
+# full-history secret sweep and Images' weekly base rebuild. Both exist so that
+# nobody has to push, which is exactly why nobody is watching when they break:
+# the secret sweep failed seventeen consecutive runs unremarked before this
+# existed. See .github/scripts/notify-failure.mjs for the reasoning and the
+# one-issue-many-comments rule.
 #
-# The scheduled secret sweep failed SEVENTEEN CONSECUTIVE RUNS — every scheduled
-# run that had ever executed — and nobody noticed, because a scheduled run
-# notifies nobody by default: there is no PR to turn red, no push author to
-# email, and the Actions tab only shows it to someone who goes looking. The
-# remediation eventually came from reading the code, not from any of the
-# seventeen alarms. So the fix for that class of failure is not a better gate; it
-# is making the existing gate reach a human.
-#
-# SCHEDULED AND DISPATCHED RUNS ONLY, deliberately. A failing push or PR run
-# already has an obvious owner watching it, and opening an issue for those would
-# bury the signal in noise — which is precisely how the seventeen came to be
-# ignored. Callers gate on the event; this workflow does not second-guess them.
-#
-# ONE ISSUE, MANY COMMENTS. Seventeen red days must produce one issue with
-# seventeen comments, never seventeen issues: a duplicate-issue storm is the same
-# desensitization in a different costume. The issue is found by label + title, so
-# a still-open report is commented on and a resolved one is reopened rather than
-# duplicated.
+# Callers gate on the event (schedule and workflow_dispatch only) and grant
+# `issues: write` on the calling job — this workflow deliberately does not
+# second-guess either, because a failing push or PR run already has an owner
+# watching it and an issue per push failure would bury the signal.
 on:
   workflow_call:
     inputs:
@@ -28,99 +19,21 @@ on:
         required: true
         type: string
       details:
-        description: One line on what the failure means, and where to look first.
+        description: One line on what this workflow's failure usually means, and where to look first.
         required: false
         default: ''
         type: string
-
-permissions:
-  contents: read
 
 jobs:
   open-or-update-issue:
     runs-on: ubuntu-latest
     permissions:
-      # The only write this repository's automation performs, and it is scoped to
-      # this job alone — the calling workflows keep `contents: read`.
       issues: write
     steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            const LABEL = 'ci-failure';
-            const title = `CI: scheduled ${{ inputs.workflow }} run is failing`;
-            const runUrl =
-              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
-              `/actions/runs/${context.runId}`;
-            const details = `${{ toJSON(inputs.details) }}`;
-
-            // Ensure the label exists before it is used as a search key; a
-            // missing label would make every run open a fresh issue.
-            try {
-              await github.rest.issues.getLabel({ ...context.repo, name: LABEL });
-            } catch {
-              await github.rest.issues.createLabel({
-                ...context.repo,
-                name: LABEL,
-                color: 'b60205',
-                description: 'A scheduled or dispatched CI gate is failing',
-              });
-            }
-
-            // Search open FIRST, then closed. A gate that starts failing again
-            // after someone closed the report should reopen that thread rather
-            // than start a parallel one.
-            const search = async (state) =>
-              (
-                await github.rest.issues.listForRepo({
-                  ...context.repo,
-                  labels: LABEL,
-                  state,
-                  per_page: 100,
-                })
-              ).data.find((i) => i.title === title);
-
-            const body =
-              `Scheduled run of **${{ inputs.workflow }}** failed: ${runUrl}\n\n` +
-              `Commit \`${context.sha.slice(0, 7)}\` · event \`${context.eventName}\`` +
-              (details && details !== '""' ? `\n\n${JSON.parse(details)}` : '');
-
-            const open = await search('open');
-            if (open) {
-              await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number: open.number,
-                body,
-              });
-              core.notice(`Commented on existing #${open.number}`);
-              return;
-            }
-
-            const closed = await search('closed');
-            if (closed) {
-              await github.rest.issues.update({
-                ...context.repo,
-                issue_number: closed.number,
-                state: 'open',
-              });
-              await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number: closed.number,
-                body: `Failing again.\n\n${body}`,
-              });
-              core.notice(`Reopened #${closed.number}`);
-              return;
-            }
-
-            const created = await github.rest.issues.create({
-              ...context.repo,
-              title,
-              labels: [LABEL],
-              body:
-                `${body}\n\n---\n\nThis issue is opened by ` +
-                `\`.github/workflows/notify-failure.yml\` because a scheduled run has ` +
-                `no PR to turn red and no push author to notify. Further failures are ` +
-                `added as comments here rather than as new issues. Close it when the ` +
-                `gate is green; it reopens itself if the failure returns.`,
-            });
-            core.notice(`Opened #${created.data.number}`);
+      - uses: actions/checkout@v4
+      - name: Open or update the failure issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NOTIFY_WORKFLOW: ${{ inputs.workflow }}
+          NOTIFY_DETAILS: ${{ inputs.details }}
+        run: node .github/scripts/notify-failure.mjs
