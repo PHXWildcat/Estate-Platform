@@ -1,0 +1,39 @@
+name: Notify failure
+
+# Called by the two workflows that have SCHEDULES — Security's nightly
+# full-history secret sweep and Images' weekly base rebuild. Both exist so that
+# nobody has to push, which is exactly why nobody is watching when they break:
+# the secret sweep failed seventeen consecutive runs unremarked before this
+# existed. See .github/scripts/notify-failure.mjs for the reasoning and the
+# one-issue-many-comments rule.
+#
+# Callers gate on the event (schedule and workflow_dispatch only) and grant
+# `issues: write` on the calling job — this workflow deliberately does not
+# second-guess either, because a failing push or PR run already has an owner
+# watching it and an issue per push failure would bury the signal.
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: Human name of the workflow that failed, used in the issue title.
+        required: true
+        type: string
+      details:
+        description: One line on what this workflow's failure usually means, and where to look first.
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  open-or-update-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open or update the failure issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NOTIFY_WORKFLOW: ${{ inputs.workflow }}
+          NOTIFY_DETAILS: ${{ inputs.details }}
+        run: node .github/scripts/notify-failure.mjs

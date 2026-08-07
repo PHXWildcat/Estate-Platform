@@ -48,8 +48,18 @@ docs/                   00–04 + docs/adr/ going forward
    be importable from `apps/web` — lint-enforced.
 4. **Services never import each other** — only `packages/*`. `web` may import `ui`,
    `contracts`, `vault-crypto` only.
-5. **CI security gates are merge-blocking from commit one:** gitleaks, CodeQL,
-   dependency review; tfsec/OPA once Terraform lands.
+5. **CI security gates run on every push and PR from commit one:** gitleaks, CodeQL,
+   dependency review; tfsec/OPA once Terraform lands. CORRECTED 2026-08-07 — this rule
+   previously said "merge-blocking", and that was aspiration recorded as fact: `main`
+   has never had branch protection or required status checks, so no gate has ever
+   mechanically blocked a merge. The gap was not cosmetic — the scheduled secret sweep
+   failed seventeen consecutive runs while every merge proceeded, because a red check
+   that blocks nothing is a notification, and an unread notification is nothing. The
+   practice that holds today is procedural: CI is watched before every merge
+   (`gh pr merge --auto` merges immediately here, so watching is the only gate).
+   Making the original sentence true again means enabling branch protection with
+   required status checks on `main` — a repository-settings change, not a commit,
+   recorded here as the open item it is.
 6. **A CI gate never holds a hand-maintained list of what it covers — it derives the
    list from the tree.** Specifically: *a diagnostics step must derive its container
    set* (`compose ps -a --services`), never name services inline. This is a rule

@@ -60,10 +60,18 @@ export default tseslint.config(
     // stdout) does not apply. They never touch user data.
     files: ['.github/scripts/**/*.mjs'],
     languageOptions: {
-      globals: { process: 'readonly', console: 'readonly' },
+      // `fetch` is a Node 18+ global. It was absent here only because
+      // gate-image-scan.mjs reads a file and makes no request; notify-failure.mjs
+      // is the first of these to call an API.
+      globals: { process: 'readonly', console: 'readonly', fetch: 'readonly' },
     },
     rules: {
       'no-console': 'off',
+      // These are plain .mjs, so a rule demanding TypeScript annotations on
+      // exported functions cannot be satisfied — and the exports are what make
+      // the logic unit-testable without a live GitHub repository, which matters
+      // more here than in a script with no exports at all.
+      '@typescript-eslint/explicit-module-boundary-types': 'off',
     },
   },
   {

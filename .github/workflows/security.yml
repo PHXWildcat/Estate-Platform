@@ -62,3 +62,24 @@ jobs:
       - uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: low
+
+  # A scheduled run notifies nobody by default — no PR to turn red, no push
+  # author to email — which is how this workflow's own sweep failed seventeen
+  # consecutive times unremarked. Gated to schedule and dispatch on purpose: a
+  # failing push or PR run already has someone watching it, and an issue per push
+  # failure would bury the signal exactly as the seventeen were buried.
+  notify-on-failure:
+    needs: [secret-scan, codeql]
+    if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/notify-failure.yml
+    permissions:
+      issues: write
+    with:
+      workflow: Security
+      details: >-
+        The scheduled sweep scans the WHOLE HISTORY, unlike the push scan which
+        covers only the pushed commits — so this can be red while every push and
+        PR is green. A finding in a historical commit stays found even after the
+        tree is remediated; the remedy is a 4-field `.gitleaksignore` fingerprint
+        (see that file's header), never a path or rule exclusion. Reproduce with
+        `gh workflow run security.yml --ref main`.
