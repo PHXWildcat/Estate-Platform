@@ -1792,3 +1792,27 @@ deviating from them, stop and propose the change with rationale — do not silen
   into the duplicate list, and the first correction to `%%` — zero placeholders
   — turned the branch into a hard error). AN EXCEPTION NOBODY TRIGGERS IN A
   TEST IS AN EXCEPTION NOBODY HAS READ.
+- 2026-08-06 — A COMMENT ASSERTING AN ABSENCE OUTLIVED THE ABSENCE, and the
+  shipped web image lost the vendored typeface for several milestones.
+  `web.Dockerfile` copied `.next/standalone` + `.next/static` and stated "There
+  is no `public/` directory in this app" — true when M5 wrote it, false the
+  moment the Evergreen-rail redesign vendored Instrument Sans into
+  `apps/web/public/fonts`. `output: 'standalone'` excludes `public/` from the
+  traced bundle exactly as it excludes `.next/static`, so the omission was not a
+  build error but a RUNTIME 404: measured against the live stack, the face
+  status was `error` with 0 bytes transferred and every page fell back to a
+  system font — defeating the whole reason the font is vendored (2026-07-30: no
+  build or page load may depend on a third-party fetch). Invisible to every gate
+  because the image's only frontend check was LIVENESS, and a missing asset
+  still boots, still renders, still answers 200 at `/`. Fixed with the COPY;
+  `images.yml` now asserts each file under `apps/web/public` returns 200 from
+  the built image, DERIVED FROM THE REPO TREE rather than hardcoded so the next
+  asset is covered without anyone remembering — and so a `.dockerignore` rule
+  that starts excluding something under `public/` turns red instead of shipping
+  quietly. Mutation-tested both ways (exit 1 against the shipped image, 0 with
+  the COPY). Service images are NOT exposed to this class: `node-service.
+  Dockerfile` ships `pnpm deploy --prod`'s whole package tree, so `.cedar`
+  policies and the template JSON travel without an explicit copy — verified
+  present in the running documents image. The general rule: a comment that
+  justifies an omission by asserting a fact about the tree is a test nobody
+  runs, and the fix is to make the tree the input.

@@ -55,10 +55,19 @@ ENV NODE_ENV=production \
 USER nonroot
 # `standalone` already contains the minimal node_modules closure and a server.js
 # entrypoint; the static assets are copied in beside it because Next deliberately
-# leaves them out of the traced bundle. There is no `public/` directory in this
-# app — add a COPY for it here if one is ever introduced, since Next excludes it
-# from the bundle too.
+# leaves them out of the traced bundle. BOTH of the copies below are required for
+# that reason — `.next/static` and `public/` are excluded from the traced bundle
+# alike, and a missing one produces a 404 at runtime rather than a build error.
+#
+# `public/` held nothing when this file was written and that comment outlived the
+# fact: the Evergreen-rail redesign vendored Instrument Sans into
+# apps/web/public/fonts precisely so no build or page load reaches a third-party
+# CDN, and without this copy every page in the shipped image silently fell back
+# to a system font. .github/workflows/images.yml asserts each file under
+# apps/web/public is served with a 200 by the built image, so the next asset
+# added is covered by a test rather than by this comment.
 COPY --from=builder --chown=nonroot:nonroot /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=nonroot:nonroot /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=nonroot:nonroot /app/apps/web/public ./apps/web/public
 EXPOSE 3000
 CMD ["apps/web/server.js"]

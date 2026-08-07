@@ -119,6 +119,20 @@ jobs:
           fi
 
       # The frontend has no secrets to validate, so its liveness IS the check.
+      #
+      # Liveness alone is not enough. `output: 'standalone'` omits BOTH
+      # `.next/static` and `public/` from the traced bundle, so each reaches the
+      # image only via an explicit COPY in web.Dockerfile — and a missing one is
+      # invisible here: the server still boots, the page still renders, and only
+      # the asset 404s. That is exactly what happened to the vendored Instrument
+      # Sans files for several milestones (the whole point of vendoring them is
+      # that no page load touches a third-party CDN, which a 404 defeats). So
+      # every file under apps/web/public must come back 200 from the image.
+      #
+      # Derived from the repo tree rather than hardcoded, so a newly added asset
+      # is covered without anyone remembering to extend this list — and so a
+      # .dockerignore rule that starts excluding something under public/ turns
+      # this red instead of shipping quietly.
       - name: Smoke test — web serves
         if: matrix.kind == 'web'
         run: |
@@ -129,9 +143,22 @@ jobs:
             sleep 2
           done
           docker logs web
-          docker rm -f web >/dev/null
           if [ -z "$ok" ]; then
+            docker rm -f web >/dev/null
             echo "::error::web image did not serve on :3000"
+            exit 1
+          fi
+
+          missing=
+          for f in $(find apps/web/public -type f | sort); do
+            asset="${f#apps/web/public}"
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000${asset}")
+            echo "public${asset} -> ${code}"
+            [ "$code" = 200 ] || missing="${missing} ${asset}(${code})"
+          done
+          docker rm -f web >/dev/null
+          if [ -n "$missing" ]; then
+            echo "::error::the image does not serve public/ assets:${missing}"
             exit 1
           fi
 
