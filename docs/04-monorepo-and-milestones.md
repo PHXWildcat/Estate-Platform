@@ -50,6 +50,20 @@ docs/                   00–04 + docs/adr/ going forward
    `contracts`, `vault-crypto` only.
 5. **CI security gates are merge-blocking from commit one:** gitleaks, CodeQL,
    dependency review; tfsec/OPA once Terraform lands.
+6. **A CI gate never holds a hand-maintained list of what it covers — it derives the
+   list from the tree.** Specifically: *a diagnostics step must derive its container
+   set* (`compose ps -a --services`), never name services inline. This is a rule
+   because the same drift has now cost three times, in three different shapes: a
+   hand-copied `migrate-*` list that never learned about `migrate-notifications` (M9),
+   a `web.Dockerfile` comment asserting `public/` was empty long after the redesign
+   vendored a typeface into it (2026-08-06), and an `if: failure()` diagnostics step
+   whose nine hand-named services excluded every one-shot job — so a `migrate-documents`
+   failure printed sixty lines each from healthy containers and nothing from the one
+   that died (2026-08-07). All three passed every gate: a list maintained by memory,
+   beside a thing that grows, fails silently and reads as coverage. The corollary is
+   that the derivation must degrade rather than gate — if the derivation itself fails,
+   print its error and fall through to an undifferentiated dump; the enhancement may
+   fail, the diagnostic may not.
 
 ## Milestones
 
