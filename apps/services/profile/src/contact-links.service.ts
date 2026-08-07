@@ -317,8 +317,7 @@ export const CODE_RANDOM_BYTES = 20;
  * code is not the guard it appears to be, and the honest place to measure a
  * canonical form is after canonicalizing.
  */
-export const CANONICAL_CODE_LENGTH =
-  canonicalCode('ESL1-').length + (CODE_RANDOM_BYTES * 8) / 5;
+export const CANONICAL_CODE_LENGTH = canonicalCode('ESL1-').length + (CODE_RANDOM_BYTES * 8) / 5;
 
 function readableCode(): string {
   const bytes = randomBytes(CODE_RANDOM_BYTES);
