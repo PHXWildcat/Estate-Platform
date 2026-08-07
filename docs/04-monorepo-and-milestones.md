@@ -2604,14 +2604,26 @@ milestone itself introduced, and most falsify a claim it made about itself.**
    a `canonicalCode` fold that is strict onto the minted alphabet (so it cannot
    make two mintable codes collide) applied on BOTH sides of the hash.
 
-**Found while re-driving the live stack, not by a lens:** `role_assignments` had
-no uniqueness of any kind, so two clicks minted two identical live executor
-designations. Nothing downstream breaks (every resolver uses `EXISTS`), which is
-precisely why it would have gone unnoticed — but revoking "the" designation would
-leave the duplicate conferring everything, and on the §5.1 chain "revoked" must
-mean revoked. Closed with a partial unique index (COALESCE'd scope, because SQL
-uniqueness treats NULLs as distinct and whole-estate is the commonest case) and a
-`409 role_already_granted`.
+**Hardening, not an observed defect — and the distinction is the point.**
+`role_assignments` had no uniqueness of any kind: nothing in the schema, the repo
+or the service stopped a double-submit or a retry from minting two identical live
+designations, which is a real gap and is now closed with a partial unique index
+(COALESCE'd scope, because SQL uniqueness treats NULLs as distinct and
+whole-estate is the commonest case) plus a `409 role_already_granted`. Revoking
+"the" designation would otherwise leave a duplicate conferring everything it
+conferred before, and on the §5.1 chain "revoked" has to mean revoked.
+
+CORRECTED, because the first version of this entry claimed the live stack had
+EXHIBITED the bug. It had not. Two `executor` / `on_death_verified` rows in the
+stack's core database were read as a duplicate pair from a two-line
+`SELECT role, effective_condition` listing — while the
+`GROUP BY owner_user_id, contact_id, role` query run minutes earlier had already
+returned nothing, which was the correct answer. They belonged to two different
+owners and two different contacts. The migration's own pre-flight settled it
+independently: run against that database it APPLIED rather than refusing, which
+is only possible if no duplicate group existed. The gap is real; the sighting was
+not, and a doc claiming evidence it does not have is the defect class this repo
+treats as real.
 
 **And the duplicate-designation fix produced a second finding on its own.** The
 index was first APPENDED TO 003, a migration the migrator had already recorded —

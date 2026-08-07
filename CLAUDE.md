@@ -1675,19 +1675,31 @@ deviating from them, stop and propose the change with rationale — do not silen
   scopes by owner, fixed anyway because a cross-owner designation resurrects the
   silent-retirement shape PR1 closed — the other owner's `contact_in_use` check is
   owner-scoped and would never see it.
-- 2026-08-06 — RE-DRIVING THE LIVE STACK FOUND WHAT NO LENS DID: `role_assignments`
-  had no uniqueness of any kind, so two clicks minted two identical live executor
-  designations. Nothing downstream breaks — every resolver uses `EXISTS`/`LIMIT 1`
-  — which is precisely why it would have gone unnoticed, and precisely why it
-  matters: revoking "the" designation leaves the duplicate conferring everything
-  it conferred before, and on the docs/03 §5.1 executor chain "revoked" has to
-  mean revoked. Closed with a partial unique index over (owner, contact, role,
-  scope_type, COALESCE(scope_id, nil-uuid), effective_condition) WHERE deleted_at
-  IS NULL — the COALESCE because SQL uniqueness treats NULLs as distinct and
-  `scope_id IS NULL` (the whole estate) is the commonest case, so without it the
-  constraint would have permitted unlimited duplicates of exactly the broadest
-  designation — plus a `409 role_already_granted` so a double click is an ordinary
-  refusal rather than a 500 or a silent second write.
+- 2026-08-06 — `role_assignments` HAD NO UNIQUENESS OF ANY KIND — hardening, and
+  the entry is worth keeping mostly for how it was nearly mis-recorded. Nothing in
+  the schema, the repo or the service stopped a double-submit or a retry from
+  minting two identical live designations, and revoking "the" designation would
+  leave the duplicate conferring everything it conferred before; on the docs/03
+  §5.1 executor chain "revoked" has to mean revoked. Closed with a partial unique
+  index over (owner, contact, role, scope_type, COALESCE(scope_id, nil-uuid),
+  effective_condition) WHERE deleted_at IS NULL — the COALESCE because SQL
+  uniqueness treats NULLs as distinct and `scope_id IS NULL` (the whole estate) is
+  the commonest case, so without it the constraint would permit unlimited
+  duplicates of exactly the broadest designation — plus a `409
+  role_already_granted` so a double click is an ordinary refusal rather than a 500
+  or a silent second write.
+  CORRECTED IN THE SAME SESSION: this was first written up as a defect the live
+  stack had EXHIBITED ("two clicks minted two identical designations"). It had
+  not. Two `executor`/`on_death_verified` rows were read as a duplicate pair off a
+  two-line `SELECT role, effective_condition` listing — while a
+  `GROUP BY owner_user_id, contact_id, role` run minutes earlier had already
+  returned nothing, which was the right answer; the rows belonged to two different
+  owners and two different contacts. The migration's own pre-flight then settled
+  it independently: run against that database it APPLIED instead of refusing,
+  which is only possible with no duplicate group present. THE LESSON IS THE
+  GENERAL ONE THIS REPO KEEPS RESTATING, turned on myself: a listing that LOOKS
+  like duplicates is not a grouping query, and a doc that claims evidence it does
+  not have is a defect even when the fix it justifies is sound.
 - 2026-08-06 — The link code's ALPHABET WAS HALF-IMPLEMENTED, and the fix is worth
   the entry because the reasoning recurs: the mint avoids I, L, O and U so a code
   can be read down a phone line, but redemption hashed the RAW submission — so
