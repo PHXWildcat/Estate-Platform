@@ -2,6 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "//": "ATTACH to the running M8 compose stack — no command, so nothing is started and no port is bound. This is the entry to use for previewing the real app: `pnpm stack:up` brings up all ten services plus LocalStack, Redpanda, clamd and tesseract, and the web container publishes 3000. The two from-source entries below cannot substitute for it — web alone 500s without a BFF, and real auth/assets/documents data needs the whole stack. Port 3000 specifically: docs/05 and the M8 PR3 decision address the stack at http://localhost:3000 (BFF Secure cookies rely on the browser's localhost exemption).",
+      "name": "stack",
+      "url": "http://localhost:3000",
+      "port": 3000
+    },
+    {
+      "//": "From-source dev servers, for frontend work with no stack running. Both conflict with the stack's published ports by design — they are the same app, so use `stack` above instead of relocating these.",
       "name": "web",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@estate/web", "dev"],
