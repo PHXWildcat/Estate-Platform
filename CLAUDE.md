@@ -1816,3 +1816,62 @@ deviating from them, stop and propose the change with rationale — do not silen
   present in the running documents image. The general rule: a comment that
   justifies an omission by asserting a fact about the tree is a test nobody
   runs, and the fix is to make the tree the input.
+- 2026-08-07 — A DIAGNOSTICS STEP MUST DERIVE ITS CONTAINER SET, which is the
+  THIRD instance of one drift class and the reason it is now written down. CI
+  went red on main with `service "migrate-documents" didn't complete
+  successfully: exit 1` and nothing else — although `images.yml` HAD an
+  `if: failure()` Diagnostics step, and it ran. That step named nine
+  long-running services by hand, `migrate-documents` was not among them, and
+  neither was any other one-shot job: it printed sixty lines each from healthy
+  containers, an EMPTY block for `documents` (whose `depends_on` chain runs
+  through the job that died, so it never started and never logged), and nothing
+  from the container holding the answer. The whole root cause then had to be
+  chased off-box against a scratch database. Same shape as stack.yml's
+  hand-copied migrate list (M9) and web.Dockerfile's asserted-absent `public/`
+  (2026-08-06): a list maintained by memory beside a thing that grows. Fixed by
+  deriving from the project — `compose ps -a --status exited --services`, each
+  exited container framed and UNTRUNCATED (a migrator's entire output is one
+  `err.message` with no stack, so it is the one place a `--tail` removes the
+  answer), then a bounded whole-project dump for ordering context. Four
+  properties were measured rather than assumed: `logs` does cover EXITED
+  containers, but only because `Stop` (`down -v`) runs after Diagnostics — the
+  two steps must not be reordered; the `--profile` flags are REQUIRED for the
+  bare service-less form (without them, ten of thirty-five containers, exit 0,
+  no warning) and so live in one shell function that `ps` and `logs` share,
+  since the old step passed them to `ps` only; the bare dump INTERLEAVES
+  containers, so it is context and not the answer; and the step needs an
+  env-file guard, because the failures most in need of it happen before
+  `.env.stack` exists and `bash -e` would make the entire output one
+  `couldn't find env file` line. stack.yml gets the same fix for a
+  non-obvious reason: its migrate loop runs each job ATTACHED, so a job NAMED
+  on the command line streams its own failure, but an unattached DEPENDENCY
+  does not — and the sorted list starts at `migrate-ai-assistant`, which pulls
+  notifications → settlement → profile in as prerequisites. Do NOT "improve"
+  either step with `docker inspect` or `compose config`: those print the
+  resolved environment, where the generated service credentials and KMS keys
+  live. Container logs do not, and that was verified rather than assumed —
+  every `ConfigError` carries zod issue paths and messages only, no service
+  dumps `process.env`, audit's logger is closed to scalars behind `no-console`,
+  a migrator prints `err.message` and never its connection string, and
+  localstack runs `DEBUG=0`.
+- 2026-08-07 — THE SCHEDULED SECRET SCAN HAD NEVER PASSED, and the fix is a
+  fingerprint rather than an exclusion. `gitleaks-action` scans only the pushed
+  commits on `push` but the WHOLE HISTORY on `schedule`, so both scheduled runs
+  that have ever executed (2026-08-06, 2026-08-07) failed on
+  `generic-api-key` in the M1 walking-skeleton commit `b21e514` — an xkcd
+  passphrase used as a test password, already remediated in the tree (the line
+  generates it with `randomBytes` and says why) but immortal in that commit. A
+  remediated tree does not make a history scan pass. `.gitleaksignore` now
+  carries the 4-field commit form `commit:file:rule-id:start-line`, and three
+  details are load-bearing: the line number is the line AT THAT COMMIT (93),
+  not in the tree (95), which would never match; the 3-field GLOBAL form is
+  checked FIRST and matches in EVERY commit, so it would silently suppress a
+  genuine secret re-introduced at the same path and rule and is banned in the
+  file's own header; and a wrong entry can only leave the scan RED, never turn
+  it green, which is what makes the file reviewable. A `.gitleaks.toml`
+  allowlist was rejected — it has no concept of a line, and expressing it there
+  means writing the literal string back into a tracked file at HEAD, inside a
+  file gitleaks itself scans and whose allowlist cannot cover its own path.
+  The point of the entry is that the gate goes GREEN: a permanently red scan is
+  one where the NEXT finding is invisible, which is the M5 base-image-gate
+  lesson arrived at from the other direction.

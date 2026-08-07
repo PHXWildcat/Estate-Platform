@@ -1,0 +1,34 @@
+# Historical findings that are provably not secrets.
+#
+# Same policy as .gitleaks.toml's allowlist: entries must be provably
+# non-secret, scoped as narrowly as possible, and justified here. Broad path or
+# rule exclusions are not accepted — and neither is the 3-field GLOBAL form
+# (`file:rule-id:start-line`), which gitleaks checks FIRST and which matches in
+# every commit, so it would silently suppress a genuine secret re-introduced at
+# the same path and rule. Use the 4-field commit form only:
+#
+#   commit:file:rule-id:start-line
+#
+# A wrong entry can only leave the scan RED (the fingerprint is a map key that
+# is never hit, and the finding is still reported). There is no way for a wrong
+# entry to turn the scan green, which is the property that makes this file
+# reviewable at all.
+#
+# WHY THIS FILE EXISTS AT ALL: gitleaks-action scans only the pushed commits on
+# `push`, but the whole history on `schedule`. Any secret ever committed is
+# immortal, so a remediated tree does not make the scheduled scan pass — an
+# entry here does. Keeping it green is the point: a red gate is one where the
+# NEXT finding is invisible, which is how a real leak would be missed.
+
+# An xkcd passphrase used as a test password against an in-process test server,
+# in the M1 walking-skeleton commit. Never a credential to anything, and no
+# service outside that test ever accepted it. Already remediated in the working
+# tree, where the value is generated with randomBytes and the line says why —
+# but this commit still adds it, and `git log --all -G` confirms it is the only
+# commit that does, so this one entry is sufficient.
+#
+# The line number is the line AT THIS COMMIT (93). The same statement sits at
+# line 95 in the current tree, and 95 would never match. If this history is ever
+# rewritten the SHA changes and the scan goes red again with no explanation —
+# that is the safe direction, and this comment is the explanation.
+b21e514c9b2382b48a9d80a5af692a8efc846f57:apps/e2e/test/walking-skeleton.e2e.spec.ts:generic-api-key:93
