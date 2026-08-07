@@ -49,6 +49,7 @@ Postgres integration tests are gated on `PG_TEST_URL` (CI always sets it; locall
 - Every field decryption is an audited event (`@estate/crypto` fails closed).
 - Step-up MFA (fresh ≤ 5 min) for sensitive operations.
 - Secrets never in the repo; gitleaks, CodeQL and dependency review run on every
-  push and PR. They are not yet merge-blocking — `main` has no branch protection,
-  so a red gate stops a merge only because a human reads it (docs/04, boundary
-  rule 5).
+  push and PR, and `main` requires the secret scan, CodeQL, the test suite and both
+  stack end-to-end gates to pass before a merge. The image build and scan jobs run
+  but are not required — see docs/04 boundary rule 5 for which checks are required,
+  which can never be, and why.
