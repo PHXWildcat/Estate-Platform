@@ -2218,3 +2218,62 @@ deviating from them, stop and propose the change with rationale — do not silen
   direction. The address-change route that closes it already carries a written
   obligation to clear the verified bit, and now also to invalidate any
   outstanding code.
+- 2026-08-07 — M14 REVIEW ROUND 2, over the fixes themselves, and it earned its
+  place for the second milestone running. Two agents against the fix commit's
+  files only. The headline: THE COMMIT MESSAGE SAID "EVERY FIX MUTATION-TESTED"
+  AND THREE OF THEM SHIPPED CHANGES NO TEST COULD DISTINGUISH FROM A REVERT —
+  vault's new `unverified_recipient` emit (no test anywhere, and the int case
+  added beside it builds the one state where it cannot fire), settlement's
+  emit-outside-the-catch restructure (whose only observable difference is a
+  broker failure propagating, which nothing provoked), and profile's ordering
+  swap (both emits pushed to separate arrays, so relative order was never
+  asserted). All three have tests that go red on revert now. The lesson is not
+  "write more tests": it is that MUTATION-TESTING A FIX MEANS REVERTING THE FIX,
+  not re-running the suite — three of these were "verified" by watching a green
+  suite that would have been green either way.
+- 2026-08-07 — Round 2 also found MY WEDGE TEST PROVING THE WRONG LAYER, which
+  is the M13 lesson committed inside the fix that cites it. The int case was
+  named for "the M14 review's worst finding, pinned against a real database"
+  and called `repo.revokeLive` EXPLICITLY — whose SQL the fix never touched. It
+  proved the primitive that was always correct and asserted nothing about the
+  service decision that was wrong. It drives the SERVICE against the real index
+  now, which is the pair (decision + partial unique index) that no test
+  combined before.
+- 2026-08-07 — Round 2's substantive finds, both in the crypto-shred fix. (a)
+  THE DEK PREDICATE WENT ON THE READ AND NOT THE WRITE: `findStatus` refused a
+  shredded recipient while `markVerified` still stamped one, so the platform
+  would tell a user their address was verified in the same breath as telling
+  every gate it was not — and two docstrings asserted the opposite. (b) THE
+  SHRED WAS FAIL-CLOSED ONLY UNTIL THE NEXT LOGIN: `encryptField` mints a fresh
+  DEK once the old one is destroyed and the upsert preserved `verified_at`, so
+  the row came back with an active key and an untouched proof and every arming
+  gate re-armed with nothing re-proved. The upsert clears the bit when
+  `dek_id` CHANGES now — which happens exactly when the key underneath changed
+  (a shred, or a rotation when one lands) and never on an ordinary login
+  re-feed, so it costs the common path nothing.
+- 2026-08-07 — AND THE ATTEMPT CAP WAS DECORATIVE, which round 2 proved from
+  the code rather than from a test. `countAttempt` took a resolved row id and
+  `verify()` only ever called it inside the branch that had ALREADY decided the
+  row was dead — so `attempts` could only increment on a code that was revoked,
+  spent or expired. Worse, a wrong guess produces a DIFFERENT DIGEST, so the
+  lookup returned nothing and no counter moved at all: the cap could not see
+  the only kind of failure a guesser actually produces. Three comments claimed
+  it "bounds guessing against a LIVE code"; it bounded replay of a dead one,
+  which nothing needed. Keyed on the USER now, so a failed redemption costs the
+  caller's own live code one attempt whatever they submitted — which is what
+  makes `findLive`'s attempts predicate reachable and gives the redeem route
+  its only bound (every failure there writes an append-only `auth_events` row
+  and an audit event). Self-inflicted only: it moves a counter on the caller's
+  own code, from their own session, and the response stays the same uniform
+  refusal.
+- 2026-08-07 — RECORDED, NOT CLOSED: the credential-graph fence still only sees
+  a literal `config.<identifier>`. `config['field']`, `config?.field`, a
+  destructured factory parameter and an intermediate `const` all evade it, as
+  does a config.ts written with `||` instead of `??` (which is what the
+  field→env mapping parses), and the anti-vacuity floor is per SERVICE rather
+  than per edge. None is a regression — the old pattern had every one — but the
+  fix's own rationale about renaming into invisibility applies to the ACCESS
+  SHAPE too, so the remaining holes are written next to the scan rather than
+  left for a reader to assume closed. Closing them properly wants the
+  TypeScript AST rather than a regex, which is a bigger change than a review
+  should make.

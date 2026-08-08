@@ -315,6 +315,20 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       expect(rows).toHaveLength(1); // the row really is still live and still stamped
 
       expect(await service.recipientStatus(shredded)).toEqual({ verified: false });
+      // ...and the WRITE agrees with the read. Round 2 of the M14 review found
+      // the first fix put the DEK predicate only on `findStatus`, so this still
+      // returned true and stamped the row: the platform would tell a user their
+      // address was verified in the same breath as telling every gate it was
+      // not.
+      expect(await service.markRecipientVerified(shredded)).toEqual({ ok: false });
+
+      // AND THE SHRED SURVIVES THE NEXT LOGIN. Identity re-feeds this store on
+      // every login, `encryptField` mints a fresh DEK once the old one is
+      // destroyed, and the upsert used to preserve `verified_at` — so the row
+      // came back with an active key and an untouched proof, and every arming
+      // gate re-armed with nothing re-proved. A change of key clears the proof.
+      await service.upsertRecipient({ userId: shredded, email: 'shredded@example.com' });
+      expect(await service.recipientStatus(shredded)).toEqual({ verified: false });
     });
 
     it('answers false — never throws — for a user the store has never seen', async () => {

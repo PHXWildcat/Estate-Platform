@@ -262,12 +262,16 @@ export class EmailVerificationService {
       row.attempts >= MAX_VERIFY_ATTEMPTS ||
       row.user_id !== userId
     ) {
-      if (row !== null && row.user_id === userId) {
-        // Only count an attempt against the caller's OWN code. Counting
-        // somebody else's would let a signed-in attacker who guessed a digest
-        // exhaust a victim's attempts and force them to re-issue.
-        await this.codes.countAttempt(row.id);
-      }
+      // Count against the CALLER'S OWN live code, whatever they submitted —
+      // including a guess that resolved to nothing, which is what a wrong code
+      // actually looks like (a different digest, so no row). Round 2 of the M14
+      // review found the previous form unreachable: it took the resolved row's
+      // id and ran only inside this already-dead branch, so `attempts` could
+      // never move on a live code and the cap bounded nothing.
+      //
+      // Never somebody else's: keying on the caller means a signed-in attacker
+      // who somehow guessed a digest still cannot exhaust a victim's attempts.
+      await this.codes.countAttempt(userId, now);
       await this.recordFailure(userId, sessionId);
       throw invalidCode();
     }
