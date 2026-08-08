@@ -126,6 +126,20 @@ fragment AnalysisFields on Analysis {
   }
 }`;
 
+export const EMAIL_VERIFICATION_QUERY = `query EmailVerification {
+  emailVerification
+}`;
+
+export const RESEND_EMAIL_VERIFICATION_MUTATION = `mutation ResendEmailVerification {
+  resendEmailVerification
+}`;
+
+export const VERIFY_EMAIL_MUTATION = `mutation VerifyEmail($code: String!) {
+  verifyEmail(code: $code) {
+    ok
+  }
+}`;
+
 export const CONSENTS_QUERY = `query Consents {
   consents
 }`;
@@ -550,6 +564,9 @@ export const operations = {
   TotpVerify: TOTP_VERIFY_MUTATION,
   StepUp: STEP_UP_MUTATION,
   ExportDemo: EXPORT_DEMO_MUTATION,
+  EmailVerification: EMAIL_VERIFICATION_QUERY,
+  ResendEmailVerification: RESEND_EMAIL_VERIFICATION_MUTATION,
+  VerifyEmail: VERIFY_EMAIL_MUTATION,
   Session: SESSION_QUERY,
   Assets: ASSETS_QUERY,
   NetWorth: NET_WORTH_QUERY,

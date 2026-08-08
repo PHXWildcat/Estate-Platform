@@ -30,6 +30,20 @@ export interface TotpEnrollment {
   readonly otpauthUri: string;
 }
 
+/**
+ * Whether the platform can PROVE it reaches this user (M14).
+ *
+ * Three states, not two, because `unavailable` is a fact about the platform
+ * rather than about the user: telling somebody "your address is unverified"
+ * during a notifications outage would send them to complete a ceremony that
+ * cannot run, and telling them nothing at all would leave the arming gates
+ * refusing with no explanation.
+ */
+export type EmailVerificationStatus = 'verified' | 'unverified' | 'unavailable';
+
+/** What a resend attempt did — reported honestly rather than always "sent". */
+export type ResendOutcome = 'sent' | 'too_soon' | 'already_verified' | 'unavailable';
+
 export interface IdentityClient {
   register(email: string, password: string): Promise<void>;
   login(email: string, password: string): Promise<IssuedTokens>;
@@ -40,6 +54,12 @@ export interface IdentityClient {
   totpVerify(accessToken: string, code: string): Promise<void>;
   stepUp(accessToken: string, code: string): Promise<void>;
   exportDemo(accessToken: string): Promise<void>;
+  /** M14: has this user proved they receive mail at the stored address? */
+  emailVerificationStatus(accessToken: string): Promise<EmailVerificationStatus>;
+  /** M14: mail another code to the address already on file for this user. */
+  resendEmailVerification(accessToken: string): Promise<ResendOutcome>;
+  /** M14: redeem a mailed code. Throws INVALID_CREDENTIALS on any refusal. */
+  verifyEmail(accessToken: string, code: string): Promise<void>;
   /**
    * Revokes exactly the presented session. Resolves false when identity
    * refuses the ACCESS token (401) — which means only that the 15-minute
@@ -148,7 +168,28 @@ export type BffErrorCode =
   /** That exact designation is already live on that contact (M13, migration 004). */
   | 'ROLE_ALREADY_GRANTED'
   /** That exact permission is already live on that role (M13, migration 005). */
-  | 'PERMISSION_ALREADY_GRANTED';
+  | 'PERMISSION_ALREADY_GRANTED'
+  /**
+   * M14's address-verification code was refused. The `INVALID_LINK_CODE`
+   * shape, for the same reason: identity answers ONE `invalid_code` for
+   * unknown, expired, spent, revoked, attempt-exhausted and
+   * belonging-to-someone-else, and that uniformity IS the control — the edge
+   * carries it through rather than re-deriving distinctions from status codes.
+   *
+   * Kept out of `INVALID_CREDENTIALS` deliberately. That token already means
+   * "email and password" on the login surface, and the M12 review's finding
+   * was precisely that one code changing meaning with the surface produces
+   * copy telling a user to check a password on a form that has none.
+   */
+  | 'INVALID_VERIFICATION_CODE'
+  /**
+   * The platform could not complete a verification it otherwise accepted —
+   * the delivery store has no live row to vouch for (never fed, soft-deleted,
+   * crypto-shredded). Distinct from `INVALID_VERIFICATION_CODE` because the
+   * code was fine and there is nothing for the user to re-check, and distinct
+   * from `NOTIFICATIONS_UNAVAILABLE` because nothing is down.
+   */
+  | 'VERIFICATION_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -172,7 +213,23 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   NOTIFICATIONS_UNAVAILABLE: 'We cannot notify the account owner right now',
   ROLE_ALREADY_GRANTED: 'That role is already recorded for this person',
   PERMISSION_ALREADY_GRANTED: 'That permission is already allowed for this role',
+  INVALID_VERIFICATION_CODE: 'That code was not accepted',
+  VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
 };
+
+/**
+ * The machine-readable token from an error body, or '' when there is not one.
+ * Shared so a mapper can look at the token WITHOUT consuming the response the
+ * shared mapper will read again.
+ */
+async function readErrorToken(res: Response): Promise<string> {
+  try {
+    const parsed = ErrorBodySchema.safeParse(await res.json());
+    return parsed.success ? parsed.data.error : '';
+  } catch {
+    return '';
+  }
+}
 
 /** GraphQLError with a stable machine-readable code; safe to expose. */
 export function bffError(code: BffErrorCode): GraphQLError {
@@ -184,6 +241,14 @@ const TokensSchema = z.object({
   refreshToken: z.string().min(1),
   sessionId: z.string().min(1),
   userId: z.string().min(1),
+});
+
+const VerificationStatusSchema = z.object({
+  status: z.enum(['verified', 'unverified', 'unavailable']),
+});
+
+const ResendSchema = z.object({
+  outcome: z.enum(['sent', 'too_soon', 'already_verified', 'unavailable']),
 });
 
 const SessionSchema = z.object({
@@ -299,6 +364,47 @@ export class FetchIdentityClient implements IdentityClient {
     }
   }
 
+  async emailVerificationStatus(accessToken: string): Promise<EmailVerificationStatus> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/v1/auth/email/verification',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, VerificationStatusSchema)).status;
+  }
+
+  async resendEmailVerification(accessToken: string): Promise<ResendOutcome> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/email/verification/resend',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, ResendSchema)).outcome;
+  }
+
+  async verifyEmail(accessToken: string, code: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/email/verification/verify',
+      accessToken,
+      body: { code },
+    });
+    if (!res.ok) {
+      // Every refusal identity makes here is the SAME `invalid_code`, and it
+      // has to stay that way through the edge: unknown, expired, spent,
+      // revoked, attempt-exhausted and belonging-to-someone-else must remain
+      // indistinguishable, or the edge re-creates the oracle the uniform
+      // answer removes from the service.
+      throw await this.mapVerifyError(res);
+    }
+  }
+
   async exportDemo(accessToken: string): Promise<void> {
     const res = await this.request({ method: 'POST', path: '/v1/auth/export-demo', accessToken });
     if (!res.ok) {
@@ -355,6 +461,22 @@ export class FetchIdentityClient implements IdentityClient {
    * Anything unrecognized (5xx, malformed) becomes a plain Error so yoga's
    * error masking replaces it with a generic message.
    */
+  /**
+   * The verify route's two 400s mean different things to the person holding
+   * the code, so they do not both collapse to INVALID_REQUEST. Everything
+   * else falls through to the shared mapping.
+   */
+  private async mapVerifyError(res: Response): Promise<Error> {
+    if (res.status === 400) {
+      const token = await readErrorToken(res.clone());
+      if (token === 'verification_unavailable') {
+        return bffError('VERIFICATION_UNAVAILABLE');
+      }
+      return bffError('INVALID_VERIFICATION_CODE');
+    }
+    return this.mapError(res);
+  }
+
   private async mapError(res: Response): Promise<Error> {
     let token = '';
     try {

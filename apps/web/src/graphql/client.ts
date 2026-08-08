@@ -53,6 +53,16 @@ export const GQL_ERROR_CODES = [
   'ROLE_ALREADY_GRANTED',
   /** That permission is already live on that role (M13). */
   'PERMISSION_ALREADY_GRANTED',
+  /**
+   * A verification code was refused — one answer for unknown, expired, spent,
+   * revoked and attempt-exhausted, by design (M14). Kept apart from
+   * INVALID_CREDENTIALS because that token means "email and password" on the
+   * login surface, and the M12 review found exactly that collision producing
+   * copy about a password on a form that has none.
+   */
+  'INVALID_VERIFICATION_CODE',
+  /** The code was fine but the platform could not complete it (M14). */
+  'VERIFICATION_UNAVAILABLE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -537,6 +547,22 @@ interface OperationSignatures {
     };
     data: { regenerateDocument: GeneratedDocumentInfo };
   };
+  /**
+   * M14. The three states are the BFF enum verbatim: UNAVAILABLE is a fact
+   * about the platform, not about the user, and collapsing it into UNVERIFIED
+   * would send somebody to complete a ceremony that cannot run.
+   */
+  EmailVerification: {
+    variables: EmptyVariables;
+    data: { emailVerification: 'VERIFIED' | 'UNVERIFIED' | 'UNAVAILABLE' };
+  };
+  ResendEmailVerification: {
+    variables: EmptyVariables;
+    data: {
+      resendEmailVerification: 'SENT' | 'TOO_SOON' | 'ALREADY_VERIFIED' | 'UNAVAILABLE';
+    };
+  };
+  VerifyEmail: { variables: { code: string }; data: { verifyEmail: { ok: boolean } } };
   Consents: { variables: EmptyVariables; data: { consents: string[] } };
   GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };
   RevokeConsent: { variables: { scope: string }; data: { revokeConsent: string[] } };
