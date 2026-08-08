@@ -40,6 +40,14 @@ const EnvSchema = z
     // (send + recipient-upsert and nothing else; credential-graph.ts). Unset ⇒
     // the client short-circuits and every send records as undelivered.
     NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND (M14): what this service PRESENTS to the notifications
+    // RECIPIENT-STATUS read route, to ask whether the owner has PROVED the
+    // address their §5.2 alerts go to. A DIFFERENT secret from the send one
+    // above because reading delivery state is a different capability with
+    // different legitimate holders — settlement sends and never asks
+    // (credential-graph.ts). Without it the arming gates refuse, which is the
+    // fail-closed direction.
+    NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
     // Base URL of the settlement service (M7 PR2, docs/03 §6a): emergency
     // access is the LAST staged grant of a settlement, so release consults it.
     // Required IN production; dev defaults to localhost.
@@ -114,17 +122,38 @@ const EnvSchema = z
             'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; undelivered owner notifications hollow out the §5.2 waiting period)',
         });
       }
-      // One value must never authenticate two callees (the M7 collapse).
       if (
-        env.NOTIFICATIONS_INTERNAL_TOKEN &&
-        env.NOTIFICATIONS_INTERNAL_TOKEN === env.SETTLEMENT_INTERNAL_TOKEN
+        !env.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ||
+        env.NOTIFICATIONS_STATUS_INTERNAL_TOKEN.length < 32
       ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
+          path: ['NOTIFICATIONS_STATUS_INTERNAL_TOKEN'],
           message:
-            'NOTIFICATIONS_INTERNAL_TOKEN must differ from SETTLEMENT_INTERNAL_TOKEN (one value must never open two callees)',
+            'NOTIFICATIONS_STATUS_INTERNAL_TOKEN is required in production (>= 32 chars; unwired, no escrow can ever arm because the M14 gate fails closed)',
         });
+      }
+      // A FULL PAIRWISE LOOP over every credential this service touches. One
+      // value must never authenticate two callees (the M7 collapse), and a
+      // hand-written comparison per pair stays correct only for the arity it
+      // was written at — this was a single `if` when vault touched two.
+      const touched = [
+        'SETTLEMENT_INTERNAL_TOKEN',
+        'NOTIFICATIONS_INTERNAL_TOKEN',
+        'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+      ] as const;
+      for (let i = 0; i < touched.length; i += 1) {
+        for (let j = i + 1; j < touched.length; j += 1) {
+          const a = touched[i]!;
+          const b = touched[j]!;
+          if (env[a] && env[a] === env[b]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [b],
+              message: `${b} must differ from ${a} (one value must never open two surfaces)`,
+            });
+          }
+        }
       }
     }
   });
@@ -152,6 +181,8 @@ export interface VaultConfig {
   /** OUTBOUND: presented to the notifications service ('' ⇒ sends record as
    * undelivered). Never the settlement value — one secret per callee. */
   readonly notificationsInternalToken: string;
+  /** OUTBOUND: presented to the notifications RECIPIENT-STATUS route (M14). */
+  readonly notificationsStatusToken: string;
 }
 
 export class ConfigError extends Error {
@@ -190,5 +221,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): VaultConfig {
     settlementInternalToken: e.SETTLEMENT_INTERNAL_TOKEN ?? '',
     notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
     notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
+    notificationsStatusToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
   };
 }

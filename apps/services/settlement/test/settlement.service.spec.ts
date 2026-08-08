@@ -63,13 +63,28 @@ describe('intake (docs/03 §5.1: reports only OPEN a case)', () => {
       expect.objectContaining({ kind: 'case_opened', ownerUserId: DECEDENT }),
     ]);
     const events = auditEvents(h.producer);
-    expect(events).toHaveLength(1);
+    // TWO events, and the second is M14's PROCEED-AND-RECORD half. The stub
+    // notifier reports an unverified recipient (it must never vouch for one),
+    // so opening this case also records that the owner alert went to an address
+    // nobody proved. The case still opens — refusing would deny a legitimate
+    // reporter the §5.1 chain — but an operator reviewing it, or an
+    // investigation reading it later, can now tell a waiting period the owner
+    // could have interrupted from one they could not.
+    expect(events.map((event) => event['action'])).toEqual([
+      'settlement.case.reported',
+      'settlement.unverified_recipient',
+    ]);
     expect(events[0]).toMatchObject({
       action: 'settlement.case.reported',
       actorId: REPORTER,
       onBehalfOf: DECEDENT,
     });
     expect(events[0]?.['detail']).toMatchObject({ source: 'trusted_contact' });
+    expect(events[1]).toMatchObject({
+      actorType: 'system',
+      onBehalfOf: DECEDENT,
+      resourceId: dto.caseId,
+    });
   });
 
   it('death-certificate evidence is recorded with its attacher (the documents cross-check key)', async () => {
@@ -168,6 +183,10 @@ describe('review (docs/03 §5.1 control 2: mandatory human review)', () => {
     ]);
     expect(auditActions(h.producer)).toEqual([
       'settlement.case.reported',
+      // M14: the intake notification went to an unproved address (the stub
+      // never vouches), recorded rather than refused — the actor is a reporter
+      // and the recipient is the decedent.
+      'settlement.unverified_recipient',
       'settlement.case.review_started',
       'settlement.case.approved',
     ]);

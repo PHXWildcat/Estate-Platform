@@ -152,7 +152,16 @@ describe('graph lookup helpers', () => {
     // edge promises not to expose; settlement sends and never asks, so it is
     // deliberately absent here. Vault and profile join in PR2, in the same
     // change as the clients that present it.
-    expect(inbound.find((e) => e.envVar === NOTIFICATIONS_STATUS)?.holders).toEqual(['identity']);
+    // M14 PR2 added vault and profile, in the same change as the clients that
+    // present it. SETTLEMENT is still absent, and that absence is the gate
+    // classification made structural: its §5.1 gates PROCEED on an unverified
+    // recipient and record the fact, so it never asks the question — and a
+    // service that never asks must not hold the key to it.
+    expect(inbound.find((e) => e.envVar === NOTIFICATIONS_STATUS)?.holders).toEqual([
+      'identity',
+      'profile',
+      'vault',
+    ]);
     expect(inbound.find((e) => e.envVar === NOTIFICATIONS_STATUS)?.holders).not.toContain(
       'settlement',
     );
@@ -165,6 +174,8 @@ describe('graph lookup helpers', () => {
     expect(outboundCredentialsFor('vault').map((e) => e.envVar)).toEqual([
       SETTLEMENT,
       NOTIFICATIONS,
+      // M14: the STATUS read for the escrow-arming gates.
+      NOTIFICATIONS_STATUS,
     ]);
     expect(outboundCredentialsFor('settlement').map((e) => e.envVar)).toEqual([
       IDENTITY,
@@ -180,8 +191,16 @@ describe('graph lookup helpers', () => {
       NOTIFICATIONS_STATUS,
     ]);
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).not.toContain(NOTIFICATIONS);
-    // M13: profile's first outbound credential, and the SEND one only.
-    expect(outboundCredentialsFor('profile').map((e) => e.envVar)).toEqual([NOTIFICATIONS]);
+    // M13 gave profile its first outbound credential; M14 added the STATUS read
+    // for the link-code MINT gate. Still no recipients credential: profile can
+    // ask whether an owner proved their address, never set or vouch for one.
+    expect(outboundCredentialsFor('profile').map((e) => e.envVar)).toEqual([
+      NOTIFICATIONS,
+      NOTIFICATIONS_STATUS,
+    ]);
+    expect(outboundCredentialsFor('profile').map((e) => e.envVar)).not.toContain(
+      NOTIFICATIONS_RECIPIENTS,
+    );
   });
 
   it('grants settlement four distinct variables, never the same one twice', () => {
@@ -207,7 +226,10 @@ describe('graph lookup helpers', () => {
     for (const service of ['assets', 'plaid', 'audit'] as const) {
       expect(credentialEnvVarsFor(service)).toEqual([]);
     }
-    expect(credentialEnvVarsFor('profile')).toEqual([NOTIFICATIONS]);
+    expect(credentialEnvVarsFor('profile')).toEqual([NOTIFICATIONS, NOTIFICATIONS_STATUS]);
+    // Still no INBOUND credential — the property this test is named for. M14
+    // widened what profile may PRESENT; it did not make profile addressable by
+    // a peer with anything but a user's own bearer.
     expect(inboundCredentialsFor('profile')).toEqual([]);
   });
 

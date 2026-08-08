@@ -127,7 +127,26 @@ export interface RecipientStatus {
  * must not roll back the state change it describes (the M6 design).
  */
 export type SendOutcome =
-  { accepted: true; delivered: boolean; channel: string } | { accepted: false };
+  | {
+      accepted: true;
+      delivered: boolean;
+      channel: string;
+      /**
+       * Whether the address this was sent to had been PROVED by the user (M14).
+       *
+       * It rides the send response so a caller that proceeds on an unverified
+       * recipient can record that fact on its own audit trail without holding
+       * the status credential — settlement is the case that matters: its §5.1
+       * gates proceed and record, so it must never need to ask the question
+       * separately.
+       *
+       * `false` also covers "the service could not tell", which is the safe
+       * reading: a caller records that it could not confirm reach, never that
+       * it could.
+       */
+      recipientVerified: boolean;
+    }
+  | { accepted: false };
 
 export interface NotificationsPort {
   send(input: NotificationSendInput): Promise<SendOutcome>;
@@ -159,6 +178,12 @@ export interface NotificationsPort {
 const SendResponseSchema = z.object({
   delivered: z.boolean(),
   channel: z.string().min(1),
+  // M14. `.default(false)` rather than required, so a client talking to a
+  // notifications service that predates the field degrades to "could not
+  // confirm" instead of narrowing the whole send to contract drift. The safe
+  // direction: a caller records that it could not confirm reach, never that it
+  // could.
+  recipientVerified: z.boolean().default(false),
 });
 
 const UpsertResponseSchema = z.object({ ok: z.literal(true) });
@@ -259,7 +284,12 @@ export class HttpNotificationsClient implements NotificationsPort {
     if (!parsed.success) {
       return NOT_ACCEPTED; // contract drift ⇒ recorded as not sent, never guessed
     }
-    return { accepted: true, delivered: parsed.data.delivered, channel: parsed.data.channel };
+    return {
+      accepted: true,
+      delivered: parsed.data.delivered,
+      channel: parsed.data.channel,
+      recipientVerified: parsed.data.recipientVerified,
+    };
   }
 
   async send(input: NotificationSendInput): Promise<SendOutcome> {

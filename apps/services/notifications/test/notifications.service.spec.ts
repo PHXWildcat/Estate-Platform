@@ -89,6 +89,7 @@ function harness(options: { recipient: RecipientRow | null; email?: EmailSender 
 }
 
 const RECIPIENT: RecipientRow = {
+  verified_at: null,
   user_id: USER,
   email_ct: Buffer.from('ct:owner@example.com'),
   dek_id: DEK,
@@ -105,7 +106,11 @@ describe('NotificationsService.send', () => {
       deadline: '2026-08-09T00:00:00.000Z',
     });
 
-    expect(result).toEqual({ delivered: true, channel: 'email' });
+    // M14: the fixture recipient is UNVERIFIED, so the delivery is recorded as
+    // what it was. `delivered` stays true — the carrier accepted it — and the
+    // unproved address rides back separately rather than looking like a
+    // transport failure a caller would retry.
+    expect(result).toEqual({ delivered: true, channel: 'email', recipientVerified: false });
     expect(stub.sent).toHaveLength(1);
     expect(stub.sent[0]?.to).toBe('owner@example.com');
     expect(stub.sent[0]?.body).toContain('2026-08-09');
@@ -114,14 +119,37 @@ describe('NotificationsService.send', () => {
       kind: 'settlement.case_opened',
       requestedChannel: 'push',
       channel: 'email',
-      outcome: 'sent',
+      outcome: 'sent_unverified',
     });
     const sent = emitted.find((event) => event.action === 'notification.sent');
     expect(sent?.onBehalfOf).toBe(USER);
-    expect(sent?.detail).toMatchObject({ outcome: 'sent', transport: 'stub' });
+    expect(sent?.detail).toMatchObject({ outcome: 'sent_unverified', transport: 'stub' });
     // The audit stream never carries the address or the body.
     expect(JSON.stringify(emitted)).not.toContain('owner@example.com');
     expect(JSON.stringify(emitted)).not.toContain('report was filed');
+  });
+
+  it('records plain `sent` once the address has been PROVED (M14)', async () => {
+    // The pair is what makes the distinction evidence rather than decoration:
+    // a §5.1 investigation reading a case trail can tell "the owner was mailed
+    // at a mailbox they confirmed" from "at one we have no proof they read",
+    // which is the difference between a waiting period they could have
+    // interrupted and one they could not.
+    const { service, recorded, emitted } = harness({
+      recipient: { ...RECIPIENT, verified_at: new Date('2026-08-01T00:00:00.000Z') },
+    });
+
+    const result = await service.send({
+      userId: USER,
+      kind: 'settlement.case_opened',
+      channel: 'email',
+    });
+
+    expect(result).toEqual({ delivered: true, channel: 'email', recipientVerified: true });
+    expect(recorded[0]).toMatchObject({ outcome: 'sent' });
+    expect(emitted.find((event) => event.action === 'notification.sent')?.detail).toMatchObject({
+      outcome: 'sent',
+    });
   });
 
   it('records no_recipient when the store has no address — an outcome, not an error', async () => {
@@ -133,7 +161,7 @@ describe('NotificationsService.send', () => {
       channel: 'email',
     });
 
-    expect(result).toEqual({ delivered: false, channel: 'email' });
+    expect(result).toEqual({ delivered: false, channel: 'email', recipientVerified: false });
     expect(stub.sent).toHaveLength(0);
     expect(recorded[0]).toMatchObject({ outcome: 'no_recipient', providerMessageId: null });
   });
@@ -148,7 +176,7 @@ describe('NotificationsService.send', () => {
 
     const result = await service.send({ userId: USER, kind: 'vault.reset', channel: 'email' });
 
-    expect(result).toEqual({ delivered: false, channel: 'email' });
+    expect(result).toEqual({ delivered: false, channel: 'email', recipientVerified: false });
     expect(recorded[0]).toMatchObject({ outcome: 'carrier_failure' });
     expect(JSON.stringify(emitted)).not.toContain('owner@example.com');
   });
@@ -164,7 +192,7 @@ describe('NotificationsService.send', () => {
       channel: 'email',
     });
 
-    expect(result).toEqual({ delivered: false, channel: 'email' });
+    expect(result).toEqual({ delivered: false, channel: 'email', recipientVerified: false });
     expect(recorded[0]).toMatchObject({ outcome: 'carrier_failure' });
   });
 });

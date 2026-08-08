@@ -44,7 +44,15 @@ describe('HttpNotificationsClient.send', () => {
       deadline: new Date('2026-08-04T00:00:00.000Z'),
     });
 
-    expect(outcome).toEqual({ accepted: true, delivered: true, channel: 'email' });
+    // M14: `recipientVerified` rides the response so a caller that PROCEEDS on
+    // an unverified recipient can record that fact without holding the status
+    // credential — settlement is the case that matters.
+    expect(outcome).toEqual({
+      accepted: true,
+      delivered: true,
+      channel: 'email',
+      recipientVerified: false,
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe('http://notifications:3009/internal/v1/notifications/send');
     expect(calls[0]?.init.method).toBe('POST');
@@ -72,7 +80,12 @@ describe('HttpNotificationsClient.send', () => {
 
     const outcome = await client.send({ userId: USER, kind: 'emergency.requested' });
 
-    expect(outcome).toEqual({ accepted: true, delivered: false, channel: 'email' });
+    expect(outcome).toEqual({
+      accepted: true,
+      delivered: false,
+      channel: 'email',
+      recipientVerified: false,
+    });
     expect(JSON.parse(calls[0]?.init.body ?? '{}')).toEqual({
       userId: USER,
       kind: 'emergency.requested',
@@ -126,6 +139,47 @@ describe('HttpNotificationsClient.send', () => {
       fetchImpl: drifted,
     });
     expect(await drift.send({ userId: USER, kind: 'vault.reset' })).toEqual({ accepted: false });
+  });
+});
+
+describe('HttpNotificationsClient.send — the recipient-verified passthrough (M14)', () => {
+  it('carries the service answer through verbatim', async () => {
+    const { fetchImpl } = transportDouble(() => ({
+      ok: true,
+      status: 200,
+      payload: { delivered: true, channel: 'email', recipientVerified: true },
+    }));
+    const client = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: { send: 's' },
+      fetchImpl,
+    });
+    expect(await client.send({ userId: USER, kind: 'vault.reset' })).toMatchObject({
+      recipientVerified: true,
+    });
+  });
+
+  it('defaults to FALSE against a service that predates the field', async () => {
+    // The safe direction, and why the field is `.default(false)` rather than
+    // required: a version skew must degrade to "could not confirm reach", never
+    // narrow the whole send to contract drift (which would read as a delivery
+    // failure) and never claim a confirmation that was never made.
+    const { fetchImpl } = transportDouble(() => ({
+      ok: true,
+      status: 200,
+      payload: { delivered: true, channel: 'email' },
+    }));
+    const client = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: { send: 's' },
+      fetchImpl,
+    });
+    expect(await client.send({ userId: USER, kind: 'vault.reset' })).toEqual({
+      accepted: true,
+      delivered: true,
+      channel: 'email',
+      recipientVerified: false,
+    });
   });
 });
 
@@ -301,6 +355,7 @@ describe('HttpNotificationsClient credential partitioning', () => {
       accepted: true,
       delivered: true,
       channel: 'email',
+      recipientVerified: false,
     });
     // Two fields. There is no subject, no body, no text — the approved
     // deviation is a CODE, and the wire is what makes that literal.

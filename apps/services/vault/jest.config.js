@@ -10,6 +10,8 @@
 // the README) when you want coverage. Ratchets toward 95/90 - never lower.
 // M7 PR2 raised the measured numbers to 89.79/72.72/92.59/91.02 (the §6a
 // settlement gate arrived with its own tests), so the floor ratchets UP.
+// M14 PR2 (the verified-recipient gates) re-measured at 89.84/73.84/93.12/90.98;
+// ratcheted UP to match. Never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 89, branches: 72, functions: 92, lines: 90 } },
+  coverageThreshold: { global: { statements: 89, branches: 73, functions: 93, lines: 90 } },
 });

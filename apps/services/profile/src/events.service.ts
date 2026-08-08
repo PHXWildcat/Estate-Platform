@@ -220,6 +220,28 @@ export class EventsService {
   }
 
   /**
+   * A link claim was notified to an address the owner never PROVED (M14).
+   *
+   * Not a refusal: the claim stood, because the REDEEMER drove it and an
+   * owner's own typo must not deny somebody they deliberately invited. It is
+   * recorded because §6g's argument for this ceremony is that a claim is
+   * auditable BY THE OWNER, and a message to an unconfirmed mailbox is a weaker
+   * version of that than `ownerNotified: 'delivered'` alone suggests. The
+   * OWNER is the subject; the actor is the redeemer, as on the claim itself.
+   */
+  async contactLinkUnverifiedRecipient(ownerUserId: string, redeemerId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'contact.link.unverified_recipient',
+      actorId: redeemerId,
+      actorType: 'user',
+      onBehalfOf: ownerUserId,
+      resourceType: 'contact',
+      resourceId: null,
+      sessionId: null,
+    });
+  }
+
+  /**
    * A grant withdrawn. No `detail`: the resource/action pair is already on the
    * `permission.granted` event for this same id, and the grant row survives with
    * its `revoked_at` set, so repeating it here would add nothing an

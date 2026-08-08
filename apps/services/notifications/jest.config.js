@@ -11,6 +11,8 @@
 // every-kind send loop (migration 002), then at 73.57/70.98/72.22/71.75 when
 // M14 added the verification send, the verified bit and their specs. Ratcheted
 // UP both times.
+// M14 PR2 (the verified-recipient gates) re-measured at 73.64/71.68/72.22/71.83;
+// ratcheted UP to match. Never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 73, branches: 70, functions: 72, lines: 71 } },
+  coverageThreshold: { global: { statements: 73, branches: 71, functions: 72, lines: 71 } },
 });

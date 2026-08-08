@@ -29,6 +29,13 @@ export interface LinkClaimedNotification {
   readonly ownerUserId: string;
 }
 
+/** What a send actually did (M14); the vault/settlement shape. */
+export interface NotifyOutcome {
+  readonly delivered: boolean;
+  /** Whether the owner had PROVED the address it went to. */
+  readonly recipientVerified: boolean;
+}
+
 export interface LinkNotificationPort {
   /** Identifies the adapter in the audit detail. */
   readonly channel: string;
@@ -37,9 +44,23 @@ export interface LinkNotificationPort {
    * production behind an adapter that does not — the vault's
    * `deliversToRealChannels` rule, for the same reason: a control whose only
    * output is a message nobody receives is not a control.
+   *
+   * It is a property of the ADAPTER. `recipientVerified` below is the question
+   * about the RECIPIENT that M14 exists to make askable.
    */
   readonly deliversToRealChannels: boolean;
-  notify(notification: LinkClaimedNotification): Promise<void>;
+  /**
+   * Whether the delivery store holds an address this owner PROVED (M14). Fail
+   * closed: unanswerable is `false`.
+   *
+   * Read by MINTING, not by redemption. Minting hands out a capability that
+   * ends in a §5.1 authorization edge and the actor is the owner themselves, so
+   * refusing costs them an action they can unblock by verifying. Redemption is
+   * driven by the CONTACT, so refusing there would let an owner's own typo
+   * permanently deny somebody they deliberately invited.
+   */
+  recipientVerified(ownerUserId: string): Promise<boolean>;
+  notify(notification: LinkClaimedNotification): Promise<NotifyOutcome>;
 }
 
 /**
@@ -51,9 +72,14 @@ export class StubLinkNotifier implements LinkNotificationPort {
   readonly deliversToRealChannels = false;
   readonly sent: LinkClaimedNotification[] = [];
 
-  notify(notification: LinkClaimedNotification): Promise<void> {
+  /** False, never true — a stub must not vouch for anything (M8's rule). */
+  recipientVerified(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  notify(notification: LinkClaimedNotification): Promise<NotifyOutcome> {
     this.sent.push(notification);
-    return Promise.resolve();
+    return Promise.resolve({ delivered: true, recipientVerified: false });
   }
 }
 
@@ -65,12 +91,11 @@ const WIRE_KIND: EstateNotificationKind = 'contact.link_claimed';
 /**
  * The real adapter: delegates to the notifications service, which owns address
  * resolution and the closed template registry — this service still never sees an
- * address. Throws on non-delivery — including a network-level failure the
- * notifications service never saw, which `outcome.accepted === false` encodes —
- * and the caller records that outcome on the claim's audit event
- * (`ownerNotified: 'failed'`, the vault delivered_at-NULL precedent). It never
- * rolls the link back: a notification failure must not undo the state change it
- * describes (the M6 design), it must be VISIBLE instead.
+ * address. M14 stopped it throwing on non-delivery: the caller already recorded
+ * that outcome (`ownerNotified: 'failed'`, the vault delivered_at-NULL
+ * precedent), and an exception cannot carry the second fact a send now returns.
+ * It never rolls the link back either way: a notification failure must not undo
+ * the state change it describes (the M6 design), it must be VISIBLE instead.
  */
 export class HttpLinkNotifier implements LinkNotificationPort {
   readonly channel = 'email';
@@ -78,14 +103,20 @@ export class HttpLinkNotifier implements LinkNotificationPort {
 
   constructor(private readonly client: NotificationsClientPort) {}
 
-  async notify(notification: LinkClaimedNotification): Promise<void> {
+  async recipientVerified(ownerUserId: string): Promise<boolean> {
+    const status = await this.client.recipientStatus(ownerUserId);
+    return status?.verified === true;
+  }
+
+  async notify(notification: LinkClaimedNotification): Promise<NotifyOutcome> {
     const outcome = await this.client.send({
       userId: notification.ownerUserId,
       kind: WIRE_KIND,
       channel: 'email',
     });
-    if (!outcome.accepted || !outcome.delivered) {
-      throw new Error('link-claimed notification was not delivered');
+    if (!outcome.accepted) {
+      return { delivered: false, recipientVerified: false };
     }
+    return { delivered: outcome.delivered, recipientVerified: outcome.recipientVerified };
   }
 }

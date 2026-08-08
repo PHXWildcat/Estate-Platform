@@ -61,6 +61,8 @@ describe('config validation', () => {
     NOTIFY_MODE: 'http',
     NOTIFICATIONS_URL: 'https://notifications.internal',
     NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(32),
+    // M14: the STATUS edge, distinct from the send one.
+    NOTIFICATIONS_STATUS_INTERNAL_TOKEN: 'v'.repeat(32),
   };
 
   it('production REQUIRES IDENTITY_URL (cross-service session verification)', () => {

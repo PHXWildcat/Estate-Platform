@@ -28,6 +28,16 @@ export interface SettlementNotification {
   readonly waitingPeriodEnds?: Date;
 }
 
+/**
+ * What a send actually did (M14). See vault's identical type: `notify` stopped
+ * throwing because an exception cannot carry the second fact a send returns.
+ */
+export interface NotifyOutcome {
+  readonly delivered: boolean;
+  /** Whether the owner had PROVED the address it went to. */
+  readonly recipientVerified: boolean;
+}
+
 export interface NotificationPort {
   /** Identifies the adapter in the contact-attempt record. */
   readonly channel: string;
@@ -37,8 +47,22 @@ export interface NotificationPort {
    * owner turns the waiting period into a formality.
    */
   readonly deliversToRealChannels: boolean;
-  notify(notification: SettlementNotification): Promise<void>;
+  notify(notification: SettlementNotification): Promise<NotifyOutcome>;
 }
+
+/**
+ * SETTLEMENT DELIBERATELY HAS NO `recipientVerified` READ, and that absence is
+ * the M14 classification made structural.
+ *
+ * Intake, provider-signal intake and review-approve are PROCEED-AND-RECORD:
+ * the actor is a reporter or an operator and the recipient is the DECEDENT, so
+ * refusing on the owner's unverified address would deny a legitimate reporter
+ * the §5.1 chain entirely — and it would deny it hardest for exactly the
+ * dormant, never-verified owner a fraudulent report targets. So this service
+ * never asks the question, holds no `NOTIFICATIONS_STATUS_INTERNAL_TOKEN`, and
+ * learns the answer only as a by-product of a send it was making anyway. The
+ * credential graph records the same fact from the other side.
+ */
 
 /**
  * Dev/test adapter. Records what would have been sent so tests can assert on
@@ -50,9 +74,11 @@ export class StubNotifier implements NotificationPort {
   readonly deliversToRealChannels = false;
   readonly sent: SettlementNotification[] = [];
 
-  notify(notification: SettlementNotification): Promise<void> {
+  notify(notification: SettlementNotification): Promise<NotifyOutcome> {
     this.sent.push(notification);
-    return Promise.resolve();
+    // `recipientVerified: false` — a stub must never be the permissive answer
+    // to a security question (the M8 fail-open-in-style rule).
+    return Promise.resolve({ delivered: true, recipientVerified: false });
   }
 }
 
@@ -78,7 +104,7 @@ export class HttpNotifier implements NotificationPort {
 
   constructor(private readonly client: NotificationsClientPort) {}
 
-  async notify(notification: SettlementNotification): Promise<void> {
+  async notify(notification: SettlementNotification): Promise<NotifyOutcome> {
     const outcome = await this.client.send({
       userId: notification.ownerUserId,
       kind: WIRE_KIND[notification.kind],
@@ -87,8 +113,9 @@ export class HttpNotifier implements NotificationPort {
         ? { deadline: notification.waitingPeriodEnds }
         : {}),
     });
-    if (!outcome.accepted || !outcome.delivered) {
-      throw new Error('notification_not_delivered');
+    if (!outcome.accepted) {
+      return { delivered: false, recipientVerified: false };
     }
+    return { delivered: outcome.delivered, recipientVerified: outcome.recipientVerified };
   }
 }

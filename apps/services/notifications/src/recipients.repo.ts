@@ -5,6 +5,8 @@ export interface RecipientRow {
   user_id: string;
   email_ct: Buffer;
   dek_id: string;
+  /** Non-null once the user proved they receive mail there (M14). */
+  verified_at: Date | null;
 }
 
 /**
@@ -20,7 +22,7 @@ export class RecipientsRepo {
 
   async find(userId: string): Promise<RecipientRow | null> {
     const rows = await this.db.query<RecipientRow>(
-      `SELECT user_id, email_ct, dek_id
+      `SELECT user_id, email_ct, dek_id, verified_at
          FROM notification_recipients
         WHERE user_id = $1 AND deleted_at IS NULL`,
       [userId],

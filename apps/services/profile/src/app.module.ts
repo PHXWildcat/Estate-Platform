@@ -94,9 +94,13 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
           ? new HttpLinkNotifier(
               new HttpNotificationsClient({
                 notificationsUrl: config.notificationsUrl,
-                // ONE FIELD PER EDGE (M14): profile holds the SEND credential
-                // and nothing else.
-                credentials: { send: config.notificationsInternalToken },
+                // ONE FIELD PER EDGE (M14): profile holds SEND and STATUS, and
+                // notably NOT the recipients credential — it can ask whether an
+                // owner proved their address, never set or vouch for one.
+                credentials: {
+                  send: config.notificationsInternalToken,
+                  status: config.notificationsStatusToken,
+                },
               }),
             )
           : new StubLinkNotifier(),

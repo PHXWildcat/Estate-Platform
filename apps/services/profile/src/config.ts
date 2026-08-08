@@ -88,6 +88,14 @@ const EnvSchema = z
     // recipients credential — it has no business repointing where anybody's
     // notifications go, which is the split the M9 review forced.
     NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND (M14): what this service PRESENTS to the notifications
+    // RECIPIENT-STATUS read route, to ask — at MINT time only — whether the
+    // owner has proved the address a link claim would be announced to. A
+    // different secret from the send one: reading delivery state is a
+    // different capability with different legitimate holders
+    // (credential-graph.ts). Unwired, the mint gate refuses, which is the
+    // fail-closed direction.
+    NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && env.NOTIFY_MODE === 'stub') {
@@ -112,6 +120,31 @@ const EnvSchema = z
           path: ['NOTIFICATIONS_INTERNAL_TOKEN'],
           message:
             'NOTIFICATIONS_INTERNAL_TOKEN is required in production (>= 32 chars; an owner who is never told a link was claimed cannot remove it)',
+        });
+      }
+      if (
+        !env.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ||
+        env.NOTIFICATIONS_STATUS_INTERNAL_TOKEN.length < 32
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_STATUS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_STATUS_INTERNAL_TOKEN is required in production (>= 32 chars; unwired, no link code can ever be minted because the M14 gate fails closed)',
+        });
+      }
+      // Profile's two notifications credentials must never be one value: the
+      // send edge is broadly held and the status edge is not, so collapsing
+      // them would hand settlement and vault a read they were denied.
+      if (
+        env.NOTIFICATIONS_INTERNAL_TOKEN &&
+        env.NOTIFICATIONS_INTERNAL_TOKEN === env.NOTIFICATIONS_STATUS_INTERNAL_TOKEN
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['NOTIFICATIONS_STATUS_INTERNAL_TOKEN'],
+          message:
+            'NOTIFICATIONS_STATUS_INTERNAL_TOKEN must differ from NOTIFICATIONS_INTERNAL_TOKEN (one value opening both surfaces re-creates the over-grant the split exists to remove)',
         });
       }
     }
@@ -207,6 +240,8 @@ export interface ProfileConfig {
   readonly notificationsUrl: string;
   /** Empty ⇒ the client short-circuits and every send records as undelivered. */
   readonly notificationsInternalToken: string;
+  /** OUTBOUND: presented to the notifications RECIPIENT-STATUS route (M14). */
+  readonly notificationsStatusToken: string;
 }
 
 export class ConfigError extends Error {
@@ -257,5 +292,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProfileConfig 
     notify: { mode: e.NOTIFY_MODE },
     notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
     notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
+    notificationsStatusToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
   };
 }

@@ -164,6 +164,13 @@ export const AUDIT_ACTIONS = [
   // outage.
   'vault.emergency.notifications_refused',
   'settlement.notifications_refused',
+  // M14, the PROCEED-AND-RECORD half of the gate classification: an owner
+  // alert went to an address nobody proved. Not a refusal — the action stood —
+  // but evidence a §5.1/§5.2 investigation needs, because a waiting period
+  // announced to an unconfirmed mailbox is not one the owner could interrupt.
+  'vault.emergency.unverified_recipient',
+  'settlement.unverified_recipient',
+  'contact.link.unverified_recipient',
   // AI estate assistant service (core cluster; docs/01 §2.8, docs/03 §4 TB5).
   // The firewall is stricter here than anywhere else: these carry IDs and
   // enums only, which in THIS service also excludes prompt text, retrieved
