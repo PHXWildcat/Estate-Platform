@@ -551,6 +551,19 @@ export const typeDefs = /* GraphQL */ `
     rolePermissions(roleAssignmentId: ID!): [PermissionGrant!]!
   }
 
+  """
+  What the app needs to hand a user to the vault origin (M15).
+
+  'vaultOrigin' comes from the BFF's configuration at REQUEST time rather than
+  from the web bundle, because Next bakes build-time values into its routes
+  manifest and the M8 PR5 review found exactly that shipping a wrong one.
+  """
+  type VaultHandoff {
+    code: String!
+    expiresAt: String!
+    vaultOrigin: String!
+  }
+
   type Mutation {
     register(email: String!, password: String!): Ok!
     "Sets httpOnly session cookies; no token material in the response body."
@@ -562,6 +575,15 @@ export const typeDefs = /* GraphQL */ `
     totpEnroll: TotpEnroll!
     totpVerify(code: String!): Ok!
     stepUp(code: String!): Ok!
+    """
+    Mint a single-use code for the ISOLATED VAULT ORIGIN (M15, docs/03 TB6).
+
+    Step-up gated at identity. The code is returned in the response BODY so the
+    app can put it in a hidden field and submit a top-level POST to
+    'vaultOrigin' — it must never reach a URL, a Referer or a history entry.
+    Sixty seconds, single use, burned on the attempt.
+    """
+    startVaultHandoff: VaultHandoff!
     "Step-up-gated demo action (stands in for data export)."
     exportDemo: Ok!
     """
@@ -812,6 +834,12 @@ export interface SchemaDeps {
   profile: ProfileClient;
   /** Adds the Secure attribute to session cookies (production). */
   secureCookies: boolean;
+  /**
+   * Browser-facing origin of the isolated vault surface (M15). Handed to the
+   * client in `startVaultHandoff`; the BFF never calls it and holds no
+   * credential for it.
+   */
+  vaultOrigin: string;
   /** Clock override for tests. */
   now?: () => number;
 }
@@ -1039,7 +1067,7 @@ function familyInput(args: FamilyMemberArgs): FamilyMemberInput {
 }
 
 export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
-  const { identity, assets, assistant, documents, profile, secureCookies } = deps;
+  const { identity, assets, assistant, documents, profile, secureCookies, vaultOrigin } = deps;
   const now = deps.now ?? ((): number => Date.now());
 
   return createSchema<RequestContext>({
@@ -1583,6 +1611,17 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         ): Promise<typeof OK> => {
           await identity.stepUp(requireAccessToken(ctx), args.code);
           return OK;
+        },
+        startVaultHandoff: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<{ code: string; expiresAt: string; vaultOrigin: string }> => {
+          // The BFF adds no authority here: identity's own StepUpGuard decides,
+          // and this forwards the caller's bearer like every other resolver.
+          // What it contributes is the ORIGIN, which only the deployment knows.
+          const minted = await identity.mintVaultHandoff(requireAccessToken(ctx));
+          return { ...minted, vaultOrigin };
         },
         exportDemo: async (
           _parent: unknown,

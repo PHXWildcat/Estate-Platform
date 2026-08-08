@@ -67,6 +67,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     aiAssistantUrl: 'http://assistant.test',
     documentsUrl: 'http://documents.test',
     profileUrl: 'http://profile.test',
+    vaultOrigin: 'http://vault.localhost:3010',
     persistedManifestPath: null,
     ...overrides,
   };
@@ -175,6 +176,20 @@ export class FakeIdentityClient implements IdentityClient {
   logout(accessToken: string): Promise<boolean> {
     this.logoutCalls.push(accessToken);
     return this.logoutError ? Promise.reject(this.logoutError) : Promise.resolve(this.logoutResult);
+  }
+
+  vaultHandoff: { code: string; expiresAt: string } = {
+    code: 'handoff-code',
+    expiresAt: '2026-08-08T00:01:00.000Z',
+  };
+  vaultHandoffError: Error | null = null;
+  mintVaultHandoffCalls: string[] = [];
+
+  mintVaultHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    this.mintVaultHandoffCalls.push(accessToken);
+    return this.vaultHandoffError
+      ? Promise.reject(this.vaultHandoffError)
+      : Promise.resolve(this.vaultHandoff);
   }
 
   logoutByRefresh(refreshToken: string): Promise<void> {

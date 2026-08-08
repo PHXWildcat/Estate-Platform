@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  // The edge only. `src/client` is compiled by tsconfig.client.json into
+  // `public/app` as native ES modules — two outputs from one package, because
+  // they run in two places with two different platform surfaces.
+  "include": ["src"],
+  "exclude": ["src/client"]
+}

@@ -235,6 +235,8 @@ describe('bffProcessEnv', () => {
       DOCUMENTS_URL: 'http://localhost:3005',
       // M13: the fourth. Profile has no service-credential routes at all.
       PROFILE_URL: 'http://localhost:3002',
+      // M15: NOT a downstream — the address the BFF hands the browser.
+      VAULT_ORIGIN: 'http://vault.localhost:3010',
       PERSISTED_MANIFEST_PATH: '/repo/m.json',
     });
   });

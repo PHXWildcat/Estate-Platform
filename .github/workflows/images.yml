@@ -76,6 +76,16 @@ jobs:
           - app: bff
             pkg: '@estate/bff'
             kind: bff
+            # Every setting has a development default, so a bare run would
+            # listen forever; its fail-fast guard is production-only.
+            smokeProduction: true
+          # M15's isolated vault origin. Same shape as the BFF: development
+          # defaults for every upstream, and a production guard that requires
+          # them explicitly — so the fail-fast posture is only reachable with
+          # NODE_ENV=production.
+          - app: vault-web
+            pkg: '@estate/vault-web'
+            smokeProduction: true
           - app: web
             pkg: '@estate/web'
             dockerfile: infra/docker/web.Dockerfile
@@ -114,8 +124,12 @@ jobs:
       - name: Smoke test — config fail-fast
         if: matrix.kind != 'web'
         env:
-          # Only the BFF needs a production posture to reach its guard.
-          SMOKE_ENV: ${{ matrix.kind == 'bff' && '-e NODE_ENV=production' || '' }}
+          # Apps whose settings all have development defaults reach their
+          # fail-fast guard only under a production posture (the BFF's persisted
+          # operations, the vault origin's four required upstreams). Flagged per
+          # entry rather than inferred from `kind`, which also drives the
+          # web/liveness branch and would quietly conflate the two.
+          SMOKE_ENV: ${{ matrix.smokeProduction && '-e NODE_ENV=production' || '' }}
         run: |
           set +e
           output=$(timeout 60 docker run --rm --name smoke-${{ matrix.app }} \
@@ -287,9 +301,11 @@ jobs:
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
             // M13 added the people-surface round trip: 16/4 -> 17/4. M14 added
-            // the address-verification ceremony: 17/4 -> 18/4.
-            if (r.numPassedTests !== 18 || r.numPendingTests !== 4) {
-              console.error(`::error::expected exactly 18 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
+            // the address-verification ceremony: 17/4 -> 18/4. M15 added six
+            // for the isolated vault origin: 18/4 -> 24/4. Measured on a
+            // development-profile stack, which is what this job runs.
+            if (r.numPassedTests !== 24 || r.numPendingTests !== 4) {
+              console.error(`::error::expected exactly 24 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
               process.exit(1);
             }
           '

@@ -16,3 +16,8 @@ Thumbs.db
 
 # Generated AWS-endpoint TLS material for the local stack (production profile).
 .stack-certs/
+
+# The vault origin's compiled browser bundle (tsconfig.client.json). Emitted
+# under public/ because that is what the edge serves, but build output all the
+# same — the served tree is reproduced by `pnpm --filter @estate/vault-web build`.
+apps/vault-web/public/app/

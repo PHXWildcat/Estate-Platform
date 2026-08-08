@@ -248,6 +248,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
     user_id: 'u-1',
     mfa_level: 'none',
     stepup_expires_at: null,
+    audience: 'account',
   };
 
   it('rotates both tokens and retains the presented hash as previous', async () => {

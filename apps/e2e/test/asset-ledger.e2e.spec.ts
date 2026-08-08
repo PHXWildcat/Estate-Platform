@@ -49,6 +49,7 @@ const fakeVerifier: SessionVerifier = {
       sessionId: '00000000-0000-4000-8000-000000000000',
       mfaLevel: level as MfaLevel,
       stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
+      audience: 'account',
     };
     return Promise.resolve(ctx);
   },

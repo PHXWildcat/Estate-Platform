@@ -8,6 +8,7 @@ import {
   type SettlementVaultGate,
 } from '@estate/settlement-client';
 import {
+  ALLOWED_SESSION_AUDIENCES,
   CallerGuard,
   HttpSessionVerifier,
   SESSION_VERIFIER,
@@ -132,6 +133,25 @@ function notifierFor(config: VaultConfig): NotificationPort {
       useFactory: (config: VaultConfig): HttpSessionVerifier =>
         new HttpSessionVerifier({ identityUrl: config.identityUrl }),
     },
+    /**
+     * THE ONE SERVICE THAT ADMITS A VAULT-AUDIENCE SESSION (M15).
+     *
+     * Zone A lives on an isolated origin (docs/03 TB6) reached by a single-use
+     * handoff, and the session that handoff redeems for is minted `vault`. Every
+     * other service leaves this token unbound and therefore refuses it, which is
+     * what keeps a leaked handoff from becoming authority over assets,
+     * documents, profile or identity.
+     *
+     * `account` stays admitted alongside it, deliberately. An account session is
+     * strictly MORE powerful — it already opens every other service — so
+     * refusing it here would protect nothing while making this service reachable
+     * only through the handoff, including from its own integration tests. The
+     * property being bought runs one way only.
+     *
+     * Declared in `AUDIENCE_ADMITTERS` and checked by
+     * `packages/auth-guard/test/session-audience.spec.ts`.
+     */
+    { provide: ALLOWED_SESSION_AUDIENCES, useValue: ['account', 'vault'] },
     { provide: NOTIFIER, inject: [CONFIG], useFactory: notifierFor },
     // docs/03 §6a: emergency access is the LAST staged grant of a settlement,
     // so release consults settlement state. The client fails closed on every

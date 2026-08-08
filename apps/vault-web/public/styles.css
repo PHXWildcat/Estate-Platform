@@ -1,0 +1,166 @@
+/*
+ * The vault origin's stylesheet.
+ *
+ * Hand-written and self-contained: no Tailwind, no build step, no `@import`.
+ * `style-src 'self'` admits this file and nothing else, and there is no inline
+ * `style` attribute anywhere in the app.
+ *
+ * The palette is DELIBERATELY the Evergreen rail's (2026-07-30), copied rather
+ * than imported. Copied, because importing would mean this origin depending on
+ * the app's build; the same, because a user who is asked to type their vault
+ * password should recognise where they are — an unfamiliar-looking page asking
+ * for the most valuable secret in the product is what a phishing page looks
+ * like. The `Vault · Zone A` marker in the rail says it is a different place.
+ *
+ * The rail colours stay constant across schemes, as they do in the app: theme
+ * switching changes the light in the room, not the building.
+ */
+
+:root {
+  --rail: #0f2c22;
+  --rail-line: #1d4436;
+  --rail-text: #e7f0ea;
+  --rail-accent: #7fd1ac;
+  --bg: #f7faf8;
+  --surface: #ffffff;
+  --line: #dbe6e0;
+  --text: #10221b;
+  --muted: #5b6f66;
+  --ok: #1f6f4f;
+  --warn: #8a5a12;
+  --error: #97231f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1512;
+    --surface: #12201b;
+    --line: #22352d;
+    --text: #e7f0ea;
+    --muted: #9ab0a6;
+    --ok: #7fd1ac;
+    --warn: #e0b062;
+    --error: #f0918c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  /* System stack only. The app vendors Instrument Sans; this origin does not
+     load a font at all, so there is one fewer served asset to get wrong and
+     `font-src 'self'` never has to be exercised. */
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.rail {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.9rem 1.25rem;
+  background: var(--rail);
+  color: var(--rail-text);
+  border-bottom: 1px solid var(--rail-line);
+}
+
+.brand {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.zone {
+  font-size: 0.8125rem;
+  color: var(--rail-accent);
+}
+
+.shell {
+  max-width: 38rem;
+  margin: 2.5rem auto;
+  padding: 1.75rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+
+h1 {
+  margin: 0 0 0.75rem;
+  font-size: 1.375rem;
+  letter-spacing: -0.015em;
+}
+
+.status {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.status-ok {
+  color: var(--ok);
+}
+.status-warn {
+  color: var(--warn);
+}
+.status-error {
+  color: var(--error);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1.25rem;
+  font-size: 0.875rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  /* User ids are long and opaque; wrap rather than overflow the card. */
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.button {
+  font: inherit;
+  padding: 0.55rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--rail);
+  background: var(--rail);
+  color: var(--rail-text);
+  cursor: pointer;
+}
+
+.button[disabled] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.link {
+  color: var(--ok);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.foot {
+  max-width: 38rem;
+  margin: 0 auto 3rem;
+  padding: 0 1.75rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}

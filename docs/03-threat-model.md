@@ -941,6 +941,82 @@ settlement, profile — cannot fire it.
   the address-ownership half of §5.3's enumeration residual and did NOT close
   the timing half: `register` still awaits KMS, inserts and Kafka publishes on
   the new-email path only. Recorded in `auth.service.ts` and unchanged here.
+## 6i. Threat-model delta — M15 the vault surface, PR1 (2026-08-08)
+
+M6 activated **TB6 (client device)** in the library. M15 activates it in the
+BROWSER, which is where risk #4 (vault client-side compromise, Critical) has
+always actually lived: until now no page in this product ever held a Zone A key,
+so every TB6 control in §4 was a requirement with no surface to apply to. §6a
+recorded that plainly — "the isolated vault origin, CSP, and Trusted Types are
+frontend controls; no vault UI ships in M6, so they land with that surface."
+This is that surface. PR1 deliberately ships the boundary with NO vault crypto
+behind it yet.
+
+**The §4 TB6 controls, now shipped and their status.**
+- *Isolated vault origin:* shipped. A different HOST (`vault.localhost:3010`
+  locally, `vault.<domain>` in production), not a different port — MEASURED,
+  because cookie scope ignores the port and a port-only split would have sent
+  the app's session to the vault on every request. The vault's cookie carries
+  the `__Host-` prefix, so host-only is enforced by the browser rather than by
+  convention, which is what makes a same-registrable-domain deployment safe.
+- *Strict CSP:* shipped, and stricter than the main app's honest-partial one.
+  `default-src 'none'`, `script-src 'self'` with NO `unsafe-inline` and NO
+  `unsafe-eval` in ANY environment, `connect-src 'self'`, `img-src 'self'` (no
+  `data:`), `frame-ancestors 'none'`, `base-uri 'none'`.
+- *Trusted Types:* shipped and ENFORCED — `require-trusted-types-for 'script'`
+  with `trusted-types 'none'`, so no policy may be created and every DOM XSS
+  sink throws. This is only possible because the client is framework-free; a
+  framework that templates through `innerHTML` needs a permissive policy, which
+  is the control in name only. Verified in a real browser: policy creation
+  refused, `innerHTML` threw with zero nodes created, `eval`/`new Function` threw
+  EvalError from page context.
+- *No third-party scripts on vault surfaces:* shipped, and stronger than an
+  allowlist — there is no bundler and no dependency tree. The browser client
+  imports only relative paths and (from PR2) `@estate/vault-crypto` by absolute
+  path from this origin. Enforced by a source fence.
+- *Re-auth on vault open:* shipped. Minting the handoff requires a fresh step-up,
+  and the vault service's own SRP legs are step-up gated (M6).
+- *WebCrypto non-extractable keys, memory zeroization, clipboard auto-clear:*
+  NOT in PR1, because no key exists on this origin yet. They land with PR2, which
+  is what "prove the boundary before putting keys behind it" means.
+
+**New in the threat model: the handoff itself.** Authority now crosses an origin
+boundary, which is a channel that did not previously exist. It is a single-use
+160-bit code, minted under step-up, delivered by a top-level form POST (never a
+URL, a fragment, or a `Referer`), burned on the ATTEMPT, and redeemed
+server-side for a session that is `vault`-audience, 15 minutes, and carries NO
+refresh token. Deny-by-default audience enforcement means that session opens the
+vault service and nothing else — measured across every service. A vault session
+cannot mint another handoff, so a leak cannot chain forward.
+
+**Residuals accepted, and why.**
+- *The handoff is a bearer capability for 60 seconds.* Anyone holding it can
+  redeem it, because the redeem route takes no other selector — which is
+  deliberate, since a route that could name an account would be an enumeration
+  oracle (§6g's rule). Bounded by the window, single use, TLS in production, and
+  by the fact that redemption yields a session that decrypts nothing.
+- *The vault origin sees contact NAMES* (from PR3's grantee picker, projected at
+  the edge to `{contactId, linkedUserId, name}` and filtered to linked contacts).
+  Unavoidable rather than accepted lightly: an owner confirming a key
+  fingerprint out of band must know whose key it is. No other Zone B field can
+  cross.
+- *A subdomain shares a registrable domain with the app.* `__Host-` makes the
+  cookie host-only at the browser, so the practical exposure is a cookie set
+  with an explicit `Domain=` on the parent — which nothing in this repo does. A
+  separate registrable domain closes it entirely and is a deployment choice.
+- *`script-src 'self'` trusts this origin's own served files.* A CSP is a
+  browser-side control and cannot defend against a compromised BUILD; the
+  supply-chain half is the empty dependency tree and the absence of a bundler,
+  not this header.
+- *No rate limiting on handoff minting.* The same standing follow-up as
+  identity's login and the vault's SRP proofs. Interim bound: one unspent
+  handoff per user, enforced by a partial unique index, so pressing the button
+  repeatedly leaves one live credential rather than many.
+
+**Not yet shipped, and therefore not yet mitigated.** Everything Zone A actually
+does — enrollment, unlock, item CRUD, emergency access — plus the Secret Key's
+device-storage question and the clipboard/idle-timeout controls. PR1's client
+holds no key and asks for no password.
 
 ## 7. Validation program
 

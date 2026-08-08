@@ -1,4 +1,13 @@
-export { isStepUpFresh, STEPUP_WINDOW_MS, type Clock, type SessionContext } from './session';
+export {
+  AUDIENCE_ADMITTERS,
+  DEFAULT_SESSION_AUDIENCE,
+  isStepUpFresh,
+  SESSION_AUDIENCES,
+  STEPUP_WINDOW_MS,
+  type Clock,
+  type SessionAudience,
+  type SessionContext,
+} from './session';
 export {
   HttpSessionVerifier,
   SESSION_CLOCK,
@@ -7,7 +16,13 @@ export {
   type HttpSessionVerifierOptions,
   type SessionVerifier,
 } from './verifier';
-export { CallerGuard, requireCaller, type CallerContext, type CallerRequest } from './caller.guard';
+export {
+  ALLOWED_SESSION_AUDIENCES,
+  CallerGuard,
+  requireCaller,
+  type CallerContext,
+  type CallerRequest,
+} from './caller.guard';
 export { StepUpGuard } from './stepup.guard';
 export {
   SERVICE_CREDENTIAL,

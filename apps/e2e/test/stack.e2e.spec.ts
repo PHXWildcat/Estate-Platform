@@ -48,6 +48,14 @@ const PROFILE_URL = process.env['STACK_PROFILE_URL'] ?? 'http://localhost:3002';
 const ASSETS = process.env['STACK_ASSETS_URL'] ?? 'http://localhost:3003';
 const DOCUMENTS = process.env['STACK_DOCUMENTS_URL'] ?? 'http://localhost:3005';
 const VAULT = process.env['STACK_VAULT_URL'] ?? 'http://localhost:3006';
+/**
+ * The ISOLATED VAULT ORIGIN (M15). A different HOST, not a different port:
+ * cookie scope ignores the port, so `localhost:3010` would have received the
+ * app's session on every request (measured in a browser, not assumed).
+ * `*.localhost` resolves to loopback and is a potentially-trustworthy origin,
+ * so its `__Host-` Secure cookie is accepted there over plain http.
+ */
+const VAULT_WEB = process.env['STACK_VAULT_WEB_URL'] ?? 'http://vault.localhost:3010';
 const SETTLEMENT = process.env['STACK_SETTLEMENT_URL'] ?? 'http://localhost:3007';
 // M10: the AI assistant runs in the DEVELOPMENT profile only — production pins
 // LLM_MODE=anthropic and no provider credential exists in this project, so the
@@ -1245,6 +1253,195 @@ describeIfStack('the running stack', () => {
           throw new Error(`chain broken at seq ${result.firstBadSeq}: ${result.reason}`);
         }
         expect(result.count).toBeGreaterThanOrEqual(10);
+      } finally {
+        await db.end();
+      }
+    });
+  });
+
+  /**
+   * THE CROSS-ORIGIN HANDOFF (M15), end to end on the real deployment.
+   *
+   * OUTSIDE the profile split, unlike plaid and the assistant: the vault origin
+   * runs in BOTH profiles because nothing about it needs a third-party
+   * credential, so both should exercise it. The production rehearsal is in fact
+   * where the shipped-image assertions matter most.
+   *
+   * These are the properties the milestone exists for, and every one of them
+   * is about what a leaked credential is WORTH rather than about a happy
+   * path. They were each measured by hand against this stack before being
+   * written down here.
+   */
+  describe('the isolated vault origin', () => {
+    it('serves the shell under a CSP with no unsafe-* and enforced Trusted Types', async () => {
+      const response = await fetch(`${VAULT_WEB}/`);
+      expect(response.status).toBe(200);
+      const csp = response.headers.get('content-security-policy') ?? '';
+      // The two directives the main app cannot honestly claim (M11), and the
+      // reason this origin is framework-free.
+      expect(csp).toContain("script-src 'self'");
+      expect(csp).toContain("require-trusted-types-for 'script'");
+      expect(csp).toContain("trusted-types 'none'");
+      expect(csp).not.toContain('unsafe-inline');
+      expect(csp).not.toContain('unsafe-eval');
+      // Nothing may frame it, and no other origin may load from it.
+      expect(csp).toContain("frame-ancestors 'none'");
+      expect(response.headers.get('cross-origin-resource-policy')).toBe('same-origin');
+    });
+
+    it('actually SERVES its client bundle from the shipped image', async () => {
+      /*
+       * The 2026-08-06 web.Dockerfile lesson, applied before it can recur.
+       * That image lost its vendored typeface for several milestones because
+       * `output: 'standalone'` excludes `public/`, and nothing noticed: the
+       * container booted, the page rendered, and only a 404 on an asset gave
+       * it away. This origin's client is ALSO build output under `public/`
+       * (tsconfig.client.json emits there, and it is gitignored), so its
+       * absence would look identical — a shell that loads and a page that
+       * never renders.
+       *
+       * Liveness is not the check. Fetching the module is.
+       */
+      const module = await fetch(`${VAULT_WEB}/app/main.js`);
+      expect(module.status).toBe(200);
+      expect(module.headers.get('content-type')).toContain('javascript');
+      const body = await module.text();
+      expect(body).toContain('render');
+
+      // The generated config module, which is the one piece of JS this origin
+      // produces at runtime rather than at build time.
+      const config = await fetch(`${VAULT_WEB}/app/config.js`);
+      expect(config.status).toBe(200);
+      expect(await config.text()).toContain('ESTATE_APP_ORIGIN');
+    });
+
+    it('refuses an arrival POST from any origin but the app', async () => {
+      const response = await fetch(`${VAULT_WEB}/open`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'http://attacker.example',
+        },
+        body: 'code=stolen',
+      });
+      expect(response.status).toBe(403);
+    });
+
+    it('mints, redeems, and yields a session worth ONLY the vault', async () => {
+      const session = await registerAndLogin();
+      await stepUp(session);
+
+      const minted = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff', { token: session.token }),
+        201,
+        'mint handoff',
+      ) as { code: string; expiresAt: string };
+      expect(minted.code.length).toBeGreaterThan(20);
+
+      const redeemed = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', { body: { code: minted.code } }),
+        200,
+        'redeem handoff',
+      ) as Record<string, unknown>;
+      // NO REFRESH TOKEN. The session lives 15 minutes and cannot be
+      // extended, because no credential capable of extending it was ever
+      // issued — `refresh_token_h` holds the digest of a value dropped on the
+      // floor at mint.
+      expect(Object.keys(redeemed).sort()).toEqual(
+        ['accessToken', 'expiresAt', 'sessionId', 'userId'].sort(),
+      );
+      const vaultToken = redeemed['accessToken'] as string;
+
+      // THE BOUNDARY. The vault service admits it…
+      expect((await api(VAULT, 'GET', '/v1/vault/keyset', { token: vaultToken })).status).toBe(200);
+      // …and every other service refuses it, without any of them having
+      // changed a line: `CallerGuard` admits `account` alone unless a service
+      // opts in, and only vault does (AUDIENCE_ADMITTERS).
+      for (const [name, base, path] of [
+        ['assets', ASSETS, '/v1/assets'],
+        ['documents', DOCUMENTS, '/v1/documents'],
+        ['profile', PROFILE_URL, '/v1/profile'],
+      ] as const) {
+        const refused = await api(base, 'GET', path, { token: vaultToken });
+        expect(`${name}:${refused.status}`).toBe(`${name}:401`);
+      }
+
+      // Identity's own surface is per ROUTE, because introspection must admit
+      // every audience or the origin cannot exist at all.
+      expect((await api(IDENTITY, 'GET', '/v1/auth/session', { token: vaultToken })).status).toBe(
+        200,
+      );
+      expect(
+        (await api(IDENTITY, 'POST', '/v1/auth/totp/enroll', { token: vaultToken })).status,
+      ).toBe(401);
+      // THE ONE THAT MATTERS MOST: a vault session cannot mint another
+      // handoff, so a leaked one cannot chain itself forward.
+      expect((await api(IDENTITY, 'POST', '/v1/auth/handoff', { token: vaultToken })).status).toBe(
+        401,
+      );
+    });
+
+    it('burns the code on the ATTEMPT, and answers every failure identically', async () => {
+      const session = await registerAndLogin();
+      await stepUp(session);
+      const minted = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff', { token: session.token }),
+        201,
+        'mint handoff',
+      ) as { code: string };
+
+      expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', { body: { code: minted.code } }),
+        200,
+        'first redemption',
+      );
+      const replay = await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', {
+        body: { code: minted.code },
+      });
+      const unknown = await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', {
+        body: { code: 'never-minted-code' },
+      });
+      // Spent and unknown are INDISTINGUISHABLE — status and body — because
+      // telling them apart says a guess named something real (docs/03 §6g).
+      expect(replay.status).toBe(401);
+      expect(unknown.status).toBe(401);
+      expect(replay.body).toEqual(unknown.body);
+      expect(replay.body).toEqual({ error: 'invalid_code' });
+    });
+
+    it('records the ceremony without recording which refusal fired', async () => {
+      const db = new Client({ connectionString: AUDIT_DB });
+      await db.connect();
+      try {
+        const rows = await pollUntil('handoff audit events', async () => {
+          const found = await db.query<{
+            action: string;
+            actor_id: string | null;
+            detail: unknown;
+          }>(
+            `SELECT action, actor_id, detail FROM audit_events
+              WHERE action LIKE 'auth.handoff%'`,
+          );
+          const actions = new Set(found.rows.map((r) => r.action));
+          return actions.has('auth.handoff.minted') &&
+            actions.has('auth.handoff.redeemed') &&
+            actions.has('auth.handoff.failed')
+            ? found.rows
+            : null;
+        });
+
+        // A refusal carries NO actor and NO reason: an audit trail that named
+        // which of unknown/expired/spent/raced applied would re-create through
+        // the stream the oracle the uniform wire answer removes (M14 PR1).
+        for (const row of rows.filter((r) => r.action === 'auth.handoff.failed')) {
+          expect(row.actor_id).toBeNull();
+          expect(row.detail ?? {}).toEqual({});
+        }
+        // A successful mint DOES carry the audience, which is the fact an
+        // owner reviewing their trail needs.
+        const minted = rows.find((r) => r.action === 'auth.handoff.minted');
+        expect(minted?.detail).toMatchObject({ audience: 'vault' });
       } finally {
         await db.end();
       }

@@ -26,6 +26,16 @@ session cookies whenever `NODE_ENV=production`, and browsers reject `Secure`
 cookies over plain http on every host *except* localhost. Any other spelling
 silently breaks login in the production profile.
 
+**The vault is a SECOND origin: `http://vault.localhost:3010` (M15).** Do not
+substitute `localhost:3010`, and the reason is measured rather than stylistic:
+cookie scope IGNORES THE PORT, so the app's session cookies would be sent to a
+same-host vault surface on every request — which is the entire property the
+isolated origin exists to have. `*.localhost` resolves to loopback in Chrome and
+Firefox and is a *potentially trustworthy* origin, so the vault's `__Host-`
+prefixed `Secure` cookie is accepted there over plain http exactly as the BFF's
+is on `localhost`. You do not normally type this address: the app's `/vault`
+page mints a single-use handoff and posts you there.
+
 ### Testing it
 
 ```bash
@@ -75,6 +85,7 @@ paths cannot drift.
 | OCR | Tesseract sidecar | Tesseract sidecar |
 | Audit bus | Redpanda | Redpanda |
 | Notifications (M9) | real HTTP → SES v1 on LocalStack | real HTTP → SES v1 on LocalStack |
+| Vault origin (M15) | `vault.localhost:3010`, real handoff | same — needs no third-party credential |
 | AWS transport | plain http | **TLS, verified** |
 | Plaid | deterministic stub | **absent** |
 | AI assistant (M10) | deterministic stub gateway | **absent** |
@@ -237,6 +248,7 @@ ports. The `5433-5438` host mappings exist only for host tooling and
 | Postgres | `pg-auth:5432` … `pg-audit:5432` | `localhost:5433` … `localhost:5438` |
 | Kafka | `redpanda:29092` | `localhost:9092` |
 | AWS | `http://localstack:4566` | `http://localhost:4566` |
+| Vault origin | `vault-web:3010` | `http://vault.localhost:3010` |
 
 ### The data volumes are ONE UNIT — LocalStack cannot persist its keys
 

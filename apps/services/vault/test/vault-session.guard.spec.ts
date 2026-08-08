@@ -22,6 +22,7 @@ function callerOf(overrides: Partial<SessionContext> = {}): SessionContext {
     sessionId: ACCOUNT_SESSION,
     mfaLevel: 'stepup',
     stepupExpiresAt: new Date(NOW.getTime() + 60_000),
+    audience: 'account',
     ...overrides,
   };
 }

@@ -1,0 +1,53 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "public/app",
+    "rootDir": "src/client",
+
+    /*
+     * NATIVE ES MODULES, SERVED AS WRITTEN — there is no bundler here and there
+     * is not meant to be one.
+     *
+     * A bundler is a build-time code generator with its own dependency tree,
+     * running over the only source in the product that handles Zone A key
+     * material. What ships to the browser is exactly what a reviewer reads,
+     * file for file, which is the same argument docs/04 boundary rule 3 makes
+     * for @estate/vault-crypto's empty dependency tree — applied to the surface
+     * instead of the library.
+     *
+     * The cost is that relative imports need explicit `.js` extensions, since
+     * a browser will not guess them. That is a rule, not a hazard: it fails at
+     * load time, loudly, on the first navigation.
+     */
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "target": "ES2023",
+
+    // A BROWSER's surface, not Node's. `types: []` is the load-bearing half:
+    // without it, @types/node's globals would let `process.env` or `Buffer`
+    // compile here and fail at runtime in the one place that must not fail.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+
+    // Emitting declarations for browser modules nobody imports from TypeScript
+    // buys nothing and clutters the served tree.
+    "declaration": false,
+    "declarationMap": false,
+
+    /*
+     * NO SOURCE MAPS on this origin, and the reason is not size.
+     *
+     * The static server's extension allowlist does not include `.map`, so an
+     * emitted map would 404 on every load — a permanent console error on the
+     * one origin whose console nobody should learn to ignore. Turning the emit
+     * off is the honest fix; widening the allowlist would serve a file that
+     * exists only to make the Zone A client easier to read.
+     *
+     * The client is unminified anyway: what a reviewer or a user sees in
+     * devtools IS the source, because nothing here is bundled.
+     */
+    "sourceMap": false
+  },
+  "include": ["src/client"]
+}

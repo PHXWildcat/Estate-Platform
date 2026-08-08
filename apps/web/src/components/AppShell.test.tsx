@@ -56,7 +56,7 @@ describe('AppShell', () => {
     await screen.findByText('Signed in');
   });
 
-  it('shows shipped-backend surfaces as inert previews, never dead links', async () => {
+  it('has NO inert previews left, and Vault leads to the interstitial', async () => {
     installGraphqlFetchMock({ Session: sessionHandler });
     render(
       <AppShell>
@@ -64,18 +64,20 @@ describe('AppShell', () => {
       </AppShell>,
     );
 
-    // Documents left this list in M12 and People in M13, each when the surface
-    // for its long-shipped service landed. Vault is the last preview, and it
-    // stays one until the docs/03 TB6 isolated origin exists — at which point it
-    // becomes an OUTBOUND link, never an in-app route.
-    for (const label of ['Vault']) {
-      expect(screen.getByText(label)).toBeInTheDocument();
-      expect(screen.queryByRole('link', { name: new RegExp(label) })).not.toBeInTheDocument();
-    }
-    // …and Documents and People are real destinations in both navigations.
+    // Documents left the preview list in M12, People in M13 and Vault in M15,
+    // each when the surface for its long-shipped service landed. Nothing is a
+    // preview any more, so the assertion is the inverse of what it used to be.
+    expect(document.querySelector('.rail-soon')).toBeNull();
+
+    // Vault points at the INTERSTITIAL, not at the vault. Zone A is on an
+    // isolated origin reached by a step-up-gated single-use handoff, which a
+    // hyperlink cannot mint — so the nav's long-standing promise of "outbound,
+    // never an in-app route" is kept one step further along, by the page this
+    // link leads to.
     for (const [label, href] of [
       ['Documents', '/documents'],
       ['People', '/people'],
+      ['Vault', '/vault'],
     ] as const) {
       const links = screen.getAllByRole('link', { name: label });
       expect(links.length).toBeGreaterThan(0);

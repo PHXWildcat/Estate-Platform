@@ -79,6 +79,11 @@ export interface IdentityClient {
   logout(accessToken: string): Promise<boolean>;
   /** Revokes the session behind a refresh token (the 30-day credential). */
   logoutByRefresh(refreshToken: string): Promise<void>;
+  /**
+   * M15: mint a single-use code for the isolated vault origin. Step-up gated at
+   * identity, so a stale session raises STEPUP_REQUIRED and the UI prompts.
+   */
+  mintVaultHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }>;
 }
 
 export type BffErrorCode =
@@ -200,7 +205,15 @@ export type BffErrorCode =
    * code was fine and there is nothing for the user to re-check, and distinct
    * from `NOTIFICATIONS_UNAVAILABLE` because nothing is down.
    */
-  | 'VERIFICATION_UNAVAILABLE';
+  | 'VERIFICATION_UNAVAILABLE'
+  /**
+   * M15. The handoff could not be minted — identity answered something this
+   * client could not read. Its own code rather than a generic failure because
+   * the remedy is "try again in a moment", and because the vault is the one
+   * surface where a user who is bounced needs to know it was the platform and
+   * not their credentials.
+   */
+  | 'VAULT_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -226,6 +239,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   PERMISSION_ALREADY_GRANTED: 'That permission is already allowed for this role',
   INVALID_VERIFICATION_CODE: 'That code was not accepted',
   VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
+  VAULT_UNAVAILABLE: 'We could not open the vault right now',
 };
 
 /**
@@ -272,6 +286,16 @@ const SessionSchema = z.object({
 const EnrollSchema = z.object({
   methodId: z.string().min(1),
   otpauthUri: z.string().min(1),
+});
+
+/**
+ * M15. Shape-checked rather than trusted, like every other identity response
+ * here: a malformed body must become a failure, never a form the browser
+ * submits with `code=undefined` to the vault origin.
+ */
+const VaultHandoffSchema = z.object({
+  code: z.string().min(1),
+  expiresAt: z.string().min(1),
 });
 
 const ErrorBodySchema = z.object({ error: z.string() });
@@ -421,6 +445,26 @@ export class FetchIdentityClient implements IdentityClient {
     if (!res.ok) {
       throw await this.mapError(res);
     }
+  }
+
+  /**
+   * Mint a single-use handoff code for the isolated vault origin (M15).
+   *
+   * Step-up gated at identity, so a stale session gets `stepup_required` and
+   * the UI prompts — the same shape every other elevated action here uses. The
+   * code is returned in the BODY and must never reach a URL: it is put in a
+   * hidden form field and submitted by top-level POST.
+   */
+  async mintVaultHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    const res = await this.request({ method: 'POST', path: '/v1/auth/handoff', accessToken });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    const parsed = VaultHandoffSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      throw bffError('VAULT_UNAVAILABLE');
+    }
+    return parsed.data;
   }
 
   async logout(accessToken: string): Promise<boolean> {

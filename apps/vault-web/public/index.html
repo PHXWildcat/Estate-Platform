@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vault · Estate</title>
+    <!--
+      A STATIC shell, byte-for-byte identical for every user and every request.
+
+      Nothing is interpolated into this file: no nonce, no user id, no origin,
+      no state. That is what lets the CSP be `script-src 'self'` with no hash
+      and no `'unsafe-inline'` — there is no inline script here to admit, and
+      the one configured value the client needs arrives as `/app/config.js`,
+      a generated JavaScript module rather than templated markup.
+
+      There is deliberately no <link rel="preconnect">, no font provider, no
+      analytics and no icon CDN. `connect-src 'self'` would refuse them anyway;
+      their absence means the refusal never has to fire.
+    -->
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app/config.js"></script>
+    <script type="module" src="/app/main.js"></script>
+  </head>
+  <body>
+    <header class="rail">
+      <span class="brand">Estate</span>
+      <span class="zone">Vault · Zone A</span>
+    </header>
+    <main id="app" class="shell">
+      <!--
+        Intentionally empty. Every node below this point is built by
+        `dom.ts` with createElement/textContent, so there is no markup path
+        into this document at runtime — the Trusted-Types policy is `'none'`,
+        which means any attempt to parse a string into DOM throws.
+      -->
+      <p class="status">Loading…</p>
+    </main>
+    <footer class="foot">
+      <p>
+        This is a separate, isolated origin. Your vault password and Secret Key are used only on
+        this device and are never sent to Estate.
+      </p>
+    </footer>
+  </body>
+</html>
