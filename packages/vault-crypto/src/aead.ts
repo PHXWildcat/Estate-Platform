@@ -17,7 +17,7 @@
  * between users, items, or roles by a server that never has to decrypt it.
  */
 
-import { source, utf8 } from './bytes';
+import { source, utf8 } from './bytes.js';
 
 export const ENVELOPE_VERSION = 0x01;
 export const NONCE_LENGTH = 12;

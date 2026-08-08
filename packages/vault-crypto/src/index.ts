@@ -23,9 +23,9 @@ export {
   seal,
   unwrapAesKey,
   type AesUsage,
-} from './aead';
+} from './aead.js';
 
-export { bigIntToBytes, bytesToBigInt, constantTimeEqual, modPow } from './bigint';
+export { bigIntToBytes, bytesToBigInt, constantTimeEqual, modPow } from './bigint.js';
 
 export {
   ECIES_VERSION,
@@ -38,7 +38,7 @@ export {
   publicKeyFingerprint,
   sealToPublicKey,
   type RecoveryKeyPair,
-} from './ecies';
+} from './ecies.js';
 
 export {
   RECOVERY_KEY_BYTES,
@@ -50,7 +50,7 @@ export {
   type EscrowMaterial,
   type HeldShare,
   type SealedShare,
-} from './recovery';
+} from './recovery.js';
 
 export {
   MAX_SHARES,
@@ -60,7 +60,7 @@ export {
   encodeShare,
   split,
   type Share,
-} from './shamir';
+} from './shamir.js';
 
 export {
   concatBytes,
@@ -71,7 +71,7 @@ export {
   utf8,
   wipe,
   xorBytes,
-} from './bytes';
+} from './bytes.js';
 
 export {
   SECRET_KEY_BYTES,
@@ -81,7 +81,7 @@ export {
   parseSecretKey,
   secretKeyFromBase64,
   secretKeyToBase64,
-} from './format';
+} from './format.js';
 
 export {
   ITEM_BLOB_VERSION,
@@ -90,7 +90,7 @@ export {
   itemContentAad,
   itemKeyAad,
   type VaultItemRef,
-} from './items';
+} from './items.js';
 
 export {
   CIPHER_ID,
@@ -111,7 +111,7 @@ export {
   hmacSha256,
   type KdfParams,
   type VaultKeyMaterial,
-} from './kdf';
+} from './kdf.js';
 
 export {
   MASTER_KEY_BYTES,
@@ -129,7 +129,7 @@ export {
   type UnlockedVault,
   type VaultEnrollment,
   type VaultKeysetPayload,
-} from './keyset';
+} from './keyset.js';
 
 export {
   SRP_ELEMENT_BYTES,
@@ -151,4 +151,4 @@ export {
   type ClientSession,
   type ServerEphemeral,
   type ServerSession,
-} from './srp';
+} from './srp.js';

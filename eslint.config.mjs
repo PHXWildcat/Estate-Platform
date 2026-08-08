@@ -17,6 +17,15 @@ export default tseslint.config(
       // the edge serves; it is still build output, and linting it reports the
       // compiler's own JS back as untyped source.
       'apps/vault-web/public/app/**',
+      // vault-crypto's browser build, copied in by the same package's build
+      // step. Emitted JavaScript, linted at its source in packages/.
+      'apps/vault-web/public/lib/**',
+      // Plain Node ESM build scripts, outside every tsconfig project — the
+      // same status .github/scripts has.
+      'apps/vault-web/scripts/**',
+      // The vault-crypto BROWSER emit. Same sources as dist/, different module
+      // format; linting the output reports the compiler's JS back as untyped.
+      '**/dist-esm/**',
     ],
   },
   js.configs.recommended,

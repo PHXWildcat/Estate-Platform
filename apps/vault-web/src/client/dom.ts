@@ -33,8 +33,16 @@ export interface Attrs {
   readonly disabled?: boolean;
   readonly hidden?: boolean;
   readonly role?: string;
+  readonly for?: string;
+  readonly rows?: string;
+  readonly min?: string;
+  readonly max?: string;
+  readonly checked?: boolean;
+  readonly readonly?: boolean;
+  readonly spellcheck?: string;
   readonly 'aria-live'?: string;
   readonly 'aria-label'?: string;
+  readonly 'data-testid'?: string;
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(
@@ -70,6 +78,57 @@ export function replaceChildren(container: Element, ...children: readonly Child[
       typeof child === 'string' ? document.createTextNode(child) : child,
     ),
   );
+}
+
+/**
+ * A labelled input. One helper rather than three nodes at each call site,
+ * because the label/id pairing is the part that gets forgotten and the vault is
+ * not a surface where a screen-reader user should have to guess which field is
+ * which.
+ */
+export interface FieldOptions {
+  readonly id: string;
+  readonly label: string;
+  readonly type?: string;
+  readonly value?: string;
+  readonly autocomplete?: string;
+  readonly hint?: string;
+  readonly multiline?: boolean;
+}
+
+export interface Field {
+  readonly row: HTMLElement;
+  readonly input: HTMLInputElement | HTMLTextAreaElement;
+}
+
+export function field(options: FieldOptions): Field {
+  const input = options.multiline
+    ? el('textarea', { id: options.id, rows: '4', spellcheck: 'false' })
+    : el('input', {
+        id: options.id,
+        type: options.type ?? 'text',
+        // Browsers and password managers both act on this. `off` on a vault
+        // field keeps ANOTHER manager from offering to save the secret this one
+        // is holding — a small thing that would otherwise scatter copies.
+        autocomplete: options.autocomplete ?? 'off',
+        spellcheck: 'false',
+      });
+  if (options.value !== undefined) {
+    input.value = options.value;
+  }
+  const row = el('div', { class: 'field' }, [
+    el('label', { class: 'field-label', for: options.id }, [options.label]),
+    ...(options.hint ? [el('p', { class: 'field-hint' }, [options.hint])] : []),
+    input,
+  ]);
+  return { row, input };
+}
+
+export function onSubmit(form: HTMLFormElement, handler: () => void): void {
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    handler();
+  });
 }
 
 export function onClick(node: Element, handler: () => void): void {

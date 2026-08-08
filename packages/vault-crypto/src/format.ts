@@ -13,8 +13,8 @@
  *   - case-insensitive, and 1/l/i and 0/o are folded on input
  */
 
-import { fromBase64, sha256, toBase64 } from './bytes';
-import { VaultCryptoError } from './aead';
+import { fromBase64, sha256, toBase64 } from './bytes.js';
+import { VaultCryptoError } from './aead.js';
 
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const PREFIX = 'ES1';

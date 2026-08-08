@@ -29,10 +29,10 @@
  * server never holds) and a rogue contact alone is not enough either.
  */
 
-import { importAesKey, open, seal, VaultCryptoError } from './aead';
-import { fromBase64, randomBytes, toBase64, wipe, xorBytes } from './bytes';
-import { openWithPrivateKey, publicKeyDigest, sealToPublicKey } from './ecies';
-import { combine, decodeShare, encodeShare, split } from './shamir';
+import { importAesKey, open, seal, VaultCryptoError } from './aead.js';
+import { fromBase64, randomBytes, toBase64, wipe, xorBytes } from './bytes.js';
+import { openWithPrivateKey, publicKeyDigest, sealToPublicKey } from './ecies.js';
+import { combine, decodeShare, encodeShare, split } from './shamir.js';
 
 export const RECOVERY_KEY_BYTES = 32;
 

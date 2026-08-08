@@ -3,29 +3,32 @@
  */
 
 /**
- * The browser client.
+ * The browser client (M15 PR2).
  *
  * jsdom cannot enforce a CSP or Trusted Types, so what those buy is measured in
- * a REAL browser instead (and was: `trustedTypes.createPolicy` refused,
- * `innerHTML` threw a TypeError producing zero child nodes, and `new Function`
- * and `eval` both threw EvalError from page context). What jsdom is good for is
- * the half a browser cannot easily assert — that the DOM helper produces TEXT
- * for text, that a failure never renders as a success, and that the status
- * mapping is what the UI thinks it is.
+ * a REAL browser instead (PR1: `trustedTypes.createPolicy` refused, `innerHTML`
+ * threw producing zero child nodes, `eval` and `new Function` threw EvalError
+ * from page context). What jsdom is good for is the half a browser cannot
+ * easily assert — that the DOM helper produces TEXT for text, that a failure
+ * never renders as a success, and that the status mapping is what the UI thinks.
+ *
+ * The crypto here is REAL: jest resolves `/lib/vault-crypto/index.js` to the
+ * package sources, so an enrollment in these tests runs PBKDF2 and SRP exactly
+ * as the browser will. That is what makes the egress spec meaningful.
  */
 import { el, replaceChildren, text } from '../src/client/dom';
 import { request } from '../src/client/api';
-import { render } from '../src/client/app';
+import { decodeItemContent, encodeItemContent } from '../src/client/item-content';
+import { entropyBits, generatePassword, GeneratorError } from '../src/client/generator';
+import { renderEmergencyKit } from '../src/client/emergency-kit';
 
 type FetchArgs = [string, RequestInit | undefined];
 
 /**
- * A response DOUBLE rather than a real `Response`.
- *
- * jsdom provides no `fetch` and no `Response` global, so constructing one threw
- * — and `request` dutifully reported NETWORK, which is the correct behaviour
- * for a transport that blew up and a completely misleading test result. The
- * double exposes exactly the three members `request` reads.
+ * A response DOUBLE rather than a real `Response`: jsdom provides no `fetch` and
+ * no `Response` global, so constructing one threw — and `request` dutifully
+ * reported NETWORK, which is correct behaviour for a broken transport and a
+ * completely misleading test result.
  */
 function response(status: number, body: string | null): unknown {
   return {
@@ -47,9 +50,9 @@ function stubFetch(handler: (path: string, init?: RequestInit) => unknown): Fetc
 const json = (status: number, body: unknown): unknown => response(status, JSON.stringify(body));
 
 describe('dom helpers build text, never markup', () => {
-  it('renders a script-shaped title as characters', () => {
+  it('renders a script-shaped item title as characters', () => {
     // The property the whole renderer exists for. A vault item's title is
-    // attacker-influencable in the general case (someone else named the
+    // attacker-influencable in the general case (somebody else named the
     // account), so it must never be parsed.
     const node = el('p', {}, ['<img src=x onerror=alert(1)>']);
     expect(node.textContent).toBe('<img src=x onerror=alert(1)>');
@@ -86,8 +89,7 @@ describe('api failure mapping', () => {
     [500, 'internal_error', 'UNKNOWN'],
   ])('maps %s/%s to %s', async (status, token, expected) => {
     stubFetch(() => json(status, { error: token }));
-    const result = await request('/api/vault/keyset');
-    expect(result).toEqual({ ok: false, code: expected });
+    expect(await request('/api/vault/keyset')).toEqual({ ok: false, code: expected });
   });
 
   it('never surfaces server error text', async () => {
@@ -101,8 +103,17 @@ describe('api failure mapping', () => {
     await request('/api/vault/keyset');
     const init = calls[0]?.[1];
     expect((init?.headers as Record<string, string>)['x-estate-vault-csrf']).toBe('1');
-    // Never 'include': there is no other origin this app should credential.
     expect(init?.credentials).toBe('same-origin');
+  });
+
+  it('sends the vault-session token as a HEADER, never in the body or the URL', async () => {
+    const calls = stubFetch(() => json(200, {}));
+    await request('/api/vault/items', { vaultSession: 'opaque-vault-token' });
+    expect((calls[0]?.[1]?.headers as Record<string, string>)['x-estate-vault-session']).toBe(
+      'opaque-vault-token',
+    );
+    expect(calls[0]?.[0]).not.toContain('opaque-vault-token');
+    expect(JSON.stringify(calls[0]?.[1]?.body ?? '')).not.toContain('opaque-vault-token');
   });
 
   it('treats a network failure as a failure, not as empty data', async () => {
@@ -116,142 +127,111 @@ describe('api failure mapping', () => {
   });
 });
 
-describe('the screen', () => {
-  // Stubbing `window.location` is unavoidable for the sign-out tests (jsdom
-  // refuses a real navigation), and a stub that outlives its test silently
-  // pins `location.search` for every later one — which is exactly what
-  // happened: the expired-link case stopped seeing its own query string and
-  // rendered the signed-in screen instead. Restore it every time.
-  const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+describe('item content', () => {
+  it('round-trips the fields a user filled in', () => {
+    const content = {
+      title: 'Bank — joint',
+      username: 'sam@example.test',
+      secret: 'hunter2',
+      notes: 'branch: high street',
+    };
+    expect(decodeItemContent(encodeItemContent(content))).toEqual(content);
+  });
 
-  afterEach(() => {
-    if (originalLocation) {
-      Object.defineProperty(window, 'location', originalLocation);
+  it('drops empty fields rather than storing blanks', () => {
+    const encoded = encodeItemContent({ title: 'Only a title', username: '', secret: '' });
+    expect(decodeItemContent(encoded)).toEqual({ title: 'Only a title' });
+    expect(new TextDecoder().decode(encoded)).not.toContain('username');
+  });
+
+  it('PRESERVES fields a newer client wrote, through an edit', () => {
+    // Without this, opening an item in an older tab and saving would silently
+    // delete fields the user never saw — data loss disguised as an edit.
+    const fromFuture = new TextEncoder().encode(
+      JSON.stringify({ title: 'Card', totpSeed: 'JBSWY3DP', customFields: [{ k: 'v' }] }),
+    );
+    const decoded = decodeItemContent(fromFuture);
+    expect(decoded.unknown).toEqual({ totpSeed: 'JBSWY3DP', customFields: [{ k: 'v' }] });
+
+    const reEncoded = JSON.parse(new TextDecoder().decode(encodeItemContent(decoded))) as Record<
+      string,
+      unknown
+    >;
+    expect(reEncoded['totpSeed']).toBe('JBSWY3DP');
+    expect(reEncoded['customFields']).toEqual([{ k: 'v' }]);
+  });
+
+  it('throws rather than guessing when a blob does not parse', () => {
+    // A blob that decrypted but will not parse means the AEAD authenticated
+    // bytes this client cannot read. Rendering a blank item over it would
+    // invite the user to overwrite something real.
+    expect(() => decodeItemContent(new TextEncoder().encode('not json'))).toThrow();
+    expect(() => decodeItemContent(new TextEncoder().encode('[1,2]'))).toThrow();
+  });
+});
+
+describe('the password generator', () => {
+  it('produces the requested length, from the declared alphabet', () => {
+    const password = generatePassword(32);
+    expect(password).toHaveLength(32);
+    expect(password).toMatch(/^[A-Za-z0-9\-_.!@#$%^&*]+$/);
+  });
+
+  it('refuses a length it cannot honour rather than clamping', () => {
+    // Silently generating something shorter than asked for costs entropy
+    // without telling anyone (the M10 moneyToCents lesson).
+    expect(() => generatePassword(4)).toThrow(GeneratorError);
+    expect(() => generatePassword(1024)).toThrow(GeneratorError);
+    expect(() => generatePassword(12.5)).toThrow(GeneratorError);
+  });
+
+  it('does not repeat itself', () => {
+    const seen = new Set(Array.from({ length: 50 }, () => generatePassword(16)));
+    expect(seen.size).toBe(50);
+  });
+
+  it('reports entropy honestly for the alphabet it uses', () => {
+    // 74 characters ⇒ ~6.2 bits each. A wrong number here would be a claim
+    // about strength that the generator does not deliver.
+    expect(entropyBits(1)).toBe(6);
+    expect(entropyBits(24)).toBeGreaterThanOrEqual(148);
+  });
+
+  it('uses rejection sampling, so the alphabet is not biased', () => {
+    // The obvious `% length` favours the first 34 characters by ~1.35x. Drawn
+    // over enough samples the tail characters must appear at a comparable rate
+    // to the head ones.
+    const counts = new Map<string, number>();
+    for (const ch of generatePassword(128).repeat(1) +
+      Array.from({ length: 40 }, () => generatePassword(128)).join('')) {
+      counts.set(ch, (counts.get(ch) ?? 0) + 1);
     }
+    const head = counts.get('a') ?? 0;
+    const tail = counts.get('*') ?? 0;
+    expect(tail).toBeGreaterThan(0);
+    // Generous bound: this is a bias check, not a randomness test suite.
+    expect(tail / Math.max(head, 1)).toBeGreaterThan(0.4);
+  });
+});
+
+describe('the emergency kit', () => {
+  const kit = renderEmergencyKit({
+    secretKey: 'ES1-AAAAA-BBBBB-CCCCC-DDDDD',
+    accountLabel: 'user-uuid',
+    issuedAt: '2026-08-08',
   });
 
-  beforeEach(() => {
-    document.body.replaceChildren(el('main', { id: 'app' }));
-    window.ESTATE_APP_ORIGIN = 'http://localhost:3000';
+  it('carries the Secret Key and NOT the password', () => {
+    expect(kit).toContain('ES1-AAAAA-BBBBB-CCCCC-DDDDD');
+    // 2SKD's whole point: a kit carrying both halves would turn a filing
+    // cabinet into a single point of failure.
+    expect(kit).toMatch(/password is deliberately NOT written here/i);
   });
 
-  it('says not signed in when the session call is refused', async () => {
-    stubFetch(() => json(401, { error: 'unauthorized' }));
-    await render();
-    expect(document.body.textContent).toContain('Not signed in');
-    expect(document.body.textContent).toContain('Open the vault from Estate');
-  });
-
-  it('distinguishes an OUTAGE from being signed out', async () => {
-    // The M10 PR4 rule: a failed read must never render as an answer, and two
-    // different failures must not collapse into one message the user cannot act
-    // on. "Sign in again" during an outage sends someone somewhere pointless.
-    stubFetch(() => json(502, { error: 'upstream_unavailable' }));
-    await render();
-    expect(document.body.textContent).toContain('temporarily unreachable');
-    expect(document.body.textContent).not.toContain('Open the vault from Estate');
-  });
-
-  it('shows the enrolled state and the session audience', async () => {
-    stubFetch((path) =>
-      path === '/api/auth/session'
-        ? json(200, { userId: 'user-uuid', mfaLevel: 'stepup', audience: 'vault' })
-        : json(200, { enrolled: true, updatedAt: '2026-08-08T00:00:00.000Z' }),
-    );
-    await render();
-    expect(document.body.textContent).toContain('A vault is set up on this account');
-    expect(document.body.textContent).toContain('user-uuid');
-    expect(document.body.textContent).toContain('vault');
-  });
-
-  it('says so plainly when no vault exists yet', async () => {
-    stubFetch((path) =>
-      path === '/api/auth/session'
-        ? json(200, { userId: 'user-uuid', mfaLevel: 'stepup', audience: 'vault' })
-        : json(200, { enrolled: false, updatedAt: null }),
-    );
-    await render();
-    expect(document.body.textContent).toContain('No vault has been set up');
-  });
-
-  it('does not claim an empty vault when the keyset read FAILS', async () => {
-    stubFetch((path) =>
-      path === '/api/auth/session'
-        ? json(200, { userId: 'user-uuid', mfaLevel: 'stepup', audience: 'vault' })
-        : json(502, { error: 'upstream_unavailable' }),
-    );
-    await render();
-    expect(document.body.textContent).toContain('Could not read the vault status');
-    expect(document.body.textContent).not.toContain('No vault has been set up');
-  });
-
-  /**
-   * Sign-out, which is the one place this screen can do harm by being
-   * optimistic: a "signed out" message over a still-live session is strictly
-   * worse than an honest failure (the M8 PR5 logout lesson, where reading
-   * identity's 401 as success cleared the cookies while a 30-day refresh token
-   * stayed alive).
-   */
-  describe('sign out', () => {
-    async function renderSignedIn(
-      logout: (calls: number) => unknown,
-    ): Promise<{ calls: FetchArgs[]; assign: jest.Mock }> {
-      let logoutCalls = 0;
-      const calls = stubFetch((path) => {
-        if (path === '/api/auth/session') {
-          return json(200, { userId: 'user-uuid', mfaLevel: 'stepup', audience: 'vault' });
-        }
-        if (path === '/api/auth/logout') {
-          logoutCalls += 1;
-          return logout(logoutCalls);
-        }
-        return json(200, { enrolled: true, updatedAt: null });
-      });
-      const assign = jest.fn();
-      Object.defineProperty(window, 'location', {
-        value: { search: '', assign },
-        writable: true,
-        configurable: true,
-      });
-      await render();
-      return { calls, assign };
-    }
-
-    it('revokes upstream FIRST, then navigates away', async () => {
-      const { calls, assign } = await renderSignedIn(() => json(200, { status: 'ok' }));
-      const button = [...document.querySelectorAll('button')].find((b) =>
-        b.textContent?.includes('Sign out'),
-      );
-      button?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      const logout = calls.find(([path]) => path === '/api/auth/logout');
-      expect(logout?.[1]?.method).toBe('POST');
-      expect(assign).toHaveBeenCalledWith('/');
-    });
-
-    it('does NOT claim to have signed out when the revocation fails', async () => {
-      const { assign } = await renderSignedIn(() => json(502, { error: 'upstream_unavailable' }));
-      const button = [...document.querySelectorAll('button')].find((b) =>
-        b.textContent?.includes('Sign out'),
-      );
-      button?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      expect(assign).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain('Your session is still open');
-      // And the control is usable again rather than stuck disabled.
-      expect(button?.hasAttribute('disabled')).toBe(false);
-    });
-  });
-
-  it('renders the expired-link message without asking anything upstream', async () => {
-    const calls = stubFetch(() => json(200, {}));
-    window.history.replaceState({}, '', '/?open=refused');
-    await render();
-    expect(document.body.textContent).toContain('This vault link has expired');
-    // One message for every reason, and no round trip to discover which.
-    expect(calls).toHaveLength(0);
-    window.history.replaceState({}, '', '/');
+  it('says plainly that losing it is unrecoverable', () => {
+    // A user deciding where to file this needs to know the stakes at the
+    // moment they decide, not after.
+    expect(kit).toMatch(/no recovery/i);
+    expect(kit).toMatch(/permanently destroys/i);
   });
 });

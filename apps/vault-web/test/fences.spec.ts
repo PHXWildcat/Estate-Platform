@@ -96,7 +96,15 @@ describe('the browser client has no dependency tree', () => {
     // The EDGE may use zod, like every other service's config. The CLIENT's
     // dependency surface is enforced above, by import, because that is what
     // actually ships to the browser.
+    //
+    // @estate/vault-crypto is deliberately a DEV dependency and not a runtime
+    // one, which is a statement about this Node process rather than a
+    // technicality: the edge never imports it. Its browser build is copied into
+    // `public/lib` at build time and served as static files, so it is a build
+    // input here and a runtime dependency of the BROWSER — a distinction this
+    // list would erase if the package were promoted.
     expect(Object.keys(packageJson.dependencies)).toEqual(['zod']);
+    expect(Object.keys(packageJson.devDependencies)).toContain('@estate/vault-crypto');
   });
 });
 

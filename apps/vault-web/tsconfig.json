@@ -10,7 +10,12 @@
     // same reason — a permissive config for tests, a strict one for the
     // artifact that ships.
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node", "jest"]
+    "types": ["node", "jest"],
+    // The client's absolute-path import of vault-crypto, resolved for the
+    // editor and ts-jest. See tsconfig.client.json for why it maps to `dist`.
+    "paths": {
+      "/lib/vault-crypto/index.js": ["../../packages/vault-crypto/dist/index.d.ts"]
+    }
   },
   "include": ["src", "test", "jest.config.js"]
 }

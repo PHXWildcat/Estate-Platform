@@ -22,7 +22,7 @@ import {
   unwrapAesKey,
   VaultCryptoError,
   VaultDecryptionError,
-} from './aead';
+} from './aead.js';
 
 export const ITEM_BLOB_VERSION = 0x01;
 const HEADER_LENGTH = 3;
