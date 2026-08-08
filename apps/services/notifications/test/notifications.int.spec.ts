@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { FieldCrypto, LocalKmsProvider } from '@estate/crypto';
+import { NOTIFICATION_KINDS } from '@estate/notifications-client';
 import { Migrator } from '@estate/db';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { Client } from 'pg';
@@ -121,6 +122,43 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
     const result = await service.send({ userId: OWNER, kind: 'vault.reset', channel: 'email' });
     expect(result.delivered).toBe(true);
     expect(stub.sent.at(-1)?.to).toBe('new-address@example.com');
+  });
+
+  /**
+   * THE CHECK MUST NEVER FALL BEHIND THE ENUM, and this is the test that says
+   * so in a way nobody has to remember.
+   *
+   * `contact.link_claimed` was on the wire, in the template registry and in
+   * profile's adapter from M13 while the DDL's kind CHECK still listed the nine
+   * M9 kinds — so every real link claim mailed the owner and then threw on the
+   * INSERT, which left no send row, no `notification.sent` event, and a
+   * `contact.link.claimed` audit event asserting `ownerNotified: 'failed'`
+   * about an owner who HAD been notified (migration 002 records the full
+   * sequence). Nothing caught it because the unit suite fakes the repo and the
+   * three kinds exercised here by hand were all M9 ones.
+   *
+   * DERIVED FROM `NOTIFICATION_KINDS`, never a list of its own: a hand-copied
+   * list beside a thing that grows is exactly the drift class that produced the
+   * defect, and docs/04 boundary rule 6 forbids it in a gate. Adding a kind
+   * without widening the CHECK now turns this red on the first run.
+   *
+   * It asserts the ROW, not just the absence of a throw: a future `send` that
+   * swallowed its own insert failure would still be caught.
+   */
+  it('records a row for every kind the wire enum declares', async () => {
+    const subject = randomUUID();
+    await service.upsertRecipient({ userId: subject, email: 'every-kind@example.com' });
+
+    for (const kind of NOTIFICATION_KINDS) {
+      const result = await service.send({ userId: subject, kind, channel: 'email' });
+      expect(result).toEqual({ delivered: true, channel: 'email' });
+    }
+
+    const rows = await admin.query<{ kind: string }>(
+      `SELECT kind FROM ${schema}.notification_sends WHERE user_id = $1 ORDER BY created_at`,
+      [subject],
+    );
+    expect([...rows.rows.map((row) => row.kind)].sort()).toEqual([...NOTIFICATION_KINDS].sort());
   });
 
   it('records no_recipient for a user the store has never seen', async () => {

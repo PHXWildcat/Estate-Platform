@@ -887,6 +887,29 @@ describeIfStack('the running stack', () => {
       ) as Array<{ id: string; linked: boolean }>;
       expect(linkedList.find((entry) => entry.id === contact.id)).toMatchObject({ linked: true });
 
+      // AND THE OWNER WAS ACTUALLY TOLD. The comment above claimed the real
+      // carrier path from the day this test was written, and it was false:
+      // `notification_sends`'s kind CHECK still listed the nine M9 kinds, so
+      // the mail went out and the row that records it threw, which made
+      // profile record `ownerNotified: 'failed'` about an owner who HAD been
+      // warned (migration 002). Nothing noticed, because the audit event this
+      // suite already polls for looks identical either way. The send LOG is
+      // the artifact that distinguishes them, so it is what gets asserted.
+      const core = new Client({ connectionString: CORE_DB });
+      await core.connect();
+      try {
+        await pollUntil('link-claimed notification recorded', async () => {
+          const { rows } = await core.query<{ outcome: string }>(
+            `SELECT outcome FROM notification_sends
+              WHERE user_id = $1 AND kind = 'contact.link_claimed'`,
+            [owner.userId],
+          );
+          return rows[0]?.outcome === 'sent' ? true : null;
+        });
+      } finally {
+        await core.end();
+      }
+
       // Grants can now be read AND withdrawn — M2 shipped only the write.
       const grant = expectStatus(
         await api(PROFILE_URL, 'POST', `/v1/role-assignments/${assignment.id}/permissions`, {
