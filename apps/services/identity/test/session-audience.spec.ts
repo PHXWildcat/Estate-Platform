@@ -27,7 +27,17 @@ function routeNames(): string[] {
 }
 
 function admittedAudiences(route: string): readonly string[] | undefined {
-  const handler = (AuthController.prototype as unknown as Record<string, object>)[route];
+  const handler = (AuthController.prototype as unknown as Record<string, object | undefined>)[
+    route
+  ];
+  // `noUncheckedIndexedAccess` makes the lookup possibly-undefined, and that is
+  // worth honouring rather than asserting away: a route name that does not
+  // exist must not read as "declares no audiences", which is the same answer a
+  // real undecorated handler gives. The callers below check existence
+  // separately, so this only has to not lie.
+  if (handler === undefined) {
+    return undefined;
+  }
   return Reflect.getMetadata(SESSION_AUDIENCE_METADATA, handler) as readonly string[] | undefined;
 }
 

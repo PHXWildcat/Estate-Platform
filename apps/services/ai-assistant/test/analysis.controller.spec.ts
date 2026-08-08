@@ -25,6 +25,7 @@ function request(): CallerRequest {
       sessionId: randomUUID(),
       mfaLevel: 'mfa',
       stepupExpiresAt: null,
+      audience: 'account',
     },
   };
 }
