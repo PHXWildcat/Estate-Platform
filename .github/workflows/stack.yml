@@ -190,8 +190,8 @@ jobs:
             // burn-on-attempt with a uniform refusal, and an audit trail that
             // records the ceremony without recording which refusal fired.
             //
-            // They sit OUTSIDE the profile split, unlike plaid's and the
-            // assistant's: the vault origin runs in BOTH profiles because
+            // They sit OUTSIDE the profile split, unlike the plaid and
+            // assistant cases: the vault origin runs in BOTH profiles because
             // nothing about it needs a third-party credential. So both legs
             // gain all six: 18/4 -> 24/4 and 9/13 -> 15/13.
             //
