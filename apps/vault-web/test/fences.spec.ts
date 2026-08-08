@@ -125,14 +125,37 @@ describe('no HTML sinks anywhere on this origin', () => {
     }
   });
 
+  /**
+   * NOTHING IS STRIPPED FIRST, and that is the point.
+   *
+   * An earlier revision removed HTML comments before asserting, so that comment
+   * PROSE could not trip the check. CodeQL flagged it (high,
+   * js/incomplete-multi-character-sanitization) because a single-pass
+   * `replace(/<!--[\s\S]*?-->/g, '')` is incomplete — surrounding text can
+   * re-form a comment opener once an inner comment is removed.
+   *
+   * The textbook fix is to loop until the string stops changing. HERE THAT
+   * WOULD HAVE BEEN WORSE, and measurably so: given
+   * `<!<!-- -->-- <script>evil()</script> <!<!-- -->-- -->`, one pass leaves the
+   * `<script>` visible and the assertion CATCHES it, while the loop strips the
+   * whole thing to `''` and the assertion sees nothing. CodeQL's rule is aimed
+   * at SANITIZERS, whose output gets rendered; this is a DETECTOR, and for a
+   * detector the dangerous direction is the opposite one. A "fix" that makes a
+   * security fence blind to what it exists to find is not a fix.
+   *
+   * So the assertions run on the raw bytes. The cost is that a future comment
+   * mentioning a script tag fails this test — a FALSE POSITIVE, which someone
+   * looks at and resolves, rather than a false negative, which nobody sees.
+   * That is the safe direction for a fence, and it is why there is no
+   * sanitization step left for CodeQL to flag.
+   */
   it('the served shell has no inline script and no inline style', () => {
     // The CSP admits neither. Asserting it here means a hand edit to the static
     // HTML fails a test rather than a page.
     const html = readFileSync(join(ROOT, 'public', 'index.html'), 'utf8');
-    const withoutComments = html.replace(/<!--[\s\S]*?-->/g, '');
-    expect(withoutComments).not.toMatch(/<script(?![^>]*\ssrc=)/i);
-    expect(withoutComments).not.toMatch(/\sstyle=/i);
-    expect(withoutComments).not.toMatch(/<script[^>]*type=["']importmap["']/i);
+    expect(html).not.toMatch(/<script(?![^>]*\ssrc=)/i);
+    expect(html).not.toMatch(/\sstyle=/i);
+    expect(html).not.toMatch(/<script[^>]*type=["']importmap["']/i);
   });
 });
 
