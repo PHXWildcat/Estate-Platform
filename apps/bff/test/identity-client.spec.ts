@@ -141,3 +141,56 @@ describe('verifyEmail', () => {
     await expect(broken.verifyEmail(TOKEN, 'EV1-K7MN')).rejects.toThrow(/status 500/);
   });
 });
+
+/**
+ * The vault handoff (M15).
+ *
+ * Here for the reason M14 wrote down when it created this file: every other BFF
+ * spec drives the FAKE identity client, so a real method added without a case
+ * here is a real method nobody executes — and the package's coverage floor is
+ * what surfaces that, which is why the floor is never the thing that moves.
+ *
+ * What is pinned is the firewall rather than the happy path: the caller's own
+ * bearer goes out, identity's text never comes back, and a malformed answer
+ * becomes a refusal instead of a form the browser posts at the vault origin.
+ */
+describe('FetchIdentityClient.mintVaultHandoff', () => {
+  const MINTED = { code: 'a-single-use-code', expiresAt: '2026-08-08T00:01:00.000Z' };
+
+  it('posts to the handoff route on the caller’s own bearer', async () => {
+    const { client, calls } = clientWith(() => response(201, MINTED));
+    await expect(client.mintVaultHandoff(TOKEN)).resolves.toEqual(MINTED);
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/handoff`);
+    expect(calls[0]?.init.method).toBe('POST');
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    // The code must never travel in a URL — it goes in a hidden form field.
+    expect(calls[0]?.url).not.toContain(MINTED.code);
+  });
+
+  it('surfaces STEPUP_REQUIRED so the surface can prompt rather than fail', async () => {
+    const { client } = clientWith(() => response(403, { error: 'stepup_required' }));
+    await expect(client.mintVaultHandoff(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+  });
+
+  it('refuses a malformed body rather than half-trusting it', async () => {
+    // A response missing `code` must not become a form posting `code=undefined`
+    // at the vault origin. VAULT_UNAVAILABLE, not UNKNOWN: the remedy is "try
+    // again in a moment", and the vault is where a vague failure is least
+    // acceptable.
+    const { client } = clientWith(() => response(201, { expiresAt: MINTED.expiresAt }));
+    await expect(client.mintVaultHandoff(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'VAULT_UNAVAILABLE' },
+    });
+  });
+
+  it('never lets identity’s own error text reach a GraphQL client', async () => {
+    const { client } = clientWith(() => response(500, { error: 'pg: relation does not exist' }));
+    await expect(client.mintVaultHandoff(TOKEN)).rejects.toThrow(/status 500/);
+    await expect(client.mintVaultHandoff(TOKEN)).rejects.not.toThrow(/relation does not exist/);
+  });
+});
