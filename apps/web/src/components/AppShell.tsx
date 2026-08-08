@@ -4,6 +4,7 @@ import { MobileTabBar, RailNav } from './AppNav';
 import { BrandMark } from './Brand';
 import { RailAccount } from './RailAccount';
 import { ThemeToggle } from './ThemeToggle';
+import { UnverifiedAddressBanner } from './UnverifiedAddressBanner';
 
 /**
  * The Evergreen-rail app shell (2026-07-30 decision): a deep evergreen brand
@@ -47,6 +48,7 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
 
       {/* Content */}
       <div className="flex min-w-0 flex-1 flex-col">
+        <UnverifiedAddressBanner />
         <main
           id="main"
           className="mx-auto w-full max-w-4xl flex-1 px-6 py-10 pb-24 lg:px-10 lg:pb-10"

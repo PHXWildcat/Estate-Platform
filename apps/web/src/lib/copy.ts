@@ -60,6 +60,12 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // click or a retry reaches them — so the copy states the outcome and stops.
   ROLE_ALREADY_GRANTED: 'This person already holds that exact role in your estate.',
   PERMISSION_ALREADY_GRANTED: 'That role is already allowed to read that.',
+  // M14. Says WHY a code stops working, because the platform deliberately
+  // refuses to say WHICH reason applied — one uniform answer is the control,
+  // so the copy has to carry the possibilities instead of the server.
+  INVALID_VERIFICATION_CODE:
+    'That code didn’t work. Codes expire after a short while and can only be used once — send yourself a new one and try again.',
+  VERIFICATION_UNAVAILABLE: 'We couldn’t confirm that address just now. Please try again shortly.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

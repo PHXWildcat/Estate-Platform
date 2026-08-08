@@ -38,6 +38,8 @@ import type {
   IdentitySession,
   IssuedTokens,
   TotpEnrollment,
+  EmailVerificationStatus,
+  ResendOutcome,
 } from '../src/identity-client';
 import type { PersistedOperationsManifest } from '../src/persisted';
 import type {
@@ -87,11 +89,17 @@ export class FakeIdentityClient implements IdentityClient {
   totpVerifyCalls: Array<{ accessToken: string; code: string }> = [];
   stepUpCalls: Array<{ accessToken: string; code: string }> = [];
   exportDemoCalls: string[] = [];
+  emailVerificationCalls: string[] = [];
+  resendEmailVerificationCalls: string[] = [];
+  verifyEmailCalls: Array<{ accessToken: string; code: string }> = [];
 
   loginResult: IssuedTokens = TOKENS;
   refreshResult: IssuedTokens = TOKENS;
   sessionResult: IdentitySession | null = null;
   totpEnrollResult: TotpEnrollment = { otpauthUri: 'otpauth://totp/estate:user?secret=abc' };
+  emailVerificationResult: EmailVerificationStatus = 'unverified';
+  resendEmailVerificationResult: ResendOutcome = 'sent';
+  verifyEmailError: Error | null = null;
 
   loginError: Error | null = null;
   refreshError: Error | null = null;
@@ -135,6 +143,21 @@ export class FakeIdentityClient implements IdentityClient {
   stepUp(accessToken: string, code: string): Promise<void> {
     this.stepUpCalls.push({ accessToken, code });
     return Promise.resolve();
+  }
+
+  emailVerificationStatus(accessToken: string): Promise<EmailVerificationStatus> {
+    this.emailVerificationCalls.push(accessToken);
+    return Promise.resolve(this.emailVerificationResult);
+  }
+
+  resendEmailVerification(accessToken: string): Promise<ResendOutcome> {
+    this.resendEmailVerificationCalls.push(accessToken);
+    return Promise.resolve(this.resendEmailVerificationResult);
+  }
+
+  verifyEmail(accessToken: string, code: string): Promise<void> {
+    this.verifyEmailCalls.push({ accessToken, code });
+    return this.verifyEmailError ? Promise.reject(this.verifyEmailError) : Promise.resolve();
   }
 
   exportDemo(accessToken: string): Promise<void> {

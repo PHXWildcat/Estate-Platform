@@ -2067,3 +2067,48 @@ deviating from them, stop and propose the change with rationale — do not silen
   an address that is by definition not yet proved), which is what makes the
   dev journey's `sent` assertion on the later link-claim mail meaningful rather
   than a constant.
+- 2026-08-07 — M14 PR3 (the verification surface) is the only place a user can
+  answer the question PR2 started asking, and its design problem is that the
+  REFUSAL and the CAUSE happen in different places: an owner with an unverified
+  address is turned away at escrow configure and link-code mint, and nothing at
+  that moment explains why. So the surface is TWO components. An app-wide
+  one-line banner states the cause before anyone meets the effect, and the
+  Security page carries the ceremony. The banner renders NOTHING on
+  `UNAVAILABLE` or on an error — telling somebody to go and confirm an address
+  during a notifications outage sends them to a ceremony that cannot run, so
+  this is the one place in the milestone where failing safe means saying LESS;
+  the settings page says it properly when they arrive. Neither is a modal and
+  neither is dismissible: a dismiss button on a real capability gap is a way to
+  hide it.
+- 2026-08-07 — M14 PR3 wire decisions, each an existing rule applied rather than
+  a new one. THREE STATES CROSS GRAPHQL, not a boolean, because `UNAVAILABLE` is
+  a fact about the platform and collapsing it into `UNVERIFIED` would make the
+  page lie about which happened (the M10 PR4 readiness rule). The status is its
+  OWN query and deliberately not a field on `session`: that resolver backs every
+  authenticated request and identity's own session route is the cross-service
+  introspection hot path, so a settings-page question must not cost a
+  notifications round trip on every call in the product. The resend OUTCOME is
+  returned rather than flattened — `TOO_SOON` is the re-issue floor, the only
+  rate limit on this path, and a user told "sent" who receives nothing keeps
+  pressing. And the code is passed through the edge EXACTLY as typed: identity
+  measures and hashes the canonical form, so a fold in the BFF or the browser
+  would be a second copy of a matching rule, free to disagree with the one that
+  decides (the M12 upload-client rule: never a client-side second opinion on a
+  server-side gate).
+- 2026-08-07 — M14 PR3 gave a refused verification code its OWN error code
+  rather than reusing `INVALID_CREDENTIALS`, which is the M12 finding applied
+  before it could recur: that token already means "email and password" on the
+  login surface, and one code changing meaning with the surface is exactly what
+  produced copy telling a user to check a password on a form that has none.
+  `VERIFICATION_UNAVAILABLE` is separate again — the code was fine and there is
+  nothing to re-check. The copy for the uniform refusal has to carry what the
+  server refuses to say: identity answers one `invalid_code` for unknown,
+  expired, spent, revoked and attempt-exhausted, so the message lists the
+  possibilities instead of asking the user to guess which applied.
+- 2026-08-07 — M14 PR3 also closed a coverage gap it would otherwise have
+  opened: `identity-client.ts` sat at 58% because every BFF spec exercises the
+  FAKE, and adding three methods dropped the package under its floor. The fix
+  was the first `identity-client.spec.ts` — the real client against a stubbed
+  transport, the peer-client pattern — which took that file to 77% and the
+  package to 90.5/88.05/91.01/91.08, ratcheted up. Lowering the floor was never
+  the option; the floor doing its job is what surfaced the gap.

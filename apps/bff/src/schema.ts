@@ -453,9 +453,46 @@ export const typeDefs = /* GraphQL */ `
     createdAt: String!
   }
 
+  """
+  Whether the platform can PROVE it reaches the caller (M14).
+
+  THREE states, not a boolean, because UNAVAILABLE is a fact about the
+  platform rather than about the user: telling somebody their address is
+  unverified during a notifications outage would send them to complete a
+  ceremony that cannot run, and saying nothing would leave the arming gates
+  refusing with no explanation.
+  """
+  enum EmailVerificationStatus {
+    VERIFIED
+    UNVERIFIED
+    UNAVAILABLE
+  }
+
+  """
+  What a resend attempt actually did. Reported honestly rather than always
+  claiming a send: TOO_SOON is the re-issue floor, which is the only rate
+  limit on this path and would otherwise look like a silent failure.
+  """
+  enum ResendVerificationOutcome {
+    SENT
+    TOO_SOON
+    ALREADY_VERIFIED
+    UNAVAILABLE
+  }
+
   type Query {
     "Current session, or null when unauthenticated."
     session: Session
+    """
+    Whether the caller has proved they receive mail at the address on file.
+
+    A DEDICATED query, deliberately not a field on the session query: that resolver
+    backs every authenticated request in the app, and identity's own session
+    route is the cross-service introspection hot path. Putting a notifications
+    round trip on either would make a settings-page question cost something on
+    every call in the product.
+    """
+    emailVerification: EmailVerificationStatus!
     "The caller's assets. The BFF forwards the caller's own bearer token."
     assets: [Asset!]!
     netWorth: NetWorth!
@@ -527,6 +564,19 @@ export const typeDefs = /* GraphQL */ `
     stepUp(code: String!): Ok!
     "Step-up-gated demo action (stands in for data export)."
     exportDemo: Ok!
+    """
+    Mail another address-verification code to the address already on file.
+
+    NOT step-up gated: it grants nothing, and the strongest thing a caller
+    achieves is receiving their own mail. The re-issue floor in identity is the
+    rate limit, and its outcome is returned rather than hidden.
+    """
+    resendEmailVerification: ResendVerificationOutcome!
+    """
+    Redeem a mailed verification code. The code is the ONLY selector — there is
+    no user id on this mutation — and every refusal is one uniform error.
+    """
+    verifyEmail(code: String!): Ok!
     """
     Records an asset. A valuation is all-or-nothing: supply estValue,
     valuationAsOf and valuationSource together, or none of them — an amount
@@ -1017,6 +1067,12 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
             stepUpFresh: Number.isFinite(expiresAt) && expiresAt > now(),
           };
         },
+        emailVerification: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<string> =>
+          (await identity.emailVerificationStatus(requireAccessToken(ctx))).toUpperCase(),
         assets: async (_parent: unknown, _args: unknown, ctx: RequestContext): Promise<Asset[]> =>
           assets.list(requireAccessToken(ctx)),
         netWorth: async (
@@ -1534,6 +1590,23 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<typeof OK> => {
           await identity.exportDemo(requireAccessToken(ctx));
+          return OK;
+        },
+        resendEmailVerification: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<string> =>
+          (await identity.resendEmailVerification(requireAccessToken(ctx))).toUpperCase(),
+        verifyEmail: async (
+          _parent: unknown,
+          args: { code: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          // The code is passed through unchanged: canonicalizing it here would
+          // be a SECOND copy of identity's fold, and two copies of a matching
+          // rule is how they drift. Identity measures the canonical form.
+          await identity.verifyEmail(requireAccessToken(ctx), args.code);
           return OK;
         },
       },

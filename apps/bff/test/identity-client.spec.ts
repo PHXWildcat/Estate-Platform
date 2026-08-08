@@ -1,0 +1,143 @@
+import { FetchIdentityClient } from '../src/identity-client';
+
+/**
+ * The REAL identity client against a stubbed transport (the peer-client
+ * pattern used for profile, assets and documents).
+ *
+ * M14 added the first routes on this client whose refusals a USER acts on, so
+ * this is where the error firewall is pinned: the caller's bearer goes out on
+ * every call, identity's response text never comes back, a malformed answer is
+ * refused rather than half-trusted, and the two refusals whose remedies differ
+ * arrive as different codes while every refusal that must stay
+ * indistinguishable collapses to one.
+ */
+
+const TOKEN = 'access-token-value-123';
+const BASE = 'http://identity.test';
+
+function response(status: number, body: unknown): Response {
+  const json = (): Promise<unknown> => Promise.resolve(body);
+  const res = {
+    ok: status >= 200 && status < 300,
+    status,
+    json,
+    clone: () => ({ json }) as unknown as Response,
+  };
+  return res as unknown as Response;
+}
+
+interface Recorded {
+  url: string;
+  init: RequestInit;
+}
+
+function clientWith(answer: (recorded: Recorded) => Response): {
+  client: FetchIdentityClient;
+  calls: Recorded[];
+} {
+  const calls: Recorded[] = [];
+  const fetchFn = (input: unknown, init: RequestInit): Promise<Response> => {
+    const recorded = { url: String(input), init };
+    calls.push(recorded);
+    return Promise.resolve(answer(recorded));
+  };
+  return { client: new FetchIdentityClient(BASE, fetchFn), calls };
+}
+
+describe('emailVerificationStatus', () => {
+  it.each(['verified', 'unverified', 'unavailable'] as const)(
+    'reads %s from the dedicated route, on the caller bearer',
+    async (status) => {
+      const { client, calls } = clientWith(() => response(200, { status }));
+      await expect(client.emailVerificationStatus(TOKEN)).resolves.toBe(status);
+      expect(calls[0]?.url).toBe(`${BASE}/v1/auth/email/verification`);
+      expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(
+        `Bearer ${TOKEN}`,
+      );
+    },
+  );
+
+  it('refuses an unknown state rather than half-trusting it', async () => {
+    // A third value would mean identity and the edge disagree about what the
+    // states ARE, and guessing would be worse than failing: the whole point of
+    // three states is that one of them is about the platform, not the user.
+    const { client } = clientWith(() => response(200, { status: 'probably' }));
+    await expect(client.emailVerificationStatus(TOKEN)).rejects.toThrow(/validation/);
+  });
+
+  it('maps an expired session to UNAUTHENTICATED', async () => {
+    const { client } = clientWith(() => response(401, { error: 'unauthenticated' }));
+    await expect(client.emailVerificationStatus(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
+  });
+});
+
+describe('resendEmailVerification', () => {
+  it.each(['sent', 'too_soon', 'already_verified', 'unavailable'] as const)(
+    'carries the %s outcome back rather than flattening it',
+    async (outcome) => {
+      const { client, calls } = clientWith(() => response(200, { outcome }));
+      await expect(client.resendEmailVerification(TOKEN)).resolves.toBe(outcome);
+      expect(calls[0]?.url).toBe(`${BASE}/v1/auth/email/verification/resend`);
+      expect(calls[0]?.init.method).toBe('POST');
+    },
+  );
+
+  it('refuses an outcome it does not recognise', async () => {
+    const { client } = clientWith(() => response(200, { outcome: 'maybe' }));
+    await expect(client.resendEmailVerification(TOKEN)).rejects.toThrow(/validation/);
+  });
+});
+
+describe('verifyEmail', () => {
+  it('posts the code unchanged and resolves on success', async () => {
+    const { client, calls } = clientWith(() => response(200, { verified: true }));
+    await expect(client.verifyEmail(TOKEN, '  ev1-k7mn ')).resolves.toBeUndefined();
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/email/verification/verify`);
+    expect(JSON.parse((calls[0]?.init.body ?? '') as string)).toEqual({ code: '  ev1-k7mn ' });
+  });
+
+  it('gives every refused code ONE token — the uniformity is the control', async () => {
+    // Identity answers the same `invalid_code` for unknown, expired, spent,
+    // revoked, attempt-exhausted and belonging-to-someone-else. The edge must
+    // carry that through rather than re-deriving distinctions, or it
+    // re-creates the oracle the uniform answer removes.
+    const { client } = clientWith(() => response(400, { error: 'invalid_code' }));
+    await expect(client.verifyEmail(TOKEN, 'nope')).rejects.toMatchObject({
+      extensions: { code: 'INVALID_VERIFICATION_CODE' },
+    });
+  });
+
+  it('keeps "we could not complete it" apart from "wrong code"', async () => {
+    // Same 400 from identity, different fact: the code was fine and the
+    // delivery store has no live row to vouch for. Nothing for the user to
+    // re-check, so folding them together would send them hunting a typo that
+    // does not exist.
+    const { client } = clientWith(() => response(400, { error: 'verification_unavailable' }));
+    await expect(client.verifyEmail(TOKEN, 'EV1-K7MN')).rejects.toMatchObject({
+      extensions: { code: 'VERIFICATION_UNAVAILABLE' },
+    });
+  });
+
+  it('treats a 400 with no recognisable token as a refused code', async () => {
+    // The safe default on this route: it is reached only by submitting a code,
+    // and telling somebody their code was refused is both true and actionable.
+    const { client } = clientWith(() => response(400, { unexpected: true }));
+    await expect(client.verifyEmail(TOKEN, 'EV1-K7MN')).rejects.toMatchObject({
+      extensions: { code: 'INVALID_VERIFICATION_CODE' },
+    });
+  });
+
+  it('falls through to the shared mapping for everything that is not a 400', async () => {
+    const { client } = clientWith(() => response(401, { error: 'unauthenticated' }));
+    await expect(client.verifyEmail(TOKEN, 'EV1-K7MN')).rejects.toMatchObject({
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
+
+    const { client: broken } = clientWith(() => response(500, { error: 'boom' }));
+    // Identity's own text never reaches a GraphQL client — a plain Error that
+    // yoga's masking turns generic.
+    await expect(broken.verifyEmail(TOKEN, 'EV1-K7MN')).rejects.toThrow(/status 500/);
+  });
+});
