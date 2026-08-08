@@ -45,12 +45,15 @@ import type { KeysetStatus, SrpChallenge, VaultItemDto, VaultOpened } from '../s
  * it reports what happened. The default stub reports delivered, which is why it
  * could not catch the regression `reset` shipped with — see the reset spec.
  */
+const notifierOutcome: { delivered: boolean; recipientVerified: boolean } = {
+  delivered: false,
+  recipientVerified: false,
+};
 const failingNotifier: NotificationPort = {
   channel: 'email',
   deliversToRealChannels: true,
   recipientVerified: (): Promise<boolean> => Promise.resolve(false),
-  notify: (): Promise<NotifyOutcome> =>
-    Promise.resolve({ delivered: false, recipientVerified: false }),
+  notify: (): Promise<NotifyOutcome> => Promise.resolve({ ...notifierOutcome }),
 };
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
@@ -767,6 +770,36 @@ describeIfPg('vault service end to end', () => {
       );
       expect(rows).toHaveLength(1);
       expect(rows[0]?.delivered_at).toBeNull();
+    });
+
+    it('records unverified_recipient when a reset DID reach an unproved address', async () => {
+      // Round 2 of the M14 review: the emit shipped with no test anywhere, and
+      // the int case added alongside it builds the one state where it cannot
+      // fire (an undelivered send). Reset was the single notification path that
+      // could never produce this evidence, because it discarded the outcome —
+      // so a vault destroyed and announced to an address nobody proved left no
+      // record of that anywhere.
+      notifierOutcome.delivered = true;
+      notifierOutcome.recipientVerified = false;
+      try {
+        const fresh = await createVaultEnrollment({
+          userId: OWNER,
+          password: 'a third password entirely',
+          iterations: MIN_ITERATIONS,
+        });
+        await request(server)
+          .post('/v1/vault/reset')
+          .set(withStepUp())
+          .send(fresh.enrollment.payload)
+          .expect(200);
+      } finally {
+        notifierOutcome.delivered = false;
+      }
+
+      const actions = producer.messages
+        .map((m) => JSON.parse(m.value) as { action?: string })
+        .map((event) => event.action);
+      expect(actions).toContain('vault.emergency.unverified_recipient');
     });
 
     it('refuses to reset a vault that was never enrolled', async () => {

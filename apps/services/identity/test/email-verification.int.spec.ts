@@ -12,6 +12,10 @@ import { join } from 'node:path';
 import { Migrator } from '@estate/db';
 import { Client } from 'pg';
 import { Db } from '../src/db';
+import type { NotificationsPort } from '@estate/notifications-client';
+import type { AuthEventsRepo } from '../src/auth-events.repo';
+import type { EventsService } from '../src/events.service';
+import { EmailVerificationService } from '../src/email-verification.service';
 import {
   EmailVerificationRepo,
   MAX_VERIFY_ATTEMPTS,
@@ -153,6 +157,13 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
       codeSha256: sha('lapsed-wedge'),
       expiresAt: new Date(NOW.getTime() - 1),
     });
+    // Backdate the MINT as well as the expiry: a code that has lapsed was by
+    // definition minted longer ago than the re-issue floor, and the floor keys
+    // on the mint. (That it blocks otherwise is the floor working.)
+    await admin.query(
+      `UPDATE ${schema}.email_verifications SET created_at = $2 WHERE user_id = $1`,
+      [stuck, new Date(NOW.getTime() - 60 * 60 * 1000)],
+    );
 
     // The state that used to be terminal: nothing live, but the slot is taken.
     expect(await repo.findLive(stuck, NOW)).toBeNull();
@@ -160,12 +171,41 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
       repo.insert({ userId: stuck, codeSha256: sha('blocked'), expiresAt: LATER }),
     ).rejects.toBeInstanceOf(VerificationRaceError);
 
-    // `revokeLive`'s predicate matches the INDEX, not `findLive`, so it clears
-    // a lapsed row — which is why the service can now call it unconditionally.
-    expect(await repo.revokeLive(stuck, NOW)).toBe(true);
-    await expect(
-      repo.insert({ userId: stuck, codeSha256: sha('re-minted'), expiresAt: LATER }),
-    ).resolves.toEqual(expect.any(String));
+    // DRIVE THE SERVICE, NOT THE REPO. Round 2 of this review caught the first
+    // version of this test calling `repo.revokeLive` explicitly — whose SQL the
+    // fix never touched — so it proved the primitive that was always right and
+    // asserted nothing about the DECISION that was wrong. That is the M13
+    // lesson this test's own docstring invokes, committed inside the fix for
+    // it. The service is what learned to retire unconditionally, so the service
+    // is what has to be exercised against the real index.
+    const service = new EmailVerificationService(
+      repo,
+      { insert: () => Promise.resolve() } as unknown as AuthEventsRepo,
+      {
+        emailVerificationSent: () => Promise.resolve(),
+        emailVerified: () => Promise.resolve(),
+        emailVerificationFailed: () => Promise.resolve(),
+        emailVerificationUnavailable: () => Promise.resolve(),
+      } as unknown as EventsService,
+      {
+        recipientStatus: () => Promise.resolve({ verified: false }),
+        sendAddressVerification: () =>
+          Promise.resolve({
+            accepted: true,
+            delivered: true,
+            channel: 'email',
+            recipientVerified: false,
+          }),
+      } as unknown as NotificationsPort,
+      () => NOW,
+    );
+
+    await expect(service.reissue(stuck)).resolves.toBe('sent');
+
+    // A NEW, USABLE code exists — the wedge is gone end to end, decision plus
+    // index, which is the pair no test combined before.
+    const live = await repo.findLive(stuck, NOW);
+    expect(live).not.toBeNull();
   });
 
   it('an ATTEMPT-EXHAUSTED code does not read as live to the mint decision', async () => {
@@ -179,9 +219,8 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
       [burned, Buffer.from('ct'), Buffer.from('bidx-burned'), randomUUID()],
     );
     await repo.insert({ userId: burned, codeSha256: sha('burned'), expiresAt: LATER });
-    const row = await repo.findByCode(sha('burned'));
     for (let i = 0; i < MAX_VERIFY_ATTEMPTS; i += 1) {
-      await repo.countAttempt(row!.id);
+      await repo.countAttempt(burned, NOW);
     }
     expect(await repo.findLive(burned, NOW)).toBeNull();
   });
@@ -213,12 +252,23 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
     expect(await repo.findLive(lapsed, NOW)).toBeNull();
   });
 
-  it('counts attempts, which is what bounds guessing at a LIVE code', async () => {
-    const row = await repo.findByCode(sha('lapsed'));
-    for (let i = 0; i < MAX_VERIFY_ATTEMPTS; i += 1) {
-      await repo.countAttempt(row!.id);
-    }
-    expect((await repo.findByCode(sha('lapsed')))?.attempts).toBe(MAX_VERIFY_ATTEMPTS);
+  it('counts a failed guess against the caller LIVE code, whatever they submitted', async () => {
+    // Round 2 of the M14 review found the cap decorative: it took a resolved
+    // row id and only ever ran once the row was already dead, so `attempts`
+    // could never move on a LIVE code — and a wrong guess produces a different
+    // digest, so nothing resolved and no counter moved at all. Keyed on the
+    // USER now, which is what makes `findLive`'s attempts predicate reachable
+    // and gives the redeem route its only bound.
+    const guessed = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id)
+       VALUES ($1, $2, $3, 'x', $4)`,
+      [guessed, Buffer.from('ct'), Buffer.from('bidx-guess'), randomUUID()],
+    );
+    await repo.insert({ userId: guessed, codeSha256: sha('guess-target'), expiresAt: LATER });
+
+    await repo.countAttempt(guessed, NOW);
+    expect((await repo.findByCode(sha('guess-target')))?.attempts).toBe(1);
   });
 
   it('keeps every row: a retired code is evidence, not garbage', async () => {

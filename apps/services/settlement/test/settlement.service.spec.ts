@@ -87,6 +87,32 @@ describe('intake (docs/03 §5.1: reports only OPEN a case)', () => {
     });
   });
 
+  it('does NOT swallow a broker failure on the unverified-recipient evidence', async () => {
+    // Round 2 of the M14 review: the restructure that moved this emit out of
+    // the delivery catch shipped with nothing able to tell it from its revert.
+    // The catch was written for a CARRIER failure; an audit emit failing is a
+    // different fault, and the §5.1 evidence that the decedent was alerted at
+    // an unproved address is exactly what an investigation reads. The vault
+    // sibling propagates and the M13 rule is that an audit emit is loud.
+    const h = linkedHarness();
+    // WRAP rather than replace: the in-memory producer records into `messages`
+    // inside `send`, so a bare override would break every other assertion in
+    // the harness rather than isolate this one.
+    const original = h.producer.send.bind(h.producer);
+    h.producer.send = (message: { topic: string; key: string; value: string }): Promise<void> =>
+      message.value.includes('settlement.unverified_recipient')
+        ? Promise.reject(new Error('broker down'))
+        : original(message);
+
+    await expect(
+      h.service.report(REPORTER, SESSION, {
+        decedentUserId: DECEDENT,
+        source: 'trusted_contact',
+        evidence: [],
+      }),
+    ).rejects.toThrow('broker down');
+  });
+
   it('death-certificate evidence is recorded with its attacher (the documents cross-check key)', async () => {
     const h = linkedHarness();
     const documentId = randomUUID();

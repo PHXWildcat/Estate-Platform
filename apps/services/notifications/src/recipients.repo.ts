@@ -105,7 +105,22 @@ export class RecipientsRepo {
        ON CONFLICT (user_id) DO UPDATE
          SET email_ct = EXCLUDED.email_ct,
              dek_id = EXCLUDED.dek_id,
-             deleted_at = NULL`,
+             deleted_at = NULL,
+             -- A CHANGE OF KEY CLEARS THE PROOF. Round 2 of the M14 review
+             -- found the crypto-shred fix good only until the next login:
+             -- encryptField mints a fresh DEK once the old one is destroyed,
+             -- and this upsert preserved verified_at, so the row came back
+             -- with an active key and an untouched proof and every arming gate
+             -- re-armed with nothing re-proved. dek_id changes ONLY when the
+             -- key underneath changed (a shred, or a rotation when one lands),
+             -- which is exactly when the old proof stops describing the
+             -- current state; an ordinary login re-feed resolves to the same
+             -- active DEK and leaves the bit alone.
+             verified_at = CASE
+               WHEN notification_recipients.dek_id = EXCLUDED.dek_id
+                 THEN notification_recipients.verified_at
+               ELSE NULL
+             END`,
       [input.userId, input.emailCt, input.dekId],
     );
   }
@@ -117,13 +132,25 @@ export class RecipientsRepo {
    * than "when did somebody last press the button". Returns false when no live
    * row exists — a shredded or soft-deleted recipient cannot be vouched for,
    * and identity turns that into a refusal rather than a silent success.
+   *
+   * THE DEK PREDICATE IS HERE TOO, and round 2 of the M14 review is why. The
+   * first fix put it only on `findStatus`, so a shredded recipient answered
+   * `verified: false` to the gates while this still returned true and stamped
+   * the row — the platform telling a user their address was verified in the
+   * same breath as telling every gate it was not. A read and a write that
+   * disagree about the same fact is worse than either answer.
    */
   async markVerified(tx: Queryable, userId: string, now: Date): Promise<boolean> {
     const rows = await tx.query<{ user_id: string }>(
-      `UPDATE notification_recipients
-          SET verified_at = COALESCE(verified_at, $2)
-        WHERE user_id = $1 AND deleted_at IS NULL
-      RETURNING user_id`,
+      `UPDATE notification_recipients r
+          SET verified_at = COALESCE(r.verified_at, $2)
+        WHERE r.user_id = $1
+          AND r.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM notification_deks d
+             WHERE d.dek_id = r.dek_id AND d.destroyed_at IS NULL
+          )
+      RETURNING r.user_id`,
       [userId, now],
     );
     return rows.length > 0;

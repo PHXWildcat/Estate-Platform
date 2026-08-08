@@ -114,6 +114,7 @@ describe('a claimed link is never silently unnotified', () => {
     claims: Array<{ actor: string; ownerNotified: string }>;
     lookups: number[];
     unverified: string[];
+    order: string[];
   } {
     const lookups: number[] = [];
     const invitation = {
@@ -151,16 +152,19 @@ describe('a claimed link is never silently unnotified', () => {
     };
     const claims: Array<{ actor: string; ownerNotified: string }> = [];
     const unverified: string[] = [];
+    const order: string[] = [];
     const events = {
       contactLinkClaimed: (actor: string, _contact: string, ownerNotified: string) => {
         if (options.auditFails === true) {
           return Promise.reject(new Error('broker down'));
         }
         claims.push({ actor, ownerNotified });
+        order.push('claimed');
         return Promise.resolve();
       },
       contactLinkNotificationsRefused: () => Promise.resolve(),
       contactLinkUnverifiedRecipient: (owner: string, _redeemer: string, contactId: string) => {
+        order.push('unverified');
         // The contact id is asserted because it was NULL until the M14 review:
         // without it an investigator cannot attach "the owner was told at an
         // unproved address" to the authorization edge that was created.
@@ -177,7 +181,7 @@ describe('a claimed link is never silently unnotified', () => {
       { nodeEnv: 'test' } as ProfileConfig,
       () => new Date('2026-08-06T00:00:00Z'),
     );
-    return { service, notified, claims, lookups, unverified };
+    return { service, notified, claims, lookups, unverified, order };
   }
 
   const REDEEMER = 'b2222222-2222-4222-8222-222222222222';
@@ -235,10 +239,16 @@ describe('a claimed link is never silently unnotified', () => {
     // argument for this ceremony is that a claim is auditable BY THE OWNER, and
     // a message to a mailbox nobody confirmed is a weaker version of that. So
     // the fact lands beside it rather than instead of it.
-    const { service, claims, unverified } = buildRedeem({ ownerVerified: false });
+    const { service, claims, unverified, order } = buildRedeem({ ownerVerified: false });
     await service.redeem(REDEEMER, CODE);
     expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'delivered' }]);
     expect(unverified).toEqual([`${OWNER}:${CONTACT}`]);
+    // THE CLAIM GOES FIRST. Round 2 of the M14 review found the ordering half
+    // unpinned: both emits propagate broker failures, so putting the SECONDARY
+    // fact first meant a failure on it could suppress the record of the claim
+    // itself — the link standing, the code spent, and the owner's trail holding
+    // neither event.
+    expect(order).toEqual(['claimed', 'unverified']);
   });
 
   it('records NOTHING extra once the owner has proved their address', async () => {

@@ -140,11 +140,38 @@ export class EmailVerificationRepo {
     return rows[0] ?? null;
   }
 
-  /** Count one failed guess against a REAL code. */
-  async countAttempt(id: string): Promise<void> {
-    await this.db.query(`UPDATE email_verifications SET attempts = attempts + 1 WHERE id = $1`, [
-      id,
-    ]);
+  /**
+   * Count one failed guess against the user's LIVE code, if they have one.
+   *
+   * ROUND 2 OF THE M14 REVIEW FOUND THE ATTEMPT CAP WAS DECORATIVE. It used to
+   * take a row id, and `verify()` only ever called it inside the branch that
+   * had already decided the row was DEAD — so `attempts` could only ever
+   * increment on a code that was already revoked, spent or expired. A wrong
+   * guess produces a DIFFERENT DIGEST, so the lookup returned nothing and no
+   * counter moved at all. Three comments claimed it "bounds guessing against a
+   * LIVE code"; it bounded replay of a dead one, which nothing needed.
+   *
+   * Keyed on the USER now, so a failed redemption costs the caller's own live
+   * code one attempt whatever they submitted. That is what makes
+   * `findLive`'s `attempts` predicate reachable, and it is the only bound of
+   * any kind on the redeem route — every failure there writes an append-only
+   * `auth_events` row and an audit event, so an unbounded one is a cost
+   * amplifier even though the 160-bit code is not guessable.
+   *
+   * Self-inflicted only: it moves a counter on the CALLER's own code, reached
+   * only from their own session. It cannot be used against anybody else, and
+   * the response stays the same uniform refusal either way.
+   */
+  async countAttempt(userId: string, now: Date): Promise<void> {
+    await this.db.query(
+      `UPDATE email_verifications
+          SET attempts = attempts + 1
+        WHERE user_id = $1
+          AND revoked_at IS NULL
+          AND verified_at IS NULL
+          AND expires_at > $2`,
+      [userId, now],
+    );
   }
 
   /**
