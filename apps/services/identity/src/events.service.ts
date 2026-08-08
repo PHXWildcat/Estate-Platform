@@ -148,6 +148,57 @@ export class EventsService {
     });
   }
 
+  /**
+   * M14 address verification. Ids and enums ONLY — never the code, never its
+   * digest, never the address it was mailed to. `delivered` is the same
+   * outcome-riding-the-event shape M13 uses for `ownerNotified`: a send that
+   * failed is a fact somebody may need to act on, and recording it here is what
+   * keeps a silent failure from looking like a user who never bothered.
+   */
+  async emailVerificationSent(userId: string, delivered: boolean): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email_verification.sent',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: userId,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { delivered: delivered ? 'delivered' : 'failed' },
+    });
+  }
+
+  async emailVerified(userId: string, sessionId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email_verification.verified',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+    });
+  }
+
+  /**
+   * A redemption was refused. Deliberately carries NO reason: the route answers
+   * one uniform `invalid_code` for unknown/expired/spent/revoked/exhausted/
+   * mismatched, and an audit detail naming which one would re-create through
+   * the trail exactly the oracle the uniform answer removes from the wire.
+   */
+  async emailVerificationFailed(userId: string, sessionId: string | null): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email_verification.failed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: {},
+    });
+  }
+
   async webauthnRegistered(userId: string): Promise<void> {
     await this.audit.emit({
       action: 'auth.webauthn.registered',

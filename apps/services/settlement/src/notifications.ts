@@ -1,5 +1,5 @@
 import type {
-  NotificationKind,
+  EstateNotificationKind,
   NotificationsPort as NotificationsClientPort,
 } from '@estate/notifications-client';
 
@@ -57,7 +57,8 @@ export class StubNotifier implements NotificationPort {
 }
 
 /** Wire kinds for the notifications service (closed set; content travels nowhere). */
-const WIRE_KIND: Record<SettlementNotificationKind, NotificationKind> = {
+// ESTATE kinds only (M14).
+const WIRE_KIND: Record<SettlementNotificationKind, EstateNotificationKind> = {
   case_opened: 'settlement.case_opened',
   owner_contact: 'settlement.owner_contact',
 };

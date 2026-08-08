@@ -147,10 +147,26 @@ interface SesStoredMessage {
   Body?: { text_part?: string | null };
 }
 
-/** Poll LocalStack for a REAL delivered email matching `predicate` (M9). */
+/**
+ * Poll LocalStack for a REAL delivered email (M9).
+ *
+ * BOTH SELECTORS ARE REQUIRED, and that is an M14 correction rather than
+ * fussiness. Every kind shares one subject by design (docs/03 §5.4), so the
+ * only two things that distinguish messages here are the recipient and the
+ * body — and until M14 an address received at most one message per journey, so
+ * call sites keyed on the address alone. M14 mails an address-verification code
+ * at first login, which means EVERY address now receives an extra message and
+ * an address-only match resolves to whichever arrived first. That is exactly
+ * what happened: the production rehearsal's settlement assertion found the
+ * verification mail and failed on the body it expected.
+ *
+ * Making `bodyIncludes` a required parameter rather than fixing the three call
+ * sites is the point: a future kind added to any journey cannot silently make
+ * an existing assertion ambiguous again.
+ */
 async function awaitSesMessage(
   what: string,
-  predicate: (message: SesStoredMessage) => boolean,
+  selector: { to: string; bodyIncludes: string },
 ): Promise<SesStoredMessage> {
   return pollUntil(what, async () => {
     const response = await fetch(`${SES_QUERY}/_aws/ses`);
@@ -158,7 +174,13 @@ async function awaitSesMessage(
       return null;
     }
     const parsed = (await response.json()) as { messages?: SesStoredMessage[] };
-    return parsed.messages?.find(predicate) ?? null;
+    return (
+      parsed.messages?.find(
+        (message) =>
+          (message.Destination?.ToAddresses ?? []).includes(selector.to) &&
+          (message.Body?.text_part ?? '').includes(selector.bodyIncludes),
+      ) ?? null
+    );
   });
 }
 
@@ -197,6 +219,97 @@ describeIfStack('the running stack', () => {
 
     beforeAll(async () => {
       owner = await registerAndLogin();
+    });
+
+    /**
+     * M14 — ADDRESS OWNERSHIP, end to end over the real carrier.
+     *
+     * Three shipped fail-closed gates (M6 §5.2, M7 §5.1, M13 §6g) rested on
+     * `deliversToRealChannels`, a hardcoded literal on an adapter class that
+     * asks whether SES is wired and never whether the stored address belongs to
+     * the owner. This is the ceremony that makes the second question
+     * answerable, driven the only way it can be honestly proved: by reading the
+     * code out of a REAL delivered message and typing it back in.
+     *
+     * `owner` registered and logged in during beforeAll, so by the time this
+     * runs the login hook has already fired.
+     */
+    it('proves an address over the real carrier: mailed code in, verified bit out (M14)', async () => {
+      const status = (): Promise<ApiResponse> =>
+        api(IDENTITY, 'GET', '/v1/auth/email/verification', { token: owner.token });
+      expect(await status()).toMatchObject({ status: 200, body: { status: 'unverified' } });
+
+      const message = await awaitSesMessage('address-verification email', {
+        to: owner.email,
+        bodyIncludes: 'Confirm this email address',
+      });
+      const body = message.Body?.text_part ?? '';
+      // The approved deviation is a CODE and nothing else: no link, and the
+      // same subject every other notification carries.
+      expect(message.Subject).toBe('Estate — action needed');
+      expect(body).not.toMatch(/https?:\/\//i);
+      const code = /EV1-[0-9A-Z-]+/.exec(body)?.[0];
+      if (!code) {
+        throw new Error(`no verification code in the delivered message: ${body}`);
+      }
+      // 160 bits, measured on the live artifact — the M6/M13 lesson that the
+      // width is the security parameter and is checked where it is produced.
+      expect(code.replace(/^EV1-/, '').replace(/-/g, '')).toHaveLength(32);
+
+      // A wrong code of the right shape is refused, uniformly.
+      expect(
+        await api(IDENTITY, 'POST', '/v1/auth/email/verification/verify', {
+          token: owner.token,
+          body: { code: `EV1-${'K7MN-'.repeat(8).slice(0, -1)}` },
+        }),
+      ).toMatchObject({ status: 400, body: { error: 'invalid_code' } });
+      expect(await status()).toMatchObject({ body: { status: 'unverified' } });
+
+      // Retyped the way a human actually retypes it — lowercase, dashes
+      // dropped — because the canonical fold is the half M13 shipped missing.
+      expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/email/verification/verify', {
+          token: owner.token,
+          body: { code: code.toLowerCase().replace(/-/g, '') },
+        }),
+        200,
+        'verify mailed code',
+      );
+      expect(await status()).toMatchObject({ body: { status: 'verified' } });
+
+      // One-shot, and a resend on a proved address says so rather than mailing.
+      expect(
+        await api(IDENTITY, 'POST', '/v1/auth/email/verification/verify', {
+          token: owner.token,
+          body: { code },
+        }),
+      ).toMatchObject({ status: 400, body: { error: 'invalid_code' } });
+      expect(
+        await api(IDENTITY, 'POST', '/v1/auth/email/verification/resend', { token: owner.token }),
+      ).toMatchObject({ status: 200, body: { outcome: 'already_verified' } });
+
+      // The send is LOGGED under its own kind — the shape M13's link claim was
+      // missing, which is what let a delivered mail record itself as a failure.
+      const core = new Client({ connectionString: CORE_DB });
+      await core.connect();
+      try {
+        const { rows } = await core.query<{ outcome: string; verified: boolean }>(
+          `SELECT s.outcome, (r.verified_at IS NOT NULL) AS verified
+             FROM notification_sends s
+             JOIN notification_recipients r ON r.user_id = s.user_id
+            WHERE s.user_id = $1 AND s.kind = 'identity.address_verification'`,
+          [owner.userId],
+        );
+        expect(rows).toEqual([{ outcome: 'sent', verified: true }]);
+        // And the code itself is nowhere in the delivery store.
+        const leak = await core.query(
+          `SELECT 1 FROM notification_sends WHERE user_id = $1 AND provider_message_id = $2`,
+          [owner.userId, code],
+        );
+        expect(leak.rowCount).toBe(0);
+      } finally {
+        await core.end();
+      }
     });
 
     it('verifies sessions across services: a forged token is refused everywhere', async () => {
@@ -566,7 +679,7 @@ describeIfStack('the running stack', () => {
       );
     });
 
-    it('keeps the two notification surfaces on two credentials, live (M9 review)', async () => {
+    it('keeps the four notification surfaces on four credentials, live (M9 review, M14)', async () => {
       // The M9 security review's load-bearing finding, pinned against the
       // running stack: one credential used to open BOTH send and
       // recipient-upsert, so vault's copy — the Zone A service, deliberately
@@ -626,6 +739,105 @@ describeIfStack('the running stack', () => {
           })
         ).status,
       ).toBe(200);
+
+      // M14 added two more surfaces on the same callee, each with its own
+      // secret, and the property is n-way rather than pairwise: no credential
+      // opens any route but its own. The one that matters most is that the
+      // BROADLY-HELD send credential — vault, settlement and profile all hold
+      // it — cannot mail a verification code, and cannot read whether an
+      // address is verified. Both are identity's, and the second is the answer
+      // three arming gates will act on in PR2.
+      const identityVerify = stackEnv.get('IDENTITY_NOTIFICATIONS_VERIFY_INTERNAL_TOKEN');
+      const identityStatus = stackEnv.get('IDENTITY_NOTIFICATIONS_STATUS_INTERNAL_TOKEN');
+      if (!identityVerify || !identityStatus) {
+        throw new Error('M14 notification credentials missing from the stack env');
+      }
+      const verificationPath = '/internal/v1/notifications/verification';
+      const statusPath = `/internal/v1/notifications/recipients/${owner.userId}/status`;
+      const surfaces = [
+        {
+          name: 'send',
+          credential: vaultSend,
+          probe: (): Promise<ApiResponse> =>
+            api(NOTIFICATIONS, 'POST', sendPath, {
+              headers: asService(vaultSend),
+              body: { userId: owner.userId, kind: 'vault.reset', channel: 'email' },
+            }),
+        },
+        {
+          name: 'recipients',
+          credential: identityRecipients,
+          probe: (): Promise<ApiResponse> =>
+            api(NOTIFICATIONS, 'PUT', recipientsPath, {
+              headers: asService(identityRecipients),
+              body: { userId: owner.userId, email: owner.email },
+            }),
+        },
+        {
+          name: 'verification',
+          credential: identityVerify,
+          probe: (): Promise<ApiResponse> =>
+            api(NOTIFICATIONS, 'POST', verificationPath, {
+              headers: asService(identityVerify),
+              body: { userId: owner.userId, code: 'EV1-STACK-PROBE' },
+            }),
+        },
+        {
+          name: 'status',
+          credential: identityStatus,
+          probe: (): Promise<ApiResponse> =>
+            api(NOTIFICATIONS, 'GET', statusPath, { headers: asService(identityStatus) }),
+        },
+      ];
+      // Four DISTINCT values, minted per EDGE by the generator: the provisioning
+      // drift the credential graph records as unenforced is closed for
+      // GENERATED environments by construction, and this is where that is
+      // observed rather than assumed.
+      expect(new Set(surfaces.map((s) => s.credential)).size).toBe(4);
+
+      // Every credential on every OTHER surface: refused.
+      const routes = [
+        {
+          path: sendPath,
+          method: 'POST' as const,
+          body: { userId: owner.userId, kind: 'vault.reset', channel: 'email' },
+          owner: 'send',
+        },
+        {
+          path: recipientsPath,
+          method: 'PUT' as const,
+          body: { userId: owner.userId, email: 'attacker@evil.test' },
+          owner: 'recipients',
+        },
+        {
+          path: verificationPath,
+          method: 'POST' as const,
+          body: { userId: owner.userId, code: 'EV1-STACK-PROBE' },
+          owner: 'verification',
+        },
+        { path: statusPath, method: 'GET' as const, body: undefined, owner: 'status' },
+      ];
+      for (const route of routes) {
+        for (const surface of surfaces) {
+          if (surface.name === route.owner) continue;
+          const refused = await api(NOTIFICATIONS, route.method, route.path, {
+            headers: asService(surface.credential),
+            ...(route.body ? { body: route.body } : {}),
+          });
+          expect({ route: route.path, credential: surface.name, status: refused.status }).toEqual({
+            route: route.path,
+            credential: surface.name,
+            status: 401,
+          });
+        }
+      }
+      // ...and each still works on its own, so the loop above is not vacuous.
+      for (const surface of surfaces) {
+        expect({ surface: surface.name, status: (await surface.probe()).status }).toEqual({
+          surface: surface.name,
+          status: 200,
+        });
+      }
     });
 
     it('computes an estate analysis over the live services, gated by the master switch (M10 PR3)', async () => {
@@ -972,6 +1184,12 @@ describeIfStack('the running stack', () => {
           'permission.revoked',
           // M13 PR3: the claim, audited with the REDEEMER as actor.
           'contact.link.claimed',
+          // M14: the owner proved they receive mail at the address on file.
+          // Two events, from two services, for one act — identity records the
+          // ceremony, notifications records that the delivery store now
+          // vouches for the address. Both crossed the real broker.
+          'auth.email_verification.verified',
+          'notification.recipient.verified',
         ] as const) {
           await pollUntil(`audit event ${action}`, async () => {
             const { rows } = await db.query(
@@ -1029,9 +1247,12 @@ describeIfStack('the running stack', () => {
         201,
         'settlement intake (prod, M9 — the retired 503)',
       );
-      const message = await awaitSesMessage('the case_opened email in LocalStack SES', (m) =>
-        (m.Destination?.ToAddresses ?? []).includes(decedent.email),
-      );
+      const message = await awaitSesMessage('the case_opened email in LocalStack SES', {
+        to: decedent.email,
+        // M14: this address also receives a verification code at first login,
+        // so the body is what names WHICH message this assertion is about.
+        bodyIncludes: 'A report was filed',
+      });
       // Content-free doctrine, proven on the live wire: uniform subject, a
       // pointer into the app, and NO links of any kind (docs/03 §5.4, risk #10).
       expect(message.Subject).toBe('Estate — action needed');
@@ -1092,12 +1313,10 @@ describeIfStack('the running stack', () => {
         201,
         'reconfigure (retires the previous grantees)',
       );
-      const message = await awaitSesMessage(
-        'the grantees_changed email in LocalStack SES',
-        (m) =>
-          (m.Destination?.ToAddresses ?? []).includes(owner.email) &&
-          (m.Body?.text_part ?? '').includes('emergency contacts'),
-      );
+      const message = await awaitSesMessage('the grantees_changed email in LocalStack SES', {
+        to: owner.email,
+        bodyIncludes: 'emergency contacts',
+      });
       expect(message.Subject).toBe('Estate — action needed');
       expect(message.Body?.text_part ?? '').not.toMatch(/https?:\/\//i);
     });

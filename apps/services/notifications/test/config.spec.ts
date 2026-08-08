@@ -17,6 +17,10 @@ const PROD_BASE: NodeJS.ProcessEnv = {
   // The second inbound credential (M9 review): the recipient-upsert surface
   // is identity's alone and must never share a value with the send surface.
   NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: `${STRONG_TOKEN}-recipients`,
+  // M14's two further surfaces, each with its own holder set and therefore its
+  // own secret: mailing a verification code, and reading the verified bit.
+  NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: `${STRONG_TOKEN}-verify`,
+  NOTIFICATIONS_STATUS_INTERNAL_TOKEN: `${STRONG_TOKEN}-status`,
   EMAIL_MODE: 'ses',
   SES_FROM_ADDRESS: 'no-reply@estate.example',
   KMS_MODE: 'aws',
@@ -57,6 +61,18 @@ describe('loadConfig (dev/test)', () => {
   });
 });
 
+/**
+ * This service's four inbound surfaces, in one place, so the production
+ * requirement, the weak-value check and the full pairwise aliasing check are
+ * all derived from the same list rather than restated three times.
+ */
+const INBOUND_CREDENTIALS = [
+  'NOTIFICATIONS_INTERNAL_TOKEN',
+  'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
+  'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
+  'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+] as const;
+
 describe('loadConfig (production)', () => {
   it('accepts the full production shape', () => {
     const config = loadConfig(PROD_BASE);
@@ -69,6 +85,8 @@ describe('loadConfig (production)', () => {
     ['KAFKA_BROKERS', 'audit emission'],
     ['NOTIFICATIONS_INTERNAL_TOKEN', 'the send surface'],
     ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN', 'the recipient surface'],
+    ['NOTIFICATIONS_VERIFY_INTERNAL_TOKEN', 'the verification-send surface'],
+    ['NOTIFICATIONS_STATUS_INTERNAL_TOKEN', 'the recipient-status surface'],
     ['SES_FROM_ADDRESS', 'the verified sender'],
   ])('requires %s in production', (key) => {
     const env = { ...PROD_BASE };
@@ -92,26 +110,43 @@ describe('loadConfig (production)', () => {
     });
   });
 
-  it.each(['NOTIFICATIONS_INTERNAL_TOKEN', 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'])(
-    'rejects a weak %s',
-    (key) => {
-      expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
-    },
-  );
-
-  it('refuses one value pasted into BOTH inbound slots (M9 review)', () => {
-    // Splitting the surfaces buys nothing if the operator provisions one
-    // secret twice: vault and settlement would again hold a working key to
-    // the recipient route and could silently repoint any owner's alerts.
-    expect(() =>
-      loadConfig({ ...PROD_BASE, NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: STRONG_TOKEN }),
-    ).toThrow(/must differ from/);
+  it.each(INBOUND_CREDENTIALS)('rejects a weak %s', (key) => {
+    expect(() => loadConfig({ ...PROD_BASE, [key]: 'short' })).toThrow(ConfigError);
   });
 
-  it('absorbs the recipient credential into its own field, not the send one', () => {
+  /**
+   * EVERY PAIR, not the one pair that existed when this was written (M9 review,
+   * extended by M14). Splitting the surfaces buys nothing if the operator
+   * provisions one secret twice — vault and settlement would again hold a
+   * working key to the recipient route and could silently repoint any owner's
+   * alerts — and a hand-written comparison per pair stays correct only until
+   * the next credential lands. Derived from the list, so a fifth surface is
+   * covered by adding it there.
+   */
+  it.each(
+    INBOUND_CREDENTIALS.flatMap((a, i) =>
+      INBOUND_CREDENTIALS.slice(i + 1).map((b) => [a, b] as const),
+    ),
+  )('refuses one value pasted into both %s and %s', (a, b) => {
+    expect(() => loadConfig({ ...PROD_BASE, [b]: PROD_BASE[a] })).toThrow(/must differ from/);
+  });
+
+  it('absorbs each inbound credential into its OWN field', () => {
     const config = loadConfig(PROD_BASE);
     expect(config.internalApiToken).toBe(STRONG_TOKEN);
     expect(config.recipientsApiToken).toBe(`${STRONG_TOKEN}-recipients`);
+    expect(config.verificationApiToken).toBe(`${STRONG_TOKEN}-verify`);
+    expect(config.recipientStatusApiToken).toBe(`${STRONG_TOKEN}-status`);
+    // Four DISTINCT values landing in four distinct fields is the property; a
+    // crossed pair of factories would otherwise pass every check above.
+    expect(
+      new Set([
+        config.internalApiToken,
+        config.recipientsApiToken,
+        config.verificationApiToken,
+        config.recipientStatusApiToken,
+      ]).size,
+    ).toBe(4);
   });
 });
 

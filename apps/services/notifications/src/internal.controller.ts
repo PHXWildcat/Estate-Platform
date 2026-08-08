@@ -1,20 +1,24 @@
-import { Body, Controller, HttpCode, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Put, UseGuards } from '@nestjs/common';
 import { ServiceCredentialGuard } from '@estate/auth-guard';
 import { NotificationsService } from './notifications.service';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
-import { parseBody, RecipientSchema, SendSchema } from './schemas';
+import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
+import { VerificationCredentialGuard } from './verification-credential.guard';
+import { parseBody, parseUserId, RecipientSchema, SendSchema, VerificationSchema } from './schemas';
 
 /**
- * Internal-only surface, split into TWO credential-guarded controllers because
- * its routes are two different capabilities with two different legitimate
+ * Internal-only surface, split into FOUR credential-guarded controllers
+ * because its routes are four different capabilities with different legitimate
  * holders (credential-graph.ts). There are deliberately NO user-facing routes
  * in this service — a bearer token must never be able to make the platform
  * speak.
  *
- * SENDING (NOTIFICATIONS_INTERNAL_TOKEN; holders vault + settlement): pick
- * which of nine closed template kinds fires, for a user, now. The wire has no
- * text field, so a holder never chooses the words and never chooses the
- * destination.
+ * SENDING (NOTIFICATIONS_INTERNAL_TOKEN; holders vault + settlement +
+ * profile): pick which of ten closed ESTATE template kinds fires, for a user,
+ * now. The wire has no text field, so a holder never chooses the words and
+ * never chooses the destination — and `SendSchema` is built from
+ * ESTATE_NOTIFICATION_KINDS, so it cannot reach the one kind that carries a
+ * variable.
  */
 @Controller('internal/v1/notifications')
 @UseGuards(ServiceCredentialGuard)
@@ -30,7 +34,8 @@ export class InternalController {
 
 /**
  * RECIPIENTS (NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN; holder identity ALONE):
- * set the address a user's notifications are delivered to.
+ * set the address a user's notifications are delivered to, and declare that
+ * the user proved they own it.
  *
  * Separated from sending by the M9 security review. This route decides where
  * every future owner alert lands, so holding it is the power to silence the
@@ -38,6 +43,11 @@ export class InternalController {
  * pointing them at a mailbox the owner never reads. Identity is the only
  * service that legitimately knows an address — it watches the user type it at
  * registration and login — and it is the only holder.
+ *
+ * M14 put the VOUCHING route here rather than on a fifth credential because it
+ * is the same capability class: both statements decide what the delivery store
+ * believes about reaching a user, and a holder that can already repoint an
+ * address gains nothing from also being able to mark one verified.
  */
 @Controller('internal/v1/notifications')
 @UseGuards(RecipientsCredentialGuard)
@@ -48,5 +58,62 @@ export class RecipientsController {
   @HttpCode(200)
   upsertRecipient(@Body() body: unknown): Promise<{ ok: true }> {
     return this.notifications.upsertRecipient(parseBody(RecipientSchema, body));
+  }
+
+  @Put('recipients/:userId/verified')
+  @HttpCode(200)
+  markVerified(@Param('userId') userId: string): Promise<{ ok: boolean }> {
+    return this.notifications.markRecipientVerified(parseUserId(userId));
+  }
+}
+
+/**
+ * VERIFICATION SEND (NOTIFICATIONS_VERIFY_INTERNAL_TOKEN; holder identity
+ * ALONE): mail one address-verification code to the address already on file.
+ *
+ * Its own credential rather than a share of either neighbour. Not the SEND
+ * one, because that fires estate alarms and the service that mints sessions
+ * must not be able to ring "a death report was filed on your account". Not the
+ * RECIPIENTS one, because that can REPOINT an address and this can only mail
+ * to whatever is already stored — so the first future holder of a resend
+ * capability does not inherit the power the M9 review split out.
+ */
+@Controller('internal/v1/notifications')
+@UseGuards(VerificationCredentialGuard)
+export class VerificationController {
+  constructor(private readonly notifications: NotificationsService) {}
+
+  // Named `sendCode`, not `send`: the estate send route is `InternalController.send`
+  // and two same-named handlers on two differently-guarded classes is how a
+  // future refactor merges them by accident.
+  @Post('verification')
+  @HttpCode(200)
+  sendCode(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
+    return this.notifications.sendAddressVerification(parseBody(VerificationSchema, body));
+  }
+}
+
+/**
+ * RECIPIENT STATUS (NOTIFICATIONS_STATUS_INTERNAL_TOKEN): one boolean about
+ * one named user — whether the store holds an address that user proved they
+ * own.
+ *
+ * This is the question three shipped fail-closed gates have always ASSUMED and
+ * never asked. It is a read of DELIVERY STATE, which is why it is not on the
+ * send credential: settlement sends and never asks (its §5.1 gates proceed on
+ * an unverified recipient and record it), so putting the read there would grant
+ * settlement a capability it has no use for and make the send edge's promise
+ * that it "exposes no delivery state" untrue.
+ *
+ * It returns no address and no timestamp, and writes nothing.
+ */
+@Controller('internal/v1/notifications')
+@UseGuards(RecipientStatusCredentialGuard)
+export class RecipientStatusController {
+  constructor(private readonly notifications: NotificationsService) {}
+
+  @Get('recipients/:userId/status')
+  status(@Param('userId') userId: string): Promise<{ verified: boolean }> {
+    return this.notifications.recipientStatus(parseUserId(userId));
   }
 }

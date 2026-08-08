@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
-import { InternalController, RecipientsController } from '../src/internal.controller';
+import {
+  InternalController,
+  RecipientStatusController,
+  RecipientsController,
+  VerificationController,
+} from '../src/internal.controller';
 import type { NotificationsService } from '../src/notifications.service';
 
 /**
@@ -14,9 +19,23 @@ describe('InternalController', () => {
   const build = (): {
     controller: InternalController;
     recipients: RecipientsController;
-    calls: { send: unknown[]; upsert: unknown[] };
+    verification: VerificationController;
+    status: RecipientStatusController;
+    calls: {
+      send: unknown[];
+      upsert: unknown[];
+      verification: unknown[];
+      markVerified: unknown[];
+      status: unknown[];
+    };
   } => {
-    const calls: { send: unknown[]; upsert: unknown[] } = { send: [], upsert: [] };
+    const calls = {
+      send: [] as unknown[],
+      upsert: [] as unknown[],
+      verification: [] as unknown[],
+      markVerified: [] as unknown[],
+      status: [] as unknown[],
+    };
     const service = {
       send: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
         calls.send.push(input);
@@ -26,10 +45,26 @@ describe('InternalController', () => {
         calls.upsert.push(input);
         return Promise.resolve({ ok: true });
       },
+      sendAddressVerification: (
+        input: unknown,
+      ): Promise<{ delivered: boolean; channel: string }> => {
+        calls.verification.push(input);
+        return Promise.resolve({ delivered: true, channel: 'email' });
+      },
+      markRecipientVerified: (userId: unknown): Promise<{ ok: boolean }> => {
+        calls.markVerified.push(userId);
+        return Promise.resolve({ ok: true });
+      },
+      recipientStatus: (userId: unknown): Promise<{ verified: boolean }> => {
+        calls.status.push(userId);
+        return Promise.resolve({ verified: true });
+      },
     } as unknown as NotificationsService;
     return {
       controller: new InternalController(service),
       recipients: new RecipientsController(service),
+      verification: new VerificationController(service),
+      status: new RecipientStatusController(service),
       calls,
     };
   };
@@ -63,12 +98,70 @@ describe('InternalController', () => {
     expect(calls.upsert).toEqual([body]);
   });
 
-  it('the two surfaces are separate classes, so they can carry separate guards', () => {
-    // The split is only real if a guard can bind to one without the other:
-    // sending is vault + settlement, repointing an address is identity alone.
-    const { controller, recipients } = build();
+  it('the four surfaces are separate classes, so they can carry separate guards', () => {
+    // The split is only real if a guard can bind to one without the others:
+    // sending estate kinds is vault + settlement + profile, repointing and
+    // vouching for an address is identity alone, mailing a code is identity
+    // alone on a DIFFERENT secret, and reading the verified bit is its own
+    // edge again. A guard binds exactly one token, so one class per capability
+    // is what makes the partition real rather than described.
+    const { controller, recipients, verification, status } = build();
+    const surfaces = [controller, recipients, verification, status];
+    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(4);
     expect('upsertRecipient' in controller).toBe(false);
     expect('send' in recipients).toBe(false);
+    // The code-bearing route lives nowhere near the broadly-held send surface.
+    expect('send' in verification).toBe(false);
+    expect('sendAddressVerification' in controller).toBe(false);
+    // The read surface writes nothing.
+    expect(Object.getOwnPropertyNames(RecipientStatusController.prototype)).toEqual([
+      'constructor',
+      'status',
+    ]);
+  });
+
+  it('verification: parses the typed code wire and delegates', async () => {
+    const { verification, calls } = build();
+    const body = { userId: randomUUID(), code: 'EV1-K7MN-ABCD' };
+    await expect(verification.sendCode(body)).resolves.toEqual({
+      delivered: true,
+      channel: 'email',
+    });
+    expect(calls.verification).toEqual([body]);
+  });
+
+  it('verification: refuses free text where the code goes', () => {
+    // The deviation docs/03 §6c records is a CODE, not a text field. A caller
+    // that could put a sentence here would have re-created the free-text field
+    // the whole content doctrine exists to refuse.
+    const { verification, calls } = build();
+    for (const code of ['hello there', 'https://evil.test/x', 'ev1-lowercase', '']) {
+      expect(() => verification.sendCode({ userId: randomUUID(), code })).toThrow(
+        BadRequestException,
+      );
+    }
+    expect(() =>
+      verification.sendCode({ userId: randomUUID(), code: 'EV1-ABCD', subject: 'words' }),
+    ).toThrow(BadRequestException);
+    expect(calls.verification).toEqual([]);
+  });
+
+  it('path-borne user ids are validated like body-borne ones', () => {
+    // A path parameter reaches the handler as whatever the router matched, so
+    // a malformed id must be a 400 here rather than a database error two
+    // layers down.
+    const { recipients, status } = build();
+    expect(() => recipients.markVerified('not-a-uuid')).toThrow(BadRequestException);
+    expect(() => status.status('../../etc/passwd')).toThrow(BadRequestException);
+  });
+
+  it('status and mark-verified delegate the parsed id', async () => {
+    const { recipients, status, calls } = build();
+    const userId = randomUUID();
+    await expect(recipients.markVerified(userId)).resolves.toEqual({ ok: true });
+    await expect(status.status(userId)).resolves.toEqual({ verified: true });
+    expect(calls.markVerified).toEqual([userId]);
+    expect(calls.status).toEqual([userId]);
   });
 
   it('upsertRecipient: refuses a malformed address without echoing it', async () => {

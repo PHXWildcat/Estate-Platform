@@ -8,7 +8,9 @@
 // Ratchets toward 95/90; never lower this floor.
 //
 // Re-measured at 69.9/68.65/69.56/68.35 when the int suite gained the
-// every-kind send loop (migration 002), and ratcheted UP to match.
+// every-kind send loop (migration 002), then at 73.57/70.98/72.22/71.75 when
+// M14 added the verification send, the verified bit and their specs. Ratcheted
+// UP both times.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 69, branches: 68, functions: 69, lines: 68 } },
+  coverageThreshold: { global: { statements: 73, branches: 70, functions: 72, lines: 71 } },
 });

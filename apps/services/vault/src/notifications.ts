@@ -1,5 +1,5 @@
 import type {
-  NotificationKind,
+  EstateNotificationKind,
   NotificationsPort as NotificationsClientPort,
 } from '@estate/notifications-client';
 
@@ -68,7 +68,9 @@ export class StubNotifier implements NotificationPort {
 }
 
 /** Wire kinds for the notifications service (closed set; content travels nowhere). */
-const WIRE_KIND: Record<EmergencyNotificationKind, NotificationKind> = {
+// ESTATE kinds only (M14): a sending service cannot name the
+// address-verification kind, mirroring `SendSchema`'s refusal on the wire.
+const WIRE_KIND: Record<EmergencyNotificationKind, EstateNotificationKind> = {
   requested: 'emergency.requested',
   blocked: 'emergency.blocked',
   reminder: 'emergency.reminder',

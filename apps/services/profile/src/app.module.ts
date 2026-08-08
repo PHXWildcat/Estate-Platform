@@ -94,7 +94,9 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
           ? new HttpLinkNotifier(
               new HttpNotificationsClient({
                 notificationsUrl: config.notificationsUrl,
-                serviceCredential: config.notificationsInternalToken,
+                // ONE FIELD PER EDGE (M14): profile holds the SEND credential
+                // and nothing else.
+                credentials: { send: config.notificationsInternalToken },
               }),
             )
           : new StubLinkNotifier(),

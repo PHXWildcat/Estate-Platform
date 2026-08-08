@@ -22,6 +22,32 @@ export const CLOCK = Symbol('CLOCK');
  */
 export const RECIPIENTS_CREDENTIAL = Symbol('RECIPIENTS_CREDENTIAL');
 
+/**
+ * The credential for MAILING ONE ADDRESS-VERIFICATION CODE (M14). Identity
+ * alone.
+ *
+ * Identity must be able to make the platform mail a code it minted, and must
+ * NOT thereby gain the power to fire an estate notification — "a death report
+ * was filed on your account" is not a message the session service should be
+ * able to ring. So it is neither on `SERVICE_CREDENTIAL` (the estate send
+ * surface, held by vault/settlement/profile) nor folded into
+ * `RECIPIENTS_CREDENTIAL`, whose holder can REPOINT an address: this one can
+ * only mail to whatever is already on file.
+ */
+export const VERIFICATION_CREDENTIAL = Symbol('VERIFICATION_CREDENTIAL');
+
+/**
+ * The credential for READING whether a user's address is verified (M14).
+ *
+ * A separate edge from sending because its holders differ: settlement sends
+ * and never asks (its §5.1 gates PROCEED on an unverified recipient and record
+ * the fact), while vault and profile ask at their two ARMING gates. Folding
+ * the read into the send credential would hand settlement a capability it has
+ * no use for and force a hedge into that edge's `grants` sentence, which
+ * currently promises it exposes no delivery state.
+ */
+export const RECIPIENT_STATUS_CREDENTIAL = Symbol('RECIPIENT_STATUS_CREDENTIAL');
+
 /** Injectable clock so send records are testable without real time. */
 export type Clock = () => Date;
 

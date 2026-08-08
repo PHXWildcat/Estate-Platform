@@ -198,18 +198,26 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
   {
     envVar: 'NOTIFICATIONS_INTERNAL_TOKEN',
     callee: 'notifications',
-    // SEND ONLY. Vault and settlement send their M6/M7 waiting-period
+    // ESTATE SENDS ONLY. Vault and settlement send their M6/M7 waiting-period
     // notifications; profile joined in M13 to tell an owner that somebody
     // CLAIMED a link to one of their contacts (docs/03 §6g — a claim is the
     // moment that person becomes able to open a death case, so a silent claim
-    // is the failure this notification exists to prevent). Identity is
-    // deliberately NOT here — it never sends, it only feeds the recipient
-    // store, which is the separate edge below.
+    // is the failure this notification exists to prevent).
+    //
+    // Identity is deliberately NOT here, and M14 made that a statement about
+    // capability rather than about traffic. Identity now DOES make the platform
+    // mail somebody — exactly one kind, its own address-verification code, on
+    // its own edge below. What it must not gain is the power to fire an ESTATE
+    // notification: a holder of this credential chooses which of ten
+    // owner-facing alarms rings and when, and the service that mints sessions
+    // has no business ringing "a death report was filed on your account".
+    // SYSTEM_NOTIFICATION_KINDS is excluded from this route's schema for the
+    // mirror-image reason.
     holders: ['profile', 'settlement', 'vault'],
     guard: SHARED_GUARD,
     opens: ['POST /internal/v1/notifications/send'],
     grants:
-      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of ten notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address, no estate data, and cannot redirect delivery.',
+      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of ten estate notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address, no estate data, no delivery state, and cannot redirect delivery. Reading whether an address is verified is a DIFFERENT edge (below) precisely so this sentence stays true of this credential.',
   },
   {
     envVar: 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
@@ -230,9 +238,58 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // module's own rule 3 ("holders is exhaustive and MINIMAL") true here.
     holders: ['identity'],
     guard: { className: 'RecipientsCredentialGuard', token: 'RECIPIENTS_CREDENTIAL' },
-    opens: ['PUT /internal/v1/notifications/recipients'],
+    opens: [
+      'PUT /internal/v1/notifications/recipients',
+      // M14. Vouching for an address is the SAME capability class as setting
+      // one — both decide what the delivery store believes about how to reach a
+      // user — so it belongs on this credential rather than a fifth. A holder
+      // able to repoint an address gains nothing by also being able to mark it
+      // verified; a holder able ONLY to mark verified would be strictly weaker,
+      // and no such holder exists.
+      'PUT /internal/v1/notifications/recipients/:userId/verified',
+    ],
     grants:
-      "Set the address a user's notifications are delivered to. A holder can silently redirect every future owner alert — including the §5.1 death-case contact sweep and the §5.2 emergency-access waiting-period alerts — to a mailbox they control, defeating the waiting period by removing the owner's only signal. It reads nothing: the stored address is never returned by any route, and the change is recorded (prior ciphertext retained in the versions table) though NOT attributed to a caller, so the audit trail proves that an address changed, never who changed it.",
+      "Set the address a user's notifications are delivered to, and declare that the user proved they own it. A holder can silently redirect every future owner alert — including the §5.1 death-case contact sweep and the §5.2 emergency-access waiting-period alerts — to a mailbox they control, defeating the waiting period by removing the owner's only signal, and can vouch for that mailbox so M14's arming gates (escrow configure, link-code mint) stop refusing. It reads nothing: the stored address is never returned by any route, and the change is recorded (prior ciphertext retained in the versions table) though NOT attributed to a caller, so the audit trail proves that an address changed, never who changed it.",
+  },
+  {
+    envVar: 'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // IDENTITY ALONE (M14). Identity mints an address-verification code, keeps
+    // only its sha256, and needs the platform to mail it — but must not join
+    // the SEND holders above to do so, because that credential fires estate
+    // alarms and this one cannot.
+    //
+    // Separate from the RECIPIENTS edge despite having the identical holder,
+    // and the reason is what a stolen copy buys. RECIPIENTS can REPOINT an
+    // address; this can only mail a code to whatever address is already on
+    // file. Folding them together would mean that the first future holder of
+    // "resend my code" — a support tool, a BFF-side resend — inherits the power
+    // the M9 review split out. Splitting now costs one secret and makes that
+    // grant possible later without re-litigating it.
+    holders: ['identity'],
+    guard: { className: 'VerificationCredentialGuard', token: 'VERIFICATION_CREDENTIAL' },
+    opens: ['POST /internal/v1/notifications/verification'],
+    grants:
+      "Mail one address-verification code, of the platform's own choosing of words, to the address already on file for a user. It is the one route whose payload carries a variable that is not a date (docs/03 §6c records the deviation), but the variable is opaque, platform-authored and single-use: a holder cannot choose the recipient, cannot see the address, cannot fire any estate notification, and cannot make the code valid. Misuse means mailing a user a code they did not ask for, which they can simply ignore — and, at volume, sender-reputation damage.",
+  },
+  {
+    envVar: 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // M14. Identity reads it to decide whether to mint a code at login;
+    // PR2 adds vault and profile, which read it at the two ARMING gates
+    // (escrow configure, link-code mint) — and, per the M9 PR2 rule, those
+    // holders are added in the SAME change as the clients that present it,
+    // never before.
+    //
+    // Settlement holds SEND and is deliberately NOT here: its gates PROCEED on
+    // an unverified recipient and record the fact, so it never asks the
+    // question. That is what makes `holders` minimal rather than "everyone who
+    // talks to notifications".
+    holders: ['identity'],
+    guard: { className: 'RecipientStatusCredentialGuard', token: 'RECIPIENT_STATUS_CREDENTIAL' },
+    opens: ['GET /internal/v1/notifications/recipients/:userId/status'],
+    grants:
+      'Read one boolean about one named user: whether the delivery store holds an address that user has proved they own. It returns no address, no timestamp, no estate fact, and writes nothing. The residual is an oracle — a holder learns whether a given user id has completed verification — bounded by user ids being unguessable UUIDs that this route never enumerates.',
   },
 ];
 

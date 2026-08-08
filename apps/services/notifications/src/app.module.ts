@@ -25,12 +25,21 @@ import {
   FIELD_CRYPTO,
   PG_POOL_CONFIG,
   RECIPIENTS_CREDENTIAL,
+  RECIPIENT_STATUS_CREDENTIAL,
+  VERIFICATION_CREDENTIAL,
 } from './di-tokens';
 import { SesEmailSender, StubEmailSender, type EmailSender } from './email';
 import { EventsService } from './events.service';
 import { HttpErrorFilter } from './http-error.filter';
-import { InternalController, RecipientsController } from './internal.controller';
+import {
+  InternalController,
+  RecipientStatusController,
+  RecipientsController,
+  VerificationController,
+} from './internal.controller';
+import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
+import { VerificationCredentialGuard } from './verification-credential.guard';
 import { NotificationsService } from './notifications.service';
 import { RecipientsRepo } from './recipients.repo';
 import { SendsRepo } from './sends.repo';
@@ -74,7 +83,12 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
 }
 
 @Module({
-  controllers: [InternalController, RecipientsController],
+  controllers: [
+    InternalController,
+    RecipientsController,
+    VerificationController,
+    RecipientStatusController,
+  ],
   providers: [
     { provide: CONFIG, useFactory: (): NotificationsConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
@@ -152,8 +166,27 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: NotificationsConfig): string => config.recipientsApiToken,
     },
+    {
+      // M14 #3: mailing one address-verification code. Identity alone. Kept off
+      // the send credential (which fires estate alarms) and off the recipients
+      // credential (which can repoint an address); this one can only mail to
+      // whatever is already on file. Fails closed on '' like the others.
+      provide: VERIFICATION_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: NotificationsConfig): string => config.verificationApiToken,
+    },
+    {
+      // M14 #4: reading the verified bit. A read of DELIVERY STATE, which the
+      // send edge promises not to expose — hence its own token rather than a
+      // widening of that promise.
+      provide: RECIPIENT_STATUS_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: NotificationsConfig): string => config.recipientStatusApiToken,
+    },
     ServiceCredentialGuard,
     RecipientsCredentialGuard,
+    VerificationCredentialGuard,
+    RecipientStatusCredentialGuard,
     RecipientsRepo,
     SendsRepo,
     NotificationsService,

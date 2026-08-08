@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { NOTIFICATION_CHANNELS, NOTIFICATION_KINDS } from '@estate/notifications-client';
+import { ESTATE_NOTIFICATION_KINDS, NOTIFICATION_CHANNELS } from '@estate/notifications-client';
 import { z } from 'zod';
 
 /** Payloads are ids, enums, a timestamp, and (on upsert) one address. */
@@ -9,16 +9,50 @@ export const BODY_LIMIT = '64kb';
  * The send wire: content-free BY SCHEMA. `.strict()` means a caller that
  * tries to smuggle a subject, a body, or a template variable is refused with
  * invalid_request — the closed template registry is the only source of words.
+ *
+ * BUILT FROM `ESTATE_NOTIFICATION_KINDS`, NOT `NOTIFICATION_KINDS`, and that
+ * subtraction is a control (M14). The wider constant is the vocabulary of the
+ * send LOG; this narrower one is what a send-credential holder may fire.
+ * `identity.address_verification` is excluded because its template needs a
+ * code and this wire has nowhere to carry one — a holder naming it here would
+ * otherwise mail somebody "enter this code: undefined", authored by a
+ * credential vault, settlement and profile all hold. It travels on its own
+ * route, behind its own credential, with its own typed input.
  */
 export const SendSchema = z
   .object({
     userId: z.string().uuid(),
-    kind: z.enum(NOTIFICATION_KINDS),
+    kind: z.enum(ESTATE_NOTIFICATION_KINDS),
     channel: z.enum(NOTIFICATION_CHANNELS),
     deadline: z.string().datetime().optional(),
   })
   .strict();
 export type SendInput = z.infer<typeof SendSchema>;
+
+/**
+ * The address-verification wire (M14). One id and one opaque platform-authored
+ * code, `.strict()` like everything else so no subject, body or extra variable
+ * can ride along.
+ *
+ * The code is bounded and character-restricted at the edge rather than trusted
+ * from the caller: it is interpolated into a message body, and although the
+ * only holder of this credential is identity — which mints it from
+ * `randomBytes` over a fixed alphabet — a schema that accepted arbitrary text
+ * here would be the free-text field the whole content doctrine exists to
+ * refuse. The pattern admits identity's alphabet and its grouping separator
+ * and nothing else, so this route cannot become one by drift.
+ */
+export const VerificationSchema = z
+  .object({
+    userId: z.string().uuid(),
+    code: z
+      .string()
+      .min(8)
+      .max(64)
+      .regex(/^[0-9A-Z-]+$/, 'code must be uppercase base32 with dashes'),
+  })
+  .strict();
+export type VerificationInput = z.infer<typeof VerificationSchema>;
 
 /** RFC 5321 caps the path at 320 octets; anything longer is not an address. */
 export const RecipientSchema = z
@@ -28,6 +62,20 @@ export const RecipientSchema = z
   })
   .strict();
 export type RecipientInput = z.infer<typeof RecipientSchema>;
+
+/**
+ * Validate a user id taken from the PATH. Path parameters reach a handler as
+ * whatever the router matched, so the two routes keyed by `:userId` get the
+ * same shape check the body-borne ids get — a malformed id must be a 400 here,
+ * not a database error two layers down.
+ */
+export function parseUserId(userId: string): string {
+  const parsed = z.string().uuid().safeParse(userId);
+  if (!parsed.success) {
+    throw new BadRequestException({ error: 'invalid_request' });
+  }
+  return parsed.data;
+}
 
 export function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
   const parsed = schema.safeParse(body);

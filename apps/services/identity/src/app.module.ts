@@ -18,6 +18,8 @@ import {
 import type { PoolConfig } from 'pg';
 import { AuthController } from './auth.controller';
 import { AuthEventsRepo } from './auth-events.repo';
+import { EmailVerificationRepo } from './email-verification.repo';
+import { EmailVerificationService } from './email-verification.service';
 import { AuthService } from './auth.service';
 import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
 import { loadConfig, type IdentityConfig } from './config';
@@ -130,6 +132,8 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     WebAuthnRepo,
     AuthService,
     WebAuthnService,
+    EmailVerificationRepo,
+    EmailVerificationService,
     SettlementLockService,
     SessionGuard,
     StepUpGuard,
@@ -144,16 +148,27 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     },
     ServiceCredentialGuard,
     {
-      // The recipient-store feed (M9). Best-effort by contract: the client
-      // never throws, so a notifications outage cannot block registration or
-      // login. The OUTBOUND credential — distinct from identity's own inbound
-      // value (config.ts refuses equality in production).
+      // The recipient-store feed (M9) plus M14's verification ceremony.
+      // Best-effort by contract: the client never throws, so a notifications
+      // outage cannot block registration or login.
+      //
+      // THREE credentials, one per EDGE, and identity holds no fourth: it does
+      // NOT hold `NOTIFICATIONS_INTERNAL_TOKEN`, so nothing here can fire an
+      // estate notification. A method whose credential is absent
+      // short-circuits without a round trip, so this object grants exactly the
+      // three capabilities the graph names and no more. All three are distinct
+      // from identity's own inbound value; config.ts refuses any equality in
+      // production with a full pairwise loop.
       provide: NOTIFICATIONS,
       inject: [CONFIG],
       useFactory: (config: IdentityConfig): NotificationsPort =>
         new HttpNotificationsClient({
           notificationsUrl: config.notificationsUrl,
-          serviceCredential: config.notificationsInternalToken,
+          credentials: {
+            recipients: config.notificationsInternalToken,
+            verification: config.notificationsVerifyToken,
+            status: config.notificationsStatusToken,
+          },
         }),
     },
     { provide: APP_FILTER, useClass: HttpErrorFilter },

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { FieldCrypto, LocalKmsProvider } from '@estate/crypto';
-import { NOTIFICATION_KINDS } from '@estate/notifications-client';
+import { ESTATE_NOTIFICATION_KINDS, NOTIFICATION_KINDS } from '@estate/notifications-client';
 import { Migrator } from '@estate/db';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { Client } from 'pg';
@@ -62,6 +62,7 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       events,
       crypto,
       stub,
+      () => new Date(),
     );
   });
 
@@ -149,16 +150,129 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
     const subject = randomUUID();
     await service.upsertRecipient({ userId: subject, email: 'every-kind@example.com' });
 
-    for (const kind of NOTIFICATION_KINDS) {
+    for (const kind of ESTATE_NOTIFICATION_KINDS) {
       const result = await service.send({ userId: subject, kind, channel: 'email' });
       expect(result).toEqual({ delivered: true, channel: 'email' });
     }
+    // The system kinds are unreachable through `send` BY DESIGN (their
+    // templates need a code), so each has its own entry point — and the
+    // assertion below is over NOTIFICATION_KINDS, so a system kind added
+    // without a route here fails rather than quietly going unlogged.
+    expect(await service.sendAddressVerification({ userId: subject, code: 'EV1-TEST' })).toEqual({
+      delivered: true,
+      channel: 'email',
+    });
 
     const rows = await admin.query<{ kind: string }>(
       `SELECT kind FROM ${schema}.notification_sends WHERE user_id = $1 ORDER BY created_at`,
       [subject],
     );
     expect([...rows.rows.map((row) => row.kind)].sort()).toEqual([...NOTIFICATION_KINDS].sort());
+  });
+
+  /**
+   * M14. The four properties migration 003 CLAIMS, asserted against a real
+   * database rather than assumed — two of them are "free" consequences of
+   * existing machinery, which is exactly the kind of claim that turns out to be
+   * wrong (the M13 lesson: a fix whose behaviour lives in SQL must be pinned by
+   * a test that runs SQL).
+   */
+  describe('the verified bit', () => {
+    const SUBJECT = randomUUID();
+
+    it('starts unverified, and a mark makes it verified', async () => {
+      await service.upsertRecipient({ userId: SUBJECT, email: 'proof@example.com' });
+      expect(await service.recipientStatus(SUBJECT)).toEqual({ verified: false });
+
+      expect(await service.markRecipientVerified(SUBJECT)).toEqual({ ok: true });
+      expect(await service.recipientStatus(SUBJECT)).toEqual({ verified: true });
+    });
+
+    it('is NEVER re-stamped, so it answers when an address was FIRST proved', async () => {
+      const [before] = await admin
+        .query<{ verified_at: Date }>(
+          `SELECT verified_at FROM ${schema}.notification_recipients WHERE user_id = $1`,
+          [SUBJECT],
+        )
+        .then((r) => r.rows);
+      await service.markRecipientVerified(SUBJECT);
+      const [after] = await admin
+        .query<{ verified_at: Date }>(
+          `SELECT verified_at FROM ${schema}.notification_recipients WHERE user_id = $1`,
+          [SUBJECT],
+        )
+        .then((r) => r.rows);
+      expect(after?.verified_at.toISOString()).toBe(before?.verified_at.toISOString());
+    });
+
+    it('SURVIVES the login re-feed — otherwise no address could ever stay verified', async () => {
+      // Identity re-feeds this store on EVERY login. The address it carries is
+      // by construction the one already on file (login resolves the user by
+      // email_bidx first), which is what makes preserving the bit sound.
+      await service.upsertRecipient({ userId: SUBJECT, email: 'proof@example.com' });
+      expect(await service.recipientStatus(SUBJECT)).toEqual({ verified: true });
+    });
+
+    it('is CAPTURED by the versions trigger with no trigger change', async () => {
+      // Free because the trigger stores a whole-row `to_jsonb(OLD)` image —
+      // claimed by migration 003, so proved here rather than believed.
+      const { rows } = await admin.query<{ row_data: { verified_at: string | null } }>(
+        `SELECT row_data FROM ${schema}.notification_recipients_versions
+          WHERE row_id = $1 ORDER BY version_seq DESC LIMIT 1`,
+        [SUBJECT],
+      );
+      expect(rows[0]?.row_data).toHaveProperty('verified_at');
+      expect(rows[0]?.row_data.verified_at).not.toBeNull();
+    });
+
+    it('DIES WITH THE ROW: a soft-deleted recipient is unverified again', async () => {
+      // The arming gates then refuse, fail-closed by construction rather than
+      // by a separate check — a crypto-shredded or deleted recipient must not
+      // keep vouching for an address the store can no longer reach.
+      const doomed = randomUUID();
+      await service.upsertRecipient({ userId: doomed, email: 'doomed@example.com' });
+      await service.markRecipientVerified(doomed);
+      expect(await service.recipientStatus(doomed)).toEqual({ verified: true });
+
+      // THROUGH `db`, NOT `admin`, and the reason is a real defect this test
+      // had on its first run. The soft delete fires the version-capture
+      // trigger, whose INSERT names `notification_recipients_versions`
+      // UNQUALIFIED — so it resolves on the EXECUTING CONNECTION's search_path,
+      // not on the schema the UPDATE was qualified with. `admin` has no
+      // scratch-schema search_path, so on a developer machine whose PG_TEST_URL
+      // points at the running stack's core cluster the trigger found the
+      // stack's own `public.notification_recipients_versions` and the test
+      // passed WHILE WRITING A ROW INTO THE LIVE STACK. CI has no such table
+      // and the same statement failed there. `db` carries
+      // `-c search_path=<schema>`, which every other write here already uses.
+      await db.query(`UPDATE notification_recipients SET deleted_at = now() WHERE user_id = $1`, [
+        doomed,
+      ]);
+      // The capture landed in the SCRATCH schema — asserted, so the mistake
+      // above cannot recur silently in either direction. The NEWEST version row
+      // is the soft delete's PRE-image, so it still shows a live, verified row:
+      // that is what identifies this capture as the soft delete's rather than
+      // the mark-verified UPDATE's, which the trigger also recorded.
+      const { rows: captured } = await admin.query<{
+        row_data: { deleted_at: string | null; verified_at: string | null };
+      }>(
+        `SELECT row_data FROM ${schema}.notification_recipients_versions
+          WHERE row_id = $1 AND operation = 'UPDATE'
+          ORDER BY version_seq DESC LIMIT 1`,
+        [doomed],
+      );
+      expect(captured[0]?.row_data.deleted_at).toBeNull();
+      expect(captured[0]?.row_data.verified_at).not.toBeNull();
+
+      expect(await service.recipientStatus(doomed)).toEqual({ verified: false });
+      // And it cannot be vouched for again while deleted.
+      expect(await service.markRecipientVerified(doomed)).toEqual({ ok: false });
+    });
+
+    it('answers false — never throws — for a user the store has never seen', async () => {
+      expect(await service.recipientStatus(randomUUID())).toEqual({ verified: false });
+      expect(await service.markRecipientVerified(randomUUID())).toEqual({ ok: false });
+    });
   });
 
   it('records no_recipient for a user the store has never seen', async () => {

@@ -33,7 +33,7 @@ describe('HttpNotificationsClient.send', () => {
     }));
     const client = new HttpNotificationsClient({
       notificationsUrl: 'http://notifications:3009/',
-      serviceCredential: 'secret',
+      credentials: { send: 'secret', recipients: 'secret' },
       fetchImpl,
     });
 
@@ -66,7 +66,7 @@ describe('HttpNotificationsClient.send', () => {
     }));
     const client = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      serviceCredential: 'secret',
+      credentials: { send: 'secret', recipients: 'secret' },
       fetchImpl,
     });
 
@@ -96,7 +96,7 @@ describe('HttpNotificationsClient.send', () => {
     const failing: FetchLike = () => Promise.reject(new Error('ECONNREFUSED'));
     const network = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      serviceCredential: 's',
+      credentials: { send: 's', recipients: 's' },
       fetchImpl: failing,
     });
     expect(await network.send({ userId: USER, kind: 'vault.reset' })).toEqual({ accepted: false });
@@ -108,7 +108,7 @@ describe('HttpNotificationsClient.send', () => {
     }));
     const unavailable = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      serviceCredential: 's',
+      credentials: { send: 's', recipients: 's' },
       fetchImpl: http503,
     });
     expect(await unavailable.send({ userId: USER, kind: 'vault.reset' })).toEqual({
@@ -122,7 +122,7 @@ describe('HttpNotificationsClient.send', () => {
     }));
     const drift = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      serviceCredential: 's',
+      credentials: { send: 's', recipients: 's' },
       fetchImpl: drifted,
     });
     expect(await drift.send({ userId: USER, kind: 'vault.reset' })).toEqual({ accepted: false });
@@ -138,7 +138,7 @@ describe('HttpNotificationsClient.upsertRecipient', () => {
     }));
     const client = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      serviceCredential: 'secret',
+      credentials: { send: 'secret', recipients: 'secret' },
       fetchImpl,
     });
 
@@ -163,9 +163,147 @@ describe('HttpNotificationsClient.upsertRecipient', () => {
     }));
     const drift = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      serviceCredential: 's',
+      credentials: { send: 's', recipients: 's' },
       fetchImpl: drifted,
     });
     expect(await drift.upsertRecipient({ userId: USER, email: 'a@b.c' })).toEqual({ ok: false });
+  });
+});
+
+/**
+ * ONE CREDENTIAL PER EDGE, enforced at the transport (M14).
+ *
+ * The point of splitting the fields is that a service holding one capability
+ * cannot exercise another, and the place that has to be true is the header
+ * this client puts on the wire. A single `serviceCredential` — the pre-M14
+ * shape — would have sent identity's recipients secret to the send route and
+ * back, which is exactly the M9 collapse re-created inside one object.
+ */
+describe('HttpNotificationsClient credential partitioning', () => {
+  const ALL = {
+    send: 'send-cred',
+    recipients: 'rcpt-cred',
+    verification: 'verify-cred',
+    status: 'status-cred',
+  };
+
+  it('routes each capability to its own path with its own secret', async () => {
+    const { fetchImpl, calls } = transportDouble(({ url }) => ({
+      ok: true,
+      status: 200,
+      payload: url.endsWith('/status')
+        ? { verified: true }
+        : url.endsWith('/verified')
+          ? { ok: true }
+          : { delivered: true, channel: 'email' },
+    }));
+    const client = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: ALL,
+      fetchImpl,
+    });
+
+    await client.send({ userId: USER, kind: 'vault.reset' });
+    await client.upsertRecipient({ userId: USER, email: 'a@b.c' });
+    await client.markRecipientVerified({ userId: USER });
+    await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' });
+    await client.recipientStatus(USER);
+
+    expect(
+      calls.map((call) => [
+        call.init.method,
+        call.url.replace('http://n/internal/v1/notifications', ''),
+        call.init.headers[SERVICE_CREDENTIAL_HEADER],
+      ]),
+    ).toEqual([
+      ['POST', '/send', 'send-cred'],
+      ['PUT', '/recipients', 'rcpt-cred'],
+      // Vouching rides the RECIPIENTS credential: setting an address and
+      // declaring it proved are the same capability class (M14 decision 5).
+      ['PUT', `/recipients/${USER}/verified`, 'rcpt-cred'],
+      ['POST', '/verification', 'verify-cred'],
+      ['GET', `/recipients/${USER}/status`, 'status-cred'],
+    ]);
+  });
+
+  it('makes NO round trip for a capability it does not hold', async () => {
+    // A service granted only `send` must not even announce itself to the other
+    // routes: an over-broad client should be a configuration that cannot reach
+    // them, not one that reaches them and is rejected.
+    const { fetchImpl, calls } = transportDouble(() => {
+      throw new Error('must not be called');
+    });
+    const sendOnly = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: { send: 'send-cred' },
+      fetchImpl,
+    });
+
+    expect(await sendOnly.upsertRecipient({ userId: USER, email: 'a@b.c' })).toEqual({ ok: false });
+    expect(await sendOnly.markRecipientVerified({ userId: USER })).toEqual({ ok: false });
+    expect(await sendOnly.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' })).toEqual({
+      accepted: false,
+    });
+    expect(await sendOnly.recipientStatus(USER)).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('answers null — not false — when the status query is unanswerable', async () => {
+    // The distinction is the whole reason the return type is nullable: an
+    // outage and a genuinely unverified address are different facts, and the
+    // arming gates must state what an outage means rather than inherit it from
+    // a flattened boolean.
+    const cases: FetchLike[] = [
+      () => Promise.reject(new Error('ECONNREFUSED')),
+      () => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }),
+      () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ verified: 'yes' }),
+        }),
+    ];
+    for (const fetchImpl of cases) {
+      const client = new HttpNotificationsClient({
+        notificationsUrl: 'http://n',
+        credentials: { status: 'status-cred' },
+        fetchImpl,
+      });
+      expect(await client.recipientStatus(USER)).toBeNull();
+    }
+
+    const { fetchImpl: ok } = transportDouble(() => ({
+      ok: true,
+      status: 200,
+      payload: { verified: false },
+    }));
+    const answered = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: { status: 'status-cred' },
+      fetchImpl: ok,
+    });
+    expect(await answered.recipientStatus(USER)).toEqual({ verified: false });
+  });
+
+  it('sends the verification code as a typed field and nothing else', async () => {
+    const { fetchImpl, calls } = transportDouble(() => ({
+      ok: true,
+      status: 200,
+      payload: { delivered: true, channel: 'email' },
+    }));
+    const client = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: { verification: 'verify-cred' },
+      fetchImpl,
+    });
+
+    expect(await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' })).toEqual({
+      accepted: true,
+      delivered: true,
+      channel: 'email',
+    });
+    // Two fields. There is no subject, no body, no text — the approved
+    // deviation is a CODE, and the wire is what makes that literal.
+    expect(JSON.parse(calls[0]?.init.body ?? '{}')).toEqual({ userId: USER, code: 'EV1-ABCD' });
   });
 });

@@ -1,4 +1,4 @@
-import type { NotificationKind } from '@estate/notifications-client';
+import type { EstateNotificationKind } from '@estate/notifications-client';
 
 /**
  * The template registry: the ONLY source of carrier-visible words in the
@@ -38,7 +38,7 @@ function day(deadline: Date): string {
 const UNTIL = (deadline: Date | null): string =>
   deadline === null ? '' : ` You have until ${day(deadline)} to respond.`;
 
-const BODIES: Record<NotificationKind, (deadline: Date | null) => string> = {
+const BODIES: Record<EstateNotificationKind, (deadline: Date | null) => string> = {
   'emergency.requested': (d) =>
     `Someone you designated has asked for emergency access to your Estate vault. If you did not expect this, open your Estate app and deny the request — one tap stops it.${UNTIL(d)}`,
   'emergency.blocked': () =>
@@ -68,6 +68,47 @@ export interface RenderedNotification {
   readonly body: string;
 }
 
-export function render(kind: NotificationKind, deadline: Date | null): RenderedNotification {
+export function render(kind: EstateNotificationKind, deadline: Date | null): RenderedNotification {
   return { subject: SUBJECT, body: BODIES[kind](deadline) };
+}
+
+/**
+ * The address-verification body (M14) — a SEPARATE function, not an entry in
+ * BODIES, because it is the one message that carries a variable which is not a
+ * date and `render`'s signature must stay unable to accept one.
+ *
+ * THE CODE IS THE APPROVED DEVIATION (docs/03 §6c). Everything else about the
+ * doctrine survives verbatim and deliberately:
+ *  - the code is PLATFORM-AUTHORED — identity mints it from `randomBytes` and
+ *    it is never derived from anything a user or a caller wrote, so this is
+ *    not a text field by another name;
+ *  - it carries no estate fact, no name, no address, no identifier of any kind
+ *    that outlives its few days;
+ *  - NO LINK, same as every other body. The reader is told to type it into the
+ *    app they already have, which is what keeps "we will never link you"
+ *    literally true rather than nearly true;
+ *  - the SAME subject as everything else, so a mailbox observer scanning
+ *    subject lines still learns only that Estate wants attention.
+ *
+ * The event class does reach the carrier, as it does for every kind — here it
+ * is the least sensitive one in the registry: that somebody is confirming an
+ * address. It is also the only body in this file whose recipient may not be
+ * the account holder, which is exactly the situation it exists to detect: a
+ * stranger who receives this was typed into somebody's registration by mistake
+ * or by design, and the message tells them to ignore it rather than act.
+ */
+export function renderAddressVerification(code: string): RenderedNotification {
+  return {
+    subject: SUBJECT,
+    body:
+      `Confirm this email address for your Estate account by entering this code in the app: ${code}. ` +
+      'It expires shortly and can be used once. ' +
+      // Deliberately NOT "you will not hear from us again": that would be a
+      // promise this platform does not keep. An unverified address is re-asked
+      // at a later login once the code lapses (bounded by the re-issue floor),
+      // and until somebody proves ownership the address stays on file. What IS
+      // true is that the code is worthless to whoever received it by mistake,
+      // because redeeming it requires being signed in to the account.
+      'If you did not create an Estate account, you can ignore this message — the code cannot be used without signing in to that account.',
+  };
 }

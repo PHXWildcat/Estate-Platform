@@ -89,6 +89,8 @@ const config: IdentityConfig = {
   internalApiToken: '',
   notificationsUrl: 'http://localhost:3008',
   notificationsInternalToken: '',
+  notificationsVerifyToken: '',
+  notificationsStatusToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): WebAuthnService {

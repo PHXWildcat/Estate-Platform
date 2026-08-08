@@ -10,6 +10,7 @@ import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-cli
 import { AuthEventsRepo } from './auth-events.repo';
 import type { IdentityConfig } from './config';
 import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
+import { EmailVerificationService } from './email-verification.service';
 import { EventsService } from './events.service';
 import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
@@ -53,6 +54,7 @@ export class AuthService {
     @Inject(CONFIG) private readonly config: IdentityConfig,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(NOTIFICATIONS) private readonly notifications: NotificationsPort,
+    private readonly emailVerification: EmailVerificationService,
   ) {}
 
   /**
@@ -66,6 +68,38 @@ export class AuthService {
    */
   private feedRecipientStore(userId: string, email: string): void {
     void this.notifications.upsertRecipient({ userId, email });
+  }
+
+  /**
+   * Ask the user to prove they own that address (M14) — LOGIN ONLY.
+   *
+   * NOT at registration, which is unauthenticated: a notification kind firing
+   * there would be a mail-bomb primitive addressable by anyone holding a
+   * victim's address, and this repo has no rate-limiting machinery to bound it.
+   * docs/03 §6c's mitigation, "no notification kind fires at registration",
+   * stays literally true.
+   *
+   * CHAINED ONTO THE UPSERT, not fired beside it. The verification send
+   * resolves the address from the recipient store, so on a user's FIRST login
+   * the two racing would leave the send with nothing to mail — a
+   * `no_recipient` outcome and a burned code — every time. Chaining orders them
+   * without awaiting either: the whole chain is still fire-and-forget, so login
+   * latency is never coupled to SES.
+   *
+   * The `ensureVerificationRequested` half is idempotent (it mints only when
+   * the address is unverified and no live code exists), which is what keeps
+   * every login from mailing another code.
+   */
+  private requestAddressVerification(userId: string, email: string): void {
+    void this.notifications
+      .upsertRecipient({ userId, email })
+      .then(() => this.emailVerification.ensureVerificationRequested(userId))
+      .catch(() => {
+        // Neither half may reach the auth path. The client narrows failures to
+        // outcomes and the service swallows its own; this catch is the backstop
+        // that keeps an unhandled rejection from a detached promise out of the
+        // process, not a place where a decision is made.
+      });
   }
 
   /**
@@ -167,7 +201,10 @@ export class AuthService {
 
     await this.authEvents.insert({ userId: user.id, sessionId, kind: 'login.succeeded' });
     await this.events.loginSucceeded(user.id, sessionId, 'none');
-    this.feedRecipientStore(user.id, normalizeEmail(email));
+    // The address a login carries is by construction the one already on file —
+    // the user was resolved by `email_bidx` above — which is what lets the
+    // recipient store preserve its `verified_at` across this re-feed.
+    this.requestAddressVerification(user.id, normalizeEmail(email));
     return { accessToken, refreshToken, sessionId, userId: user.id };
   }
 

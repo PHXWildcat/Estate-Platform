@@ -83,6 +83,7 @@ function harness(options: { recipient: RecipientRow | null; email?: EmailSender 
     events,
     cryptoDouble('owner@example.com'),
     options.email ?? stub,
+    () => new Date('2026-08-07T00:00:00.000Z'),
   );
   return { service, emitted, recorded, stub, upserts };
 }

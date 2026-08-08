@@ -71,7 +71,12 @@ function notifierFor(config: SettlementConfig): NotificationPort {
       return new HttpNotifier(
         new HttpNotificationsClient({
           notificationsUrl: config.notificationsUrl,
-          serviceCredential: config.notificationsInternalToken,
+          // ONE FIELD PER EDGE (M14). This service holds the SEND credential
+          // and nothing else, so every other method on the client
+          // short-circuits without a round trip — an over-broad client would be
+          // a configuration that cannot reach the route, never one that reaches
+          // it and is rejected.
+          credentials: { send: config.notificationsInternalToken },
         }),
       );
     case 'stub':
