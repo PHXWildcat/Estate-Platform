@@ -147,10 +147,26 @@ interface SesStoredMessage {
   Body?: { text_part?: string | null };
 }
 
-/** Poll LocalStack for a REAL delivered email matching `predicate` (M9). */
+/**
+ * Poll LocalStack for a REAL delivered email (M9).
+ *
+ * BOTH SELECTORS ARE REQUIRED, and that is an M14 correction rather than
+ * fussiness. Every kind shares one subject by design (docs/03 §5.4), so the
+ * only two things that distinguish messages here are the recipient and the
+ * body — and until M14 an address received at most one message per journey, so
+ * call sites keyed on the address alone. M14 mails an address-verification code
+ * at first login, which means EVERY address now receives an extra message and
+ * an address-only match resolves to whichever arrived first. That is exactly
+ * what happened: the production rehearsal's settlement assertion found the
+ * verification mail and failed on the body it expected.
+ *
+ * Making `bodyIncludes` a required parameter rather than fixing the three call
+ * sites is the point: a future kind added to any journey cannot silently make
+ * an existing assertion ambiguous again.
+ */
 async function awaitSesMessage(
   what: string,
-  predicate: (message: SesStoredMessage) => boolean,
+  selector: { to: string; bodyIncludes: string },
 ): Promise<SesStoredMessage> {
   return pollUntil(what, async () => {
     const response = await fetch(`${SES_QUERY}/_aws/ses`);
@@ -158,7 +174,13 @@ async function awaitSesMessage(
       return null;
     }
     const parsed = (await response.json()) as { messages?: SesStoredMessage[] };
-    return parsed.messages?.find(predicate) ?? null;
+    return (
+      parsed.messages?.find(
+        (message) =>
+          (message.Destination?.ToAddresses ?? []).includes(selector.to) &&
+          (message.Body?.text_part ?? '').includes(selector.bodyIncludes),
+      ) ?? null
+    );
   });
 }
 
@@ -217,10 +239,10 @@ describeIfStack('the running stack', () => {
         api(IDENTITY, 'GET', '/v1/auth/email/verification', { token: owner.token });
       expect(await status()).toMatchObject({ status: 200, body: { status: 'unverified' } });
 
-      const message = await awaitSesMessage(
-        'address-verification email',
-        (m) => m.Destination?.ToAddresses?.includes(owner.email) === true,
-      );
+      const message = await awaitSesMessage('address-verification email', {
+        to: owner.email,
+        bodyIncludes: 'Confirm this email address',
+      });
       const body = message.Body?.text_part ?? '';
       // The approved deviation is a CODE and nothing else: no link, and the
       // same subject every other notification carries.
@@ -1225,9 +1247,12 @@ describeIfStack('the running stack', () => {
         201,
         'settlement intake (prod, M9 — the retired 503)',
       );
-      const message = await awaitSesMessage('the case_opened email in LocalStack SES', (m) =>
-        (m.Destination?.ToAddresses ?? []).includes(decedent.email),
-      );
+      const message = await awaitSesMessage('the case_opened email in LocalStack SES', {
+        to: decedent.email,
+        // M14: this address also receives a verification code at first login,
+        // so the body is what names WHICH message this assertion is about.
+        bodyIncludes: 'A report was filed',
+      });
       // Content-free doctrine, proven on the live wire: uniform subject, a
       // pointer into the app, and NO links of any kind (docs/03 §5.4, risk #10).
       expect(message.Subject).toBe('Estate — action needed');
@@ -1288,12 +1313,10 @@ describeIfStack('the running stack', () => {
         201,
         'reconfigure (retires the previous grantees)',
       );
-      const message = await awaitSesMessage(
-        'the grantees_changed email in LocalStack SES',
-        (m) =>
-          (m.Destination?.ToAddresses ?? []).includes(owner.email) &&
-          (m.Body?.text_part ?? '').includes('emergency contacts'),
-      );
+      const message = await awaitSesMessage('the grantees_changed email in LocalStack SES', {
+        to: owner.email,
+        bodyIncludes: 'emergency contacts',
+      });
       expect(message.Subject).toBe('Estate — action needed');
       expect(message.Body?.text_part ?? '').not.toMatch(/https?:\/\//i);
     });

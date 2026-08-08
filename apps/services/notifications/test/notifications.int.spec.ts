@@ -234,10 +234,36 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       await service.markRecipientVerified(doomed);
       expect(await service.recipientStatus(doomed)).toEqual({ verified: true });
 
-      await admin.query(
-        `UPDATE ${schema}.notification_recipients SET deleted_at = now() WHERE user_id = $1`,
+      // THROUGH `db`, NOT `admin`, and the reason is a real defect this test
+      // had on its first run. The soft delete fires the version-capture
+      // trigger, whose INSERT names `notification_recipients_versions`
+      // UNQUALIFIED — so it resolves on the EXECUTING CONNECTION's search_path,
+      // not on the schema the UPDATE was qualified with. `admin` has no
+      // scratch-schema search_path, so on a developer machine whose PG_TEST_URL
+      // points at the running stack's core cluster the trigger found the
+      // stack's own `public.notification_recipients_versions` and the test
+      // passed WHILE WRITING A ROW INTO THE LIVE STACK. CI has no such table
+      // and the same statement failed there. `db` carries
+      // `-c search_path=<schema>`, which every other write here already uses.
+      await db.query(`UPDATE notification_recipients SET deleted_at = now() WHERE user_id = $1`, [
+        doomed,
+      ]);
+      // The capture landed in the SCRATCH schema — asserted, so the mistake
+      // above cannot recur silently in either direction. The NEWEST version row
+      // is the soft delete's PRE-image, so it still shows a live, verified row:
+      // that is what identifies this capture as the soft delete's rather than
+      // the mark-verified UPDATE's, which the trigger also recorded.
+      const { rows: captured } = await admin.query<{
+        row_data: { deleted_at: string | null; verified_at: string | null };
+      }>(
+        `SELECT row_data FROM ${schema}.notification_recipients_versions
+          WHERE row_id = $1 AND operation = 'UPDATE'
+          ORDER BY version_seq DESC LIMIT 1`,
         [doomed],
       );
+      expect(captured[0]?.row_data.deleted_at).toBeNull();
+      expect(captured[0]?.row_data.verified_at).not.toBeNull();
+
       expect(await service.recipientStatus(doomed)).toEqual({ verified: false });
       // And it cannot be vouched for again while deleted.
       expect(await service.markRecipientVerified(doomed)).toEqual({ ok: false });
