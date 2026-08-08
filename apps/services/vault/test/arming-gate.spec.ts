@@ -106,15 +106,19 @@ function realNotifier(verified: boolean | 'throws', asked: string[]): Notificati
   };
 }
 
+const GRANTEE = '11112222-3333-4444-8555-666677778888';
+
 const CONFIGURE_INPUT = {
   threshold: 1,
-  platformPart: 'AAAA',
-  wrappedMasterKeyRecovery: 'BBBB',
+  platformPart: Buffer.alloc(32).toString('base64'),
+  wrappedMasterKeyRecovery: 'AAAA',
   grantees: [
     {
-      granteeUserId: '11112222-3333-4444-8555-666677778888',
-      share: 'CCCC',
-      publicKeySha256: 'DDDD',
+      granteeContactId: GRANTEE,
+      granteeUserId: GRANTEE,
+      keyShare: 'AAAA',
+      granteePublicKeySha256: Buffer.alloc(32).toString('base64'),
+      waitingPeriodHours: 24,
     },
   ],
 };
@@ -218,7 +222,7 @@ describe('request and release — PROCEED and RECORD, never refuse', () => {
     const h = harness('production', realNotifier(false, asked), asked);
 
     await expect(
-      h.service.request('11112222-3333-4444-8555-666677778888', 'session', 'policy-1'),
+      h.service.request(GRANTEE, 'session', 'policy-1'),
     ).rejects.toThrow(/the gate must fire before any other work/);
     expect(asked).toEqual([]);
   });
