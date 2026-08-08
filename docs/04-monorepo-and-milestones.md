@@ -2978,6 +2978,66 @@ third-party egress out of Zone A and needs its own decision). A password
 generator DOES ship in PR2 — `crypto.getRandomValues`, no dependency, and
 creating a password item without one pushes users toward weak choices.
 
+**PR2 — the vault core.** Zone A becomes usable: setup, unlock, item CRUD,
+password change, and the reset that is a crypto-shred. Vault routes 1–12 of the
+22 now have a caller.
+
+- **Two builds of one source.** vault-crypto has always shipped CommonJS
+  because the vault SERVICE imports its server-side SRP half; the browser needs
+  native ES modules with no bundler. `tsconfig.esm.json` emits the same sources
+  a second way, and every relative import gained an explicit `.js` — a no-op for
+  the CJS output, mandatory for a browser. The client loads it by ABSOLUTE PATH
+  from this origin rather than through an inline import map, which is what keeps
+  the CSP at `script-src 'self'` with no hash.
+- **One module holds every key.** `VaultSession` owns the master key (a
+  non-extractable `CryptoKey`), the keyset-auth key, the session token, and —
+  only for the password change — the AUK and wrapped master key, because
+  re-wrapping needs BYTES a non-extractable key cannot give. `#private` fields,
+  not TypeScript `private`, which is erased and leaves enumerable properties
+  (the M10 privacy-proxy shape). Dropped on lock, on a 5-minute idle timer, and
+  on `pagehide` so a bfcache restore comes back locked.
+- **The central claim is driven, not argued.** A recording-transport spec runs
+  enrollment, a REAL SRP-6a unlock, a create and a list, then searches every
+  recorded byte for the password, the Secret Key, its ungrouped parts and the
+  item plaintext — and round-trips an item back through decryption so the blob
+  is proven both opaque and openable. Mutation-tested both ways.
+- **The Secret Key** is shown once behind an acknowledgement, downloadable as an
+  Emergency Kit (the key, deliberately not the password), and remembered in
+  IndexedDB by default with an opt-out — with the screen saying plainly that
+  under XSS on this origin any persisted key is readable, and that the control
+  is the empty dependency tree and the CSP rather than the storage API.
+- **One message for both halves of 2SKD.** A wrong password and a wrong Secret
+  Key are indistinguishable, because naming which half was wrong would tell
+  someone holding a stolen Secret Key that it is the right one.
+
+**Two real defects, both found by tests refusing to pass:** a malformed Secret
+Key makes vault-crypto THROW rather than return, so the password-change screen
+sat on "Changing…" forever; and the settings screen had two fields sharing the
+visible label "New vault password", which is ambiguous to a person and broken
+for a screen reader.
+
+**A stale `dist` nearly became the thing under test.** The `.js` extensions made
+jest's resolution depend on the built output — moving `dist/` aside made every
+import fail, and a run against a stale one was observed at 10.68% coverage with
+only the two import-free files instrumented. Both symptoms proved
+cache-sensitive and are recorded as observed rather than explained; a
+`moduleNameMapper` now makes the suite read `src` regardless. My first write-up
+of this asserted a mechanism and a test-count drop I could not reproduce, and
+was corrected — the M13 rule about claiming evidence you do not have, applied to
+myself.
+
+**Proven live** against a rebuilt stack: setup → Secret Key → unlock over real
+SRP → an item created with a generated password. The vault cluster holds 203
+bytes of ciphertext with the `0x01` envelope header and **zero** occurrences of
+the title or username; the keyset holds a 512-byte verifier, a 61-byte wrapped
+master key and PBKDF2-SHA256 at 650k iterations; the audit trail carries
+`vault.keyset.created`, `vault.opened`, `vault.items.listed`, `vault.item.created`
+with ids and enums only and no vault content anywhere. Trusted Types stayed
+enforced with the crypto module loaded, and no key material is reachable from
+`window`.
+
+Coverage 88.49/75.54/86.48/90.53, floor ratcheted up.
+
 ### M16 — The vault browser extension (planned)
 
 Autofill, which M15 deferred with a reason rather than an omission: it needs a

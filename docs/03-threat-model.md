@@ -977,8 +977,18 @@ behind it yet.
 - *Re-auth on vault open:* shipped. Minting the handoff requires a fresh step-up,
   and the vault service's own SRP legs are step-up gated (M6).
 - *WebCrypto non-extractable keys, memory zeroization, clipboard auto-clear:*
-  NOT in PR1, because no key exists on this origin yet. They land with PR2, which
-  is what "prove the boundary before putting keys behind it" means.
+  SHIPPED IN PR2. The master key is unwrapped as a non-extractable `CryptoKey`,
+  so an injected script on this origin could use it but not read it out. Byte
+  arrays are wiped where they exist; the `CryptoKey` itself has no bytes this
+  client can zero, and that limit is stated in the code rather than left to be
+  read as a stronger promise. Clipboard auto-clear is 20 seconds and is
+  described to the user as best effort, because a page cannot read the clipboard
+  to check, cannot reach a clipboard manager or a synced clipboard, and never
+  clears at all if the tab is closed first.
+- *Re-auth on vault open, in full:* the handoff needs a fresh step-up, and the
+  vault's own SRP legs are step-up gated. PR2 adds a client-side idle lock at 5
+  minutes and a `pagehide` lock, so a bfcache restore returns locked rather than
+  with keys in memory.
 
 **New in the threat model: the handoff itself.** Authority now crosses an origin
 boundary, which is a channel that did not previously exist. It is a single-use
@@ -1013,10 +1023,18 @@ cannot mint another handoff, so a leak cannot chain forward.
   handoff per user, enforced by a partial unique index, so pressing the button
   repeatedly leaves one live credential rather than many.
 
-**Not yet shipped, and therefore not yet mitigated.** Everything Zone A actually
-does — enrollment, unlock, item CRUD, emergency access — plus the Secret Key's
-device-storage question and the clipboard/idle-timeout controls. PR1's client
-holds no key and asks for no password.
+**The Secret Key on the device, as a residual rather than a control.** PR2
+persists it in IndexedDB by default, with an explicit opt-out. Under XSS on this
+origin it is readable — localStorage and IndexedDB alike, since no browser
+primitive hides bytes from same-origin script — so the mitigation is the empty
+dependency tree, `script-src 'self'` and enforced Trusted Types, not the storage
+API. The default is deliberate: requiring 26 retyped characters at every unlock
+reliably moves the key to a text file on the desktop, which is worse. The vault
+PASSWORD is never persisted, so a stolen Secret Key alone opens nothing.
+
+**Still not shipped after PR2, and therefore not mitigated:** emergency access
+on this surface (PR3), which is where §5.2's waiting period and the out-of-band
+fingerprint ceremony reach a user for the first time.
 
 ## 7. Validation program
 
