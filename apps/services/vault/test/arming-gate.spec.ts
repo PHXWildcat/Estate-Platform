@@ -221,9 +221,9 @@ describe('request and release — PROCEED and RECORD, never refuse', () => {
     const asked: string[] = [];
     const h = harness('production', realNotifier(false, asked), asked);
 
-    await expect(
-      h.service.request(GRANTEE, 'session', 'policy-1'),
-    ).rejects.toThrow(/the gate must fire before any other work/);
+    await expect(h.service.request(GRANTEE, 'session', 'policy-1')).rejects.toThrow(
+      /the gate must fire before any other work/,
+    );
     expect(asked).toEqual([]);
   });
 });
