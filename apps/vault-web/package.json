@@ -1,0 +1,27 @@
+{
+  "name": "@estate/vault-web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The ISOLATED VAULT ORIGIN (docs/03 TB6). A small node:http edge that redeems the cross-origin handoff, holds a __Host- session cookie scoped to this origin alone, and proxies the vault service on the caller's own bearer \u2014 plus a FRAMEWORK-FREE browser client, so the one origin holding Zone A keys has no dependency tree and can run under a CSP with no unsafe-inline and enforced Trusted Types.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.client.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "jest",
+    "dev": "node dist/main.js"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/auth-guard": "workspace:*",
+    "@estate/config": "workspace:*",
+    "@estate/vault-crypto": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "jest-environment-jsdom": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -3,7 +3,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { parseEnvFile } from './doctor';
-import { bffProcessEnv, plannedServices, scrubbedBaseEnv, serviceProcessEnv } from './service-env';
+import { VAULT_WEB_PORT } from './topology';
+import {
+  bffProcessEnv,
+  plannedServices,
+  scrubbedBaseEnv,
+  serviceProcessEnv,
+  vaultWebProcessEnv,
+} from './service-env';
 
 /**
  * Host-mode supervisor: run the stack's node processes from their built dist,
@@ -127,11 +134,18 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   if (withBff) {
     launch('bff', 'apps/bff/dist/main.js', bffProcessEnv(env, options));
+    // The ISOLATED VAULT ORIGIN (M15) is edge tier like the BFF — no cluster,
+    // no migration, no credential — so it rides the same flag. Started here
+    // rather than in `plannedServices` because that list is derived from
+    // `apps/services/*`, which the vault origin is deliberately NOT: keeping it
+    // out of that directory is what keeps it out of `SERVICE_NAMES` and the
+    // credential graph, where a service is presumed to hold a secret.
+    launch('vault-web', 'apps/vault-web/dist/main.js', vaultWebProcessEnv(env, options));
   }
 
   const ports = [
     ...services.filter((s) => s.port !== null).map((s) => s.port as number),
-    ...(withBff ? [4000] : []),
+    ...(withBff ? [4000, VAULT_WEB_PORT] : []),
   ];
   try {
     await Promise.all(ports.map((port) => waitForPort(port, PORT_DEADLINE_MS)));
@@ -144,7 +158,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
   process.stdout.write(
-    `stack up: ${services.map((s) => s.name).join(', ')}${withBff ? ', bff' : ''}\n`,
+    `stack up: ${services.map((s) => s.name).join(', ')}${withBff ? ', bff, vault-web' : ''}\n`,
   );
 
   // Stay resident until a signal or a child death.

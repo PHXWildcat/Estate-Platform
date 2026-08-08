@@ -43,6 +43,15 @@ const EnvSchema = z
      */
     PROFILE_URL: z.string().url().default('http://localhost:3002'),
     /**
+     * M15. NOT a downstream — the BFF never calls the vault origin and holds no
+     * credential for it. This is the address it HANDS THE BROWSER so the app
+     * can submit its top-level handoff form there, returned per request rather
+     * than baked into the web bundle (the M8 PR5 BFF_URL lesson: a value
+     * serialised at build time gets baked wrong and nothing notices until
+     * production).
+     */
+    VAULT_ORIGIN: z.string().url().default('http://vault.localhost:3010'),
+    /**
      * Path to the persisted-operations manifest (JSON: sha256 hex → GraphQL
      * document). Optional in dev/test (empty manifest ⇒ arbitrary operations
      * are still allowed there); REQUIRED in production, where only manifest
@@ -70,6 +79,8 @@ export interface BffConfig {
   readonly aiAssistantUrl: string;
   readonly documentsUrl: string;
   readonly profileUrl: string;
+  /** Browser-facing origin of the isolated vault surface (M15). */
+  readonly vaultOrigin: string;
   /** null means "no manifest" (never allowed in production). */
   readonly persistedManifestPath: string | null;
 }
@@ -98,6 +109,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BffConfig {
     aiAssistantUrl: e.AI_ASSISTANT_URL.replace(/\/+$/, ''),
     documentsUrl: e.DOCUMENTS_URL.replace(/\/+$/, ''),
     profileUrl: e.PROFILE_URL.replace(/\/+$/, ''),
+    vaultOrigin: e.VAULT_ORIGIN.replace(/\/+$/, ''),
     persistedManifestPath: e.PERSISTED_MANIFEST_PATH ?? null,
   };
 }

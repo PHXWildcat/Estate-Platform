@@ -2869,9 +2869,230 @@ for carrier failures.
 of code and ZERO lines of documentation, so every sentence it invalidated was
 still standing — including a citation pointing at a docs/03 §6c passage that
 recorded the opposite. docs/03 §6h now exists and that citation points at it.
+### M15 — The vault surface: Zone A in the browser (PR1 shipped)
+
+The largest remaining zero-callers gap in the repo: `apps/services/vault` has
+exposed **22 owner-facing routes since M6 with no consumer anywhere**. M6
+deferred the UI explicitly — "a vault surface needs the isolated-origin and
+CSP/Trusted-Types work of docs/03 TB6 and deserves its own milestone" — and M14
+removed the last blocker in front of the emergency-access half by making the
+address-verification gate real. This milestone is also the first consumer of the
+16-symbol grantee fingerprint the M6 security review widened for a client that
+did not exist yet.
+
+Four PRs: **PR1** the origin, the handoff and the fences, with no vault crypto
+behind it; **PR2** the vault core (setup, unlock, item CRUD, reset); **PR3**
+emergency access on both sides; **PR4** the security review.
+
+**PR1 — prove the boundary before putting keys behind it.**
+
+- **The origin is a different HOST, and that was measured rather than reasoned.**
+  Cookie scope IGNORES THE PORT: a probe served on an unrelated port was handed a
+  real `estate_access`/`estate_refresh` pair from a previous stack run, so a vault
+  surface at `localhost:3010` would have received the app's full session on every
+  request. `vault.localhost` receives none of them, and `*.localhost` is a
+  potentially-trustworthy origin, so the `__Host-` prefixed `Secure` cookie is
+  accepted there over plain http. The prefix is unconditional in every
+  environment — unlike the BFF's `Secure`, which is production-only — because a
+  conditional prefix would have the dev profile exercising a different cookie
+  from the production one.
+- **`apps/vault-web` is framework-free, and that is the security decision of the
+  PR.** M6's own TB6 argument is that the code holding the only keys to a vault
+  has no transitive tree; putting Next and React on that origin would place a
+  large tree there and ask a CSP to compensate. Hand-written DOM instead, which
+  is what makes `script-src 'self'` (no `unsafe-inline`, no `unsafe-eval`, any
+  environment) and enforced Trusted Types possible rather than declared. Verified
+  in a real browser: policy creation refused, `innerHTML` threw with zero nodes
+  created, `eval`/`new Function` threw EvalError. Cost: no React, no Tailwind, and
+  a visual seam narrowed by COPYING the Evergreen palette rather than importing
+  it — an unfamiliar-looking page asking for the most valuable secret in the
+  product is what a phishing page looks like.
+- **The handoff.** A 160-bit single-use code, minted under step-up, carried by a
+  top-level form POST (never a URL, fragment or `Referer`), burned on the
+  ATTEMPT, redeemed server-side for a `vault`-audience session of 15 minutes with
+  NO refresh token — `refresh_token_h` is NOT NULL, so it holds the digest of a
+  value discarded in the same expression. Every failure is one `invalid_code`, on
+  the wire and in the audit trail.
+- **Audience, deny by default.** `SessionContext` gains `audience`; `CallerGuard`
+  admits `account` alone unless a service opts in, and only vault does. Identity
+  is per-route because introspection must admit every audience or the origin
+  cannot exist; `session`, `stepup` and `logout` widen and `handoff` deliberately
+  does not, so a leaked vault session cannot chain another. Both halves declared
+  as data (`AUDIENCE_ADMITTERS`, `VAULT_AUDIENCE_ROUTES`) and checked against
+  source in both directions.
+- **The edge holds no credential**, in either direction — the second component in
+  the product of which that is true by design. Asserted as source, runtime and
+  deployment facts. It lives at `apps/` rather than `apps/services/` on purpose:
+  `SERVICE_NAMES` derives from that directory, and staying out of it keeps the
+  origin out of the credential graph. Its proxy is an allowlist of exact routes,
+  with identity's entries exact because `startsWith('/api/auth/logout')` also
+  matches `/api/auth/logout/refresh`.
+- **Seven fences, each mutation-tested red before green.** Zero client
+  dependencies · no HTML/script sink with ZERO declared exemptions (the main app
+  has one; this origin has none) · `api.ts` the only network call site · no
+  `console.*` · no inline script or style in the shell · the audience table
+  matches source · identity's per-route widening matches its declaration.
+
+**Two tests of my own that passed for the wrong reason**, both the M13 lesson.
+The traversal test used `fetch`, which normalises `/../../x` to `/x` before
+sending — measured, the server saw `/package.json` — so the 404 came from the
+extension allowlist and no traversal was attempted. Rewritten to a raw socket,
+after which a mutation showed the `startsWith(publicDir)` guard is UNREACHABLE
+anyway, because the WHATWG `URL` parse collapses `..` and decodes `%2e%2e` first.
+The guard stays as defence in depth but is documented as unreachable rather than
+credited as the control, and the test now asserts the property. Separately, a
+`window.location` stub leaked between cases and made a later test render the
+wrong screen.
+
+**One product defect, caught by its own new test.** `VaultLaunch` destructured
+`result.data.startVaultHandoff` with no shape guard, so a BFF predating the
+mutation would have thrown mid-click — and the alternative failure is a form
+posting `code=undefined` at the vault origin. A missing field is no data.
+
+**Driven live in both profiles.** Register → login → TOTP → `/vault` interstitial
+→ step-up → form POST → `http://vault.localhost:3010` showing
+`Session type: vault`. The audience boundary was measured across every service
+(vault 200; assets, documents, profile, assistant 401; identity session 200,
+TOTP 401, handoff 401), along with burn-on-attempt, the uniform refusal, the
+absent refresh token, and an audit stream whose `failed` events carry no actor
+and empty detail.
+
+**Stack counts measured in BOTH profiles rather than derived**, because running
+the production assertions against a development stack makes the M14 arming gate
+legitimately answer 201 instead of 503 and a derived number would encode that as
+a pass. The six vault-origin tests sit outside the profile split (this origin
+runs in both): 18/4 → 24/4 development, 9/13 → 15/13 production. `vault-web`
+joined the image matrix with an explicit `smokeProduction` flag, and the e2e
+fetches `/app/main.js` from the shipped image — closing the class the
+`web.Dockerfile` `public/` defect belonged to, since this client is build output
+under `public/` too.
+
+**Deliberately deferred, with reasons.** Autofill (needs a browser extension: a
+separate distribution artifact with its own supply chain, and an extension
+holding vault-origin access reopens TB6 from a direction no CSP can see) ·
+encrypted attachments (blobs cap at 68 KiB; M6 recorded the streaming path as the
+prerequisite, so the `attachment` item type stays in the enum with no create
+path) · family sharing (needs §5.2's per-item scope limits, deferred in M6) ·
+item version-history UI · breach/reuse health checks (a k-anonymity lookup is a
+third-party egress out of Zone A and needs its own decision). A password
+generator DOES ship in PR2 — `crypto.getRandomValues`, no dependency, and
+creating a password item without one pushes users toward weak choices.
+
+### M16 — The vault browser extension (planned)
+
+Autofill, which M15 deferred with a reason rather than an omission: it needs a
+browser extension, which is a separate distribution artifact with its own supply
+chain, and an extension holding vault-origin access reopens TB6 from a direction
+no CSP can see. Sequenced AFTER M15 completes because the extension is a SECOND
+CLIENT of the same SRP/2SKD protocol — building it before that protocol has one
+settled client would fork it.
+
+**Shape.** `apps/vault-extension`, Manifest V3. The background service worker is
+the only key holder and the only network caller; the content script is a
+zero-trust filler that can never REQUEST a credential, only receive one after a
+user gesture in extension-owned UI. Same zero-dependency posture as the vault
+origin, and `@estate/vault-crypto` gains a SECOND declared importer — as data in
+a fence, on the credential-graph habit, not as an exception someone remembers.
+
+**The three problems that make this a milestone rather than a PR.**
+
+1. *MV3 service workers are terminated, and that collides with a control M6
+   shipped.* A password manager needs keys warm across arbitrary browsing.
+   Persisting them means `chrome.storage.session`, and a non-extractable
+   `CryptoKey` CANNOT be serialized — so persistence means storing raw key bytes
+   and surrendering the "non-extractable keys where the platform allows" property
+   of docs/03 §4 TB6. The alternatives (frequent re-unlock, a kept-alive
+   offscreen document, or a native-messaging host) each cost something different.
+   This decision must be taken explicitly, with its residual recorded; it must
+   not arrive as the default that happened to work.
+2. *Origin matching IS the security property.* Filling the wrong origin is
+   credential exfiltration. Non-negotiable: match on eTLD+1 through the Public
+   Suffix List and never a substring; no filling into a cross-origin iframe
+   without explicit opt-in; never downgrade an `https`-saved credential into
+   `http`; never auto-submit.
+3. *The supply chain inverts M15's central argument.* The vault origin's case is
+   "no bundler, no dependency tree, CSP and Trusted Types enforceable, what ships
+   is what a reviewer reads." An extension is a signed artifact auto-updated
+   through a vendor store, with no CSP in the path — a compromised update is full
+   Zone A compromise for every user, silently. Reproducible builds and a
+   published build attestation are the compensating controls to design for.
+
+**Stated up front: autofill does not resist phishing.** It fills a lookalike
+domain if the user saved a credential there. Passkeys are origin-bound by
+construction and identity already has WebAuthn machinery, so a lookalike-domain
+warning is the minimum this milestone owes, and passkey provisioning is a
+legitimate competing priority for the same slot.
+
+**Needs its own docs/03 delta**, because it adds a trust boundary the model does
+not have: the extension against arbitrary web pages.
+
+### M17 — Subscription manager (planned)
+
+**The estate keeps paying until somebody stops it.** Recurring charges — streaming,
+SaaS, gym, storage, insurance, domains — continue debiting after death, and every
+month between death and cancellation is money out of the estate. An executor
+today has to reconstruct that list from bank statements under time pressure.
+This milestone makes the list exist BEFORE it is needed, which is the same
+argument the whole product rests on.
+
+**Where it lives.** Financial cluster, alongside assets and the Plaid isolate.
+It is NOT an asset and must not be modelled as one: `asset_events` is an
+event-sourced ledger of things the estate OWNS, and a subscription is a
+recurring OUTFLOW. Separate tables, separate bounded context, same cluster and
+same Zone B envelope encryption.
+
+**The design decisions to take when this is planned properly.**
+
+- *A subscription list is a behavioural profile, and arguably more sensitive
+  than the asset list.* It reveals health conditions (therapy, medication
+  delivery), religion, politics, sexuality, and recovery programmes. So the
+  merchant name is CIPHERTEXT here, deliberately unlike `assets_view.title`,
+  which is accepted plaintext label metadata. The M4/M13 precedent applies:
+  decide it explicitly and say why, rather than inheriting the asset service's
+  shape because the cluster is shared.
+- *Manual entry first; Plaid-assisted detection second.* The M3 decision
+  verbatim — the manual ledger shipped before the Plaid isolate, so no dormant
+  schema sat under migration drift. Detection is a strong fit (recurring
+  merchant, amount and cadence are exactly what transaction data exposes), but
+  it must respect the isolate: the asset side cannot unwrap a Plaid token, so
+  detection either lives in the Plaid service or arrives as an event carrying
+  IDs and enums, never by widening a KMS grant.
+- *THE PLATFORM NEVER CANCELS ANYTHING.* It produces a worklist with
+  per-merchant instructions and records what the executor did — status, actor,
+  date, evidence. Automated cancellation would make the platform an agent acting
+  on someone's accounts, which is a fraud vector (cancelling a LIVING owner's
+  insurance) and squarely against "settlement is never fully automated".
+- *Credentials stay in the vault.* A subscription record may REFERENCE a vault
+  item id; it must never hold a password. A second credential store outside Zone
+  A is the failure this whole architecture exists to prevent.
+- *Not everything should be cancelled, and the naive version of this feature is
+  harmful.* Life insurance is an ASSET and cancelling it destroys value. A
+  storage unit may hold estate property. A domain registration may carry a
+  business. So records need a cancel-guidance classification — cancel / review
+  carefully / DO NOT CANCEL — and the executor surface must lead with the last
+  category rather than with a "cancel all" affordance.
+- *Executor access rides M7 PR2's staged ladder, at the FIRST rung.* Subscriptions
+  are inventory-class, and that is a happy alignment: the thing that saves the
+  estate money is available at the earliest and least sensitive stage, while
+  documents and Zone A stay further along. Beneficiaries get nothing here —
+  docs/03 §5.5 scopes them to assets naming them, and a subscription names
+  nobody.
+- *The abuse case is cancelling a living person's utilities*, so the executor
+  view sits behind the same verified-case gate as every other staged grant, and
+  every recorded cancellation is audited.
+
+**Natural follow-on:** the M10 readiness analysers gain a deterministic finding —
+recurring monthly exposure, and subscriptions with no cancellation route on
+file. That is arithmetic over structured data, which is exactly what those
+analysers are for.
+
+**No blockers.** Every prerequisite already ships: the financial cluster, the
+Plaid isolate, settlement's staged access, and the analyser surface. It could
+swap ahead of M16 if estate value sooner is worth more than autofill.
 
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature
 primitives. (Notifications moved up and shipped as M9; the AI assistant is M10,
-both above.)
+both above. The vault extension and the subscription manager are sketched as
+M16 and M17 above, each with the decisions it will have to take.)

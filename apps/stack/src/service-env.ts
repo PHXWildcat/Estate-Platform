@@ -4,10 +4,13 @@ import {
   type ServiceName,
 } from '@estate/auth-guard';
 import {
+  APP_ORIGIN,
   envPrefixFor,
   kmsKeyIdFor,
   SERVICES,
   serviceUrl,
+  VAULT_ORIGIN,
+  VAULT_WEB_PORT,
   type Addressing,
   type StackService,
 } from './topology';
@@ -233,6 +236,37 @@ const SCRUBBED: readonly RegExp[] = [
   /^NODE_EXTRA_CA_CERTS$/,
 ];
 
+/**
+ * The ISOLATED VAULT ORIGIN (M15). Not a StackService either: no cluster, no
+ * KMS key, and — the property the milestone turns on — NO CREDENTIAL, inbound
+ * or outbound. It authenticates nobody to anybody; it forwards the caller's own
+ * bearer from a cookie scoped to its own origin.
+ *
+ * That is why this mapping is short, and why its shortness is asserted rather
+ * than admired: `apps/vault-web/test/config.spec.ts` loads the real config with
+ * EVERY credential in the graph present and requires it to absorb none, and the
+ * compose-parity spec requires this map and the YAML block to agree key for key.
+ */
+export function vaultWebProcessEnv(
+  env: ReadonlyMap<string, string>,
+  options: ServiceEnvOptions,
+): Record<string, string> {
+  return {
+    NODE_ENV: fromFile(env, 'STACK_MODE'),
+    PORT: String(VAULT_WEB_PORT),
+    // The three upstreams it may proxy to, each reached on the CALLER's bearer.
+    VAULT_URL: serviceUrl('vault', options.addressing),
+    IDENTITY_URL: serviceUrl('identity', options.addressing),
+    // PR3's grantee picker — the one Zone B read on this origin, projected at
+    // the edge to {contactId, linkedUserId, name}. Present from PR1 so the
+    // shape of the deployment does not change when the picker lands.
+    PROFILE_URL: serviceUrl('profile', options.addressing),
+    // An exact ORIGIN, never a pattern: it is what the handoff POST's `Origin`
+    // header is compared against, and what "back to Estate" navigates to.
+    APP_ORIGIN,
+  };
+}
+
 /** The BFF is not a StackService (no cluster, no credentials); mapped here. */
 export function bffProcessEnv(
   env: ReadonlyMap<string, string>,
@@ -261,6 +295,19 @@ export function bffProcessEnv(
     // notifications SEND key — which is invisible from here and unreachable
     // through this URL.)
     PROFILE_URL: serviceUrl('profile', options.addressing),
+    /*
+     * M15. NOT a downstream — the BFF never calls the vault origin. This is the
+     * address it HANDS THE BROWSER when a user opens the vault, returned in the
+     * `startVaultHandoff` response so the app can submit its top-level form
+     * there.
+     *
+     * Returned at RUNTIME rather than baked into the web bundle, and that is a
+     * deliberate reaction to the M8 PR5 defect: `BFF_URL` had to be a build ARG
+     * because Next serialises rewrites into the routes manifest, and the image
+     * duly baked a rewrite to localhost:4000. A value the server hands over per
+     * request cannot be baked wrong.
+     */
+    VAULT_ORIGIN,
   };
   if (options.manifestPath) {
     out['PERSISTED_MANIFEST_PATH'] = options.manifestPath;

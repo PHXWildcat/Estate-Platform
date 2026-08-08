@@ -39,6 +39,21 @@ export const TOTP_VERIFY_MUTATION = `mutation TotpVerify($code: String!) {
   }
 }`;
 
+/**
+ * Open the ISOLATED VAULT ORIGIN (M15).
+ *
+ * Returns a single-use code and the origin to submit it to. The code lives for
+ * sixty seconds, is burned on the attempt, and must go into a hidden field —
+ * never a URL.
+ */
+export const START_VAULT_HANDOFF_MUTATION = `mutation StartVaultHandoff {
+  startVaultHandoff {
+    code
+    expiresAt
+    vaultOrigin
+  }
+}`;
+
 export const STEP_UP_MUTATION = `mutation StepUp($code: String!) {
   stepUp(code: $code) {
     ok
@@ -563,6 +578,7 @@ export const operations = {
   TotpEnroll: TOTP_ENROLL_MUTATION,
   TotpVerify: TOTP_VERIFY_MUTATION,
   StepUp: STEP_UP_MUTATION,
+  StartVaultHandoff: START_VAULT_HANDOFF_MUTATION,
   ExportDemo: EXPORT_DEMO_MUTATION,
   EmailVerification: EMAIL_VERIFICATION_QUERY,
   ResendEmailVerification: RESEND_EMAIL_VERIFICATION_MUTATION,

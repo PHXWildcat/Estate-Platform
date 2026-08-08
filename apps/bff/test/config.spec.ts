@@ -21,6 +21,8 @@ describe('loadConfig', () => {
       // has no service-credential routes at all — nothing here that a bearer
       // token could not have opened anyway.
       profileUrl: 'http://localhost:3002',
+      // M15: handed to the browser, never called by the BFF.
+      vaultOrigin: 'http://vault.localhost:3010',
       persistedManifestPath: null,
     });
   });

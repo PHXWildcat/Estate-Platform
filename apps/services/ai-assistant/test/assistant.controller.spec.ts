@@ -22,6 +22,7 @@ function request(headers: Record<string, string | string[] | undefined> = {}): C
       sessionId: randomUUID(),
       mfaLevel: 'stepup',
       stepupExpiresAt: new Date('2026-08-04T00:05:00Z'),
+      audience: 'account',
     },
   };
 }

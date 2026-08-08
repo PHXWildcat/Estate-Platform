@@ -9,6 +9,24 @@ import type { NextConfig } from 'next';
 const bffUrl = process.env.BFF_URL ?? 'http://localhost:4000';
 
 /**
+ * The ISOLATED VAULT ORIGIN (M15, docs/03 TB6).
+ *
+ * Needed here for ONE directive: `form-action`. Opening the vault is a
+ * top-level form POST from this origin to that one — the shape that keeps the
+ * single-use handoff code out of the URL, out of history and out of any
+ * intermediary's access log — and `form-action 'self'` alone would have the
+ * browser refuse it.
+ *
+ * BUILD TIME, like BFF_URL, because `headers()` is serialised into the routes
+ * manifest exactly as `rewrites()` is. That is the M8 PR5 defect's shape, so it
+ * is stated rather than discovered: the container build passes this arg, and
+ * `compose-parity.spec.ts` asserts the value matches the one the BFF hands the
+ * browser at runtime. If the two ever disagree the symptom is a refused form
+ * post, not a silent downgrade.
+ */
+const vaultOrigin = process.env.VAULT_ORIGIN ?? 'http://vault.localhost:3010';
+
+/**
  * Content-Security-Policy, added with the conversation surface (M11) as DEFENCE
  * IN DEPTH BEHIND THE RENDERER, not instead of it.
  *
@@ -52,7 +70,10 @@ const csp = [
     ? "script-src 'self' 'unsafe-inline'"
     : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "frame-ancestors 'none'",
-  "form-action 'self'",
+  // 'self' plus exactly the vault origin — not a wildcard, and not the whole
+  // scheme. This is the only cross-origin destination any form in this app is
+  // permitted to reach.
+  `form-action 'self' ${vaultOrigin}`,
   "base-uri 'self'",
   "object-src 'none'",
 ].join('; ');

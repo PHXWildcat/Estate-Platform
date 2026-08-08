@@ -46,6 +46,7 @@ describe('HttpSessionVerifier (introspection against identity)', () => {
       sessionId: SESSION,
       mfaLevel: 'stepup',
       stepupExpiresAt: new Date('2026-07-23T12:05:00.000Z'),
+      audience: 'account',
     });
     // Trailing slash trimmed; token presented as a bearer, never in the URL.
     expect(calls[0]!.url).toBe('http://identity:3001/v1/auth/session');
@@ -60,6 +61,36 @@ describe('HttpSessionVerifier (introspection against identity)', () => {
     });
     const ctx = await new HttpSessionVerifier({ ...opts, fetchImpl }).verify('t');
     expect(ctx?.stepupExpiresAt).toBeNull();
+  });
+
+  /**
+   * The two directions of the M15 audience parse, which are deliberately not
+   * the same. Tolerating an absent field is version-skew tolerance; tolerating
+   * an unknown one would admit a future audience everywhere by default.
+   */
+  it('carries a vault audience through', async () => {
+    const { fetchImpl } = transport({
+      ok: true,
+      status: 200,
+      body: sessionBody({ audience: 'vault' }),
+    });
+    const ctx = await new HttpSessionVerifier({ ...opts, fetchImpl }).verify('t');
+    expect(ctx?.audience).toBe('vault');
+  });
+
+  it('reads an ABSENT audience as account (an identity that old mints none)', async () => {
+    const { fetchImpl } = transport({ ok: true, status: 200, body: sessionBody() });
+    const ctx = await new HttpSessionVerifier({ ...opts, fetchImpl }).verify('t');
+    expect(ctx?.audience).toBe('account');
+  });
+
+  it('FAILS CLOSED on an unrecognised audience rather than defaulting it', async () => {
+    const { fetchImpl } = transport({
+      ok: true,
+      status: 200,
+      body: sessionBody({ audience: 'settlement-operator' }),
+    });
+    expect(await new HttpSessionVerifier({ ...opts, fetchImpl }).verify('t')).toBeNull();
   });
 
   it('returns null on an empty token without calling identity', async () => {

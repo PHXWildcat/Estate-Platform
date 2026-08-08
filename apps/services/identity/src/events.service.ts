@@ -149,6 +149,70 @@ export class EventsService {
   }
 
   /**
+   * M15, the vault handoff. Ids and enums only — never the code and never its
+   * digest. No domain event on the bus: nothing consumes one, and the M9/M13
+   * rule is that a topic gets a payload when a consumer needs it.
+   */
+  async handoffMinted(
+    userId: string,
+    sessionId: string,
+    detail: { audience: string; retired: number },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.handoff.minted',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'session',
+      resourceId: sessionId,
+      sessionId,
+      // `retired` is how an owner sees that a second code was minted while one
+      // was outstanding — the receipt for a button pressed twice, and the
+      // signal if it was pressed by someone else.
+      detail,
+    });
+  }
+
+  async handoffRedeemed(
+    userId: string,
+    sessionId: string,
+    detail: { audience: string },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.handoff.redeemed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'session',
+      // The session the handoff PRODUCED, which is the thing an owner reviewing
+      // their trail would want to follow into the vault events.
+      resourceId: sessionId,
+      sessionId,
+      detail,
+    });
+  }
+
+  /**
+   * A refused redemption. NO actor, NO subject, NO reason, and that is the
+   * whole design: the redeem route resolves a code and nothing else, so it does
+   * not know whose code it was — an unknown code has no row — and saying which
+   * of unknown/expired/spent/raced applied would tell whoever is guessing that
+   * their guess named something real.
+   */
+  async handoffFailed(): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.handoff.failed',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: null,
+      resourceType: 'session',
+      resourceId: null,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
+  /**
    * M14 address verification. Ids and enums ONLY — never the code, never its
    * digest, never the address it was mailed to. `delivered` is the same
    * outcome-riding-the-event shape M13 uses for `ownerNotified`: a send that

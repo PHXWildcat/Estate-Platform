@@ -65,6 +65,12 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // so the copy has to carry the possibilities instead of the server.
   INVALID_VERIFICATION_CODE:
     'That code didn’t work. Codes expire after a short while and can only be used once — send yourself a new one and try again.',
+  // M15. The vault is where a vague failure is least acceptable: a user bounced
+  // on the way in needs to know it was the platform rather than their
+  // credentials, or the reasonable conclusion is that they have been locked out
+  // of the most valuable thing they keep here.
+  VAULT_UNAVAILABLE:
+    'We couldn’t open the vault just now. Nothing about your vault has changed — please try again in a moment.',
   VERIFICATION_UNAVAILABLE: 'We couldn’t confirm that address just now. Please try again shortly.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',

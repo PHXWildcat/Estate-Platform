@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { MfaLevelSchema } from '@estate/contracts';
-import type { Clock, SessionContext } from './session';
+import {
+  DEFAULT_SESSION_AUDIENCE,
+  SESSION_AUDIENCES,
+  type Clock,
+  type SessionContext,
+} from './session';
 
 /** DI token for the SessionVerifier a service wires into the guards. */
 export const SESSION_VERIFIER = Symbol('SESSION_VERIFIER');
@@ -31,6 +36,19 @@ const SessionResponseSchema = z.object({
   sessionId: z.string().uuid(),
   mfaLevel: MfaLevelSchema,
   stepupExpiresAt: z.string().datetime().nullable(),
+  /**
+   * M15. Two failure directions, deliberately different:
+   *
+   *  - ABSENT defaults to `account`, which is version-skew tolerance and not a
+   *    hole: only identity mints a non-account audience, so an identity that
+   *    does not report the field cannot have issued one (see
+   *    DEFAULT_SESSION_AUDIENCE).
+   *  - UNRECOGNISED is rejected by the enum, which makes the whole parse fail
+   *    and the verifier return null. A service must never silently treat an
+   *    audience it has never heard of as the ordinary one — that is how a
+   *    future third audience would be admitted everywhere by default.
+   */
+  audience: z.enum(SESSION_AUDIENCES).default(DEFAULT_SESSION_AUDIENCE),
 });
 
 export interface HttpSessionVerifierOptions {
@@ -117,6 +135,7 @@ export class HttpSessionVerifier implements SessionVerifier {
       sessionId: parsed.data.sessionId,
       mfaLevel: parsed.data.mfaLevel,
       stepupExpiresAt: parsed.data.stepupExpiresAt ? new Date(parsed.data.stepupExpiresAt) : null,
+      audience: parsed.data.audience,
     };
     this.cache.set(key, { context, expiresAt: now + this.cacheTtlMs });
     return context;

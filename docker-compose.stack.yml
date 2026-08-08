@@ -766,6 +766,9 @@ services:
       # service-credential routes at all, so there is nothing behind this URL
       # that a bearer token could not have opened anyway.
       PROFILE_URL: http://profile:3002
+      # M15: NOT a downstream. This is the address the BFF hands the browser
+      # in startVaultHandoff, so the app can submit its top-level form there.
+      VAULT_ORIGIN: http://vault.localhost:3010
       PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
     volumes:
       # The web bundle sends hash-only GraphQL bodies (its client inlines
@@ -777,13 +780,48 @@ services:
     depends_on:
       identity: { condition: service_healthy }
 
+  # The ISOLATED VAULT ORIGIN (M15, docs/03 TB6). A separate deployable on a
+  # separate HOST — vault.localhost, not a second port on localhost, because
+  # cookie scope ignores the port and the app's session would otherwise be sent
+  # here on every request (measured in a real browser, not assumed).
+  #
+  # It holds NO service credential in either direction, which is why its
+  # environment block is four URLs and nothing else — the shortest block in this
+  # file, and asserted to be exactly that by apps/vault-web/test/config.spec.ts.
+  vault-web:
+    build: { <<: *node-build, args: { PKG: '@estate/vault-web' } }
+    profiles: ['edge']
+    restart: unless-stopped
+    # ADDRESS IT AS http://vault.localhost:3010. `*.localhost` resolves to
+    # loopback and is a potentially-trustworthy origin, so the __Host- prefixed
+    # Secure cookie is accepted over plain http exactly as the BFF's is on
+    # localhost — and the app's cookies are NOT sent here.
+    ports: ['3010:3010']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3010'
+      VAULT_URL: http://vault:3006
+      IDENTITY_URL: http://identity:3001
+      PROFILE_URL: http://profile:3002
+      APP_ORIGIN: http://localhost:3000
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      vault: { condition: service_healthy }
+      identity: { condition: service_healthy }
+
   web:
     build:
       context: .
       dockerfile: infra/docker/web.Dockerfile
       # Build-time, not runtime: next build serialises the rewrite target into
       # the routes manifest and the standalone server never re-reads the config.
-      args: { BFF_URL: 'http://bff:4000' }
+      args:
+        BFF_URL: 'http://bff:4000'
+        # M15: the app's CSP must permit a form POST to the vault origin, and
+        # Next serialises headers() into the routes manifest at build time —
+        # the same reason BFF_URL is a build arg (M8 PR5 found the runtime
+        # version of this baked wrong).
+        VAULT_ORIGIN: 'http://vault.localhost:3010'
     profiles: ['edge']
     restart: unless-stopped
     # ADDRESS THE STACK AS http://localhost:3000. The BFF sets Secure on its

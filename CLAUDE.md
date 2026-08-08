@@ -2277,3 +2277,243 @@ deviating from them, stop and propose the change with rationale — do not silen
   left for a reader to assume closed. Closing them properly wants the
   TypeScript AST rather than a regex, which is a bigger change than a review
   should make.
+- 2026-08-08 — M15 is THE VAULT SURFACE: Zone A in the browser, on an isolated
+  origin (docs/03 §4 TB6, risk #4). It closes the LARGEST remaining zero-callers
+  gap in the repo — apps/services/vault has exposed 22 owner-facing routes since
+  M6 with no consumer anywhere — and it is the first consumer of the 16-symbol
+  grantee fingerprint the M6 review widened for a client that did not exist.
+  M6 deferred the UI explicitly because a vault surface needs the TB6
+  isolated-origin and CSP/Trusted-Types work; M14 removed the last blocker in
+  front of the emergency-access half. Four PRs: PR1 the origin, the handoff and
+  the fences (no vault crypto behind it yet — prove the boundary first), PR2 the
+  vault core, PR3 emergency access both sides, PR4 the security review.
+- 2026-08-08 — THE ISOLATED ORIGIN IS A DIFFERENT HOST, and the reason was
+  MEASURED IN A BROWSER rather than reasoned about: cookie scope IGNORES THE
+  PORT. A probe served on an unrelated port was handed a real
+  `estate_access`/`estate_refresh` pair left over from a previous stack run, so
+  a vault surface at `localhost:3010` would have received the app's full session
+  on every request — the cheapest candidate design, failing live. `vault.localhost`
+  receives NONE of them (the app's cookies are host-only), and `*.localhost` is a
+  potentially-trustworthy origin, so the vault's `__Host-` prefixed `Secure`
+  cookie is accepted there over plain http exactly as the BFF's is on
+  `localhost`. No TLS terminator is needed for the dev stack and the prefix is
+  UNCONDITIONAL in every environment — unlike the BFF's `Secure`, which is
+  production-only, because a conditional prefix would mean the dev profile
+  exercising a different cookie from the production one. Production addressing is
+  `vault.<domain>`; the residual is stated rather than hidden — a subdomain
+  shares a registrable domain with the app, which is exactly why `__Host-` is
+  used, since it makes host-only a property the BROWSER enforces rather than a
+  convention someone has to keep. A separate registrable domain is strictly
+  better and is a deployment choice, not a code one.
+- 2026-08-08 — THE VAULT CLIENT IS FRAMEWORK-FREE, and that is a security
+  decision rather than a taste one. M6's own stated TB6 control is that "the code
+  holding the only keys that open a vault has no transitive tree to compromise";
+  putting Next and React on that origin would place a large tree there and then
+  ask a CSP to compensate. Hand-written DOM (`createElement`/`textContent`, no
+  parser anywhere) is what makes the origin's policy REAL instead of declared:
+  `default-src 'none'`, `script-src 'self'` with NO `unsafe-inline` and NO
+  `unsafe-eval` IN ANY ENVIRONMENT (nothing here needs React Refresh, so the M11
+  development-only carve-out has no counterpart), plus
+  `require-trusted-types-for 'script'` with `trusted-types 'none'` — enforceable
+  only because no policy is ever created. MEASURED in a real browser on the
+  running stack: `trustedTypes.createPolicy` refused, `innerHTML` threw a
+  TypeError producing ZERO child nodes, and `new Function`/`eval` both threw
+  EvalError. That last one initially reported ALLOWED and the discrepancy was
+  worth chasing — the browser tool evaluates in an isolated world whose CSP is
+  not the page's, so a temporary in-page probe was served to get the real
+  answer. There is no `'sha256-…'` and there is not meant to be: the client will
+  reach @estate/vault-crypto by ABSOLUTE PATH (`/lib/vault-crypto/index.js`,
+  served by this edge) rather than through an inline import map, precisely so
+  `script-src` can stay `'self'` and nothing else for the life of the app. Cost,
+  stated: no React, no Tailwind, and a visual seam with the rest of the product
+  — narrowed by copying the Evergreen palette rather than importing it, because
+  an unfamiliar-looking page asking for the most valuable secret in the product
+  is what a phishing page looks like. The `Vault · Zone A` rail marker says it is
+  a different place.
+- 2026-08-08 — AUTHORITY CROSSES BY A SINGLE-USE HANDOFF, AUDIENCE-SCOPED. The
+  app mints a 160-bit code (`POST /v1/auth/handoff`, SessionGuard + StepUpGuard),
+  puts it in a HIDDEN FIELD, and the browser submits a TOP-LEVEL FORM POST to the
+  vault origin — not a redirect with the code in the query string and not a
+  fragment, because a form body is the only shape that keeps it out of browser
+  history, out of the `Referer` and out of every intermediary's access log (the
+  M12 document-search reasoning). The edge redeems it server-side and sets its
+  own `__Host-` cookie; nothing the app can read ever holds a vault credential.
+  WHAT A STOLEN CODE BUYS, which is the only reason any parameter is what it is:
+  60 seconds to redeem (pure exposure, not a usability number — no human ever
+  sees this code, unlike M13's link code and M14's verification code); burned on
+  the ATTEMPT, so a race with the legitimate redemption is winner-takes-all; and
+  on success ONE access token, 15 minutes, WITH NO REFRESH TOKEN — `refresh_token_h`
+  is NOT NULL, so it holds the digest of a value generated and discarded in the
+  same expression, meaning no refresh token for that session exists anywhere to
+  be presented. And it still decrypts nothing: reaching the vault API is not
+  opening a vault. Every failure — unknown, expired, spent, raced — is one
+  `invalid_code`, on the wire AND in the audit trail, where `auth.handoff.failed`
+  carries no actor and an empty detail (the M14 PR1 rule: a trail that named
+  which refusal fired would re-create the oracle the uniform answer removes).
+- 2026-08-08 — `SessionContext` GAINED AN AUDIENCE, enforced DENY BY DEFAULT in
+  `CallerGuard`: a service admits `account` alone unless it binds
+  `ALLOWED_SESSION_AUDIENCES`, and only vault does. The eight other services
+  reject a leaked vault session without changing a line. Two parse directions,
+  deliberately different: an ABSENT `audience` on the introspection response
+  defaults to `account` (version-skew tolerance that is sound, because only
+  identity mints a non-account audience and an identity old enough to omit the
+  field has no handoff route), while an UNRECOGNISED one fails the whole parse.
+  Identity itself cannot take one service-wide decision — introspection MUST
+  admit every audience or the origin cannot exist — so its gate is PER ROUTE
+  (`@AllowSessionAudiences`), and exactly three routes widen: `session`,
+  `stepup` (a vault session must re-prove a factor without a round trip back
+  across the origin boundary; step-up strengthens the session presenting it and
+  confers nothing else) and `logout` (revoking your own credential can only
+  reduce authority — the M6 rule). `handoff` is deliberately NOT among them, so a
+  vault session cannot mint another and a leaked one cannot chain itself forward;
+  a test names that fact by itself. Vault admits `account` TOO, and the asymmetry
+  is the point: an account session is strictly MORE powerful, so refusing it
+  there would protect nothing while making the service reachable only through the
+  handoff. The property bought runs one way. Both halves are declared as DATA —
+  `AUDIENCE_ADMITTERS` in @estate/auth-guard and `VAULT_AUDIENCE_ROUTES` in
+  identity — and checked against source in both directions, the credential-graph
+  precedent. Every refusal is the SAME generic 401 as an invalid token: a
+  distinct "wrong audience" would tell whoever presented a stolen session that it
+  is real and merely pointed at the wrong door.
+- 2026-08-08 — The vault edge HOLDS NO CREDENTIAL, in either direction, making it
+  the second component in the product of which that is true by design (the
+  assistant service is the first). It forwards the caller's own bearer from a
+  cookie scoped to its own origin, so it can only reach what the calling user
+  could already reach. Asserted three ways rather than claimed: a source fence
+  (no `_INTERNAL_TOKEN` may appear), a runtime one (`credentialsHeldIn(config)`
+  is asserted BOTH equal to the granted set and explicitly empty — without the
+  second assertion the test passes vacuously if the graph changes shape, the
+  ai-assistant precedent), and a deployment one (its compose block carries
+  nothing credential-shaped). It lives at `apps/` rather than `apps/services/`
+  ON PURPOSE: `SERVICE_NAMES` is derived from that directory, and keeping the
+  vault origin out of it keeps it out of the credential graph, where a service is
+  presumed to hold a secret. Its proxy is an ALLOWLIST of exact routes, not a
+  prefix rewrite — a proxy that forwards whatever path it is given is an SSRF
+  primitive carrying a live bearer, and the identity entries are EXACT matches
+  because `startsWith('/api/auth/logout')` also matches
+  `/api/auth/logout/refresh`, identity's unauthenticated refresh-token
+  revocation route.
+- 2026-08-08 — M15 PR1 fences, each MUTATION-TESTED RED before green, because a
+  fence that has never failed has never been tested. Zero dependency tree in the
+  browser client (only relative `.js` specifiers and the one absolute
+  vault-crypto path); no HTML/script sink anywhere on the origin with ZERO
+  declared exemptions (the main app has one for its theme script; this one has
+  none and must never acquire one); `api.ts` is the ONLY module that may reach
+  the network, which is what makes "nothing derived from the vault password or
+  Secret Key leaves the device" checkable rather than re-argued per screen; no
+  `console.*` in the client, because a log is an exfiltration channel that
+  survives review far more easily than a fetch; the served shell has no inline
+  script or style; the audience table matches source in both directions; and
+  identity's per-route widening matches its declaration. Confirmed red by
+  reintroducing each: an `innerHTML`, a second network call site, a
+  `console.log`, a bare specifier, an inline script, a runtime dependency, an
+  undeclared service binding the audience token, vault dropping or widening its
+  own, and `handoff` quietly admitting `vault`.
+- 2026-08-08 — A TEST THAT PASSED FOR THE WRONG REASON, twice over, in M15 PR1's
+  own suite — the M13 lesson about a test named for a property it never touched.
+  The static server's traversal test used `fetch`, which NORMALISES `/../../x` to
+  `/x` before the request is sent (measured: the request line the server saw was
+  `/package.json`), so the 404 came from the extension allowlist and no traversal
+  was ever attempted. Rewritten to use a RAW SOCKET — and then a mutation showed
+  the `startsWith(publicDir)` guard is UNREACHABLE anyway, because the WHATWG
+  `URL` parse upstream of it collapses `..` and decodes `%2e%2e` to `..` first.
+  The guard stays as defence in depth against a refactor that stops routing
+  through `new URL`, but it is documented as unreachable rather than credited as
+  the control, and the test now asserts the PROPERTY (nothing outside `public/`
+  is ever served, targeting a real `.css` file in another app so the extension
+  allowlist cannot mask an escape). Mutation-tested by rooting the server at
+  `apps/` and watching it go red.
+- 2026-08-08 — M15 PR1 was DRIVEN LIVE against a freshly reset stack in both
+  profiles, and the audience boundary was measured rather than asserted from
+  unit tests: presenting a redeemed vault session gets 200 at vault, 401 at
+  assets, documents, profile and the assistant, 200 at identity's introspection
+  route, and 401 at identity's TOTP-enrollment and handoff routes. Replay of a
+  spent code and an unknown code return byte-identical `{"error":"invalid_code"}`;
+  the redeem response carries no `refreshToken`; the audit stream shows
+  minted/redeemed with the audience and `failed` with no actor and empty detail.
+  On the origin itself: Trusted Types enforced, `innerHTML` blocked,
+  cross-origin `fetch` to the app's BFF refused by `connect-src 'self'`, no
+  JS-visible cookies, and the app's cookie names buy nothing (401). The whole
+  ceremony also ran through the real UI — register, login, TOTP, `/vault`
+  interstitial, step-up prompt, form POST, landing on
+  `http://vault.localhost:3010` showing `Session type: vault`.
+- 2026-08-08 — Driving the real app found the fifth browser-only-class defect in
+  as many milestones, and this one was caught by its own new test rather than in
+  production: `VaultLaunch` destructured `result.data.startVaultHandoff` with no
+  shape guard, so a BFF predating the mutation (`{"data":{}}`) would have thrown
+  mid-click. Worse than the M11/M12 instances, because the alternative failure is
+  a form posting `code=undefined` at the vault origin. A missing field is NO
+  DATA, never data. Related and deliberate: the vault origin is returned by the
+  BFF at REQUEST time rather than baked into the web bundle — the M8 PR5 lesson,
+  where `BFF_URL` had to be a build arg because Next serialises rewrites into
+  the routes manifest and the image duly baked a rewrite to localhost:4000. The
+  app's CSP still needs the origin at BUILD time for one directive
+  (`form-action`), so that value IS a build arg, and a parity spec asserts it
+  equals the one the BFF hands the browser — a disagreement is a refused form
+  post rather than a silent downgrade.
+- 2026-08-08 — M15 PR1 stack counts MEASURED IN BOTH PROFILES, not derived, and
+  the reason is instructive: run the production assertions against a DEVELOPMENT
+  stack and the M14 arming gate legitimately answers 201 instead of 503, because
+  `assertOwnerReachable` is production-scoped — a derived number would have
+  encoded that as a pass. The six vault-origin tests sit OUTSIDE the profile
+  split, unlike plaid's and the assistant's, because nothing about this origin
+  needs a third-party credential and it runs in both: 18/4 → 24/4 in
+  development, 9/13 → 15/13 in the production rehearsal. `vault-web` joined the
+  image matrix with an explicit `smokeProduction` flag rather than by
+  overloading `kind` (which also drives the web/liveness branch), and its
+  fail-fast message was verified against the workflow's own grep. The e2e also
+  fetches `/app/main.js` from the SHIPPED image, closing the class the
+  2026-08-06 `web.Dockerfile` defect belonged to: this origin's client is build
+  output under `public/` too, so its absence would look identical — a shell that
+  loads and a page that never renders.
+- 2026-08-08 — ROADMAP: M16 is the VAULT BROWSER EXTENSION, M17 the SUBSCRIPTION
+  MANAGER. Both recorded in docs/04 with the decisions each will have to take.
+  The extension is sequenced after M15 because it is a SECOND CLIENT of the same
+  SRP/2SKD protocol and building it before the first client settles would fork
+  the protocol; it is a milestone rather than a PR because of three things that
+  are not incidental. MV3 service workers are TERMINATED, and a non-extractable
+  `CryptoKey` cannot be serialized — so keeping keys warm across browsing means
+  either frequent re-unlock, a kept-alive offscreen document, a native-messaging
+  host, or storing raw key bytes and surrendering the docs/03 TB6
+  non-extractable-keys property. That must be an explicit decision with a
+  recorded residual, not whichever option happens to work. Origin matching IS
+  the security property (eTLD+1 via the Public Suffix List, never a substring; no
+  cross-origin iframe fill without opt-in; no https→http downgrade; no
+  auto-submit), and the content script must be structurally unable to REQUEST a
+  credential. And the extension INVERTS M15's central argument: a signed artifact
+  auto-updated through a vendor store with no CSP in the path, so a compromised
+  update is silent full Zone A compromise — reproducible builds and a published
+  attestation are the compensating controls to design for. Stated up front:
+  autofill does NOT resist phishing (it fills a lookalike domain the user saved),
+  so a lookalike warning is the minimum owed and passkey provisioning is a
+  legitimate competing priority. `@estate/vault-crypto` gains a SECOND declared
+  importer, as fence data rather than as a remembered exception — and the fence
+  asserting who may import it does not exist yet (M15 PR1 shipped seven fences,
+  and that was not among them).
+- 2026-08-08 — M17's subscription manager exists because THE ESTATE KEEPS PAYING
+  UNTIL SOMEBODY STOPS IT: recurring charges continue debiting after death and
+  every month before cancellation is money out. It is NOT an asset and must not
+  be modelled as one — `asset_events` is an event-sourced ledger of what the
+  estate OWNS, and a subscription is a recurring OUTFLOW — so separate tables in
+  the financial cluster. Five decisions worth pre-recording. (1) A subscription
+  list is a BEHAVIOURAL PROFILE — therapy, medication delivery, religion,
+  politics, sexuality, recovery — and arguably more sensitive than the asset
+  list, so the merchant name is CIPHERTEXT, deliberately unlike
+  `assets_view.title`'s accepted plaintext. (2) Manual entry first, Plaid-assisted
+  detection second (the M3 decision verbatim, no dormant schema), and detection
+  must respect the isolate: IDs and enums on the bus, never a widened KMS grant.
+  (3) THE PLATFORM NEVER CANCELS ANYTHING — it produces a worklist and records
+  what the executor did; automated cancellation would make the platform an agent
+  on someone's accounts and is a fraud vector against a LIVING owner, squarely
+  against "settlement is never fully automated". (4) Credentials stay in the
+  vault: a record may REFERENCE a vault item id and must never hold a password,
+  or the feature becomes a second credential store outside Zone A. (5) The naive
+  version is HARMFUL — life insurance is an asset, a storage unit may hold estate
+  property, a domain may carry a business — so records carry a cancel /
+  review-carefully / DO-NOT-CANCEL classification and the surface leads with the
+  last rather than with "cancel all". Executor access rides M7 PR2's staged
+  ladder at the FIRST rung, which is a happy alignment: the thing that saves
+  money is available earliest while documents and Zone A stay further along.
+  Beneficiaries get nothing (docs/03 §5.5 scopes them to assets naming them; a
+  subscription names nobody). No blockers — financial cluster, Plaid isolate,
+  staged access and the analysers all ship — so it could swap ahead of M16.

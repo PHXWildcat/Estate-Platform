@@ -9,21 +9,26 @@ import { Icon, type IconName } from './icons';
  * Navigation for the Evergreen-rail shell (2026-07-30 decision). One config
  * drives both the desktop rail and the mobile bottom tab bar.
  *
- * "Soon" entries are surfaces whose BACKENDS already shipped (vault M6) without
- * a UI — they render as inert previews, not links, so the shell shows the
- * product's shape without dead ends. Vault will additionally live on an ISOLATED
- * ORIGIN (docs/03 TB6), so when it goes live its entry becomes an outbound link,
- * never an in-app route.
+ * "Soon" entries are surfaces whose BACKENDS already shipped without a UI —
+ * they render as inert previews, not links, so the shell shows the product's
+ * shape without dead ends. Documents stopped being a preview in M12, People in
+ * M13, and Vault in M15, each when the surface for its long-shipped service
+ * landed — M4's, M2's and M6's respectively.
  *
- * Documents stopped being a preview in M12 and People in M13, each when the
- * surface for its long-shipped service landed — M4's and M2's respectively.
+ * THERE ARE NO PREVIEWS LEFT, and Vault's entry is the one that had to be
+ * different. It points at `/vault`, which is an INTERSTITIAL and not the vault:
+ * Zone A lives on an isolated origin (docs/03 TB6), reached by a single-use
+ * handoff that has to be minted under step-up, so the nav could never link
+ * straight there. This comment used to promise "an outbound link, never an
+ * in-app route" — the promise is kept one step further along, on the page the
+ * link leads to, because a handoff cannot be minted by a hyperlink.
  */
 
 interface NavItem {
   label: string;
   icon: IconName;
   /** Absent for "Soon" entries — they are previews, not destinations. */
-  href?: '/' | '/assets' | '/assistant' | '/documents' | '/people' | '/security';
+  href?: '/' | '/assets' | '/assistant' | '/documents' | '/people' | '/security' | '/vault';
   /** Active only on exact match (the Overview item, so "/" ≠ everything). */
   exact?: boolean;
 }
@@ -44,7 +49,7 @@ export const NAV_GROUPS: ReadonlyArray<{ label: string; items: readonly NavItem[
   {
     label: 'Protection',
     items: [
-      { label: 'Vault', icon: 'vault' },
+      { label: 'Vault', icon: 'vault', href: '/vault' },
       { label: 'Security', icon: 'security', href: '/security' },
     ],
   },

@@ -106,6 +106,38 @@ export function serviceUrl(name: string, addressing: Addressing): string {
     : `http://${service.name}:${service.port}`;
 }
 
+/**
+ * THE TWO BROWSER-FACING ORIGINS (M15).
+ *
+ * These are addresses a BROWSER uses, so unlike `serviceUrl` they do not change
+ * with `Addressing`: in compose mode they are the published ports, and in host
+ * mode they are the same ports on the same names.
+ *
+ * `vault.localhost` rather than a second port on `localhost`, and that is the
+ * whole isolation. MEASURED in a real browser before it was relied on:
+ *
+ *   · cookie scope IGNORES THE PORT, so a vault surface at `localhost:3010`
+ *     receives the app's `estate_access`/`estate_refresh` on every request —
+ *     observed live, with a probe on an unrelated port being handed a real
+ *     session from a previous stack run;
+ *   · `vault.localhost` receives NONE of them, because the app's cookies are
+ *     host-only;
+ *   · and `*.localhost` is a potentially-trustworthy origin, so the vault's
+ *     `__Host-` prefixed `Secure` cookie is accepted there over plain http
+ *     exactly as the BFF's is on `localhost`. No TLS terminator is needed for
+ *     the dev stack, and the prefix is unconditional in every environment.
+ *
+ * Production addressing is `vault.<domain>` beside `app.<domain>`. The residual
+ * is recorded rather than hidden: a subdomain shares a registrable domain with
+ * the app, so a cookie set with a `Domain=` attribute on the parent would be
+ * visible to both — which is precisely why the vault's cookie carries `__Host-`,
+ * making host-only a property the browser enforces rather than a convention.
+ * A separate registrable domain is strictly better and is a deployment choice.
+ */
+export const APP_ORIGIN = 'http://localhost:3000' as const;
+export const VAULT_ORIGIN = 'http://vault.localhost:3010' as const;
+export const VAULT_WEB_PORT = 3010;
+
 /** The six physical clusters (docs/02). Separate containers, never one server
  *  with six databases: no code may assume clusters are co-located. */
 export const CLUSTERS = {

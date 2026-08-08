@@ -80,6 +80,7 @@ const fakeVerifier: SessionVerifier = {
       userId: userId!,
       sessionId: sessionId ?? ACCOUNT_SESSION,
       mfaLevel: level as MfaLevel,
+      audience: 'account',
       stepupExpiresAt: level === 'stepup' ? new Date(Date.now() + 5 * 60 * 1000) : null,
     };
     return Promise.resolve(ctx);

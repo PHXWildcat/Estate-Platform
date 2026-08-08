@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { MfaLevel } from '@estate/contracts';
+import type { SessionAudience } from '@estate/auth-guard';
 import { Db } from './db';
 
 export interface SessionRow {
@@ -7,6 +8,8 @@ export interface SessionRow {
   user_id: string;
   mfa_level: MfaLevel;
   stepup_expires_at: Date | null;
+  /** M15: what this session may be spent on. See the 004 migration. */
+  audience: SessionAudience;
 }
 
 @Injectable()
@@ -20,10 +23,12 @@ export class SessionsRepo {
     accessTokenH: Buffer;
     accessExpiresAt: Date;
     expiresAt: Date;
+    /** Omitted ⇒ the ordinary session every pre-M15 caller means. */
+    audience?: SessionAudience;
   }): Promise<void> {
     await this.db.query(
-      `INSERT INTO sessions (id, user_id, refresh_token_h, access_token_h, access_expires_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO sessions (id, user_id, refresh_token_h, access_token_h, access_expires_at, expires_at, audience)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         input.id,
         input.userId,
@@ -31,6 +36,7 @@ export class SessionsRepo {
         input.accessTokenH,
         input.accessExpiresAt,
         input.expiresAt,
+        input.audience ?? 'account',
       ],
     );
   }
@@ -46,7 +52,7 @@ export class SessionsRepo {
    */
   async findLiveByAccessHash(accessTokenH: Buffer, now: Date): Promise<SessionRow | null> {
     const rows = await this.db.query<SessionRow>(
-      `SELECT s.id, s.user_id, s.mfa_level, s.stepup_expires_at
+      `SELECT s.id, s.user_id, s.mfa_level, s.stepup_expires_at, s.audience
          FROM sessions s
          JOIN users u ON u.id = s.user_id
         WHERE s.access_token_h = $1
@@ -65,7 +71,7 @@ export class SessionsRepo {
    * account state that minted it. */
   async findLiveByRefreshHash(refreshTokenH: Buffer, now: Date): Promise<SessionRow | null> {
     const rows = await this.db.query<SessionRow>(
-      `SELECT s.id, s.user_id, s.mfa_level, s.stepup_expires_at
+      `SELECT s.id, s.user_id, s.mfa_level, s.stepup_expires_at, s.audience
          FROM sessions s
          JOIN users u ON u.id = s.user_id
         WHERE s.refresh_token_h = $1
@@ -84,7 +90,7 @@ export class SessionsRepo {
    */
   async findLiveByPrevRefreshHash(refreshTokenH: Buffer): Promise<SessionRow | null> {
     const rows = await this.db.query<SessionRow>(
-      `SELECT id, user_id, mfa_level, stepup_expires_at
+      `SELECT id, user_id, mfa_level, stepup_expires_at, audience
          FROM sessions
         WHERE refresh_token_prev_h = $1
           AND revoked_at IS NULL`,

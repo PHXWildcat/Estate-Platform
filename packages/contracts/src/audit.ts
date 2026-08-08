@@ -166,6 +166,14 @@ export const AUDIT_ACTIONS = [
   // codes, and an outage counted there is a false positive in exactly that
   // judgement.
   'auth.email_verification.unavailable',
+
+  // M15, the cross-origin vault handoff. `failed` carries NO reason and NO
+  // subject, deliberately: unknown, expired, spent and raced are one answer on
+  // the wire, and a trail that separated them would re-create through the audit
+  // stream the oracle the uniform refusal removes (the M14 PR1 rule).
+  'auth.handoff.minted',
+  'auth.handoff.redeemed',
+  'auth.handoff.failed',
   // The M6/M7 capability gates firing (503 notifications_unavailable) — a
   // control refusing is a fact the audit stream must carry, or it reads as an
   // outage.

@@ -3,8 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnvFile } from '../src/doctor';
 import { generateEnv, renderEnvFile } from '../src/generate-env';
-import { bffProcessEnv, serviceProcessEnv } from '../src/service-env';
-import { SERVICES } from '../src/topology';
+import { bffProcessEnv, serviceProcessEnv, vaultWebProcessEnv } from '../src/service-env';
+import { SERVICES, VAULT_ORIGIN } from '../src/topology';
 
 /**
  * THE TWO MAPPINGS MUST AGREE. docker-compose.stack.yml maps the flat
@@ -101,6 +101,45 @@ describe('compose/supervisor mapping parity', () => {
       );
     },
   );
+
+  /**
+   * The vault origin (M15). Held to the STRICTER standard the BFF is not: key
+   * for key AND value for value, because its whole environment is four URLs
+   * that decide which upstreams it may reach — there is no manifest-path
+   * divergence to make room for.
+   */
+  it('vault-web: the compose block and vaultWebProcessEnv agree exactly', () => {
+    const composeEnv = composeEnvironmentBlock(compose, 'vault-web');
+    const resolved = new Map([...composeEnv].map(([key, value]) => [key, resolve(value, file)]));
+    const mapped = vaultWebProcessEnv(file, { addressing: 'compose' });
+    expect(Object.fromEntries([...resolved].sort())).toEqual(
+      Object.fromEntries(Object.entries(mapped).sort()),
+    );
+  });
+
+  it('vault-web carries NO credential of any kind, in either direction', () => {
+    // The source and runtime halves live in apps/vault-web; this is the
+    // DEPLOYMENT half. A credential cannot be held by a container that is never
+    // handed one, and the compose block is where it would be handed one.
+    const composeEnv = composeEnvironmentBlock(compose, 'vault-web');
+    for (const key of composeEnv.keys()) {
+      expect({ key, credentialShaped: /_INTERNAL_TOKEN$|KEY|SECRET/.test(key) }).toEqual({
+        key,
+        credentialShaped: false,
+      });
+    }
+  });
+
+  it('the BFF hands the browser the same vault origin the vault container serves', () => {
+    // Two places name this origin — the BFF's runtime response and the web
+    // image's build-time CSP — and a disagreement between them is a form POST
+    // the browser refuses, which is exactly the class of defect the M8 PR5
+    // BFF_URL bug was. Both are checked against the one constant.
+    const bff = composeEnvironmentBlock(compose, 'bff');
+    expect(bff.get('VAULT_ORIGIN')).toBe(VAULT_ORIGIN);
+    const webBuildArg = /VAULT_ORIGIN:\s*'([^']+)'/.exec(compose);
+    expect(webBuildArg?.[1]).toBe(VAULT_ORIGIN);
+  });
 
   it('bff: same keys; the manifest path differs by design (mount vs repo file)', () => {
     const composeEnv = composeEnvironmentBlock(compose, 'bff');

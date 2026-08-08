@@ -18,6 +18,8 @@ import type {
 import { z } from 'zod';
 import { AuthService, type IssuedTokens, type StepUpResult } from './auth.service';
 import { EmailVerificationService, type ReissueOutcome } from './email-verification.service';
+import { HandoffService, type MintedHandoff } from './handoff.service';
+import { AllowSessionAudiences } from './session-audience.decorator';
 import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
 import { StepUpGuard } from './stepup.guard';
 import { WebAuthnService } from './webauthn.service';
@@ -41,6 +43,17 @@ const RefreshSchema = z.object({
 
 const CodeSchema = z.object({
   code: z.string().regex(/^\d{6}$/),
+});
+
+/**
+ * The vault handoff code (M15). Shape only, and generous: the AUTHORITY is the
+ * digest lookup, so a strict alphabet here would add a second place for the
+ * encoding to drift and a shape rejection that differed from a wrong-code
+ * rejection would reintroduce the oracle the uniform answer removes. The bound
+ * exists so an unbounded body cannot be hashed.
+ */
+const HandoffCodeSchema = z.object({
+  code: z.string().min(1).max(256),
 });
 
 /**
@@ -93,6 +106,7 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly webauthn: WebAuthnService,
     private readonly emailVerification: EmailVerificationService,
+    private readonly handoff: HandoffService,
   ) {}
 
   @Post('register')
@@ -118,15 +132,27 @@ export class AuthController {
     return this.auth.refresh(refreshToken);
   }
 
-  /** Session introspection for the BFF: context of the presented token only. */
+  /**
+   * Session introspection for the BFF and for every downstream service's
+   * `HttpSessionVerifier`: context of the presented token only.
+   *
+   * ADMITS EVERY AUDIENCE (M15), and must. This route is how a token becomes a
+   * verified caller anywhere in the product, so refusing a vault session here
+   * would not tighten the boundary — it would make the vault audience unusable
+   * and take the whole isolated origin down. It ACTS on no authority: it reads
+   * a session and describes it, `audience` included, which is precisely what
+   * lets the callers downstream apply the deny-by-default rule.
+   */
   @Get('session')
   @HttpCode(200)
   @UseGuards(SessionGuard)
+  @AllowSessionAudiences('vault')
   session(@Req() request: AuthedRequest): {
     userId: string;
     sessionId: string;
     mfaLevel: MfaLevel;
     stepupExpiresAt: string | null;
+    audience: string;
   } {
     const auth = requireAuth(request);
     return {
@@ -134,13 +160,22 @@ export class AuthController {
       sessionId: auth.sessionId,
       mfaLevel: auth.mfaLevel,
       stepupExpiresAt: auth.stepupExpiresAt?.toISOString() ?? null,
+      audience: auth.audience,
     };
   }
 
-  /** Logout: revokes the PRESENTED session only (other devices stay live). */
+  /**
+   * Logout: revokes the PRESENTED session only (other devices stay live).
+   *
+   * Admits a vault session (M15) so the vault origin can sign itself out.
+   * Revoking the credential you are holding is the one action that can only
+   * ever reduce authority, and the M6 rule is that the protective action must
+   * never be the harder one.
+   */
   @Post('logout')
   @HttpCode(200)
   @UseGuards(SessionGuard)
+  @AllowSessionAudiences('vault')
   async logout(@Req() request: AuthedRequest): Promise<{ status: string }> {
     const auth = requireAuth(request);
     await this.auth.logout(auth.userId, auth.sessionId);
@@ -255,13 +290,68 @@ export class AuthController {
     return { verified: true };
   }
 
+  /**
+   * Elevate the PRESENTED session. Admits a vault session (M15): the vault
+   * origin has to be able to re-prove a factor when its five-minute window
+   * lapses mid-session, and sending the user back across the origin boundary
+   * for a fresh handoff would make deleting an item a navigation. Step-up
+   * strengthens the session presenting it and confers nothing else — a
+   * stepped-up vault session is still a vault session, and still reaches only
+   * the vault service.
+   */
   @Post('stepup')
   @HttpCode(200)
   @UseGuards(SessionGuard)
+  @AllowSessionAudiences('vault')
   async stepUp(@Req() request: AuthedRequest, @Body() body: unknown): Promise<StepUpResult> {
     const auth = requireAuth(request);
     const { code } = parseBody(CodeSchema, body);
     return this.auth.stepUp(auth.userId, auth.sessionId, code);
+  }
+
+  /**
+   * Mint a single-use code for the ISOLATED VAULT ORIGIN (M15, docs/03 TB6).
+   *
+   * SessionGuard + StepUpGuard, and deliberately account-audience only: a vault
+   * session cannot mint another handoff, so a leaked one cannot chain itself
+   * forward or reach a future second audience. The step-up is doing two jobs —
+   * it is docs/01 §5's re-auth before vault access, and it is what makes it
+   * honest for redemption to give the new session its own freshness window.
+   *
+   * Returns the code IN THE BODY, never in a URL or a redirect: the app origin
+   * puts it in a hidden field and the browser submits it by top-level POST, so
+   * it never lands in history, a Referer, or an intermediary's access log.
+   */
+  @Post('handoff')
+  @HttpCode(201)
+  @UseGuards(SessionGuard, StepUpGuard)
+  async mintHandoff(@Req() request: AuthedRequest): Promise<{ code: string; expiresAt: string }> {
+    const auth = requireAuth(request);
+    const minted: MintedHandoff = await this.handoff.mint(auth.userId, auth.sessionId);
+    return { code: minted.code, expiresAt: minted.expiresAt.toISOString() };
+  }
+
+  /**
+   * Spend one. UNAUTHENTICATED by construction — the code is the authority, and
+   * there is no field in this request that could name an account (the M13 §6g
+   * anti-enumeration shape).
+   *
+   * Every failure is one `invalid_code`: unknown, expired, already spent, and
+   * lost a race are indistinguishable here and in the audit trail.
+   */
+  @Post('handoff/redeem')
+  @HttpCode(200)
+  async redeemHandoff(
+    @Body() body: unknown,
+  ): Promise<{ accessToken: string; userId: string; sessionId: string; expiresAt: string }> {
+    const { code } = parseBody(HandoffCodeSchema, body);
+    const redeemed = await this.handoff.redeem(code);
+    return {
+      accessToken: redeemed.accessToken,
+      userId: redeemed.userId,
+      sessionId: redeemed.sessionId,
+      expiresAt: redeemed.expiresAt.toISOString(),
+    };
   }
 
   /**

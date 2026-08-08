@@ -63,6 +63,13 @@ export const GQL_ERROR_CODES = [
   'INVALID_VERIFICATION_CODE',
   /** The code was fine but the platform could not complete it (M14). */
   'VERIFICATION_UNAVAILABLE',
+  /**
+   * The vault handoff could not be minted (M15). Its own code because the
+   * remedy is "try again in a moment" — and because the vault is the one
+   * surface where a bounced user needs to know it was the platform rather than
+   * their credentials.
+   */
+  'VAULT_UNAVAILABLE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -367,6 +374,10 @@ interface OperationSignatures {
   TotpEnroll: { variables: EmptyVariables; data: { totpEnroll: { otpauthUri: string } } };
   TotpVerify: { variables: { code: string }; data: { totpVerify: { ok: boolean } } };
   StepUp: { variables: { code: string }; data: { stepUp: { ok: boolean } } };
+  StartVaultHandoff: {
+    variables: EmptyVariables;
+    data: { startVaultHandoff: { code: string; expiresAt: string; vaultOrigin: string } };
+  };
   ExportDemo: { variables: EmptyVariables; data: { exportDemo: { ok: boolean } } };
   Session: { variables: EmptyVariables; data: { session: SessionInfo } };
   Logout: { variables: EmptyVariables; data: { logout: { ok: boolean } } };

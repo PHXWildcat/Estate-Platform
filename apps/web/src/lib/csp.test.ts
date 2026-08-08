@@ -44,4 +44,23 @@ describe('the Content-Security-Policy', () => {
     expect(source).toContain('"object-src \'none\'"');
     expect(source).toContain('"base-uri \'self\'"');
   });
+
+  describe('form-action and the vault origin (M15)', () => {
+    it('permits exactly one cross-origin form destination', () => {
+      // Opening the vault is a top-level form POST to the isolated origin, so
+      // 'self' alone would have the browser refuse it. What must NOT appear is
+      // a wildcard or a bare scheme: this is the one destination any form in
+      // this app may reach, and naming it exactly is the whole control.
+      expect(source).toMatch(/form-action 'self' \$\{vaultOrigin\}/);
+      expect(source).not.toMatch(/form-action[^;`"]*\*/);
+      expect(source).not.toMatch(/form-action[^;`"]*https:(?!\/\/)/);
+    });
+
+    it('takes the origin from the environment with a localhost default', () => {
+      // Build-time, like BFF_URL, and for the same reason — headers() is
+      // serialised into the routes manifest. Stated here so the M8 PR5 defect's
+      // shape stays visible to whoever changes this next.
+      expect(source).toMatch(/process\.env\.VAULT_ORIGIN \?\? 'http:\/\/vault\.localhost:3010'/);
+    });
+  });
 });
