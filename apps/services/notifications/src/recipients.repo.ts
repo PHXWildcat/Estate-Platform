@@ -40,12 +40,29 @@ export class RecipientsRepo {
    * same — but they are kept apart here because the send path already
    * distinguishes them (`no_recipient`) and a repo that merged them would make
    * that impossible to see.
+   *
+   * IT REQUIRES AN ACTIVE DEK, and that is the M14 review making a claim true
+   * rather than deleting it. Migration 003 says a crypto-shredded recipient
+   * "loses its verification along with its address and the arming gates then
+   * refuse — fail-closed by construction". Crypto-shredding destroys the DEK,
+   * NOT the row, so without this EXISTS the row survived with `verified_at`
+   * set: the gates would ARM for an owner whose every alert then failed to
+   * decrypt and recorded `carrier_failure`. Exactly the fail-open M14 exists to
+   * remove, in the machinery that removes it. No in-repo caller destroys a
+   * notifications DEK today (erasure is an operator action), which is why this
+   * was latent rather than live — and why it had to be closed before the
+   * erasure route lands and nobody re-reads the comment.
    */
   async findStatus(userId: string): Promise<{ verifiedAt: Date | null } | null> {
     const rows = await this.db.query<{ verified_at: Date | null }>(
-      `SELECT verified_at
-         FROM notification_recipients
-        WHERE user_id = $1 AND deleted_at IS NULL`,
+      `SELECT r.verified_at
+         FROM notification_recipients r
+        WHERE r.user_id = $1
+          AND r.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM notification_deks d
+             WHERE d.dek_id = r.dek_id AND d.destroyed_at IS NULL
+          )`,
       [userId],
     );
     return rows[0] ? { verifiedAt: rows[0].verified_at } : null;

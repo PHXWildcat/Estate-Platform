@@ -512,12 +512,29 @@ export class VaultService {
     // notification port lands" (M9): the owner is TOLD their vault was
     // destroyed. Best-effort with the standard bookkeeping — a failed send
     // records delivered_at null and never unwinds the reset.
+    //
+    // READ THE OUTCOME. M14 changed `notify()` from throwing on non-delivery to
+    // returning one, and updated every call site except this one — so for a
+    // while this `catch` was unreachable and `deliveredAt` was stamped
+    // unconditionally: EVERY reset recorded its notification as delivered, even
+    // when notifications were down or the user had no recipient row. On the one
+    // route where a bearer token destroys a Zone A vault, the only compensating
+    // control the docstring names was asserting something false. Found by the
+    // M14 security review; the sibling site in emergency.service.ts had been
+    // updated correctly, so the two disagreed.
     let deliveredAt: Date | null = null;
+    let recipientVerified = false;
     try {
-      await this.notifier.notify({ kind: 'reset', ownerUserId: actorUserId, policyId: null });
-      deliveredAt = this.clock();
+      const outcome = await this.notifier.notify({
+        kind: 'reset',
+        ownerUserId: actorUserId,
+        policyId: null,
+      });
+      deliveredAt = outcome.delivered ? this.clock() : null;
+      recipientVerified = outcome.recipientVerified;
     } catch {
-      // Recorded below; the reset itself already happened.
+      // The port narrows failures to outcomes now, so reaching here means an
+      // adapter broke its own contract. Recorded as a non-delivery either way.
     }
     await this.emergency.recordNotification(this.db, {
       policyId: null,
@@ -526,6 +543,22 @@ export class VaultService {
       channel: this.notifier.channel,
       deliveredAt,
     });
+    // ...and the same PROCEED-AND-RECORD fact every other notification carries
+    // (M14 PR2). Reset was the one path that could never emit it, because it
+    // discarded the outcome — so a vault destroyed and "announced" to an
+    // unproved address left no evidence of that anywhere.
+    if (deliveredAt !== null && !recipientVerified) {
+      await this.events.audit.emit({
+        action: 'vault.emergency.unverified_recipient',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: actorUserId,
+        resourceType: 'vault',
+        resourceId: null,
+        sessionId: accountSessionId,
+        detail: { kind: 'reset' },
+      });
+    }
     return { itemsDestroyed: result.itemsDestroyed };
   }
 }

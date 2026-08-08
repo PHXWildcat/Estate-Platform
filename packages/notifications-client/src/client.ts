@@ -106,6 +106,32 @@ export interface AddressVerificationInput {
 }
 
 /**
+ * The exact shape a verification code may take ON THE WIRE.
+ *
+ * IT LIVES HERE, in the wire contract both services import, because the M14
+ * review found the two ends disagreeing: notifications validated
+ * `/^[0-9A-Z-]+$/` with a 64-character cap while identity mints Crockford
+ * base32 (no I, L, O or U), so the route accepted 64 characters of readable
+ * uppercase English and `renderAddressVerification` interpolated it verbatim
+ * into a real message from the platform's verified sender. A free-text field
+ * by another name, in the one wire the content doctrine exists to keep
+ * text-free.
+ *
+ * The obvious fix — tighten notifications' regex — was rejected on identity's
+ * own stated reasoning that a second pattern "would only add a second place
+ * for the alphabet to drift". One shared declaration is the version of that
+ * fix without the drift: notifications validates against it, and identity has
+ * a spec asserting every code it mints satisfies it, so a change to either end
+ * fails a test instead of silently widening what may be mailed.
+ *
+ * NOTIFICATIONS MUST STILL VALIDATE IT ITSELF. The doctrine is a property of
+ * the delivery boundary, and the credential model is that a bearer of a secret
+ * IS the service — so "identity would never send prose" is not something the
+ * notifications service may assume about its caller.
+ */
+export const VERIFICATION_CODE_PATTERN = /^EV1(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){8}$/;
+
+/**
  * What the delivery store knows about reaching a user.
  *
  * `verified` answers the question three shipped fail-closed gates have always

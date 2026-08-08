@@ -262,14 +262,24 @@ export class ContactLinksService {
     // "a message went to an address the owner never confirmed" are different
     // facts, and §6g's whole argument is that the claim is auditable BY THE
     // OWNER. This is what keeps `ownerNotified: 'delivered'` from overstating.
-    if (ownerNotified === 'delivered' && !recipientVerified) {
-      await this.events.contactLinkUnverifiedRecipient(invitation.owner_user_id, callerUserId);
-    }
+    // AFTER the claim event, not before (M14 review). This annotation
+    // propagates broker failures like every audit emit here, so emitting it
+    // first meant a failure on the SECONDARY fact could suppress the record of
+    // the claim itself — the link standing, the code spent, and the owner's
+    // trail holding neither event. Same reasoning that put `notify` before the
+    // claim in M13: the record that must survive goes first.
     // AUDITED ON BOTH SIDES: the owner's trail records that their contact was
     // claimed, the actor recorded is the redeemer, and the delivery outcome
     // rides along — so "who linked themselves to whose estate, and was the
     // owner told" is answerable from either end.
     await this.events.contactLinkClaimed(callerUserId, invitation.contact_id, ownerNotified);
+    if (ownerNotified === 'delivered' && !recipientVerified) {
+      await this.events.contactLinkUnverifiedRecipient(
+        invitation.owner_user_id,
+        callerUserId,
+        invitation.contact_id,
+      );
+    }
   }
 
   /**

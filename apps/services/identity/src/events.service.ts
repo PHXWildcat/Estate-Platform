@@ -199,6 +199,25 @@ export class EventsService {
     });
   }
 
+  /**
+   * A verification the platform could not complete (M14 review). Distinct from
+   * `emailVerificationFailed`: the code was right and was spent, and what
+   * failed was the delivery store. Counting this as a failed verification would
+   * corrupt the one signal that says somebody is guessing at a user's codes.
+   */
+  async emailVerificationUnavailable(userId: string, sessionId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email_verification.unavailable',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: userId,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: {},
+    });
+  }
+
   async webauthnRegistered(userId: string): Promise<void> {
     await this.audit.emit({
       action: 'auth.webauthn.registered',

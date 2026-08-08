@@ -783,6 +783,12 @@ describeIfStack('the running stack', () => {
         throw new Error('M14 notification credentials missing from the stack env');
       }
       const verificationPath = '/internal/v1/notifications/verification';
+      // A code of the SHAPE identity actually mints. The M14 review tightened
+      // this wire field from `/^[0-9A-Z-]+$/` (which took 64 characters of
+      // readable English straight into a real message) to the shared
+      // VERIFICATION_CODE_PATTERN, so a placeholder probe is now correctly
+      // refused — which is the point.
+      const probeCode = 'EV1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
       const statusPath = `/internal/v1/notifications/recipients/${owner.userId}/status`;
       const surfaces = [
         {
@@ -809,7 +815,7 @@ describeIfStack('the running stack', () => {
           probe: (): Promise<ApiResponse> =>
             api(NOTIFICATIONS, 'POST', verificationPath, {
               headers: asService(identityVerify),
-              body: { userId: owner.userId, code: 'EV1-STACK-PROBE' },
+              body: { userId: owner.userId, code: probeCode },
             }),
         },
         {
@@ -842,7 +848,7 @@ describeIfStack('the running stack', () => {
         {
           path: verificationPath,
           method: 'POST' as const,
-          body: { userId: owner.userId, code: 'EV1-STACK-PROBE' },
+          body: { userId: owner.userId, code: probeCode },
           owner: 'verification',
         },
         { path: statusPath, method: 'GET' as const, body: undefined, owner: 'status' },

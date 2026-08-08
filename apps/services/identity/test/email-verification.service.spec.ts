@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import type { NotificationsPort } from '@estate/notifications-client';
+import { VERIFICATION_CODE_PATTERN, type NotificationsPort } from '@estate/notifications-client';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import {
   EmailVerificationRepo,
@@ -32,6 +32,7 @@ const VALID_SHAPE = `EV1-${'K7MN-'.repeat((CODE_RANDOM_BYTES * 8) / 5 / 4).slice
 interface Fakes {
   codes: {
     findLive: jest.Mock;
+    lastMintedAt: jest.Mock;
     insert: jest.Mock;
     findByCode: jest.Mock;
     countAttempt: jest.Mock;
@@ -43,6 +44,7 @@ interface Fakes {
     emailVerificationSent: jest.Mock;
     emailVerified: jest.Mock;
     emailVerificationFailed: jest.Mock;
+    emailVerificationUnavailable: jest.Mock;
   };
   notifications: {
     sendAddressVerification: jest.Mock;
@@ -55,6 +57,7 @@ function makeFakes(): Fakes {
   return {
     codes: {
       findLive: jest.fn().mockResolvedValue(null),
+      lastMintedAt: jest.fn().mockResolvedValue(null),
       insert: jest.fn().mockResolvedValue('code-row-1'),
       findByCode: jest.fn().mockResolvedValue(null),
       countAttempt: jest.fn().mockResolvedValue(undefined),
@@ -66,6 +69,7 @@ function makeFakes(): Fakes {
       emailVerificationSent: jest.fn(),
       emailVerified: jest.fn(),
       emailVerificationFailed: jest.fn(),
+      emailVerificationUnavailable: jest.fn(),
     },
     notifications: {
       sendAddressVerification: jest.fn().mockResolvedValue({
@@ -126,6 +130,21 @@ describe('the minted code', () => {
       await makeService(fakes).ensureVerificationRequested(USER);
       const body = mailedCode(fakes).replace(/^EV1-/, '').replace(/-/g, '');
       expect(body).toMatch(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ]+$/);
+    }
+  });
+
+  it('satisfies the WIRE pattern the notifications service validates against', async () => {
+    // The M14 review found the two ends disagreeing: notifications accepted
+    // `/^[0-9A-Z-]+$/` up to 64 characters while this mints Crockford base32,
+    // so the route would take 64 characters of readable English and interpolate
+    // it into a real message. The pattern is one shared declaration now, and
+    // this is the assertion that makes a change to EITHER end fail a test
+    // rather than silently widen what the platform may mail.
+    const fakes = makeFakes();
+    for (let i = 0; i < 25; i += 1) {
+      fakes.notifications.sendAddressVerification.mockClear();
+      await makeService(fakes).ensureVerificationRequested(USER);
+      expect(mailedCode(fakes)).toMatch(VERIFICATION_CODE_PATTERN);
     }
   });
 
@@ -210,6 +229,7 @@ describe('ensureVerificationRequested (the login hook)', () => {
     // for the user and, for an account standing on somebody else's address,
     // an unbounded one for a stranger. It is the only rate limit on this path.
     const fakes = makeFakes();
+    fakes.codes.lastMintedAt.mockResolvedValue(new Date(NOW.getTime() - REISSUE_FLOOR_MS + 1000));
     fakes.codes.findLive.mockResolvedValue({
       createdAt: new Date(NOW.getTime() - REISSUE_FLOOR_MS + 1000),
     });
@@ -218,10 +238,54 @@ describe('ensureVerificationRequested (the login hook)', () => {
     expect(fakes.notifications.sendAddressVerification).not.toHaveBeenCalled();
   });
 
+  it("RE-MINTS after a code lapses — the M14 review's worst finding, pinned", async () => {
+    // The partial unique index cannot carry an expiry predicate, so a lapsed
+    // row still occupies the live slot. Retiring only when `findLive` saw a row
+    // meant nothing ever cleared it: the insert took the unique violation and
+    // this answered `too_soon` FOREVER, permanently locking the account out of
+    // verification and out of every M14 arming gate. Ignoring the first email
+    // was enough to trigger it.
+    //
+    // `findLive` sees nothing (lapsed) while a row still occupies the index —
+    // exactly the state that used to wedge.
+    const fakes = makeFakes();
+    fakes.codes.findLive.mockResolvedValue(null);
+    fakes.codes.lastMintedAt.mockResolvedValue(new Date(NOW.getTime() - REISSUE_FLOOR_MS - 1000));
+    fakes.codes.revokeLive.mockResolvedValue(true);
+
+    await makeService(fakes).ensureVerificationRequested(USER);
+
+    // It RETIRED the lapsed row before minting...
+    expect(fakes.codes.revokeLive).toHaveBeenCalledWith(USER, NOW);
+    // ...and actually minted and mailed a new code.
+    expect(fakes.codes.insert).toHaveBeenCalledTimes(1);
+    expect(fakes.notifications.sendAddressVerification).toHaveBeenCalledTimes(1);
+    // No retirement is AUDITED, because nothing usable was retired — a lapsed
+    // code had already stopped working.
+    expect(
+      (fakes.authEvents.insert.mock.calls as { kind: string }[][]).map((call) => call[0]?.kind),
+    ).not.toContain('email_verification.reissued');
+  });
+
+  it('applies the floor even when NO live code exists — the resend loop, closed', async () => {
+    // A send that fails RETIRES its code, so the old floor (checked only when a
+    // live code existed) was skipped in exactly the state where sends were
+    // failing: the resend route then had no rate limit at all, and each
+    // iteration cost a real SES call and two append-only auth_events rows.
+    const fakes = makeFakes();
+    fakes.codes.findLive.mockResolvedValue(null);
+    fakes.codes.lastMintedAt.mockResolvedValue(new Date(NOW.getTime() - 1000));
+
+    expect(await makeService(fakes).reissue(USER)).toBe('too_soon');
+    expect(fakes.codes.insert).not.toHaveBeenCalled();
+    expect(fakes.notifications.sendAddressVerification).not.toHaveBeenCalled();
+  });
+
   it('re-mints once the floor has passed, RETIRING the previous code first', async () => {
     // Exactly one code is ever usable, so a code the user gave up on cannot be
     // redeemed later by whoever else saw it.
     const fakes = makeFakes();
+    fakes.codes.lastMintedAt.mockResolvedValue(new Date(NOW.getTime() - REISSUE_FLOOR_MS - 1000));
     fakes.codes.findLive.mockResolvedValue({
       createdAt: new Date(NOW.getTime() - REISSUE_FLOOR_MS - 1000),
     });
@@ -274,6 +338,7 @@ describe('reissue (the user asked for another code)', () => {
     expect(await makeService(down).reissue(USER)).toBe('unavailable');
 
     const tooSoon = makeFakes();
+    tooSoon.codes.lastMintedAt.mockResolvedValue(NOW);
     tooSoon.codes.findLive.mockResolvedValue({ createdAt: NOW });
     expect(await makeService(tooSoon).reissue(USER)).toBe('too_soon');
 

@@ -153,16 +153,38 @@ export class EmailVerificationService {
     opts: { respectFloor: boolean },
   ): Promise<ReissueOutcome> {
     const now = this.clock();
-    const live = await this.codes.findLive(userId, now);
-    if (live && opts.respectFloor && now.getTime() - live.createdAt.getTime() < REISSUE_FLOOR_MS) {
+
+    // THE FLOOR KEYS ON THE LAST MINT, NOT ON A LIVE CODE (M14 review). It used
+    // to be checked only when `findLive` returned a row — but a send that fails
+    // RETIRES its code, so in exactly the state where sends are failing there
+    // was no live code, the floor was skipped, and this route had no rate limit
+    // at all. `lastMintedAt` answers the question the floor was always asking:
+    // how recently did we mail this address.
+    const lastMinted = await this.codes.lastMintedAt(userId);
+    if (
+      opts.respectFloor &&
+      lastMinted !== null &&
+      now.getTime() - lastMinted.getTime() < REISSUE_FLOOR_MS
+    ) {
       return 'too_soon';
     }
-    if (live) {
-      // Re-issuing retires the previous code, so exactly one is ever usable and
-      // a code the user gave up on cannot be redeemed later by whoever else saw
-      // it. The retirement is audited: a code that stopped working is a fact an
-      // investigation may need (M13's reasoning).
-      await this.codes.revokeLive(userId, now);
+
+    const live = await this.codes.findLive(userId, now);
+    // RETIRE UNCONDITIONALLY, and this is the M14 review's worst finding fixed.
+    // `revokeLive`'s predicate matches the PARTIAL UNIQUE INDEX, which cannot
+    // carry an expiry clause; `findLive`'s carries the clock. Calling this only
+    // when a code was LIVE meant a lapsed row kept occupying the index forever:
+    // the next insert took the unique violation, `mintAndSend` answered
+    // `too_soon`, and the account could never be verified again — so every M14
+    // arming gate refused it permanently. Ignoring the first email was enough
+    // to trigger it.
+    const retired = await this.codes.revokeLive(userId, now);
+    if (retired && live !== null) {
+      // Audited only when a USABLE code was retired. Clearing a lapsed or
+      // attempt-exhausted row is bookkeeping — it had already stopped working,
+      // so recording it as a retirement would put a fact in the trail that did
+      // not happen. (The repo's boolean was previously discarded here, which
+      // audited retirements that retired nothing.)
       await this.authEvents.insert({ userId, kind: 'email_verification.reissued' });
     }
 
@@ -270,7 +292,21 @@ export class EmailVerificationService {
       // NOT report success: "your address is verified" about an address the
       // delivery store cannot reach is the exact false assurance this
       // milestone exists to remove.
-      await this.recordFailure(userId, sessionId);
+      //
+      // RECORDED AS AN OUTAGE, NOT AS A FAILED VERIFICATION (M14 review). The
+      // user presented a CORRECT code — it has already been spent by the CAS
+      // above — and the platform is what could not finish. Emitting
+      // `email_verification.failed` here would put "this user failed a
+      // verification" in the one trail an investigator reads to decide whether
+      // somebody was guessing at a user's codes, and it inverts the M9 rule
+      // that a control firing must not read as an outage by making an outage
+      // read as a control firing.
+      await this.authEvents.insert({
+        userId,
+        sessionId,
+        kind: 'email_verification.unavailable',
+      });
+      await this.events.emailVerificationUnavailable(userId, sessionId);
       throw new BadRequestException({ error: 'verification_unavailable' });
     }
 

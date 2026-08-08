@@ -28,9 +28,12 @@ const EnvSchema = z
     // Comma-separated broker list. Optional in dev/test; REQUIRED in
     // production — every send and every recipient change is an audited action.
     KAFKA_BROKERS: z.string().optional(),
-    // INBOUND #1 — SENDING. Held by vault + settlement. Lets a holder fire one
-    // of nine closed template kinds at a user; the wire has no text field, so
-    // it chooses neither the words nor the destination (credential-graph.ts).
+    // INBOUND #1 — SENDING. Held by vault, settlement and (since M13) profile.
+    // Lets a holder fire one of ten closed ESTATE template kinds at a user; the
+    // wire has no text field, so it chooses neither the words nor the
+    // destination (credential-graph.ts). Since M14 the RESPONSE also reports
+    // whether that user had proved their address — see the STATUS edge for what
+    // remains exclusive to it.
     NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
     // INBOUND #2 — RECIPIENTS. Held by IDENTITY ALONE, and deliberately a
     // different secret from the one above: this one decides WHERE a user's
@@ -44,10 +47,11 @@ const EnvSchema = z
     // off #1 because identity must not be able to fire an estate alarm, and off
     // #2 because that one can REPOINT an address while this one cannot.
     NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: z.string().optional(),
-    // INBOUND #4 — RECIPIENT STATUS (M14). Held by identity today; vault and
-    // profile join in PR2, where the two ARMING gates start asking. One
-    // boolean about one named user, no address and no timestamp. Off #1
-    // because settlement sends and never asks.
+    // INBOUND #4 — RECIPIENT STATUS (M14). Held by identity, vault and profile;
+    // the latter two ask at their ARMING gates. One boolean about one named
+    // user, no address and no timestamp. Off #1 because settlement sends and
+    // never asks — and what this edge withholds from a send holder is the
+    // SILENT read, not the bit itself (the send response carries it too).
     NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
     // Which carrier delivers email. 'stub' records without delivering
     // (dev/test); 'ses' is the real adapter. Production REQUIRES 'ses' — see

@@ -160,8 +160,11 @@ describe('a claimed link is never silently unnotified', () => {
         return Promise.resolve();
       },
       contactLinkNotificationsRefused: () => Promise.resolve(),
-      contactLinkUnverifiedRecipient: (owner: string) => {
-        unverified.push(owner);
+      contactLinkUnverifiedRecipient: (owner: string, _redeemer: string, contactId: string) => {
+        // The contact id is asserted because it was NULL until the M14 review:
+        // without it an investigator cannot attach "the owner was told at an
+        // unproved address" to the authorization edge that was created.
+        unverified.push(`${owner}:${contactId}`);
         return Promise.resolve();
       },
     };
@@ -235,7 +238,7 @@ describe('a claimed link is never silently unnotified', () => {
     const { service, claims, unverified } = buildRedeem({ ownerVerified: false });
     await service.redeem(REDEEMER, CODE);
     expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'delivered' }]);
-    expect(unverified).toEqual([OWNER]);
+    expect(unverified).toEqual([`${OWNER}:${CONTACT}`]);
   });
 
   it('records NOTHING extra once the owner has proved their address', async () => {

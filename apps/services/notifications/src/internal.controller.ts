@@ -99,11 +99,16 @@ export class VerificationController {
  * own.
  *
  * This is the question three shipped fail-closed gates have always ASSUMED and
- * never asked. It is a read of DELIVERY STATE, which is why it is not on the
- * send credential: settlement sends and never asks (its §5.1 gates proceed on
- * an unverified recipient and record it), so putting the read there would grant
- * settlement a capability it has no use for and make the send edge's promise
- * that it "exposes no delivery state" untrue.
+ * never asked. It is its own credential because settlement sends and never asks
+ * (its §5.1 gates proceed on an unverified recipient and record it), so a
+ * standalone read is a capability settlement has no use for.
+ *
+ * WHAT THE SPLIT ACTUALLY BUYS, corrected by the M14 review: the send response
+ * carries `recipientVerified` too, so a send holder can obtain the same bit by
+ * mailing the user. This route withholds the SILENT read — no alarm reaches the
+ * subject, no send-log row, no audit event. An earlier version of this comment
+ * claimed the send edge exposed no delivery state at all, which was false the
+ * moment PR2 shipped.
  *
  * It returns no address and no timestamp, and writes nothing.
  */

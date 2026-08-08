@@ -183,6 +183,34 @@ describe('HttpNotificationsClient.send — the recipient-verified passthrough (M
   });
 });
 
+describe('HttpNotificationsClient transport failures', () => {
+  it('narrows a body that is not JSON to the failure outcome, never throwing', async () => {
+    // A 200 whose body cannot be parsed is the one transport failure the other
+    // cases do not reach: `requestJson` catches it and returns null, so every
+    // method degrades to its own recorded non-outcome rather than throwing into
+    // a caller that has no error path (the M9 SendOutcome discipline).
+    const fetchImpl: FetchLike = () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new Error('not json')),
+      });
+    const client = new HttpNotificationsClient({
+      notificationsUrl: 'http://n',
+      credentials: { send: 's', recipients: 's', verification: 's', status: 's' },
+      fetchImpl,
+    });
+
+    expect(await client.send({ userId: USER, kind: 'vault.reset' })).toEqual({ accepted: false });
+    expect(await client.upsertRecipient({ userId: USER, email: 'a@b.c' })).toEqual({ ok: false });
+    expect(await client.markRecipientVerified({ userId: USER })).toEqual({ ok: false });
+    expect(await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' })).toEqual({
+      accepted: false,
+    });
+    expect(await client.recipientStatus(USER)).toBeNull();
+  });
+});
+
 describe('HttpNotificationsClient.upsertRecipient', () => {
   it('PUTs the recipient and reports ok on the literal contract answer', async () => {
     const { fetchImpl, calls } = transportDouble(() => ({

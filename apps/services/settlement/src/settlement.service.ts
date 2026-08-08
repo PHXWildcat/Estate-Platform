@@ -25,7 +25,7 @@ import { Db, isUniqueViolation } from './db';
 import { DocumentsHoldError, type DocumentsHoldPort } from './documents-hold';
 import { EventsService } from './events.service';
 import { IdentityLockError, OwnerAliveError, type IdentityLockPort } from './identity-lock';
-import type { NotificationPort } from './notifications';
+import type { NotificationPort, NotifyOutcome } from './notifications';
 import { OperatorsRepo } from './operators.repo';
 import { SettingsRepo, DEFAULT_WAITING_PERIOD_DAYS } from './settings.repo';
 import { TasksRepo } from './tasks.repo';
@@ -793,42 +793,51 @@ export class SettlementService {
   }
 
   private async notifyOwner(kind: 'case_opened' | 'owner_contact', row: CaseRow): Promise<void> {
+    let outcome: NotifyOutcome = { delivered: false, recipientVerified: false };
     try {
-      const outcome = await this.notifier.notify({
+      outcome = await this.notifier.notify({
         kind,
         ownerUserId: row.decedent_user_id,
         caseId: row.id,
         ...(row.waiting_period_ends ? { waitingPeriodEnds: row.waiting_period_ends } : {}),
       });
-      // M14, PROCEED-AND-RECORD. This is the case the classification exists
-      // for: the actor is a reporter or an operator and the recipient is the
-      // DECEDENT, so refusing on an unverified address would deny a legitimate
-      // reporter the §5.1 chain — hardest for the dormant owner a fraudulent
-      // report actually targets, whose address is stalest because the only
-      // self-heal was a login and whose account cannot log in once verified.
-      //
-      // The case still opens. What must not happen is that it opens LOOKING
-      // like the owner had a chance to interrupt it. §5.1's control 3 is a
-      // waiting period the owner can void; announcing it to an address nobody
-      // proved is not that control, and an operator reviewing this case — or
-      // an investigation reading it afterwards — has to be able to see the
-      // difference.
-      if (outcome.delivered && !outcome.recipientVerified) {
-        await this.events.audit.emit({
-          action: 'settlement.unverified_recipient',
-          actorId: null,
-          actorType: 'system',
-          onBehalfOf: row.decedent_user_id,
-          resourceType: 'settlement_case',
-          resourceId: row.id,
-          sessionId: null,
-          detail: { kind },
-        });
-      }
     } catch {
       // Delivery failure is non-fatal: the attempt row + audit event record
       // that contact was attempted, and (M9) the notifications service's own
       // send log records the outcome. Contact liveness degrades; safety never.
+    }
+    // M14, PROCEED-AND-RECORD. This is the case the classification exists
+    // for: the actor is a reporter or an operator and the recipient is the
+    // DECEDENT, so refusing on an unverified address would deny a legitimate
+    // reporter the §5.1 chain — hardest for the dormant owner a fraudulent
+    // report actually targets, whose address is stalest because the only
+    // self-heal was a login and whose account cannot log in once verified.
+    //
+    // The case still opens. What must not happen is that it opens LOOKING
+    // like the owner had a chance to interrupt it. §5.1's control 3 is a
+    // waiting period the owner can void; announcing it to an address nobody
+    // proved is not that control, and an operator reviewing this case — or
+    // an investigation reading it afterwards — has to be able to see the
+    // difference.
+    // OUTSIDE the delivery catch, deliberately. M14 first put this emit inside
+    // it, where a broker failure on the EVIDENCE would be swallowed by a catch
+    // written for a CARRIER failure — two different faults sharing one silence.
+    // The M14 review judged the loss narrow (the notifications service's own
+    // send log records `sent_unverified` durably, and a broker outage would
+    // usually have failed the unwrapped `caseReported` emit moments earlier),
+    // but the vault sibling propagates and the M13 rule is that an audit emit
+    // is loud. Consistency with those is worth more than the swallow.
+    if (outcome.delivered && !outcome.recipientVerified) {
+      await this.events.audit.emit({
+        action: 'settlement.unverified_recipient',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: row.decedent_user_id,
+        resourceType: 'settlement_case',
+        resourceId: row.id,
+        sessionId: null,
+        detail: { kind },
+      });
     }
   }
 

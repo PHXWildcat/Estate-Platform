@@ -229,14 +229,25 @@ export class EventsService {
    * version of that than `ownerNotified: 'delivered'` alone suggests. The
    * OWNER is the subject; the actor is the redeemer, as on the claim itself.
    */
-  async contactLinkUnverifiedRecipient(ownerUserId: string, redeemerId: string): Promise<void> {
+  async contactLinkUnverifiedRecipient(
+    ownerUserId: string,
+    redeemerId: string,
+    contactId: string,
+  ): Promise<void> {
     await this.audit.emit({
       action: 'contact.link.unverified_recipient',
       actorId: redeemerId,
       actorType: 'user',
       onBehalfOf: ownerUserId,
+      // The CONTACT, as everywhere else in this ceremony — "resourceId is the
+      // CONTACT throughout, so the whole life of one link reads as one thread".
+      // It was null here, which dropped the join key an investigator needs to
+      // attach "the owner was told at an unproved address" to the specific
+      // authorization edge that was created (M14 review). The null IS correct
+      // on `contactLinkNotificationsRefused`, where nothing has been looked up
+      // yet.
       resourceType: 'contact',
-      resourceId: null,
+      resourceId: contactId,
       sessionId: null,
     });
   }

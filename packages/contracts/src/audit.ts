@@ -159,6 +159,13 @@ export const AUDIT_ACTIONS = [
   'auth.email_verification.sent',
   'auth.email_verification.verified',
   'auth.email_verification.failed',
+  // M14 review: the user presented a CORRECT code and the PLATFORM could not
+  // finish (the delivery store had no live row to vouch for, or was
+  // unreachable). Kept apart from `.failed` because that action is the trail an
+  // investigator reads to decide whether somebody was guessing at a user's
+  // codes, and an outage counted there is a false positive in exactly that
+  // judgement.
+  'auth.email_verification.unavailable',
   // The M6/M7 capability gates firing (503 notifications_unavailable) — a
   // control refusing is a fact the audit stream must carry, or it reads as an
   // outage.

@@ -2770,6 +2770,106 @@ on its own:
   percent, zero placeholders — made the branch a hard error. An exception nobody
   triggers in a test is an exception nobody has read.
 
+### M14 — address ownership (shipped 2026-08-07)
+
+The milestone that makes three shipped fail-closed controls mean what they
+claim. Full threat-model delta in docs/03 §6h; the design decisions are in
+CLAUDE.md's log. Four PRs:
+
+- **PR0 (#47)** — `notification_sends`' kind CHECK had fallen behind the wire
+  enum since M13, and the path was LIVE (`PROFILE_NOTIFY_MODE=http` in both
+  stack profiles). Every real link claim mailed the owner, threw on the INSERT,
+  emitted no `notification.sent`, and recorded `ownerNotified: "failed"` about
+  an owner who HAD been warned — an audit claim that INVERTS rather than a row
+  that is merely missing. Split out because a live defect must not hide inside
+  a feature branch.
+- **PR1 (#48)** — the ceremony, plus two new credential-graph edges
+  (`NOTIFICATIONS_VERIFY_INTERNAL_TOKEN`, `NOTIFICATIONS_STATUS_INTERNAL_TOKEN`)
+  and every fence. The fence was made RED FIRST (10 failing assertions) and
+  green after.
+- **PR2 (#49)** — the gate classification applied per call site, the
+  `recipientVerified` port method, and `sent_unverified`. Proven live under full
+  production config: escrow configure refused, the ceremony ran against a real
+  SES message, the same request was admitted, and settlement intake proceeded
+  while recording — the whole table in one audit trail.
+- **PR3 (#50)** — the surface: an app-wide banner and the Security-page
+  ceremony.
+
+#### M14 security review (2026-08-07)
+
+Five discovery lenses over NAMED FILE LISTS (never a diff range — the M13
+lesson), then two adversarial verifiers per candidate on different angles
+(production reachability; already-a-decision), both told to default to refuted.
+The verifiers refuted or downgraded five of the candidates put to them, which is
+the point of running them.
+
+EIGHTH milestone running where every confirmed finding sits in machinery the
+milestone introduced, and most falsify a claim it made about itself. Two were
+load-bearing, and both were mine.
+
+1. **AN EXPIRED CODE WEDGED THE ACCOUNT PERMANENTLY.** The partial unique index
+   enforcing "one live code per user" cannot carry an expiry predicate — a
+   partial index cannot reference `now()` — while `findLive`, which decided
+   whether to retire the old code, could. Retirement ran only when `findLive`
+   saw a row, so once a code lapsed nothing ever cleared it: the next insert
+   took the unique violation, the ceremony answered `too_soon` forever, and the
+   account could never be verified again. Every M14 arming gate then refused it
+   permanently. The trigger was ignoring the first email. M14 had replaced "the
+   gate is satisfied without proof" with "the gate can never be satisfied".
+   THREE claims contradicted it, including an int-spec comment asserting a
+   re-mint the test never checked — the M13 "a test named for a property it
+   never touched" shape, reproduced. Fixed by retiring unconditionally, keyed on
+   the index's own predicate; `findLive` now also matches `verify()` on
+   `attempts`, so all three notions of liveness agree.
+2. **THE RESEND ROUTE HAD NO RATE LIMIT WHEN SENDS WERE FAILING.** The
+   re-issue floor was checked only when a live code existed — but a send that
+   fails RETIRES its code, so in exactly the state where sends fail there was no
+   live code and the floor was skipped entirely. The floor keys on the last MINT
+   now, which is the question it was always asking.
+3. **VAULT RESET RECORDED EVERY NOTIFICATION AS DELIVERED.** PR2 changed the
+   port from throw-based to outcome-based and updated every call site except
+   `vault.service.ts` — so the `catch` was unreachable and `deliveredAt` was
+   stamped unconditionally, on the one route where a bearer token destroys a
+   Zone A vault and where that record is the only compensating control the
+   route's own docstring names. Reset also discarded `recipientVerified`, so it
+   was the one path that could never emit the evidence event.
+4. **A CRYPTO-SHREDDED RECIPIENT STILL VOUCHED FOR ITSELF.** Shredding destroys
+   the DEK, not the row, so `findStatus` answered `verified: true` for an
+   address the service could no longer decrypt: the arming gates would ARM while
+   every alert recorded `carrier_failure`. Migration 003 claimed the opposite as
+   "fail-closed by construction" and said the specs asserted it; only the
+   soft-delete half was tested. Latent (no in-repo caller destroys a DEK) and
+   fixed anyway, because it arms itself the day an erasure route lands.
+5. **THE VERIFICATION CODE FIELD ACCEPTED 64 CHARACTERS OF ENGLISH.**
+   `/^[0-9A-Z-]+$/` against a minting alphabet that excludes I, L, O and U, next
+   to a comment claiming it "admits identity's alphabet and nothing else". The
+   pattern now lives in the WIRE CONTRACT both services import, with an identity
+   spec asserting every minted code satisfies it — one declaration instead of
+   two free to drift, which is why the obvious fix (tighten the regex locally)
+   was rejected.
+6. **I SILENTLY DISABLED A FENCE.** The credential-graph spec matched outbound
+   wiring with `/(?:serviceCredential|credential)\s*:\s*config\.(\w+)/`; PR1
+   changed every notifications client to `credentials: { send: config.X }`,
+   which that regex does not match. Identity, profile and notifications were
+   checked on ZERO credentials. The scan is keyed on the CONFIG FIELD now — a
+   property name is a caller's choice and can be renamed into invisibility,
+   which is exactly what happened — and it carries the anti-vacuity floor the
+   file header already claimed every scan had.
+
+Also fixed: an outage recorded as a failed verification (`verification_
+unavailable` now has its own action, so it cannot pollute the trail that says
+somebody is guessing at a user's codes); the send edge's `grants` sentence and
+three restatements of it, which claimed no delivery state was exposed; a BFF
+interface docstring that would have led a second implementation straight back
+into the M12 `INVALID_CREDENTIALS` collision; profile's evidence event dropping
+the contact id it held; and settlement's evidence emit sharing a catch written
+for carrier failures.
+
+**The root cause of four of the ten**, named by a verifier: M14 shipped 84 files
+of code and ZERO lines of documentation, so every sentence it invalidated was
+still standing — including a citation pointing at a docs/03 §6c passage that
+recorded the opposite. docs/03 §6h now exists and that citation points at it.
+
 ### Later milestones (rough order, one per bounded context)
 Referral · search · the M5 cloud half, reduced by what M8 took over.
 Settlement came late deliberately: highest-risk domains land on mature

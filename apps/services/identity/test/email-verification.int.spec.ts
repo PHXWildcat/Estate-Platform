@@ -98,6 +98,9 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
     expect(Object.getOwnPropertyNames(EmailVerificationRepo.prototype)).toEqual([
       'constructor',
       'findLive',
+      // M14 review: the re-issue floor keys on the last MINT rather than on a
+      // live code, so a failed send (which retires its code) cannot skip it.
+      'lastMintedAt',
       'insert',
       'findByCode',
       'countAttempt',
@@ -118,6 +121,78 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
       repo.markVerified(row!.id, NOW),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  /**
+   * THE M14 REVIEW'S WORST FINDING, pinned against a real database.
+   *
+   * `ux_email_verifications_live` is `WHERE revoked_at IS NULL AND verified_at
+   * IS NULL` — a partial index cannot reference `now()`, so a LAPSED row still
+   * occupies the live slot. `findLive` carries the clock and therefore sees
+   * nothing. The service used to retire only when `findLive` returned a row, so
+   * once a code lapsed nothing ever cleared it: the next insert took the unique
+   * violation, the ceremony answered `too_soon` forever, and the account could
+   * never be verified — permanently refusing every M14 arming gate. Ignoring
+   * the first email was the whole trigger.
+   *
+   * The earlier version of this suite asserted only that `findLive` returns
+   * null "so the service re-mints rather than waiting" — and never asserted the
+   * re-mint. That is the M13 lesson (a test named for a property it never
+   * touched) and it is why this shipped, so the assertion below is the one that
+   * was missing: a LAPSED row must not block the next insert.
+   */
+  it('a LAPSED code does not wedge the live slot: retire then re-mint', async () => {
+    const stuck = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id)
+       VALUES ($1, $2, $3, 'x', $4)`,
+      [stuck, Buffer.from('ct'), Buffer.from('bidx-stuck'), randomUUID()],
+    );
+    await repo.insert({
+      userId: stuck,
+      codeSha256: sha('lapsed-wedge'),
+      expiresAt: new Date(NOW.getTime() - 1),
+    });
+
+    // The state that used to be terminal: nothing live, but the slot is taken.
+    expect(await repo.findLive(stuck, NOW)).toBeNull();
+    await expect(
+      repo.insert({ userId: stuck, codeSha256: sha('blocked'), expiresAt: LATER }),
+    ).rejects.toBeInstanceOf(VerificationRaceError);
+
+    // `revokeLive`'s predicate matches the INDEX, not `findLive`, so it clears
+    // a lapsed row — which is why the service can now call it unconditionally.
+    expect(await repo.revokeLive(stuck, NOW)).toBe(true);
+    await expect(
+      repo.insert({ userId: stuck, codeSha256: sha('re-minted'), expiresAt: LATER }),
+    ).resolves.toEqual(expect.any(String));
+  });
+
+  it('an ATTEMPT-EXHAUSTED code does not read as live to the mint decision', async () => {
+    // The third disagreeing predicate. `verify()` treats an exhausted code as
+    // dead; `findLive` used to treat it as live, so a user who mistyped five
+    // times waited out the re-issue floor for a code that could never work.
+    const burned = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id)
+       VALUES ($1, $2, $3, 'x', $4)`,
+      [burned, Buffer.from('ct'), Buffer.from('bidx-burned'), randomUUID()],
+    );
+    await repo.insert({ userId: burned, codeSha256: sha('burned'), expiresAt: LATER });
+    const row = await repo.findByCode(sha('burned'));
+    for (let i = 0; i < MAX_VERIFY_ATTEMPTS; i += 1) {
+      await repo.countAttempt(row!.id);
+    }
+    expect(await repo.findLive(burned, NOW)).toBeNull();
+  });
+
+  it('lastMintedAt sees a code whatever became of it — the floor cannot be skipped', async () => {
+    // The floor used to be checked only when a live code existed, so a failed
+    // send (which retires its code) left the resend route with no rate limit at
+    // all. `lastMintedAt` answers "how recently did we mail this address",
+    // which is the question the floor was always asking.
+    const revoked = await repo.lastMintedAt(user);
+    expect(revoked).not.toBeNull();
   });
 
   it('refuses to spend an expired code even when nothing else retired it', async () => {

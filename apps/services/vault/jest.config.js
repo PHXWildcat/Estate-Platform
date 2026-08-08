@@ -12,6 +12,9 @@
 // settlement gate arrived with its own tests), so the floor ratchets UP.
 // M14 PR2 (the verified-recipient gates) re-measured at 89.84/73.84/93.12/90.98;
 // ratcheted UP to match. Never lower this floor.
+// M14 security review re-measured at 90.62/74.73/94.17/91.82; ratcheted UP. The review
+// added the vault notification adapters' first specs and the client's
+// transport-failure case.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 89, branches: 73, functions: 93, lines: 90 } },
+  coverageThreshold: { global: { statements: 90, branches: 74, functions: 94, lines: 91 } },
 });
