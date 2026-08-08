@@ -1875,3 +1875,150 @@ deviating from them, stop and propose the change with rationale — do not silen
   The point of the entry is that the gate goes GREEN: a permanently red scan is
   one where the NEXT finding is invisible, which is the M5 base-image-gate
   lesson arrived at from the other direction.
+- 2026-08-07 — M14 is ADDRESS OWNERSHIP, and the defect it closes is that three
+  shipped fail-closed controls rested on an assumption docs/03 §6c itself
+  recorded as unverified. M6 emergency access (§5.2), M7 settlement
+  intake/review-approve (§5.1) and M13's link ceremony (§6g) all refuse in
+  production rather than proceed silently — but all three test
+  `deliversToRealChannels`, which is A PROPERTY OF THE ADAPTER, NOT OF THE
+  RECIPIENT: a hardcoded literal on whichever adapter class that service's own
+  `NOTIFY_MODE` selected, declared independently three times, `false` on the
+  stub and `true` on the HTTP one. It asks whether SES is wired. It never asks
+  whether the stored address belongs to the owner, and could not, because the
+  bit never leaves the process and never names a recipient. Meanwhile identity
+  fed the delivery store whatever was typed, at registration and at EVERY login,
+  and `users.email_verified_at` had sat unread and unwritten since M1. So the
+  gate was satisfied, the escrow armed or the five-day clock started, and the
+  owner's ability to INTERRUPT — the entire content of §5.2 and of §5.1's
+  control 3 — was unenforced. The sharp part is an anti-correlation: the only
+  self-heal was the login-time re-feed, so the address is freshest for active
+  users and STALEST for the dormant owner a fraudulent death report actually
+  targets — and once status is `settlement`, login is blocked, so it can never
+  heal at all.
+- 2026-08-07 — M14 PR0, found while scoping and split out because a live defect
+  must not hide inside a feature branch: `notification_sends`'s kind CHECK had
+  fallen behind the wire enum since M13. `contact.link_claimed` was on the wire,
+  in the template registry and in profile's adapter, and NOT in the DDL — and
+  `PROFILE_NOTIFY_MODE=http` in BOTH stack profiles, so the path was live. The
+  row is recorded AFTER the carrier hand-off and OUTSIDE the try/catch, so every
+  real link claim mailed the owner, threw on the INSERT, emitted no
+  `notification.sent`, and made profile record `contact.link.claimed
+  {"ownerNotified":"failed"}` ABOUT AN OWNER WHO HAD BEEN WARNED. That inverts
+  an audit claim rather than losing a row: `ownerNotified: 'failed'` exists so
+  an operator can re-drive a notification the owner never got (§6g), and here it
+  would duplicate one they already had while the real signal — this kind cannot
+  be logged at all — read as an ordinary carrier failure. MEASURED on the
+  running stack, not reasoned about: LocalStack's SES inbox held the body,
+  `notification_sends` held no row of that kind, and both claim events said
+  "failed"; after the fix a fresh ceremony records `sent` / "delivered".
+  Nothing caught it because the unit suite fakes the repo (no CHECK to violate),
+  the int suite exercised three kinds by hand and none was the new one, and the
+  stack e2e polls for an audit event whose shape is identical either way. The
+  int suite now drives EVERY kind DERIVED FROM the enum, and the stack e2e
+  asserts the send LOG rather than only the event.
+- 2026-08-07 — M14 gate classification: A VERIFIED ADDRESS GATES
+  CAPABILITY-ARMING ACTIONS, NOT CASE-OPENING ONES. Arms (require verified):
+  vault escrow `configure`, vault `rearm`, profile link-code `invite`. Proceeds
+  and RECORDS `unverified_recipient`: vault `request`/`release`, profile
+  `redeem`, settlement `report`/`reportProviderSignal`/review-approve. The
+  discriminator is that in the second group THE ACTOR AND THE NOTIFICATION
+  RECIPIENT ARE DIFFERENT PEOPLE, so blocking on the OWNER's unverified address
+  would let an owner's own typo permanently deny a legitimate grantee, redeemer
+  or reporter — the M6 rule that the protective action must never be harder,
+  pointed the other way — and applied to §5.1 intake it would become a denial of
+  service for exactly the unverified dormant owner (M12's "fail closed without
+  trapping the owner"). `rearm` lands in the first group though the brief did not
+  enumerate it: it restores a grantee's ability to start the §5.2 clock and
+  actor == recipient, so refusing costs the owner an action they can unblock
+  themselves. Corrections to the brief's own table, both verified in code:
+  `release` had NO gate to reclassify (it notifies after the fact), and profile's
+  `invite` had none either — so M14 ADDS a precondition there rather than
+  tightening one.
+- 2026-08-07 — M14 decision 2, an APPROVED DEVIATION from M9's content doctrine,
+  taken one notch narrower than proposed. The platform now mails a variable that
+  is not a date. It is a typed `code` and never a `text` field, it is
+  PLATFORM-AUTHORED (`randomBytes`, never derived from anything a user or caller
+  wrote), opaque, single-use and short-lived; the subject is unchanged and there
+  is still NO LINK, so "we never link you" stays literally true. Implemented as
+  a SEPARATE port method and route (`POST /internal/v1/notifications/verification`)
+  rather than a widened `send`: `NotificationSendInput` keeps zero variable
+  content beyond the deadline, and — the reason that matters — `SendSchema` is
+  built from a new `ESTATE_NOTIFICATION_KINDS` that EXCLUDES the verification
+  kind, because a send-credential holder naming it on the shared wire would mail
+  "enter this code: undefined", authored by a secret vault, settlement and
+  profile all hold. `NOTIFICATION_KINDS` stays the union and is the send LOG's
+  vocabulary, so every kind is still logged; the three sending services' adapters
+  are typed over the narrower union so they structurally cannot name it either.
+- 2026-08-07 — M14 credentials: TWO new edges on the notifications callee, not
+  one. `NOTIFICATIONS_VERIFY_INTERNAL_TOKEN` (identity alone) mails the code;
+  `NOTIFICATIONS_STATUS_INTERNAL_TOKEN` reads the verified bit (identity in PR1;
+  vault + profile join in PR2, in the SAME change as the clients, the
+  DOCUMENTS_INTERNAL_TOKEN rule). Identity deliberately does NOT join the SEND
+  holders — the service that mints sessions must not be able to ring "a death
+  report was filed on your account" — and the graph's `identity is deliberately
+  NOT here` comment was REWRITTEN to say exactly that rather than deleted. VERIFY
+  is separate from RECIPIENTS despite an identical holder because RECIPIENTS can
+  REPOINT an address and VERIFY can only mail to what is already on file, so the
+  first future holder of a resend capability does not inherit the power the M9
+  review split out. STATUS is separate from SEND because settlement holds SEND and
+  never asks (its gates proceed and record), so folding the read in would violate
+  `holders` minimality AND make the send edge's promise that it "exposes no
+  delivery state" untrue — the sentence was kept true verbatim rather than
+  hedged. Vouching for an address rides the RECIPIENTS credential: setting one and
+  declaring it proved are the same capability class. Both service configs now run
+  a FULL PAIRWISE aliasing loop derived from a list rather than a hand-written
+  `if` per pair — the M9 split left one `if`, correct only while there were two.
+  The fence was made RED FIRST (10 failing assertions) and green after.
+- 2026-08-07 — M14 decision 4: the ceremony fires at FIRST AUTHENTICATED LOGIN,
+  never at registration, so docs/03 §6c's mitigation ("no notification kind fires
+  at registration") stays literally true — an unauthenticated route would be a
+  mail-bomb and sender-reputation primitive and this repo has no rate-limiting
+  machinery. Two consequences, each easy to get wrong. It is CHAINED onto the
+  existing recipient upsert rather than fired beside it: the verification send
+  resolves the address from the recipient store, so on a first login the two
+  racing would leave the send with nothing to mail, every time. And the whole
+  chain stays fire-and-forget, so login latency is never coupled to SES.
+  Idempotence is the point — mint only when unverified AND no live code exists
+  AND the last mint is older than a five-minute floor — enforced by a PARTIAL
+  UNIQUE INDEX (`WHERE revoked_at IS NULL AND verified_at IS NULL`) rather than
+  check-then-act, so two concurrent logins produce one code and the loser adopts
+  it. A send that does not land RETIRES its code, or the idempotence guard turns
+  into a TTL-long lockout over a mail nobody received. Deliberately still open
+  and stated in docs/03 rather than dropped: the fixed-shape/fixed-time register
+  response for the M1 enumeration timing channel.
+- 2026-08-07 — M14 decision 5: the verified bit lives on
+  `notification_recipients`, NOT on `users`, so the delivery store structurally
+  cannot hold an unproven address without saying so and the question "can we
+  actually reach this owner?" is answered by the store that would have to do the
+  reaching. `users.email_verified_at` stays dead rather than becoming a second
+  source of truth. FOUR consequences, each asserted rather than assumed. (a) The
+  port shape had to change and THAT IS THE FIX: `deliversToRealChannels` was not
+  on the shared wire at all, so a per-recipient answer needed a new route, a new
+  client method, and a per-service port method — making this the FIRST NETWORK
+  ROUND TRIP these gates have ever performed, which is why `recipientStatus`
+  returns `null` for UNANSWERABLE rather than flattening to `false`: before M14
+  the check could not fail, so no call site had an error path, and each must now
+  state what an outage means for its own gate instead of inheriting it. (b) The
+  login re-feed CANNOT clobber the bit, because login resolves the user by
+  `email_bidx` first, so the address a login carries is by construction the one
+  on file — that reasoning lives in a comment next to the upsert, with the
+  forward commitment that THE DAY AN ADDRESS-CHANGE ROUTE EXISTS IT INHERITS THE
+  OBLIGATION TO CLEAR THE BIT. No blind index; M9's decision intact. (c) The
+  versions trigger captures the new column with no trigger change (whole-row
+  `to_jsonb(OLD)`) and (d) the bit dies with the row, so a shredded or
+  soft-deleted recipient loses verification with its address and the arming gates
+  refuse by construction — both proved against real Postgres, because a "free"
+  consequence is exactly the kind of claim that turns out to be wrong.
+- 2026-08-07 — M14 PR1 was driven live before being called done, and the whole
+  ceremony was observed against the running stack: registration mailed NOTHING,
+  login produced a real SES message carrying a 160-bit `EV1-…` code, a wrong code
+  of the right shape got the uniform `invalid_code`, the code RETYPED THE WAY A
+  HUMAN RETYPES IT (lowercase, dashes dropped) was accepted — which is the M13
+  canonical-fold lesson applied at the point of use — the status flipped to
+  verified, a replay was refused, a resend answered `already_verified`, and a
+  second login mailed nothing. `email_verifications` holds a 32-byte digest and
+  no code; the wrong guess did NOT count against the attempt cap (an unknown code
+  has no row) while the replay did; and both services' audit events landed with
+  EMPTY details, because a trail that named which refusal fired would re-create
+  through the audit stream exactly the oracle the uniform answer removes from the
+  wire.

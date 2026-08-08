@@ -41,6 +41,29 @@ export class EventsService {
     });
   }
 
+  /**
+   * The user proved they receive mail at the stored address (M14).
+   *
+   * DISTINCT FROM `recipientUpdated` on purpose. That event fires on every
+   * login and cannot attribute a change (docs/03 §6c records it as evidence
+   * for recovery, never a detection control); this one fires once per address,
+   * marks the moment three arming gates start trusting it, and is therefore
+   * the event an investigation actually wants. Ids only, as ever: which
+   * address was proved is exactly what this stream must not carry.
+   */
+  async recipientVerified(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'notification.recipient.verified',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: userId,
+      resourceType: 'notification_recipient',
+      resourceId: userId,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
   /** Identity registered or refreshed a user's delivery address. */
   async recipientUpdated(userId: string): Promise<void> {
     await this.audit.emit({

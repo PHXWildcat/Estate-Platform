@@ -17,6 +17,7 @@ import type {
 } from '@simplewebauthn/server';
 import { z } from 'zod';
 import { AuthService, type IssuedTokens, type StepUpResult } from './auth.service';
+import { EmailVerificationService, type ReissueOutcome } from './email-verification.service';
 import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
 import { StepUpGuard } from './stepup.guard';
 import { WebAuthnService } from './webauthn.service';
@@ -40,6 +41,17 @@ const RefreshSchema = z.object({
 
 const CodeSchema = z.object({
   code: z.string().regex(/^\d{6}$/),
+});
+
+/**
+ * The mailed verification code. Shape only, bounded generously: the AUTHORITY
+ * is the digest lookup and the length is measured on the CANONICAL form inside
+ * the service, so a strict pattern here would only add a second place for the
+ * alphabet to drift — and a shape rejection that differed from a wrong-code
+ * rejection would be a free oracle for the format (M13's reasoning).
+ */
+const VerificationCodeSchema = z.object({
+  code: z.string().min(1).max(128),
 });
 
 // WebAuthn ceremony responses are validated for shape only here; the security
@@ -80,6 +92,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly webauthn: WebAuthnService,
+    private readonly emailVerification: EmailVerificationService,
   ) {}
 
   @Post('register')
@@ -154,6 +167,69 @@ export class AuthController {
     const { refreshToken } = parseBody(RefreshSchema, body);
     await this.auth.logoutByRefreshToken(refreshToken);
     return { status: 'ok' };
+  }
+
+  /**
+   * Whether the delivery store can provably reach this user (M14).
+   *
+   * A DEDICATED ROUTE rather than a field on `GET /v1/auth/session`. That route
+   * is the cross-service introspection hot path — every guarded request in
+   * every downstream service resolves through it — and giving it a
+   * notifications round trip would put a second service on the critical path of
+   * every authenticated call in the product. This one is read by a settings
+   * page.
+   *
+   * `unavailable` is its own state, not a `false`: telling a user "your address
+   * is unverified" during a notifications outage would send them to complete a
+   * ceremony that cannot run.
+   */
+  @Get('email/verification')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async emailVerificationStatus(
+    @Req() request: AuthedRequest,
+  ): Promise<{ status: 'verified' | 'unverified' | 'unavailable' }> {
+    const auth = requireAuth(request);
+    const status = await this.emailVerification.status(auth.userId);
+    if (status === null) {
+      return { status: 'unavailable' };
+    }
+    return { status: status.verified ? 'verified' : 'unverified' };
+  }
+
+  /**
+   * Send another code. Not step-up gated: it mails the address already on file
+   * for the calling user and grants nothing — the strongest thing a caller
+   * achieves is receiving their own mail. The floor between mints
+   * (`REISSUE_FLOOR_MS`) is the rate limit, and `too_soon` is reported honestly
+   * rather than dressed up as a send.
+   */
+  @Post('email/verification/resend')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async resendEmailVerification(
+    @Req() request: AuthedRequest,
+  ): Promise<{ outcome: ReissueOutcome }> {
+    const auth = requireAuth(request);
+    return { outcome: await this.emailVerification.reissue(auth.userId) };
+  }
+
+  /**
+   * Redeem a mailed code. THE CODE IS THE ONLY SELECTOR — the body carries no
+   * user id and no address, and the caller's own session supplies who they are.
+   * Every failure is the same `invalid_code`.
+   */
+  @Post('email/verification/verify')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async verifyEmail(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<{ verified: true }> {
+    const auth = requireAuth(request);
+    const { code } = parseBody(VerificationCodeSchema, body);
+    await this.emailVerification.verify(auth.userId, auth.sessionId, code);
+    return { verified: true };
   }
 
   @Post('totp/enroll')

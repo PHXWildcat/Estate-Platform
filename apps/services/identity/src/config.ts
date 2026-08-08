@@ -100,6 +100,22 @@ const EnvSchema = z
     // repoint any owner's alerts. Optional in dev/test — the client
     // short-circuits to a no-op while unset.
     NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND (M14): what this service PRESENTS to the notifications
+    // VERIFICATION-SEND route, to mail an address-verification code it minted.
+    // Identity is the sole holder, and it is a THIRD secret rather than a reuse
+    // of either neighbour: not the send credential, because identity must not
+    // be able to fire an estate alarm ("a death report was filed on your
+    // account"); not the recipients credential, because that one can REPOINT an
+    // address while this can only mail to whatever is already stored, so the
+    // first future holder of a resend capability does not inherit the power the
+    // M9 review split out.
+    NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND (M14): what this service PRESENTS to the notifications
+    // RECIPIENT-STATUS read route, to learn whether an address has been proved.
+    // Identity reads it to decide whether to mint a code at login and to answer
+    // the settings page; vault and profile join as holders in PR2, where the
+    // two ARMING gates start asking.
+    NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -183,29 +199,55 @@ const EnvSchema = z
             'NOTIFICATIONS_URL is required in production (an unfed recipient store silently starves the M6/M7 owner notifications)',
         });
       }
-      if (
-        !env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ||
-        env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN.length < 32
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
-          message:
-            'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN is required in production (>= 32 chars; recipient upserts must not be silently unauthenticated)',
-        });
+      const required = [
+        [
+          'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
+          'recipient upserts must not be silently unauthenticated',
+        ],
+        [
+          'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
+          'unwired, no verification code is ever mailed and every arming gate refuses forever',
+        ],
+        [
+          'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+          'unwired, identity cannot tell a verified address from an unverified one and stops asking',
+        ],
+      ] as const;
+      for (const [key, why] of required) {
+        const token = env[key];
+        if (!token || token.length < 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} is required in production (>= 32 chars; ${why})`,
+          });
+        }
       }
-      // One value must never authenticate both directions (the M7 collapse):
-      // splitting the fields cannot stop one value being pasted into both slots.
-      if (
-        env.IDENTITY_INTERNAL_TOKEN &&
-        env.IDENTITY_INTERNAL_TOKEN === env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
-          message:
-            'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN must differ from IDENTITY_INTERNAL_TOKEN (sharing one value hands the notifications recipient surface a key to the account-lock API)',
-        });
+      // A FULL PAIRWISE LOOP over every credential this service touches — its
+      // own inbound one and its three outbound ones. One value must never
+      // authenticate two directions (the M7 collapse), and splitting the fields
+      // cannot stop one value being pasted into several slots. Derived from the
+      // list rather than written pair by pair, because the hand-written form
+      // stays correct only until the next credential lands: this check was a
+      // single `if` when there were two, and M14 added two more.
+      const touched = [
+        'IDENTITY_INTERNAL_TOKEN',
+        'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
+        'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
+        'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+      ] as const;
+      for (let i = 0; i < touched.length; i += 1) {
+        for (let j = i + 1; j < touched.length; j += 1) {
+          const a = touched[i]!;
+          const b = touched[j]!;
+          if (env[a] && env[a] === env[b]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [b],
+              message: `${b} must differ from ${a} (sharing one value collapses two capability boundaries into one, which is the M7 failure)`,
+            });
+          }
+        }
       }
     }
   });
@@ -246,9 +288,14 @@ export interface IdentityConfig {
   readonly internalApiToken: string;
   /** Notifications service base URL (recipient-store feed; M9). */
   readonly notificationsUrl: string;
-  /** OUTBOUND: what this service presents to the notifications service
-   * ('' ⇒ the client short-circuits to a no-op). Never the inbound value. */
+  /** OUTBOUND: what this service presents to the notifications RECIPIENT
+   * routes ('' ⇒ the client short-circuits to a no-op). Never the inbound
+   * value. */
   readonly notificationsInternalToken: string;
+  /** OUTBOUND: presented to the notifications VERIFICATION-SEND route (M14). */
+  readonly notificationsVerifyToken: string;
+  /** OUTBOUND: presented to the notifications RECIPIENT-STATUS route (M14). */
+  readonly notificationsStatusToken: string;
 }
 
 export class ConfigError extends Error {
@@ -302,5 +349,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     internalApiToken: e.IDENTITY_INTERNAL_TOKEN ?? '',
     notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
     notificationsInternalToken: e.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ?? '',
+    notificationsVerifyToken: e.NOTIFICATIONS_VERIFY_INTERNAL_TOKEN ?? '',
+    notificationsStatusToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
   };
 }

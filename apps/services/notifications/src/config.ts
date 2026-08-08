@@ -39,6 +39,16 @@ const EnvSchema = z
     // M9 security review found both surfaces behind one secret, which handed
     // that power to vault and settlement, which only ever send.
     NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: z.string().optional(),
+    // INBOUND #3 — VERIFICATION SEND (M14). Held by IDENTITY ALONE. Mails one
+    // address-verification code to whatever address is already on file. Kept
+    // off #1 because identity must not be able to fire an estate alarm, and off
+    // #2 because that one can REPOINT an address while this one cannot.
+    NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: z.string().optional(),
+    // INBOUND #4 — RECIPIENT STATUS (M14). Held by identity today; vault and
+    // profile join in PR2, where the two ARMING gates start asking. One
+    // boolean about one named user, no address and no timestamp. Off #1
+    // because settlement sends and never asks.
+    NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
     // Which carrier delivers email. 'stub' records without delivering
     // (dev/test); 'ses' is the real adapter. Production REQUIRES 'ses' — see
     // the superRefine below.
@@ -99,6 +109,14 @@ const EnvSchema = z
           'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
           "an open recipient surface lets anyone redirect an owner's alerts",
         ],
+        [
+          'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
+          'an open verification surface lets anyone mail a user an unsolicited code',
+        ],
+        [
+          'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+          'an open status surface is an oracle for whether a named user has verified',
+        ],
       ] as const;
       for (const [key, why] of credentials) {
         const token = env[key];
@@ -110,18 +128,25 @@ const EnvSchema = z
           });
         }
       }
-      // Splitting the surfaces buys nothing if one value is pasted into both
-      // slots — the same reasoning settlement's config applies to its four.
-      if (
-        env.NOTIFICATIONS_INTERNAL_TOKEN &&
-        env.NOTIFICATIONS_INTERNAL_TOKEN === env.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN'],
-          message:
-            'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN must differ from NOTIFICATIONS_INTERNAL_TOKEN (one value opening both surfaces re-creates the over-grant the split exists to remove)',
-        });
+      // A FULL PAIRWISE LOOP over all four, not a hand-written comparison per
+      // pair. Splitting the surfaces buys nothing if one value is pasted into
+      // two slots, and a list of explicit pairs is the drift class this repo
+      // keeps rediscovering: the M9 review split two credentials and left one
+      // `if`, which stayed correct only while there were exactly two. The loop
+      // is derived from the array above, so a fifth credential is covered by
+      // adding it there and nothing else.
+      for (let i = 0; i < credentials.length; i += 1) {
+        for (let j = i + 1; j < credentials.length; j += 1) {
+          const [a] = credentials[i]!;
+          const [b] = credentials[j]!;
+          if (env[a] && env[a] === env[b]) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [b],
+              message: `${b} must differ from ${a} (one value opening two surfaces re-creates the over-grant the split exists to remove)`,
+            });
+          }
+        }
       }
     }
     if (env.EMAIL_MODE === 'ses') {
@@ -188,9 +213,13 @@ export interface NotificationsConfig {
   readonly kafkaBrokers: string[] | null;
   /** INBOUND: what this service expects on its SEND route ('' ⇒ refuse all). */
   readonly internalApiToken: string;
-  /** INBOUND: what it expects on the RECIPIENT-UPSERT route, held by identity
-   * alone ('' ⇒ refuse all). Never equal to the send credential. */
+  /** INBOUND: what it expects on the RECIPIENT-UPSERT and mark-verified
+   * routes, held by identity alone ('' ⇒ refuse all). */
   readonly recipientsApiToken: string;
+  /** INBOUND: what it expects on the VERIFICATION-SEND route, identity alone. */
+  readonly verificationApiToken: string;
+  /** INBOUND: what it expects on the RECIPIENT-STATUS read route. */
+  readonly recipientStatusApiToken: string;
   readonly email: EmailConfig;
   readonly kms: KmsConfig;
   /** KEK alias wrapping THIS service's per-user DEKs (never 'core/kek'). */
@@ -228,6 +257,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NotificationsC
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     internalApiToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',
     recipientsApiToken: e.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ?? '',
+    verificationApiToken: e.NOTIFICATIONS_VERIFY_INTERNAL_TOKEN ?? '',
+    recipientStatusApiToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
     // The superRefine above guarantees the required fields per mode, so these
     // non-null assertions are sound.
     email:

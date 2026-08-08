@@ -1,5 +1,5 @@
 import type {
-  NotificationKind,
+  EstateNotificationKind,
   NotificationsPort as NotificationsClientPort,
 } from '@estate/notifications-client';
 
@@ -57,7 +57,10 @@ export class StubLinkNotifier implements LinkNotificationPort {
   }
 }
 
-const WIRE_KIND: NotificationKind = 'contact.link_claimed';
+// ESTATE kinds only (M14). Typing this as the narrower union means a sending
+// service structurally cannot name the address-verification kind, which is the
+// mirror of `SendSchema` refusing it on the wire.
+const WIRE_KIND: EstateNotificationKind = 'contact.link_claimed';
 
 /**
  * The real adapter: delegates to the notifications service, which owns address

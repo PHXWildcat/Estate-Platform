@@ -20,6 +20,8 @@ const IDENTITY = 'IDENTITY_INTERNAL_TOKEN';
 const SETTLEMENT = 'SETTLEMENT_INTERNAL_TOKEN';
 const NOTIFICATIONS = 'NOTIFICATIONS_INTERNAL_TOKEN';
 const NOTIFICATIONS_RECIPIENTS = 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN';
+const NOTIFICATIONS_VERIFY = 'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN';
+const NOTIFICATIONS_STATUS = 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN';
 
 describe('credentialsHeldIn', () => {
   it('reports nothing for a config that holds no credential', () => {
@@ -118,12 +120,17 @@ describe('graph lookup helpers', () => {
     expect(inboundCredentialsFor('audit')).toEqual([]);
   });
 
-  it('gives notifications TWO inbound credentials, one per capability (M9 review)', () => {
+  it('gives notifications FOUR inbound credentials, one per capability (M9 review, M14)', () => {
     // The send surface and the recipient-upsert surface have different
     // legitimate holders, so they must not share a secret: holding "may
     // notify this user" must not also mean "may decide where their alerts go".
     const inbound = inboundCredentialsFor('notifications');
-    expect(inbound.map((e) => e.envVar)).toEqual([NOTIFICATIONS, NOTIFICATIONS_RECIPIENTS]);
+    expect(inbound.map((e) => e.envVar)).toEqual([
+      NOTIFICATIONS,
+      NOTIFICATIONS_RECIPIENTS,
+      NOTIFICATIONS_VERIFY,
+      NOTIFICATIONS_STATUS,
+    ]);
     // M13 added profile: it tells an owner when somebody CLAIMED a link to one
     // of their contacts. Send-only, like the other two — profile has no business
     // deciding where anybody's notifications go.
@@ -132,12 +139,26 @@ describe('graph lookup helpers', () => {
       'settlement',
       'vault',
     ]);
-    // The load-bearing half: identity, and nobody else, may repoint an address.
+    // The load-bearing half: identity, and nobody else, may repoint an address
+    // or vouch for one.
     expect(inbound.find((e) => e.envVar === NOTIFICATIONS_RECIPIENTS)?.holders).toEqual([
       'identity',
     ]);
-    // ...and they are enforced by different guards, or the split is cosmetic.
-    expect(new Set(inbound.map((e) => e.guard.token)).size).toBe(2);
+    // M14. Mailing a verification code is identity's alone and is NOT the send
+    // credential — the service that mints sessions must not be able to fire
+    // "a death report was filed on your account".
+    expect(inbound.find((e) => e.envVar === NOTIFICATIONS_VERIFY)?.holders).toEqual(['identity']);
+    // M14. Reading the verified bit is a read of DELIVERY STATE, which the send
+    // edge promises not to expose; settlement sends and never asks, so it is
+    // deliberately absent here. Vault and profile join in PR2, in the same
+    // change as the clients that present it.
+    expect(inbound.find((e) => e.envVar === NOTIFICATIONS_STATUS)?.holders).toEqual(['identity']);
+    expect(inbound.find((e) => e.envVar === NOTIFICATIONS_STATUS)?.holders).not.toContain(
+      'settlement',
+    );
+    // ...and they are enforced by four different guards, or the split is
+    // cosmetic: a guard binds exactly one token, so the token IS the partition.
+    expect(new Set(inbound.map((e) => e.guard.token)).size).toBe(4);
   });
 
   it('resolves outbound credentials by holder', () => {
@@ -150,11 +171,15 @@ describe('graph lookup helpers', () => {
       'DOCUMENTS_INTERNAL_TOKEN',
       NOTIFICATIONS,
     ]);
-    // Identity holds the RECIPIENTS credential and NOT the send one: it feeds
-    // the store and never makes the platform speak.
+    // Identity holds three notifications credentials and NOT the send one:
+    // it feeds the store, mails its own verification code, and reads the
+    // verified bit — but can never fire an estate notification.
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([
       NOTIFICATIONS_RECIPIENTS,
+      NOTIFICATIONS_VERIFY,
+      NOTIFICATIONS_STATUS,
     ]);
+    expect(outboundCredentialsFor('identity').map((e) => e.envVar)).not.toContain(NOTIFICATIONS);
     // M13: profile's first outbound credential, and the SEND one only.
     expect(outboundCredentialsFor('profile').map((e) => e.envVar)).toEqual([NOTIFICATIONS]);
   });

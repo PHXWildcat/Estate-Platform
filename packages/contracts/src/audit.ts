@@ -150,6 +150,15 @@ export const AUDIT_ACTIONS = [
   // only — never an address, a subject line, or a body.
   'notification.sent',
   'notification.recipient.updated',
+  // M14. Distinct from `.updated` on purpose: that one fires on every login and
+  // cannot attribute a change (docs/03 §6c), while this fires once per address
+  // and marks the moment three arming gates start trusting it.
+  'notification.recipient.verified',
+  // M14, identity's half of the ceremony. Ids and enums only — never the code,
+  // never its digest, never an address.
+  'auth.email_verification.sent',
+  'auth.email_verification.verified',
+  'auth.email_verification.failed',
   // The M6/M7 capability gates firing (503 notifications_unavailable) — a
   // control refusing is a fact the audit stream must carry, or it reads as an
   // outage.

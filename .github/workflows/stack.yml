@@ -180,9 +180,12 @@ jobs:
             // that test can only ever run in dev. M13 added the people-surface
             // round trip (step-up on a role, and a profile edit that keeps the
             // SSN) in the same dev block, so dev gains a pass and production a
-            // skip: 16/4 -> 17/4 and 9/11 -> 9/12.
-            const expectedPassed = production ? 9 : 17;
-            const expectedPending = production ? 12 : 4;
+            // skip: 16/4 -> 17/4 and 9/11 -> 9/12. M14 added the
+            // address-verification ceremony — a code read out of a REAL
+            // delivered SES message and typed back in — to the same dev block:
+            // 17/4 -> 18/4 and 9/12 -> 9/13.
+            const expectedPassed = production ? 9 : 18;
+            const expectedPending = production ? 13 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
             if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {

@@ -63,7 +63,20 @@ describe('config validation', () => {
     IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
     NOTIFICATIONS_URL: 'https://notifications.internal',
     NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: 'n'.repeat(48),
+    // M14: identity presents three DIFFERENT notifications credentials, one
+    // per edge — feed/vouch, mail a code, read the verified bit — and holds
+    // none of the estate SEND credential.
+    NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: 'v'.repeat(48),
+    NOTIFICATIONS_STATUS_INTERNAL_TOKEN: 's'.repeat(48),
   };
+
+  /** Every credential this service touches, inbound and outbound. */
+  const TOUCHED_CREDENTIALS = [
+    'IDENTITY_INTERNAL_TOKEN',
+    'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
+    'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
+    'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+  ] as const;
 
   it('production REQUIRES the notifications feed (M9) and refuses credential aliasing', () => {
     const { NOTIFICATIONS_URL: _u, ...withoutUrl } = PROD_EXTRAS;
@@ -86,6 +99,36 @@ describe('config validation', () => {
       ),
     ).toThrow(/must differ from IDENTITY_INTERNAL_TOKEN/);
   });
+
+  it.each(
+    TOUCHED_CREDENTIALS.flatMap((a, i) =>
+      TOUCHED_CREDENTIALS.slice(i + 1).map((b) => [a, b] as const),
+    ),
+  )('production refuses one value pasted into both %s and %s', (a, b) => {
+    // EVERY PAIR. The single hand-written comparison above was correct while
+    // identity touched two credentials; M14 made it four, and the shape this
+    // repo keeps rediscovering is a check that stayed true only for the
+    // arity it was written at.
+    expect(() =>
+      loadConfig(
+        validEnv({
+          NODE_ENV: 'production',
+          KAFKA_BROKERS: 'k1:9092',
+          ...PROD_EXTRAS,
+          [b]: PROD_EXTRAS[a],
+        }),
+      ),
+    ).toThrow(/must differ from/);
+  });
+
+  it.each(TOUCHED_CREDENTIALS.filter((key) => key !== 'IDENTITY_INTERNAL_TOKEN'))(
+    'production REQUIRES %s',
+    (key) => {
+      const env = validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...PROD_EXTRAS });
+      delete env[key];
+      expect(() => loadConfig(env)).toThrow(ConfigError);
+    },
+  );
 
   it('production REQUIRES the WebAuthn RP identity (never a localhost default)', () => {
     // Kafka + AWS KMS present but RP vars missing ⇒ still rejected.

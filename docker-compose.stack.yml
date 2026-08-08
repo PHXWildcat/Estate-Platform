@@ -403,11 +403,15 @@ services:
       RP_NAME: ${RP_NAME}
       NOTIFICATIONS_URL: http://notifications:3008
       # The ONLY lock-capable credential in the product. Held by settlement
-      # alone (packages/auth-guard/src/credential-graph.ts). The second value
-      # is identity's OUTBOUND grant: it feeds the notifications recipient
-      # store at registration/login and opens nothing else.
+      # alone (packages/auth-guard/src/credential-graph.ts). The other three are
+      # identity's OUTBOUND grants against notifications, one per EDGE: feed and
+      # vouch for the recipient store, mail an address-verification code (M14),
+      # and read the verified bit. Identity holds NO estate SEND credential, so
+      # nothing here can fire "a death report was filed on your account".
       IDENTITY_INTERNAL_TOKEN: ${IDENTITY_IDENTITY_INTERNAL_TOKEN}
       NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: ${IDENTITY_NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN}
+      NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: ${IDENTITY_NOTIFICATIONS_VERIFY_INTERNAL_TOKEN}
+      NOTIFICATIONS_STATUS_INTERNAL_TOKEN: ${IDENTITY_NOTIFICATIONS_STATUS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
@@ -646,13 +650,19 @@ services:
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       EMAIL_MODE: ${NOTIFICATIONS_EMAIL_MODE}
       SES_FROM_ADDRESS: ${SES_FROM_ADDRESS}
-      # TWO inbound credentials, one per internal surface (M9 review): sending
-      # is held by vault + settlement, deciding WHERE a user's notifications go
-      # is identity's alone. One value in both slots would re-create the
-      # over-grant; this service refuses to boot on it in production and the
-      # doctor refuses it in every mode.
+      # FOUR inbound credentials, one per internal surface (M9 review, M14):
+      # sending estate notifications is held by vault + settlement + profile;
+      # deciding WHERE a user's notifications go, and vouching that they own
+      # that address, is identity's alone; mailing a verification code is
+      # identity's alone and is NOT the send credential; and reading the
+      # verified bit is a read of delivery state the send edge promises not to
+      # expose. One value in two slots would re-create the over-grant; this
+      # service refuses to boot on any such pair in production and the doctor
+      # refuses it in every mode.
       NOTIFICATIONS_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_INTERNAL_TOKEN}
       NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN}
+      NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_VERIFY_INTERNAL_TOKEN}
+      NOTIFICATIONS_STATUS_INTERNAL_TOKEN: ${NOTIFICATIONS_NOTIFICATIONS_STATUS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck

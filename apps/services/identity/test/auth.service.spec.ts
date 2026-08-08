@@ -2,6 +2,7 @@ import { UnauthorizedException } from '@nestjs/common';
 import type { DekRepository, FieldCrypto } from '@estate/crypto';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import { AuthService } from '../src/auth.service';
+import type { EmailVerificationService } from '../src/email-verification.service';
 import type { IdentityConfig } from '../src/config';
 import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
@@ -40,7 +41,14 @@ function makeFakes(): {
   };
   fieldCrypto: { getOrCreateDek: jest.Mock; encryptField: jest.Mock; decryptField: jest.Mock };
   deks: { findActiveByUser: jest.Mock };
-  notifications: { upsertRecipient: jest.Mock; send: jest.Mock };
+  notifications: {
+    upsertRecipient: jest.Mock;
+    send: jest.Mock;
+    sendAddressVerification: jest.Mock;
+    markRecipientVerified: jest.Mock;
+    recipientStatus: jest.Mock;
+  };
+  emailVerification: { ensureVerificationRequested: jest.Mock };
 } {
   return {
     users: { findByEmailBidx: jest.fn().mockResolvedValue(null), insert: jest.fn() },
@@ -81,7 +89,14 @@ function makeFakes(): {
     notifications: {
       upsertRecipient: jest.fn().mockResolvedValue({ ok: true }),
       send: jest.fn().mockResolvedValue({ accepted: false }),
+      sendAddressVerification: jest.fn().mockResolvedValue({ accepted: false }),
+      markRecipientVerified: jest.fn().mockResolvedValue({ ok: true }),
+      recipientStatus: jest.fn().mockResolvedValue({ verified: true }),
     },
+    // M14: the login hook is fire-and-forget, so a double that RESOLVES is
+    // what keeps these tests deterministic — an unhandled rejection from a
+    // detached promise would surface in an unrelated test.
+    emailVerification: { ensureVerificationRequested: jest.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -99,6 +114,8 @@ const config: IdentityConfig = {
   internalApiToken: '',
   notificationsUrl: 'http://localhost:3008',
   notificationsInternalToken: '',
+  notificationsVerifyToken: '',
+  notificationsStatusToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
@@ -114,6 +131,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
     config,
     () => NOW,
     fakes.notifications,
+    fakes.emailVerification as unknown as EmailVerificationService,
   );
 }
 
@@ -318,5 +336,86 @@ describe('AuthService.register (no account enumeration)', () => {
       expect.objectContaining({ kind: 'user.registered' }),
     );
     expect(fakes.events.userRegistered).toHaveBeenCalledTimes(1);
+  });
+
+  it('feeds the recipient store but does NOT ask for verification (M14)', async () => {
+    // docs/03 §6c's mitigation — "no notification kind fires at registration" —
+    // stays literally true. Registration is unauthenticated, so a kind firing
+    // there would be a mail-bomb primitive addressable by anyone holding a
+    // victim's address, and this repo has no rate-limiting machinery to bound
+    // it. The ceremony starts at the first authenticated LOGIN instead.
+    const fakes = makeFakes();
+    fakes.users.insert.mockResolvedValue('inserted');
+    await makeService(fakes).register('user@example.com', 'a-long-password!');
+    await Promise.resolve();
+    expect(fakes.notifications.upsertRecipient).toHaveBeenCalledTimes(1);
+    expect(fakes.emailVerification.ensureVerificationRequested).not.toHaveBeenCalled();
+    expect(fakes.notifications.sendAddressVerification).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService login → address verification (M14)', () => {
+  const liveUser = {
+    id: 'u-1',
+    password_hash: 'argon2-hash',
+    status: 'active',
+    dek_id: 'dek-1',
+  };
+
+  /** Let the detached fire-and-forget chain settle. */
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.resolve();
+    }
+  };
+
+  it('CHAINS the verification request AFTER the recipient upsert', async () => {
+    // Not fired beside it. The verification send resolves the address from the
+    // recipient store, so on a user's FIRST login the two racing would leave
+    // the send with nothing to mail — a no_recipient outcome and a burned code
+    // — every time.
+    const order: string[] = [];
+    const fakes = makeFakes();
+    fakes.users.findByEmailBidx.mockResolvedValue(liveUser);
+    fakes.hasher.verifyPassword.mockResolvedValue(true);
+    fakes.notifications.upsertRecipient.mockImplementation(() => {
+      order.push('upsert');
+      return Promise.resolve({ ok: true });
+    });
+    fakes.emailVerification.ensureVerificationRequested.mockImplementation(() => {
+      order.push('verify-request');
+      return Promise.resolve();
+    });
+
+    await makeService(fakes).login('user@example.com', 'a-long-password!');
+    await settle();
+    expect(order).toEqual(['upsert', 'verify-request']);
+  });
+
+  it('does not couple login to the chain: it resolves before either lands', async () => {
+    // Fire-and-forget, exactly like the M9 upsert it follows. Login latency
+    // must never depend on SES.
+    const fakes = makeFakes();
+    fakes.users.findByEmailBidx.mockResolvedValue(liveUser);
+    fakes.hasher.verifyPassword.mockResolvedValue(true);
+    fakes.notifications.upsertRecipient.mockReturnValue(new Promise(() => undefined));
+
+    await expect(
+      makeService(fakes).login('user@example.com', 'a-long-password!'),
+    ).resolves.toMatchObject({ userId: 'u-1' });
+    expect(fakes.emailVerification.ensureVerificationRequested).not.toHaveBeenCalled();
+  });
+
+  it('survives a rejecting chain without an unhandled rejection', async () => {
+    const fakes = makeFakes();
+    fakes.users.findByEmailBidx.mockResolvedValue(liveUser);
+    fakes.hasher.verifyPassword.mockResolvedValue(true);
+    fakes.notifications.upsertRecipient.mockRejectedValue(new Error('notifications down'));
+
+    await expect(
+      makeService(fakes).login('user@example.com', 'a-long-password!'),
+    ).resolves.toMatchObject({ userId: 'u-1' });
+    await settle();
+    expect(fakes.emailVerification.ensureVerificationRequested).not.toHaveBeenCalled();
   });
 });
