@@ -794,12 +794,37 @@ export class SettlementService {
 
   private async notifyOwner(kind: 'case_opened' | 'owner_contact', row: CaseRow): Promise<void> {
     try {
-      await this.notifier.notify({
+      const outcome = await this.notifier.notify({
         kind,
         ownerUserId: row.decedent_user_id,
         caseId: row.id,
         ...(row.waiting_period_ends ? { waitingPeriodEnds: row.waiting_period_ends } : {}),
       });
+      // M14, PROCEED-AND-RECORD. This is the case the classification exists
+      // for: the actor is a reporter or an operator and the recipient is the
+      // DECEDENT, so refusing on an unverified address would deny a legitimate
+      // reporter the §5.1 chain — hardest for the dormant owner a fraudulent
+      // report actually targets, whose address is stalest because the only
+      // self-heal was a login and whose account cannot log in once verified.
+      //
+      // The case still opens. What must not happen is that it opens LOOKING
+      // like the owner had a chance to interrupt it. §5.1's control 3 is a
+      // waiting period the owner can void; announcing it to an address nobody
+      // proved is not that control, and an operator reviewing this case — or
+      // an investigation reading it afterwards — has to be able to see the
+      // difference.
+      if (outcome.delivered && !outcome.recipientVerified) {
+        await this.events.audit.emit({
+          action: 'settlement.unverified_recipient',
+          actorId: null,
+          actorType: 'system',
+          onBehalfOf: row.decedent_user_id,
+          resourceType: 'settlement_case',
+          resourceId: row.id,
+          sessionId: null,
+          detail: { kind },
+        });
+      }
     } catch {
       // Delivery failure is non-fatal: the attempt row + audit event record
       // that contact was attempted, and (M9) the notifications service's own

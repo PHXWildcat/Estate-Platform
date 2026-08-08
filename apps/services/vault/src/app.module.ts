@@ -63,12 +63,17 @@ function notifierFor(config: VaultConfig): NotificationPort {
       return new HttpNotifier(
         new HttpNotificationsClient({
           notificationsUrl: config.notificationsUrl,
-          // ONE FIELD PER EDGE (M14). This service holds the SEND credential
-          // and nothing else, so every other method on the client
-          // short-circuits without a round trip — an over-broad client would be
-          // a configuration that cannot reach the route, never one that reaches
-          // it and is rejected.
-          credentials: { send: config.notificationsInternalToken },
+          // ONE FIELD PER EDGE (M14). Vault holds SEND and STATUS and nothing
+          // else — notably NOT the recipients credential, so it can neither
+          // repoint an owner's address nor vouch for one; it can only ask
+          // whether somebody already did. Every other method on the client
+          // short-circuits without a round trip, so an over-broad client would
+          // be a configuration that cannot reach the route rather than one that
+          // reaches it and is rejected.
+          credentials: {
+            send: config.notificationsInternalToken,
+            status: config.notificationsStatusToken,
+          },
         }),
       );
     case 'stub':

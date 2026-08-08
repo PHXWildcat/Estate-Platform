@@ -97,13 +97,16 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       deadline: '2026-08-09T00:00:00.000Z',
     });
 
-    expect(result).toEqual({ delivered: true, channel: 'email' });
+    // M14: this owner has not proved their address yet, so the delivery is
+    // recorded as `sent_unverified`. `delivered` stays true — the carrier took
+    // it — and the same owner's `sent` case is covered once they verify below.
+    expect(result).toEqual({ delivered: true, channel: 'email', recipientVerified: false });
     expect(stub.sent.at(-1)?.to).toBe('owner@example.com');
     const sends = await admin.query<{ outcome: string; requested_channel: string }>(
       `SELECT outcome, requested_channel FROM ${schema}.notification_sends WHERE user_id = $1`,
       [OWNER],
     );
-    expect(sends.rows.at(-1)).toEqual({ outcome: 'sent', requested_channel: 'push' });
+    expect(sends.rows.at(-1)).toEqual({ outcome: 'sent_unverified', requested_channel: 'push' });
   });
 
   it('re-upsert replaces in place and the versions trigger captures the prior row', async () => {
@@ -152,16 +155,15 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
 
     for (const kind of ESTATE_NOTIFICATION_KINDS) {
       const result = await service.send({ userId: subject, kind, channel: 'email' });
-      expect(result).toEqual({ delivered: true, channel: 'email' });
+      expect(result).toMatchObject({ delivered: true, channel: 'email' });
     }
     // The system kinds are unreachable through `send` BY DESIGN (their
     // templates need a code), so each has its own entry point — and the
     // assertion below is over NOTIFICATION_KINDS, so a system kind added
     // without a route here fails rather than quietly going unlogged.
-    expect(await service.sendAddressVerification({ userId: subject, code: 'EV1-TEST' })).toEqual({
-      delivered: true,
-      channel: 'email',
-    });
+    expect(
+      await service.sendAddressVerification({ userId: subject, code: 'EV1-TEST' }),
+    ).toMatchObject({ delivered: true, channel: 'email' });
 
     const rows = await admin.query<{ kind: string }>(
       `SELECT kind FROM ${schema}.notification_sends WHERE user_id = $1 ORDER BY created_at`,
@@ -211,6 +213,21 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       // email_bidx first), which is what makes preserving the bit sound.
       await service.upsertRecipient({ userId: SUBJECT, email: 'proof@example.com' });
       expect(await service.recipientStatus(SUBJECT)).toEqual({ verified: true });
+    });
+
+    it("records plain `sent` once proved — the send log's own evidence (M14)", async () => {
+      const result = await service.send({
+        userId: SUBJECT,
+        kind: 'vault.reset',
+        channel: 'email',
+      });
+      expect(result).toMatchObject({ delivered: true, recipientVerified: true });
+      const { rows } = await admin.query<{ outcome: string }>(
+        `SELECT outcome FROM ${schema}.notification_sends
+          WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [SUBJECT],
+      );
+      expect(rows[0]?.outcome).toBe('sent');
     });
 
     it('is CAPTURED by the versions trigger with no trigger change', async () => {
@@ -283,7 +300,7 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       channel: 'email',
     });
 
-    expect(result).toEqual({ delivered: false, channel: 'email' });
+    expect(result).toEqual({ delivered: false, channel: 'email', recipientVerified: false });
     const sends = await admin.query<{ outcome: string }>(
       `SELECT outcome FROM ${schema}.notification_sends WHERE user_id = $1`,
       [stranger],

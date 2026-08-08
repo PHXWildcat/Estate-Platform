@@ -3,6 +3,8 @@
 // (profile.int.spec.ts) only runs in CI, so local coverage comes from the unit
 // suites (config, authz PEP, validation, contacts service). CI coverage is
 // higher. Ratchets toward 95/90 — never lower this floor.
+// M14 PR2 (the verified-recipient gates) re-measured at 87.33/77.12/86.02/86.48;
+// ratcheted UP to match. Never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
   // M13 PR3 RE-ANCHORS this floor to the WITH-PG measurement — 87.68/76.45/86.81/
   // 86.82, measured, ratcheted up from 72/70/49/70 — because the old no-PG anchor
@@ -17,5 +19,5 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // package now REQUIRES `PG_TEST_URL` (every CI workflow sets it; docs/05 has the
   // local stack). Without it the suites still run — they skip — but the threshold
   // fails, which is more honest than a green bar over a third of the service.
-  coverageThreshold: { global: { statements: 87, branches: 76, functions: 86, lines: 86 } },
+  coverageThreshold: { global: { statements: 87, branches: 77, functions: 86, lines: 86 } },
 });

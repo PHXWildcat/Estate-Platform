@@ -39,6 +39,22 @@ export interface EmergencyNotification {
   readonly releasesAt?: Date;
 }
 
+/**
+ * What a send actually did (M14). `notify` no longer throws for a failed
+ * delivery: the caller has always recorded that outcome (a null delivered_at),
+ * and an exception was a poor carrier for a second fact.
+ */
+export interface NotifyOutcome {
+  /** The carrier accepted the message. */
+  readonly delivered: boolean;
+  /**
+   * Whether the owner had PROVED the address it went to. `false` also covers
+   * "could not tell", which is the safe reading: the record says we could not
+   * confirm reach, never that we could.
+   */
+  readonly recipientVerified: boolean;
+}
+
 export interface NotificationPort {
   /** Identifies the adapter in the notification record. */
   readonly channel: string;
@@ -46,9 +62,28 @@ export interface NotificationPort {
    * Whether this adapter actually reaches a human. The emergency-access routes
    * refuse to arm an escrow in production behind an adapter that does not -
    * an unreachable owner turns the waiting period into a formality.
+   *
+   * IT IS A PROPERTY OF THE ADAPTER, NOT OF THE RECIPIENT, and M14 exists
+   * because three shipped controls rested on it as if it were both: it is a
+   * hardcoded literal chosen at DI time from this service's own NOTIFY_MODE,
+   * so it asks whether SES is wired and never whether the stored address
+   * belongs to the owner. `recipientVerified` below is the other half.
    */
   readonly deliversToRealChannels: boolean;
-  notify(notification: EmergencyNotification): Promise<void>;
+  /**
+   * Whether the delivery store holds an address this owner PROVED they receive
+   * mail at (M14).
+   *
+   * FAIL CLOSED: an unanswerable query — no credential, network failure,
+   * non-2xx, contract drift — is `false`, never a permissive default. This is
+   * the first network round trip the emergency-access gates have ever made, so
+   * the decision about what an outage means is written here rather than
+   * inherited from a thrown exception: an outage means the escrow does not arm,
+   * which delays a legitimate owner by minutes and costs an attacker the whole
+   * §5.2 waiting period.
+   */
+  recipientVerified(ownerUserId: string): Promise<boolean>;
+  notify(notification: EmergencyNotification): Promise<NotifyOutcome>;
 }
 
 /**
@@ -61,9 +96,20 @@ export class StubNotifier implements NotificationPort {
   readonly deliversToRealChannels = false;
   readonly sent: EmergencyNotification[] = [];
 
-  notify(notification: EmergencyNotification): Promise<void> {
+  /**
+   * FALSE, not true. A stub that vouched for an address would be the
+   * "fail-open in style" shape M8 PR1 named: the dev default must never be the
+   * permissive answer to a security question. The arming gates are
+   * production-scoped, so dev is unaffected in practice — this is about what
+   * the stub SAYS, not what it lets through.
+   */
+  recipientVerified(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  notify(notification: EmergencyNotification): Promise<NotifyOutcome> {
     this.sent.push(notification);
-    return Promise.resolve();
+    return Promise.resolve({ delivered: true, recipientVerified: false });
   }
 }
 
@@ -83,8 +129,13 @@ const WIRE_KIND: Record<EmergencyNotificationKind, EstateNotificationKind> = {
 /**
  * The real adapter (M9): delegates to the notifications service, which owns
  * address resolution and the closed template registry — this service still
- * never sees an address. Throws on non-delivery so the caller's bookkeeping
- * records a null delivered_at, exactly as it did for the stub's failures.
+ * never sees an address.
+ *
+ * M14 stopped it throwing on non-delivery. The caller already recorded that
+ * outcome (a null delivered_at) by catching, and an exception cannot carry the
+ * SECOND fact a send now returns — whether the address was proved. Narrowing
+ * both to one value is the @estate/notifications-client discipline applied one
+ * layer up: every failure becomes an outcome, never a control-flow surprise.
  */
 export class HttpNotifier implements NotificationPort {
   readonly channel = 'email';
@@ -92,15 +143,24 @@ export class HttpNotifier implements NotificationPort {
 
   constructor(private readonly client: NotificationsClientPort) {}
 
-  async notify(notification: EmergencyNotification): Promise<void> {
+  async recipientVerified(ownerUserId: string): Promise<boolean> {
+    // `null` is UNANSWERABLE and collapses to false HERE, at the boundary that
+    // knows what the question was for. The client keeps the two apart so this
+    // decision has to be made explicitly rather than inherited.
+    const status = await this.client.recipientStatus(ownerUserId);
+    return status?.verified === true;
+  }
+
+  async notify(notification: EmergencyNotification): Promise<NotifyOutcome> {
     const outcome = await this.client.send({
       userId: notification.ownerUserId,
       kind: WIRE_KIND[notification.kind],
       channel: 'email',
       ...(notification.releasesAt !== undefined ? { deadline: notification.releasesAt } : {}),
     });
-    if (!outcome.accepted || !outcome.delivered) {
-      throw new Error('notification_not_delivered');
+    if (!outcome.accepted) {
+      return { delivered: false, recipientVerified: false };
     }
+    return { delivered: outcome.delivered, recipientVerified: outcome.recipientVerified };
   }
 }

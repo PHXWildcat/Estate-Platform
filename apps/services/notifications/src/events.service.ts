@@ -25,7 +25,7 @@ export class EventsService {
       kind: string;
       requestedChannel: string;
       channel: string;
-      outcome: 'sent' | 'no_recipient' | 'carrier_failure';
+      outcome: 'sent' | 'sent_unverified' | 'no_recipient' | 'carrier_failure';
       transport: string;
     },
   ): Promise<void> {

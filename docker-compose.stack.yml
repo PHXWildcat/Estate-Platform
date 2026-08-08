@@ -442,11 +442,13 @@ services:
       IDENTITY_URL: http://identity:3001
       # M13: profile's FIRST outbound credential and first non-identity peer. It
       # tells an owner when somebody claimed a link to one of their contacts —
-      # the SEND surface only, so it can never repoint where alerts go (the M9
-      # review's split).
+      # the SEND surface plus (M14) the read-only RECIPIENT-STATUS surface, so
+      # it can ask whether an owner proved their address but can never repoint
+      # where alerts go or vouch for one (the M9 review's split, extended).
       NOTIFY_MODE: ${PROFILE_NOTIFY_MODE}
       NOTIFICATIONS_URL: http://notifications:3008
       NOTIFICATIONS_INTERNAL_TOKEN: ${PROFILE_NOTIFICATIONS_INTERNAL_TOKEN}
+      NOTIFICATIONS_STATUS_INTERNAL_TOKEN: ${PROFILE_NOTIFICATIONS_STATUS_INTERNAL_TOKEN}
     volumes:
       - ./.stack-certs:/certs:ro
     healthcheck: *tcp-healthcheck
@@ -577,10 +579,13 @@ services:
       NOTIFICATIONS_URL: http://notifications:3008
       NOTIFY_MODE: ${VAULT_NOTIFY_MODE}
       # Zone A holds NO server-side key material — no KMS_MODE, no master key,
-      # no index key. The two credentials it carries open settlement's
-      # read-only §6a gate and the notifications send surface, nothing else.
+      # no index key. The three credentials it carries open settlement's
+      # read-only §6a gate, the notifications send surface, and (M14) the
+      # read-only recipient-status surface the escrow-arming gates consult.
+      # None of them writes anything to another service.
       SETTLEMENT_INTERNAL_TOKEN: ${VAULT_SETTLEMENT_INTERNAL_TOKEN}
       NOTIFICATIONS_INTERNAL_TOKEN: ${VAULT_NOTIFICATIONS_INTERNAL_TOKEN}
+      NOTIFICATIONS_STATUS_INTERNAL_TOKEN: ${VAULT_NOTIFICATIONS_STATUS_INTERNAL_TOKEN}
     healthcheck: *tcp-healthcheck
     depends_on:
       migrate-vault: { condition: service_completed_successfully }

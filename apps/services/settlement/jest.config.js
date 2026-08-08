@@ -11,6 +11,8 @@
 // service surface (staged access, tasks, distributions, authority) while its
 // unit suites target the CONTROLS rather than every DTO mapper. Ratchets
 // toward 95/90 — never lower this floor.
+// M14 PR2 (the verified-recipient gates) re-measured at 62.18/47.51/57.32/61.94;
+// ratcheted UP to match. Never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 61, branches: 44, functions: 56, lines: 61 } },
+  coverageThreshold: { global: { statements: 62, branches: 47, functions: 57, lines: 61 } },
 });

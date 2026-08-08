@@ -36,6 +36,9 @@ describe('loadConfig', () => {
       NOTIFY_MODE: 'http',
       NOTIFICATIONS_URL: 'https://notifications.internal',
       NOTIFICATIONS_INTERNAL_TOKEN: 'n'.repeat(48),
+      // M14: the STATUS edge, a distinct secret — vault reads whether the owner
+      // proved their address before arming an escrow.
+      NOTIFICATIONS_STATUS_INTERNAL_TOKEN: 'v'.repeat(48),
     };
 
     it('requires Kafka so audit emission cannot be a no-op', () => {
@@ -169,6 +172,7 @@ describe('loadConfig', () => {
       'kafkaBrokers',
       'nodeEnv',
       'notificationsInternalToken',
+      'notificationsStatusToken',
       'notificationsUrl',
       'notify',
       'port',

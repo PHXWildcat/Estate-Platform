@@ -37,7 +37,9 @@ export class NotificationsService {
     return this.email.deliversToRealChannels;
   }
 
-  async send(input: SendInput): Promise<{ delivered: boolean; channel: string }> {
+  async send(
+    input: SendInput,
+  ): Promise<{ delivered: boolean; channel: string; recipientVerified: boolean }> {
     const deadline = input.deadline !== undefined ? new Date(input.deadline) : null;
     return this.deliver({
       userId: input.userId,
@@ -63,7 +65,7 @@ export class NotificationsService {
    */
   async sendAddressVerification(
     input: VerificationInput,
-  ): Promise<{ delivered: boolean; channel: string }> {
+  ): Promise<{ delivered: boolean; channel: string; recipientVerified: boolean }> {
     return this.deliver({
       userId: input.userId,
       kind: 'identity.address_verification',
@@ -86,8 +88,11 @@ export class NotificationsService {
     kind: NotificationKind;
     requestedChannel: string;
     render: () => RenderedNotification;
-  }): Promise<{ delivered: boolean; channel: string }> {
+  }): Promise<{ delivered: boolean; channel: string; recipientVerified: boolean }> {
     const recipient = await this.recipients.find(job.userId);
+    // Read from the row already in hand — no second query, and no window in
+    // which the bit could change between the send and the record.
+    const recipientVerified = recipient?.verified_at != null;
 
     let outcome: SendOutcomeToken;
     let providerMessageId: string | null = null;
@@ -114,7 +119,9 @@ export class NotificationsService {
           subject: rendered.subject,
           body: rendered.body,
         });
-        outcome = 'sent';
+        // The delivery is recorded as what it actually was: to a proved
+        // address, or to one nobody confirmed (M14, migration 004).
+        outcome = recipientVerified ? 'sent' : 'sent_unverified';
         providerMessageId = sent.providerMessageId;
       } catch {
         // Carrier or crypto failure: recorded, never echoed (the error could
@@ -139,7 +146,15 @@ export class NotificationsService {
       outcome,
       transport: this.email.transport,
     });
-    return { delivered: outcome === 'sent', channel: 'email' };
+    // BOTH send outcomes are deliveries. A caller must not treat an unverified
+    // recipient as a transport failure and retry it — the carrier accepted the
+    // message either way; what differs is whether anyone proved they read that
+    // mailbox, which rides back separately.
+    return {
+      delivered: outcome === 'sent' || outcome === 'sent_unverified',
+      channel: 'email',
+      recipientVerified,
+    };
   }
 
   async upsertRecipient(input: RecipientInput): Promise<{ ok: true }> {

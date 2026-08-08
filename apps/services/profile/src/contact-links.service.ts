@@ -79,6 +79,17 @@ export class ContactLinksService {
    */
   async invite(callerUserId: string, contactId: string): Promise<MintedInvitation> {
     this.authz.assertCan(callerUserId, 'manage', coreResource('Contact', contactId, callerUserId));
+    // ARMING GATE (M14). Minting hands out a capability whose redemption makes
+    // somebody able to open a death case against this owner (docs/03 §6b), and
+    // the ONLY thing that makes that safe after the fact is the owner hearing
+    // about the claim. Before M14 this route had no notification precondition
+    // at all — redemption had one, minting did not — so M14 ADDS a gate here
+    // rather than tightening one.
+    //
+    // The actor is the owner and so is the recipient, so refusing costs them an
+    // action they can unblock themselves by verifying their address; it never
+    // denies a third party. Redemption stays open for the mirror-image reason.
+    await this.assertOwnerReachable(callerUserId);
     const contact = await this.contacts.findById(contactId);
     if (!contact || contact.owner_user_id !== callerUserId) {
       throw new NotFoundException({ error: 'not_found' });
@@ -110,6 +121,24 @@ export class ContactLinksService {
     });
     await this.events.contactLinkInvited(callerUserId, contactId);
     return { code, expiresAt: expiresAt.toISOString() };
+  }
+
+  /**
+   * The arming precondition (M14), production-scoped like its neighbour above.
+   *
+   * Fail closed: the port collapses an unanswerable status query to `false`, so
+   * a notifications outage refuses the mint. That is the cheap direction — the
+   * owner retries in a minute — where the alternative is handing out a §5.1
+   * capability whose only safety net is a message that may go nowhere.
+   */
+  private async assertOwnerReachable(ownerUserId: string): Promise<void> {
+    if (this.config.nodeEnv !== 'production') {
+      return;
+    }
+    if (!(await this.notifier.recipientVerified(ownerUserId))) {
+      await this.events.contactLinkNotificationsRefused(ownerUserId);
+      throw new ServiceUnavailableException({ error: 'recipient_unverified' });
+    }
   }
 
   /** Withdraw an unredeemed code. NOT step-up gated — see the controller. */
@@ -217,11 +246,24 @@ export class ContactLinksService {
     // exists to prevent — left no record anywhere when the send failed at the
     // network rather than at the carrier.
     let ownerNotified: 'delivered' | 'failed' = 'failed';
+    let recipientVerified = false;
     try {
-      await this.notifier.notify({ ownerUserId: invitation.owner_user_id });
-      ownerNotified = 'delivered';
+      const outcome = await this.notifier.notify({ ownerUserId: invitation.owner_user_id });
+      ownerNotified = outcome.delivered ? 'delivered' : 'failed';
+      recipientVerified = outcome.recipientVerified;
     } catch {
-      // Recorded on the claim event below; the link stands either way.
+      // The port narrows failures to outcomes now, so reaching here means an
+      // adapter broke its own contract. Recorded on the claim event below; the
+      // link stands either way.
+    }
+    // M14, PROCEED-AND-RECORD. The REDEEMER drove this, so the owner's own
+    // unverified address must not block them — that would let a typo deny
+    // somebody the owner deliberately invited. But "the owner was told" and
+    // "a message went to an address the owner never confirmed" are different
+    // facts, and §6g's whole argument is that the claim is auditable BY THE
+    // OWNER. This is what keeps `ownerNotified: 'delivered'` from overstating.
+    if (ownerNotified === 'delivered' && !recipientVerified) {
+      await this.events.contactLinkUnverifiedRecipient(invitation.owner_user_id, callerUserId);
     }
     // AUDITED ON BOTH SIDES: the owner's trail records that their contact was
     // claimed, the actor recorded is the redeemer, and the delivery outcome

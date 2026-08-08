@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { Db } from './db';
 
-export type SendOutcomeToken = 'sent' | 'no_recipient' | 'carrier_failure';
+/**
+ * `sent` means delivered to an address the user PROVED they own;
+ * `sent_unverified` means delivered to one they never confirmed (M14). Both are
+ * deliveries — the distinction is evidence for a §5.1 investigation, not a
+ * transport outcome a caller should retry on.
+ */
+export type SendOutcomeToken = 'sent' | 'sent_unverified' | 'no_recipient' | 'carrier_failure';
 
 /**
  * Append-only send log: ids and enums only — never an address, never content

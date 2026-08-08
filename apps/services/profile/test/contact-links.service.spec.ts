@@ -102,11 +102,18 @@ describe('the invitation code', () => {
 describe('a claimed link is never silently unnotified', () => {
   const CONTACT = 'f0000000-0000-4000-8000-000000000001';
 
-  function buildRedeem(options: { notifyFails?: boolean; auditFails?: boolean }): {
+  function buildRedeem(options: {
+    notifyFails?: boolean;
+    auditFails?: boolean;
+    /** M14: whether the OWNER has proved the address the claim is announced to. */
+    ownerVerified?: boolean;
+    notifyUndelivered?: boolean;
+  }): {
     service: ContactLinksService;
     notified: string[];
     claims: Array<{ actor: string; ownerNotified: string }>;
     lookups: number[];
+    unverified: string[];
   } {
     const lookups: number[] = [];
     const invitation = {
@@ -130,15 +137,20 @@ describe('a claimed link is never silently unnotified', () => {
     const notifier = {
       channel: 'stub',
       deliversToRealChannels: false,
+      recipientVerified: () => Promise.resolve(options.ownerVerified === true),
       notify: (n: { ownerUserId: string }) => {
         if (options.notifyFails === true) {
           return Promise.reject(new Error('carrier down'));
         }
         notified.push(n.ownerUserId);
-        return Promise.resolve();
+        return Promise.resolve({
+          delivered: options.notifyUndelivered !== true,
+          recipientVerified: options.ownerVerified === true,
+        });
       },
     };
     const claims: Array<{ actor: string; ownerNotified: string }> = [];
+    const unverified: string[] = [];
     const events = {
       contactLinkClaimed: (actor: string, _contact: string, ownerNotified: string) => {
         if (options.auditFails === true) {
@@ -148,6 +160,10 @@ describe('a claimed link is never silently unnotified', () => {
         return Promise.resolve();
       },
       contactLinkNotificationsRefused: () => Promise.resolve(),
+      contactLinkUnverifiedRecipient: (owner: string) => {
+        unverified.push(owner);
+        return Promise.resolve();
+      },
     };
     const service = new ContactLinksService(
       links as never,
@@ -158,7 +174,7 @@ describe('a claimed link is never silently unnotified', () => {
       { nodeEnv: 'test' } as ProfileConfig,
       () => new Date('2026-08-06T00:00:00Z'),
     );
-    return { service, notified, claims, lookups };
+    return { service, notified, claims, lookups, unverified };
   }
 
   const REDEEMER = 'b2222222-2222-4222-8222-222222222222';
@@ -204,6 +220,31 @@ describe('a claimed link is never silently unnotified', () => {
     // NO record anywhere — no notifications-service row (never reached it), no
     // profile-side fact, nothing.
     expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'failed' }]);
+  });
+
+  it('PROCEEDS on an unverified owner address, and records that it did (M14)', async () => {
+    // The mirror of the mint gate. Redemption is driven by the CONTACT, so
+    // refusing on the OWNER's unverified address would let an owner's own typo
+    // permanently deny somebody they deliberately invited — the M6 rule pointed
+    // the wrong way. The link stands.
+    //
+    // But `ownerNotified: 'delivered'` alone would overstate it: §6g's whole
+    // argument for this ceremony is that a claim is auditable BY THE OWNER, and
+    // a message to a mailbox nobody confirmed is a weaker version of that. So
+    // the fact lands beside it rather than instead of it.
+    const { service, claims, unverified } = buildRedeem({ ownerVerified: false });
+    await service.redeem(REDEEMER, CODE);
+    expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'delivered' }]);
+    expect(unverified).toEqual([OWNER]);
+  });
+
+  it('records NOTHING extra once the owner has proved their address', async () => {
+    // Otherwise the event above would be noise on every claim rather than a
+    // signal about the ones that matter.
+    const { service, claims, unverified } = buildRedeem({ ownerVerified: true });
+    await service.redeem(REDEEMER, CODE);
+    expect(claims).toEqual([{ actor: REDEEMER, ownerNotified: 'delivered' }]);
+    expect(unverified).toEqual([]);
   });
 
   it('notifies the owner even when the audit broker is down', async () => {
@@ -261,5 +302,94 @@ describe('a code survives being retyped by a human', () => {
     expect(canonicalCode(a)).not.toBe(canonicalCode(b));
     // And the canonical form of a minted code contains nothing outside it.
     expect(canonicalCode(MINTED)).toMatch(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ]+$/);
+  });
+});
+
+/**
+ * THE MINT GATE (M14), and the asymmetry that decides it.
+ *
+ * Minting hands out a capability whose redemption makes somebody able to open a
+ * death case against this owner (docs/03 §6b), and the only thing that makes
+ * that safe after the fact is the owner HEARING about the claim. Before M14
+ * this route had no notification precondition at all — redemption had one,
+ * minting did not — so M14 adds a gate here rather than tightening one.
+ *
+ * Minting refuses and redemption does not, because in one the actor and the
+ * recipient are the same person and in the other they are not.
+ */
+describe('minting a link code requires a reachable owner', () => {
+  const CONTACT = 'f0000000-0000-4000-8000-000000000001';
+
+  function mintHarness(options: { nodeEnv: 'production' | 'test'; ownerVerified: boolean }): {
+    service: ContactLinksService;
+    asked: string[];
+    refusals: string[];
+    minted: number;
+  } {
+    const asked: string[] = [];
+    const refusals: string[] = [];
+    const counters = { minted: 0 };
+    const links = {
+      revokeLive: () => Promise.resolve(null),
+      insert: () => {
+        counters.minted += 1;
+        return Promise.resolve('i-1');
+      },
+    };
+    const service = new ContactLinksService(
+      links as never,
+      {
+        findById: () =>
+          Promise.resolve({ id: CONTACT, owner_user_id: OWNER, linked_user_id: null }),
+      } as never,
+      new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+      {
+        contactLinkInvited: () => Promise.resolve(),
+        contactLinkInvitationRevoked: () => Promise.resolve(),
+        contactLinkNotificationsRefused: (owner: string) => {
+          refusals.push(owner);
+          return Promise.resolve();
+        },
+      } as never,
+      {
+        channel: 'email',
+        deliversToRealChannels: true,
+        recipientVerified: (ownerUserId: string) => {
+          asked.push(ownerUserId);
+          return Promise.resolve(options.ownerVerified);
+        },
+        notify: () =>
+          Promise.resolve({ delivered: true, recipientVerified: options.ownerVerified }),
+      },
+      { nodeEnv: options.nodeEnv } as ProfileConfig,
+      () => new Date('2026-08-06T00:00:00Z'),
+    );
+    return { service, asked, refusals, minted: counters.minted };
+  }
+
+  it('REFUSES in production when the owner never proved their address', async () => {
+    const h = mintHarness({ nodeEnv: 'production', ownerVerified: false });
+    await expect(h.service.invite(OWNER, CONTACT)).rejects.toMatchObject({
+      response: { error: 'recipient_unverified' },
+    });
+    // Asked about the OWNER, and the refusal is recorded — a control firing
+    // must never read as an outage (the M9 rule).
+    expect(h.asked).toEqual([OWNER]);
+    expect(h.refusals).toEqual([OWNER]);
+  });
+
+  it('mints for a PROVED owner, so the refusal above is not vacuous', async () => {
+    const h = mintHarness({ nodeEnv: 'production', ownerVerified: true });
+    const { code } = await h.service.invite(OWNER, CONTACT);
+    expect(code.startsWith('ESL1-')).toBe(true);
+    expect(h.asked).toEqual([OWNER]);
+    expect(h.refusals).toEqual([]);
+  });
+
+  it('does not ask outside production, where the stub is the intended adapter', async () => {
+    const h = mintHarness({ nodeEnv: 'test', ownerVerified: false });
+    const minted = await h.service.invite(OWNER, CONTACT);
+    expect(minted.code.startsWith('ESL1-')).toBe(true);
+    expect(h.asked).toEqual([]);
   });
 });

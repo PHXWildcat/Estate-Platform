@@ -184,6 +184,32 @@ async function awaitSesMessage(
   });
 }
 
+/**
+ * Drive the M14 ceremony end to end for a session: read the code out of the
+ * REAL delivered message and type it back in.
+ *
+ * The only honest way to prove an address here, and the only way a production
+ * test can reach the ARMING gates at all — they refuse an owner nobody proved.
+ */
+async function proveAddress(session: Session): Promise<void> {
+  const message = await awaitSesMessage(`verification code for ${session.userId}`, {
+    to: session.email,
+    bodyIncludes: 'Confirm this email address',
+  });
+  const code = /EV1-[0-9A-Z-]+/.exec(message.Body?.text_part ?? '')?.[0];
+  if (!code) {
+    throw new Error('no verification code in the delivered message');
+  }
+  expectStatus(
+    await api(IDENTITY, 'POST', '/v1/auth/email/verification/verify', {
+      token: session.token,
+      body: { code },
+    }),
+    200,
+    'verify address',
+  );
+}
+
 /** Enroll TOTP and elevate the session to step-up. */
 async function stepUp(session: Session): Promise<void> {
   const enroll = expectStatus(
@@ -300,7 +326,11 @@ describeIfStack('the running stack', () => {
             WHERE s.user_id = $1 AND s.kind = 'identity.address_verification'`,
           [owner.userId],
         );
-        expect(rows).toEqual([{ outcome: 'sent', verified: true }]);
+        // `sent_unverified` (M14 PR2) — and it could not be anything else: the
+        // code is mailed to an address that is by definition not yet proved.
+        // The row is the send log's own evidence, in the store that knows.
+        // The verified bit is now set, because the ceremony above just set it.
+        expect(rows).toEqual([{ outcome: 'sent_unverified', verified: true }]);
         // And the code itself is nowhere in the delivery store.
         const leak = await core.query(
           `SELECT 1 FROM notification_sends WHERE user_id = $1 AND provider_message_id = $2`,
@@ -1116,6 +1146,11 @@ describeIfStack('the running stack', () => {
               WHERE user_id = $1 AND kind = 'contact.link_claimed'`,
             [owner.userId],
           );
+          // `sent`, not `sent_unverified` — and that is the OTHER half of the
+          // M14 PR2 pair. This owner proved their address in the ceremony test
+          // earlier in this journey, so the same code path that recorded
+          // `sent_unverified` for the verification mail records `sent` here.
+          // Without the pair, one token would just be a constant.
           return rows[0]?.outcome === 'sent' ? true : null;
         });
       } finally {
@@ -1297,6 +1332,23 @@ describeIfStack('the running stack', () => {
           },
         ],
       });
+      // M14, THE ARMING GATE, live and both ways round. An escrow is what a
+      // grantee later starts the §5.2 clock against, and the owner's only way
+      // to interrupt that clock is a notification — so before M14 this could
+      // arm while the alert went to an address nobody had ever confirmed. It
+      // refuses now, with its own token, distinct from the adapter refusal.
+      const beforeProof = await api(VAULT, 'POST', '/v1/vault/emergency-access', {
+        token: owner.token,
+        body: configureBody(),
+      });
+      expect(beforeProof.status).toBe(503);
+      expect(beforeProof.body).toEqual({ error: 'recipient_unverified' });
+
+      // Prove the address through the real ceremony — a code read out of a
+      // real SES message — and the same request is admitted. Without this half
+      // the refusal above would pass just as well against a gate that refuses
+      // everything.
+      await proveAddress(owner);
       expectStatus(
         await api(VAULT, 'POST', '/v1/vault/emergency-access', {
           token: owner.token,

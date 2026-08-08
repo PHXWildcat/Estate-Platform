@@ -127,18 +127,67 @@ export class EmergencyAccessService {
       // The refusal is a control firing, and as of M9 it is VISIBLE: a
       // production vault silently 503ing emergency access would otherwise be
       // indistinguishable from an outage in the very stream operators watch.
-      await this.events.audit.emit({
-        action: 'vault.emergency.notifications_refused',
-        actorId: null,
-        actorType: 'system',
-        onBehalfOf: null,
-        resourceType: 'vault',
-        resourceId: null,
-        sessionId: null,
-        detail: {},
-      });
+      await this.auditRefusal('adapter_unwired', null);
       throw new ServiceUnavailableException({ error: 'notifications_unavailable' });
     }
+  }
+
+  /**
+   * THE ARMING GATE (M14): refuse to arm an escrow for an owner whose address
+   * nobody has proved.
+   *
+   * `deliversToRealChannels` above asks whether SES is wired. It is a hardcoded
+   * literal on an adapter class, so it cannot be wrong about a recipient — it
+   * never looks at one. That is the gap M14 closes: an escrow could arm, the
+   * §5.2 clock could start, and the notification meant to let the owner
+   * INTERRUPT it could be going to an address they had never confirmed. Worst
+   * for the dormant owner, whose stored address is stalest precisely because
+   * the only self-heal was a login.
+   *
+   * ARMING-CLASS, so it REFUSES rather than recording. The actor and the
+   * recipient are the same person here — the owner is configuring their own
+   * escrow — so refusing costs them an action they can unblock themselves by
+   * verifying, and never denies a third party. That asymmetry is the whole
+   * classification: `request`, `release` and settlement's intake proceed and
+   * record instead, because there the actor is a grantee, a redeemer or a
+   * reporter, and an owner's own typo must not be able to lock them out.
+   *
+   * Production-scoped, extending the existing condition rather than adding a
+   * second shape: dev and test run against the stub by design, and gating them
+   * would mean threading the whole ceremony through every fixture.
+   */
+  private async assertOwnerReachable(ownerUserId: string): Promise<void> {
+    if (this.config.nodeEnv !== 'production') {
+      return;
+    }
+    // Fail closed: the port collapses an unanswerable query to false, and an
+    // outage therefore delays a legitimate owner by minutes rather than handing
+    // an attacker the waiting period.
+    if (!(await this.notifier.recipientVerified(ownerUserId))) {
+      await this.auditRefusal('recipient_unverified', ownerUserId);
+      throw new ServiceUnavailableException({ error: 'recipient_unverified' });
+    }
+  }
+
+  /**
+   * A control firing must never read as an outage (the M9 rule). The REASON is
+   * an enum token, because "SES is not wired" and "this owner never confirmed
+   * their address" call for completely different operator responses.
+   */
+  private async auditRefusal(
+    reason: 'adapter_unwired' | 'recipient_unverified',
+    ownerUserId: string | null,
+  ): Promise<void> {
+    await this.events.audit.emit({
+      action: 'vault.emergency.notifications_refused',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: ownerUserId,
+      resourceType: 'vault',
+      resourceId: null,
+      sessionId: null,
+      detail: { reason },
+    });
   }
 
   private async notify(
@@ -147,13 +196,17 @@ export class EmergencyAccessService {
     ownerUserId: string,
   ): Promise<void> {
     let deliveredAt: Date | null = null;
+    let recipientVerified = false;
     try {
-      await this.notifier.notify(notification);
-      deliveredAt = this.clock();
-    } catch {
+      const outcome = await this.notifier.notify(notification);
       // A failed notification must not roll back the state change: the request
       // still happened and the owner still needs the record. The null
       // delivered_at is the signal that a channel let us down.
+      deliveredAt = outcome.delivered ? this.clock() : null;
+      recipientVerified = outcome.recipientVerified;
+    } catch {
+      // The port narrows failures to outcomes now, so reaching here means an
+      // adapter broke its own contract. Recorded as a non-delivery either way.
     }
     await this.emergency.recordNotification(this.db, {
       policyId,
@@ -162,6 +215,25 @@ export class EmergencyAccessService {
       channel: this.notifier.channel,
       deliveredAt,
     });
+    // M14, the PROCEED-AND-RECORD half. `request` and `release` are driven by a
+    // GRANTEE, so they must not be blocked by the OWNER's unverified address —
+    // that would let an owner's typo permanently deny a legitimate emergency
+    // contact, the M6 rule pointed the wrong way. The fact still has to land
+    // somewhere the §5.2 record can be read from, and this is it: an alert sent
+    // to an unproved address is not evidence the owner could have interrupted
+    // anything.
+    if (deliveredAt !== null && !recipientVerified) {
+      await this.events.audit.emit({
+        action: 'vault.emergency.unverified_recipient',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: ownerUserId,
+        resourceType: 'vault',
+        resourceId: policyId,
+        sessionId: null,
+        detail: { kind: notification.kind },
+      });
+    }
   }
 
   /** Publish this user's public key so others can name them as a contact. */
@@ -232,6 +304,10 @@ export class EmergencyAccessService {
   ): Promise<EscrowDto> {
     this.authz.assertCan(actorUserId, 'manage', vaultResource(actorUserId));
     await this.assertNotificationsUsable();
+    // ARMS a capability (M14): the escrow this creates is what a grantee later
+    // starts the §5.2 clock against, so the owner must be provably reachable
+    // before it exists.
+    await this.assertOwnerReachable(actorUserId);
 
     if (input.grantees.length === 0) throw new ConflictException({ error: 'no_grantees' });
     if (input.threshold > input.grantees.length) {
@@ -420,6 +496,12 @@ export class EmergencyAccessService {
   /** Clear a denial so the contact can request again. Step-up gated. */
   async rearm(ownerUserId: string, accountSessionId: string, policyId: string): Promise<PolicyDto> {
     await this.assertNotificationsUsable();
+    // ARMS, and this one was not in M14's original table. Re-arming restores a
+    // grantee's ability to start the §5.2 clock — a denial is sticky with no
+    // cooldown precisely so it stays the owner's decision — and the actor here
+    // IS the recipient, so refusing costs the owner an action they can unblock
+    // themselves rather than denying a third party.
+    await this.assertOwnerReachable(ownerUserId);
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
       if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });

@@ -23,6 +23,7 @@ function configFor(nodeEnv: VaultConfig['nodeEnv']): VaultConfig {
     settlementInternalToken: 's'.repeat(32),
     notificationsUrl: 'http://localhost:3008',
     notificationsInternalToken: '',
+    notificationsStatusToken: '',
   };
 }
 
@@ -117,7 +118,10 @@ describe('the production notification gate', () => {
     const real: NotificationPort = {
       channel: 'ses',
       deliversToRealChannels: true,
-      notify: (): Promise<void> => Promise.resolve(),
+      // M14: a verified owner, so the ARMING gate lets this through too and the
+      // assertion below still measures the ADAPTER gate rather than the new one.
+      recipientVerified: (): Promise<boolean> => Promise.resolve(true),
+      notify: () => Promise.resolve({ delivered: true, recipientVerified: true }),
     };
     const service = serviceWith('production', real);
     // Past the gate, so it fails on the database proxy instead.

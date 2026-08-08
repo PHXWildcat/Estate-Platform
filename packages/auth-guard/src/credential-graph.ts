@@ -275,17 +275,26 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
   {
     envVar: 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
     callee: 'notifications',
-    // M14. Identity reads it to decide whether to mint a code at login;
-    // PR2 adds vault and profile, which read it at the two ARMING gates
-    // (escrow configure, link-code mint) — and, per the M9 PR2 rule, those
-    // holders are added in the SAME change as the clients that present it,
-    // never before.
+    // M14. Identity reads it to decide whether to mint a code at login. Vault
+    // and profile joined in PR2, which is the change that gave them clients
+    // presenting it — the DOCUMENTS_INTERNAL_TOKEN rule: a holder recorded
+    // before its caller exists is an aspirational grant, exactly the
+    // prose-vs-reality drift this module forbids.
     //
-    // Settlement holds SEND and is deliberately NOT here: its gates PROCEED on
-    // an unverified recipient and record the fact, so it never asks the
-    // question. That is what makes `holders` minimal rather than "everyone who
+    // Vault reads it at escrow `configure` and `rearm`; profile at link-code
+    // `invite`. All three are ARMING actions where the actor and the
+    // notification recipient are the same person, so refusing costs the owner
+    // an action they can unblock themselves.
+    //
+    // Settlement holds SEND and is deliberately NOT here, and that is the
+    // classification made structural. Its §5.1 gates PROCEED on an unverified
+    // recipient and record the fact, because there the actor is a reporter and
+    // the recipient is the decedent — refusing would deny a legitimate reporter
+    // the chain entirely, hardest for exactly the dormant owner a fraudulent
+    // report targets. A service that never asks the question must not hold the
+    // key to it: that is what makes `holders` minimal rather than "everyone who
     // talks to notifications".
-    holders: ['identity'],
+    holders: ['identity', 'profile', 'vault'],
     guard: { className: 'RecipientStatusCredentialGuard', token: 'RECIPIENT_STATUS_CREDENTIAL' },
     opens: ['GET /internal/v1/notifications/recipients/:userId/status'],
     grants:

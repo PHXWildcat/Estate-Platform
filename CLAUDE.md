@@ -2022,3 +2022,48 @@ deviating from them, stop and propose the change with rationale — do not silen
   EMPTY details, because a trail that named which refusal fired would re-create
   through the audit stream exactly the oracle the uniform answer removes from the
   wire.
+- 2026-08-07 — M14 PR2 applies the gate table, and the load-bearing change is
+  that `deliversToRealChannels` GAINED A NEIGHBOUR rather than being replaced:
+  it is a true statement about the adapter and stays, and
+  `recipientVerified(userId)` is the question about the RECIPIENT that three
+  shipped controls had been answering with it. That makes this the FIRST
+  NETWORK ROUND TRIP those gates have ever performed, so every port declares
+  what an outage means instead of inheriting it from a thrown exception:
+  `recipientStatus` returns `null` for UNANSWERABLE on the shared client, and
+  each service's own adapter collapses it to `false` at the boundary that knows
+  what the question was for. Stubs answer `false`, never `true` — a dev default
+  must not be the permissive answer to a security question (the M8
+  fail-open-in-style rule). ARMS ⇒ refuse with its OWN token
+  (`recipient_unverified`, distinct from `notifications_unavailable`, because
+  "SES is not wired" and "this owner never confirmed their address" call for
+  completely different operator responses, and the refusal audit now carries a
+  `reason`). OPENS ⇒ proceed, and record.
+- 2026-08-07 — WHERE THE PROCEED-AND-RECORD FACT LANDS, and why it is two
+  places. `notification_sends.outcome` gains `sent_unverified` (migration 004),
+  so the delivery store — the one that KNOWS — carries it in its own
+  append-only log rather than in a parallel table nobody would join against;
+  `delivered` stays TRUE for it, because the carrier accepted the message and a
+  caller must not retry an unproved address as though it were a transport
+  failure. And `recipientVerified` rides the SEND RESPONSE, which is what lets
+  settlement record the fact on the case's own trail WITHOUT holding the status
+  credential. That is the classification made structural: settlement sends and
+  never asks, so it is deliberately absent from the STATUS edge's holders while
+  vault and profile joined it in the same change as their clients. A service
+  that never asks the question must not hold the key to it. Not backfilled:
+  every pre-M14 `sent` row went to an unproved address, but rewriting an
+  append-only log to say so would be a worse lie than the one it corrects, and
+  `REVOKE UPDATE` forbids it anyway — the absence of `sent_unverified` before
+  migration 004 IS the marker.
+- 2026-08-07 — M14 PR2 was proven live under FULL PRODUCTION CONFIG, and the
+  whole table is visible in one audit trail: escrow `configure` refused with
+  `vault.emergency.notifications_refused {"reason":"recipient_unverified"}`;
+  the ceremony then ran against a real SES message
+  (`auth.email_verification.verified` + `notification.recipient.verified`); the
+  same request was admitted and its own notification recorded `sent`, the only
+  `sent` row in the stack. Meanwhile settlement intake PROCEEDED for an
+  unverified decedent and recorded both `settlement.unverified_recipient` and a
+  `sent_unverified` row — the two halves of the classification, from one run.
+  The verification mail itself is `sent_unverified` BY CONSTRUCTION (it goes to
+  an address that is by definition not yet proved), which is what makes the
+  dev journey's `sent` assertion on the later link-claim mail meaningful rather
+  than a constant.
