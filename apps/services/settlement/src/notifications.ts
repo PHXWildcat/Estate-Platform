@@ -93,8 +93,10 @@ const WIRE_KIND: Record<SettlementNotificationKind, EstateNotificationKind> = {
  * The real adapter (M9): delegates to the notifications service, which owns
  * address resolution and the closed template registry — this service still
  * never sees an address, preserving its no-email-lookup anti-enumeration
- * boundary. Throws on non-delivery so notifyOwner's swallow keeps meaning
- * "attempted, not confirmed" exactly as it did for the stub. Delivery is
+ * boundary. M14 stopped it throwing on non-delivery — it returns an outcome,
+ * because an exception cannot carry the second fact a send now reports
+ * (whether the recipient had proved their address), and `notifyOwner` reads
+ * both. Delivery is
  * email-only this milestone; the contact trail's channel cycle remains the
  * record of intent.
  */

@@ -405,17 +405,13 @@ rest on. Controls shipped, each mapped to what this document demanded:
   after-the-fact recovery, NOT a detection control, and should not be cited
   as one. Closing it means recording the calling service, which the static
   shared-secret model cannot do — it arrives with the mesh's peer identity.
-- *Users' addresses are UNVERIFIED.* Registration is unauthenticated and
-  performs no ownership proof, and identity feeds whatever the user typed
-  into the delivery store; `users.email_verified_at` exists in the schema and
-  is never written or read. So "identity's word" means the address was
-  TYPED, not that it is OWNED, and an attacker can register a third party's
-  address and stand the account up far enough to make the platform mail them.
-  Bounded today: no notification kind fires at registration, addresses that
-  already belong to an account cannot be taken, and every message is
-  content-free and link-free, so the phishing value is low and the real risk
-  is sender-reputation damage degrading everyone's alerts. A confirm-token
-  flow is the fix and needs its own change.
+- *Users' addresses are UNVERIFIED.* **CLOSED by M14** — see §6h. The residual
+  as it stood: registration performed no ownership proof, identity fed whatever
+  the user typed into the delivery store, and `users.email_verified_at` was
+  never written or read, so "identity's word" meant the address was TYPED, not
+  OWNED. `users.email_verified_at` remains dead schema deliberately; the
+  verified bit lives on `notification_recipients`, in the store that would have
+  to do the reaching.
 - *The carrier sees addresses, timing, AND the event class (TB5).* Inherent
   to email, and wider than previously recorded here: the body names which
   control is running, so SES and the receiving provider get a per-address
@@ -847,6 +843,104 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
   the linked contact opened before being unlinked stays open — cases are evidence
   and have no soft delete (§5.1 c6) — and is stopped by the owner's own
   step-up-gated void route, not by unlinking.
+
+## 6h. Threat-model delta — M14 address ownership (2026-08-07)
+
+**What was wrong.** Three shipped fail-closed controls — §5.2 emergency access,
+§5.1 settlement intake and review-approve, and §6g's link ceremony — refuse in
+production rather than proceed silently, on the rule that a waiting period
+nobody can be told about is not a control. All three tested
+`deliversToRealChannels`, which is A PROPERTY OF THE ADAPTER, NOT OF THE
+RECIPIENT: a hardcoded literal on whichever adapter class that service's own
+`NOTIFY_MODE` selected, declared independently three times, `false` on the stub
+and `true` on the HTTP one. It asks whether SES is wired. It never asks whether
+the stored address belongs to the owner, and could not — the bit never left the
+process and never named a recipient. So the gate was satisfied, the escrow
+armed or the five-day clock started, and the owner's ability to INTERRUPT — the
+entire content of §5.2 and of §5.1's control 3 — was unenforced.
+
+The sharp part was an anti-correlation: the only self-heal was identity's
+login-time re-feed, so the stored address was freshest for active users and
+STALEST for the dormant owner a fraudulent death report actually targets — and
+once status reaches `settlement`, login is blocked, so it could never heal.
+
+**The ceremony.** Identity mints a 160-bit code at FIRST AUTHENTICATED LOGIN
+(never at registration — an unauthenticated route would be a mail-bomb and
+sender-reputation primitive, and no rate-limiting machinery exists), stores only
+its sha256, mails it through notifications' own credential-scoped route, and
+marks the address verified when the user returns it. One uniform `invalid_code`
+for unknown, expired, spent, revoked, attempt-exhausted, someone-else's and
+raced; free re-issue behind a five-minute floor.
+
+**The verified bit lives on `notification_recipients`**, not on `users`, so the
+delivery store structurally cannot hold an unproven address without saying so.
+`users.email_verified_at` stays dead rather than becoming a second source of
+truth.
+
+**Gate classification.** A verified address gates CAPABILITY-ARMING actions, not
+case-opening ones:
+
+| requires verified (refuses) | proceeds and records |
+|---|---|
+| vault escrow `configure` | vault `request`, vault `release` |
+| vault `rearm` | profile link redemption |
+| profile link-code `invite` | settlement `report`, provider signal, review-approve |
+
+The discriminator is that in the right-hand column the ACTOR and the
+NOTIFICATION RECIPIENT are different people. Refusing there on the OWNER's
+unverified address would let an owner's own typo permanently deny a legitimate
+grantee, redeemer or reporter — the M6 rule that the protective action must
+never be harder, pointed the other way — and applied to §5.1 intake it becomes a
+denial of service against exactly the dormant, never-verified owner a fraudulent
+report targets. Those paths record `sent_unverified` in the send log and an
+`unverified_recipient` audit event instead.
+
+**One approved deviation from M9's content doctrine.** The platform now mails a
+variable that is not a date. It is a typed `code`, never a `text` field:
+platform-authored (`randomBytes`), opaque, single-use, short-lived. The subject
+is unchanged and there is still NO LINK, so "we never link you" stays literally
+true. It travels on its own route behind its own credential, and `SendSchema` is
+built from a kind list that EXCLUDES it, so a send-credential holder — vault,
+settlement, profile — cannot fire it.
+
+### Residuals
+
+- *A user who mistypes their address at registration cannot fix it.* There is no
+  address-change route anywhere in the platform, and verification can only ever
+  target the address already on file. In production such a user is permanently
+  refused escrow `configure`, `rearm` and link-code `invite`, with no
+  self-service and no operator remedy (that belongs to the TB7 operator
+  platform). The arming gates' justification — "refusing costs them an action
+  they can unblock themselves" — is true for the intended contrast (actor ==
+  recipient) and FALSE as an unconditional claim; it is recorded here rather than
+  softened. It fails in the safe direction, and the address-change route that
+  closes it already carries a written obligation to clear the verified bit and
+  invalidate any outstanding code.
+- *A SEND-credential holder can read any user's verified bit* by firing one
+  notification at them, because the send response carries `recipientVerified` —
+  deliberately, so settlement can record the fact without holding the STATUS
+  credential. What the STATUS edge still withholds is the SILENT read: a send
+  costs the subject a real estate alarm, a committed send-log row and an audit
+  event. A weaker oracle, not none. The M14 security review found the credential
+  graph claiming the send edge exposed no delivery state at all; that sentence
+  is corrected rather than the field removed.
+- *An unreachable status route refuses every arming action.* The gates fail
+  closed on an unanswerable query, so a notifications outage suspends escrow
+  configuration, re-arming and link-code minting entirely. That is the intended
+  direction — blocking delays a legitimate owner by minutes where the other
+  direction hands an attacker a whole waiting period — but it is a total outage
+  of those paths, not a degradation, and it is the first network round trip
+  those gates have ever made.
+- *An authenticated attacker can sustain one mail per five minutes to an
+  address they typed into their own registration.* The re-issue floor is
+  per-account, with no per-address, per-IP or global cap, so a single arbitrary
+  address can be sent roughly 288 content-free "confirm this address" messages a
+  day. Rate limiting is absent platform-wide; this is the same residual §6c
+  records for registration, now with a bound.
+- *Registration's fixed-shape, fixed-time response is still owed.* M14 closed
+  the address-ownership half of §5.3's enumeration residual and did NOT close
+  the timing half: `register` still awaits KMS, inserts and Kafka publishes on
+  the new-email path only. Recorded in `auth.service.ts` and unchanged here.
 
 ## 7. Validation program
 

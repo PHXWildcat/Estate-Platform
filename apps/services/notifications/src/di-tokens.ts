@@ -41,10 +41,14 @@ export const VERIFICATION_CREDENTIAL = Symbol('VERIFICATION_CREDENTIAL');
  *
  * A separate edge from sending because its holders differ: settlement sends
  * and never asks (its §5.1 gates PROCEED on an unverified recipient and record
- * the fact), while vault and profile ask at their two ARMING gates. Folding
- * the read into the send credential would hand settlement a capability it has
- * no use for and force a hedge into that edge's `grants` sentence, which
- * currently promises it exposes no delivery state.
+ * the fact), while vault and profile ask at their two ARMING gates.
+ *
+ * It withholds the SILENT read, not the bit. The send response carries
+ * `recipientVerified` as well — deliberately, so settlement can record the fact
+ * without this credential — so what a non-holder gives up is the ability to ask
+ * without mailing the subject and leaving a trail. The M14 review found this
+ * comment claiming the send edge exposed no delivery state; it did from PR2
+ * onward.
  */
 export const RECIPIENT_STATUS_CREDENTIAL = Symbol('RECIPIENT_STATUS_CREDENTIAL');
 

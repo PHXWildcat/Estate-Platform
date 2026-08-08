@@ -37,10 +37,18 @@ export class EmailVerificationRepo {
   constructor(private readonly db: Db) {}
 
   /**
-   * The live code for a user, if any. `live` means unspent, unrevoked and
-   * unexpired — an expired row is left in place as evidence rather than
-   * cleaned up, so the predicate carries the clock rather than trusting a
-   * background job that does not exist.
+   * The live code for a user, if any. `live` means USABLE: unspent, unrevoked,
+   * unexpired, and not attempt-exhausted. An expired row is left in place as
+   * evidence rather than cleaned up, so the predicate carries the clock rather
+   * than trusting a background job that does not exist.
+   *
+   * THE PREDICATE MATCHES `verify()`'s, deliberately and exactly. The M14
+   * security review found the ceremony had THREE disagreeing notions of
+   * liveness — this method, `verify()`, and the partial unique index — and the
+   * disagreement was fatal (see `revokeLive`). `attempts` is included here for
+   * the same reason: a code that has burned its attempt cap is dead to
+   * redemption, so it must not read as live to the mint decision either, or a
+   * user who mistypes five times waits out the re-issue floor for nothing.
    */
   async findLive(userId: string, now: Date): Promise<{ createdAt: Date } | null> {
     const rows = await this.db.query<{ created_at: Date }>(
@@ -50,11 +58,39 @@ export class EmailVerificationRepo {
           AND revoked_at IS NULL
           AND verified_at IS NULL
           AND expires_at > $2
+          AND attempts < $3
         ORDER BY created_at DESC
         LIMIT 1`,
-      [userId, now],
+      [userId, now, MAX_VERIFY_ATTEMPTS],
     );
     return rows[0] ? { createdAt: rows[0].created_at } : null;
+  }
+
+  /**
+   * When this user was last MAILED a code, live or not.
+   *
+   * The re-issue floor keys on this rather than on `findLive`, and that is the
+   * M14 review's second finding: the floor used to be checked only when a live
+   * code existed, but a send that fails RETIRES its code — so in exactly the
+   * state where sends are failing (no recipient row, SES refusing, the
+   * verification route down) there was no live code, the floor was skipped
+   * entirely, and `POST /v1/auth/email/verification/resend` had no rate limit
+   * of any kind. Each iteration cost a real SES call and two append-only
+   * `auth_events` rows.
+   *
+   * "How recently did we mail this address" is the question the floor was
+   * always trying to ask; `created_at` answers it whatever became of the row.
+   */
+  async lastMintedAt(userId: string): Promise<Date | null> {
+    const rows = await this.db.query<{ created_at: Date }>(
+      `SELECT created_at
+         FROM email_verifications
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId],
+    );
+    return rows[0]?.created_at ?? null;
   }
 
   async insert(input: { userId: string; codeSha256: Buffer; expiresAt: Date }): Promise<string> {
@@ -132,10 +168,25 @@ export class EmailVerificationRepo {
   }
 
   /**
-   * Retire whatever live code the user has. Used when a send fails (so the next
-   * login re-mints rather than waiting out a TTL for a mail nobody received)
-   * and when the user asks for a fresh one. Returns whether anything was
-   * retired, so the caller can audit a real retirement and stay quiet otherwise.
+   * Retire whatever code the user has occupying the live slot — and note that
+   * "the live slot" here means the PARTIAL UNIQUE INDEX's notion of live
+   * (`revoked_at IS NULL AND verified_at IS NULL`), NOT `findLive`'s.
+   *
+   * THE DIFFERENCE IS THE M14 REVIEW'S WORST FINDING. A partial index cannot
+   * reference `now()`, so `ux_email_verifications_live` cannot carry an expiry
+   * predicate — it counts a LAPSED row as occupying the slot. `findLive` does
+   * carry the clock. The caller used to invoke this only when `findLive`
+   * returned a row, so once a code passed its TTL nothing ever retired it, the
+   * next insert took the unique violation, and the ceremony answered
+   * `too_soon` FOREVER. The most common user behaviour there is — ignoring the
+   * first email — permanently locked the account out of verification, and with
+   * it out of every M14 arming gate. Reproduced against a real database before
+   * this comment was written.
+   *
+   * So this predicate deliberately MATCHES THE INDEX rather than `findLive`,
+   * and the caller now invokes it unconditionally before minting. Returns
+   * whether anything was retired, so the caller can audit a real retirement
+   * and stay quiet otherwise.
    */
   async revokeLive(userId: string, now: Date): Promise<boolean> {
     const rows = await this.db.query<{ id: string }>(

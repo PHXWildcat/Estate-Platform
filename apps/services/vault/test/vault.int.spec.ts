@@ -35,9 +35,23 @@ import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { InMemoryAuditProducer } from '@estate/kafka';
-import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
+import { AUDIT_PRODUCER, NOTIFIER, PG_POOL_CONFIG } from '../src/di-tokens';
+import type { NotificationPort, NotifyOutcome } from '../src/notifications';
 import { VAULT_SESSION_HEADER } from '../src/vault-session.guard';
 import type { KeysetStatus, SrpChallenge, VaultItemDto, VaultOpened } from '../src/vault.service';
+
+/**
+ * A notifier shaped like every PRODUCTION adapter since M14: it never throws,
+ * it reports what happened. The default stub reports delivered, which is why it
+ * could not catch the regression `reset` shipped with — see the reset spec.
+ */
+const failingNotifier: NotificationPort = {
+  channel: 'email',
+  deliversToRealChannels: true,
+  recipientVerified: (): Promise<boolean> => Promise.resolve(false),
+  notify: (): Promise<NotifyOutcome> =>
+    Promise.resolve({ delivered: false, recipientVerified: false }),
+};
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -168,6 +182,12 @@ describeIfPg('vault service end to end', () => {
       .useValue({ connectionString: pgUrl, options: `-c search_path=${schema}` })
       .overrideProvider(SESSION_VERIFIER)
       .useValue(fakeVerifier)
+      // A notifier that REPORTS NON-DELIVERY without throwing — the shape every
+      // production adapter has since M14 turned the port outcome-based. The
+      // default stub reports delivered, so it could never have caught the
+      // regression below.
+      .overrideProvider(NOTIFIER)
+      .useValue(failingNotifier)
       .compile();
 
     app = moduleRef.createNestApplication({ logger: false });
@@ -727,6 +747,26 @@ describeIfPg('vault service end to end', () => {
         .set({ ...asOwner(), [VAULT_SESSION_HEADER]: opened.token })
         .expect(200);
       expect((list.body as { items: VaultItemDto[] }).items).toHaveLength(0);
+    });
+
+    it('records a reset notification that did NOT land as delivered_at NULL', async () => {
+      // The M14 review's confirmed regression. PR2 changed the port from
+      // throw-based to outcome-based and updated every call site EXCEPT this
+      // one, so `deliveredAt = this.clock()` was reached unconditionally: every
+      // reset recorded its notification as delivered, on the one route where a
+      // bearer token destroys a Zone A vault, where that record is the only
+      // compensating control the route's own docstring names.
+      //
+      // The notifier above reports non-delivery WITHOUT throwing, which is what
+      // every production adapter does now — the old `catch` was simply
+      // unreachable.
+      const { rows } = await admin.query<{ delivered_at: Date | null }>(
+        `SELECT delivered_at FROM ${schema}.emergency_access_notifications
+          WHERE user_id = $1 AND kind = 'reset' ORDER BY created_at DESC LIMIT 1`,
+        [OWNER],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.delivered_at).toBeNull();
     });
 
     it('refuses to reset a vault that was never enrolled', async () => {

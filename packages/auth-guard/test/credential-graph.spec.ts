@@ -27,6 +27,7 @@ import {
   credentialSentinel,
   envVarPrefixFor,
   inboundCredentialsFor,
+  outboundCredentialsFor,
   SERVICE_CREDENTIAL_GRAPH,
   SERVICE_NAMES,
   type ServiceName,
@@ -282,19 +283,50 @@ describe('the guard mechanism agrees with the graph', () => {
   });
 
   it.each(SERVICE_NAMES)('%s presents only credentials the graph grants it', (service) => {
-    // Outbound side: every `credential:`/`serviceCredential:` construction site
-    // must draw on a config field whose env var this service is allowed to
-    // hold — and never on its own inbound one. That last clause is rule 2, and
-    // it is the exact line the M7 collapse crossed.
+    // Outbound side: every credential a service hands to a peer client must
+    // draw on a config field whose env var this service is allowed to hold —
+    // and never on its own inbound one. That last clause is rule 2, and it is
+    // the exact line the M7 collapse crossed.
+    //
+    // THE PATTERN COVERS BOTH WIRING SHAPES, and the second one is why the M14
+    // review flagged this loop. It used to match only
+    // `(?:serviceCredential|credential)\s*:\s*config\.X` — then M14 changed every
+    // notifications client to the per-capability object
+    // `credentials: { send: config.X, status: config.Y }`. `credentials:` does
+    // not match `credential:` (an `s` sits in between) and the inner keys are
+    // `send`/`recipients`/`verification`/`status`, so the scan silently fell to
+    // ZERO matches for identity, profile and notifications and covered none of
+    // the seven notifications presentations. A fence that stops matching is
+    // worse than one that never existed, because the decision log goes on
+    // citing it.
     const module = read(serviceSrc(service, 'app.module.ts'));
     const fieldToEnv = configFieldToEnvVar(service);
     const granted = credentialEnvVarsFor(service);
     const inboundVars = inboundCredentialsFor(service).map((edge) => edge.envVar);
 
-    for (const match of module.matchAll(/(?:serviceCredential|credential)\s*:\s*config\.(\w+)/g)) {
-      const envVar = fieldToEnv[match[1] as string];
+    // Any `<key>: config.<field>` whose field is a known credential field. This
+    // is deliberately keyed on the CONFIG FIELD rather than on the property
+    // name: a property name is a caller's choice and can be renamed into
+    // invisibility (which is exactly what happened), whereas the set of config
+    // fields that hold credentials is derived from the graph.
+    // Only CREDENTIAL env vars: `configFieldToEnvVar` maps every config field,
+    // and a service legitimately wires plenty of non-secrets (base URLs, modes)
+    // into the same client factories.
+    const credentialVars = new Set(SERVICE_CREDENTIAL_GRAPH.map((edge) => edge.envVar));
+    const wired = [...module.matchAll(/[A-Za-z_$][\w$]*\s*:\s*config\.(\w+)/g)]
+      .map((match) => fieldToEnv[match[1] as string])
+      .filter((envVar): envVar is string => envVar !== undefined && credentialVars.has(envVar));
+
+    for (const envVar of wired) {
       expect(granted).toContain(envVar);
       expect(inboundVars).not.toContain(envVar);
+    }
+
+    // ANTI-VACUITY. The file header claims every scan carries one; this loop
+    // did not, which is why its fall to zero matches was silent. A service the
+    // graph grants an outbound credential MUST be observed wiring one.
+    if (outboundCredentialsFor(service).length > 0) {
+      expect(wired.length).toBeGreaterThan(0);
     }
   });
 });

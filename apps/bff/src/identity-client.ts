@@ -58,7 +58,18 @@ export interface IdentityClient {
   emailVerificationStatus(accessToken: string): Promise<EmailVerificationStatus>;
   /** M14: mail another code to the address already on file for this user. */
   resendEmailVerification(accessToken: string): Promise<ResendOutcome>;
-  /** M14: redeem a mailed code. Throws INVALID_CREDENTIALS on any refusal. */
+  /**
+   * M14: redeem a mailed code. Throws INVALID_VERIFICATION_CODE for every
+   * refusal identity makes — it answers one uniform `invalid_code` and the edge
+   * carries that through — or VERIFICATION_UNAVAILABLE when the code was fine
+   * and the platform could not finish.
+   *
+   * NEVER INVALID_CREDENTIALS. That token means "email and password" on the
+   * login surface, and the M12 review's finding was exactly that collision. An
+   * earlier draft of THIS LINE said it throws INVALID_CREDENTIALS, which would
+   * have led a second implementation straight back into that defect — the
+   * interface is the contract, so the contract has to say the right thing.
+   */
   verifyEmail(accessToken: string, code: string): Promise<void>;
   /**
    * Revokes exactly the presented session. Resolves false when identity

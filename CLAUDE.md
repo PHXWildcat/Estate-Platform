@@ -2112,3 +2112,109 @@ deviating from them, stop and propose the change with rationale — do not silen
   transport, the peer-client pattern — which took that file to 77% and the
   package to 90.5/88.05/91.01/91.08, ratcheted up. Lowering the floor was never
   the option; the floor doing its job is what surfaced the gap.
+- 2026-08-07 — M14 security review (five discovery lenses over NAMED FILE LISTS
+  — never a diff range, the M13 lesson — then TWO adversarial verifiers per
+  candidate on different angles, production reachability and
+  is-it-already-a-decision, both defaulting to refuted). The verifiers refuted
+  or downgraded five of the candidates put to them, which is what they are for.
+  EIGHTH milestone running where every confirmed finding sits in machinery the
+  milestone introduced, and most falsify a claim it made about itself.
+  THE WORST ONE INVERTED THE MILESTONE: a partial unique index cannot reference
+  `now()`, so `ux_email_verifications_live` counted a LAPSED row as occupying
+  the live slot, while `findLive` — which decided whether to retire the previous
+  code — carried the clock. Retirement ran only inside `if (live)`, so once a
+  code passed its TTL nothing ever cleared it: the next insert took the unique
+  violation, the ceremony answered `too_soon` FOREVER, and the account could
+  never be verified again, which meant every M14 arming gate refused it
+  permanently. The trigger was the most common user behaviour there is —
+  ignoring the first email. M14 had replaced "the gate is satisfied without
+  proof" with "the gate can never be satisfied". THREE claims contradicted it,
+  and the third is the lesson: an int-spec comment said "findLive agrees, so the
+  service re-mints rather than waiting" and the test never asserted the re-mint
+  — the M13 "a test named for a property it never touched" shape, reproduced by
+  me in the milestone that cites it. Fixed by retiring UNCONDITIONALLY (the
+  retirement predicate matches the INDEX, deliberately, not `findLive`), and
+  `findLive` now also matches `verify()` on `attempts` so all three notions of
+  liveness agree. Reproduced on the live stack before the fix and mutation-
+  tested after.
+- 2026-08-07 — THE SECOND M14 REVIEW FINDING IS THE SAME SHAPE AS THE FIRST, one
+  layer over: the re-issue floor — documented in its own class docstring as
+  "the ONLY rate limit on this path" — was checked only when a live code
+  existed. A send that fails RETIRES its code, so in exactly the state where
+  sends are failing (no recipient row, SES refusing, the verification route
+  down) there was no live code, the floor was skipped entirely, and the resend
+  route had no rate limit of any kind, at whatever rate a caller could sustain;
+  each iteration cost a real SES call and two append-only `auth_events` rows.
+  The floor keys on the LAST MINT now (`lastMintedAt`), which is the question it
+  was always trying to ask: how recently did we mail this address. Both findings
+  came from one predicate being written twice with different clauses — the
+  general rule being that when a rule exists at two layers, a test must say
+  WHICH layer it proves, and the layers must be made to agree rather than
+  assumed to.
+- 2026-08-07 — M14 review, the other confirmed defects. (a) VAULT RESET recorded
+  every notification as DELIVERED: PR2 changed the port from throw-based to
+  outcome-based and updated every call site except `vault.service.ts`, so the
+  `catch` was unreachable and `deliveredAt` was stamped unconditionally — on the
+  one route where a bearer token destroys a Zone A vault, and where that record
+  is the only compensating control the route's own docstring names. Reset also
+  discarded `recipientVerified`, so it was the single path that could never emit
+  the M14 evidence event. (b) A CRYPTO-SHREDDED RECIPIENT still answered
+  `verified: true`, because shredding destroys the DEK and not the row, so the
+  arming gates would ARM while every subsequent alert recorded
+  `carrier_failure`; migration 003 claimed the opposite as "fail-closed by
+  construction" AND claimed the specs asserted it, while only the soft-delete
+  half was tested. Latent — no in-repo caller destroys a DEK — and fixed anyway,
+  because it arms itself the day an erasure route lands and the comment is
+  exactly what would stop someone looking. (c) THE VERIFICATION CODE FIELD
+  accepted 64 characters of readable English (`/^[0-9A-Z-]+$/` against a minting
+  alphabet that excludes I, L, O and U) and interpolated it verbatim into a real
+  message from the platform's verified sender. The fix puts the pattern in the
+  WIRE CONTRACT both services import, with an identity spec asserting every
+  minted code satisfies it — one declaration rather than two free to drift,
+  which is why the obvious local tightening was rejected. (d) An outage was
+  recorded as a FAILED VERIFICATION: `verification_unavailable` reached
+  `recordFailure`, putting "this user failed a verification" in the one trail an
+  investigator reads to decide whether somebody is guessing at a user's codes.
+  It has its own action now — the M9 rule that a control firing must not read as
+  an outage, applied in the other direction.
+- 2026-08-07 — I SILENTLY DISABLED A FENCE, and the shape generalizes past this
+  repo. `credential-graph.spec.ts` matched outbound credential wiring with
+  `/(?:serviceCredential|credential)\s*:\s*config\.(\w+)/`; M14 PR1 changed every
+  notifications client to the per-capability object `credentials: { send:
+  config.X }`, which that regex does not match (an `s` sits between `credential`
+  and `:`). Measured: identity, profile and notifications were checked on ZERO
+  credentials, so rule 2's outbound half — the exact line the M7 collapse
+  crossed — covered none of the seven notifications presentations, while the
+  decision log went on citing the fence as enforcing it. A FENCE THAT STOPS
+  MATCHING IS WORSE THAN ONE THAT NEVER EXISTED. Two fixes, both structural:
+  the scan is keyed on the CONFIG FIELD rather than the property name (a
+  property name is a caller's choice and can be renamed into invisibility, which
+  is what happened; the set of credential-bearing config fields is derived from
+  the graph), and the loop gained the ANTI-VACUITY floor the file header already
+  claimed every scan carried. Mutation-tested with the exact mis-wiring it had
+  become blind to — settlement handing its own inbound §6a gate secret to the
+  notifications client — which now turns it red.
+- 2026-08-07 — THE ROOT CAUSE OF FOUR OF THE TEN M14 FINDINGS, named by a
+  verifier rather than by me: M14 shipped 84 files of code and ZERO lines of
+  documentation, so every sentence it invalidated was still standing. Including
+  a citation IN SHIPPED CODE pointing at docs/03 §6c "recording the deviation"
+  for mailing a code — a passage that recorded the opposite, since §6c still
+  described unverified addresses as an open residual with "a confirm-token flow
+  is the fix and needs its own change". The credential graph's SEND edge still
+  promised it "exposes no delivery state" after PR2 put `recipientVerified` on
+  the send response, in three more restatements. docs/03 §6h now exists, §6c is
+  marked closed by it, and the citation points somewhere true. The rule this
+  yields: A MILESTONE THAT INVALIDATES A SENTENCE OWNS THAT SENTENCE, and
+  deferring the docs to after the review means shipping code that cites
+  documentation contradicting it.
+- 2026-08-07 — M14's ARMING-GATE JUSTIFICATION IS TRUE ONLY FOR THE CONTRAST IT
+  WAS WRITTEN FOR, recorded in docs/03 §6h rather than softened. "Refusing costs
+  them an action they can unblock themselves by verifying" is right about actor
+  == recipient, and FALSE unconditionally: there is no address-change route
+  anywhere in the platform, so a user who mistypes their address at registration
+  — precisely the failure M14 exists to catch — can never verify, and is
+  permanently refused escrow configure, rearm and link-code mint in production,
+  with no operator remedy until the TB7 platform. It fails in the safe
+  direction. The address-change route that closes it already carries a written
+  obligation to clear the verified bit, and now also to invalidate any
+  outstanding code.

@@ -1,5 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
-import { ESTATE_NOTIFICATION_KINDS, NOTIFICATION_CHANNELS } from '@estate/notifications-client';
+import {
+  ESTATE_NOTIFICATION_KINDS,
+  NOTIFICATION_CHANNELS,
+  VERIFICATION_CODE_PATTERN,
+} from '@estate/notifications-client';
 import { z } from 'zod';
 
 /** Payloads are ids, enums, a timestamp, and (on upsert) one address. */
@@ -45,11 +49,14 @@ export type SendInput = z.infer<typeof SendSchema>;
 export const VerificationSchema = z
   .object({
     userId: z.string().uuid(),
-    code: z
-      .string()
-      .min(8)
-      .max(64)
-      .regex(/^[0-9A-Z-]+$/, 'code must be uppercase base32 with dashes'),
+    // The SHARED wire pattern, not a local copy — see its declaration in
+    // @estate/notifications-client for why the M14 review moved it there. The
+    // previous pattern here was `/^[0-9A-Z-]+$/` with `max(64)`, whose comment
+    // claimed it "admits identity's alphabet and its grouping separator and
+    // nothing else": false, and the gap was 64 characters of readable English
+    // interpolated verbatim into a real message from the platform's verified
+    // sender.
+    code: z.string().regex(VERIFICATION_CODE_PATTERN, 'code must be a minted verification code'),
   })
   .strict();
 export type VerificationInput = z.infer<typeof VerificationSchema>;

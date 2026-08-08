@@ -15,6 +15,9 @@ import type { NotificationsService } from '../src/notifications.service';
  * valid one reaches the service verbatim. The credential guard itself is
  * proven in the auth-guard suite and on the live stack.
  */
+/** The shape identity actually mints: EV1- plus eight groups of four. */
+const MINTED_CODE = 'EV1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
+
 describe('InternalController', () => {
   const build = (): {
     controller: InternalController;
@@ -122,7 +125,7 @@ describe('InternalController', () => {
 
   it('verification: parses the typed code wire and delegates', async () => {
     const { verification, calls } = build();
-    const body = { userId: randomUUID(), code: 'EV1-K7MN-ABCD' };
+    const body = { userId: randomUUID(), code: MINTED_CODE };
     await expect(verification.sendCode(body)).resolves.toEqual({
       delivered: true,
       channel: 'email',
@@ -135,13 +138,28 @@ describe('InternalController', () => {
     // that could put a sentence here would have re-created the free-text field
     // the whole content doctrine exists to refuse.
     const { verification, calls } = build();
-    for (const code of ['hello there', 'https://evil.test/x', 'ev1-lowercase', '']) {
+    for (const code of [
+      'hello there',
+      'https://evil.test/x',
+      'ev1-lowercase',
+      '',
+      // The M14 review's finding: the old pattern was `/^[0-9A-Z-]+$/` with a
+      // 64-character cap, so 47 characters of readable English passed and were
+      // interpolated verbatim into a real message from the platform's verified
+      // sender — a free-text field by another name, in the one wire the content
+      // doctrine exists to keep text-free.
+      'YOUR-ESTATE-VAULT-IS-LOCKED-CALL-1-800-555-0100',
+      // I, L, O and U are precisely what the minting alphabet excludes.
+      'EV1-IIII-LLLL-OOOO-UUUU-2222-3333-4444-5555',
+      // Right alphabet, wrong shape.
+      'EV1-K7MN',
+    ]) {
       expect(() => verification.sendCode({ userId: randomUUID(), code })).toThrow(
         BadRequestException,
       );
     }
     expect(() =>
-      verification.sendCode({ userId: randomUUID(), code: 'EV1-ABCD', subject: 'words' }),
+      verification.sendCode({ userId: randomUUID(), code: MINTED_CODE, subject: 'words' }),
     ).toThrow(BadRequestException);
     expect(calls.verification).toEqual([]);
   });

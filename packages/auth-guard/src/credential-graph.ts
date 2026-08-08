@@ -217,7 +217,7 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     guard: SHARED_GUARD,
     opens: ['POST /internal/v1/notifications/send'],
     grants:
-      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of ten estate notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address, no estate data, no delivery state, and cannot redirect delivery. Reading whether an address is verified is a DIFFERENT edge (below) precisely so this sentence stays true of this credential.',
+      'Make the platform send a content-free template email to the address already on file for a user. The wire has no text field and the template registry is closed, so a holder chooses WHICH of ten estate notifications fires and WHEN, never what it says and never where it goes. Misuse means notification spam (desensitization — the M6 review attacked this and the design held), not disclosure: it exposes no stored address and no estate data, and cannot redirect delivery. IT DOES EXPOSE ONE BIT OF DELIVERY STATE: since M14 the send RESPONSE carries `recipientVerified`, so a holder can learn whether any named user has proved their address by firing a notification at them. That is deliberate — it is what lets settlement record the fact on a §5.1 case trail without holding the STATUS credential — and it is stated here because an earlier version of this sentence claimed the opposite, which is the prose-vs-reality drift this module exists to forbid. The STATUS edge below still buys something real: it is a silent, side-effect-free read, where this one costs the user an actual estate alarm, a committed send-log row and an audit event.',
   },
   {
     envVar: 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
@@ -270,7 +270,7 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     guard: { className: 'VerificationCredentialGuard', token: 'VERIFICATION_CREDENTIAL' },
     opens: ['POST /internal/v1/notifications/verification'],
     grants:
-      "Mail one address-verification code, of the platform's own choosing of words, to the address already on file for a user. It is the one route whose payload carries a variable that is not a date (docs/03 §6c records the deviation), but the variable is opaque, platform-authored and single-use: a holder cannot choose the recipient, cannot see the address, cannot fire any estate notification, and cannot make the code valid. Misuse means mailing a user a code they did not ask for, which they can simply ignore — and, at volume, sender-reputation damage.",
+      "Mail one address-verification code, of the platform's own choosing of words, to the address already on file for a user. It is the one route whose payload carries a variable that is not a date (docs/03 §6h records the deviation), but the variable is opaque, platform-authored and single-use: a holder cannot choose the recipient, cannot see the address, cannot fire any estate notification, and cannot make the code valid. Misuse means mailing a user a code they did not ask for, which they can simply ignore — and, at volume, sender-reputation damage.",
   },
   {
     envVar: 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
@@ -294,6 +294,15 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // report targets. A service that never asks the question must not hold the
     // key to it: that is what makes `holders` minimal rather than "everyone who
     // talks to notifications".
+    //
+    // WHAT THAT MINIMALITY IS AND IS NOT WORTH, stated because the M14 review
+    // found the graph overclaiming it: settlement can still obtain the same bit
+    // by firing a send (the response carries it — see the SEND edge's grants).
+    // What this edge withholds is the SILENT read. A send costs the user a real
+    // estate alarm, a committed `notification_sends` row and an audit event, so
+    // a settlement compromise that wanted to enumerate verified addresses would
+    // be mailing every subject and leaving a trail. That is a weaker oracle,
+    // not no oracle, and the difference is the whole value of the split.
     holders: ['identity', 'profile', 'vault'],
     guard: { className: 'RecipientStatusCredentialGuard', token: 'RECIPIENT_STATUS_CREDENTIAL' },
     opens: ['GET /internal/v1/notifications/recipients/:userId/status'],

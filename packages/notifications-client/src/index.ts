@@ -6,6 +6,7 @@ export {
   NOTIFICATION_KINDS,
   SERVICE_CREDENTIAL_HEADER,
   SYSTEM_NOTIFICATION_KINDS,
+  VERIFICATION_CODE_PATTERN,
   type AddressVerificationInput,
   type EstateNotificationKind,
   type FetchLike,

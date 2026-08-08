@@ -286,6 +286,37 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       expect(await service.markRecipientVerified(doomed)).toEqual({ ok: false });
     });
 
+    it('DIES WITH THE DEK TOO: a crypto-shredded recipient stops vouching', async () => {
+      // The half migration 003 asserted and nobody tested — found false by the
+      // M14 review. Crypto-shredding destroys the DEK, NOT the row, so before
+      // the fix `findStatus` still answered `verified: true` for an address the
+      // service could no longer decrypt: the arming gates would ARM while every
+      // subsequent alert recorded `carrier_failure`. Exactly the fail-open M14
+      // exists to remove, inside the machinery that removes it.
+      //
+      // The soft-delete case above and this one are the TWO halves of that
+      // claim; only one of them used to exist, and the comment named both.
+      const shredded = randomUUID();
+      await service.upsertRecipient({ userId: shredded, email: 'shredded@example.com' });
+      await service.markRecipientVerified(shredded);
+      expect(await service.recipientStatus(shredded)).toEqual({ verified: true });
+
+      // Shred: the DEK goes, the row stays — which is the whole point of
+      // crypto-shredding as this platform defines it.
+      await admin.query(
+        `UPDATE ${schema}.notification_deks SET destroyed_at = now() WHERE user_id = $1`,
+        [shredded],
+      );
+      const { rows } = await admin.query(
+        `SELECT 1 FROM ${schema}.notification_recipients
+          WHERE user_id = $1 AND deleted_at IS NULL AND verified_at IS NOT NULL`,
+        [shredded],
+      );
+      expect(rows).toHaveLength(1); // the row really is still live and still stamped
+
+      expect(await service.recipientStatus(shredded)).toEqual({ verified: false });
+    });
+
     it('answers false — never throws — for a user the store has never seen', async () => {
       expect(await service.recipientStatus(randomUUID())).toEqual({ verified: false });
       expect(await service.markRecipientVerified(randomUUID())).toEqual({ ok: false });
