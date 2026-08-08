@@ -416,23 +416,29 @@ describe('verify', () => {
   });
 
   it("never counts an attempt against somebody else's code", async () => {
-    // Otherwise a signed-in attacker who guessed a digest could exhaust a
-    // victim's attempts and force them to re-issue.
+    // Keyed on the CALLER, so a signed-in attacker who somehow resolved another
+    // user's digest still cannot exhaust that victim's attempts.
     const fakes = makeFakes();
     fakes.codes.findByCode.mockResolvedValue({ ...liveRow, user_id: OTHER });
     await expect(makeService(fakes).verify(USER, SESSION, VALID_SHAPE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(fakes.codes.countAttempt).not.toHaveBeenCalled();
+    expect(fakes.codes.countAttempt).toHaveBeenCalledWith(USER, NOW);
+    expect(fakes.codes.countAttempt).not.toHaveBeenCalledWith(OTHER, expect.anything());
   });
 
-  it("counts an attempt against the caller's own live code", async () => {
+  it('counts a WRONG GUESS, which resolves to no row at all', async () => {
+    // The case the old cap could never see. A wrong code produces a DIFFERENT
+    // DIGEST, so the lookup returns nothing — and the previous implementation
+    // took a resolved row id, so it never moved a counter for the only kind of
+    // failure a guesser actually produces. Round 2 of the M14 review found the
+    // cap decorative because of exactly this.
     const fakes = makeFakes();
-    fakes.codes.findByCode.mockResolvedValue({ ...liveRow, revoked_at: NOW });
+    fakes.codes.findByCode.mockResolvedValue(null);
     await expect(makeService(fakes).verify(USER, SESSION, VALID_SHAPE)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(fakes.codes.countAttempt).toHaveBeenCalledWith('code-row-1');
+    expect(fakes.codes.countAttempt).toHaveBeenCalledWith(USER, NOW);
   });
 
   it('refuses when the delivery store has no live row to vouch for', async () => {
@@ -445,6 +451,13 @@ describe('verify', () => {
       response: { error: 'verification_unavailable' },
     });
     expect(fakes.events.emailVerified).not.toHaveBeenCalled();
+    // RECORDED AS AN OUTAGE, NOT AS A FAILED VERIFICATION. Round 2 of this
+    // review found the fix shipped with only the two assertions above, both of
+    // which held BEFORE it — so nothing would have gone red on a revert, in a
+    // commit that claimed every fix was mutation-tested. The whole point of the
+    // change is which action lands in which trail, so that is what is asserted.
+    expect(fakes.events.emailVerificationUnavailable).toHaveBeenCalledWith(USER, SESSION);
+    expect(fakes.events.emailVerificationFailed).not.toHaveBeenCalled();
   });
 
   it('refuses when a concurrent redemption already spent the code', async () => {
