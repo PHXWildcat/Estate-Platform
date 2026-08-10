@@ -76,11 +76,22 @@ onlyBuiltDependencies: []
 # Transitive security bumps. Next.js pins these two exactly, and both carry
 # high-severity advisories at the versions it pins:
 #   * postcss 8.4.31 — arbitrary file read / path traversal via an
-#     attacker-controlled `sourceMappingURL` in a CSS comment (fixed 8.5.18)
+#     attacker-controlled `sourceMappingURL` in a CSS comment
+#     (GHSA-6g55-p6wh-862q, nominally fixed 8.5.18 — but see below)
 #   * sharp 0.34.5 — inherited libvips CVEs (fixed 0.35.0)
 # Both are same-major bumps, and the image scan gate blocks on application
 # dependencies by design, so they are overridden rather than shipped. Drop these
-# once Next ships newer pins of its own.
+# once Next ships newer pins of its own — NOT YET TRUE as of next 15.5.23, which
+# still pins postcss 8.4.31 exactly as 15.5.21 did (verified with `npm view`).
+#
+# THE POSTCSS FLOOR IS 8.5.23, NOT 8.5.18, and the difference is the whole
+# reason this line is worth reading. GHSA-fxqj-rqcc-2cmp / CVE-2026-69153
+# (published 2026-08-03) says the 8.5.18 fix was INCOMPLETE: the same
+# attacker-controlled `sourceMappingURL` still reads arbitrary `.map` files when
+# `from` is unset, for every version <= 8.5.22. A floor of >=8.5.18 therefore
+# admits five versions that are still vulnerable to the advisory it was written
+# to close. It resolves to 8.5.26 today only because that is what the catalog
+# happens to carry; the floor is what holds if Next ever pins inside the gap.
 overrides:
-  next>postcss: '>=8.5.18'
+  next>postcss: '>=8.5.23'
   next>sharp: '>=0.35.0'
