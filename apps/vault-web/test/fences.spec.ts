@@ -230,3 +230,41 @@ describe('the edge holds no credential and no key', () => {
     }
   });
 });
+
+/**
+ * THE ZONE B SURFACE ON THIS ORIGIN IS ONE PROJECTED READ (M15 PR3).
+ *
+ * Emergency access needs contact NAMES, so profile became reachable from the
+ * vault origin. The safe version of that is a handler which parses profile's
+ * answer and keeps three fields; the unsafe version is a proxy entry, which
+ * would put profile's whole owner-facing surface — relationships, family,
+ * notes, the profile row itself — one path segment away from Zone A.
+ *
+ * The realistic regression is somebody adding `{ prefix: '/api/profile/',
+ * upstream: 'profile', … }` for a screen that wants one more field. This
+ * refuses that shape rather than trusting the review that let it in.
+ */
+describe('profile is reachable only through the projection', () => {
+  const server = code(join(SRC, 'server.ts'));
+
+  it('finds the route table it is meant to be checking', () => {
+    expect(server).toContain('PROXY_ROUTES');
+    expect(server).toContain("upstream: 'vault'");
+  });
+
+  it('declares no profile entry in the proxy allowlist', () => {
+    // The `upstream` union still NAMES profile, because the projected handler
+    // is a profile caller. What must not exist is a routed one.
+    const routeTable = server.slice(
+      server.indexOf('const PROXY_ROUTES'),
+      server.indexOf('THE ONE ZONE B READ ON THIS ORIGIN'),
+    );
+    expect(routeTable).not.toContain("upstream: 'profile'");
+  });
+
+  it('reaches profile from exactly one place, and projects what comes back', () => {
+    const reads = server.split("path: '/v1/contacts").length - 1;
+    expect(reads).toBe(1);
+    expect(server).toContain('projectGranteeCandidates(parsed)');
+  });
+});

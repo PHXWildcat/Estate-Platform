@@ -48,6 +48,28 @@ export interface ContactView {
  * which is exactly the accounting docs/03 §5.5 wants for rapid enumeration.
  * Branching the shape by audience is how two projections drift apart.
  */
+/**
+ * A contact the owner could name for vault emergency access (M15 PR3).
+ *
+ * THREE FIELDS, and the narrowness is the security parameter rather than
+ * tidiness. This is the ONE profile response a `vault`-audience session may
+ * read (`AUDIENCE_ROUTE_ADMITTERS`), so its shape is exactly what a leaked
+ * vault handoff would buy at this service. `ContactSummary` — which carries
+ * relationship, professional kind and four has* flags — is deliberately NOT
+ * that shape, and the account id lives here rather than being added to it, so
+ * the disclosure surface of every existing profile client is unchanged.
+ *
+ * Linked contacts only: a contact with no platform account cannot hold a
+ * published recovery key, so an unlinked row could only ever render a person
+ * the owner is unable to choose.
+ */
+export interface GranteeCandidate {
+  contactId: string;
+  /** The account a Shamir share is sealed to. Unguessable, and owner-linked. */
+  userId: string;
+  name: string;
+}
+
 export interface ContactSummary {
   id: string;
   ownerUserId: string;
@@ -235,6 +257,46 @@ export class ContactsService {
       );
     });
     return Promise.all(visible.map((row) => this.toSummary(callerUserId, row)));
+  }
+
+  /**
+   * The caller's OWN linked contacts, projected to what a grantee picker needs.
+   *
+   * SELF ONLY — no `ownerUserId` parameter and nowhere to name another estate.
+   * The §5.5 cross-owner read exists on `listForOwner` because a role-holder
+   * has a legitimate reason to read an estate's contacts; nobody has a
+   * legitimate reason to choose grantees for someone else's vault, and this is
+   * the route a `vault`-audience session may reach, so the narrower shape is
+   * also the narrower authority.
+   *
+   * One audited decrypt per row (the name), same as the summary list — M13
+   * PR2's decrypt-budget rule, which is why this projects rather than filtering
+   * a full read.
+   */
+  async granteeCandidates(callerUserId: string): Promise<GranteeCandidate[]> {
+    const rows = await this.repo.listByOwner(callerUserId);
+    const linked = rows.filter((row) => row.linked_user_id !== null);
+    const out: GranteeCandidate[] = [];
+    for (const row of linked) {
+      // The PEP still runs per row, on the same resource shape the summary uses
+      // — this route is narrower, never exempt.
+      if (
+        !this.authz.can(
+          callerUserId,
+          'read',
+          coreResource('Contact', row.id, callerUserId, [callerUserId]),
+        )
+      ) {
+        continue;
+      }
+      const summary = await this.toSummary(callerUserId, row);
+      out.push({
+        contactId: row.id,
+        userId: row.linked_user_id as string,
+        name: summary.name,
+      });
+    }
+    return out;
   }
 
   /** Resolve whether `callerUserId` holds an effective read grant over `contactId`. */

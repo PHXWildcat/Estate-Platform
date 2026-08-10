@@ -13,6 +13,7 @@
   "dependencies": {
     "@estate/contracts": "workspace:*",
     "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

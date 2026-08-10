@@ -16,6 +16,7 @@ import {
   PublishRecoveryKeySchema,
   UuidSchema,
 } from './schemas';
+import { VaultSessionGuard } from './vault-session.guard';
 import {
   EmergencyAccessService,
   type EscrowDto,
@@ -59,6 +60,21 @@ export class EmergencyAccessController {
       caller.sessionId,
       parse(PublishRecoveryKeySchema, body),
     );
+  }
+
+  /**
+   * The caller's OWN recovery keypair (M15 PR3), so a grantee can open a share
+   * that was sealed to them. Behind an OPEN VAULT: the private half is wrapped
+   * under the caller's master key, so a session alone is not enough to use it
+   * and should not be enough to fetch it either.
+   */
+  @Get('vault/recovery-key')
+  @UseGuards(VaultSessionGuard)
+  @HttpCode(200)
+  ownRecoveryKey(
+    @Req() req: CallerRequest,
+  ): Promise<{ publicKey: string; wrappedPrivateKey: string }> {
+    return this.emergency.ownRecoveryKey(requireCaller(req).userId);
   }
 
   /**

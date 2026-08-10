@@ -64,6 +64,54 @@ export const AUDIENCE_ADMITTERS: Readonly<
 };
 
 /**
+ * WHO MAY ADMIT A NON-DEFAULT AUDIENCE ON ONE ROUTE ONLY (M15 PR3).
+ *
+ * The table above is the service-wide grant, and for the vault service that is
+ * the right unit — every route it has is a Zone A route. Emergency access broke
+ * that symmetry: choosing a grantee needs contact NAMES, which live in profile,
+ * and a service-wide grant there would hand a leaked vault session the owner's
+ * PII, every contact's decrypted detail, the family tree and the role
+ * assignments. So profile admits a `vault` session on ONE route, whose whole
+ * response is the three fields the design already decided may cross into
+ * Zone A — a contact id, an account id and a name.
+ *
+ * DENY BY DEFAULT still holds and is what makes this narrow: an undecorated
+ * route falls back to the service-wide list, which is `account` alone until a
+ * service says otherwise, so this table is the COMPLETE list of exceptions
+ * rather than a summary of them.
+ *
+ * Keyed `service:handler` and checked against the real decorated handlers in
+ * both directions by `test/session-audience.spec.ts` — a route that quietly
+ * acquires the decorator fails the build, and so does an entry here whose
+ * handler no longer carries it. It also refuses an entry whose service already
+ * holds the audience service-wide, because a route-level grant that changes
+ * nothing reads as a narrower one than is actually in force.
+ */
+export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
+  Record<Exclude<SessionAudience, 'account'>, readonly string[]>
+> = {
+  vault: [
+    // Identity's three, and why each is safe rather than merely convenient:
+    // `session` is introspection and MUST admit every audience or the audience
+    // is unusable; `stepUp` STRENGTHENS the session presenting it and confers
+    // nothing else, so a vault session that steps up is still a vault session;
+    // `logout` revokes the credential you presented, which can only reduce
+    // authority (the M6 rule that the protective action must never be harder).
+    // Absent, and load-bearing: `mintHandoff`. A vault session cannot mint
+    // another, so a leaked one cannot chain itself forward.
+    'identity:session',
+    'identity:stepUp',
+    'identity:logout',
+    // Profile's one, added by M15 PR3. Its whole response is a contact id, an
+    // account id and a name — see the route's own comment.
+    'profile:granteeCandidates',
+  ],
+};
+
+/** Metadata key carrying a route's admitted audiences. See AllowSessionAudiences. */
+export const SESSION_AUDIENCE_METADATA = 'estate:session-audiences';
+
+/**
  * The verified session context a downstream service acts on. Mirrors the shape
  * identity's own SessionGuard attaches and its `GET /v1/auth/session`
  * introspection route returns — the single source of truth for "who is calling

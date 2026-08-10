@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { CallerGuard } from '../src/caller.guard';
+import { AllowSessionAudiences } from '../src/session-audience.decorator';
+import { SESSION_AUDIENCE_METADATA } from '../src/session';
 import { StepUpGuard } from '../src/stepup.guard';
 import { STEPUP_WINDOW_MS, type SessionContext } from '../src/session';
 import type { SessionVerifier } from '../src/verifier';
@@ -125,6 +128,95 @@ describe('CallerGuard audience gate (deny by default)', () => {
     const { context } = contextFor({ authorization: 'Bearer future' });
     const guard = new CallerGuard(fakeVerifier('future', future), ['account', 'vault']);
     await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+  });
+});
+
+/**
+ * THE ROUTE-LEVEL HALF (M15 PR3).
+ *
+ * A service can stay `account`-only while opening ONE route to another
+ * audience. Every case here is about what that does NOT do — because the whole
+ * value of the narrower grant is that its neighbours keep refusing.
+ */
+describe('CallerGuard per-route audiences', () => {
+  const vaultSession = session({ audience: 'vault' });
+
+  /** A context whose handler carries (or does not carry) the decorator. */
+  function routeContext(
+    headers: Record<string, string>,
+    audiences?: readonly string[],
+  ): { context: ExecutionContext; request: { caller?: SessionContext } } {
+    const request: { headers: typeof headers; caller?: SessionContext } = { headers };
+    const handler = (): void => undefined;
+    if (audiences) {
+      Reflect.defineMetadata(SESSION_AUDIENCE_METADATA, audiences, handler);
+    }
+    const context = {
+      switchToHttp: () => ({ getRequest: () => request }),
+      getHandler: () => handler,
+      getClass: () => class Controller {},
+    } as unknown as ExecutionContext;
+    return { context, request };
+  }
+
+  it('admits a vault session on a DECORATED route of an account-only service', async () => {
+    const { context, request } = routeContext({ authorization: 'Bearer handoff' }, [
+      'account',
+      'vault',
+    ]);
+    const guard = new CallerGuard(
+      fakeVerifier('handoff', vaultSession),
+      undefined,
+      new Reflector(),
+    );
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(request.caller?.audience).toBe('vault');
+  });
+
+  it('REFUSES it on every other route of the same service', async () => {
+    // The narrower grant is only worth anything if the neighbours still say no.
+    const { context, request } = routeContext({ authorization: 'Bearer handoff' });
+    const guard = new CallerGuard(
+      fakeVerifier('handoff', vaultSession),
+      undefined,
+      new Reflector(),
+    );
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+    expect(request.caller).toBeUndefined();
+  });
+
+  it('UNIONS with the service-wide list rather than replacing it', async () => {
+    // A route-level table that could take authority away as well as add it
+    // would be a second place to look when something is unexpectedly 401.
+    const { context } = routeContext({ authorization: 'Bearer ordinary' }, ['vault']);
+    const guard = new CallerGuard(
+      fakeVerifier('ordinary', session()),
+      ['account'],
+      new Reflector(),
+    );
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('is inert without a Reflector, rather than throwing', async () => {
+    // Services construct the guard through Nest DI, which always has one — but
+    // the parameter is optional, so the fallback must be the service-wide list
+    // and not a 500 on every request.
+    const { context } = routeContext({ authorization: 'Bearer handoff' }, ['account', 'vault']);
+    const guard = new CallerGuard(fakeVerifier('handoff', vaultSession));
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('the decorator always implies account, so a route cannot lock ordinary callers out', () => {
+    const target = (): void => undefined;
+    AllowSessionAudiences('vault')(target as never, 'handler', {
+      value: target,
+    } as PropertyDescriptor);
+    // SetMetadata attaches to the descriptor's value in this shape; read it
+    // back off whichever the decorator chose.
+    const attached =
+      (Reflect.getMetadata(SESSION_AUDIENCE_METADATA, target) as string[] | undefined) ?? [];
+    expect(attached).toContain('account');
+    expect(attached).toContain('vault');
   });
 });
 

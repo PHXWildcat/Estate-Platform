@@ -2596,3 +2596,72 @@ deviating from them, stop and propose the change with rationale — do not silen
   drop I could not reproduce. The fix is not in doubt: a `moduleNameMapper`
   makes the suite read `src` regardless of whether a build artifact exists or
   how old it is (the 2026-08-06 rule, enforced rather than hoped for).
+- 2026-08-08 — M15 PR3 (emergency access, both sides) opened by finding that the
+  DESIGN COULD NOT COMPLETE: M6 wrote `vault_keysets.wrapped_private_key` and
+  cleared it on reset, and no route ever served it back — so a grantee could
+  never open a share sealed to them and no release could finish. Invisible
+  because nothing consumed it (the M4 legal-hold shape). `GET
+  /v1/vault/recovery-key` closes it behind an OPEN VAULT rather than a session,
+  which is also the property that makes emergency access safe to expose: a
+  stolen bearer reaches the release route and comes away with ciphertext it
+  cannot open.
+- 2026-08-08 — THE OBVIOUS WAY TO CROSS ZONE B COULD NEVER HAVE WORKED, and
+  driving the live stack is what said so. Choosing a grantee needs contact NAMES,
+  which live in profile; profile admits `account` sessions only, so the vault
+  origin's read of `/v1/contacts` returned 401 on the first real run. The
+  shortcut that makes it work is widening profile SERVICE-WIDE, which hands a
+  leaked vault handoff the owner's PII, every contact's decrypted detail, the
+  family tree and the role assignments. Instead `CallerGuard` gained PER-ROUTE
+  audiences (union with the service-wide list, never a narrowing — a route-level
+  table that could take authority away is a second place to look when something
+  is unexpectedly 401), and profile gained ONE dedicated route whose whole
+  response is a contact id, an account id and a name. The `linkedUserId` field
+  first added to `ContactSummary` was REVERTED: with a dedicated projection it is
+  unnecessary, and not adding it leaves every existing profile client's
+  disclosure surface exactly where M13 left it. Narrowed TWICE on purpose —
+  profile projects because it owns the data, and the vault edge re-projects
+  because it is the only upstream response this origin parses and a later
+  widening of profile's shape must not reach Zone A because nobody remembered the
+  edge exists.
+- 2026-08-08 — ONE VOCABULARY, TWO GUARDS: `AllowSessionAudiences` and
+  `SESSION_AUDIENCE_METADATA` moved into @estate/auth-guard, so identity's own
+  `SessionGuard` and every downstream `CallerGuard` read the same key and ONE
+  fence sees every widening in the repo. `AUDIENCE_ROUTE_ADMITTERS` is the single
+  declaration and identity's `VAULT_AUDIENCE_ROUTES` DERIVES from it rather than
+  restating it (a second hand-written list is a second place for one fact, free
+  to disagree with the one the fence checks). The fence checks the table against
+  the real decorated handlers in both directions, refuses an entry whose service
+  already holds the audience service-wide, and asserts every decorator is
+  ATTRIBUTED to a handler — its first version used a `[\s\S]{0,400}` bridge that
+  backtracked past `async` and reported `identity:constructor`, which is the
+  2026-08-07 lesson restated: a fence that matches the wrong thing is worse than
+  one that matches nothing, because it still goes green. Mutation-tested three
+  ways.
+- 2026-08-08 — THREE DEFECTS THE LIVE DRIVE FOUND AND EVERY UNIT TEST PASSED
+  OVER, all from ONE cause: the arranged row printed a raw UUID (an owner could
+  not recognise who they had named, which is the only reason to read an
+  arrangement back), the status rendered the DDL's own word `configured` at a
+  person, and "Request access" was gated on `armed` — A STATUS THE SCHEMA DOES
+  NOT HAVE — so a grantee could never have started a waiting period. Every
+  fixture used a vocabulary a test author invented rather than the one Postgres
+  stores. Fixtures are pinned to `002_emergency_access.sql` now, with a case
+  walking all six statuses against what the service's own `blockReason` accepts.
+  The general rule: A FIXTURE THAT INVENTS AN ENUM TESTS THE FIXTURE.
+- 2026-08-08 — Two more M15 PR3 defects, both caught by tests refusing to pass.
+  A malformed public key made `offerFor` THROW, leaving the candidate row on "not
+  confirmed" with nothing said — Zone A's threat model treats the server as
+  hostile, so an unparseable key is a refusal (`INVALID_REQUEST`), not an
+  exception, and refusing to fingerprint it is also the right security answer
+  since there is nothing there to seal a share to. And a success message written
+  before the screen re-read itself was DESTROYED by that re-read, so a grantee
+  who started a 48-hour waiting period was told nothing at all; what an action
+  wants to say is carried INTO the render now rather than left behind it.
+- 2026-08-08 — M15 PR3 copy decisions: M14's arming gate
+  (`recipient_unverified`) and a notifications outage
+  (`notifications_unavailable`) are separate `ApiFailure` codes with separate
+  sentences, because "we cannot reach anyone" and "you never confirmed your
+  address" have completely different remedies (the M9 rule that a control firing
+  must not read as an outage). `emergencyMessage` was briefly a SECOND message
+  table and was collapsed back into `messageFor` — two copies of two sentences is
+  the drift shape this repo keeps finding. Denial is one ungated tap and re-arming
+  is step-up gated, which is the M6 asymmetry made visible on screen.

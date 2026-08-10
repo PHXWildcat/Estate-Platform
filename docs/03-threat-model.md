@@ -941,7 +941,7 @@ settlement, profile — cannot fire it.
   the address-ownership half of §5.3's enumeration residual and did NOT close
   the timing half: `register` still awaits KMS, inserts and Kafka publishes on
   the new-email path only. Recorded in `auth.service.ts` and unchanged here.
-## 6i. Threat-model delta — M15 the vault surface, PR1 (2026-08-08)
+## 6i. Threat-model delta — M15 the vault surface (2026-08-08)
 
 M6 activated **TB6 (client device)** in the library. M15 activates it in the
 BROWSER, which is where risk #4 (vault client-side compromise, Critical) has
@@ -1032,9 +1032,46 @@ API. The default is deliberate: requiring 26 retyped characters at every unlock
 reliably moves the key to a text file on the desktop, which is worse. The vault
 PASSWORD is never persisted, so a stolen Secret Key alone opens nothing.
 
-**Still not shipped after PR2, and therefore not mitigated:** emergency access
-on this surface (PR3), which is where §5.2's waiting period and the out-of-band
-fingerprint ceremony reach a user for the first time.
+**PR3 — emergency access reaches a user, and §5.2's ceremony becomes real.**
+
+*The out-of-band fingerprint confirmation is now a shipped control rather than a
+design.* Until PR3 the 16-symbol fingerprint the M6 review widened had no client
+at all, so key substitution by a malicious server — which `grantee_public_key_
+sha256` cannot detect, because that digest is derived from whatever key the
+client was handed — was mitigated only on paper. The screen shows the
+fingerprint, tells the owner to check it by phone or in person and NOT through
+this platform, and refuses to arm until at least one candidate is confirmed.
+
+*A design that could not complete.* M6's `wrapped_private_key` was written and
+never served, so a grantee could not open a share sealed to them and no release
+could ever finish. Closed by an own-key route gated on an OPEN VAULT, which also
+states the property that makes emergency access safe to expose: a stolen bearer
+reaches the release route and comes away with ciphertext it cannot open, because
+the private half lives inside the grantee's own vault.
+
+*A NEW disclosure, bounded and declared.* Contact names now cross onto the vault
+origin. The read is a dedicated profile route whose entire response is a contact
+id, an account id and a name, it is the ONLY route in that service a
+`vault`-audience session may reach, and both facts are declared as data in
+`AUDIENCE_ROUTE_ADMITTERS` and checked against source in both directions. What a
+leaked vault handoff buys at profile is therefore exactly that projection for the
+owner's own linked contacts — measured against the live service, not argued: the
+same token is refused 401 at `/v1/contacts`, `/v1/contacts/:id`, `/v1/profile`,
+`/v1/profile/family` and `/v1/role-assignments`. The alternative considered and
+REJECTED was a service-wide widening, which would have handed that token the
+owner's PII, every contact's decrypted detail, the family tree and the roles.
+
+*Residual, unchanged from M6 and restated because a UI does not fix it:* a server
+that releases its platform half early defeats the waiting period. The
+compensating controls are the audit trail and owner notification, both of which
+this surface now exercises — a request, a refusal and a denial each produce an
+ids-and-enums audit event, and the owner's screen offers denial as one ungated
+tap.
+
+*Residual, new:* the grantee picker's names come from the candidate list, so a
+contact deleted after an arrangement was made shows as an account id. The row
+still renders and can still be removed — hiding a live arrangement would be the
+worse failure — but the owner sees an opaque id rather than a person.
 
 ## 7. Validation program
 

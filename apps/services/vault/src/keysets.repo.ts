@@ -112,6 +112,29 @@ export class KeysetsRepo {
   }
 
   /**
+   * The caller's OWN recovery keypair, public half and wrapped private half.
+   *
+   * M6 wrote `wrapped_private_key` and never served it back, so a grantee could
+   * never open a share sealed to them — the release path was structurally
+   * incompletable. Invisible until M15 PR3 became its first consumer, which is
+   * the M4 legal-hold shape: a route with no caller hides the gap next to it.
+   */
+  async findRecoveryKeyPair(
+    q: Queryable | Db,
+    userId: string,
+  ): Promise<{ publicKey: Buffer; wrappedPrivateKey: Buffer } | null> {
+    const rows = await q.query<{ public_key: Buffer | null; wrapped_private_key: Buffer | null }>(
+      `SELECT public_key, wrapped_private_key FROM vault_keysets WHERE user_id = $1`,
+      [userId],
+    );
+    const row = rows[0];
+    if (!row?.public_key || !row.wrapped_private_key) {
+      return null;
+    }
+    return { publicKey: row.public_key, wrappedPrivateKey: row.wrapped_private_key };
+  }
+
+  /**
    * Replace the keyset in place. The version-capture trigger records who
    * changed it and when, with the key material redacted - see the migration
    * for why retaining a superseded wrapped master key would be an attack asset
