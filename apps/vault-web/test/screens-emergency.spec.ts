@@ -22,6 +22,7 @@ import {
   createEscrow,
   createServerEphemeral,
   generateRecoveryKeyPair,
+  publicKeyFingerprint,
   decodeGroupElement,
   encodeGroupElement,
   fromBase64,
@@ -839,5 +840,136 @@ describe('the emergency-access screens', () => {
       });
       await forgetSecretKey(USER);
     }
+  });
+
+  it('shows the grantee their OWN fingerprint, so the ceremony can be completed', async () => {
+    /*
+     * The M15 review's highest finding: the owner is told to read a fingerprint
+     * to the grantee, and the grantee had nowhere to read theirs. A ceremony
+     * only one side can perform is not a defence against key substitution.
+     */
+    const service = installService();
+    await openEmergency();
+    await waitForText(/nobody can name you for emergency access yet/i);
+    clickText('Let others name me');
+    await waitForText(/your key is published/i);
+
+    await waitForText(/check it against yours/i);
+    const shown = [...document.querySelectorAll('.secret-key')].at(-1)?.textContent ?? '';
+    expect(shown.replace(/-/g, '')).toHaveLength(16);
+    // And it is the fingerprint of the key the SERVER holds, which is the value
+    // an owner naming this person would be shown.
+    expect(shown).toBe(await publicKeyFingerprint(fromBase64(service.ownKey?.publicKey ?? '')));
+  });
+
+  it('refuses to arm a threshold this client could never open', async () => {
+    // The service and vault-crypto both do M-of-N; `releaseAndRecover` passes a
+    // single share, so arming 2-of-2 would store an arrangement nobody can open
+    // and the first grantee to try would spend their one-shot policy on it.
+    const service = installService();
+    service.candidates = [{ contactId: 'c1', userId: GRANTEE, name: 'Ada' }];
+    const pair = await generateRecoveryKeyPair();
+    service.publishedKeys.set(GRANTEE, toBase64(pair.publicKey));
+    await openEmergency();
+    await waitForText('Ada');
+    clickText('Confirm key');
+    await waitForText('key confirmed');
+
+    byLabel('How many must act together').value = '2';
+    clickText('Arm emergency access');
+    await waitForText(/choose between 1 and 1/i);
+    expect(
+      service.calls.filter((c) => c.method === 'POST' && c.path === '/api/vault/emergency-access'),
+    ).toHaveLength(0);
+  });
+
+  it('reports a failure to read the published key back rather than showing a wrong one', async () => {
+    // Refusing to display SOMETHING is the right answer: a fingerprint computed
+    // from a key we could not parse, compared against the owner's, would
+    // confirm a substitution as legitimate.
+    const service = installService();
+    service.ownKey = { publicKey: 'not-a-key', wrappedPrivateKey: 'also-not' };
+    await openEmergency();
+    await waitForText(/could not read your key.s fingerprint back/i);
+    expect(document.querySelectorAll('.secret-key')).toHaveLength(0);
+  });
+
+  it('surfaces a request refused by M14’s arming gate on the GRANTEE side too', async () => {
+    const service = installService();
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: '33333333-4444-4555-8666-777777777777',
+        status: 'configured',
+        releasesAt: null,
+      },
+    ];
+    service.fail.set('POST /api/vault/emergency-access/p9/request', {
+      status: 503,
+      error: 'recipient_unverified',
+    });
+    await openEmergency();
+    await waitForText('Granted to you');
+    clickText('Request access');
+    await waitForText(/confirm your email address in estate/i);
+  });
+
+  it('prompts for a factor when ARMING is refused, then arms (M15 review)', async () => {
+    // `POST /v1/vault/emergency-access` is step-up gated and the redeemed
+    // session no longer arrives with one, so this is the path an owner actually
+    // takes. Wired late and found by the live drive on the SETUP equivalent.
+    const service = installService();
+    service.candidates = [{ contactId: 'c1', userId: GRANTEE, name: 'Ada' }];
+    const pair = await generateRecoveryKeyPair();
+    service.publishedKeys.set(GRANTEE, toBase64(pair.publicKey));
+    service.fail.set('POST /api/vault/emergency-access', {
+      status: 403,
+      error: 'stepup_required',
+    });
+    await openEmergency();
+    await waitForText('Ada');
+    clickText('Confirm key');
+    await waitForText('key confirmed');
+    clickText('Arm emergency access');
+
+    await waitForText(/arming emergency access needs a fresh identity check/i);
+    service.fail.delete('POST /api/vault/emergency-access');
+    (document.getElementById('stepup-code') as HTMLInputElement).value = '123456';
+    document.querySelectorAll('form').forEach((f) => {
+      if (f.querySelector('#stepup-code')) {
+        f.dispatchEvent(new Event('submit', { cancelable: true }));
+      }
+    });
+    await waitForText(/1 contact\(s\) named/i);
+    expect(service.calls.some((c) => c.path === '/api/auth/stepup')).toBe(true);
+  });
+
+  it('CANCELLING the prompt leaves the arrangement untouched', async () => {
+    // Proceeding past a withdrawn consent is the M13 round-3 defect; the
+    // ceremony that guards arming must not be the place it comes back.
+    const service = installService();
+    const armed = {
+      id: 'p1',
+      granteeContactId: 'c1',
+      granteeUserId: GRANTEE,
+      waitingPeriodHours: 48,
+      status: 'configured',
+      requestedAt: null,
+      releasesAt: null,
+      requestCount: 0,
+    };
+    service.escrow = { configured: true, threshold: 1, policies: [armed] };
+    service.fail.set('DELETE /api/vault/emergency-access/p1', {
+      status: 403,
+      error: 'stepup_required',
+    });
+    await openEmergency();
+    await waitForText('ready if you cannot');
+
+    clickText('Remove');
+    await waitForText(/remove needs a fresh identity check/i);
+    clickText('Cancel');
+    await waitForText(/needs a fresh identity check, and it was not completed/i);
+    expect(service.escrow.policies).toHaveLength(1);
   });
 });

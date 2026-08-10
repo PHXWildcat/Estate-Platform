@@ -16,6 +16,8 @@ import {
   decodeGroupElement,
   encodeGroupElement,
   fromBase64,
+  formatSecretKey,
+  generateSecretKey,
   toBase64,
   verifyClientSession,
 } from '@estate/vault-crypto';
@@ -309,26 +311,103 @@ describe('the vault’s actions', () => {
     expect(document.body.textContent).toMatch(/cannot reach a clipboard manager/i);
   });
 
-  it('changes the vault password with the SRP-derived proof', async () => {
-    const service = installService();
-    await openVaultWithItem();
+  /**
+   * THE PASSWORD-CHANGE PATH (M15 review rewrote these).
+   *
+   * The single test that used to cover this asserted nothing: it waited on
+   * `/password has changed|does not match this vault/i` — an alternation that
+   * passes on FAILURE — and put every real assertion behind `if (put)`, so a
+   * run where no request was ever made was a green run. Both defects it was
+   * meant to cover were live underneath it.
+   */
+  describe('changing the vault password', () => {
+    /** The Secret Key this device actually holds, in its ES1 text form. */
+    async function currentSecretKey(): Promise<string> {
+      const entropy = await recallSecretKey(USER);
+      if (!entropy) throw new Error('the device should have remembered the Secret Key');
+      return formatSecretKey(entropy);
+    }
 
-    clickText('Settings');
-    await waitForText('Change your vault password');
-    byLabel('Secret Key').value = 'ES1-not-used-by-the-fake';
-    byLabel('New vault password').value = 'a-brand-new-vault-password';
-    submitForm();
-    await waitForText(/password has changed|does not match this vault/i);
+    it('rebinds the keyset when the current password and Secret Key are right', async () => {
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
 
-    const put = service.calls.find((c) => c.method === 'PUT' && c.path === '/api/vault/keyset');
-    if (put) {
-      const payload = JSON.parse(put.body) as Record<string, unknown>;
+      byLabel('Current vault password').value = PASSWORD;
+      byLabel('Secret Key').value = await currentSecretKey();
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/password has changed/i);
+
+      const put = service.calls.find((c) => c.method === 'PUT' && c.path === '/api/vault/keyset');
+      expect(put).toBeDefined();
+      const payload = JSON.parse((put as { body: string }).body) as Record<string, unknown>;
       // The proof is what makes replacement require the CURRENT password —
       // without it, exfiltrated tokens could destroy every item.
       expect(payload['proof']).toEqual(expect.any(String));
       expect(payload['srpVerifier']).toEqual(expect.any(String));
       expect(JSON.stringify(payload)).not.toContain('a-brand-new-vault-password');
-    }
+      expect(JSON.stringify(payload)).not.toContain(PASSWORD);
+    });
+
+    it('REFUSES a well-formed Secret Key that is not this vault’s, and sends nothing', async () => {
+      /*
+       * The defect: nothing compared the typed key to the vault's own, so a key
+       * from another kit re-derived the AUK and the SRP verifier from itself,
+       * the server accepted the replacement (its proof authorizes the change
+       * and, being zero-knowledge, cannot see what the new payload was built
+       * from), and the screen said "Your vault password has changed."
+       */
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
+
+      byLabel('Current vault password').value = PASSWORD;
+      byLabel('Secret Key').value = await generateSecretKey(); // valid, and not ours
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/did not open this vault, so nothing was changed/i);
+
+      expect(
+        service.calls.filter((c) => c.method === 'PUT' && c.path === '/api/vault/keyset'),
+      ).toHaveLength(0);
+      expect(service.keysetPuts).toBe(0);
+    });
+
+    it('REFUSES a wrong current password, and sends nothing', async () => {
+      // The same local check catches this half: `open()` is an AEAD decrypt, so
+      // either wrong input fails authentication rather than returning garbage.
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
+
+      byLabel('Current vault password').value = 'not-the-vault-password';
+      byLabel('Secret Key').value = await currentSecretKey();
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/did not open this vault, so nothing was changed/i);
+      expect(service.keysetPuts).toBe(0);
+    });
+
+    it('says the same thing for both halves, so neither is confirmed', async () => {
+      // The 2SKD rule the unlock screen already follows: naming which half was
+      // wrong tells someone holding a stolen Secret Key that it is the right one.
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
+
+      byLabel('Current vault password').value = 'not-the-vault-password';
+      byLabel('Secret Key').value = await generateSecretKey();
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/did not open this vault, so nothing was changed/i);
+      expect(document.body.textContent).not.toMatch(/secret key is wrong|password is wrong/i);
+      expect(service.keysetPuts).toBe(0);
+    });
   });
 
   it('resets only after DESTROY, then shows a NEW Secret Key', async () => {

@@ -3,7 +3,6 @@ import {
   fromBase64,
   generateRecoveryKeyPair,
   open,
-  publicKeyDigest,
   publicKeyFingerprint,
   recoverMasterKey,
   seal,
@@ -195,6 +194,15 @@ export async function configureEscrow(input: ConfigureInput): Promise<ApiResult<
   if (input.threshold < 1 || input.threshold > input.confirmed.length) {
     throw new EmergencyAccessError('threshold must be between 1 and the number of grantees');
   }
+  if (input.threshold !== 1) {
+    // `releaseAndRecover` below passes ONE share to `recoverMasterKey`, so an
+    // escrow needing more could never be opened by this client — and release is
+    // one-shot, so the first grantee to try would spend their policy learning
+    // that. The protocol and the service both support M-of-N; this client does
+    // not, and refusing to ARM is the only way to fail closed rather than
+    // storing an arrangement that silently cannot work (M15 review).
+    throw new EmergencyAccessError('this client can only complete a release with threshold 1');
+  }
 
   const grantees: EscrowGrantee[] = input.confirmed.map((offer) => ({
     granteeUserId: offer.userId,
@@ -301,6 +309,8 @@ export async function releaseAndRecover(input: {
       ownerUserId: released.data.ownerUserId,
       platformPart: released.data.platformPart,
       wrappedMasterKeyRecovery: released.data.wrappedMasterKeyRecovery,
+      // ONE share. `configureEscrow` refuses any threshold above 1 for exactly
+      // this reason — see the note there.
       shares: [
         {
           granteeUserId: input.granteeUserId,
@@ -321,9 +331,4 @@ export async function releaseAndRecover(input: {
   } finally {
     wipe(privateKey);
   }
-}
-
-/** Exposed for the screen's "what did I seal to" display, and for its test. */
-export async function digestOf(publicKey: Uint8Array): Promise<string> {
-  return toBase64(await publicKeyDigest(publicKey));
 }

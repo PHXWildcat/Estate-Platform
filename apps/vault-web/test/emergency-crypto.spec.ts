@@ -18,10 +18,12 @@
 import {
   createVaultEnrollment,
   exportMasterKeyBytes,
+  fromBase64,
+  generateRecoveryKeyPair,
   MIN_ITERATIONS,
   prepareUnlock,
   publicKeyFingerprint,
-  fromBase64,
+  toBase64,
 } from '@estate/vault-crypto';
 import {
   configureEscrow,
@@ -197,7 +199,17 @@ describe('emergency access, owner device to grantee device', () => {
     // 80 bits in the M6-widened alphabet: what the owner reads down a phone.
     expect(offer.data.fingerprint).toMatch(/^[0-9A-HJKMNP-TV-Z-]+$/);
     expect(offer.data.fingerprint.replace(/-/g, '')).toHaveLength(16);
-    expect(offer.data.fingerprint).toBe(await publicKeyFingerprint(offer.data.publicKey));
+    /*
+     * NOT `toBe(await publicKeyFingerprint(offer.data.publicKey))`, which is
+     * what this asserted until the M15 review: both sides compute over the SAME
+     * served key, so it reduces to f(x) === f(x) and would hold just as well for
+     * a key the server had substituted — i.e. it could not fail in the one case
+     * the ceremony exists for. What it must show is that the value the OWNER
+     * reads out identifies the key the GRANTEE'S DEVICE actually holds, and
+     * that a substitution changes it.
+     */
+    const published = server.recoveryKeys.get(GRANTEE)?.publicKey ?? '';
+    expect(offer.data.fingerprint).toBe(await publicKeyFingerprint(fromBase64(published)));
 
     // 3. Arm. The split happens here, on the owner's device.
     const armed = await configureEscrow({
@@ -229,6 +241,39 @@ describe('emergency access, owner device to grantee device', () => {
     expect(Buffer.from(owner.bytes).equals(Buffer.alloc(owner.bytes.length))).toBe(false);
     expect(Buffer.from(recovered.data.masterKeyBytes)).toEqual(Buffer.from(owner.bytes));
     expect(recovered.data.ownerUserId).toBe(OWNER);
+  });
+
+  it('a SUBSTITUTED grantee key changes the fingerprint the owner reads out', async () => {
+    /*
+     * The attack the ceremony is the only defence against, and the reason the
+     * assertion above cannot be `f(served) === f(served)`: a malicious server
+     * serves its OWN public key in place of the grantee's, then — already
+     * holding `platform_part` and the recovery-wrapped master key — reads the
+     * whole escrow. `grantee_public_key_sha256` cannot catch it, because it is
+     * derived client-side from whatever key the client was handed.
+     *
+     * Nothing detects this except a human comparing two short strings, so the
+     * property under test is that the two strings DIFFER when the key does.
+     */
+    server.caller = GRANTEE;
+    await publishRecoveryKey(GRANTEE, grantee.key);
+    const honest = server.recoveryKeys.get(GRANTEE);
+    server.caller = OWNER;
+    const candidates = await granteeCandidates();
+    if (!candidates.ok) throw new Error('candidates');
+    const before = await offerFor(candidates.data[0] as GranteeCandidate);
+    if (!before.ok) throw new Error('offer');
+
+    const impostor = await generateRecoveryKeyPair();
+    server.recoveryKeys.set(GRANTEE, {
+      publicKey: toBase64(impostor.publicKey),
+      wrappedPrivateKey: honest?.wrappedPrivateKey ?? '',
+    });
+    const after = await offerFor(candidates.data[0] as GranteeCandidate);
+    if (!after.ok) throw new Error('substituted offer');
+
+    expect(after.data.fingerprint).not.toBe(before.data.fingerprint);
+    expect(after.data.fingerprint).toBe(await publicKeyFingerprint(impostor.publicKey));
   });
 
   it('never puts the master key, or anything that opens it, on the wire', async () => {

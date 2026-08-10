@@ -2665,3 +2665,103 @@ deviating from them, stop and propose the change with rationale — do not silen
   table and was collapsed back into `messageFor` — two copies of two sentences is
   the drift shape this repo keeps finding. Denial is one ungated tap and re-arming
   is step-up gated, which is the M6 asymmetry made visible on screen.
+- 2026-08-10 — M15 PR4 security review (six discovery lenses over NAMED FILE LISTS
+  — the M13 rule, and this range is 128 files / 12,263 insertions, exactly the
+  size that stalled agents before — then TWO adversarial verifiers per candidate
+  on different angles, production reachability and is-it-already-a-decision, both
+  defaulting to refuted; 26 raw, 25 unique, 18 verified under the cap with the 7
+  dropped LOGGED BY NAME and hand-verified, 10 survivors, 8 refuted). NINTH
+  milestone running where every confirmed finding sits in machinery the milestone
+  introduced, and most falsify a claim it made about itself.
+  THE WORST ONE CROSSED THE BOUNDARY THE MILESTONE EXISTS TO CREATE, in the
+  destructive direction. `POST /v1/auth/handoff/redeem` is unauthenticated by
+  construction (the code IS the authority) and redemption GRANTED STEP-UP, while
+  `POST /v1/vault/reset` is gated on step-up ALONE — deliberately, because a lost
+  vault password cannot be proven. So a stolen 60-second handoff code
+  crypto-shredded every item, the emergency escrow and the recovery keypair, with
+  no vault password and no Secret Key. The sharp part is an escalation: script on
+  the app origin CANNOT mint a handoff (minting is step-up gated) but can read one
+  out of the hidden field it is posted in, so stealing a code converted
+  no-step-up into step-up authority over Zone A — and the app origin is the weaker
+  one, since M11 recorded that its `script-src` is not locked down because Next's
+  inline bootstrap needs nonces. Isolation held for CONFIDENTIALITY (reaching the
+  vault API is still not opening a vault) and not for DESTRUCTION.
+  Fixed by granting no step-up on redemption and wiring the vault origin to prove
+  its own factor through `POST /v1/auth/stepup` — the route PR1 widened for the
+  `vault` audience with exactly this rationale and then left unwired, because the
+  free step-up made it look unnecessary. Measured live after the fix: the redeemed
+  session reports `mfaLevel: none`, `stepupExpiresAt: null`, and reset answers 403
+  `stepup_required`.
+- 2026-08-10 — REMOVING THE FREE STEP-UP BROKE VAULT SETUP, and only the live
+  drive found it. `POST /v1/vault/keyset` is step-up gated too, so enrollment
+  became the FIRST place a factor must be proved on this origin — and I had wired
+  the prompt into reset, delete and publish but not setup, so a brand-new user was
+  told "that action needs a fresh identity check" with no way to give one. Every
+  gated action is wrapped now (setup, change-password, reset, item delete,
+  recovery-key publish, escrow configure, rearm, revoke), and the old copy —
+  "Open the vault again from Estate" — is gone from all of them, because
+  re-opening MINTS A FRESH HANDOFF, which is the credential the change exists to
+  devalue. The general shape: removing a capability that was silently satisfying
+  several gates breaks every gate at once, and the unit suite stayed green because
+  its fakes never returned `stepup_required` for those routes.
+- 2026-08-10 — THE FINGERPRINT CEREMONY HAD ONLY ONE SIDE, which both verifiers
+  rated high. The owner's screen shows the fingerprint of the key it is about to
+  seal a share to and says "check this with them by phone or in person" — and the
+  person on the other end of that call had NOWHERE to read their own, so the
+  comparison could not be performed and the sole defence against a malicious
+  server substituting its own key was a ceremony nobody could complete.
+  `grantee_public_key_sha256` cannot help: it is derived client-side from whatever
+  key the client was handed, so it binds to a substituted key just as happily. The
+  grantee's own fingerprint is displayed now, computed from the key the SERVER
+  serves back (the value an owner would see, so agreement rules out substitution
+  on either leg) — verified live: the screen showed `BEM1-A582-HS7E-0JBJ` and the
+  same digest computed from `vault_keysets.public_key` matched exactly.
+- 2026-08-10 — AN M-of-N ESCROW ABOVE 1 COULD NEVER BE OPENED. `createEscrow`
+  splits Shamir over the grantees exactly as M6 designed and the service stores
+  it, but `releaseAndRecover` hands `recoverMasterKey` a SINGLE share, and release
+  is one-shot per policy with no way for one grantee to collect another's. Arming
+  2-of-3 therefore stored an arrangement nobody could open, and the first grantee
+  to try would spend their own policy finding out. Refused at BOTH layers now —
+  the screen and `configureEscrow` — because failing closed here means refusing to
+  ARM, not arming something unusable. The capability stays in the protocol and the
+  service; the field says plainly that this client cannot complete it yet.
+- 2026-08-10 — PASSWORD CHANGE ACCEPTED ANY WELL-FORMED SECRET KEY, and my own
+  first severity call on it was WRONG — recorded because the correction is the
+  useful part. I called it critical and unrecoverable; a verifier refuted that and
+  was right on both counts. The master key is unchanged and merely RE-WRAPPED, so
+  the vault still opens with (new password + the key that was typed); and reaching
+  the screen at all needs an OPEN vault, i.e. the correct password AND Secret Key,
+  so an attacker there gains nothing they did not have. Real severity medium: a
+  lockout only via a typo that survives the ONE-BYTE checksum (~1 in 256), plus
+  three false claims — the field hint ("Unchanged by this"), the error copy ("That
+  Secret Key does not match this vault", when nothing checked matching) and the
+  success message. Fixed by asking for the CURRENT password too and verifying
+  locally: re-derive this vault's AUK from the typed pair and use it to unwrap the
+  master key already held. `open()` is an AEAD decrypt, so either wrong half fails
+  authentication rather than returning garbage — and one message covers both, the
+  2SKD rule the unlock screen already follows.
+- 2026-08-10 — TWO OF MY OWN TESTS PROVED NOTHING, both found by this review.
+  `fences.spec.ts`'s proxy-allowlist scan sliced on a COMMENT anchor while its
+  input is `code()`, which strips comments — so `indexOf` returned -1,
+  `slice(start, -1)` ran to the end of the file, and the fence scanned everything
+  rather than the route table it is named for. It still went red under my
+  mutation, which is why it survived: a scan that is too WIDE catches the planted
+  defect and hides that it is not testing the stated layer. It anchors on the
+  array's own closing bracket now, with a case asserting the slice EXCLUDES the
+  handler below it, and mutation-tested in both directions. And
+  `emergency-crypto.spec.ts` asserted the fingerprint equalled
+  `publicKeyFingerprint(offer.data.publicKey)` — both sides computing over the
+  same served key, i.e. f(x) === f(x), which holds just as well for a substituted
+  key and so could not fail in the one case the ceremony exists for. It compares
+  against the key the grantee's device published now, and a separate case
+  substitutes an impostor key and asserts the displayed value CHANGES.
+- 2026-08-10 — Also fixed in the round: `digestOf` in the emergency client was
+  dead (no caller anywhere) and is deleted rather than tested — untested dead code
+  in a Zone A module is worse than either alone; and the release path, which
+  reconstructs the owner's key and immediately wipes it because no screen reads
+  their items yet, now SAYS SO BEFORE the button is pressed rather than after,
+  since release is one-shot and spending it for a message is worse than not
+  offering it. The reader screen is deliberately a separate PR: holding a second
+  owner's master key in memory needs its own retention decision, and appending it
+  to a fix round is how that decision gets skipped.
+

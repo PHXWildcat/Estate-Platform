@@ -314,9 +314,11 @@ export class AuthController {
    *
    * SessionGuard + StepUpGuard, and deliberately account-audience only: a vault
    * session cannot mint another handoff, so a leaked one cannot chain itself
-   * forward or reach a future second audience. The step-up is doing two jobs —
-   * it is docs/01 §5's re-auth before vault access, and it is what makes it
-   * honest for redemption to give the new session its own freshness window.
+   * forward or reach a future second audience. The step-up here is docs/01 §5's
+   * re-auth before vault access — and ONLY that. It does NOT carry into the
+   * redeemed session: the M15 review found that a step-up-fresh redeemed
+   * session let whoever held a stolen code reach `POST /v1/vault/reset`, which
+   * is gated on step-up alone. The vault origin proves its own factor now.
    *
    * Returns the code IN THE BODY, never in a URL or a redirect: the app origin
    * puts it in a hidden field and the browser submits it by top-level POST, so

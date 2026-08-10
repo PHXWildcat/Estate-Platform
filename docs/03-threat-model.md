@@ -1073,6 +1073,40 @@ contact deleted after an arrangement was made shows as an account id. The row
 still renders and can still be removed — hiding a live arrangement would be the
 worse failure — but the owner sees an opaque id rather than a person.
 
+**PR4 — the security review, and the boundary it found crossed.**
+
+*The isolation held for confidentiality and not for destruction.* Reaching the
+vault API was never opening a vault — that needs the vault password and the
+Secret Key, neither of which this platform holds. But `POST /v1/vault/reset` is
+gated on step-up ALONE, deliberately, because a lost vault password cannot be
+proven; and handoff redemption granted step-up. So a stolen 60-second code
+crypto-shredded every item, the emergency escrow and the recovery keypair. The
+escalation is the sharp part: app-origin script cannot MINT a handoff (minting is
+step-up gated) but can read one out of the hidden field it is posted in, so
+stealing a code converted no-step-up into step-up authority over Zone A — and
+the app origin is the weaker one, since its `script-src` is not locked down
+(M11). CLOSED: redemption grants no step-up, and the vault origin proves its own
+factor through `POST /v1/auth/stepup`, the route widened in PR1 for exactly this.
+
+*The fingerprint ceremony had one side.* The owner reads a code out; the grantee
+had nowhere to read theirs, so the only defence against a malicious server
+substituting its own key for a grantee's could not be exercised.
+`grantee_public_key_sha256` cannot substitute for it — it is derived client-side
+from whatever key the client was handed. CLOSED: the grantee's own fingerprint is
+displayed, computed from the key the server serves back.
+
+*Residual, unchanged and now stated on the screen rather than implied:* a
+released escrow reconstructs the owner's recovery key and this client cannot yet
+read their items with it. Release is one-shot, so pressing the button spends the
+arrangement. The warning is given BEFORE the action; the reader is a separate
+change with its own retention decision, because holding a second owner's master
+key in memory is not something to settle inside a fix round.
+
+*Residual, accepted:* an M-of-N escrow above threshold 1 is refused by this
+client at both layers. The protocol and the service support it; collecting
+several grantees' shares does not exist, and arming an arrangement nobody can
+open would be worse than declining to arm it.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

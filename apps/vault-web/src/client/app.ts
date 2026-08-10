@@ -1,4 +1,10 @@
-import { formatSecretKey, parseSecretKey, wipe } from '/lib/vault-crypto/index.js';
+import {
+  formatSecretKey,
+  fromBase64,
+  parseSecretKey,
+  publicKeyFingerprint,
+  wipe,
+} from '/lib/vault-crypto/index.js';
 import { request, type ApiFailure } from './api.js';
 import { copyWithAutoClear, clearNow, CLIPBOARD_CLEAR_MS } from './clipboard.js';
 import { el, field, onClick, onSubmit, replaceChildren, requireElement } from './dom.js';
@@ -21,6 +27,7 @@ import {
   type PolicyDto,
 } from './emergency.js';
 import { DEFAULT_LENGTH, entropyBits, generatePassword } from './generator.js';
+import { promptForStepUp } from './stepup.js';
 import type { ItemContent } from './item-content.js';
 import { forgetSecretKey, recallSecretKey, rememberSecretKey } from './secret-key-store.js';
 import { IDLE_LOCK_MS, VaultSession, type OpenedItem } from './vault-session.js';
@@ -56,13 +63,46 @@ const ITEM_TYPES: ReadonlyArray<{ value: string; label: string }> = [
   // something the service cannot store.
 ];
 
+/**
+ * Run a step-up-gated action, proving a factor ON THIS ORIGIN if it is refused.
+ *
+ * Redemption grants no step-up any more (the M15 review's bypass: a stolen
+ * handoff code reaching `POST /v1/vault/reset`, which is gated on step-up
+ * alone). So every gated action has to be able to ask, and the old copy —
+ * "Open the vault again from Estate" — is now both wrong and dangerous advice,
+ * because re-opening mints a fresh handoff, the very credential the change
+ * exists to devalue.
+ *
+ * ONE retry, only after identity ACCEPTED the code. A cancel resolves without
+ * running the action at all: proceeding past a withdrawn consent is the M13
+ * round-3 defect and this is the same ceremony.
+ */
+async function withStepUp<T extends { ok: boolean; code?: ApiFailure }>(
+  host: HTMLElement,
+  what: string,
+  run: () => Promise<T>,
+): Promise<T | { ok: false; code: 'STEPUP_REQUIRED' }> {
+  const first = await run();
+  if (first.ok || first.code !== 'STEPUP_REQUIRED') {
+    return first;
+  }
+  const outcome = await promptForStepUp(host, what, messageFor);
+  if (outcome !== 'elevated') {
+    return { ok: false, code: 'STEPUP_REQUIRED' };
+  }
+  return run();
+}
+
 /** One message per failure. Vague copy is worst on the screen holding secrets. */
 function messageFor(code: ApiFailure): string {
   switch (code) {
     case 'UNAUTHENTICATED':
       return 'Your vault session has ended. Open the vault again from Estate.';
     case 'STEPUP_REQUIRED':
-      return 'That action needs a fresh identity check. Open the vault again from Estate.';
+      // Reached only when the user CANCELLED the prompt, or the action is one
+      // that does not offer one. Never "go back to Estate": re-opening mints a
+      // fresh handoff, which is what the step-up change exists to devalue.
+      return 'That action needs a fresh identity check, and it was not completed.';
     case 'VAULT_LOCKED':
       return 'The vault is locked. Unlock it and try again.';
     case 'CONFLICT':
@@ -181,17 +221,23 @@ function renderSetup(): void {
         return;
       }
       if (!account) return;
+      const { userId } = account;
       submit.setAttribute('disabled', '');
       note.append(status('Setting up your vault — this takes a moment.'));
-      const created = await session
-        .enroll(account.userId, password.input.value)
-        .catch(() => ({ ok: false as const, code: 'UNAVAILABLE' as const }));
+      // `POST /v1/vault/keyset` is step-up gated, and the redeemed session no
+      // longer arrives with one (the M15 review's bypass), so first-time setup
+      // is the FIRST place a factor has to be proved on this origin.
+      const created = await withStepUp(note, 'Setting up your vault', () =>
+        session
+          .enroll(userId, password.input.value)
+          .catch(() => ({ ok: false as const, code: 'UNAVAILABLE' as const })),
+      );
       // The password is gone from the DOM the instant it has been used.
       password.input.value = '';
       confirm.input.value = '';
       if (!created.ok) {
         submit.removeAttribute('disabled');
-        replaceChildren(note, status(messageFor(created.code), 'error'));
+        replaceChildren(note, status(messageFor(created.code ?? 'UNKNOWN'), 'error'));
         return;
       }
       renderSecretKey(created.data.secretKey, created.data.entropy);
@@ -491,7 +537,48 @@ async function renderEmergency(notice?: {
   // --- the other side: what others have named you for ---
   children.push(el('h2', {}, ['Granted to you']));
   if (own.ok) {
-    children.push(status('Others can name you for emergency access. Your key is published.'));
+    /*
+     * THE GRANTEE HALF OF THE FINGERPRINT CEREMONY (M15 review).
+     *
+     * The owner's side shows the fingerprint of the key it is about to seal a
+     * share to and says "check this with them by phone or in person". Until
+     * this block existed the person on the other end of that call had NOWHERE
+     * to read their own — so the comparison could not be performed, and the
+     * only defence against a malicious server substituting its own key for a
+     * grantee's was a ceremony nobody could complete. `grantee_public_key_sha256`
+     * cannot help: it is derived client-side from whatever key the client was
+     * handed, so it binds to a substituted key just as happily.
+     *
+     * Computed from the key the SERVER just served back, deliberately — that is
+     * the value an owner would be shown, so if the two agree the substitution
+     * did not happen on either leg.
+     */
+    // `fromBase64` throws SYNCHRONOUSLY, so a trailing `.catch()` on the
+    // promise does not catch it and the whole screen fails to render — the same
+    // defect `offerFor` had in PR3, reintroduced here and caught by its test.
+    // Zone A treats the server as hostile, so a malformed key is expected input.
+    const fingerprint = await Promise.resolve()
+      .then(() => publicKeyFingerprint(fromBase64(own.data.publicKey)))
+      .catch(() => null);
+    children.push(
+      status('Others can name you for emergency access. Your key is published.'),
+      ...(fingerprint
+        ? [
+            el('p', { class: 'field-hint' }, [
+              'If someone names you, they will read a short code back to you. Check it against yours — by phone or in person, not through this platform:',
+            ]),
+            el('p', { class: 'secret-key' }, [fingerprint]),
+          ]
+        : [
+            // Refusing to display SOMETHING is the right answer here: a wrong
+            // fingerprint compared against a right one would confirm a
+            // substitution as legitimate.
+            status(
+              'We could not read your key’s fingerprint back. Reload before confirming it with anyone.',
+              'warn',
+            ),
+          ]),
+    );
   } else if (own.code === 'NOT_FOUND') {
     // ORDERING IS THE POINT: nobody can seal a share to you until this exists,
     // so it is stated as a precondition rather than buried in a failure later.
@@ -505,19 +592,13 @@ async function renderEmergency(notice?: {
           void (async () => {
             if (!account) return;
             replaceChildren(note, status('Publishing…'));
-            const published = await Promise.resolve()
-              .then(() => publishRecoveryKey(account?.userId ?? '', session.requireMasterKey()))
-              .catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
+            const published = await withStepUp(note, 'Publishing your key', () =>
+              Promise.resolve()
+                .then(() => publishRecoveryKey(account?.userId ?? '', session.requireMasterKey()))
+                .catch(() => ({ ok: false as const, code: 'UNKNOWN' as const })),
+            );
             if (!published.ok) {
-              replaceChildren(
-                note,
-                status(
-                  published.code === 'STEPUP_REQUIRED'
-                    ? 'Publishing needs a fresh identity check. Open the vault again from Estate, then retry.'
-                    : messageFor(published.code),
-                  'error',
-                ),
-              );
+              replaceChildren(note, status(messageFor(published.code ?? 'UNKNOWN'), 'error'));
               return;
             }
             await renderEmergency();
@@ -636,7 +717,10 @@ function policyRow(
   ): HTMLElement =>
     quietButton(label, () => {
       void (async () => {
-        const result = await run();
+        // `rearm` and `revoke` are step-up gated; `deny` is deliberately not
+        // (the M6 rule that the protective action must never be harder). Wrapping
+        // all three is harmless: `withStepUp` only prompts on a refusal.
+        const result = await withStepUp(note, label, run);
         if (!result.ok) {
           replaceChildren(note, status(messageFor(result.code ?? 'UNKNOWN'), 'error'));
           return;
@@ -709,6 +793,16 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
     label: 'How many must act together',
     type: 'number',
     value: '1',
+    // ONLY 1 IS SUPPORTED BY THIS CLIENT (M15 review). The service and
+    // `packages/vault-crypto` both do arbitrary M-of-N — `createEscrow` splits
+    // Shamir over the grantees exactly as M6 designed — but `releaseAndRecover`
+    // hands `recoverMasterKey` a SINGLE share, because release is one-shot per
+    // policy and there is no way yet for one grantee to collect another's.
+    // Arming 2-of-3 would therefore create an arrangement nobody could ever
+    // open, and the first grantee to try would spend their own policy finding
+    // out. Offering the field and refusing the value is the honest shape: the
+    // capability exists in the protocol and not yet in this client.
+    hint: 'This client can only complete a release with 1 — collecting several people’s shares is not built yet.',
   });
   const arm = el('button', { class: 'button', type: 'button' }, ['Arm emergency access']);
 
@@ -774,13 +868,15 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
         return;
       }
       try {
-        const armed = await configureEscrow({
-          ownerUserId: account?.userId ?? '',
-          masterKeyBytes,
-          confirmed: [...confirmed.values()],
-          threshold: needed,
-          waitingPeriodHours: hours,
-        }).catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
+        const armed = await withStepUp(note, 'Arming emergency access', () =>
+          configureEscrow({
+            ownerUserId: account?.userId ?? '',
+            masterKeyBytes,
+            confirmed: [...confirmed.values()],
+            threshold: needed,
+            waitingPeriodHours: hours,
+          }).catch(() => ({ ok: false as const, code: 'UNKNOWN' as const })),
+        );
         if (!armed.ok) {
           arm.removeAttribute('disabled');
           // `api.ts` narrows both 503 refusals to their own codes, so the M14
@@ -820,6 +916,21 @@ function renderRelease(policyId: string): void {
     el('h1', {}, ['Open the vault you were trusted with']),
     el('p', { class: 'status status-warn' }, [
       'This spends the arrangement: it can be done once, and the owner is told. Only continue if they genuinely cannot do this themselves.',
+    ]),
+    /*
+     * SAY WHAT THIS DOES AND DOES NOT DO (M15 review).
+     *
+     * Release is ONE-SHOT, and this client reconstructs the owner's recovery
+     * key and then wipes it — there is no screen yet that reads their items
+     * with it. Until that ships, pressing the button spends the only chance the
+     * arrangement had and returns nothing usable, so the person doing it in a
+     * real emergency has to be told that BEFORE they press it rather than
+     * discovering it afterwards. Withholding the warning while keeping the
+     * button is the shape this repo calls offering what the server would
+     * refuse; here the server would not refuse, which makes it worse.
+     */
+    el('p', { class: 'status status-warn' }, [
+      'Reading the owner’s items is not built yet. This confirms the pieces fit and that you could open the vault — it does not show you what is inside, and the arrangement cannot be used a second time once you continue.',
     ]),
     el('p', {}, [
       buttonEl('Open it now', () => {
@@ -873,7 +984,7 @@ function renderRelease(policyId: string): void {
           replaceChildren(
             note,
             status(
-              'The recovery key was reconstructed on this device. The owner has been told this happened.',
+              'The recovery key was reconstructed on this device, and the owner has been told. It was not kept: reading their items with it is not built yet, and this arrangement is now spent.',
               'ok',
             ),
           );
@@ -996,17 +1107,11 @@ function renderItem(existing: OpenedItem | null): void {
       el('p', {}, [
         quietButton('Delete this item', () => {
           void (async () => {
-            const removed = await session.remove(existing.id);
+            const removed = await withStepUp(note, 'Deleting this item', () =>
+              session.remove(existing.id),
+            );
             if (!removed.ok) {
-              replaceChildren(
-                note,
-                status(
-                  removed.code === 'STEPUP_REQUIRED'
-                    ? 'Deleting needs a fresh identity check. Open the vault again from Estate, then retry.'
-                    : messageFor(removed.code),
-                  'error',
-                ),
-              );
+              replaceChildren(note, status(messageFor(removed.code ?? 'UNKNOWN'), 'error'));
               return;
             }
             await renderVault();
@@ -1030,14 +1135,28 @@ function renderSettings(): void {
   const unlocked = session.isUnlocked;
 
   // --- change the vault password (needs an open vault + the Secret Key) ---
+  const currentPassword = field({
+    id: 'change-current',
+    label: 'Current vault password',
+    type: 'password',
+    hint: 'Checked on this device before anything changes.',
+  });
   const current = field({
     id: 'change-secret',
     label: 'Secret Key',
+    // The M15 review found this hint was a claim the code did not keep: a
+    // different well-formed key was accepted and the vault rebound to it. It is
+    // verified now, so the sentence is true.
     hint: 'Unchanged by this — only the password half of the derivation moves.',
   });
   const next = field({ id: 'change-new', label: 'New vault password', type: 'password' });
   const changeButton = el('button', { class: 'button', type: 'submit' }, ['Change password']);
-  const changeForm = el('form', {}, [current.row, next.row, el('p', {}, [changeButton])]);
+  const changeForm = el('form', {}, [
+    currentPassword.row,
+    current.row,
+    next.row,
+    el('p', {}, [changeButton]),
+  ]);
 
   onSubmit(changeForm, () => {
     void (async () => {
@@ -1051,19 +1170,28 @@ function renderSettings(): void {
       // prefix, wrong length) rather than returning a result — so without this
       // the screen would sit on "Changing…" forever, which is the worst
       // possible answer on the screen that changes key material.
-      const changed = await session
-        .changePassword(next.input.value, current.input.value.trim())
-        .catch(() => ({ ok: false as const, code: 'INVALID_REQUEST' as const }));
+      const changed = await withStepUp(note, 'Changing your vault password', () =>
+        session
+          .changePassword(currentPassword.input.value, next.input.value, current.input.value.trim())
+          .catch(() => ({ ok: false as const, code: 'INVALID_REQUEST' as const })),
+      );
       next.input.value = '';
       current.input.value = '';
+      currentPassword.input.value = '';
       changeButton.removeAttribute('disabled');
       replaceChildren(
         note,
         changed.ok
           ? status('Your vault password has changed. Other devices were signed out.', 'ok')
           : status(
-              changed.code === 'CONFLICT' || changed.code === 'INVALID_REQUEST'
-                ? 'That Secret Key does not match this vault.'
+              // UNAUTHENTICATED is the local verification refusing; the other
+              // two are a malformed key or a server conflict. One sentence for
+              // all three, because naming which half was wrong is what the
+              // unlock screen already refuses to do.
+              changed.code === 'UNAUTHENTICATED' ||
+                changed.code === 'CONFLICT' ||
+                changed.code === 'INVALID_REQUEST'
+                ? 'That vault password and Secret Key did not open this vault, so nothing was changed.'
                 : messageFor(changed.code),
               'error',
             ),
@@ -1100,29 +1228,26 @@ function renderSettings(): void {
         return;
       }
       if (!account) return;
+      // Captured: `account` is module state and the closure below runs again
+      // after a step-up, by which time narrowing has been lost.
+      const { userId } = account;
       reset.setAttribute('disabled', '');
       replaceChildren(note, status('Resetting…'));
-      const done = await session
-        .reset(account.userId, resetPassword.input.value)
-        .catch(() => ({ ok: false as const, code: 'UNAVAILABLE' as const }));
+      const done = await withStepUp(note, 'Resetting the vault', () =>
+        session
+          .reset(userId, resetPassword.input.value)
+          .catch(() => ({ ok: false as const, code: 'UNAVAILABLE' as const })),
+      );
       resetPassword.input.value = '';
       confirm.input.value = '';
       if (!done.ok) {
         reset.removeAttribute('disabled');
-        replaceChildren(
-          note,
-          status(
-            done.code === 'STEPUP_REQUIRED'
-              ? 'Resetting needs a fresh identity check. Open the vault again from Estate, then retry.'
-              : messageFor(done.code),
-            'error',
-          ),
-        );
+        replaceChildren(note, status(messageFor(done.code ?? 'UNKNOWN'), 'error'));
         return;
       }
       // The old Secret Key opens nothing now, so this device must forget it and
       // the user must save the new one.
-      await forgetSecretKey(account.userId);
+      await forgetSecretKey(userId);
       renderSecretKey(done.data.secretKey, done.data.entropy);
     })();
   });
