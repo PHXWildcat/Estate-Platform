@@ -186,18 +186,7 @@ const submitForm = (index = 0): void => {
   forms[index]?.dispatchEvent(new Event('submit', { cancelable: true }));
 };
 
-/*
- * NINETY SECONDS, not thirty. These specs drive the REAL client, so every
- * enrollment and unlock is a genuine PBKDF2 at 650k iterations — the shipped
- * parameter, deliberately not lowered, because a test-only iteration count
- * would put a seam into the one derivation Zone A rests on. The whole file runs
- * in ~4s on a developer machine and CI runs 48 turbo tasks at once on a small
- * runner, where a single wait exceeded 30s and failed a green branch.
- *
- * This is harness PATIENCE, not a property: jest's own 180s per-test timeout
- * still bounds a genuine hang, so raising it cannot hide one indefinitely.
- */
-const waitForText = async (pattern: string | RegExp, deadlineMs = 90_000): Promise<void> => {
+const waitForText = async (pattern: string | RegExp, deadlineMs = 30_000): Promise<void> => {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     const text = document.body.textContent ?? '';
@@ -447,6 +436,14 @@ describe('the vault’s actions', () => {
     });
     await waitForText('Save your Secret Key');
     expect(service.calls.some((c) => c.path === '/api/auth/stepup')).toBe(true);
+
+    // Finish the flow. A test that stops mid-ceremony leaves this module — and
+    // the device store behind it — in a state the NEXT test inherits, and these
+    // specs share one module registry per file. Landing on the unlock screen is
+    // where every other test here ends.
+    (document.getElementById('ack') as HTMLInputElement).checked = true;
+    clickText('I have saved it');
+    await waitForText('Unlock your vault');
   });
 
   it('proves a factor ON THIS ORIGIN when reset is refused, then retries (M15 review)', async () => {
