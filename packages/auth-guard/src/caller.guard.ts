@@ -7,7 +7,13 @@ import {
   type CanActivate,
   type ExecutionContext,
 } from '@nestjs/common';
-import { DEFAULT_SESSION_AUDIENCE, type SessionAudience, type SessionContext } from './session';
+import { Reflector } from '@nestjs/core';
+import {
+  DEFAULT_SESSION_AUDIENCE,
+  SESSION_AUDIENCE_METADATA,
+  type SessionAudience,
+  type SessionContext,
+} from './session';
 import { SESSION_VERIFIER, type SessionVerifier } from './verifier';
 
 /**
@@ -77,6 +83,7 @@ export class CallerGuard implements CanActivate {
   constructor(
     @Inject(SESSION_VERIFIER) private readonly verifier: SessionVerifier,
     @Optional() @Inject(ALLOWED_SESSION_AUDIENCES) allowedAudiences?: readonly SessionAudience[],
+    @Optional() private readonly reflector?: Reflector,
   ) {
     // An explicitly EMPTY list would admit nothing and lock the service out of
     // itself; treat it as unwired rather than as a configured denial, so a
@@ -97,10 +104,29 @@ export class CallerGuard implements CanActivate {
     if (!session) {
       throw new UnauthorizedException({ error: 'unauthorized' });
     }
-    if (!this.allowedAudiences.includes(session.audience)) {
+    if (!this.audiencesFor(context).includes(session.audience)) {
       throw new UnauthorizedException({ error: 'unauthorized' });
     }
     request.caller = session;
     return true;
+  }
+
+  /**
+   * The service-wide grant, WIDENED by a route that declares more.
+   *
+   * `getAllAndOverride` so a handler decorator wins over a controller-level
+   * one; absent metadata is the service-wide list, never "unrestricted". The
+   * two are UNIONED rather than replaced, so decorating a route in the vault
+   * service could never accidentally narrow it below what the service admits —
+   * a route-level table that could take authority away as well as add it would
+   * be a second place to look when something is unexpectedly 401.
+   */
+  private audiencesFor(context: ExecutionContext): readonly SessionAudience[] {
+    const perRoute = this.reflector?.getAllAndOverride<readonly SessionAudience[] | undefined>(
+      SESSION_AUDIENCE_METADATA,
+      [context.getHandler(), context.getClass()],
+    );
+    if (!perRoute) return this.allowedAudiences;
+    return [...new Set([...this.allowedAudiences, ...perRoute])];
   }
 }

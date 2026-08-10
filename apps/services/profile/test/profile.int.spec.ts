@@ -229,6 +229,31 @@ describeIfPg('profile & contacts service end to end', () => {
     expect((rows[0] as { linked_user_id: string | null }).linked_user_id).toBe(GRANTEE);
   });
 
+  it('serves grantee candidates as their own projection, over real SQL (M15 PR3)', async () => {
+    // A Shamir share is sealed to a specific ACCOUNT's published recovery key,
+    // so a grantee picker cannot work from a contact id alone. Asserted here
+    // because the account id comes from a column no other response returns —
+    // a fake repo would happily invent it.
+    const candidates = await request(server)
+      .get('/v1/contacts/grantee-candidates')
+      .set('authorization', asUser(OWNER));
+    expect(candidates.status).toBe(200);
+    const rows = candidates.body as Array<{ contactId: string; userId: string; name: string }>;
+    expect(rows).toEqual([{ contactId: linkedContactId, userId: GRANTEE, name: 'Grantee Person' }]);
+
+    // The route is DECLARED BEFORE `contacts/:id`, so the literal path must not
+    // be captured as a uuid parameter — which would 400 rather than answer.
+    expect(JSON.stringify(rows)).not.toContain('uuid');
+
+    // And the general summary is UNCHANGED: M15 PR3 deliberately did not widen
+    // it, so no existing client's disclosure surface moved.
+    const list = await request(server).get('/v1/contacts').set('authorization', asUser(OWNER));
+    expect(list.status).toBe(200);
+    for (const row of list.body as Array<Record<string, unknown>>) {
+      expect(Object.keys(row)).not.toContain('linkedUserId');
+    }
+  });
+
   it('role-assignment mutations require a fresh step-up (docs/01 §5)', async () => {
     const denied = await request(server)
       .post('/v1/role-assignments')

@@ -67,6 +67,11 @@ class FakeContactsRepo {
    * the service check separately — a fake that split them would let the
    * check-then-act defect back in unnoticed.
    */
+  /** The link a real redemption writes; no ordinary write path sets it. */
+  link(id: string, userId: string): void {
+    const i = this.rows.findIndex((r) => r.id === id);
+    this.rows[i] = { ...(this.rows[i] as ContactRow), linked_user_id: userId };
+  }
   assignedContactIds = new Set<string>();
   softDelete(id: string, ownerUserId: string): Promise<'deleted' | 'in_use' | 'not_found'> {
     // ownerUserId is honoured because in the real repo it is the ONLY access
@@ -134,7 +139,7 @@ function build() {
     config,
     () => new Date(),
   );
-  return { service, repo, roles, events, decrypted };
+  return { service, repo, roles, events, decrypted, authz };
 }
 
 describe('ContactsService ABAC boundary (docs/03 §5.5)', () => {
@@ -197,6 +202,10 @@ describe('ContactsService ABAC boundary (docs/03 §5.5)', () => {
       hasNotes: true,
       linked: false,
     });
+    // M15 PR3 deliberately did NOT add the linked ACCOUNT id here: it lives on
+    // the dedicated grantee-candidates projection instead, so the disclosure
+    // surface of every existing profile client is unchanged.
+    expect(Object.keys(list[0] as object)).not.toContain('linkedUserId');
     // The summary has no field for the values themselves.
     expect(Object.keys(list[0] as object)).not.toContain('email');
 
@@ -292,5 +301,88 @@ describe('the contact link survives ordinary edits (M13 PR1)', () => {
     repo.assignedContactIds.delete(a.id);
     await service.remove(OWNER, a.id);
     expect(repo.rows.some((r) => r.id === a.id)).toBe(false);
+  });
+
+  /**
+   * THE GRANTEE-CANDIDATE PROJECTION (M15 PR3).
+   *
+   * This is the one profile response a `vault`-audience session may read, so
+   * its shape is exactly what a leaked vault handoff would buy at this service.
+   * Every assertion here is about what it does NOT contain.
+   */
+  describe('grantee candidates', () => {
+    it('returns three fields for linked contacts, and nothing for unlinked ones', async () => {
+      const { service, repo } = build();
+      const linked = await service.create(OWNER, {
+        name: 'Ada Grantee',
+        email: 'ada@example.com',
+        phone: '555-0100',
+        notes: 'has the spare keys',
+        relationship: 'sibling',
+      });
+      await service.create(OWNER, { name: 'Unlinked Ursula' });
+      repo.link(linked.id, GRANTEE);
+
+      const candidates = await service.granteeCandidates(OWNER);
+      expect(candidates).toEqual([{ contactId: linked.id, userId: GRANTEE, name: 'Ada Grantee' }]);
+      // An unlinked contact has no account and so no published recovery key —
+      // it could only ever render a row the owner cannot choose.
+      expect(JSON.stringify(candidates)).not.toContain('Ursula');
+      // And none of the contact's own detail crosses.
+      const text = JSON.stringify(candidates);
+      expect(text).not.toContain('ada@example.com');
+      expect(text).not.toContain('555-0100');
+      expect(text).not.toContain('spare keys');
+      expect(text).not.toContain('sibling');
+    });
+
+    it('spends ONE decrypt per row, like the summary list (M13 PR2)', async () => {
+      const { service, repo, decrypted } = build();
+      const a = await service.create(OWNER, {
+        name: 'Ada',
+        email: 'a@example.com',
+        phone: '1',
+        address: '2',
+        notes: '3',
+      });
+      repo.link(a.id, GRANTEE);
+
+      decrypted.length = 0;
+      await service.granteeCandidates(OWNER);
+      // The name and nothing else. A projection that read the full row would
+      // put four extra audited decrypts on the owner's trail per grantee shown.
+      expect(decrypted).toEqual(['contact.name']);
+    });
+
+    it('still runs the PEP per row — the narrower route is not the exempt one', async () => {
+      const { service, repo, authz } = build();
+      const linked = await service.create(OWNER, { name: 'Ada' });
+      repo.link(linked.id, GRANTEE);
+      expect(await service.granteeCandidates(OWNER)).toHaveLength(1);
+
+      // A policy that denies must empty the list rather than be bypassed. The
+      // owner is always permitted by owner.cedar, so this is the only way to
+      // show the decision is consulted at all rather than assumed.
+      jest.spyOn(authz, 'can').mockReturnValue(false);
+      expect(await service.granteeCandidates(OWNER)).toEqual([]);
+    });
+
+    it('is SELF-ONLY: it takes no owner and answers about the caller alone', async () => {
+      const { service, repo } = build();
+      const mine = await service.create(OWNER, { name: 'Mine' });
+      repo.link(mine.id, GRANTEE);
+      const theirs = await service.create(GRANTEE, { name: 'Theirs' });
+      repo.link(theirs.id, OWNER);
+
+      // Nobody has a legitimate reason to choose grantees for someone else's
+      // vault, so unlike `listForOwner` there is nowhere here to name another
+      // estate — the §5.5 cross-owner read has no counterpart on this route.
+      expect(await service.granteeCandidates(OWNER)).toEqual([
+        { contactId: mine.id, userId: GRANTEE, name: 'Mine' },
+      ]);
+      expect(await service.granteeCandidates(GRANTEE)).toEqual([
+        { contactId: theirs.id, userId: OWNER, name: 'Theirs' },
+      ]);
+    });
   });
 });

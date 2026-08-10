@@ -259,6 +259,33 @@ export class EmergencyAccessService {
   }
 
   /**
+   * The caller's OWN recovery keypair.
+   *
+   * Returns ciphertext the caller alone can open: `wrapped_private_key` is
+   * sealed under their master key, so this is the same class of response as the
+   * `wrappedMasterKey` an unlock already returns. Gated on an OPEN VAULT rather
+   * than a bare session, which is deliberate — a grantee completing a release
+   * must be able to open their own vault, so a stolen bearer token alone
+   * achieves nothing here.
+   *
+   * Without this route the emergency-access design could not complete: M6 wrote
+   * the wrapped private key and served it to nobody, so a share sealed to a
+   * grantee could never be opened by that grantee. It had no client until M15
+   * PR3, which is why nothing noticed.
+   */
+  async ownRecoveryKey(
+    actorUserId: string,
+  ): Promise<{ publicKey: string; wrappedPrivateKey: string }> {
+    this.authz.assertCan(actorUserId, 'read', vaultResource(actorUserId));
+    const pair = await this.keysets.findRecoveryKeyPair(this.db, actorUserId);
+    if (!pair) throw new NotFoundException({ error: 'recovery_key_not_found' });
+    return {
+      publicKey: pair.publicKey.toString('base64'),
+      wrappedPrivateKey: pair.wrappedPrivateKey.toString('base64'),
+    };
+  }
+
+  /**
    * Look up a prospective grantee's public key. The owner's client is expected
    * to confirm its fingerprint with the grantee over a channel this platform
    * does not control before sealing anything to it - without that step a

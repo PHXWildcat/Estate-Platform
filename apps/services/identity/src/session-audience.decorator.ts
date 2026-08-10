@@ -1,5 +1,8 @@
-import { SetMetadata, type CustomDecorator } from '@nestjs/common';
-import { DEFAULT_SESSION_AUDIENCE, type SessionAudience } from '@estate/auth-guard';
+import {
+  AllowSessionAudiences,
+  AUDIENCE_ROUTE_ADMITTERS,
+  SESSION_AUDIENCE_METADATA,
+} from '@estate/auth-guard';
 
 /**
  * WHICH OF IDENTITY'S OWN ROUTES A NON-ACCOUNT SESSION MAY REACH (M15).
@@ -42,22 +45,26 @@ import { DEFAULT_SESSION_AUDIENCE, type SessionAudience } from '@estate/auth-gua
  * exercise account-level authority, which is not what the vault origin was
  * handed.
  */
-export const SESSION_AUDIENCE_METADATA = 'estate:session-audiences';
-
-/** Routes that admit a `vault` session, as data. Enforced, not descriptive. */
-export const VAULT_AUDIENCE_ROUTES = ['session', 'stepUp', 'logout'] as const;
+/**
+ * Re-exported, NOT redeclared: @estate/auth-guard owns the key so identity's
+ * SessionGuard and every downstream CallerGuard read the same metadata. Two
+ * guards with two copies of a string is how a route ends up decorated for a
+ * key nobody checks.
+ */
+export { AllowSessionAudiences, SESSION_AUDIENCE_METADATA };
 
 /**
- * Widen one route's admitted audiences. `account` is always implied — a route
- * that dropped it would be reachable from the vault origin and nowhere else,
- * which no route in this service wants and which would be a silent outage
- * rather than a control.
+ * This service's routes that admit a `vault` session, DERIVED from the shared
+ * table rather than restated.
+ *
+ * M15 PR3 unified the vocabulary: `@AllowSessionAudiences` and its metadata key
+ * now live in @estate/auth-guard, so one fence there sees every widening in the
+ * repo. Keeping a second hand-written list here would be a second place for the
+ * same fact, free to disagree with the one the shared fence checks — the exact
+ * drift shape this repo keeps finding. Identity's own spec still runs, against
+ * this service's real controllers, so both the derivation and the decorators
+ * stay pinned.
  */
-export function AllowSessionAudiences(
-  ...audiences: readonly Exclude<SessionAudience, 'account'>[]
-): CustomDecorator<string> {
-  return SetMetadata<string, readonly SessionAudience[]>(SESSION_AUDIENCE_METADATA, [
-    DEFAULT_SESSION_AUDIENCE,
-    ...audiences,
-  ]);
-}
+export const VAULT_AUDIENCE_ROUTES: readonly string[] = AUDIENCE_ROUTE_ADMITTERS.vault
+  .filter((key) => key.startsWith('identity:'))
+  .map((key) => key.slice('identity:'.length));

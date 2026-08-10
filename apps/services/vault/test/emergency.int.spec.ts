@@ -26,6 +26,7 @@ import {
   importAesKey,
   MIN_ITERATIONS,
   prepareUnlock,
+  proveUnlock,
   recoverMasterKey,
   toBase64,
   utf8,
@@ -34,6 +35,7 @@ import {
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { VAULT_SESSION_HEADER } from '../src/vault-session.guard';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, CLOCK, NOTIFIER, PG_POOL_CONFIG } from '../src/di-tokens';
 import { SETTLEMENT_AUTHORITY, type SettlementVaultGate } from '@estate/settlement-client';
@@ -105,6 +107,8 @@ describeIfPg('emergency access end to end', () => {
   let ownerItemId: string;
   let granteeKeys: RecoveryKeyPair;
   let otherGranteeKeys: RecoveryKeyPair;
+  /** Each enrolled user's Secret Key, so `openVaultFor` can unlock as them. */
+  const secretKeys = new Map<string, string>();
   let policyId: string;
 
   const asOwner = (): Record<string, string> => bearer('mfa', OWNER);
@@ -230,22 +234,27 @@ describeIfPg('emergency access end to end', () => {
     );
 
     // Both grantees enrol vaults of their own and publish a public key.
+    // STRANGER enrols too but publishes nothing, which is what makes the
+    // own-key 404 case reachable.
     granteeKeys = await generateRecoveryKeyPair();
     otherGranteeKeys = await generateRecoveryKeyPair();
     for (const [userId, keys] of [
       [GRANTEE, granteeKeys],
       [OTHER_GRANTEE, otherGranteeKeys],
+      [STRANGER, null],
     ] as const) {
       const theirs = await createVaultEnrollment({
         userId,
         password: `${userId} vault password`,
         iterations: MIN_ITERATIONS,
       });
+      secretKeys.set(userId, theirs.enrollment.secretKey);
       await request(server)
         .post('/v1/vault/keyset')
         .set(bearer('stepup', userId))
         .send(theirs.enrollment.payload)
         .expect(201);
+      if (!keys) continue;
       await request(server)
         .post('/v1/vault/recovery-key')
         .set(bearer('stepup', userId))
@@ -256,6 +265,43 @@ describeIfPg('emergency access end to end', () => {
         .expect(201);
     }
   });
+
+  /** Complete a real SRP unlock for one user, the way a client does. */
+  async function openVaultFor(userId: string): Promise<{ token: string }> {
+    const headers = bearer('stepup', userId);
+    const challenge = await request(server)
+      .post('/v1/vault/srp/start')
+      .set(headers)
+      .expect(201)
+      .then(
+        (res) =>
+          res.body as {
+            handshakeId: string;
+            srpSalt: string;
+            kdfParams: unknown;
+            serverPublic: string;
+          },
+      );
+    const preparation = await prepareUnlock({
+      userId,
+      password: `${userId} vault password`,
+      secretKey: secretKeys.get(userId) as string,
+      kdfParams: challenge.kdfParams,
+      srpSalt: challenge.srpSalt,
+    });
+    const { m1 } = await proveUnlock(preparation, challenge.serverPublic);
+    const opened = await request(server)
+      .post('/v1/vault/srp/verify')
+      .set(headers)
+      .send({
+        handshakeId: challenge.handshakeId,
+        clientPublic: preparation.publicA,
+        clientProof: m1,
+      })
+      .expect(200)
+      .then((res) => res.body as { vaultSession: { token: string } });
+    return { token: opened.vaultSession.token };
+  }
 
   afterAll(async () => {
     if (app) await app.close();
@@ -286,6 +332,48 @@ describeIfPg('emergency access end to end', () => {
         .set(asOwner())
         .expect(200);
       expect((res.body as { publicKey: string }).publicKey).toBe(toBase64(granteeKeys.publicKey));
+    });
+
+    /**
+     * THE ROUTE M6 NEVER HAD (M15 PR3).
+     *
+     * `wrapped_private_key` was written by publish and cleared by reset, and no
+     * route ever returned it — so a share sealed to a grantee could never be
+     * opened BY that grantee and the whole release path was structurally
+     * incompletable. Nothing noticed because M6 shipped with no client; PR3 is
+     * the first consumer, which is the M4 legal-hold shape exactly.
+     */
+    it('serves the CALLER their own wrapped private key, behind an open vault', async () => {
+      const { token } = await openVaultFor(GRANTEE);
+      const res = await request(server)
+        .get('/v1/vault/recovery-key')
+        .set(bearer('stepup', GRANTEE))
+        .set(VAULT_SESSION_HEADER, token)
+        .expect(200);
+      const body = res.body as { publicKey: string; wrappedPrivateKey: string };
+      expect(body.publicKey).toBe(toBase64(granteeKeys.publicKey));
+      // The private half comes back as the ciphertext that was stored — only
+      // this caller's master key opens it.
+      expect(body.wrappedPrivateKey).toBe(toBase64(granteeKeys.privateKey));
+    });
+
+    it('refuses the own-key route without an OPEN vault', async () => {
+      // A session alone must not be enough: completing a release requires the
+      // grantee to open their own vault, and fetching the key that does it
+      // should be held to the same bar.
+      await request(server)
+        .get('/v1/vault/recovery-key')
+        .set(bearer('stepup', GRANTEE))
+        .expect(403, { error: 'vault_locked' });
+    });
+
+    it('404s the own-key route for a user who never published one', async () => {
+      const { token } = await openVaultFor(STRANGER);
+      await request(server)
+        .get('/v1/vault/recovery-key')
+        .set(bearer('stepup', STRANGER))
+        .set(VAULT_SESSION_HEADER, token)
+        .expect(404, { error: 'recovery_key_not_found' });
     });
 
     it('404s a user who has not published one', async () => {

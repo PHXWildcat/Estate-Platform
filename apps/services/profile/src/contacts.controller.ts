@@ -10,8 +10,18 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
-import { ContactsService, type ContactSummary, type ContactView } from './contacts.service';
+import {
+  AllowSessionAudiences,
+  CallerGuard,
+  requireCaller,
+  type CallerRequest,
+} from '@estate/auth-guard';
+import {
+  ContactsService,
+  type ContactSummary,
+  type ContactView,
+  type GranteeCandidate,
+} from './contacts.service';
 import { ContactSchema, parse, UuidSchema } from './schemas';
 
 /**
@@ -47,6 +57,28 @@ export class ContactsController {
   listOwnContacts(@Req() req: CallerRequest): Promise<ContactSummary[]> {
     const { userId } = requireCaller(req);
     return this.contacts.listForOwner(userId, userId);
+  }
+
+  /**
+   * THE ONE PROFILE ROUTE A `vault` SESSION MAY REACH (M15 PR3).
+   *
+   * Zone A's emergency-access ceremony runs on an isolated origin holding a
+   * `vault`-audience session, and choosing a grantee needs contact names — so
+   * some contact data has to cross. Widening profile SERVICE-WIDE would have
+   * handed a leaked vault handoff the owner's PII, every contact's decrypted
+   * detail, the family tree and the role assignments; this widens ONE route
+   * whose entire response is a contact id, an account id and a name.
+   *
+   * Declared in `AUDIENCE_ROUTE_ADMITTERS` and checked against this decorator
+   * in both directions, so neither the table nor the route can drift alone.
+   *
+   * Declared BEFORE `contacts/:id` so the literal path is not captured as an id.
+   */
+  @Get('contacts/grantee-candidates')
+  @AllowSessionAudiences('vault')
+  @HttpCode(200)
+  granteeCandidates(@Req() req: CallerRequest): Promise<GranteeCandidate[]> {
+    return this.contacts.granteeCandidates(requireCaller(req).userId);
   }
 
   /** One of the caller's own contacts, decrypted in full. An audited decrypt. */

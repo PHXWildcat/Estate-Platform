@@ -3,6 +3,23 @@ import { request, type ApiFailure } from './api.js';
 import { copyWithAutoClear, clearNow, CLIPBOARD_CLEAR_MS } from './clipboard.js';
 import { el, field, onClick, onSubmit, replaceChildren, requireElement } from './dom.js';
 import { downloadEmergencyKit } from './emergency-kit.js';
+import {
+  configureEscrow,
+  denyPolicy,
+  describeEscrow,
+  grantedToMe,
+  granteeCandidates,
+  offerFor,
+  ownRecoveryKey,
+  publishRecoveryKey,
+  rearmPolicy,
+  releaseAndRecover,
+  requestAccess,
+  revokePolicy,
+  type GranteeCandidate,
+  type GranteeKeyOffer,
+  type PolicyDto,
+} from './emergency.js';
 import { DEFAULT_LENGTH, entropyBits, generatePassword } from './generator.js';
 import type { ItemContent } from './item-content.js';
 import { forgetSecretKey, recallSecretKey, rememberSecretKey } from './secret-key-store.js';
@@ -54,6 +71,14 @@ function messageFor(code: ApiFailure): string {
       return 'That item is no longer there.';
     case 'INVALID_REQUEST':
       return 'Something about that was not accepted. Check the fields and try again.';
+    case 'RECIPIENT_UNVERIFIED':
+      // M14's arming gate. DISTINCT from an outage on purpose: "we cannot
+      // reach anyone" and "you have never confirmed your address" call for
+      // completely different actions, and the M9 rule is that a control firing
+      // must never read as a failure.
+      return 'Confirm your email address in Estate first. Emergency access depends on us being able to warn you while the waiting period runs, so we will not arm it until we know we can reach you.';
+    case 'NOTIFICATIONS_UNAVAILABLE':
+      return 'We cannot send notifications right now, so arming emergency access would leave you unable to interrupt it. Try again shortly.';
     case 'UNAVAILABLE':
     case 'NETWORK':
       return 'The vault is temporarily unreachable. Try again shortly.';
@@ -361,7 +386,503 @@ async function renderVault(): Promise<void> {
       }),
       ' ',
       quietButton('Settings', () => renderSettings()),
+      ' ',
+      quietButton('Emergency access', () => void renderEmergency()),
     ]),
+  );
+}
+
+// ------------------------------------------------- emergency access (PR3)
+
+/**
+ * THE OWNER'S SIDE.
+ *
+ * Reading order matters here: what is arranged now, then who could be added,
+ * then the arming action. A screen that led with "add a grantee" would make the
+ * destructive part of a reconfiguration (it retires every existing share) the
+ * easiest thing on the page.
+ */
+async function renderEmergency(notice?: {
+  readonly text: string;
+  readonly tone?: 'ok' | 'warn' | 'error';
+}): Promise<void> {
+  // Every read on this screen needs the vault OPEN — the idle lock can have
+  // fired while it was on screen, and a thrown accessor would leave a blank
+  // page rather than the unlock form.
+  let vaultToken: string;
+  try {
+    vaultToken = session.requireVaultToken();
+  } catch {
+    await renderUnlock();
+    return;
+  }
+
+  // A MESSAGE HAS TO SURVIVE THE RE-RENDER THAT FOLLOWS IT. Every action here
+  // re-reads the screen afterwards, and a note written before that read is
+  // destroyed by it — so what an action wants to say is carried IN, not left
+  // behind. Without this a grantee pressed "Request access", started a waiting
+  // period, and was told nothing at all.
+  const note = el('div');
+  const [escrow, candidates, granted, own] = await Promise.all([
+    describeEscrow(),
+    granteeCandidates(),
+    grantedToMe(),
+    ownRecoveryKey(vaultToken),
+  ]);
+
+  /**
+   * A policy's grantee, by name where we can and by account id where we cannot.
+   *
+   * The candidate list is the ONLY place a name exists on this origin — the
+   * vault service stores account ids, deliberately, because the vault cluster
+   * cannot dereference a core-cluster contact. A contact deleted since the
+   * arrangement was made therefore falls back to the id rather than
+   * disappearing: the arrangement is still live and the owner still needs to
+   * see it.
+   */
+  const namesByUser = new Map(
+    (candidates.ok ? candidates.data : []).map((candidate) => [candidate.userId, candidate.name]),
+  );
+  const nameFor = (policy: PolicyDto): string =>
+    namesByUser.get(policy.granteeUserId) ?? policy.granteeUserId;
+
+  const children: HTMLElement[] = [
+    el('h1', {}, ['Emergency access']),
+    ...(notice ? [status(notice.text, notice.tone ?? 'ok')] : []),
+    el('p', { class: 'status' }, [
+      'People you choose can open this vault if you cannot — but never quietly. Every request starts a waiting period, you are told, and one tap stops it.',
+    ]),
+  ];
+
+  // --- what is arranged now ---
+  children.push(el('h2', {}, ['Your arrangement']));
+  if (!escrow.ok) {
+    children.push(status(messageFor(escrow.code), 'error'));
+  } else if (!escrow.data.configured) {
+    children.push(status('Nobody can open this vault but you.'));
+  } else {
+    children.push(
+      status(
+        `${escrow.data.policies.length} contact(s) named; ${escrow.data.threshold ?? 1} needed together to open it.`,
+      ),
+      el(
+        'ul',
+        { class: 'items' },
+        escrow.data.policies.map((policy) => policyRow(policy, note, nameFor)),
+      ),
+    );
+  }
+
+  // --- who could be added ---
+  children.push(el('h2', {}, ['Choose who can open it']));
+  if (!candidates.ok) {
+    children.push(status('We could not load your contacts just now.', 'error'));
+  } else if (candidates.data.length === 0) {
+    children.push(
+      status(
+        'None of your contacts has an Estate account linked yet. Link one in Estate first — emergency access seals a share to a specific account.',
+        'warn',
+      ),
+    );
+  } else {
+    children.push(granteePicker(candidates.data, note));
+  }
+
+  // --- the other side: what others have named you for ---
+  children.push(el('h2', {}, ['Granted to you']));
+  if (own.ok) {
+    children.push(status('Others can name you for emergency access. Your key is published.'));
+  } else if (own.code === 'NOT_FOUND') {
+    // ORDERING IS THE POINT: nobody can seal a share to you until this exists,
+    // so it is stated as a precondition rather than buried in a failure later.
+    children.push(
+      status('Nobody can name you for emergency access yet.', 'warn'),
+      el('p', { class: 'field-hint' }, [
+        'Publishing a key lets others seal a share of their recovery key to you. The half that opens it never leaves this vault.',
+      ]),
+      el('p', {}, [
+        quietButton('Let others name me', () => {
+          void (async () => {
+            if (!account) return;
+            replaceChildren(note, status('Publishing…'));
+            const published = await Promise.resolve()
+              .then(() => publishRecoveryKey(account?.userId ?? '', session.requireMasterKey()))
+              .catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
+            if (!published.ok) {
+              replaceChildren(
+                note,
+                status(
+                  published.code === 'STEPUP_REQUIRED'
+                    ? 'Publishing needs a fresh identity check. Open the vault again from Estate, then retry.'
+                    : messageFor(published.code),
+                  'error',
+                ),
+              );
+              return;
+            }
+            await renderEmergency();
+          })();
+        }),
+      ]),
+    );
+  } else {
+    children.push(status('We could not check whether your key is published.', 'error'));
+  }
+  if (!granted.ok) {
+    children.push(status('We could not check what others have named you for.', 'error'));
+  } else if (granted.data.length === 0) {
+    children.push(status('Nobody has named you for emergency access.'));
+  } else {
+    children.push(
+      el(
+        'ul',
+        { class: 'items' },
+        granted.data.map((policy) =>
+          el('li', { class: 'item' }, [
+            el('span', {}, [`Vault of ${policy.ownerUserId}`]),
+            el('span', { class: 'item-type' }, [describeGranteeStatus(policy)]),
+            ...granteeActions(policy, note),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  children.push(el('p', {}, [quietButton('Back', () => void renderVault())]), note);
+  replaceChildren(main(), ...children);
+}
+
+/**
+ * A policy status in words, not in the service's vocabulary.
+ *
+ * `configured` is what the DDL calls an arrangement nobody has acted on; to an
+ * owner reading their own page that is "ready if you cannot", and printing the
+ * column value would have shipped a schema enum onto the one screen where
+ * somebody decides whether their arrangement is what they meant. Driving the
+ * live stack is what surfaced it — every unit fixture used the words a test
+ * author chose rather than the ones Postgres stores.
+ */
+const POLICY_STATUS_WORDS: Readonly<Record<string, string>> = {
+  configured: 'ready if you cannot',
+  requested: 'requested',
+  waiting: 'waiting period running',
+  denied_by_owner: 'stopped by you',
+  released: 'opened',
+  revoked: 'removed',
+};
+
+function describePolicyStatus(status: string): string {
+  // An UNKNOWN status still renders — a service deployed ahead of this origin
+  // must not blank the row (the M12 rule), and the raw token is at least true.
+  return POLICY_STATUS_WORDS[status] ?? status.replace(/_/g, ' ');
+}
+
+function describeGranteeStatus(policy: { status: string; releasesAt: string | null }): string {
+  if (policy.status === 'waiting' && policy.releasesAt) {
+    const remainingMs = Date.parse(policy.releasesAt) - Date.now();
+    if (remainingMs > 0) {
+      const hours = Math.ceil(remainingMs / 3_600_000);
+      return `waiting — about ${hours}h left`;
+    }
+    return 'ready to open';
+  }
+  return describePolicyStatus(policy.status);
+}
+
+function granteeActions(
+  policy: { id: string; status: string; releasesAt: string | null },
+  note: HTMLElement,
+): HTMLElement[] {
+  const ready =
+    policy.status === 'waiting' && policy.releasesAt && Date.parse(policy.releasesAt) <= Date.now();
+  // WHAT THE SERVICE ACTUALLY ALLOWS, not a status invented here. `blockReason`
+  // refuses a request only for revoked / released / waiting / denied_by_owner,
+  // so `configured` and `requested` are the two a grantee may act on. An
+  // earlier version gated this on `armed` — a status the DDL does not have —
+  // and so would never have offered the button at all. Every unit fixture used
+  // the same invented word, which is why only the live stack found it.
+  if (policy.status === 'configured' || policy.status === 'requested') {
+    return [
+      quietButton('Request access', () => {
+        void (async () => {
+          const result = await requestAccess(policy.id);
+          if (!result.ok) {
+            replaceChildren(note, status(messageFor(result.code), 'error'));
+            return;
+          }
+          await renderEmergency({
+            text: 'The waiting period has started and the owner has been told. You can open the vault when it ends — unless they stop it.',
+          });
+        })();
+      }),
+    ];
+  }
+  if (ready) {
+    return [quietButton('Open the vault', () => renderRelease(policy.id))];
+  }
+  return [];
+}
+
+/** One arranged grantee, with the owner's controls. */
+function policyRow(
+  policy: PolicyDto,
+  note: HTMLElement,
+  nameFor: (policy: PolicyDto) => string,
+): HTMLElement {
+  const act = (
+    label: string,
+    done: string,
+    run: () => Promise<{ ok: boolean; code?: ApiFailure }>,
+  ): HTMLElement =>
+    quietButton(label, () => {
+      void (async () => {
+        const result = await run();
+        if (!result.ok) {
+          replaceChildren(note, status(messageFor(result.code ?? 'UNKNOWN'), 'error'));
+          return;
+        }
+        await renderEmergency({ text: done });
+      })();
+    });
+
+  const controls: HTMLElement[] = [];
+  if (policy.status === 'waiting') {
+    // DENY IS ONE TAP AND NEVER STEP-UP GATED (docs/03 §5.2). A challenge
+    // between an owner and "stop this" is a control that argues with itself.
+    controls.push(
+      act(
+        'Stop this',
+        'Stopped. That request cannot proceed, and it stays stopped until you allow it again.',
+        () => denyPolicy(policy.id),
+      ),
+    );
+  }
+  if (policy.status === 'denied_by_owner') {
+    controls.push(
+      act('Allow again', 'Allowed again. A new request would start a fresh waiting period.', () =>
+        rearmPolicy(policy.id),
+      ),
+    );
+  }
+  if (policy.status !== 'released') {
+    controls.push(
+      act('Remove', 'Removed. That person can no longer open this vault.', () =>
+        revokePolicy(policy.id),
+      ),
+    );
+  }
+
+  return el('li', { class: 'item' }, [
+    // THE PERSON, not their account id. An owner reviewing an arrangement has
+    // to be able to recognise who they named — a row of UUIDs cannot be checked
+    // against what they intended, which is the whole point of reading it back.
+    el('span', {}, [nameFor(policy)]),
+    el('span', { class: 'item-type' }, [
+      `${describePolicyStatus(policy.status)} · ${policy.waitingPeriodHours}h wait` +
+        (policy.requestCount > 0 ? ` · ${policy.requestCount} request(s)` : ''),
+    ]),
+    ...controls,
+  ]);
+}
+
+/**
+ * The picker, and the FINGERPRINT CEREMONY.
+ *
+ * Each candidate must be confirmed individually, and the confirmation shows the
+ * fingerprint of the key that will actually be sealed to. This is the only
+ * defence against a malicious server substituting its own key — nothing
+ * server-side can detect it, because the digest recorded alongside the share is
+ * derived from whatever key the client was handed.
+ */
+function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElement): HTMLElement {
+  const confirmed = new Map<string, GranteeKeyOffer>();
+  const list = el('ul', { class: 'items' });
+  const waiting = field({
+    id: 'waiting-hours',
+    label: 'Waiting period (hours)',
+    type: 'number',
+    value: '48',
+    hint: 'At least 24. This is how long you have to stop a request before it succeeds.',
+  });
+  const threshold = field({
+    id: 'threshold',
+    label: 'How many must act together',
+    type: 'number',
+    value: '1',
+  });
+  const arm = el('button', { class: 'button', type: 'button' }, ['Arm emergency access']);
+
+  for (const candidate of candidates) {
+    const state = el('span', { class: 'item-type' }, ['not confirmed']);
+    const confirm = quietButton('Confirm key', () => {
+      void (async () => {
+        const offer = await offerFor(candidate);
+        if (!offer.ok) {
+          replaceChildren(
+            note,
+            status(
+              offer.code === 'NOT_FOUND'
+                ? `${candidate.name} has not set up a vault yet, so there is no key to seal a share to.`
+                : messageFor(offer.code),
+              'warn',
+            ),
+          );
+          return;
+        }
+        // The owner reads this to the grantee out of band and they agree it
+        // matches. Only then does the share get sealed to that key.
+        replaceChildren(
+          note,
+          el('p', { class: 'status status-warn' }, [
+            `Check this with ${candidate.name} by phone or in person before arming — not by email or message on this platform:`,
+          ]),
+          el('p', { class: 'secret-key' }, [offer.data.fingerprint]),
+        );
+        confirmed.set(candidate.userId, offer.data);
+        replaceChildren(state, 'key confirmed');
+      })();
+    });
+    list.append(el('li', { class: 'item' }, [el('span', {}, [candidate.name]), state, confirm]));
+  }
+
+  onClick(arm, () => {
+    void (async () => {
+      if (confirmed.size === 0) {
+        replaceChildren(
+          note,
+          status('Confirm at least one contact’s key fingerprint first.', 'warn'),
+        );
+        return;
+      }
+      const hours = Number(waiting.input.value);
+      const needed = Number(threshold.input.value);
+      if (!Number.isInteger(hours) || hours < 24) {
+        replaceChildren(note, status('The waiting period must be at least 24 hours.', 'error'));
+        return;
+      }
+      if (!Number.isInteger(needed) || needed < 1 || needed > confirmed.size) {
+        replaceChildren(note, status(`Choose between 1 and ${confirmed.size}.`, 'error'));
+        return;
+      }
+      arm.setAttribute('disabled', '');
+      replaceChildren(note, status('Splitting your recovery key on this device…'));
+
+      const masterKeyBytes = await session.exportMasterKey().catch(() => null);
+      if (!masterKeyBytes) {
+        arm.removeAttribute('disabled');
+        replaceChildren(note, status(messageFor('VAULT_LOCKED'), 'error'));
+        return;
+      }
+      try {
+        const armed = await configureEscrow({
+          ownerUserId: account?.userId ?? '',
+          masterKeyBytes,
+          confirmed: [...confirmed.values()],
+          threshold: needed,
+          waitingPeriodHours: hours,
+        }).catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
+        if (!armed.ok) {
+          arm.removeAttribute('disabled');
+          // `api.ts` narrows both 503 refusals to their own codes, so the M14
+          // arming gate and a real outage stay distinguishable here.
+          replaceChildren(note, status(messageFor(armed.code), 'error'));
+          return;
+        }
+        await renderEmergency();
+      } finally {
+        wipe(masterKeyBytes);
+      }
+    })();
+  });
+
+  return el('div', {}, [
+    el('p', { class: 'field-hint' }, [
+      'Confirm each person’s key fingerprint with them directly. It is the only way to be sure a share is sealed to them and not to somebody else.',
+    ]),
+    list,
+    waiting.row,
+    threshold.row,
+    el('p', {}, [arm]),
+  ]);
+}
+
+/**
+ * The grantee opening someone else's vault.
+ *
+ * Needs the grantee's OWN vault open, because their recovery private key is
+ * wrapped under their own master key. A session alone achieves nothing, which
+ * is the property that makes the release meaningful.
+ */
+function renderRelease(policyId: string): void {
+  const note = el('div');
+  replaceChildren(
+    main(),
+    el('h1', {}, ['Open the vault you were trusted with']),
+    el('p', { class: 'status status-warn' }, [
+      'This spends the arrangement: it can be done once, and the owner is told. Only continue if they genuinely cannot do this themselves.',
+    ]),
+    el('p', {}, [
+      buttonEl('Open it now', () => {
+        void (async () => {
+          if (!account) return;
+          replaceChildren(note, status('Collecting the pieces…'));
+          let vaultToken: string;
+          let granteeMasterKey: CryptoKey;
+          try {
+            vaultToken = session.requireVaultToken();
+            granteeMasterKey = session.requireMasterKey();
+          } catch {
+            replaceChildren(
+              note,
+              status(
+                'Unlock your own vault first — the key that opens your share is inside it.',
+                'warn',
+              ),
+            );
+            return;
+          }
+          const own = await ownRecoveryKey(vaultToken);
+          if (!own.ok) {
+            replaceChildren(
+              note,
+              status(
+                own.code === 'VAULT_LOCKED'
+                  ? 'Unlock your own vault first — the key that opens your share is inside it.'
+                  : messageFor(own.code),
+                'warn',
+              ),
+            );
+            return;
+          }
+          const recovered = await releaseAndRecover({
+            policyId,
+            granteeUserId: account.userId,
+            granteeMasterKey,
+            granteePublicKey: own.data.publicKey,
+            wrappedPrivateKey: own.data.wrappedPrivateKey,
+          }).catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
+          if (!recovered.ok) {
+            replaceChildren(note, status(messageFor(recovered.code), 'error'));
+            return;
+          }
+          // The recovered key is NOT retained and NOT sent anywhere. What this
+          // release proves is that the reconstruction works; reading the
+          // owner's items with it is the next screen's job and is deliberately
+          // not part of the one-shot action.
+          wipe(recovered.data.masterKeyBytes);
+          replaceChildren(
+            note,
+            status(
+              'The recovery key was reconstructed on this device. The owner has been told this happened.',
+              'ok',
+            ),
+          );
+        })();
+      }),
+      ' ',
+      quietButton('Back', () => void renderEmergency()),
+    ]),
+    note,
   );
 }
 

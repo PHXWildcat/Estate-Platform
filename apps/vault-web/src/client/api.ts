@@ -24,6 +24,13 @@ export type ApiFailure =
   | 'CONFLICT'
   | 'INVALID_REQUEST'
   | 'UNAVAILABLE'
+  // M14's arming gate and M9's capability gate. Both arrive as 503 and BOTH
+  // ARE CONTROLS FIRING, not outages — so they are named here rather than
+  // folded into UNAVAILABLE. "We cannot notify anyone right now" and "you have
+  // never confirmed your address" have completely different remedies, and a
+  // screen that cannot tell them apart must give the wrong one to somebody.
+  | 'RECIPIENT_UNVERIFIED'
+  | 'NOTIFICATIONS_UNAVAILABLE'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -42,7 +49,11 @@ function failureFor(status: number, token: string | null): ApiFailure {
   if (status === 404) return 'NOT_FOUND';
   if (status === 409 || status === 412) return 'CONFLICT';
   if (status === 400) return 'INVALID_REQUEST';
-  if (status === 502 || status === 503) return 'UNAVAILABLE';
+  if (status === 502 || status === 503) {
+    if (token === 'recipient_unverified') return 'RECIPIENT_UNVERIFIED';
+    if (token === 'notifications_unavailable') return 'NOTIFICATIONS_UNAVAILABLE';
+    return 'UNAVAILABLE';
+  }
   return 'UNKNOWN';
 }
 

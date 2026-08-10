@@ -19,7 +19,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { AUDIENCE_ADMITTERS, SESSION_AUDIENCES } from '../src/session';
+import { AUDIENCE_ADMITTERS, AUDIENCE_ROUTE_ADMITTERS, SESSION_AUDIENCES } from '../src/session';
 
 const SERVICES_DIR = join(__dirname, '..', '..', '..', 'apps', 'services');
 const TOKEN = 'ALLOWED_SESSION_AUDIENCES';
@@ -116,5 +116,104 @@ describe('session-audience grants match the declaration', () => {
     // Stated explicitly as well as derived: this one sentence is the milestone's
     // claim, and a table edit that broke it should fail a test that NAMES it.
     expect(AUDIENCE_ADMITTERS.vault).toEqual(['vault']);
+  });
+
+  /**
+   * THE ROUTE-LEVEL HALF (M15 PR3).
+   *
+   * A service that binds nothing service-wide can still open ONE route to
+   * another audience with `@AllowSessionAudiences`. That is a narrower grant
+   * than the table above, and narrower grants are the ones that get added
+   * quietly — so both directions are checked: every declared entry names a
+   * handler that really carries the decorator, and NO undeclared handler
+   * anywhere carries it.
+   */
+  describe('route-level widenings', () => {
+    /**
+     * Every `@AllowSessionAudiences(...)` in a service, as `service:handler`.
+     *
+     * Line-oriented rather than one big regex: a `[\\s\\S]{0,N}` bridge between
+     * the decorator and the handler backtracks past `async` and lands on
+     * whatever comes next, which is how the first version of this scan
+     * reported `identity:constructor`. A fence that matches the wrong thing is
+     * worse than one that matches nothing, because it still goes green.
+     */
+    function decoratedRoutes(): Array<{ key: string; audiences: string[] }> {
+      const found: Array<{ key: string; audiences: string[] }> = [];
+      for (const service of services) {
+        for (const file of sourceFiles(service)) {
+          const lines = readFileSync(file, 'utf8').split('\n');
+          for (const [index, line] of lines.entries()) {
+            // Comments discuss the decorator by name — the credential-graph
+            // habit. Only a real decoration counts.
+            const trimmed = line.trim();
+            if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+              continue;
+            }
+            const decorator = /@AllowSessionAudiences\(([^)]*)\)/.exec(line);
+            if (!decorator) continue;
+            const audiences = [...(decorator[1] ?? '').matchAll(/'([^']+)'/g)].map(
+              (m) => m[1] ?? '',
+            );
+            // The handler is the first line after it that is not another
+            // decorator and not blank.
+            for (const next of lines.slice(index + 1)) {
+              const text = next.trim();
+              if (text === '' || text.startsWith('@') || text.startsWith('//')) continue;
+              const handler = /^(?:public |private |protected )?(?:async )?(\w+)\s*\(/.exec(text);
+              found.push({ key: `${service}:${handler?.[1] ?? '<unparsed>'}`, audiences });
+              break;
+            }
+          }
+        }
+      }
+      return found;
+    }
+
+    it('finds the decorated routes it is meant to be checking', () => {
+      // Anti-vacuity: a regex that stops matching is worse than no fence at
+      // all, which is the 2026-08-07 credential-graph lesson.
+      const routes = decoratedRoutes();
+      expect(routes.length).toBeGreaterThan(0);
+      // And every one is ATTRIBUTED. A decorator the scan cannot tie to a
+      // handler must fail loudly rather than be silently pinned to whatever
+      // token followed it.
+      expect(routes.filter((r) => r.key.endsWith(':<unparsed>'))).toEqual([]);
+    });
+
+    it('every declared route really carries the decorator, for that audience', () => {
+      const decorated = new Map(decoratedRoutes().map((r) => [r.key, r.audiences]));
+      for (const [audience, keys] of Object.entries(AUDIENCE_ROUTE_ADMITTERS)) {
+        for (const key of keys) {
+          expect({ key, found: decorated.has(key) }).toEqual({ key, found: true });
+          expect(decorated.get(key)).toContain(audience);
+        }
+      }
+    });
+
+    it('NO UNDECLARED ROUTE carries it', () => {
+      const declared = new Set(Object.values(AUDIENCE_ROUTE_ADMITTERS).flat());
+      for (const route of decoratedRoutes()) {
+        expect({ route: route.key, declared: declared.has(route.key) }).toEqual({
+          route: route.key,
+          declared: true,
+        });
+      }
+    });
+
+    it('a route-level widening names an audience the route’s service does NOT hold', () => {
+      // Otherwise the decorator is decoration: the service-wide grant already
+      // admits it, and someone reading the route would believe a narrower
+      // grant is in force than actually is.
+      for (const [audience, keys] of Object.entries(AUDIENCE_ROUTE_ADMITTERS)) {
+        for (const key of keys) {
+          const service = key.split(':')[0] as string;
+          expect({ key, serviceWide: boundAudiences(service).includes(audience) }).toEqual({
+            key,
+            serviceWide: false,
+          });
+        }
+      }
+    });
   });
 });

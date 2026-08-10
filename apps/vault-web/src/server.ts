@@ -50,6 +50,67 @@ const PROXY_ROUTES: ReadonlyArray<{
   { prefix: '/api/auth/logout', upstream: 'identity', rewriteTo: '/v1/auth/logout', tree: false },
 ];
 
+/**
+ * THE ONE ZONE B READ ON THIS ORIGIN (M15 PR3).
+ *
+ * Emergency access needs the owner to choose grantees and confirm each one's
+ * key fingerprint out of band — which is impossible without knowing WHO they
+ * are choosing. So contact NAMES cross onto the vault origin, and nothing else
+ * does.
+ *
+ * TWO INDEPENDENT NARROWINGS, and the first is the one that matters. Profile
+ * serves this edge a DEDICATED route (`/v1/contacts/grantee-candidates`) whose
+ * whole response is three fields, and that route is the only one in the service
+ * a `vault`-audience session may reach at all. Found by driving the stack: the
+ * obvious version of this — read `/v1/contacts` and project here — could never
+ * have worked, because profile refuses a vault session, and the shortcut that
+ * would have made it work is widening profile SERVICE-WIDE, which hands a
+ * leaked handoff the owner's PII, every contact's decrypted detail, the family
+ * tree and the role assignments.
+ *
+ * The projection below is then the SECOND narrowing, kept even though the
+ * upstream is already minimal: it is the only upstream response this edge
+ * parses, and a future widening of profile's shape must not reach Zone A
+ * because nobody remembered this edge exists. Belt and braces, cheap, and with
+ * its own test.
+ *
+ * Filtered to LINKED contacts for the same reason profile filters them: an
+ * unlinked contact has no platform account, so it cannot hold a recovery
+ * keypair and cannot be a grantee.
+ */
+const GRANTEE_CANDIDATES_PATH = '/api/grantee-candidates';
+
+interface ProfileGranteeCandidate {
+  contactId?: unknown;
+  userId?: unknown;
+  name?: unknown;
+}
+
+export interface GranteeCandidate {
+  readonly contactId: string;
+  readonly userId: string;
+  readonly name: string;
+}
+
+/** Keep exactly three fields, whatever else the upstream sends. For its test. */
+export function projectGranteeCandidates(payload: unknown): GranteeCandidate[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  const out: GranteeCandidate[] = [];
+  for (const row of payload as ProfileGranteeCandidate[]) {
+    const { contactId, userId, name } = row ?? {};
+    if (typeof contactId !== 'string' || typeof userId !== 'string' || typeof name !== 'string') {
+      // A row missing what a grantee needs is dropped rather than passed
+      // through half-formed — the client would otherwise render a row it
+      // cannot seal a share to.
+      continue;
+    }
+    out.push({ contactId, userId, name });
+  }
+  return out;
+}
+
 function applySecurityHeaders(res: ServerResponse): void {
   for (const [name, value] of SECURITY_HEADERS) {
     res.setHeader(name, value);
@@ -262,6 +323,40 @@ export function createVaultWebServer(options: VaultWebServerOptions): Server {
     send(res, result.status, result.body, result.contentType);
   }
 
+  /** Profile's contact summary, narrowed to what a grantee picker needs. */
+  async function handleGranteeCandidates(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.headers[CSRF_HEADER] !== '1') {
+      sendJson(res, 403, { error: 'forbidden' });
+      return;
+    }
+    const bearer = sessionTokenFrom(req.headers['cookie']);
+    if (!bearer) {
+      sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+    const result = await upstream.proxy({
+      baseUrl: upstreamUrl.profile,
+      path: '/v1/contacts/grantee-candidates',
+      method: 'GET',
+      bearer,
+    });
+    if (result.status !== 200) {
+      // Passed through as a status, never as profile's body: the client needs
+      // to distinguish "no contacts" from "could not ask", and nothing profile
+      // says about the failure belongs on this origin.
+      sendJson(res, result.status === 401 ? 401 : 502, { error: 'contacts_unavailable' });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.body);
+    } catch {
+      sendJson(res, 502, { error: 'contacts_unavailable' });
+      return;
+    }
+    sendJson(res, 200, { candidates: projectGranteeCandidates(parsed) });
+  }
+
   return createServer((req, res) => {
     void (async (): Promise<void> => {
       applySecurityHeaders(res);
@@ -270,6 +365,10 @@ export function createVaultWebServer(options: VaultWebServerOptions): Server {
 
       if (req.method === 'POST' && pathname === '/open') {
         await handleOpen(req, res);
+        return;
+      }
+      if (req.method === 'GET' && pathname === GRANTEE_CANDIDATES_PATH) {
+        await handleGranteeCandidates(req, res);
         return;
       }
       if (pathname.startsWith('/api/')) {

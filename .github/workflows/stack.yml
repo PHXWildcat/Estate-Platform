@@ -195,6 +195,19 @@ jobs:
             // nothing about it needs a third-party credential. So both legs
             // gain all six: 18/4 -> 24/4 and 9/13 -> 15/13.
             //
+            // NOTE: images.yml carries a TWIN of the development number, for
+            // the stack-from-images job. Separate on purpose (that job runs
+            // built images, this one runs `dist`), so a new stack test has to
+            // be recorded in both — forgetting the second is how that gate went
+            // red once, with the suite itself passing.
+            //
+            // M15 PR3 adds ONE more to each leg (24/4 -> 25/4, 15/13 -> 16/13):
+            // the grantee-candidate projection, which is the only profile
+            // response a `vault`-audience session may read. It runs in both
+            // profiles because it drives the M14 address ceremony first —
+            // minting a contact link code is an ARMING action, so a production
+            // stack refuses an owner nobody proved.
+            //
             // BOTH NUMBERS MEASURED, on a stack brought up in each profile.
             // Deriving one from the other would have been wrong here for an
             // instructive reason: run the production assertions against a
@@ -202,7 +215,7 @@ jobs:
             // 201 instead of 503, because `assertOwnerReachable` is
             // production-scoped. A derived number would have encoded that as a
             // pass.
-            const expectedPassed = production ? 15 : 24;
+            const expectedPassed = production ? 16 : 25;
             const expectedPending = production ? 13 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }

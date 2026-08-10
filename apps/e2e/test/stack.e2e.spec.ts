@@ -56,6 +56,8 @@ const VAULT = process.env['STACK_VAULT_URL'] ?? 'http://localhost:3006';
  * so its `__Host-` Secure cookie is accepted there over plain http.
  */
 const VAULT_WEB = process.env['STACK_VAULT_WEB_URL'] ?? 'http://vault.localhost:3010';
+/** The origin the vault edge accepts an arrival POST from, and only that one. */
+const APP_ORIGIN_FOR_VAULT = process.env['STACK_WEB_URL'] ?? 'http://localhost:3000';
 const SETTLEMENT = process.env['STACK_SETTLEMENT_URL'] ?? 'http://localhost:3007';
 // M10: the AI assistant runs in the DEVELOPMENT profile only — production pins
 // LLM_MODE=anthropic and no provider credential exists in this project, so the
@@ -1444,6 +1446,157 @@ describeIfStack('the running stack', () => {
         expect(minted?.detail).toMatchObject({ audience: 'vault' });
       } finally {
         await db.end();
+      }
+    });
+
+    /**
+     * THE ONE ZONE B READ ON THIS ORIGIN (M15 PR3).
+     *
+     * Emergency access needs contact NAMES so an owner can pick grantees and
+     * confirm each one's key fingerprint out of band. Contact names therefore
+     * cross onto the vault origin — and nothing else does, which is a claim
+     * about a live edge talking to a live profile service and so belongs here
+     * rather than only in a unit test against a scripted transport.
+     */
+    it('serves grantee candidates as a PROJECTION, and nothing else profile said', async () => {
+      const owner = await registerAndLogin();
+      // Minting a link code is an M14 ARMING action, so in the production
+      // rehearsal it refuses an owner nobody proved. Driving the real ceremony
+      // is what lets this test run in BOTH profiles rather than being a
+      // development-only assertion about a Zone A boundary.
+      await proveAddress(owner);
+      await stepUp(owner);
+
+      // Two contacts: one that could hold a recovery key and one that cannot.
+      const linked = expectStatus(
+        await api(PROFILE_URL, 'POST', '/v1/contacts', {
+          token: owner.token,
+          body: {
+            name: 'Ada Grantee',
+            email: 'ada@example.com',
+            phone: '555-0111',
+            relationship: 'sibling',
+            notes: 'has the spare keys',
+          },
+        }),
+        201,
+        'create linked-to-be contact',
+      ) as { id: string };
+      expectStatus(
+        await api(PROFILE_URL, 'POST', '/v1/contacts', {
+          token: owner.token,
+          body: { name: 'Unlinked Ursula', relationship: 'friend' },
+        }),
+        201,
+        'create unlinked contact',
+      );
+
+      // Link the first through M13's real ceremony: the owner mints a code
+      // under step-up and the contact redeems it on their OWN account. No raw
+      // SQL — the link is the authorization edge behind docs/03 §6b.
+      const contact = await registerAndLogin();
+      const invite = expectStatus(
+        await api(PROFILE_URL, 'POST', `/v1/contacts/${linked.id}/link-invitation`, {
+          token: owner.token,
+        }),
+        201,
+        'mint link code',
+      ) as { code: string };
+      expectStatus(
+        await api(PROFILE_URL, 'POST', '/v1/contact-links/redeem', {
+          token: contact.token,
+          body: { code: invite.code },
+        }),
+        200,
+        'redeem link code',
+      );
+
+      // Cross to the vault origin the way a browser does.
+      const minted = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff', { token: owner.token }),
+        201,
+        'mint handoff',
+      ) as { code: string };
+      const arrival = await fetch(`${VAULT_WEB}/open`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: APP_ORIGIN_FOR_VAULT,
+        },
+        body: `code=${encodeURIComponent(minted.code)}`,
+      });
+      expect(arrival.status).toBe(303);
+      const cookie = (arrival.headers.get('set-cookie') ?? '').split(';')[0] as string;
+      expect(cookie).toContain('__Host-estate_vault=');
+
+      const candidates = await fetch(`${VAULT_WEB}/api/grantee-candidates`, {
+        headers: { cookie, 'x-estate-vault-csrf': '1' },
+      });
+      expect(candidates.status).toBe(200);
+      const text = await candidates.text();
+      const payload = JSON.parse(text) as {
+        candidates: Array<{ contactId: string; userId: string; name: string }>;
+      };
+
+      // The linked contact, with the account id a share is sealed to.
+      expect(payload.candidates).toHaveLength(1);
+      expect(payload.candidates[0]).toEqual({
+        contactId: linked.id,
+        userId: contact.userId,
+        name: 'Ada Grantee',
+      });
+      // AND NOTHING ELSE. Profile's summary carries relationship, professional
+      // kind and four has* flags; a grantee picker needs a name and an id, so
+      // the rest stays in Zone B. An unlinked contact does not cross at all —
+      // it has no account, so it could never hold a recovery key.
+      expect(text).not.toContain('sibling');
+      expect(text).not.toContain('hasNotes');
+      expect(text).not.toContain('Ursula');
+      expect(text).not.toContain('ada@example.com');
+      expect(text).not.toContain('555-0111');
+
+      /*
+       * AND THE BOUNDARY ITSELF, measured against profile DIRECTLY rather than
+       * through the edge — because the edge's allowlist is not the control
+       * here. A leaked vault handoff would be presented straight at profile,
+       * so what matters is that profile refuses every route but this one.
+       *
+       * This is what a service-wide widening would have cost: the owner's PII,
+       * every contact's decrypted detail, the family tree and the roles. The
+       * per-route grant is the difference, and it is only a real difference if
+       * the neighbours still say 401.
+       */
+      const redeemed = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', {
+          body: {
+            code: (
+              expectStatus(
+                await api(IDENTITY, 'POST', '/v1/auth/handoff', { token: owner.token }),
+                201,
+                'mint second handoff',
+              ) as { code: string }
+            ).code,
+          },
+        }),
+        200,
+        'redeem second handoff',
+      ) as { accessToken: string };
+      const vaultToken = redeemed.accessToken;
+
+      expect(
+        (await api(PROFILE_URL, 'GET', '/v1/contacts/grantee-candidates', { token: vaultToken }))
+          .status,
+      ).toBe(200);
+      for (const path of [
+        '/v1/contacts',
+        `/v1/contacts/${linked.id}`,
+        '/v1/profile',
+        '/v1/profile/family',
+        '/v1/role-assignments',
+      ]) {
+        const refused = await api(PROFILE_URL, 'GET', path, { token: vaultToken });
+        expect(`${path}:${refused.status}`).toBe(`${path}:401`);
       }
     });
   });
