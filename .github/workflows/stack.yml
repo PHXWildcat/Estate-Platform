@@ -195,6 +195,12 @@ jobs:
             // nothing about it needs a third-party credential. So both legs
             // gain all six: 18/4 -> 24/4 and 9/13 -> 15/13.
             //
+            // NOTE: images.yml carries a TWIN of the development number, for
+            // the stack-from-images job. Separate on purpose (that job runs
+            // built images, this one runs `dist`), so a new stack test has to
+            // be recorded in both — forgetting the second is how that gate went
+            // red once, with the suite itself passing.
+            //
             // M15 PR3 adds ONE more to each leg (24/4 -> 25/4, 15/13 -> 16/13):
             // the grantee-candidate projection, which is the only profile
             // response a `vault`-audience session may read. It runs in both
