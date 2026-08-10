@@ -16,6 +16,8 @@ import {
   decodeGroupElement,
   encodeGroupElement,
   fromBase64,
+  formatSecretKey,
+  generateSecretKey,
   toBase64,
   verifyClientSession,
 } from '@estate/vault-crypto';
@@ -309,26 +311,167 @@ describe('the vault’s actions', () => {
     expect(document.body.textContent).toMatch(/cannot reach a clipboard manager/i);
   });
 
-  it('changes the vault password with the SRP-derived proof', async () => {
-    const service = installService();
-    await openVaultWithItem();
+  /**
+   * THE PASSWORD-CHANGE PATH (M15 review rewrote these).
+   *
+   * The single test that used to cover this asserted nothing: it waited on
+   * `/password has changed|does not match this vault/i` — an alternation that
+   * passes on FAILURE — and put every real assertion behind `if (put)`, so a
+   * run where no request was ever made was a green run. Both defects it was
+   * meant to cover were live underneath it.
+   */
+  describe('changing the vault password', () => {
+    /** The Secret Key this device actually holds, in its ES1 text form. */
+    async function currentSecretKey(): Promise<string> {
+      const entropy = await recallSecretKey(USER);
+      if (!entropy) throw new Error('the device should have remembered the Secret Key');
+      return formatSecretKey(entropy);
+    }
 
-    clickText('Settings');
-    await waitForText('Change your vault password');
-    byLabel('Secret Key').value = 'ES1-not-used-by-the-fake';
-    byLabel('New vault password').value = 'a-brand-new-vault-password';
-    submitForm();
-    await waitForText(/password has changed|does not match this vault/i);
+    it('rebinds the keyset when the current password and Secret Key are right', async () => {
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
 
-    const put = service.calls.find((c) => c.method === 'PUT' && c.path === '/api/vault/keyset');
-    if (put) {
-      const payload = JSON.parse(put.body) as Record<string, unknown>;
+      byLabel('Current vault password').value = PASSWORD;
+      byLabel('Secret Key').value = await currentSecretKey();
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/password has changed/i);
+
+      const put = service.calls.find((c) => c.method === 'PUT' && c.path === '/api/vault/keyset');
+      expect(put).toBeDefined();
+      const payload = JSON.parse((put as { body: string }).body) as Record<string, unknown>;
       // The proof is what makes replacement require the CURRENT password —
       // without it, exfiltrated tokens could destroy every item.
       expect(payload['proof']).toEqual(expect.any(String));
       expect(payload['srpVerifier']).toEqual(expect.any(String));
       expect(JSON.stringify(payload)).not.toContain('a-brand-new-vault-password');
-    }
+      expect(JSON.stringify(payload)).not.toContain(PASSWORD);
+    });
+
+    it('REFUSES a well-formed Secret Key that is not this vault’s, and sends nothing', async () => {
+      /*
+       * The defect: nothing compared the typed key to the vault's own, so a key
+       * from another kit re-derived the AUK and the SRP verifier from itself,
+       * the server accepted the replacement (its proof authorizes the change
+       * and, being zero-knowledge, cannot see what the new payload was built
+       * from), and the screen said "Your vault password has changed."
+       */
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
+
+      byLabel('Current vault password').value = PASSWORD;
+      byLabel('Secret Key').value = await generateSecretKey(); // valid, and not ours
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/did not open this vault, so nothing was changed/i);
+
+      expect(
+        service.calls.filter((c) => c.method === 'PUT' && c.path === '/api/vault/keyset'),
+      ).toHaveLength(0);
+      expect(service.keysetPuts).toBe(0);
+    });
+
+    it('REFUSES a wrong current password, and sends nothing', async () => {
+      // The same local check catches this half: `open()` is an AEAD decrypt, so
+      // either wrong input fails authentication rather than returning garbage.
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
+
+      byLabel('Current vault password').value = 'not-the-vault-password';
+      byLabel('Secret Key').value = await currentSecretKey();
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/did not open this vault, so nothing was changed/i);
+      expect(service.keysetPuts).toBe(0);
+    });
+
+    it('says the same thing for both halves, so neither is confirmed', async () => {
+      // The 2SKD rule the unlock screen already follows: naming which half was
+      // wrong tells someone holding a stolen Secret Key that it is the right one.
+      const service = installService();
+      await openVaultWithItem();
+      clickText('Settings');
+      await waitForText('Change your vault password');
+
+      byLabel('Current vault password').value = 'not-the-vault-password';
+      byLabel('Secret Key').value = await generateSecretKey();
+      byLabel('New vault password').value = 'a-brand-new-vault-password';
+      submitForm();
+      await waitForText(/did not open this vault, so nothing was changed/i);
+      expect(document.body.textContent).not.toMatch(/secret key is wrong|password is wrong/i);
+      expect(service.keysetPuts).toBe(0);
+    });
+  });
+
+  it('prompts for a factor on SETUP, the first gated action a new user meets', async () => {
+    /*
+     * Found by driving the live stack after removing the auto-granted step-up:
+     * `POST /v1/vault/keyset` is step-up gated, so enrollment became the FIRST
+     * place a factor must be proved on this origin — and it was not wired, so a
+     * brand-new user was told "that action needs a fresh identity check" with no
+     * way to give one. The fix is only complete if every gated action can ask.
+     */
+    const service = installService();
+    service.fail.set('POST /api/vault/keyset', { status: 403, error: 'stepup_required' });
+    await render();
+    await waitForText('Set up your vault');
+    byLabel('Vault password').value = PASSWORD;
+    byLabel('Confirm vault password').value = PASSWORD;
+    submitForm();
+
+    await waitForText(/setting up your vault needs a fresh identity check/i);
+    service.fail.delete('POST /api/vault/keyset');
+    (document.getElementById('stepup-code') as HTMLInputElement).value = '123456';
+    document.querySelectorAll('form').forEach((f) => {
+      if (f.querySelector('#stepup-code')) {
+        f.dispatchEvent(new Event('submit', { cancelable: true }));
+      }
+    });
+    await waitForText('Save your Secret Key');
+    expect(service.calls.some((c) => c.path === '/api/auth/stepup')).toBe(true);
+  });
+
+  it('proves a factor ON THIS ORIGIN when reset is refused, then retries (M15 review)', async () => {
+    /*
+     * Redemption used to hand every vault session a step-up, which is what let
+     * a stolen 60-second handoff code reach `POST /v1/vault/reset` — gated on
+     * step-up alone, because a lost vault password cannot be proven. It grants
+     * none now, so the gated action has to ask here. The old copy sent the user
+     * back to Estate to re-open the vault, which would MINT A FRESH HANDOFF —
+     * the credential the change exists to devalue.
+     */
+    const service = installService();
+    await openVaultWithItem();
+    clickText('Settings');
+    await waitForText('Reset the vault');
+
+    service.fail.set('POST /api/vault/reset', { status: 403, error: 'stepup_required' });
+    byLabel('Password for the new empty vault').value = 'a-brand-new-vault-password';
+    byLabel('Type DESTROY to confirm').value = 'DESTROY';
+    clickText('Reset my vault permanently');
+
+    await waitForText(/resetting the vault needs a fresh identity check/i);
+    expect(document.body.textContent).not.toMatch(/open the vault again from estate/i);
+
+    // Elevate, and the refused action runs again without being re-typed.
+    service.fail.delete('POST /api/vault/reset');
+    (document.getElementById('stepup-code') as HTMLInputElement).value = '123456';
+    document.querySelectorAll('form').forEach((f) => {
+      if (f.querySelector('#stepup-code'))
+        f.dispatchEvent(new Event('submit', { cancelable: true }));
+    });
+    await waitForText(/save your secret key/i);
+    expect(service.resets).toBe(1);
+    expect(service.calls.some((c) => c.method === 'POST' && c.path === '/api/auth/stepup')).toBe(
+      true,
+    );
   });
 
   it('resets only after DESTROY, then shows a NEW Secret Key', async () => {

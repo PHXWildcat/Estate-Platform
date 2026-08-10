@@ -125,6 +125,16 @@ export class VaultSession {
    */
   #auk: CryptoKey | null = null;
   #wrappedMasterKey: string | null = null;
+  /**
+   * The current keyset's KDF parameters and SRP salt, kept so a key-changing
+   * action can VERIFY the credentials it is handed without a network round
+   * trip (M15 review). Neither is secret — the server serves both to anyone who
+   * can start an SRP handshake — so retaining them widens nothing; what they
+   * buy is the ability to re-derive this vault's AUK locally and check that a
+   * typed password and Secret Key actually open it.
+   */
+  #kdfParams: unknown = null;
+  #srpSalt: string | null = null;
   #token: string | null = null;
   #userId: string | null = null;
   #expiresAt: string | null = null;
@@ -247,6 +257,8 @@ export class VaultSession {
     });
     this.#auk = preparation.auk;
     this.#wrappedMasterKey = opened.data.wrappedMasterKey;
+    this.#kdfParams = challenge.data.kdfParams;
+    this.#srpSalt = challenge.data.srpSalt;
     this.#token = opened.data.vaultSession.token;
     this.#userId = userId;
     this.#expiresAt = opened.data.vaultSession.expiresAt;
@@ -278,6 +290,8 @@ export class VaultSession {
     this.#vault = null;
     this.#auk = null;
     this.#wrappedMasterKey = null;
+    this.#kdfParams = null;
+    this.#srpSalt = null;
     this.#token = null;
     this.#userId = null;
     this.#expiresAt = null;
@@ -397,12 +411,56 @@ export class VaultSession {
    * moves, so a user who changes their password does not get a new Emergency
    * Kit and the old one stays correct.
    */
-  async changePassword(newPassword: string, secretKey: string): Promise<ApiResult<unknown>> {
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+    secretKey: string,
+  ): Promise<ApiResult<unknown>> {
     const { vault, token, userId } = this.#requireOpen();
-    if (!this.#auk || !this.#wrappedMasterKey) {
+    if (!this.#auk || !this.#wrappedMasterKey || !this.#srpSalt) {
       throw new Error('vault is locked');
     }
     this.touch();
+
+    /*
+     * VERIFY THE CREDENTIALS THIS IS ABOUT TO REBIND THE VAULT TO (M15 review).
+     *
+     * Before this check, `changePassword` fed whatever Secret Key was typed
+     * straight into `buildKeyset`, so a well-formed but WRONG key silently
+     * re-derived the AUK and the SRP verifier from it and the screen reported
+     * success. Nothing downstream could catch it: the service authorizes the
+     * replacement with an HMAC proof derived from the SRP session, which proves
+     * knowledge of the CURRENT credentials and — by design, this being
+     * zero-knowledge — says nothing about what the NEW payload was built from.
+     *
+     * So the check has to be here, and it has to be local. Re-deriving this
+     * vault's AUK from the typed pair and using it to unwrap the master key we
+     * already hold proves BOTH halves at once: `open()` is an AEAD decrypt, so
+     * a wrong password or a wrong Secret Key fails authentication rather than
+     * returning garbage. That is also why the form now asks for the current
+     * password — without it there is nothing to derive from, and a screen that
+     * changes key material on the strength of an open tab alone was the weaker
+     * design anyway.
+     */
+    const candidate = await prepareUnlock({
+      userId,
+      password: currentPassword,
+      secretKey,
+      kdfParams: this.#kdfParams,
+      srpSalt: this.#srpSalt,
+    });
+    try {
+      await exportMasterKeyBytes({
+        userId,
+        auk: candidate.auk,
+        wrappedMasterKey: this.#wrappedMasterKey,
+      }).then(wipe);
+    } catch {
+      // One answer for a wrong password and a wrong Secret Key, matching the
+      // unlock screen: naming which half was wrong would tell someone holding a
+      // stolen Secret Key that it is the right one (the 2SKD rule).
+      return { ok: false, code: 'UNAUTHENTICATED' };
+    }
     const masterKeyBytes = await exportMasterKeyBytes({
       userId,
       auk: this.#auk,

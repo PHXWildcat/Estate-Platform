@@ -2869,7 +2869,7 @@ for carrier failures.
 of code and ZERO lines of documentation, so every sentence it invalidated was
 still standing — including a citation pointing at a docs/03 §6c passage that
 recorded the opposite. docs/03 §6h now exists and that citation points at it.
-### M15 — The vault surface: Zone A in the browser (PR1–PR3 shipped)
+### M15 — The vault surface: Zone A in the browser (PR1–PR4 shipped)
 
 The largest remaining zero-callers gap in the repo: `apps/services/vault` has
 exposed **22 owner-facing routes since M6 with no consumer anywhere**. M6
@@ -3128,6 +3128,46 @@ code is an ARMING action, so a production stack refuses an owner nobody proved.
 
 Coverage: vault-web 89/77/86/91 (ratcheted up), auth-guard unchanged at its
 98-function floor with the new per-route paths covered.
+
+**PR4 — the security review and its fix round.**
+
+Six discovery lenses over NAMED FILE LISTS (never the range: 128 files / 12,263
+insertions is the size that stalled agents in M13), then two adversarial
+verifiers per candidate on different angles — production reachability, and
+is-it-already-a-documented-decision — both defaulting to refuted. 26 raw, 25
+unique, 18 verified under the cap with the 7 dropped **logged by name and
+hand-verified**, 10 survivors, 8 refuted. Ninth milestone running where every
+confirmed finding sits in machinery the milestone introduced.
+
+Fixed, each mutation-tested:
+
+1. **The step-up bypass** — redemption granted step-up, and `POST
+   /v1/vault/reset` is gated on step-up alone, so a stolen 60-second handoff code
+   destroyed the vault with no password and no Secret Key. Redemption grants none
+   now; the vault origin proves its own factor through the route PR1 widened for
+   it. Proven live: `mfaLevel: none`, `stepupExpiresAt: null`, reset 403.
+2. **The one-sided fingerprint ceremony** — the grantee now sees their own
+   fingerprint. Proven live: the screen showed `BEM1-A582-HS7E-0JBJ` and the
+   digest computed from `vault_keysets.public_key` matched exactly.
+3. **The unopenable M-of-N escrow** — refused at both layers.
+4. **The unverified Secret Key on password change** — verified locally by
+   re-deriving the AUK and unwrapping the master key, which needs the current
+   password too, so the form now asks for it.
+
+Also: two of my own tests were proving nothing (the proxy-allowlist fence sliced
+on a comment anchor against comment-stripped input, so it scanned the whole file;
+the fingerprint assertion was f(x) === f(x)), a dead `digestOf` was deleted, and
+the incomplete release path states its limitation before the button rather than
+after.
+
+**Found only by driving the live stack:** removing the free step-up broke vault
+SETUP, because `POST /v1/vault/keyset` is gated too and the prompt had been wired
+into reset, delete and publish but not enrollment — a brand-new user was refused
+with no way to comply. Every gated action is wrapped now. The unit suite stayed
+green throughout, because its fakes never returned `stepup_required` for those
+routes.
+
+Coverage: vault-web 90/78/86/91, ratcheted up.
 
 ### M16 — The vault browser extension (planned)
 

@@ -23,6 +23,9 @@ import { join } from 'node:path';
 import { Migrator } from '@estate/db';
 import { Client } from 'pg';
 import { Db } from '../src/db';
+import { isStepUpFresh } from '@estate/auth-guard';
+import { type MfaLevel } from '@estate/contracts';
+import { HandoffService } from '../src/handoff.service';
 import { HandoffsRepo } from '../src/handoffs.repo';
 import { SessionsRepo } from '../src/sessions.repo';
 import { hashToken } from '../src/tokens';
@@ -178,6 +181,44 @@ describeIfPg('auth_handoffs against Postgres (auth cluster)', () => {
       [handoff.id],
     );
     expect(rows.rows[0]).toEqual({ session_id: vaultSession, audience: 'vault' });
+  });
+
+  it('a REDEEMED session carries NO step-up (M15 review)', async () => {
+    /*
+     * THE FIX FOR THE STEP-UP BYPASS, pinned against a real database.
+     *
+     * `POST /v1/auth/handoff/redeem` is unauthenticated — the code IS the
+     * authority — and `POST /v1/vault/reset` is gated on step-up ALONE, because
+     * a lost vault password cannot be proven. So a redeemed session that
+     * arrived step-up-fresh let whoever held a stolen 60-second code
+     * crypto-shred the vault with no password and no Secret Key. Script on the
+     * app origin cannot MINT a handoff (minting is step-up gated) but can read
+     * one out of the hidden field it is posted in, which turned no-step-up into
+     * step-up authority over Zone A.
+     *
+     * Asserted here rather than in a unit test because the property lives in a
+     * column: `stepup_expires_at` must be NULL on the row the service wrote.
+     */
+    // Events are a fire-and-forget audit hop; the property under test is a
+    // column, so a recording double keeps this spec about the database.
+    const events = {
+      handoffMinted: () => Promise.resolve(),
+      handoffRedeemed: () => Promise.resolve(),
+      handoffFailed: () => Promise.resolve(),
+    };
+    const service = new HandoffService(repo, sessions, events as never, () => NOW);
+    // `minted_from` is a FK to sessions, so the mint must come from a real one.
+    const minted = await service.mint(user, accountSession);
+    const redeemed = await service.redeem(minted.code);
+
+    const rows = await admin.query<{ stepup_expires_at: Date | null; mfa_level: string }>(
+      `SELECT stepup_expires_at, mfa_level FROM ${schema}.sessions WHERE id = $1`,
+      [redeemed.sessionId],
+    );
+    expect(rows.rows[0]?.stepup_expires_at).toBeNull();
+    // And `isStepUpFresh` — the one shared definition every guard reads — says
+    // so too, which is what a StepUpGuard downstream will actually consult.
+    expect(isStepUpFresh(rows.rows[0]?.mfa_level as MfaLevel, null, NOW)).toBe(false);
   });
 
   it('refuses an audience the CHECK does not know', async () => {

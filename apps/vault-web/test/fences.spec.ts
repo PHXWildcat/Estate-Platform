@@ -252,14 +252,40 @@ describe('profile is reachable only through the projection', () => {
     expect(server).toContain("upstream: 'vault'");
   });
 
+  /**
+   * The route table's own text, sliced on CODE.
+   *
+   * The first version of this anchored its end on a comment — and `server` is
+   * `code()`, which strips comments, so `indexOf` returned -1, `slice(start,
+   * -1)` ran to the end of the file, and the fence scanned everything rather
+   * than the table it is named for. It still went red under mutation, which is
+   * why it survived: a scan that is too WIDE catches the planted defect and
+   * hides the fact that it is not testing the stated layer. The M15 review
+   * found it; the anchor is the array's own closing bracket now.
+   */
+  function proxyRouteTable(): string {
+    const start = server.indexOf('const PROXY_ROUTES');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = server.indexOf('\n];', start);
+    expect(end).toBeGreaterThan(start);
+    return server.slice(start, end);
+  }
+
+  it('slices the route table and nothing else (so the scan is really scoped)', () => {
+    const table = proxyRouteTable();
+    expect(table).toContain("upstream: 'vault'");
+    expect(table).toContain("upstream: 'identity'");
+    // Proof of scoping: the projected profile handler lives BELOW the table and
+    // must not be inside the slice, or the check below would be meaningless.
+    expect(table).not.toContain('handleGranteeCandidates');
+    expect(table).not.toContain('projectGranteeCandidates');
+    expect(table.length).toBeLessThan(server.length / 2);
+  });
+
   it('declares no profile entry in the proxy allowlist', () => {
     // The `upstream` union still NAMES profile, because the projected handler
     // is a profile caller. What must not exist is a routed one.
-    const routeTable = server.slice(
-      server.indexOf('const PROXY_ROUTES'),
-      server.indexOf('THE ONE ZONE B READ ON THIS ORIGIN'),
-    );
-    expect(routeTable).not.toContain("upstream: 'profile'");
+    expect(proxyRouteTable()).not.toContain("upstream: 'profile'");
   });
 
   it('reaches profile from exactly one place, and projects what comes back', () => {

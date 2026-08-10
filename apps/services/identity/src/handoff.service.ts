@@ -5,7 +5,7 @@ import { CLOCK, type Clock } from './di-tokens';
 import { EventsService } from './events.service';
 import { HandoffsRepo } from './handoffs.repo';
 import { SessionsRepo } from './sessions.repo';
-import { ACCESS_TOKEN_TTL_MS, STEPUP_WINDOW_MS } from './stepup';
+import { ACCESS_TOKEN_TTL_MS } from './stepup';
 import { generateOpaqueToken, hashToken } from './tokens';
 
 /**
@@ -64,11 +64,30 @@ export interface RedeemedHandoff {
  *     vault: that needs the vault password and the Secret Key, neither of
  *     which this platform has ever held.
  *
- * Minting requires a FRESH STEP-UP (the route's StepUpGuard), which is also
- * what makes it honest to give the redeemed session its own step-up window:
- * the user demonstrably proved a factor within the last five minutes, so this
- * is a new window from a fresh proof rather than the extension of a stale one.
- * docs/03 TB6 asks for re-auth on vault open and this is where it is paid.
+ * Minting requires a FRESH STEP-UP (the route's StepUpGuard). It does NOT
+ * follow that the redeemed session should inherit one, and the M15 review
+ * found that giving it one opened a step-up bypass:
+ *
+ *   `POST /v1/auth/handoff/redeem` is unauthenticated by construction — the
+ *   code IS the authority — and `POST /v1/vault/reset` is gated on step-up
+ *   ALONE, deliberately, because a lost vault password cannot be proven. So a
+ *   redeemed session that arrived step-up-fresh could crypto-shred every item,
+ *   the emergency-access escrow and the recovery keypair, with no vault
+ *   password and no Secret Key. Script running on the APP origin cannot mint a
+ *   handoff (minting is step-up gated) but could read one out of the hidden
+ *   field it is posted in — so stealing a code converted app-origin script
+ *   with no step-up into step-up authority over Zone A. That is precisely the
+ *   boundary this origin exists to create, crossed in the destructive
+ *   direction while holding in the confidential one.
+ *
+ * The redeemed session therefore carries NO step-up. The vault origin proves
+ * its own factor when it needs one, through `POST /v1/auth/stepup` — which is
+ * one of the three routes a `vault` audience is admitted to, widened in PR1
+ * for exactly this and then left unwired. Step-up strengthens the session
+ * presenting it and confers nothing else, so this is the design PR1 described
+ * rather than a new one. docs/03 TB6 asks for re-auth on vault open; it is
+ * paid on the vault origin now, where the user can see what they are
+ * authorising.
  */
 @Injectable()
 export class HandoffService {
@@ -158,10 +177,10 @@ export class HandoffService {
       expiresAt,
       audience: handoff.audience,
     });
-    // Fresh step-up, carried from the proof the mint required. See the class
-    // docstring: this is a new window from a five-minute-old factor, not the
-    // extension of a stale one.
-    await this.sessions.grantStepUp(sessionId, new Date(now.getTime() + STEPUP_WINDOW_MS));
+    // NO STEP-UP IS GRANTED HERE. See the class docstring: the code is the only
+    // authority on this route, and `POST /v1/vault/reset` is gated on step-up
+    // alone, so a step-up-fresh redeemed session let whoever held a stolen code
+    // destroy the vault. The vault origin re-proves a factor itself.
     await this.handoffs.recordSession(handoff.id, sessionId);
 
     await this.events.handoffRedeemed(handoff.user_id, sessionId, { audience: handoff.audience });
