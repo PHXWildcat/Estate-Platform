@@ -230,7 +230,18 @@ const submitForm = (index = 0): void => {
   form?.dispatchEvent(new Event('submit', { cancelable: true }));
 };
 
-const waitForText = async (pattern: string | RegExp, deadlineMs = 30_000): Promise<void> => {
+/*
+ * NINETY SECONDS, not thirty. These specs drive the REAL client, so every
+ * enrollment and unlock is a genuine PBKDF2 at 650k iterations — the shipped
+ * parameter, deliberately not lowered, because a test-only iteration count
+ * would put a seam into the one derivation Zone A rests on. The whole file runs
+ * in ~4s on a developer machine and CI runs 48 turbo tasks at once on a small
+ * runner, where a single wait exceeded 30s and failed a green branch.
+ *
+ * This is harness PATIENCE, not a property: jest's own 180s per-test timeout
+ * still bounds a genuine hang, so raising it cannot hide one indefinitely.
+ */
+const waitForText = async (pattern: string | RegExp, deadlineMs = 90_000): Promise<void> => {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     const text = document.body.textContent ?? '';
