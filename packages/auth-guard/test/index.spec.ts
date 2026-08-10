@@ -32,6 +32,21 @@ describe('@estate/auth-guard public surface', () => {
     expect(typeof authGuard.ALLOWED_SESSION_AUDIENCES).toBe('symbol');
   });
 
+  it('re-exports the M15 PR3 per-route surface', () => {
+    // The narrower grant: a service stays account-only and opens ONE route.
+    // Identity's guard and every downstream CallerGuard read the SAME metadata
+    // key — two guards with two copies of a string is how a route ends up
+    // decorated for a key nobody checks.
+    expect(authGuard.SESSION_AUDIENCE_METADATA).toBe('estate:session-audiences');
+    expect(authGuard.AllowSessionAudiences).toBeInstanceOf(Function);
+    // The declaration both fences check source against, in both directions.
+    expect(authGuard.AUDIENCE_ROUTE_ADMITTERS.vault).toContain('profile:granteeCandidates');
+    expect(authGuard.AUDIENCE_ROUTE_ADMITTERS.vault).toContain('identity:session');
+    // And NOT the route that mints authority — a vault session cannot mint
+    // another handoff, which is what stops a leaked one chaining itself forward.
+    expect(authGuard.AUDIENCE_ROUTE_ADMITTERS.vault).not.toContain('identity:mintHandoff');
+  });
+
   it('re-exports the credential graph and the helpers services assert with', () => {
     // Every service's config spec imports these THROUGH the barrel. A symbol
     // added to credential-graph.ts but forgotten here compiles fine inside this

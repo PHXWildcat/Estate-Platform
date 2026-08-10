@@ -465,6 +465,43 @@ export class VaultSession {
     };
   }
 
+  /**
+   * The master key, for the emergency-access module.
+   *
+   * Two shapes, because the two operations genuinely need different things: the
+   * `CryptoKey` wraps and unwraps the recovery keypair, and the BYTES are what
+   * `createEscrow` splits. The caller wipes what it is given — this returns a
+   * fresh export each time rather than caching one, so there is no long-lived
+   * copy of the raw key anywhere in this process.
+   */
+  /**
+   * The vault-session token, for routes the emergency module calls directly.
+   *
+   * Exposed rather than duplicated: this token is already on the wire for every
+   * item request, so an accessor adds no reachability — while a second copy of
+   * the request plumbing inside `emergency.ts` would be a second place for the
+   * header name and the lock check to drift.
+   */
+  requireVaultToken(): string {
+    return this.#requireOpen().token;
+  }
+
+  requireMasterKey(): CryptoKey {
+    return this.#requireOpen().vault.masterKey;
+  }
+
+  async exportMasterKey(): Promise<Uint8Array> {
+    const { userId } = this.#requireOpen();
+    if (!this.#auk || !this.#wrappedMasterKey) {
+      throw new Error('vault is locked');
+    }
+    return exportMasterKeyBytes({
+      userId,
+      auk: this.#auk,
+      wrappedMasterKey: this.#wrappedMasterKey,
+    });
+  }
+
   /** Delete. Step-up gated server-side, like every deletion in the product. */
   async remove(itemId: string): Promise<ApiResult<unknown>> {
     const { token } = this.#requireOpen();

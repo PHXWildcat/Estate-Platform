@@ -2869,7 +2869,7 @@ for carrier failures.
 of code and ZERO lines of documentation, so every sentence it invalidated was
 still standing — including a citation pointing at a docs/03 §6c passage that
 recorded the opposite. docs/03 §6h now exists and that citation points at it.
-### M15 — The vault surface: Zone A in the browser (PR1 shipped)
+### M15 — The vault surface: Zone A in the browser (PR1–PR3 shipped)
 
 The largest remaining zero-callers gap in the repo: `apps/services/vault` has
 exposed **22 owner-facing routes since M6 with no consumer anywhere**. M6
@@ -3037,6 +3037,97 @@ enforced with the crypto module loaded, and no key material is reachable from
 `window`.
 
 Coverage 88.49/75.54/86.48/90.53, floor ratcheted up.
+
+**PR3 — emergency access, both sides.**
+
+- **A route that had no caller hid a design that could not complete.** M6 wrote
+  `vault_keysets.wrapped_private_key` and cleared it on reset, and no route ever
+  served it back — so a grantee could never open a share sealed to them, and the
+  release path had been structurally incompletable since the milestone that
+  designed it. It was invisible because nothing consumed it: the M4 legal-hold
+  shape exactly. `GET /v1/vault/recovery-key` closes it, behind an OPEN VAULT
+  rather than a session, because the private half is wrapped under the caller's
+  own master key and a stolen bearer should not be able to fetch what it cannot
+  open.
+- **The Zone B read had to cross, and the obvious way to cross it could never
+  have worked.** Choosing a grantee needs contact NAMES, which live in profile,
+  and profile admits `account` sessions only — so the vault origin's read of
+  `/v1/contacts` returned 401 the first time the stack was driven. The shortcut
+  that would have made it work is widening profile SERVICE-WIDE, which hands a
+  leaked vault handoff the owner's PII, every contact's decrypted detail, the
+  family tree and the role assignments. Instead `CallerGuard` gained PER-ROUTE
+  audiences, profile gained a dedicated `GET /v1/contacts/grantee-candidates`
+  whose whole response is a contact id, an account id and a name, and that one
+  handler carries `@AllowSessionAudiences('vault')`. **The `linkedUserId` field
+  first added to `ContactSummary` was REVERTED** — with a dedicated projection it
+  is unnecessary, and not adding it leaves every existing profile client's
+  disclosure surface exactly where M13 left it.
+- **One vocabulary, two guards.** `AllowSessionAudiences` and its metadata key
+  moved into `@estate/auth-guard`, so identity's own `SessionGuard` and every
+  downstream `CallerGuard` read the same key and ONE fence sees every widening in
+  the repo. `AUDIENCE_ROUTE_ADMITTERS` is the single declaration — identity's
+  `VAULT_AUDIENCE_ROUTES` now derives from it rather than restating it — and the
+  fence checks it against the real decorated handlers in both directions, plus
+  refuses an entry whose service already holds the audience service-wide (a
+  route-level grant that changes nothing reads as narrower than it is).
+  Mutation-tested three ways: an undeclared route acquiring the decorator, a
+  declared route losing it, and profile widening service-wide instead.
+- **The projection is narrowed TWICE**, deliberately. Profile projects (it owns
+  the data and the authorization), and the vault edge re-projects, because it is
+  the only upstream response this origin parses and a later widening of profile's
+  shape must not reach Zone A because nobody remembered the edge exists.
+- **The ceremony is a required human step.** Each candidate is confirmed
+  individually and the 80-bit fingerprint is shown, never auto-accepted:
+  `configureEscrow` refuses to run with nothing confirmed. That is the only
+  defence against a malicious server substituting its own key, because
+  `grantee_public_key_sha256` is derived client-side from whatever key the client
+  was handed and binds just as happily to a substituted one.
+- **Three defects the live drive found that every unit test passed over.** The
+  arranged row printed a raw UUID, so an owner could not recognise who they had
+  named — which is the only reason to read an arrangement back. The status
+  rendered the DDL's own word (`configured`) at a person. And "Request access"
+  was gated on `armed`, **a status the schema does not have**, so a grantee could
+  never have started a waiting period. All three shared one cause: every fixture
+  used a vocabulary a test author invented. Fixtures are pinned to
+  `002_emergency_access.sql` now, with a case that walks all six statuses against
+  what the service's own `blockReason` accepts.
+- **Two more caught by tests refusing to pass.** A malformed public key made
+  `offerFor` throw, leaving the row on "not confirmed" with nothing said — Zone
+  A's threat model treats the server as hostile, so an unparseable key is a
+  refusal, not an exception. And a success message written before the screen
+  re-read itself was destroyed by that re-read, so a grantee who started a
+  48-hour waiting period was told nothing at all; the notice is carried INTO the
+  render now rather than left behind it.
+- M14's arming gate and a notifications outage are separate `ApiFailure` codes
+  with separate copy — "we cannot reach anyone" and "you never confirmed your
+  address" have completely different remedies. Denial is one tap and ungated;
+  re-arming is step-up gated, which is the M6 asymmetry made visible.
+
+**Proven live** on a rebuilt stack, both sides: the owner's screen listed
+`Ada Grantee` through the real profile route and the edge projection; the
+fingerprint the browser showed (`8K4X-KXWR-0J73-DH5V`) matched the one the
+grantee's own device computed, byte for byte; arming produced an escrow the
+service stores as opaque values; the grantee's request moved the policy to
+`waiting` with a `releasesAt` 48 hours out; one tap stopped it; and a second
+request was refused `409 denied_by_owner` — the M6 sticky denial with no
+cooldown. The audit trail carried `vault.emergency.configured {grantees, threshold}`,
+`requested {waitingPeriodHours}`, `denied {}`, `request_blocked {reason}` and two
+`unverified_recipient {kind}` events: ids and enums only, and M14's
+proceed-and-record for the OPENS class.
+
+Also proven, against profile DIRECTLY rather than through the edge (the edge's
+allowlist is not the control — a leaked handoff would be presented straight at
+the service): the vault session is admitted at `/v1/contacts/grantee-candidates`
+and refused 401 at `/v1/contacts`, `/v1/contacts/:id`, `/v1/profile`,
+`/v1/profile/family` and `/v1/role-assignments`.
+
+Stack counts MEASURED in both profiles rather than derived: 24/4 → 25/4 in
+development, 15/13 → 16/13 in the production rehearsal. The new case runs in
+both because it drives the M14 address ceremony first — minting a contact link
+code is an ARMING action, so a production stack refuses an owner nobody proved.
+
+Coverage: vault-web 89/77/86/91 (ratcheted up), auth-guard unchanged at its
+98-function floor with the new per-route paths covered.
 
 ### M16 — The vault browser extension (planned)
 

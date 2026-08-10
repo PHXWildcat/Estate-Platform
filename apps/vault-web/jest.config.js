@@ -43,5 +43,5 @@ module.exports = require('@estate/config/jest')(__dirname, {
      */
     '^/lib/vault-crypto/index\\.js$': '<rootDir>/../../packages/vault-crypto/src/index.ts',
   },
-  coverageThreshold: { global: { statements: 88, branches: 75, functions: 86, lines: 90 } },
+  coverageThreshold: { global: { statements: 89, branches: 77, functions: 86, lines: 91 } },
 });

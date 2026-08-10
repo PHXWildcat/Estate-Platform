@@ -11,7 +11,7 @@ import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { loadConfig } from '../src/config';
-import { createVaultWebServer } from '../src/server';
+import { createVaultWebServer, projectGranteeCandidates } from '../src/server';
 import { Upstream, type FetchLike } from '../src/upstream';
 import { VAULT_CSP } from '../src/security-headers';
 
@@ -322,6 +322,89 @@ describe('the vault edge', () => {
     it('refuses paths whose extension is not on the allowlist', async () => {
       await boot();
       expect((await fetch(`${base}/package.json`)).status).toBe(404);
+    });
+  });
+
+  /**
+   * THE ONE ZONE B READ ON THIS ORIGIN (M15 PR3).
+   *
+   * Contact NAMES cross onto the vault origin so an owner can choose grantees
+   * and confirm each one's key fingerprint. Nothing else does, and the
+   * subtraction is asserted here rather than trusted to a screen.
+   */
+  describe('grantee candidates', () => {
+    // What profile's dedicated route serves. The extra fields are NOT part of
+    // that contract — they are here because the edge's own projection must hold
+    // if the upstream shape ever widens, which is the whole reason it survives
+    // now that profile projects too.
+    const CONTACTS = JSON.stringify([
+      {
+        contactId: 'c-1',
+        userId: 'u-ada',
+        name: 'Ada',
+        relationship: 'sibling',
+        professionalKind: 'attorney',
+        hasNotes: true,
+      },
+    ]);
+
+    const ask = (headers: Record<string, string> = {}): Promise<Response> =>
+      fetch(`${base}/api/grantee-candidates`, {
+        headers: { cookie: '__Host-estate_vault=t', 'x-estate-vault-csrf': '1', ...headers },
+      });
+
+    it('keeps exactly three fields, and only from linked contacts', () => {
+      expect(projectGranteeCandidates(JSON.parse(CONTACTS))).toEqual([
+        { contactId: 'c-1', userId: 'u-ada', name: 'Ada' },
+      ]);
+    });
+
+    it('drops a row that is missing what a grantee needs', () => {
+      // `linked: true` with no `linkedUserId` cannot be sealed a share, so
+      // surfacing it would render a row the owner can never choose.
+      expect(projectGranteeCandidates([{ id: 'c-3', name: 'Half', linked: true }])).toEqual([]);
+      expect(projectGranteeCandidates('not an array')).toEqual([]);
+    });
+
+    it('serves the projection, and nothing else profile said', async () => {
+      await boot(() => ({ status: 200, body: CONTACTS }));
+      const response = await ask();
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(JSON.parse(text)).toEqual({
+        candidates: [{ contactId: 'c-1', userId: 'u-ada', name: 'Ada' }],
+      });
+      // Anything profile might add later stays in Zone B.
+      expect(text).not.toContain('sibling');
+      expect(text).not.toContain('attorney');
+      expect(text).not.toContain('hasNotes');
+      // Forwarded on the caller's OWN bearer — this edge holds no credential.
+      expect(calls[0]?.headers['authorization']).toBe('Bearer t');
+      // The DEDICATED route, not the general contacts list: that one is
+      // `account`-only at profile and would 401 a vault session anyway.
+      expect(calls[0]?.url).toContain('/v1/contacts/grantee-candidates');
+    });
+
+    it('refuses without the CSRF header, and without a session', async () => {
+      await boot(() => ({ status: 200, body: CONTACTS }));
+      expect((await ask({ 'x-estate-vault-csrf': '' })).status).toBe(403);
+      const noCookie = await fetch(`${base}/api/grantee-candidates`, {
+        headers: { 'x-estate-vault-csrf': '1' },
+      });
+      expect(noCookie.status).toBe(401);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('never passes profile’s failure body through', async () => {
+      await boot(() => ({ status: 500, body: '{"error":"pg: relation contacts does not exist"}' }));
+      const response = await ask();
+      expect(response.status).toBe(502);
+      expect(await response.text()).toBe(JSON.stringify({ error: 'contacts_unavailable' }));
+    });
+
+    it('reports an unparseable upstream body as an outage, not as no contacts', async () => {
+      await boot(() => ({ status: 200, body: '<html>gateway</html>' }));
+      expect((await ask()).status).toBe(502);
     });
   });
 });
