@@ -2517,3 +2517,82 @@ deviating from them, stop and propose the change with rationale — do not silen
   Beneficiaries get nothing (docs/03 §5.5 scopes them to assets naming them; a
   subscription names nobody). No blockers — financial cluster, Plaid isolate,
   staged access and the analysers all ship — so it could swap ahead of M16.
+- 2026-08-08 — M15 PR2 ships the VAULT CORE: setup, unlock, item CRUD, password
+  change and reset, with every key operation client-side. Vault routes 1–12 of
+  the 22 now have a caller. TWO BUILDS OF ONE SOURCE — vault-crypto has always
+  shipped CommonJS because the vault SERVICE imports its server-side SRP half,
+  and the browser needs native ES modules with no bundler, so `tsconfig.esm.json`
+  emits the same sources a second way and every relative import gained an
+  explicit `.js` (a no-op for CJS, mandatory for a browser). The client loads it
+  by ABSOLUTE PATH from this origin (`/lib/vault-crypto/index.js`, copied into
+  the served tree at build time) rather than through an inline import map, which
+  is what lets the CSP stay `script-src 'self'` with no hash for the life of the
+  app. A copy rather than a second static root: the static handler is the one
+  piece of the edge that turns a URL into a file path, and its safety argument
+  rests on there being exactly one root.
+- 2026-08-08 — `VaultSession` IS THE ONLY MODULE THAT TOUCHES A KEY, and the
+  screens pass user input in and get rendered values out. It holds the master
+  key as a non-extractable CryptoKey, the SRP-derived keyset-auth key, the
+  vault-session token, and — solely for the password change — the AUK and the
+  wrapped master key, because re-wrapping needs master-key BYTES that a
+  non-extractable CryptoKey cannot provide (`exportMasterKeyBytes` exists for
+  exactly this) and the alternative is a second full SRP unlock minting a server
+  session to immediately revoke. All in `#private` fields: TypeScript's
+  `private` is erased and leaves ordinary enumerable properties reachable
+  through `Object.values` or a structured logger, which the M10 privacy-proxy
+  review found the hard way and which matters more here because these are the
+  keys. Dropped by `lock()`, by a 5-minute idle timer (shorter than the server's
+  15, because it bounds what an unattended SCREEN is worth rather than what a
+  stolen token is), and by `pagehide` so a bfcache restore comes back locked.
+- 2026-08-08 — THE MILESTONE'S CENTRAL CLAIM IS NOW DRIVEN RATHER THAN ARGUED.
+  `no-key-material-egress.spec.ts` runs enrollment, a REAL SRP-6a unlock (the
+  stand-in service speaks the server half, which vault-crypto also ships), a
+  create and a list against a recording transport, then searches every recorded
+  byte for the password, the Secret Key, its ungrouped parts and the item
+  plaintext — and separately round-trips an item back through decryption, so the
+  blob is proven BOTH opaque on the wire and openable by this device's key. A
+  version that stubbed the crypto could not tell "the plaintext is absent" from
+  "the encryption never ran". Mutation-tested: sending the content alongside the
+  blob, or the Secret Key alongside the keyset, each turns it red.
+- 2026-08-08 — THE SECRET KEY'S LIFE, stated rather than implied. Generated on
+  the device, shown ONCE behind an explicit acknowledgement (there is no "show
+  it again", because the server does not have it), downloadable as an Emergency
+  Kit carrying the key and deliberately NOT the password — a kit with both would
+  turn a filing cabinet into the single point of failure 2SKD exists to remove.
+  Remembered in IndexedDB by DEFAULT with an opt-out, and the screen says why
+  that is not as safe as it sounds: under XSS on this origin any persisted key is
+  readable, localStorage and IndexedDB alike, and the control is the empty
+  dependency tree and the CSP rather than the storage API. The alternative —
+  retyping 26 characters every unlock — reliably pushes people to a text file on
+  the desktop, which is worse. IndexedDB over localStorage for two smaller real
+  reasons: raw bytes rather than a base64 STRING in the string table, and not in
+  the flat key list extensions walk. Reset forgets it, because the old key opens
+  nothing afterwards.
+- 2026-08-08 — ONE MESSAGE FOR BOTH HALVES OF 2SKD. A wrong vault password and a
+  wrong Secret Key produce the same "did not open this vault", because the
+  server answers one `srp_failed` for both by design and naming which half was
+  wrong would tell someone holding a stolen Secret Key that it is the right one
+  — halving the work of the attack 2SKD exists to make hard. A mistyped Secret
+  Key throws in `parseSecretKey` BEFORE any network call, and lands on the same
+  message rather than a distinguishable client-side one.
+- 2026-08-08 — TWO REAL DEFECTS, both found by tests refusing to pass rather than
+  by review. (1) A malformed Secret Key makes vault-crypto THROW rather than
+  return a result, so the password-change screen sat on "Changing…" forever —
+  the worst possible answer on the screen that changes key material. Every async
+  handler now catches and reports. (2) The settings screen had TWO fields both
+  labelled "New vault password" (the change-password one and the reset one),
+  which is ambiguous to a person and genuinely broken for a screen reader; the
+  test that could not tell them apart is the same confusion a user would have.
+- 2026-08-08 — A STALE `dist` NEARLY BECAME THE THING UNDER TEST. Giving
+  vault-crypto's relative imports an explicit `.js` made jest's resolution of
+  `./bigint.js` depend on the built output: moving `dist/` aside made every
+  import fail with "Cannot find module './bigint.js' from 'src/srp.ts'", and a
+  run against a stale `dist` was observed reporting 10.68% coverage with only
+  the two files that have no relative imports instrumented. BOTH SYMPTOMS PROVED
+  CACHE-SENSITIVE and neither reproduces once `dist` is current, so the
+  mechanism is recorded as observed rather than explained — the M13 rule that a
+  doc claiming evidence it does not have is itself a defect, applied to my own
+  first write-up of this, which asserted a confident mechanism and a test-count
+  drop I could not reproduce. The fix is not in doubt: a `moduleNameMapper`
+  makes the suite read `src` regardless of whether a build artifact exists or
+  how old it is (the 2026-08-06 rule, enforced rather than hoped for).

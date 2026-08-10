@@ -14,8 +14,8 @@
  * platform share can be XOR-split away from the contacts' half - see recovery.ts.
  */
 
-import { randomBytes } from './bytes';
-import { VaultCryptoError } from './aead';
+import { randomBytes } from './bytes.js';
+import { VaultCryptoError } from './aead.js';
 
 export const MAX_SHARES = 255;
 

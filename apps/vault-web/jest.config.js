@@ -4,6 +4,12 @@
 // thereafter, never down — the M10 PR3 lesson about a floor nobody had produced
 // a number for.
 //
+// M15 PR2 re-measured at 88.49/75.54/86.48/90.53 with the vault surface, the
+// device store, the generator and the clipboard under test. Raised to just
+// below that. The PR2 run is what surfaced two real defects — a malformed
+// Secret Key throwing with no message, and two fields sharing a visible label —
+// so the floor did its job by refusing to be met without them.
+//
 // The two `main.ts` entry points sit at 0% and that is deliberate: each is a
 // three-line bootstrap around code the suite drives directly, and a test that
 // imports one only proves it can be imported.
@@ -20,6 +26,22 @@ module.exports = require('@estate/config/jest')(__dirname, {
    * mechanisms disagreeing about which imports are legal is how one of them
    * stops meaning anything.
    */
-  moduleNameMapper: { '^(\\.{1,2}/.*)\\.js$': '$1' },
-  coverageThreshold: { global: { statements: 83, branches: 75, functions: 85, lines: 85 } },
+  /*
+   * jsdom is a DOM implementation, not a browser: no TextEncoder, no WebCrypto.
+   * The vault client needs both, so Node's own implementations of the same
+   * specs are installed first. See the file for what that does and does not
+   * prove.
+   */
+  setupFiles: ['<rootDir>/test/setup-jsdom.ts'],
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+    /*
+     * The client loads vault-crypto from this ORIGIN by absolute path. Jest
+     * resolves it to the package SOURCE rather than to `dist`, so the suite
+     * exercises the real crypto and cannot be fooled by a stale build — the
+     * 2026-08-06 rule that a stale artifact is not evidence about source.
+     */
+    '^/lib/vault-crypto/index\\.js$': '<rootDir>/../../packages/vault-crypto/src/index.ts',
+  },
+  coverageThreshold: { global: { statements: 88, branches: 75, functions: 86, lines: 90 } },
 });

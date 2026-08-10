@@ -21,3 +21,10 @@ Thumbs.db
 # under public/ because that is what the edge serves, but build output all the
 # same — the served tree is reproduced by `pnpm --filter @estate/vault-web build`.
 apps/vault-web/public/app/
+
+# The vault-crypto BROWSER build (tsconfig.esm.json). Build output like dist/,
+# emitted separately because the browser loads native ES modules.
+dist-esm/
+
+# vault-crypto's browser build, copied in by apps/vault-web's build step.
+apps/vault-web/public/lib/

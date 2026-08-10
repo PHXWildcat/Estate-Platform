@@ -29,9 +29,9 @@
  * TOTP provisioning URI.
  */
 
-import { bigIntToBytes, bytesToBigInt, constantTimeEqual, modPow } from './bigint';
-import { fromBase64, randomBytes, sha256, toBase64, utf8, xorBytes } from './bytes';
-import { VaultCryptoError } from './aead';
+import { bigIntToBytes, bytesToBigInt, constantTimeEqual, modPow } from './bigint.js';
+import { fromBase64, randomBytes, sha256, toBase64, utf8, xorBytes } from './bytes.js';
+import { VaultCryptoError } from './aead.js';
 
 /**
  * RFC 5054 Appendix A, 4096-bit group (the RFC 3526 group-16 prime with g = 5).

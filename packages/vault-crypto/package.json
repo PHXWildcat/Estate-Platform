@@ -2,11 +2,11 @@
   "name": "@estate/vault-crypto",
   "version": "0.0.1",
   "private": true,
-  "description": "Zone A CLIENT-side crypto (docs/01 §4): 2SKD key derivation, SRP-6a, and AES-256-GCM item envelopes. Runs on the user's device, so it has ZERO runtime dependencies by design (docs/04 boundary rule 3 — TB6 audit surface). Never imports @estate/crypto.",
+  "description": "Zone A CLIENT-side crypto (docs/01 \u00a74): 2SKD key derivation, SRP-6a, and AES-256-GCM item envelopes. Runs on the user's device, so it has ZERO runtime dependencies by design (docs/04 boundary rule 3 \u2014 TB6 audit surface). Never imports @estate/crypto.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.esm.json",
     "typecheck": "tsc --noEmit",
     "test": "jest"
   },

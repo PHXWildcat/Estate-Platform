@@ -19,8 +19,8 @@
  * independent PBKDF2 runs would double the unlock latency for no security gain.
  */
 
-import { fromBase64, source, utf8, wipe, xorBytes } from './bytes';
-import { importAesKey, VaultCryptoError } from './aead';
+import { fromBase64, source, utf8, wipe, xorBytes } from './bytes.js';
+import { importAesKey, VaultCryptoError } from './aead.js';
 
 export const KDF_VERSION = 1;
 export const KDF_ALG = 'pbkdf2-sha256';

@@ -6,9 +6,9 @@
  * key wrapped by a key it never sees — and can do nothing with any of it.
  */
 
-import { importAesKey, open, seal, unwrapAesKey, VaultCryptoError } from './aead';
-import { fromBase64, randomBytes, toBase64, utf8, wipe } from './bytes';
-import { constantTimeEqual } from './bigint';
+import { importAesKey, open, seal, unwrapAesKey, VaultCryptoError } from './aead.js';
+import { fromBase64, randomBytes, toBase64, utf8, wipe } from './bytes.js';
+import { constantTimeEqual } from './bigint.js';
 import {
   assertSupportedKdfParams,
   DEFAULT_ITERATIONS,
@@ -18,8 +18,8 @@ import {
   hmacSha256,
   KdfParams,
   SALT_LENGTH,
-} from './kdf';
-import { generateSecretKey, parseSecretKey } from './format';
+} from './kdf.js';
+import { generateSecretKey, parseSecretKey } from './format.js';
 import {
   ClientEphemeral,
   ClientSession,
@@ -30,7 +30,7 @@ import {
   encodeGroupElement,
   srpPrivateKey,
   verifyServerProof,
-} from './srp';
+} from './srp.js';
 
 export const MASTER_KEY_BYTES = 32;
 

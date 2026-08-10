@@ -47,7 +47,23 @@
      * The client is unminified anyway: what a reviewer or a user sees in
      * devtools IS the source, because nothing here is bundled.
      */
-    "sourceMap": false
+    "sourceMap": false,
+
+    /*
+     * The client loads vault-crypto from THIS ORIGIN by absolute path, so the
+     * specifier the browser sees is a URL rather than a package name.
+     *
+     * Mapped to the built DECLARATIONS rather than the sources, which is the
+     * repo's standing convention for internal packages (2026-07-20: consumed
+     * via their built `dist` with Turborepo ordering). Pointing at `src` also
+     * drags those files into this program, where `rootDir: src/client` rejects
+     * them — and would compile vault-crypto a third time. Types come from
+     * `dist`; the RUNTIME modules are put at this path by
+     * `scripts/copy-vault-crypto.mjs`, from the separate browser build.
+     */
+    "paths": {
+      "/lib/vault-crypto/index.js": ["../../packages/vault-crypto/dist/index.d.ts"]
+    }
   },
   "include": ["src/client"]
 }

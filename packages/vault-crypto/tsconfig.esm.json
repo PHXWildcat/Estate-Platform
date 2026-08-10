@@ -1,0 +1,42 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-esm",
+    "rootDir": "src",
+
+    /*
+     * THE SAME SOURCE, EMITTED FOR A BROWSER (M15 PR2).
+     *
+     * This package has always shipped CommonJS, because the vault SERVICE
+     * imports its server-side SRP half and the backend compiles to CJS
+     * (2026-07-20). M15 gives it a second consumer that runs in a browser as
+     * NATIVE ES MODULES with no bundler, so the same sources are emitted twice.
+     *
+     * Two outputs rather than one dual-format artifact, and rather than asking
+     * the browser to load CJS through a shim: a shim is a dependency on the
+     * path that holds the only keys to a vault, which is the one thing docs/04
+     * boundary rule 3 forbids here. `tsc` emitting plain ES modules adds
+     * nothing to the tree at all.
+     *
+     * This is why every relative import in `src/` carries an explicit `.js`:
+     * a browser will not guess the extension, and TypeScript rewrites nothing.
+     * The CJS output is unaffected by the extension (Node resolves
+     * `./aead.js` to the emitted file), so one spelling serves both.
+     */
+    "module": "es2022",
+    "moduleResolution": "bundler",
+
+    // No ambient Node types in the shipped browser build: a reach for
+    // `Buffer` or `process` fails to compile rather than shipping a module
+    // that breaks on the device (tsconfig.build.json's rule, restated).
+    "types": [],
+
+    // The browser loads what a reviewer reads. Declarations belong to the CJS
+    // build, which is what TypeScript consumers resolve.
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src"]
+}

@@ -17,8 +17,8 @@
  * substitutes its own key at configure time and the escrow protects nothing.
  */
 
-import { open, seal, VaultCryptoError, VaultDecryptionError } from './aead';
-import { concatBytes, sha256, source, utf8 } from './bytes';
+import { open, seal, VaultCryptoError, VaultDecryptionError } from './aead.js';
+import { concatBytes, sha256, source, utf8 } from './bytes.js';
 
 export const ECIES_VERSION = 0x01;
 const CURVE = { name: 'ECDH', namedCurve: 'P-256' } as const;
