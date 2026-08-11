@@ -3282,3 +3282,42 @@ deviating from them, stop and propose the change with rationale — do not silen
   than seen, and this entry says so rather than claiming evidence it does not
   have (the 2026-08-06 rule turned on myself again). Deploy contracts consumers
   first; nothing enforces it.
+- 2026-08-10 — A FLAKY TEST WAS THE DEFECT SHOWING ITSELF FOR A FEW MICROTASKS.
+  CI went red on `StepUpPrompt`'s "a fresh submission re-arms after an earlier
+  cancel" while it passed locally 5/5, and the obvious reading — a scheduling
+  artifact, since the button's label is `waiting ? 'Applying…' : busy ?
+  'Checking…' : submitLabel` and the test re-submits by a `/Confirm/` query — was
+  incomplete. Reproduced deterministically by removing the test's microtask
+  drain, and the diagnostic printed the answer: after Cancel the submit button
+  was DISABLED and reading "Checking…". `abandon()` set the abort flag and called
+  `onCancel()`, leaving an interactive form to be restored by the continuation of
+  the request being cancelled — which happens whenever that request settles, and
+  NEITHER AWAIT IN `submit` HAS A TIMEOUT. A stalled identity call therefore left
+  a consent form the owner had declined permanently disabled, with a page reload
+  as the only remedy. The M6 rule stated for a new case: THE PROTECTIVE ACTION
+  MUST NOT BE CONTINGENT ON THE PERMISSIVE ONE FINISHING. `abandon` clears
+  `busy` and `waiting` itself now.
+- 2026-08-10 — CLEARING `busy` ON CANCEL OPENS A HAZARD, WHICH IS WHY THE ABORT
+  BOOLEAN BECAME AN OWNERSHIP COUNTER. With the form interactive again the owner
+  can start a SECOND attempt while the first is still in flight, and `submit()`
+  re-arms consent on the way in (deliberately — cancelling one attempt must not
+  veto the next). A boolean cannot tell "nobody owns this any more" from
+  "somebody else does", so the abandoned request would see consent restored BY A
+  DIFFERENT SUBMISSION and run the action a second time — the M13 round-3 defect
+  reachable again through its own fix. `activeAttempt` is bumped by every submit
+  and every abandon, and a continuation proceeds only while the number it
+  captured is still live. Two consequences worth stating: the abandoned path no
+  longer clears `busy` (either `abandon` did, or a newer attempt owns it and
+  clearing it would re-enable a form mid-flight), and the counter SUBSUMES the
+  boolean rather than sitting beside it — one mechanism, because two that must
+  agree are two that can drift.
+- 2026-08-10 — Measured rather than assumed, and it corrected my own framing:
+  the component fix and the test fix are NOT independently sufficient. With the
+  component fix present the test passes under the exact adverse scheduling that
+  reproduced CI EVEN WITH ITS WAIT REMOVED; with the component fix reverted it
+  fails even WITH the wait. So the component change is what makes the gate
+  deterministic, and the added `waitFor` is a stated precondition rather than the
+  repair — worth keeping for saying out loud what the test depends on, worth not
+  crediting with more than it does. The `/Confirm/` matcher was left alone: the
+  busy labels are signal, and loosening the query would have deleted the only
+  thing that made the wedge visible at all.
