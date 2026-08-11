@@ -23,7 +23,17 @@ module.exports = require('@estate/config/jest')(__dirname, {
    * `fences.spec.ts` forbids those anyway, and two mechanisms disagreeing about
    * which imports are legal is how one of them stops meaning anything.
    */
-  moduleNameMapper: { '^(\\.{1,2}/.*)\\.js$': '$1' },
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+    /*
+     * The offscreen worker loads vault-crypto by absolute path from the
+     * extension's own root. Jest resolves it to the package SOURCE rather than
+     * to `dist`, so the suite exercises the REAL crypto and cannot be fooled by
+     * a stale build — the 2026-08-06 rule that a stale artifact is not evidence
+     * about source, and the reason a real SRP round trip is meaningful here.
+     */
+    '^/lib/vault-crypto/index\\.js$': '<rootDir>/../../packages/vault-crypto/src/index.ts',
+  },
   // `chrome.d.ts` is a declaration, not code: it emits nothing and can be
   // neither executed nor covered, so counting it would drag the number down
   // with a file no test could ever reach.

@@ -1194,6 +1194,9 @@ importers:
       '@estate/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@estate/vault-crypto':
+        specifier: workspace:*
+        version: link:../../packages/vault-crypto
       '@types/jest':
         specifier: 'catalog:'
         version: 29.5.14

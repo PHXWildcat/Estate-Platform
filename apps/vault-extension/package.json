@@ -2,14 +2,15 @@
   "name": "@estate/vault-extension",
   "version": "0.0.1",
   "private": true,
-  "description": "The Estate vault BROWSER EXTENSION (docs/03 TB9, M16). Manifest V3, no bundler, no runtime dependencies, hand-written DOM — the isolated vault origin's posture applied to the one artifact that will eventually run beside code we did not write. PR2a is transport only: it pairs, holds an extension-audience session, and reads keyset status through the vault origin's edge. It holds NO key material and imports no crypto.",
+  "description": "The Estate vault BROWSER EXTENSION (docs/03 TB9, M16). Manifest V3, no bundler, no runtime dependencies, hand-written DOM \u2014 the isolated vault origin's posture applied to the one artifact that will eventually run beside code we did not write. PR2a is transport only: it pairs, holds an extension-audience session, and reads keyset status through the vault origin's edge. It holds NO key material and imports no crypto.",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/build-package.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-package.mjs && node scripts/copy-vault-crypto.mjs",
     "typecheck": "tsc --noEmit",
     "test": "jest"
   },
   "devDependencies": {
     "@estate/config": "workspace:*",
+    "@estate/vault-crypto": "workspace:*",
     "@types/jest": "catalog:",
     "@types/node": "catalog:",
     "jest": "catalog:",

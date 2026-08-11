@@ -67,6 +67,15 @@ export interface RequestOptions {
    * (pairing redemption and refresh), whose authority is in the body.
    */
   readonly bearer?: string | undefined;
+  /**
+   * The opaque vault-session token from a completed SRP unlock (M16 PR2b).
+   *
+   * A SECOND, NARROWER authority on top of the bearer: the bearer says which
+   * account is calling, and this says that this device has actually opened the
+   * vault. Item reads require both, which is why a stolen extension credential
+   * reaches the API and still decrypts nothing.
+   */
+  readonly vaultSession?: string | undefined;
 }
 
 export async function request<T>(
@@ -76,6 +85,9 @@ export async function request<T>(
   const headers: Record<string, string> = { [CSRF_HEADER]: '1' };
   if (options.body !== undefined) headers['content-type'] = 'application/json';
   if (options.bearer !== undefined) headers['authorization'] = `Bearer ${options.bearer}`;
+  if (options.vaultSession !== undefined) {
+    headers['x-estate-vault-session'] = options.vaultSession;
+  }
 
   let response: Response;
   try {

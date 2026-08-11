@@ -16,7 +16,18 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node", "jest"],
     "module": "es2022",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    /*
+     * The offscreen worker loads vault-crypto by an ABSOLUTE path that resolves
+     * against the EXTENSION's own root (`chrome-extension://<id>/lib/…`), so no
+     * bare specifier ever reaches the browser and there is no import map for a
+     * CSP to admit. Types come from the built declarations — the repo's
+     * standing convention for internal packages; the RUNTIME modules are put
+     * there by `scripts/copy-vault-crypto.mjs`, from the browser build.
+     */
+    "paths": {
+      "/lib/vault-crypto/index.js": ["../../packages/vault-crypto/dist/index.d.ts"]
+    }
   },
   "include": ["src", "test", "jest.config.js"]
 }

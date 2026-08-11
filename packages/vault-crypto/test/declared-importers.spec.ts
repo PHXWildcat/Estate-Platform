@@ -56,6 +56,11 @@ const VAULT_CRYPTO_IMPORTERS: Readonly<Record<string, string>> = {
     'The isolated vault origin (docs/03 §6i). Loads the ESM build by absolute ' +
     'path from its own served tree, so no bare specifier reaches a browser and ' +
     'the CSP stays `script-src self` with no import map to admit.',
+  'apps/vault-extension':
+    'The browser extension (M16 PR2b). Loads the ESM build by absolute path ' +
+    'from its OWN packaged root — MV3 forbids remotely hosted code, so these ' +
+    'modules ship inside the signed artifact. Exactly one file imports it, ' +
+    'the worker that holds the key, enforced by that package’s own fence.',
   'apps/e2e':
     'Drives the protocol end to end against the running stack. Test-only, and ' +
     'the reason the no-key-material-egress claim is checkable at all.',
