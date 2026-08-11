@@ -3688,3 +3688,37 @@ deviating from them, stop and propose the change with rationale — do not silen
   PR3a/PR3b line, so PR3a adds `activeTab` alone and the manifest fence still
   refuses `scripting`, `content_scripts` and `web_accessible_resources` with
   PR3b named against each. Reading a URL is not running code in a page.
+- 2026-08-11 — A STEP-UP PROMPT MAY NOT BE HOSTED INSIDE THE FORM IT GUARDS.
+  `promptForStepUp` renders a `<form>`, and `renderSetup` and `renderItem` both
+  hosted it in a `note` that sat INSIDE their own form. A form nested in a form
+  is invalid HTML no parser would build — but this origin builds its DOM
+  imperatively (`createElement`/`append`, the Trusted-Types posture), so the DOM
+  API accepts what the parser forbids and the tree was real. Nothing about it
+  was visual: it made `document.querySelectorAll('form')` ambiguous about which
+  form holds the code field, and PR #67 is what that ambiguity cost — a spec
+  helper selecting "every form CONTAINING `#stepup-code`" matched the ancestor
+  too, submitted the guarded action a second time, and started an enrollment
+  nothing awaited whose `renderSecretKey` repainted a later test's screen. #67
+  fixed the helper (`input.form`, the form OWNER); this removes the shape the
+  helper walked into, so the trap is gone rather than merely unvisited — the
+  repo's own rule that a fence protecting an invariant is weaker than not having
+  the invariant to protect. Both hosts moved out; DOM order is unchanged.
+  SETUP ALSO ENROLLS ONCE PER SUBMIT, behind an in-flight guard released in a
+  `finally`. The submit button is disabled while an enrollment runs, so a second
+  CLICK never got through and this is DEFENCE IN DEPTH rather than a reachable
+  bug — stated plainly rather than dressed up. What it bounds if reached is not
+  small: a second enrollment mints a second master key and overwrites the first
+  keyset, so whichever `renderSecretKey` continuation lands LAST is what the
+  user is told to save — a Secret Key for a keyset the server no longer holds,
+  on the one screen shown exactly once and never again. `renderItem`'s delete
+  prompt is deliberately NOT guarded the same way: `screens-actions.spec.ts`
+  re-clicks Delete to retry a refusal, so re-entry there is the intended
+  behaviour, and changing it silently would be a different decision wearing this
+  one's clothes.
+  Each of the three changes was mutation-tested by reverting it from a saved
+  copy and confirming the pin goes red. That harness caught one of my own
+  mutations that changed BYTES BUT NOT BEHAVIOUR — putting `note` back into the
+  form's children is a no-op while `replaceChildren(main(), …, note)` still
+  re-parents it straight out, so a faithful revert needs both halves. The
+  2026-08-10 rule restated: a mutation that does not mutate reads exactly like a
+  test that cannot fail.

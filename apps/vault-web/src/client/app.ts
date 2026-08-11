@@ -205,44 +205,76 @@ function renderSetup(): void {
     type: 'password',
     autocomplete: 'new-password',
   });
+  // OUTSIDE the form, and that is load-bearing rather than cosmetic. A refused
+  // action renders its step-up prompt — itself a `<form>` — into this node, and
+  // a form nested inside a form is invalid HTML that no parser would build.
+  // Anything reasoning over `document.querySelectorAll('form')` then gets a
+  // wrong answer about which form holds the code field.
   const note = el('div');
   const submit = el('button', { class: 'button', type: 'submit' }, ['Create my vault']);
-  const form = el('form', {}, [password.row, confirm.row, el('p', {}, [submit]), note]);
+  const form = el('form', {}, [password.row, confirm.row, el('p', {}, [submit])]);
+
+  /**
+   * ONE enrollment at a time.
+   *
+   * The submit button is disabled while one runs, so a second CLICK cannot get
+   * through — but a submit event arrives from more than a click, and nothing
+   * else bounded this. A second enrollment mints a second master key and a
+   * second Secret Key and overwrites the first keyset, so whichever of the two
+   * `renderSecretKey` continuations lands LAST is what the user is told to
+   * save: on a slow device that is a Secret Key for a keyset the server no
+   * longer holds, on the one screen shown exactly once and never again.
+   *
+   * It is also a stale-continuation source: `renderSecretKey` resolves `#app`
+   * when it runs, so a losing enrollment renders over whatever screen the user
+   * has since moved to.
+   */
+  let enrolling = false;
 
   onSubmit(form, () => {
+    if (enrolling) return;
+    enrolling = true;
     void (async () => {
-      replaceChildren(note);
-      if (password.input.value.length < 12) {
-        note.append(status('Use at least 12 characters.', 'error'));
-        return;
+      try {
+        await runEnrollment();
+      } finally {
+        enrolling = false;
       }
-      if (password.input.value !== confirm.input.value) {
-        note.append(status('Those two passwords do not match.', 'error'));
-        return;
-      }
-      if (!account) return;
-      const { userId } = account;
-      submit.setAttribute('disabled', '');
-      note.append(status('Setting up your vault — this takes a moment.'));
-      // `POST /v1/vault/keyset` is step-up gated, and the redeemed session no
-      // longer arrives with one (the M15 review's bypass), so first-time setup
-      // is the FIRST place a factor has to be proved on this origin.
-      const created = await withStepUp(note, 'Setting up your vault', () =>
-        session
-          .enroll(userId, password.input.value)
-          .catch(() => ({ ok: false as const, code: 'UNAVAILABLE' as const })),
-      );
-      // The password is gone from the DOM the instant it has been used.
-      password.input.value = '';
-      confirm.input.value = '';
-      if (!created.ok) {
-        submit.removeAttribute('disabled');
-        replaceChildren(note, status(messageFor(created.code ?? 'UNKNOWN'), 'error'));
-        return;
-      }
-      renderSecretKey(created.data.secretKey, created.data.entropy);
     })();
   });
+
+  async function runEnrollment(): Promise<void> {
+    replaceChildren(note);
+    if (password.input.value.length < 12) {
+      note.append(status('Use at least 12 characters.', 'error'));
+      return;
+    }
+    if (password.input.value !== confirm.input.value) {
+      note.append(status('Those two passwords do not match.', 'error'));
+      return;
+    }
+    if (!account) return;
+    const { userId } = account;
+    submit.setAttribute('disabled', '');
+    note.append(status('Setting up your vault — this takes a moment.'));
+    // `POST /v1/vault/keyset` is step-up gated, and the redeemed session no
+    // longer arrives with one (the M15 review's bypass), so first-time setup
+    // is the FIRST place a factor has to be proved on this origin.
+    const created = await withStepUp(note, 'Setting up your vault', () =>
+      session
+        .enroll(userId, password.input.value)
+        .catch(() => ({ ok: false as const, code: 'UNAVAILABLE' as const })),
+    );
+    // The password is gone from the DOM the instant it has been used.
+    password.input.value = '';
+    confirm.input.value = '';
+    if (!created.ok) {
+      submit.removeAttribute('disabled');
+      replaceChildren(note, status(messageFor(created.code ?? 'UNKNOWN'), 'error'));
+      return;
+    }
+    renderSecretKey(created.data.secretKey, created.data.entropy);
+  }
 
   replaceChildren(
     main(),
@@ -251,6 +283,7 @@ function renderSetup(): void {
       'Your vault is encrypted on this device. Estate stores only the encrypted result and cannot read it — not for a support request, and not for a court order.',
     ]),
     form,
+    note,
   );
 }
 
@@ -1069,7 +1102,8 @@ function renderItem(existing: OpenedItem | null): void {
     url.row,
     notes.row,
     el('p', {}, [save, ' ', quietButton('Cancel', () => void renderVault())]),
-    note,
+    // `note` is deliberately NOT here — see `renderSetup`. Deleting an item is
+    // step-up gated, so this node hosts a prompt that is itself a `<form>`.
   ]);
 
   onSubmit(form, () => {
@@ -1101,7 +1135,9 @@ function renderItem(existing: OpenedItem | null): void {
   });
 
   const heading = existing ? 'Edit item' : 'Add an item';
-  const children: Array<HTMLElement | string> = [el('h1', {}, [heading]), form];
+  // Same DOM order as when `note` sat inside the form — after the save row,
+  // before the delete control — without the nesting.
+  const children: Array<HTMLElement | string> = [el('h1', {}, [heading]), form, note];
   if (existing) {
     children.push(
       el('p', {}, [

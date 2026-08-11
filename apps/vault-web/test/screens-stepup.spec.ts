@@ -345,4 +345,66 @@ describe('proving a factor on this origin', () => {
       true,
     );
   });
+
+  /*
+   * THE PROMPT IS NOT INSIDE THE FORM IT GUARDS, AND SETUP ENROLLS ONCE.
+   *
+   * `promptForStepUp` renders a `<form>`, and `renderSetup` used to host it in a
+   * `note` that sat INSIDE the setup form. A form nested in a form is invalid
+   * HTML no parser would build, but this app builds its DOM imperatively, so the
+   * tree was real — and it made `querySelectorAll('form')` ambiguous about which
+   * form holds the code field. PR #67 fixed the spec helper that walked into
+   * that ambiguity; this pins the shape of the DOM underneath it, so the trap is
+   * gone rather than merely unvisited.
+   *
+   * ONE enrollment here, and the prompt is CANCELLED rather than completed, so
+   * nothing is left in flight — which is why this may sit last in the file
+   * despite not ending on the unlock screen.
+   */
+  it('hosts the step-up prompt OUTSIDE the setup form, and enrolls once per submit', async () => {
+    const service = installService();
+    service.fail.set('POST /api/vault/keyset', { status: 403, error: 'stepup_required' });
+    await render();
+    await waitForText('Set up your vault');
+    byLabel('Vault password').value = PASSWORD;
+    byLabel('Confirm vault password').value = PASSWORD;
+    submitForm();
+    await waitForText(/setting up your vault needs a fresh identity check/i);
+
+    const keysetPosts = (): number =>
+      service.calls.filter((c) => c.method === 'POST' && c.path === '/api/vault/keyset').length;
+    const setupForm = document.querySelectorAll('form')[0] as HTMLFormElement;
+    const code = document.getElementById('stepup-code') as HTMLInputElement;
+
+    // (1) NOT NESTED. Both statements, because either alone can hold while the
+    // other breaks: no form anywhere contains another, and the code field's own
+    // form OWNER is the prompt rather than the screen hosting it.
+    expect(document.querySelectorAll('form form')).toHaveLength(0);
+    expect(code.form).not.toBe(setupForm);
+    expect(code.form?.contains(code)).toBe(true);
+
+    // (2) ONE ENROLLMENT PER SUBMIT. A second submit event on the screen's own
+    // form — which is what a selector matching an ancestor produced — must not
+    // start a second enrollment. A second one mints a second master key and
+    // overwrites the first keyset, so whichever `renderSecretKey` continuation
+    // lands LAST is what the user is told to save: a Secret Key for a keyset the
+    // server no longer holds, on the one screen shown exactly once.
+    //
+    // Asserted SYNCHRONOUSLY: without the guard the handler re-enters and its
+    // first statement wipes the prompt out of `note`, so the observable does not
+    // depend on how long a PBKDF2 takes.
+    expect(keysetPosts()).toBe(1);
+    setupForm.dispatchEvent(new Event('submit', { cancelable: true }));
+    expect(document.getElementById('stepup-code')).toBe(code);
+    expect(document.body.textContent).toMatch(/needs a fresh identity check/i);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(keysetPosts()).toBe(1);
+
+    // Withdrawing consent releases the guard: a refused enrollment must not
+    // leave the form unusable for the rest of the session.
+    clickText('Cancel');
+    await waitForText(/needs a fresh identity check, and it was not completed/i);
+    submitForm();
+    await waitForText(/use at least 12 characters/i);
+  });
 });

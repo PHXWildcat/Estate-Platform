@@ -276,6 +276,14 @@ describe('the vault’s actions', () => {
     await waitForText(/fresh identity check/i);
     // Still there — the refusal did not pretend to succeed.
     expect(service.items.size).toBe(1);
+    // The prompt is a `<form>` and it is hosted next to the item form, never
+    // inside it: nested forms are invalid HTML, and while this one WAS nested
+    // it made `querySelectorAll('form')` ambiguous about which form holds the
+    // code field — see `screens-stepup.spec.ts` for what that cost.
+    expect(document.querySelectorAll('form form')).toHaveLength(0);
+    expect((document.getElementById('stepup-code') as HTMLInputElement).form).not.toBe(
+      document.querySelectorAll('form')[0],
+    );
 
     service.fail.clear();
     clickText('Delete this item');
