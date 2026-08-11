@@ -1,6 +1,11 @@
 import { request, type ApiResult } from './api.js';
 import type { ItemSummary, VaultState } from './messages.js';
-import type { OpenedSummary, SrpChallenge, VaultItemRow } from './vault-worker-core.js';
+import type {
+  MatchedSummary,
+  OpenedSummary,
+  SrpChallenge,
+  VaultItemRow,
+} from './vault-worker-core.js';
 
 /**
  * THE OFFSCREEN DOCUMENT'S JOB: everything about an unlock EXCEPT the keys.
@@ -51,6 +56,7 @@ export interface KeyHolderPort {
     vaultSessionId: string;
   }): Promise<void>;
   summarise(rows: readonly VaultItemRow[]): Promise<OpenedSummary[]>;
+  matchesFor(rows: readonly VaultItemRow[], pageUrl: string): Promise<MatchedSummary[]>;
   lock(): void;
 }
 
@@ -220,6 +226,27 @@ export class VaultHost {
       ok: true,
       data: [...summaries].sort((a, b) => a.title.localeCompare(b.title)),
     };
+  }
+
+  /**
+   * WHAT IS SAVED FOR THIS PAGE.
+   *
+   * The same read as `list`, decided differently: the worker sees each item's
+   * url and returns only what relates to the page — matches, and the refusals
+   * worth explaining. Nothing about unrelated items crosses back.
+   */
+  async matchesFor(bearer: string, pageUrl: string): Promise<ApiResult<readonly MatchedSummary[]>> {
+    const token = this.#token;
+    if (!token || !this.#holder.isUnlocked) return { ok: false, code: 'VAULT_LOCKED' };
+    this.#touch();
+    const page = await request<VaultItemPage>('/api/vault/items?limit=200', {
+      bearer,
+      vaultSession: token,
+    });
+    if (!page.ok) return page;
+    const rows = page.data.items;
+    if (!Array.isArray(rows)) return { ok: false, code: 'UNKNOWN' };
+    return { ok: true, data: await this.#holder.matchesFor(rows as VaultItemRow[], pageUrl) };
   }
 
   /**

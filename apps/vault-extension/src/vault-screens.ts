@@ -3,7 +3,8 @@ import { messageFor } from './copy.js';
 import { el, render } from './dom.js';
 import type { ItemSummary } from './messages.js';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from './secret-key-store.js';
-import { listItems, lockVault, unlockVault, vaultState } from './vault-client.js';
+import { listItems, lockVault, matchesFor, unlockVault, vaultState } from './vault-client.js';
+import type { MatchedItem } from './messages.js';
 
 /**
  * THE VAULT HALF OF THE POPUP: unlock, list, lock.
@@ -31,7 +32,13 @@ type View =
   | { kind: 'checking' }
   | { kind: 'locked'; error?: string; stepUp?: boolean }
   | { kind: 'busy'; label: string }
-  | { kind: 'unlocked'; items: readonly ItemSummary[]; error?: string };
+  | {
+      kind: 'unlocked';
+      items: readonly ItemSummary[];
+      matched?: readonly MatchedItem[];
+      pageUrl?: string;
+      error?: string;
+    };
 
 /** Six digits, the only shape identity's CodeSchema accepts. */
 const CODE_PATTERN = /^[0-9]{6}$/;
@@ -46,10 +53,35 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     draw();
   }
 
+  /**
+   * The active tab's URL, or undefined.
+   *
+   * `activeTab` grants this at INVOCATION and revokes it on navigation, so
+   * there is no standing view of anything — and a tab the extension may not see
+   * (a `chrome://` page, or a window with nothing active) simply yields nothing
+   * rather than an error, because "we cannot tell what page this is" is not a
+   * failure of the vault.
+   */
+  async function activePageUrl(): Promise<string | undefined> {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return typeof tab?.url === 'string' && tab.url.length > 0 ? tab.url : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function refresh(): Promise<void> {
     const listed = await listItems(bearer);
     if (listed.ok) {
-      show({ kind: 'unlocked', items: listed.data });
+      const pageUrl = await activePageUrl();
+      const matched = pageUrl === undefined ? undefined : await matchesFor(bearer, pageUrl);
+      show({
+        kind: 'unlocked',
+        items: listed.data,
+        ...(pageUrl === undefined ? {} : { pageUrl }),
+        ...(matched?.ok === true ? { matched: matched.data } : {}),
+      });
       return;
     }
     if (listed.code === 'VAULT_LOCKED') {
@@ -172,7 +204,49 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     );
   }
 
-  function drawUnlocked(items: readonly ItemSummary[], error: string | undefined): void {
+  /**
+   * WHAT IS SAVED FOR THIS PAGE — including the refusals.
+   *
+   * A `confusable` or a `scheme-downgrade` is SHOWN and never offered, because
+   * §4 TB9 commits to refusing rather than warning, and because a refusal the
+   * user cannot see is indistinguishable from having nothing saved. PR3b will
+   * offer a fill button on `match` rows only; there is no button here yet, and
+   * the copy says so rather than implying one is coming imminently.
+   */
+  function drawMatches(matched: readonly MatchedItem[], pageUrl: string): HTMLElement {
+    let host: string;
+    try {
+      host = new URL(pageUrl).host;
+    } catch {
+      host = pageUrl;
+    }
+    const list = el('ul', { class: 'items' });
+    for (const item of matched) {
+      const label =
+        item.verdict.kind === 'match'
+          ? `${item.title || '(no title)'} — saved for this site`
+          : item.verdict.kind === 'scheme-downgrade'
+            ? `${item.title || '(no title)'} — not offered: this page is not secure`
+            : `${item.title || '(no title)'} — not offered: this address only looks like the saved one`;
+      list.append(el('li', {}, label));
+    }
+    return el(
+      'div',
+      {},
+      el('h3', {}, `For ${host}`),
+      matched.length === 0
+        ? el('p', { class: 'hint' }, 'Nothing saved for this site.')
+        : (list as HTMLElement),
+      el('p', { class: 'hint' }, 'Filling is not available yet.'),
+    );
+  }
+
+  function drawUnlocked(
+    items: readonly ItemSummary[],
+    error: string | undefined,
+    matched: readonly MatchedItem[] | undefined,
+    pageUrl: string | undefined,
+  ): void {
     const lock = el('button', { class: 'secondary' }, 'Lock');
     lock.addEventListener('click', () => {
       void doLock();
@@ -191,6 +265,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     render(
       host,
       el('h2', {}, 'Vault open'),
+      ...(matched !== undefined && pageUrl !== undefined ? [drawMatches(matched, pageUrl)] : []),
       items.length === 0 ? el('p', { class: 'hint' }, 'No items in this vault yet.') : list,
       el('p', { class: 'hint' }, 'Reading an item is not available yet.'),
       lock,
@@ -211,7 +286,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       drawLocked(view.error, view.stepUp);
       return;
     }
-    drawUnlocked(view.items, view.error);
+    drawUnlocked(view.items, view.error, view.matched, view.pageUrl);
   }
 
   draw();

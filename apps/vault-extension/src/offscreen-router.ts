@@ -53,6 +53,10 @@ async function answer(host: VaultHost, message: VaultRequest): Promise<VaultResp
       const listed = await host.list(message.bearer);
       return listed.ok ? { ok: true, items: listed.data } : { ok: false, code: listed.code };
     }
+    case 'matches': {
+      const matched = await host.matchesFor(message.bearer, message.pageUrl);
+      return matched.ok ? { ok: true, matched: matched.data } : { ok: false, code: matched.code };
+    }
     case 'lock':
       await host.lock(message.bearer);
       return { ok: true, state: host.state };

@@ -58,6 +58,16 @@ type MessageListener = (
   sendResponse: (response: unknown) => void,
 ) => boolean | undefined;
 
+/**
+ * The active tab, which `activeTab` grants at INVOCATION and revokes on
+ * navigation — no `tabs` permission is needed to read `url` this way, and the
+ * extension has no view of any page until the user clicks it.
+ */
+interface ChromeTab {
+  readonly id?: number;
+  readonly url?: string;
+}
+
 declare const chrome: {
   readonly storage: { readonly local: ChromeStorageArea };
   readonly runtime: {
@@ -67,4 +77,7 @@ declare const chrome: {
     readonly onMessage: { addListener(listener: MessageListener): void };
   };
   readonly offscreen: ChromeOffscreen;
+  readonly tabs: {
+    query(info: { active: boolean; currentWindow: boolean }): Promise<ChromeTab[]>;
+  };
 };

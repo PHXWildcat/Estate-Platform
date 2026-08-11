@@ -1,5 +1,10 @@
 import type { KeyHolderPort } from './vault-host.js';
-import type { OpenedSummary, SrpChallenge, VaultItemRow } from './vault-worker-core.js';
+import type {
+  MatchedSummary,
+  OpenedSummary,
+  SrpChallenge,
+  VaultItemRow,
+} from './vault-worker-core.js';
 import type { WorkerRequest, WorkerResponse } from './worker-protocol.js';
 
 /**
@@ -91,6 +96,15 @@ export class WorkerKeyHolder implements KeyHolderPort {
       throw new Error('vault is locked');
     }
     return [...response.summaries];
+  }
+
+  async matchesFor(rows: readonly VaultItemRow[], pageUrl: string): Promise<MatchedSummary[]> {
+    const response = await this.#send({ kind: 'matches', rows, pageUrl });
+    if (!response.ok || !('matched' in response)) {
+      this.#unlocked = false;
+      throw new Error('vault is locked');
+    }
+    return [...response.matched];
   }
 
   lock(): void {

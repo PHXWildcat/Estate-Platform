@@ -1,5 +1,11 @@
 import type { ApiFailure } from './api.js';
-import { BACKGROUND, OFFSCREEN, type ItemSummary, type VaultState } from './messages.js';
+import {
+  BACKGROUND,
+  OFFSCREEN,
+  type ItemSummary,
+  type MatchedItem,
+  type VaultState,
+} from './messages.js';
 
 /**
  * THE POPUP'S VIEW OF THE VAULT: a message away, and no closer.
@@ -59,6 +65,19 @@ export async function listItems(bearer: string): Promise<VaultOutcome<readonly I
     bearer,
   });
   return reply.ok ? { ok: true, data: reply.data.items } : reply;
+}
+
+export async function matchesFor(
+  bearer: string,
+  pageUrl: string,
+): Promise<VaultOutcome<readonly MatchedItem[]>> {
+  const reply = await ask<{ matched: readonly MatchedItem[] }>({
+    target: OFFSCREEN,
+    kind: 'matches',
+    bearer,
+    pageUrl,
+  });
+  return reply.ok ? { ok: true, data: reply.data.matched } : reply;
 }
 
 export async function lockVault(bearer: string): Promise<VaultOutcome<VaultState>> {

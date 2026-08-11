@@ -3270,9 +3270,13 @@ IndexedDB key persistence, passkey provisioning (its own milestone), and writes
 before PR3 has proved the page boundary read-only.
 
 **PRs.** PR1 the boundary, the credential and the debts it makes acute · **PR2a
-the extension and its transport · PR2b unlock + read** · PR3 matching + fill ·
-PR4 writes + release pipeline · PR5 the security review. Each carries its own
-docs delta.
+the extension and its transport · PR2b unlock + read · PR3a origin matching ·
+PR3b fill** · PR4 writes + release pipeline · PR5 the security review. Each
+carries its own docs delta.
+
+**PR3 SPLIT TOO — seven PRs.** Origin matching is the boundary's DEFINING
+control (§4 TB9), so the decision logic lands and is proved with no code running
+in any page before the content script exists. Same reasoning as the PR2 split.
 
 **PR2 SPLIT IN TWO — a recorded deviation, making this six PRs.** "Unlock +
 read" assumed the extension existed; PR1 shipped the boundary and no extension
@@ -3500,6 +3504,55 @@ So is the IndexedDB measurement PR1 owes — whether a non-extractable `CryptoKe
 survives a structured clone into extension IndexedDB across a restart, which the
 roadmap rejects on ceremony grounds while recording the serializability premise
 as unmeasured. Both are hand-over steps with instructions, not claims.
+
+#### PR3a — origin matching
+
+The decision that governs every fill, landed with **no page contact**: the
+extension can read the active tab's URL and say what is saved for it, and cannot
+run a line of code in any page.
+
+**The Public Suffix List, vendored and digest-pinned.** Registrable domains come
+from the list — including its wildcard and exception rules — never from a
+substring and never from label stripping, the two failures §4 TB9 names. It is
+compiled to a module rather than read at runtime, and that was FORCED by a fence
+rather than chosen: `api.ts` is the only network call site, so reading the
+packaged `.dat` would mean widening that fence to admit local fetches. The `.dat`
+stays byte-for-byte as published (MPL-2.0 header included) and is the pinned
+artifact; the test regenerates from it in a subprocess and compares, so the
+committed generated module cannot drift.
+
+**A verdict, not a boolean.** `match`, `no-match`, `scheme-downgrade`,
+`confusable`, `unusable` — because a refusal that reads as an absence is the
+shape this repo keeps finding. §4 TB9 refuses confusables rather than warning, so
+the popup SHOWS the refusal and offers nothing on it; `isFillable` is true for
+exactly one verdict.
+
+**Matching happens in the key holder**, because the item's `url` is inside the
+encrypted blob. Returning every item's domain to the popup would disclose a list
+of every site the user has an account with to answer a question about one origin.
+The protocol gains one variant, and still none that returns a secret.
+
+**A scope claim of mine was wrong, and the test caught it.** The confusables
+decision was taken on the basis that punycode + edit-distance-1 catches `rn`/`m`.
+It does not — `exarnple.com` is two edits from `example.com`. Rather than weaken
+the test, the code gained an ASCII homoglyph skeleton (`rn`→`m`, `vv`→`w`,
+`cl`→`d`, `1`→`l`, `0`→`o`) folded on both sides. Full UTS #39 remains a named
+follow-up in §6j, and every miss stays a refusal.
+
+**`activeTab` alone**, verified before it was relied on: it yields the tab URL at
+invocation, is revoked on navigation, and needs no `tabs` permission. `scripting`
+is what would turn that into running code, and it is still refused by the
+manifest fence with PR3b named against it.
+
+**Verified:** a table over the traps (`evil-example.com`,
+`example.com.evil.net`, `bank.co.uk` vs `shop.co.uk`, the PSL's `*.ck`/`!www.ck`
+pair) and six mutations — substring matching, label stripping, dropped scheme
+binding, dropped confusable refusal, removed homoglyph fold, allowed cross-origin
+frames — each confirmed red. 300 tests, 97.24/90.83/96.52/98.91.
+
+**Unchanged and still owed:** the extension has never run in a browser, and the
+IndexedDB restart measurement is outstanding. PR3a adds no code that runs in a
+page, so neither moves.
 
 ### M17 — Subscription manager (planned)
 

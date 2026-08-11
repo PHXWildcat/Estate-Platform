@@ -21,6 +21,7 @@ const refusing: KeyHolderPort = {
   prepare: () => Promise.reject(new Error('wrong secret key: 0xdeadbeef')),
   finish: () => Promise.reject(new Error('bad proof')),
   summarise: () => Promise.reject(new Error('vault is locked')),
+  matchesFor: () => Promise.reject(new Error('vault is locked')),
   lock: () => undefined,
 };
 
@@ -30,6 +31,7 @@ describe('the worker protocol', () => {
       { id: 1, kind: 'prepare', userId: 'u', password: 'p', secretKey: 's', challenge: {} },
       { id: 2, kind: 'finish', serverM2: 'a', wrappedMasterKey: 'b', vaultSessionId: 'c' },
       { id: 3, kind: 'summarise', rows: [] },
+      { id: 6, kind: 'matches', rows: [], pageUrl: 'https://example.com/' },
     ] as unknown as WorkerRequest[]) {
       const response = await handleWorkerRequest(refusing, request);
       expect(response).toEqual({ id: request.id, ok: false });
@@ -60,10 +62,11 @@ describe('the worker protocol', () => {
       'prepare',
       'finish',
       'summarise',
+      'matches',
       'lock',
       'state',
     ] satisfies WorkerRequest['kind'][];
-    expect(kinds).toHaveLength(5);
+    expect(kinds).toHaveLength(6);
     const responses: WorkerResponse[] = [
       { id: 1, ok: true, proof: { publicA: 'a', m1: 'b' } },
       { id: 2, ok: true, summaries: [] },
@@ -130,6 +133,7 @@ describe('the port over the worker', () => {
       prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
       finish: () => Promise.resolve(),
       summarise: () => Promise.resolve([{ id: 'i', itemType: 'login', title: 'Zed' }]),
+      matchesFor: () => Promise.resolve([]),
       lock: () => undefined,
     };
     const worker = fakeWorker(open);
@@ -154,6 +158,38 @@ describe('the port over the worker', () => {
     expect(crossed).not.toContain('masterKey');
     port.lock();
     expect(port.isUnlocked).toBe(false);
+  });
+
+  it('carries a MATCH decision across, and goes locked when the worker refuses', async () => {
+    const open: KeyHolderPort = {
+      isUnlocked: true,
+      prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
+      finish: () => Promise.resolve(),
+      summarise: () => Promise.resolve([]),
+      matchesFor: () =>
+        Promise.resolve([
+          {
+            id: 'i',
+            itemType: 'login',
+            title: 'Bank',
+            verdict: { kind: 'match' as const, domain: 'example.com' },
+          },
+        ]),
+      lock: () => undefined,
+    };
+    const port = new WorkerKeyHolder(fakeWorker(open));
+    expect(await port.matchesFor([], 'https://example.com/')).toEqual([
+      {
+        id: 'i',
+        itemType: 'login',
+        title: 'Bank',
+        verdict: { kind: 'match', domain: 'example.com' },
+      },
+    ]);
+
+    const refused = new WorkerKeyHolder(fakeWorker(refusing));
+    await expect(refused.matchesFor([], 'https://example.com/')).rejects.toThrow('vault is locked');
+    expect(refused.isUnlocked).toBe(false);
   });
 
   it('throws rather than inventing a proof when the worker refuses a prepare', async () => {

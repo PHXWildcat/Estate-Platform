@@ -1,5 +1,10 @@
 import type { KeyHolderPort } from './vault-host.js';
-import type { OpenedSummary, SrpChallenge, VaultItemRow } from './vault-worker-core.js';
+import type {
+  MatchedSummary,
+  OpenedSummary,
+  SrpChallenge,
+  VaultItemRow,
+} from './vault-worker-core.js';
 
 /**
  * WHAT MAY BE ASKED OF THE KEY HOLDER ACROSS THE WORKER BOUNDARY.
@@ -35,12 +40,19 @@ export type WorkerRequest =
       readonly vaultSessionId: string;
     }
   | { readonly id: number; readonly kind: 'summarise'; readonly rows: readonly VaultItemRow[] }
+  | {
+      readonly id: number;
+      readonly kind: 'matches';
+      readonly rows: readonly VaultItemRow[];
+      readonly pageUrl: string;
+    }
   | { readonly id: number; readonly kind: 'lock' }
   | { readonly id: number; readonly kind: 'state' };
 
 export type WorkerResponse =
   | { readonly id: number; readonly ok: true; readonly proof: { publicA: string; m1: string } }
   | { readonly id: number; readonly ok: true; readonly summaries: readonly OpenedSummary[] }
+  | { readonly id: number; readonly ok: true; readonly matched: readonly MatchedSummary[] }
   | { readonly id: number; readonly ok: true; readonly unlocked: boolean }
   | { readonly id: number; readonly ok: false };
 
@@ -77,6 +89,9 @@ export async function handleWorkerRequest(
       }
       case 'summarise': {
         return { id, ok: true, summaries: await holder.summarise(request.rows) };
+      }
+      case 'matches': {
+        return { id, ok: true, matched: await holder.matchesFor(request.rows, request.pageUrl) };
       }
       case 'lock': {
         holder.lock();

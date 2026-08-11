@@ -40,7 +40,9 @@ interface Recorded {
 }
 
 /** A stand-in vault service that completes a genuine SRP-6a exchange. */
-async function stubService(options: { titles?: readonly string[] } = {}): Promise<{
+async function stubService(
+  options: { titles?: readonly string[]; urls?: readonly string[] } = {},
+): Promise<{
   calls: Recorded[];
   secretKey: string;
 }> {
@@ -61,7 +63,10 @@ async function stubService(options: { titles?: readonly string[] } = {}): Promis
   const rows = await Promise.all(
     titles.map(async (title, index) => {
       const id = `${String(index)}5555555-0000-4000-8000-000000000000`;
-      const plaintext = new TextEncoder().encode(JSON.stringify({ title, secret: SECRET_ITEM }));
+      const url = options.urls?.[index];
+      const plaintext = new TextEncoder().encode(
+        JSON.stringify({ title, secret: SECRET_ITEM, ...(url === undefined ? {} : { url }) }),
+      );
       return {
         id,
         itemType: 'login',
@@ -305,6 +310,100 @@ describe('unlocking through the host', () => {
         text: () => Promise.resolve('{}'), // no `items` field at all
       } as unknown as Response);
     expect(await vault.list(BEARER)).toEqual({ ok: false, code: 'UNKNOWN' });
+  });
+
+  it('answers WHAT IS SAVED FOR THIS PAGE, decided inside the key holder', async () => {
+    /*
+     * The full path with real crypto: three items sealed with different urls,
+     * matched against one page. What is pinned is that the decision happens
+     * where the url is readable, and that nothing about the unrelated items
+     * comes back — the host asked about ONE origin and learns about that origin.
+     */
+    installChromeDouble();
+    const { secretKey } = await stubService({
+      titles: ['Bank', 'Other', 'Lookalike'],
+      urls: ['https://www.example.com/login', 'https://unrelated.test/', 'https://exarnple.com/'],
+    });
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const matched = await vault.matchesFor(BEARER, 'https://example.com/account');
+    expect(matched.ok).toBe(true);
+    const rows = matched.ok ? matched.data : [];
+    expect(rows.map((r) => [r.title, r.verdict.kind])).toEqual([
+      ['Bank', 'match'],
+      ['Lookalike', 'confusable'],
+    ]);
+    // The unrelated item is not merely unmatched — it is ABSENT.
+    expect(JSON.stringify(rows)).not.toContain('Other');
+    // ...and no secret came back with any of them.
+    expect(JSON.stringify(rows)).not.toContain(SECRET_ITEM);
+  });
+
+  it('skips an item it cannot open rather than claiming anything about it', async () => {
+    // A blob this build cannot decrypt cannot be matched against anything, and
+    // reporting it as "no match" would be a claim about an item nobody read.
+    installChromeDouble();
+    const { secretKey } = await stubService({
+      titles: ['Bank'],
+      urls: ['https://www.example.com/login'],
+    });
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const original = globalThis.fetch;
+    (globalThis as { fetch?: unknown }).fetch = (url: unknown, init: RequestInit) => {
+      if (String(url).includes('/api/vault/items')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                items: [
+                  {
+                    id: '99999999-0000-4000-8000-000000000000',
+                    itemType: 'login',
+                    blob: 'AAAAAAAAAAAAAAAAAAAAAA==',
+                    blobVersion: 1,
+                    updatedAt: '2026-08-10T00:00:00Z',
+                  },
+                ],
+              }),
+            ),
+        } as unknown as Response);
+      }
+      return original(url as string, init);
+    };
+    const matched = await vault.matchesFor(BEARER, 'https://example.com/');
+    expect(matched).toEqual({ ok: true, data: [] });
+  });
+
+  it('refuses to match while locked', async () => {
+    installChromeDouble();
+    await stubService();
+    const vault = host();
+    expect(await vault.matchesFor(BEARER, 'https://example.com/')).toEqual({
+      ok: false,
+      code: 'VAULT_LOCKED',
+    });
+  });
+
+  it('an unreachable item list is not an empty match set', async () => {
+    installChromeDouble();
+    const { secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+    (globalThis as { fetch?: unknown }).fetch = () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{}'),
+      } as unknown as Response);
+    expect(await vault.matchesFor(BEARER, 'https://example.com/')).toEqual({
+      ok: false,
+      code: 'UNKNOWN',
+    });
   });
 
   it('locks LOCALLY FIRST, then tells the server', async () => {

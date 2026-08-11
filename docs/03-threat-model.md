@@ -53,7 +53,7 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 - *Coercion/shoulder-surfing of elderly users:* Optional "trusted-contact review" mode where high-risk changes (new beneficiary + address change + export within 24h) trigger a notification hold.
 
 **TB9 — Vault extension ↔ arbitrary web pages** (M16)
-- *Filling the wrong origin (credential exfiltration):* This is the boundary's defining failure, because a filled credential belongs to the page that received it — the isolated world protects the extension's variables, not the DOM value, so the origin decision IS the disclosure decision. → Registrable domain via a vendored, digest-pinned Public Suffix List snapshot (never a substring, never label stripping); scheme binding, so an `https`-saved credential is never offered on `http`; cross-origin iframes refused by default with a per-item opt-in; confusable domains REFUSED rather than warned about.
+- *Filling the wrong origin (credential exfiltration):* This is the boundary's defining failure, because a filled credential belongs to the page that received it — the isolated world protects the extension's variables, not the DOM value, so the origin decision IS the disclosure decision. → Registrable domain via a vendored, digest-pinned Public Suffix List snapshot (never a substring, never label stripping); scheme binding, so an `https`-saved credential is never offered on `http`; cross-origin iframes refused by default with a per-item opt-in; confusable domains REFUSED rather than warned about. **Confusable detection is PARTIAL as shipped (M16 PR3a)** and this sentence is narrowed rather than left implying otherwise: punycode hosts that are not the saved domain, an ASCII homoglyph skeleton (`rn`/`m`, `vv`/`w`, `cl`/`d`, digit-for-letter), and edit-distance-1 are caught; the general Unicode confusable case needs UTS #39 skeletons over a vendored confusables table and is a named follow-up. A miss is a `no-match`, so it is still REFUSED for filling — what is lost is the explanation, never the boundary.
 - *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address, and nothing is ever auto-submitted.
 - *A hostile page reading the vault by breadth of access:* → `activeTab` + `scripting` only, with no declared content scripts, so the extension has no view of any page until the user clicks it — and any later broadening is a required-permission increase the browser surfaces as re-consent.
 - *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy a vault), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
@@ -1330,6 +1330,31 @@ CLAUDE.md decision log; the security-relevant shape is:
   origin. A scratch unpacked probe exists for both; it is deliberately not
   committed, because a key-persistence harness inside an artifact that must not
   persist keys is the wrong thing to be right about.
+
+**Added by PR3a (origin matching).**
+
+- *Confusable detection is partial, and §4 TB9 now says so.* Caught: punycode
+  that is not the saved domain, an ASCII homoglyph skeleton fold, and
+  edit-distance-1. Not caught: the general Unicode confusable case, which needs
+  UTS #39 skeletons over a vendored confusables table — a named follow-up. The
+  failure direction is safe: an unrecognised confusable is a `no-match`, so it is
+  refused for filling and merely goes unexplained. Worth stating because the
+  scope decision for this PR was taken on a claim that `rn`/`m` was covered by
+  edit distance, which it is not — the homoglyph fold exists because a test
+  refused to pass.
+- *A stale Public Suffix List over-matches, narrowly.* The snapshot is vendored
+  and digest-pinned because this package must not fetch a security parameter at
+  runtime, which trades tampering-in-transit for staleness. A suffix added after
+  the snapshot is unknown, so `registrableDomain` falls back to the implicit `*`
+  rule and returns a SHORTER domain — which can make two hosts under a new
+  multi-label registry compare equal. The staleness check is deliberately a
+  one-year bound rather than a weekly one, because a check that fails constantly
+  is one people learn to bump.
+- *`activeTab` discloses the active tab's URL to the extension.* That is the
+  minimum origin matching can run on, and it is bounded by the permission itself:
+  granted only when the user clicks the extension, revoked on navigation, and
+  carrying no ability to run code (that is `scripting`, still absent). There is
+  no standing view of browsing, and no history.
 
 ## 7. Validation program
 

@@ -27,10 +27,17 @@ interface Wired {
 function wire(
   reply: (message: { kind?: string }) => unknown,
   fetchStatus: { status: number; body?: unknown } = { status: 200 },
+  // `null` means "no active tab we may see". NOT `undefined`, because passing
+  // `undefined` explicitly SELECTS a default parameter — which silently gave
+  // the no-tab case the default URL and made it pass for the wrong reason.
+  pageUrl: string | null = 'https://example.com/login',
 ): Wired {
   const sent: unknown[] = [];
   const fetched: { url: string; body: string }[] = [];
   (globalThis as { chrome?: unknown }).chrome = {
+    tabs: {
+      query: () => Promise.resolve(pageUrl === null ? [] : [{ id: 1, url: pageUrl }]),
+    },
     runtime: {
       getManifest: () => ({ host_permissions: [`${TEST_ORIGIN}/*`] }),
       getURL: (p: string) => p,
@@ -248,5 +255,105 @@ describe('the vault screens', () => {
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
     expect(text()).toContain('Vault locked');
     expect(text()).toContain(messages.UNAVAILABLE);
+  });
+});
+
+describe('what is saved for the page you are on', () => {
+  afterEach(() => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  const unlocked = {
+    ok: true,
+    state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' },
+  };
+
+  function openWith(matched: unknown, pageUrl: string | null = 'https://example.com/login'): void {
+    wire(
+      (message) =>
+        message.kind === 'list'
+          ? { ok: true, items: [] }
+          : message.kind === 'matches'
+            ? { ok: true, matched }
+            : unlocked,
+      { status: 200 },
+      pageUrl,
+    );
+  }
+
+  it('names the site and lists what matches it', async () => {
+    openWith([
+      {
+        id: 'i',
+        itemType: 'login',
+        title: 'Bank login',
+        verdict: { kind: 'match', domain: 'example.com' },
+      },
+    ]);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For example.com'), 'the per-page section');
+    expect(text()).toContain('Bank login — saved for this site');
+  });
+
+  it('SHOWS a confusable refusal rather than hiding it', async () => {
+    // §4 TB9 refuses rather than warns — but a refusal the user cannot see is
+    // indistinguishable from having nothing saved, which is the moment worth
+    // telling them about.
+    openWith([
+      {
+        id: 'i',
+        itemType: 'login',
+        title: 'Bank login',
+        verdict: { kind: 'confusable', savedDomain: 'example.com', pageDomain: 'exarnple.com' },
+      },
+    ]);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('only looks like the saved one'), 'the refusal');
+    expect(text()).not.toContain('saved for this site');
+  });
+
+  it('says why a downgrade is refused', async () => {
+    openWith([
+      {
+        id: 'i',
+        itemType: 'login',
+        title: 'Bank login',
+        verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
+      },
+    ]);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('this page is not secure'), 'the downgrade refusal');
+  });
+
+  it('says plainly that nothing is saved here', async () => {
+    openWith([]);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Nothing saved for this site'), 'the empty state');
+  });
+
+  it('offers no fill button anywhere — that is PR3b', async () => {
+    openWith([
+      {
+        id: 'i',
+        itemType: 'login',
+        title: 'Bank login',
+        verdict: { kind: 'match', domain: 'example.com' },
+      },
+    ]);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For example.com'), 'the per-page section');
+    expect(text()).toContain('Filling is not available yet');
+    const labels = [...document.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    expect(labels.some((l) => /fill/i.test(l))).toBe(false);
+  });
+
+  it('renders the whole vault normally when the page cannot be seen', async () => {
+    // A chrome:// tab, or a window with nothing active. Not a failure of the
+    // vault, so the list is still there and the per-page section simply is not.
+    openWith([], null);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Vault open'), 'the unlocked view');
+    expect(text()).not.toContain('For ');
+    expect(text()).not.toContain('Nothing saved for this site');
   });
 });
