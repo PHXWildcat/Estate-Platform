@@ -136,6 +136,9 @@ describe('the extension has no dependency tree', () => {
       '@estate/vault-crypto',
       '@types/jest',
       '@types/node',
+      // Test-only, like jest itself: the Secret Key store talks to IndexedDB,
+      // which jsdom does not implement.
+      'fake-indexeddb',
       'jest',
       'jest-environment-jsdom',
       'ts-jest',
@@ -210,6 +213,44 @@ describe('the SHIPPED artifact is compiled against a browser surface only', () =
 
   it('really resolved a config (so the assertions are not true of nothing)', () => {
     expect((resolved.files ?? []).length).toBeGreaterThan(4);
+  });
+});
+
+/**
+ * THE ENTRY FILES ARE EXCLUDED FROM COVERAGE, SO THEY ARE BOUNDED HERE.
+ *
+ * Each is the wiring the platform calls — a service-worker registration, a
+ * `new Worker`, a `self.onmessage` — around a module the suite drives directly.
+ * Excluding them is honest; leaving the exclusion unbounded would not be, since
+ * logic could then accumulate in a file nothing measures. These assertions are
+ * what keep "thin" true.
+ */
+describe('the platform entry files stay wiring', () => {
+  const ENTRIES = ['background.ts', 'offscreen.ts', 'vault-worker.ts', 'main.ts'];
+
+  it.each(ENTRIES)('%s is small enough to read at a glance', (name) => {
+    const lines = code(join(SRC, name))
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    expect(lines.length).toBeLessThanOrEqual(20);
+  });
+
+  it.each(ENTRIES)('%s accumulates no logic of its own', (name) => {
+    /*
+     * A single guard — `if (root)`, or a `target` filter — IS wiring, and an
+     * earlier version of this refused those and was simply wrong about what it
+     * was protecting. What must not appear is anything that ACCUMULATES: a
+     * loop, a switch, an error path. Those belong in a module the suite
+     * measures, and the line cap above is the real bound.
+     */
+    const source = code(join(SRC, name));
+    for (const construct of ['for (', 'while (', 'switch (', 'try {', 'catch']) {
+      expect({ name, construct, found: source.includes(construct) }).toEqual({
+        name,
+        construct,
+        found: false,
+      });
+    }
   });
 });
 

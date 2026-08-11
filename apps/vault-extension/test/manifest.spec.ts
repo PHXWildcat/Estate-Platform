@@ -16,7 +16,7 @@
  * line nobody remembers adding.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,15 +26,21 @@ const TEMPLATE = JSON.parse(readFileSync(join(ROOT, 'manifest.template.json'), '
   unknown
 >;
 
-/** The permission set, as data. Changing this is the reviewable act. */
-const PERMISSIONS = ['storage'];
+/**
+ * The permission set, as data. Changing this is the reviewable act.
+ *
+ * `offscreen` arrived in PR2b with the document it is for, which is exactly the
+ * discipline: PR2a listed it among the keys that must NOT appear, naming the PR
+ * that would introduce it, and this is that PR. `storage` is still the only
+ * other one — no page access of any kind until PR3.
+ */
+const PERMISSIONS = ['storage', 'offscreen'];
 
 /** Keys that must NOT appear at all, each with the PR that would introduce it. */
 const FORBIDDEN_KEYS = [
   'content_scripts', // PR3
   'web_accessible_resources', // PR3
   'externally_connectable', // rejected outright (docs/04: the control is an absence)
-  'background', // PR2b, when the offscreen document needs a lifecycle owner
   'declarative_net_request',
   'oauth2',
   'key',
@@ -47,6 +53,17 @@ describe('the manifest declares the minimum, and says so as data', () => {
 
   it('requests exactly the declared permissions', () => {
     expect(TEMPLATE['permissions']).toEqual(PERMISSIONS);
+  });
+
+  it('runs its service worker as a MODULE, and names only the one file', () => {
+    // The service worker holds nothing — its only job is the offscreen
+    // document's lifecycle (an MV3 worker is terminated in seconds and cannot
+    // hold a key). `type: module` is what lets it use the same native ES
+    // modules as everything else here, with no bundler.
+    expect(TEMPLATE['background']).toEqual({
+      service_worker: 'background.js',
+      type: 'module',
+    });
   });
 
   it('requests exactly ONE host, and it is the placeholder the build substitutes', () => {
@@ -77,9 +94,20 @@ describe('the build bakes the origin, and only a real origin', () => {
    * loadable extension addressing `vault.estate.test` behind every test run —
    * an artifact that looks built and silently points nowhere.
    */
-  function build(origin: string): Record<string, unknown> {
+  function build(origin: string, options: { omitEntry?: string } = {}): Record<string, unknown> {
     const out = mkdtempSync(join(tmpdir(), 'vault-ext-'));
     try {
+      /*
+       * The compiled entries would come from tsc in a real build. They are
+       * stubbed here so the script's own packaging check RUNS rather than being
+       * skipped in the temp directory — the check exists because a page the
+       * manifest names but the package lacks is a runtime load failure that
+       * names the manifest rather than the omission (the `web.Dockerfile`
+       * lesson). `omitEntry` leaves one out, so the check is proved to fire.
+       */
+      for (const entry of ['main.js', 'offscreen.js', 'background.js']) {
+        if (entry !== options.omitEntry) writeFileSync(join(out, entry), '');
+      }
       execFileSync(process.execPath, [join(ROOT, 'scripts', 'build-package.mjs')], {
         cwd: ROOT,
         env: { ...process.env, VAULT_ORIGIN: origin, OUT_DIR: out },
@@ -102,6 +130,13 @@ describe('the build bakes the origin, and only a real origin', () => {
     expect(manifest['host_permissions']).toEqual(['https://vault.estate.test/*']);
     expect(JSON.stringify(manifest)).not.toContain('__VAULT_ORIGIN__');
   });
+
+  it.each(['main.js', 'offscreen.js', 'background.js'])(
+    'refuses to package with %s missing',
+    (entry) => {
+      expect(() => build('https://vault.estate.test', { omitEntry: entry })).toThrow();
+    },
+  );
 
   it.each([
     ['not-a-url', 'not a URL'],

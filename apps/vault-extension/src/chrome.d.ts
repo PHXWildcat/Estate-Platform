@@ -32,7 +32,39 @@ interface ChromeManifest {
   readonly version?: string;
 }
 
+/**
+ * The offscreen API (M16 PR2b).
+ *
+ * `reasons` is the closed enum PR2a found had no value describing "hold vault
+ * keys". The extension declares `WORKERS`, and that is TRUE rather than
+ * convenient: the offscreen document's entire job is to spawn and host the
+ * worker in which the master key lives (`vault-worker-core.ts`).
+ */
+type OffscreenReason = 'WORKERS';
+
+interface ChromeOffscreen {
+  createDocument(options: {
+    url: string;
+    reasons: readonly OffscreenReason[];
+    justification: string;
+  }): Promise<void>;
+  hasDocument(): Promise<boolean>;
+  closeDocument(): Promise<void>;
+}
+
+type MessageListener = (
+  message: unknown,
+  sender: unknown,
+  sendResponse: (response: unknown) => void,
+) => boolean | undefined;
+
 declare const chrome: {
   readonly storage: { readonly local: ChromeStorageArea };
-  readonly runtime: { getManifest(): ChromeManifest };
+  readonly runtime: {
+    getManifest(): ChromeManifest;
+    getURL(path: string): string;
+    sendMessage(message: unknown): Promise<unknown>;
+    readonly onMessage: { addListener(listener: MessageListener): void };
+  };
+  readonly offscreen: ChromeOffscreen;
 };

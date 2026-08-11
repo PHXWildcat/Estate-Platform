@@ -1,6 +1,7 @@
 import { request, type ApiResult } from './api.js';
 import { messageFor } from './copy.js';
 import { el, render } from './dom.js';
+import { mountVaultScreens } from './vault-screens.js';
 import {
   disconnect,
   forgetSession,
@@ -141,6 +142,15 @@ export async function mountPopup({ root }: PopupDeps): Promise<void> {
     );
   }
 
+  /**
+   * The vault half mounts into its own element, and is mounted ONCE rather than
+   * on every redraw: it owns its own state machine — and possibly a half-typed
+   * vault password — so re-mounting it under the paired view would discard what
+   * somebody was in the middle of entering.
+   */
+  const vaultHost = el('div', { class: 'vault' });
+  let vaultMounted = false;
+
   function drawPaired(
     session: PairedSession,
     status: VaultStatus,
@@ -163,11 +173,20 @@ export async function mountPopup({ root }: PopupDeps): Promise<void> {
       el(
         'p',
         { class: 'hint' },
-        'This browser can look up vault items and nothing else. It cannot reset your vault, change your emergency contacts, or reach the rest of your estate. Unlocking is not available yet.',
+        'This browser can look up vault items and nothing else. It cannot reset your vault, change your emergency contacts, or reach the rest of your estate.',
       ),
+      vaultHost,
       disconnectButton,
       ...(error === undefined ? [] : [el('p', { class: 'error' }, error)]),
     );
+    if (!vaultMounted) {
+      vaultMounted = true;
+      void mountVaultScreens({
+        host: vaultHost,
+        userId: session.userId,
+        bearer: session.accessToken,
+      });
+    }
   }
 
   function draw(): void {

@@ -66,6 +66,19 @@ const publicDir = join(root, 'public');
 const statics = await readdir(publicDir);
 await Promise.all(statics.map((name) => copyFile(join(publicDir, name), join(dist, name))));
 
+/*
+ * Every page the manifest names must exist in the package, or Chrome fails the
+ * load with an error naming the manifest rather than the omission — the
+ * `web.Dockerfile` lesson (2026-08-06), where a file the build silently did not
+ * copy became a runtime 404 nothing checked for.
+ */
+const required = ['popup.html', 'offscreen.html', 'main.js', 'offscreen.js', 'background.js'];
+const present = new Set(await readdir(dist));
+const missing = required.filter((name) => !present.has(name));
+if (missing.length > 0) {
+  throw new Error(`packaged extension is missing: ${missing.join(', ')}`);
+}
+
 process.stdout.write(
   `vault-extension packaged for ${origin} (${String(statics.length)} static files)\n`,
 );
