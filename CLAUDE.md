@@ -3185,3 +3185,100 @@ deviating from them, stop and propose the change with rationale — do not silen
   is the only path that reaches the default, and a mutation of the DDL default
   turns it red — a mutation the previous version was blind to.
 
+- 2026-08-10 — M16 PR1's SECURITY SURFACE ships in the same PR as the routes it
+  calls, so the milestone closing the repo's zero-callers gaps does not open one
+  of its own. THE PAGE HOLDS ONE STEP-UP PROMPT AND THAT IS STRUCTURAL: it can
+  now be refused for three reasons (the demo export, the standalone elevation,
+  minting a pairing code), and `StepUpPrompt` labels its field "Confirm it's
+  you" for EVERY caller — so two open at once are two identical inputs neither a
+  person nor a query can tell apart, which is the M15 PR3 defect verbatim. One
+  `StepUpTarget` admits one at a time and every other opener is disabled while
+  it is up (asserted live: all three buttons `disabled=true`). The retried
+  action is bound WHERE IT IS RENDERED rather than selected from state
+  afterwards, so the M13 review's worse defect — a shared handler running a
+  different action than the one refused — has no shape to reoccur in.
+- 2026-08-10 — REPLACING THE PAGE'S PRE-M13 STEP-UP FORM FIXED TWO LIVE DEFECTS
+  IT WAS HIDING. That form labelled its input "6-digit code", the same label as
+  the enrollment field two sections up, so the collision the M15 lesson warns
+  about was ALREADY on this page. And it reported a rejected TOTP code through
+  `messageFor`, so identity's `invalid_credentials` — which it answers for a
+  wrong code exactly as for a wrong password — became "that email and password
+  combination didn't work" on a form with neither field on it. That is the M12
+  finding, whose fix landed on the consent controls and the document generator
+  in 2026-08-06 and never came back here; the ENROLLMENT form had it too, and
+  both use `stepUpMessageFor` now. The rule the two cases share is narrower than
+  "step-up": a form whose only field is an authenticator code must never explain
+  a refusal in the vocabulary of a password. The standalone "Verify your
+  identity" control STAYS despite every action now prompting inline — it is the
+  §5.1 rescue path the people surface links to by name, and a step-up is what
+  writes `stepup.granted` and voids a death case.
+- 2026-08-10 — REVOKING THE CREDENTIAL YOU ARE HOLDING GOES THROUGH LOGOUT.
+  Both kill the same row; only logout also expires the two cookies carrying it,
+  and revoking without clearing them leaves a browser that still looks signed in
+  over a dead session — what the M8 logout entry calls the worst outcome. Every
+  other row is one ungated click (the M6 rule: minting the pairing code is the
+  gated half, and someone who believes their extension is compromised must not
+  be sent to find an authenticator first). A row says what a credential can
+  REACH rather than where it is, because identity deliberately returns no IP and
+  no device name — those columns exist and nothing writes them — which makes the
+  device list the one place a user reads the boundary M16 exists to create.
+- 2026-08-10 — `PAIRING_UNAVAILABLE` exists because `startExtensionPairing`
+  reused `VAULT_UNAVAILABLE` for a malformed identity response, and that code's
+  copy reassures the reader "nothing about your vault has changed" on a screen
+  where nothing was opening a vault — the M12 collision one surface over, in
+  machinery M16 wrote three commits earlier. `VaultHandoffSchema` became
+  `MintedCodeSchema` in the same change: a schema named for the first ceremony
+  that used it is how a reader concludes two ceremonies are the same thing.
+- 2026-08-10 — `GQL_ERROR_CODES` WAS A SECOND COPY NOTHING CHECKED, and the
+  failure it permits is the M9 rule inverted: `extractErrorCode` narrows against
+  that list and anything unrecognised becomes `UNKNOWN`, so a code the BFF adds
+  and the app misses renders A CONTROL FIRING AS AN OUTAGE, silently, with both
+  sides' suites green because each list is internally consistent.
+  `error-codes.test.ts` reads `identity-client.ts` and asserts EQUALITY in both
+  directions (a code the app keeps after the BFF drops it is dead copy, and the
+  next reader cannot tell which of the two happened) — the compose-parity
+  mechanism, because apps/web cannot import a Nest package. Its ANTI-VACUITY
+  FLOOR earned its place immediately: the first version ended the union at the
+  next `;`, one member's doc comment has a semicolon in its prose, and the scan
+  silently saw nine codes of twenty-eight. A fence that stops matching goes
+  green, which is the 2026-08-07 lesson; the floor is what turns that red.
+- 2026-08-10 — M16 PR1 driven live against a stack rebuilt so EVERY service runs
+  M16 code — otherwise the refusals are the unknown-audience parse rather than
+  the deny-by-default table, and the claim being measured is not the one being
+  made. A code minted through a real TOTP step-up, redeemed at identity, giving
+  an `extension` session that answers 200 on `GET /v1/vault/keyset`, 403
+  `stepup_required` on both SRP legs and 403 `vault_locked` on `items`/`lock` —
+  admitted by audience and stopped by the NEXT control, so reaching the API is
+  still not opening a vault — and 401 on `vault/reset`, both keyset writes,
+  `recovery-key`, every emergency-access route, `POST /v1/auth/handoff` (it
+  cannot chain itself forward), `POST /v1/auth/extension/pairing` (it cannot
+  mint another), `GET /v1/auth/sessions` (it cannot enumerate the owner's
+  devices), and on assets, profile, documents, the assistant, plaid and
+  settlement. It then appeared in the owner's own list as "Browser extension",
+  was revoked in one click with no prompt, and was dead everywhere a second
+  later. The trail carried `stepup.granted` → `pairing_minted {retired:false}` →
+  `paired {audience:extension}` → four `pairing_failed` with NO actor and EMPTY
+  detail — the uniform refusal preserved in the audit stream as well as on the
+  wire.
+- 2026-08-10 — The live drive found two things no unit test had, the pattern
+  holding for the ninth milestone running. THE SESSION CARD LIED ABOUT ITSELF:
+  it kept reading "Step-up not fresh" immediately after a pairing code had been
+  minted through a genuine step-up, because only the standalone verify path
+  re-read the session — a security page stating the opposite of its own current
+  state, about exactly the thing the page exists to report. Fixed with a
+  `withSessionRefresh` wrapper that re-reads once an action SETTLES, not on
+  every poll (a `stale` outcome means the peer has not caught up, and re-asking
+  identity would change nothing). And the row with the longest description
+  wrapped its button onto the next line while its neighbours kept theirs on the
+  right, so the button moved with the prose — the M10 PR4 shape, a layout
+  inconsistency no assertion would have caught.
+- 2026-08-10 — RECORDED, NOT FIXED: events emitted while the AUDIT CONSUMER was
+  still running pre-M16 code never reached `audit_events`. An action the
+  consumer does not know is a `schema_violation` to it, indistinguishable from
+  malformed input — so a rolling deploy with identity ahead of audit loses the
+  events for the window, in the one log whose completeness is the point.
+  Observed as ABSENCE and no more than that: the old container's logs did not
+  survive its restart, so the rejection was read out of `ingestor.ts` rather
+  than seen, and this entry says so rather than claiming evidence it does not
+  have (the 2026-08-06 rule turned on myself again). Deploy contracts consumers
+  first; nothing enforces it.

@@ -1170,7 +1170,18 @@ CLAUDE.md decision log; the security-relevant shape is:
   revoke-by-id and no password-change or password-reset route — so the only way
   to revoke a session was to present it. Tolerable while every session was one
   cookie-bound browser; not tolerable beside a long-lived credential on a device.
-  PR1 ships the first paired-devices list with per-row revoke.
+  PR1 ships the first paired-devices list with per-row revoke, ON A SURFACE and
+  in the same PR as the routes: an owner can see every live credential on their
+  account and end any of them. Revocation is deliberately UNGATED — the M6 rule
+  that the protective action must never be harder than the permissive one, with
+  minting the pairing code as the gated half — while the row for the caller's
+  OWN session goes through logout instead, because only logout also expires the
+  cookies carrying it, and a browser that still looks signed in over a dead
+  session is the M8 logout entry's worst outcome. What a row can SAY is bounded
+  by what identity returns: an audience and two timestamps, no IP and no device
+  name, since those columns exist and nothing writes them. So a row identifies a
+  credential by what it can REACH rather than by where it is — which is also the
+  one place a user reads the boundary this milestone exists to create.
 - *A fence that was documented and never written.* `004_session_audience_and_
   handoffs.sql` claimed a spec pinned its `CHECK` to `SESSION_AUDIENCES`; none
   existed. PR1 writes it, mutation-tested.
@@ -1182,6 +1193,19 @@ CLAUDE.md decision log; the security-relevant shape is:
 - *Autofill does not resist phishing.*
 - *App-origin script can read a pairing code out of the DOM*, buying a paired
   extension that reaches ciphertext only and appears in the owner's device list.
+  PR1's surface displays the code in a `<code>` text node, deliberately behind a
+  step-up and shown once, which is the shape M13's link code already takes; what
+  it does not do — and cannot, on an origin whose `script-src` M11 recorded as
+  not locked down — is keep script on that origin from reading it. The device
+  list is what makes the result VISIBLE rather than silent.
+- *An older audit consumer drops an action it does not know.* A rolling deploy
+  where identity is ahead of the audit service loses those events: an
+  unrecognised action is a `schema_violation` to the consumer, indistinguishable
+  from malformed input. Observed as absence during PR1's live drive (the mint
+  and pairing events emitted before the audit service was rebuilt never reached
+  `audit_events`); the rejection itself was read from `ingestor.ts` rather than
+  seen, because the container's logs did not survive its restart. Deploy order —
+  contracts consumers first — is the mitigation, and it is not enforced anywhere.
 - *Rotation-reuse detection can self-revoke* an extension whose service worker
   died mid-rotation. The behaviour is correct; the cost is a re-pair.
 

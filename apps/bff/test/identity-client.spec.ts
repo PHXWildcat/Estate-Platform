@@ -194,3 +194,96 @@ describe('FetchIdentityClient.mintVaultHandoff', () => {
     await expect(client.mintVaultHandoff(TOKEN)).rejects.not.toThrow(/relation does not exist/);
   });
 });
+
+/**
+ * The paired-devices client (M16). Same firewall, and one thing more.
+ *
+ * A MALFORMED PAIRING RESPONSE IS NOT A VAULT FAILURE. This path first reused
+ * `VAULT_UNAVAILABLE` because the two ceremonies share a wire shape, and the
+ * code carries copy that reassures the reader "nothing about your vault has
+ * changed" — on a screen where nothing was opening a vault. That is the M12
+ * finding exactly: one code changing meaning with the surface is what produced
+ * copy about a password on a form that has none.
+ */
+describe('FetchIdentityClient — sessions, revoke and pairing', () => {
+  const MINTED = { code: 'EP1-ABCD-EFGH-JKMN', expiresAt: '2026-08-10T12:10:00.000Z' };
+
+  it('lists sessions on the caller’s own bearer, carrying the audience', async () => {
+    const rows = [
+      {
+        sessionId: 's-1',
+        audience: 'extension',
+        createdAt: '2026-08-10T12:00:00.000Z',
+        expiresAt: '2026-09-09T12:00:00.000Z',
+        current: false,
+      },
+    ];
+    const { client, calls } = clientWith(() => response(200, { sessions: rows }));
+    await expect(client.sessions(TOKEN)).resolves.toEqual(rows);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/sessions`);
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(
+      `Bearer ${TOKEN}`,
+    );
+  });
+
+  it('refuses a session list with an audience it cannot recognise', async () => {
+    // The audience is the whole of what a row says, so an unrecognised value is
+    // a parse failure rather than a row rendered as something it is not.
+    const { client } = clientWith(() =>
+      response(200, {
+        sessions: [
+          {
+            sessionId: 's-1',
+            audience: 'something-new',
+            createdAt: 'x',
+            expiresAt: 'y',
+            current: false,
+          },
+        ],
+      }),
+    );
+    await expect(client.sessions(TOKEN)).rejects.toThrow(/failed validation/);
+  });
+
+  it('revokes by id, and surfaces identity’s UNIFORM 404 as NOT_FOUND', async () => {
+    const { client, calls } = clientWith(() => response(204, {}));
+    await expect(client.revokeSession(TOKEN, 's-1')).resolves.toBeUndefined();
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/sessions/s-1`);
+    expect(calls[0]?.init.method).toBe('DELETE');
+
+    // Unknown and not-yours are one answer at identity — the owner predicate is
+    // in its UPDATE — and the edge invents no distinction of its own.
+    const missing = clientWith(() => response(404, { error: 'not_found' }));
+    await expect(missing.client.revokeSession(TOKEN, 's-2')).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+  });
+
+  it('mints a pairing code, and keeps it out of the URL', async () => {
+    const { client, calls } = clientWith(() => response(201, MINTED));
+    await expect(client.startExtensionPairing(TOKEN)).resolves.toEqual(MINTED);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/extension/pairing`);
+    expect(calls[0]?.init.method).toBe('POST');
+    expect(calls[0]?.url).not.toContain(MINTED.code);
+  });
+
+  it('surfaces STEPUP_REQUIRED so the surface can prompt rather than fail', async () => {
+    const { client } = clientWith(() => response(403, { error: 'stepup_required' }));
+    await expect(client.startExtensionPairing(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+  });
+
+  it('refuses a malformed pairing body as a PAIRING failure, not a vault one', async () => {
+    const { client } = clientWith(() => response(201, { expiresAt: MINTED.expiresAt }));
+    await expect(client.startExtensionPairing(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'PAIRING_UNAVAILABLE' },
+    });
+  });
+
+  it('never lets identity’s own error text reach a GraphQL client', async () => {
+    const { client } = clientWith(() => response(500, { error: 'pg: relation does not exist' }));
+    await expect(client.startExtensionPairing(TOKEN)).rejects.toThrow(/status 500/);
+    await expect(client.sessions(TOKEN)).rejects.not.toThrow(/relation does not exist/);
+  });
+});

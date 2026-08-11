@@ -243,7 +243,21 @@ export type BffErrorCode =
    * surface where a user who is bounced needs to know it was the platform and
    * not their credentials.
    */
-  | 'VAULT_UNAVAILABLE';
+  | 'VAULT_UNAVAILABLE'
+  /**
+   * M16. The extension pairing code could not be minted — identity answered
+   * something this client could not read.
+   *
+   * ITS OWN CODE, and the reason is the M12 finding rather than a taste for
+   * granularity. This path first reused `VAULT_UNAVAILABLE`, whose copy reads
+   * "we couldn't open the vault just now — nothing about your vault has
+   * changed", on a screen that is about connecting a browser extension and
+   * where nothing was opening a vault. One code changing meaning with the
+   * surface is exactly what produced copy about a password on a form that has
+   * none; and the remedy differs too, because there is no vault state to
+   * reassure anyone about here, only a code that did not arrive.
+   */
+  | 'PAIRING_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -270,6 +284,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   INVALID_VERIFICATION_CODE: 'That code was not accepted',
   VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
   VAULT_UNAVAILABLE: 'We could not open the vault right now',
+  PAIRING_UNAVAILABLE: 'We could not create a pairing code right now',
 };
 
 /**
@@ -324,11 +339,18 @@ const EnrollSchema = z.object({
 });
 
 /**
- * M15. Shape-checked rather than trusted, like every other identity response
- * here: a malformed body must become a failure, never a form the browser
- * submits with `code=undefined` to the vault origin.
+ * A minted single-use code and when it dies — M15's vault handoff and M16's
+ * extension pairing have the same wire shape.
+ *
+ * Shape-checked rather than trusted, like every other identity response here: a
+ * malformed body must become a failure, never a form the browser submits with
+ * `code=undefined` to the vault origin, and never a pairing code the user
+ * copies as the literal string "undefined". Named for the shape rather than for
+ * the first ceremony that used it, because the second one already exists — a
+ * `VaultHandoffSchema` parsing extension pairings is how a reader concludes the
+ * two ceremonies are the same thing.
  */
-const VaultHandoffSchema = z.object({
+const MintedCodeSchema = z.object({
   code: z.string().min(1),
   expiresAt: z.string().min(1),
 });
@@ -507,7 +529,7 @@ export class FetchIdentityClient implements IdentityClient {
     if (!res.ok) {
       throw await this.mapError(res);
     }
-    const parsed = VaultHandoffSchema.safeParse(await res.json());
+    const parsed = MintedCodeSchema.safeParse(await res.json());
     if (!parsed.success) {
       throw bffError('VAULT_UNAVAILABLE');
     }
@@ -549,9 +571,9 @@ export class FetchIdentityClient implements IdentityClient {
     }
     // The shape guard VaultLaunch's defect taught: a pairing code rendered as
     // `undefined` is worse than an error, because the user copies it.
-    const parsed = VaultHandoffSchema.safeParse(await res.json());
+    const parsed = MintedCodeSchema.safeParse(await res.json());
     if (!parsed.success) {
-      throw bffError('VAULT_UNAVAILABLE');
+      throw bffError('PAIRING_UNAVAILABLE');
     }
     return parsed.data;
   }

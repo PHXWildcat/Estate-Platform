@@ -70,6 +70,12 @@ export const GQL_ERROR_CODES = [
    * their credentials.
    */
   'VAULT_UNAVAILABLE',
+  /**
+   * The extension pairing code could not be minted (M16). Kept apart from
+   * VAULT_UNAVAILABLE, whose copy reassures the reader about their vault — a
+   * sentence with nothing to do with the screen this refusal appears on.
+   */
+  'PAIRING_UNAVAILABLE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -86,6 +92,26 @@ export interface SessionInfo {
   userId: string;
   mfaLevel: MfaLevel;
   stepUpFresh: boolean;
+}
+
+/** What a session may be spent on — the BFF enum verbatim (M15's audience, listed in M16). */
+export type SessionAudience = 'ACCOUNT' | 'VAULT' | 'EXTENSION';
+
+/**
+ * One live credential on the caller's account (M16).
+ *
+ * Deliberately narrow, and the narrowness is identity's rather than this app's:
+ * `sessions` returns ids, the audience and two timestamps, with no IP and no
+ * device name, because those columns exist and nothing writes them. The
+ * audience is what lets a row say "browser extension" instead of "a session".
+ */
+export interface LiveSessionInfo {
+  sessionId: string;
+  audience: SessionAudience;
+  createdAt: string;
+  expiresAt: string;
+  /** The session this browser is using — revoking it is a sign-out. */
+  current: boolean;
 }
 
 export interface AssetInfo {
@@ -371,20 +397,7 @@ interface OperationSignatures {
     data: { login: { ok: boolean } };
   };
   Refresh: { variables: EmptyVariables; data: { refresh: { ok: boolean } } };
-  Sessions: {
-    variables: EmptyVariables;
-    data: {
-      sessions: Array<{
-        sessionId: string;
-        // The audience is what lets a row say "browser extension" rather than
-        // "a session" — the whole reason M16 carried the field to the client.
-        audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION';
-        createdAt: string;
-        expiresAt: string;
-        current: boolean;
-      }>;
-    };
-  };
+  Sessions: { variables: EmptyVariables; data: { sessions: LiveSessionInfo[] } };
   RevokeSession: { variables: { sessionId: string }; data: { revokeSession: { ok: boolean } } };
   StartExtensionPairing: {
     variables: EmptyVariables;

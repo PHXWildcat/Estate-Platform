@@ -34,5 +34,8 @@ module.exports = createJestConfig({
   // M13 PR2 re-measured with the people surface: 85.36/82.08/87.13/88.74.
   // Ratcheted up from 83/79/85/86 — never down.
   // M13 PR3, measured: 86.02/82.6/87.43/89.37. Ratcheted up from 85/82/87/88.
-  coverageThreshold: { global: { statements: 86, branches: 82, functions: 87, lines: 89 } },
+  // M16 PR1 re-measured with the paired-devices list, the pairing ceremony and
+  // the audience vocabulary under test: 86.5/83.63/87.52/89.87. Branches
+  // ratcheted 82 -> 83. Never down.
+  coverageThreshold: { global: { statements: 86, branches: 83, functions: 87, lines: 89 } },
 });
