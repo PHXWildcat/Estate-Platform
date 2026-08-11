@@ -3028,6 +3028,27 @@ deviating from them, stop and propose the change with rationale — do not silen
   declared importer, so the fence asserting WHO MAY IMPORT IT — the one M15 PR1
   did not ship among its seven — lands as data in PR1, BEFORE the second
   importer exists.
+- 2026-08-10 — THE IMPORTER FENCE WAS PROMISED IN TWO PLACES AND WRITTEN IN
+  NEITHER, until the end of PR1. The entry directly above and docs/04 M16 both
+  said it "lands as data BEFORE that importer exists"; a repo-wide grep found
+  nothing. That is the SAME defect PR1 opens by fixing — migration 004 citing a
+  spec that pinned its CHECK to the TypeScript union, where no such spec existed
+  — committed by me one entry later, in the sentence describing this fence.
+  Recorded rather than quietly corrected, because the citation is the harm: a
+  fence a document claims and nobody wrote is worse than one nobody claimed,
+  since the claim is what stops the next person looking. Now shipped as
+  `packages/vault-crypto/test/declared-importers.spec.ts`: a
+  `VAULT_CRYPTO_IMPORTERS` table carrying a REASON per entry (which packages is
+  answerable from the lockfile; why each is allowed is not), scanned in both
+  directions over manifests AND comment-stripped source, with an anti-vacuity
+  floor. It counts the browser consumer by the path it ACTUALLY loads
+  (`/lib/vault-crypto/`, served from the vault origin's own tree) rather than by
+  the bare specifier — a fence looking only for `@estate/vault-crypto` would
+  miss the one consumer that ships this code to a user's device, which is the
+  opposite of the point. Mutation-tested five ways: an undeclared importer, a
+  real importer dropped from the table, a phantom entry, a vacuous scan, and
+  blindness to the served path each turn it red on the assertion that names the
+  property.
 - 2026-08-10 — M16 PR1 slice A: the SESSION-AUDIENCE VOCABULARY MOVED to
   @estate/contracts and the ENFORCEMENT stayed in @estate/auth-guard, because a
   consumer exists that cannot follow it — the BFF labels sessions with the

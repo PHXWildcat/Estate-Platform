@@ -3182,7 +3182,12 @@ settled client would fork it. Autofill is a docs/00 §7 deliverable.
 Zero runtime dependencies, hand-written DOM, no bundler — the vault origin's
 posture, for the vault origin's reason. `@estate/vault-crypto` gains a SECOND
 declared importer, so the fence asserting WHO MAY IMPORT IT (the one M15 PR1 did
-not ship among its seven) lands as data before that importer exists.
+not ship among its seven) lands as data before that importer exists —
+`packages/vault-crypto/test/declared-importers.spec.ts`, a table with a reason
+per entry, checked in both directions and counting the browser consumer by the
+absolute path it actually loads. It was promised here and in the decision log
+before it was written, and shipped only at the end of PR1; that gap is recorded
+in the log as the same defect PR1 opens by fixing.
 
 **Two corrections to this brief, made before any code was written.**
 
