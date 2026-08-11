@@ -38,6 +38,7 @@ function openHolder(): KeyHolderPort {
           verdict: { kind: 'match' as const, domain: 'example.com' },
         },
       ]),
+    fillFor: () => Promise.resolve(null),
     lock: () => undefined,
   };
 }

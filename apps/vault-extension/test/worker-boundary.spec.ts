@@ -8,11 +8,7 @@
  */
 import { VaultKeyHolder } from '../src/vault-worker-core';
 import { WorkerKeyHolder } from '../src/worker-key-holder';
-import {
-  handleWorkerRequest,
-  type WorkerRequest,
-  type WorkerResponse,
-} from '../src/worker-protocol';
+import { handleWorkerRequest, type WorkerRequest } from '../src/worker-protocol';
 import type { KeyHolderPort } from '../src/vault-host';
 
 /** A holder that refuses everything, to exercise the failure path. */
@@ -22,6 +18,7 @@ const refusing: KeyHolderPort = {
   finish: () => Promise.reject(new Error('bad proof')),
   summarise: () => Promise.reject(new Error('vault is locked')),
   matchesFor: () => Promise.reject(new Error('vault is locked')),
+  fillFor: () => Promise.reject(new Error('vault is locked')),
   lock: () => undefined,
 };
 
@@ -32,6 +29,9 @@ describe('the worker protocol', () => {
       { id: 2, kind: 'finish', serverM2: 'a', wrappedMasterKey: 'b', vaultSessionId: 'c' },
       { id: 3, kind: 'summarise', rows: [] },
       { id: 6, kind: 'matches', rows: [], pageUrl: 'https://example.com/' },
+      // The one variant that could return a secret refuses the same way: a bare
+      // `{ ok: false }`, carrying no reason a caller could learn anything from.
+      { id: 7, kind: 'fill', rows: [], itemId: 'i', pageUrl: 'https://example.com/' },
     ] as unknown as WorkerRequest[]) {
       const response = await handleWorkerRequest(refusing, request);
       expect(response).toEqual({ id: request.id, ok: false });
@@ -55,27 +55,67 @@ describe('the worker protocol', () => {
     });
   });
 
-  it('has NO variant that could ask for the key, and none that returns one', () => {
-    // The union is the capability surface. A `getKey` here would be a one-line
-    // diff and a total defeat, so the shape is asserted rather than assumed.
-    const kinds = [
-      'prepare',
+  it('enumerates the request union EXHAUSTIVELY, so a new variant cannot slip in', () => {
+    /*
+     * The union is the capability surface: a `getKey` here would be a one-line
+     * diff and a total defeat.
+     *
+     * REWRITTEN IN PR3b, because the previous form could not do the job it was
+     * named for. It was a literal array `satisfies WorkerRequest['kind'][]` plus
+     * `toHaveLength(6)`, and BOTH halves are subset checks — `satisfies` only
+     * asks whether every element is assignable, and a hand-counted length is
+     * true of any six-element literal. A SEVENTH variant compiled clean and left
+     * the length at six, so the fence guarding this boundary stayed green while
+     * the boundary moved. PR3b is the change that moves it.
+     *
+     * A `Record` keyed by the union is the form that cannot: a missing key is a
+     * compile error, and a key that is not in the union is a compile error too.
+     * The runtime list then has to be updated as well, so adding a variant costs
+     * two deliberate edits in the file whose whole subject is what may be asked.
+     */
+    const KINDS: Record<WorkerRequest['kind'], true> = {
+      prepare: true,
+      finish: true,
+      summarise: true,
+      matches: true,
+      // ADDED IN PR3b, and the compile error that forced this line is the fence
+      // doing its job: the previous form let a seventh variant through silently.
+      fill: true,
+      lock: true,
+      state: true,
+    };
+    expect(Object.keys(KINDS).sort()).toEqual([
+      'fill',
       'finish',
-      'summarise',
-      'matches',
       'lock',
+      'matches',
+      'prepare',
       'state',
-    ] satisfies WorkerRequest['kind'][];
-    expect(kinds).toHaveLength(6);
-    const responses: WorkerResponse[] = [
-      { id: 1, ok: true, proof: { publicA: 'a', m1: 'b' } },
-      { id: 2, ok: true, summaries: [] },
-      { id: 3, ok: true, unlocked: true },
-      { id: 4, ok: false },
+      'summarise',
+    ]);
+  });
+
+  it('returns no secret from any variant that is not the fill', async () => {
+    /*
+     * ASSERTED BEHAVIOURALLY rather than over the response type, because the
+     * response union is not discriminated by a single literal and a shape
+     * assertion over hand-written samples proves only that the samples are
+     * clean. This drives the REAL handler over every non-fill variant against an
+     * unlocked holder and searches what comes back.
+     */
+    const holder = new VaultKeyHolder();
+    const requests: WorkerRequest[] = [
+      { id: 1, kind: 'state' },
+      { id: 2, kind: 'lock' },
+      { id: 3, kind: 'summarise', rows: [] },
+      { id: 4, kind: 'matches', rows: [], pageUrl: 'https://example.com/' },
     ];
-    for (const response of responses) {
-      expect(Object.keys(response)).not.toContain('key');
-      expect(Object.keys(response)).not.toContain('masterKey');
+    for (const request of requests) {
+      const response = await handleWorkerRequest(holder, request);
+      const text = JSON.stringify(response);
+      for (const forbidden of ['key', 'masterKey', 'secret', 'password']) {
+        expect(text).not.toContain(forbidden);
+      }
     }
   });
 });
@@ -134,6 +174,7 @@ describe('the port over the worker', () => {
       finish: () => Promise.resolve(),
       summarise: () => Promise.resolve([{ id: 'i', itemType: 'login', title: 'Zed' }]),
       matchesFor: () => Promise.resolve([]),
+      fillFor: () => Promise.resolve(null),
       lock: () => undefined,
     };
     const worker = fakeWorker(open);
@@ -175,6 +216,7 @@ describe('the port over the worker', () => {
             verdict: { kind: 'match' as const, domain: 'example.com' },
           },
         ]),
+      fillFor: () => Promise.resolve(null),
       lock: () => undefined,
     };
     const port = new WorkerKeyHolder(fakeWorker(open));
@@ -189,6 +231,38 @@ describe('the port over the worker', () => {
 
     const refused = new WorkerKeyHolder(fakeWorker(refusing));
     await expect(refused.matchesFor([], 'https://example.com/')).rejects.toThrow('vault is locked');
+    expect(refused.isUnlocked).toBe(false);
+  });
+
+  it('carries a FILL across, and a refusal comes back as null rather than an error', async () => {
+    /*
+     * The refusal is the interesting half. `fillFor` answering `null` means the
+     * holder declined — wrong page, or an item it could not open — and that must
+     * cross the boundary AS null. Turning it into a throw would make the caller's
+     * failure path explain which of several reasons applied, which is exactly
+     * what this boundary refuses to do everywhere else.
+     */
+    const filling: KeyHolderPort = {
+      isUnlocked: true,
+      prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
+      finish: () => Promise.resolve(),
+      summarise: () => Promise.resolve([]),
+      matchesFor: () => Promise.resolve([]),
+      fillFor: (_rows, itemId) =>
+        Promise.resolve(itemId === 'yes' ? { username: 'u', secret: 's3cret' } : null),
+      lock: () => undefined,
+    };
+    const port = new WorkerKeyHolder(fakeWorker(filling));
+    expect(await port.fillFor([], 'yes', 'https://example.com/')).toEqual({
+      username: 'u',
+      secret: 's3cret',
+    });
+    expect(await port.fillFor([], 'no', 'https://example.com/')).toBeNull();
+
+    const refused = new WorkerKeyHolder(fakeWorker(refusing));
+    await expect(refused.fillFor([], 'yes', 'https://example.com/')).rejects.toThrow(
+      'vault is locked',
+    );
     expect(refused.isUnlocked).toBe(false);
   });
 

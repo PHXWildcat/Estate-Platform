@@ -57,6 +57,11 @@ export interface KeyHolderPort {
   }): Promise<void>;
   summarise(rows: readonly VaultItemRow[]): Promise<OpenedSummary[]>;
   matchesFor(rows: readonly VaultItemRow[], pageUrl: string): Promise<MatchedSummary[]>;
+  fillFor(
+    rows: readonly VaultItemRow[],
+    itemId: string,
+    pageUrl: string,
+  ): Promise<{ username: string; secret: string } | null>;
   lock(): void;
 }
 

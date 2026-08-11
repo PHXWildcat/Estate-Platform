@@ -119,6 +119,75 @@ async function sealItem(
 describe('the key holder', () => {
   jest.setTimeout(60_000); // 650k PBKDF2 iterations, twice, on the real crypto.
 
+  /*
+   * THE FILL, WHICH IS THE ONE OPERATION THAT LETS A SECRET OUT (M16 PR3b).
+   *
+   * These run against a REAL sealed blob and a REAL unlocked holder, because the
+   * property under test is that the holder RE-TAKES the origin decision from the
+   * item's own encrypted `url` — a faked holder could only prove that a stub
+   * returns what the stub was told to.
+   */
+  const ITEM = '44444444-0000-4000-8000-000000000000';
+  const login = (enrolled: Enrolled): Promise<VaultItemRow> =>
+    sealItem(enrolled, ITEM, {
+      title: 'Bank login',
+      username: 'someone',
+      secret: 'the-password',
+      url: 'https://bank.example.com/login',
+    });
+
+  it('fills when the item belongs to the page', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await login(enrolled);
+
+    expect(await holder.fillFor([row], ITEM, 'https://bank.example.com/login')).toEqual({
+      username: 'someone',
+      secret: 'the-password',
+    });
+    // And across the registrable domain, which is what `match` means.
+    expect(await holder.fillFor([row], ITEM, 'https://www.bank.example.com/')).not.toBeNull();
+  });
+
+  it('REFUSES a page the item does not belong to, however the caller asks', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await login(enrolled);
+
+    // The caller names the item explicitly. It is refused anyway, because the
+    // decision is not the caller's to make — this is the whole shape of the
+    // variant: a compromised popup can ask for a fill, never for a secret.
+    expect(await holder.fillFor([row], ITEM, 'https://evil.example.net/')).toBeNull();
+    // A lookalike is REFUSED, not warned about (§4 TB9).
+    expect(await holder.fillFor([row], ITEM, 'https://bank-example.com/')).toBeNull();
+    // Scheme downgrade: saved on https, offered on http.
+    expect(await holder.fillFor([row], ITEM, 'http://bank.example.com/')).toBeNull();
+  });
+
+  it('refuses an item id it was not given, rather than filling something else', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await login(enrolled);
+
+    expect(
+      await holder.fillFor(
+        [row],
+        '55555555-0000-4000-8000-000000000000',
+        'https://bank.example.com/',
+      ),
+    ).toBeNull();
+  });
+
+  it('refuses to fill a locked vault', async () => {
+    const holder = new VaultKeyHolder();
+    await expect(holder.fillFor([], ITEM, 'https://bank.example.com/')).rejects.toThrow(
+      'vault is locked',
+    );
+  });
+
   it('opens a vault from a password and a Secret Key, and names its items', async () => {
     const enrolled = await enrol();
     const holder = new VaultKeyHolder();

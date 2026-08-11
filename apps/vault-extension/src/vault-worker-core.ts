@@ -1,4 +1,4 @@
-import { matchOrigin, type MatchVerdict } from './origin-match.js';
+import { isFillable, matchOrigin, type MatchVerdict } from './origin-match.js';
 import {
   decryptItem,
   finishUnlock,
@@ -75,6 +75,19 @@ export interface OpenedSummary {
 /** A summary plus why it is being shown for a particular page. */
 export interface MatchedSummary extends OpenedSummary {
   readonly verdict: MatchVerdict;
+}
+
+/**
+ * The decoded content envelope, or null when it is not one.
+ *
+ * An ARRAY passes a bare `typeof === 'object'` check, so it is refused here for
+ * the same reason `titleOf` refuses it: "a record with no fields" and "content
+ * this build cannot read" are different facts.
+ */
+function contentOf(plaintext: Uint8Array): Record<string, unknown> | null {
+  const decoded: unknown = JSON.parse(new TextDecoder().decode(plaintext));
+  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) return null;
+  return decoded as Record<string, unknown>;
 }
 
 /** The item's own `url`, which never leaves this module. */
@@ -232,6 +245,61 @@ export class VaultKeyHolder {
       }
     }
     return out;
+  }
+
+  /**
+   * THE ONE OPERATION THAT LETS A SECRET LEAVE THIS MODULE (M16 PR3b).
+   *
+   * Every other variant deliberately returns none, and `worker-protocol.ts` has
+   * said since PR2b that a fill "will arrive with the gesture requirement that
+   * governs it rather than by widening this quietly". This is that arrival, and
+   * the shape is what keeps the promise:
+   *
+   *   · THE CALLER NAMES AN ITEM AND A PAGE, NEVER A SECRET. There is no
+   *     "give me item X's password" — the request is "fill X on page P", and
+   *     the answer is a credential only if this module agrees the two belong
+   *     together. A popup that has been talked into asking cannot ask for more
+   *     than a fill it could have driven anyway.
+   *   · THE DECISION IS RE-TAKEN HERE, not trusted from the caller. The item's
+   *     `url` lives inside the encrypted blob, so this is the only place that
+   *     can compare it — and `matchesFor` having already said `match` is not
+   *     evidence, because the page can navigate between the two calls.
+   *   · ONLY `match` FILLS. `scheme-downgrade` and `confusable` are refusals
+   *     with an explanation, and a refusal here returns nothing at all rather
+   *     than a reason, on the same grounds as every other worker failure.
+   */
+  async fillFor(
+    rows: readonly VaultItemRow[],
+    itemId: string,
+    pageUrl: string,
+  ): Promise<{ username: string; secret: string } | null> {
+    const vault = this.#vault;
+    const userId = this.#userId;
+    if (!vault || !userId) throw new Error('vault is locked');
+    const row = rows.find((candidate) => candidate.id === itemId);
+    if (!row) return null;
+
+    let plaintext: Uint8Array | null = null;
+    try {
+      plaintext = await decryptItem(
+        vault.masterKey,
+        { userId, itemId: row.id, blobVersion: row.blobVersion },
+        fromBase64(row.blob),
+      );
+      if (!isFillable(matchOrigin(urlOf(plaintext), pageUrl))) return null;
+      const content = contentOf(plaintext);
+      if (!content) return null;
+      return {
+        username: typeof content['username'] === 'string' ? content['username'] : '',
+        secret: typeof content['secret'] === 'string' ? content['secret'] : '',
+      };
+    } catch {
+      // An unopenable blob fills nothing, and explaining which of the several
+      // reasons applied is what this boundary refuses to do everywhere else.
+      return null;
+    } finally {
+      if (plaintext) plaintext.fill(0);
+    }
   }
 
   /**
