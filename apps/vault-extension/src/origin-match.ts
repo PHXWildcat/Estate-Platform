@@ -172,52 +172,31 @@ export function isFillable(verdict: MatchVerdict): boolean {
   return verdict.kind === 'match';
 }
 
-/**
- * A SUBFRAME IS FILLABLE ONLY IF IT IS SAME-ORIGIN WITH THE TOP FRAME (§4 TB9).
+/*
+ * `frameIsAllowed` LIVED HERE AND IS GONE (M16 PR3b).
  *
- * NARROWED IN PR3b FROM SAME-SITE TO SAME-ORIGIN, because the platform was
- * measured and the old rule was more permissive than the platform is. PR3a
- * allowed any subframe sharing a registrable domain and scheme, on the reasoning
- * that "a same-site iframe is the page". Chrome disagrees: `activeTab` grants
- * exactly the main frame's ORIGIN — Chromium builds the pattern as
- * `origin.Serialize() + "/*"`, which is host-exact and does not match
- * subdomains. Measured in Chrome 151 against a page carrying all three shapes:
+ * PR3a declared it for PR3b to wire, and PR3b narrowed it from same-site to
+ * same-origin after measuring the platform. Then wiring it showed it cannot
+ * have a caller at all, which is a better answer than either:
  *
- *   http://example.test/        top          INJECTED
- *   http://example.test/        same origin  INJECTED
- *   http://pay.example.test/    same site    REFUSED — "Cannot access contents
- *                                            of the page. Extension manifest
- *                                            must request permission to access
- *                                            the respective host."
- *   http://other.test/          cross origin REFUSED
+ *   · The popup cannot enumerate frames. Reading frame ids needs `webNavigation`
+ *     or `tabs`, and this extension deliberately holds neither — the only
+ *     permission-free route is `executeScript({allFrames:true})`, which is an
+ *     injection into every reachable frame BEFORE any origin decision, i.e. the
+ *     opposite order from the one TB9 wants.
+ *   · The injected function cannot import it. `func` is serialized for
+ *     injection, so it closes over nothing and carries no module.
  *
- * So the old rule computed "allowed" for a frame the fill could only ever fail
- * on. A rule that disagrees with the platform is worse than no rule: it puts
- * the refusal at the bottom of the stack, as an opaque platform error, instead
- * of at the top as a decision this code took on purpose.
- *
- * THE PER-ITEM OPT-IN IS GONE, not deferred. It was documented as the escape
- * hatch for a cross-origin frame, and the same measurement shows it cannot be
- * built on `activeTab` at all — honouring it needs host permissions for the
- * third-party origin, i.e. `optional_host_permissions` plus a runtime
- * `chrome.permissions.request()`: a new manifest key and a new consent surface,
- * neither of which this milestone has. A flag that can never be honoured is the
- * M4 zero-callers shape with an extra step, so it is removed here and docs/03
- * §6j is corrected rather than left describing a capability that cannot exist.
+ * So the rule had nowhere to run, and a rule with nowhere to run is the M4
+ * zero-callers shape — the thing this milestone keeps closing. It is deleted
+ * rather than kept "for later", and what replaces it is not a weaker rule but a
+ * stronger one: THE PLATFORM ENFORCES THIS ITSELF, measured in Chrome 151. An
+ * `executeScript` at a frame the activeTab grant does not cover is refused with
+ * "Cannot access contents of the page", and the grant is the top frame's origin,
+ * host-exact. PR3b fills the TOP FRAME ONLY; a login form inside even a
+ * same-origin subframe is not filled, and that limitation is stated in docs/03
+ * §6j rather than papered over with a rule that would only have agreed with the
+ * platform when the platform was already saying no.
  */
-export function frameIsAllowed(input: {
-  readonly isTopFrame: boolean;
-  readonly topUrl: string;
-  readonly frameUrl: string;
-}): boolean {
-  if (input.isTopFrame) return true;
-  const top = parse(input.topUrl);
-  const frame = parse(input.frameUrl);
-  if (!top || !frame) return false;
-  // `URL.origin` is scheme + host + port, which is exactly what the grant is
-  // keyed on — so this asks the platform's own question rather than a proxy for
-  // it. It also keeps the scheme binding the old rule checked separately.
-  return top.origin === frame.origin && top.origin !== 'null';
-}
 
 export { normaliseHost };

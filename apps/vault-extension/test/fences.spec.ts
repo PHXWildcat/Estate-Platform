@@ -325,7 +325,55 @@ describe('the network has exactly one call site', () => {
   it('api.ts really is the module that calls fetch (so the fence is not vacuous)', () => {
     expect(code(join(SRC, 'api.ts'))).toContain('fetch(');
   });
+});
 
+describe('running code in a page has exactly one call site too', () => {
+  /**
+   * THE SECOND WAY SOMETHING LEAVES THIS EXTENSION (M16 PR3b).
+   *
+   * `api.ts` is the one network call site, and the fence above is what makes
+   * "nothing derived from the vault password leaves the device" a one-file
+   * question. `chrome.scripting.executeScript` is an egress the network fence
+   * cannot see: it puts a credential into ANOTHER PROCESS, as a JSON `args`
+   * value, with no fetch anywhere. So it gets the same treatment for the same
+   * reason — one call site, named here, auditable in one file.
+   *
+   * `fill-into-page.ts` is deliberately NOT the call site. It is the payload
+   * that runs in the page: it is serialized by `executeScript`, so it closes
+   * over nothing, imports nothing, and holds no reference to `chrome` at all.
+   */
+  const INJECTION = ['executeScript', 'chrome.scripting'];
+  /*
+   * `chrome.d.ts` is exempt, and it is the only exemption: DECLARING an API is
+   * not calling it, and the declaration is itself the reviewable statement of
+   * how much platform this artifact touches (its own docstring says so). A
+   * `.d.ts` emits no code, so nothing there can inject anything.
+   */
+  const outside = sourceFiles.filter(
+    (file) => !file.endsWith(join('src', 'inject.ts')) && !file.endsWith('.d.ts'),
+  );
+
+  it.each(outside)('%s runs no code in any page', (file) => {
+    const source = code(file);
+    for (const sink of INJECTION) {
+      expect({ file, sink, found: source.includes(sink) }).toEqual({ file, sink, found: false });
+    }
+  });
+
+  it('inject.ts really is the module that injects (so the fence is not vacuous)', () => {
+    expect(code(join(SRC, 'inject.ts'))).toContain('executeScript');
+  });
+
+  it('the injected payload holds no chrome reference and imports no module of ours', () => {
+    // If it could reach `chrome` it could message; if it could import, it could
+    // import the crypto. It is a leaf on purpose.
+    const payload = code(join(SRC, 'fill-into-page.ts'));
+    expect(payload).not.toContain('chrome.');
+    expect(payload).not.toMatch(/^\s*import\s/m);
+  });
+});
+
+describe('the rest of the fences', () => {
   it('nothing logs, because a log is an exfiltration channel too', () => {
     // A `console.log(session)` survives review far more easily than a fetch —
     // and in an extension the console is readable by anything with devtools
