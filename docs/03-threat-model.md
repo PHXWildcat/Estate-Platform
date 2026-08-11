@@ -1354,6 +1354,31 @@ CLAUDE.md decision log; the security-relevant shape is:
   scope decision for this PR was taken on a claim that `rn`/`m` was covered by
   edit distance, which it is not — the homoglyph fold exists because a test
   refused to pass.
+- *WRITE AND FILL ARE ONE TRUST LEVEL, and that is the sharpest consequence of
+  M16 PR4a.* The item's `url` lives INSIDE the encrypted blob, and `fillFor`
+  re-decides the origin from it — so anything that can write an item can repoint
+  where that item's credential is later filled. The origin control is not
+  bypassed; it is FED. This buys an attacker persistence rather than access
+  (writing already requires an unlocked vault, and anything that can write can
+  also read the credential outright), but it survives the session in which it
+  was done, which reading does not. Treat "may write items" as equivalent to
+  "may direct where those credentials go", and never grant one expecting the
+  other to bound it.
+- *An unlocked extension can overwrite every item, and there is no restore
+  surface.* `deleteItem` stays refused, so the destructive verb is out, and
+  `vault_items_versions` captures BEFORE UPDATE OR DELETE — but NO PRODUCTION
+  CODE READS THAT TABLE. Recovery today means an operator with psql. "Recoverable"
+  is therefore true of the data and not of the product, and the two are recorded
+  apart rather than allowed to sound like one claim. A restore surface is the
+  obvious follow-up and belongs with the operator platform (TB7).
+- *An edit needs no read, and that was a choice rather than a limitation.* The
+  popup cannot open an item: `summarise` yields titles and `fillFor` yields one
+  credential for a page that matches. Editing normally requires reading the item
+  back, which would have made the popup a general vault reader. Instead the key
+  holder MERGES — the caller sends only the fields it is changing, and the
+  plaintext it did not send is never sent back. The cost, stated on screen: a
+  field left blank keeps its saved value, so clearing one is not expressible in
+  the extension.
 - *A stale Public Suffix List over-matches, narrowly.* The snapshot is vendored
   and digest-pinned because this package must not fetch a security parameter at
   runtime, which trades tampering-in-transit for staleness. A suffix added after

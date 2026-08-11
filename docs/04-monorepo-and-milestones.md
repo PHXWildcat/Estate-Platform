@@ -3652,6 +3652,53 @@ declaration rather than copying it.
 Chrome 151, so PR4's "third-party-runnable verification procedure" cannot be
 phrased as loading unpacked from the command line.
 
+#### PR4a — writes
+
+`createItem` and `updateItem`, admitted to the `extension` audience **in the same
+change as their callers** — and the first draft of this PR broke that rule, which
+an adversarial pass caught: the grant landed while `sealItem` was reachable from
+nothing. An aspirational grant is the M8 zero-holder-edge shape, and the callers
+followed in the same PR rather than the next one.
+
+**AUTHORING IS TYPED IN THE POPUP.** Capturing a credential from a page after a
+sign-in — what a password manager normally does — needs a page observing form
+submissions, i.e. a standing content script, which PR3b refused and the manifest
+fence still forbids. So the write surface adds NO page surface at all. The cost
+is real and belongs on screen: there is no "save this login?" prompt.
+
+**AN EDIT NEEDS NO READ.** The popup cannot open an item, and giving it that
+ability would have made it a general vault reader in the PR whose subject is
+what a paired session can reach. The key holder MERGES instead: the caller sends
+only the fields it is changing, and the plaintext it did not send is never sent
+back. Absent means unchanged — a blank field must not erase a password the user
+cannot see — while an explicit empty string is a real value, the profile-SSN
+distinction. Consequence, stated in the form's own copy: clearing a field is not
+expressible in the extension.
+
+**THE VERSION IS THE SUBTLE PART.** The service writes `locked.blob_version + 1`
+after comparing `If-Match` to the row it locks, and the version is inside the
+AEAD's AAD — so an update seals for the SUCCESSOR of what it read and sends what
+it read in the header. Reversed, the row lands unopenable and nothing in the
+response says so. The item summary therefore carries the version it was read at:
+re-reading it at write time would make the check pass every time and defeat it.
+
+**`deleteItem` IS NOT ADMITTED**, and the milestone's "an extension session
+cannot destroy a vault" is narrowed rather than restated. The keyset survives —
+`reset`, both keyset routes and all eleven emergency routes stay refused — but
+an unlocked extension can overwrite every ITEM, and while `vault_items_versions`
+holds the prior image, no production code reads it. Full record in docs/03 §6j,
+along with the sharpest consequence: the item's `url` lives inside the blob, so
+anything that can write an item can repoint where its credential fills. Write
+and fill are one trust level.
+
+**Three closed-set fences fired**, once per widening: `seal` and `reseal` at the
+worker boundary and `create`/`update` at the popup one, each a compile error
+naming the new variant. The popup union had no exhaustive test before this PR
+and now has one. PR1's own "writes; PR4 decides this, not PR1" cases were
+rewritten rather than deleted, and the derived refused count moved 18 → 16 —
+still a hand-written number, because deriving it from the admitted list would
+make it agree with any widening automatically.
+
 ### M17 — Subscription manager (planned)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

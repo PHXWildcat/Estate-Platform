@@ -6,11 +6,13 @@ import type { ItemSummary } from './messages.js';
 import { isFillable } from './origin-match.js';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from './secret-key-store.js';
 import {
+  createItem,
   fillFor,
   listItems,
   lockVault,
   matchesFor,
   unlockVault,
+  updateItem,
   vaultState,
 } from './vault-client.js';
 import type { MatchedItem } from './messages.js';
@@ -49,7 +51,14 @@ type View =
       tabId?: number;
       error?: string;
       note?: string;
-    };
+    }
+  /**
+   * AUTHORING, IN EXTENSION-OWNED UI (M16 PR4a). `editing` carries the item
+   * being changed; its absence is a create. Nothing here observes a page —
+   * capturing a credential from one would need a standing content script, which
+   * PR3b refused and the manifest fence still forbids.
+   */
+  | { kind: 'composing'; editing?: ItemSummary; error?: string };
 
 /** Six digits, the only shape identity's CodeSchema accepts. */
 const CODE_PATTERN = /^[0-9]{6}$/;
@@ -317,6 +326,125 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     });
   }
 
+  /**
+   * The add / edit form.
+   *
+   * ON AN EDIT, BLANK MEANS UNCHANGED, and the copy says so because the user
+   * cannot see what they are leaving alone: the popup never receives the item's
+   * content, the key holder merges inside itself, and a field left empty is
+   * simply not sent. Clearing a value on purpose is therefore not expressible
+   * here, which is stated rather than hidden — it is the price of not making
+   * this surface a full vault reader.
+   */
+  function drawComposing(editing: ItemSummary | undefined, error: string | undefined): void {
+    const isEdit = editing !== undefined;
+    const line = (id: string, type = 'text'): HTMLInputElement =>
+      el('input', { id, type, class: 'code' });
+    const labelled = (input: HTMLInputElement, text: string): HTMLElement => {
+      const label = el('label', { class: 'label' }, text);
+      label.htmlFor = input.id;
+      return el('div', {}, label, input);
+    };
+
+    const title = line('item-title');
+    if (isEdit) title.value = editing.title;
+    const username = line('item-username');
+    const secret = line('item-secret', 'password');
+    const url = line('item-url');
+
+    const save = el('button', {}, isEdit ? 'Save changes' : 'Add to vault');
+    save.addEventListener('click', () => {
+      void submitComposed(editing, {
+        title: title.value,
+        username: username.value,
+        secret: secret.value,
+        url: url.value,
+      });
+    });
+    const cancel = el('button', { class: 'secondary' }, 'Cancel');
+    cancel.addEventListener('click', () => {
+      void refresh();
+    });
+
+    render(
+      host,
+      el('h2', {}, isEdit ? 'Edit item' : 'New item'),
+      labelled(title, 'Title'),
+      labelled(username, 'Username'),
+      labelled(secret, 'Password'),
+      labelled(url, 'Web address'),
+      el(
+        'p',
+        { class: 'hint' },
+        isEdit
+          ? 'Leave a field empty to keep what is already saved — this device never receives the values it is not changing.'
+          : 'Saved to your vault, encrypted on this device.',
+      ),
+      // The address is what decides where this credential may later be filled,
+      // so it is worth one sentence rather than none.
+      el('p', { class: 'hint' }, 'The web address decides where this can be filled.'),
+      save,
+      cancel,
+      ...(error === undefined ? [] : [el('p', { class: 'error' }, error)]),
+    );
+  }
+
+  /** Create, or send only what changed. */
+  async function submitComposed(
+    editing: ItemSummary | undefined,
+    typed: { title: string; username: string; secret: string; url: string },
+  ): Promise<void> {
+    if (editing === undefined && typed.title.trim().length === 0) {
+      show({ kind: 'composing', error: 'Give it a title so you can find it again.' });
+      return;
+    }
+    show({ kind: 'busy', label: editing ? 'Saving…' : 'Adding…' });
+
+    if (editing === undefined) {
+      const made = await createItem(bearer, 'password', {
+        title: typed.title.trim(),
+        username: typed.username,
+        secret: typed.secret,
+        url: typed.url,
+      });
+      if (!made.ok) {
+        show({ kind: 'composing', error: messageFor(made.code) });
+        return;
+      }
+      await refresh();
+      return;
+    }
+
+    // ONLY WHAT WAS TYPED. An empty field is omitted, so the holder leaves that
+    // value alone — see `drawComposing`.
+    const changes: Record<string, unknown> = {};
+    if (typed.title.trim().length > 0 && typed.title.trim() !== editing.title) {
+      changes['title'] = typed.title.trim();
+    }
+    for (const [key, value] of [
+      ['username', typed.username],
+      ['secret', typed.secret],
+      ['url', typed.url],
+    ] as const) {
+      if (value.length > 0) changes[key] = value;
+    }
+    if (Object.keys(changes).length === 0) {
+      await refresh();
+      return;
+    }
+    const saved = await updateItem(bearer, {
+      itemId: editing.id,
+      itemType: editing.itemType,
+      changes,
+      blobVersion: editing.blobVersion,
+    });
+    if (!saved.ok) {
+      show({ kind: 'composing', editing, error: messageFor(saved.code) });
+      return;
+    }
+    await refresh();
+  }
+
   function drawUnlocked(
     items: readonly ItemSummary[],
     error: string | undefined,
@@ -331,14 +459,26 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     const list = el('ul', { class: 'items' });
     for (const item of items) {
       // A text node, never markup — the title is somebody's own data.
-      list.append(
-        el(
-          'li',
-          {},
-          item.unreadable ? '(this item could not be read)' : item.title || '(no title)',
-        ),
+      const row = el(
+        'li',
+        {},
+        item.unreadable ? '(this item could not be read)' : item.title || '(no title)',
       );
+      // No edit control on an item this build cannot read: there is nothing to
+      // merge into, and the holder would refuse anyway.
+      if (!item.unreadable) {
+        const edit = el('button', { class: 'secondary' }, 'Edit');
+        edit.addEventListener('click', () => {
+          show({ kind: 'composing', editing: item });
+        });
+        row.append(' ', edit);
+      }
+      list.append(row);
     }
+    const add = el('button', { class: 'secondary' }, 'New item');
+    add.addEventListener('click', () => {
+      show({ kind: 'composing' });
+    });
     render(
       host,
       el('h2', {}, 'Vault open'),
@@ -346,7 +486,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
         ? [drawMatches(matched, pageUrl, view.kind === 'unlocked' ? view.tabId : undefined)]
         : []),
       items.length === 0 ? el('p', { class: 'hint' }, 'No items in this vault yet.') : list,
-      el('p', { class: 'hint' }, 'Reading an item is not available yet.'),
+      add,
       lock,
       // A NOTE IS NOT AN ERROR. "That item is not offered for this page" and
       // "filled, nothing was submitted" are outcomes the user asked for; styling
@@ -367,6 +507,10 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     }
     if (view.kind === 'locked') {
       drawLocked(view.error, view.stepUp);
+      return;
+    }
+    if (view.kind === 'composing') {
+      drawComposing(view.editing, view.error);
       return;
     }
     drawUnlocked(view.items, view.error, view.matched, view.pageUrl, view.note);
