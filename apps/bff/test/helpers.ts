@@ -859,6 +859,15 @@ export function sha256Hex(document: string): string {
   return createHash('sha256').update(document, 'utf8').digest('hex');
 }
 
-export const SESSION_QUERY = 'query Session { session { userId mfaLevel stepUpFresh } }';
+/**
+ * A HAND-COPY of `apps/web/src/graphql/operations.ts`'s Session document, and
+ * it is a copy because the BFF does not depend on the web app. That makes it a
+ * drift hazard with a nasty shape: `persisted.spec.ts` hashes THIS string, so a
+ * field added to the real document and forgotten here leaves the suite green
+ * while it executes a document no client will ever send. M16 hit exactly that
+ * when `audience` was added. Keep the two in step; the field list is the whole
+ * of what can rot.
+ */
+export const SESSION_QUERY = 'query Session { session { userId mfaLevel stepUpFresh audience } }';
 export const LOGIN_MUTATION =
   'mutation Login($email: String!, $password: String!) { login(email: $email, password: $password) { ok } }';

@@ -25,6 +25,7 @@ describe('session query', () => {
       userId: TOKENS.userId,
       sessionId: TOKENS.sessionId,
       mfaLevel: 'stepup',
+      audience: 'account',
       stepupExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const res = await gql(
@@ -35,7 +36,13 @@ describe('session query', () => {
     expect(identity.sessionCalls).toEqual(['the-access-token']);
     expect(res.body).toEqual({
       data: {
-        session: { userId: TOKENS.userId, mfaLevel: 'STEPUP', stepUpFresh: true },
+        session: {
+          userId: TOKENS.userId,
+          mfaLevel: 'STEPUP',
+          stepUpFresh: true,
+          // M16: identity has always sent this; the BFF used to strip it.
+          audience: 'ACCOUNT',
+        },
       },
     });
     // sessionId is deliberately not exposed.
@@ -47,6 +54,7 @@ describe('session query', () => {
       userId: TOKENS.userId,
       sessionId: TOKENS.sessionId,
       mfaLevel: 'mfa',
+      audience: 'account',
       stepupExpiresAt: new Date(Date.now() - 1_000).toISOString(),
     };
     const res = await gql(app, { query: SESSION_QUERY }, { cookie: 'estate_access=tok' });
@@ -54,6 +62,7 @@ describe('session query', () => {
       userId: TOKENS.userId,
       mfaLevel: 'MFA',
       stepUpFresh: false,
+      audience: 'ACCOUNT',
     });
   });
 
@@ -62,6 +71,7 @@ describe('session query', () => {
       userId: TOKENS.userId,
       sessionId: TOKENS.sessionId,
       mfaLevel: 'none',
+      audience: 'account',
       stepupExpiresAt: null,
     };
     const res = await gql(app, { query: SESSION_QUERY }, { cookie: 'estate_access=tok' });
@@ -69,6 +79,7 @@ describe('session query', () => {
       userId: TOKENS.userId,
       mfaLevel: 'NONE',
       stepUpFresh: false,
+      audience: 'ACCOUNT',
     });
   });
 

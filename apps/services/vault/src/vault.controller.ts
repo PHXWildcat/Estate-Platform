@@ -11,7 +11,13 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
+import {
+  AllowSessionAudiences,
+  CallerGuard,
+  requireCaller,
+  StepUpGuard,
+  type CallerRequest,
+} from '@estate/auth-guard';
 import {
   CreateItemSchema,
   CreateKeysetSchema,
@@ -56,6 +62,24 @@ function ifMatchOf(req: CallerRequest): number {
  *
  * Deletion of an item takes BOTH, matching the deletion-class rule the document
  * service follows.
+ *
+ * M16 ADDS A THIRD GATE, and it runs across the other two rather than beside
+ * them: the SESSION AUDIENCE. This service admits `account` and `vault`
+ * service-wide, and five handlers here additionally admit `extension` —
+ * `keysetStatus`, both SRP legs, `listItems` and `lock`. That set is not a
+ * subset of either guard above, which is exactly why it is declared per handler:
+ * the step-up-alone routes include both `reset` and the two SRP legs, so no
+ * guard-shaped rule could admit an extension to the second without handing it
+ * the first.
+ *
+ * Read the decorators as a bound on a COMPROMISED CLIENT rather than as
+ * permissions for a trusted one. A browser extension is delivered by a vendor
+ * store that can update it silently, so what matters is that everything it can
+ * reach yields ciphertext — `listItems` sits behind VaultSessionGuard, which
+ * only a completed SRP unlock satisfies, and that needs the vault password and
+ * the device Secret Key, neither of which this platform holds. The declaration
+ * lives in `AUDIENCE_ROUTE_ADMITTERS`; `test/session-audience.spec.ts` names
+ * every route that must refuse it.
  */
 @Controller('v1')
 @UseGuards(CallerGuard)
@@ -64,6 +88,7 @@ export class VaultController {
 
   /** Has this user enrolled a vault yet? Drives the client's first screen. */
   @Get('vault/keyset')
+  @AllowSessionAudiences('extension')
   @HttpCode(200)
   keysetStatus(@Req() req: CallerRequest): Promise<KeysetStatus> {
     return this.vault.keysetStatus(requireCaller(req).userId);
@@ -102,6 +127,7 @@ export class VaultController {
   }
 
   @Post('vault/srp/start')
+  @AllowSessionAudiences('extension')
   @UseGuards(StepUpGuard)
   @HttpCode(201)
   startUnlock(@Req() req: CallerRequest): Promise<SrpChallenge> {
@@ -110,6 +136,7 @@ export class VaultController {
   }
 
   @Post('vault/srp/verify')
+  @AllowSessionAudiences('extension')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   finishUnlock(@Req() req: CallerRequest, @Body() body: unknown): Promise<VaultOpened> {
@@ -118,6 +145,7 @@ export class VaultController {
   }
 
   @Post('vault/lock')
+  @AllowSessionAudiences('extension')
   @UseGuards(VaultSessionGuard)
   @HttpCode(204)
   lock(@Req() req: VaultRequest): Promise<void> {
@@ -140,6 +168,7 @@ export class VaultController {
   }
 
   @Get('vault/items')
+  @AllowSessionAudiences('extension')
   @UseGuards(VaultSessionGuard)
   @HttpCode(200)
   listItems(@Req() req: VaultRequest, @Query() query: unknown): Promise<VaultItemPage> {

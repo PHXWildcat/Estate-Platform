@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GraphQLSchema } from 'graphql';
 import { createSchema } from 'graphql-yoga';
-import type { MfaLevel } from '@estate/contracts';
+import type { MfaLevel, SessionAudience } from '@estate/contracts';
 import type { Asset, AssetsClient, CreateResult, NetWorth } from './assets-client';
 import type {
   AnalysisName,
@@ -56,11 +56,24 @@ export const typeDefs = /* GraphQL */ `
     STEPUP
   }
 
+  """
+  What a session may be spent on. ACCOUNT is an ordinary sign-in; VAULT is the
+  isolated vault origin's short-lived session; EXTENSION is a paired browser
+  extension.
+  """
+  enum SessionAudience {
+    ACCOUNT
+    VAULT
+    EXTENSION
+  }
+
   type Session {
     userId: ID!
     mfaLevel: MfaLevel!
     "True while the session's step-up window (fresh ≤5 min) is open."
     stepUpFresh: Boolean!
+    "What this session may be spent on."
+    audience: SessionAudience!
   }
 
   type Ok {
@@ -848,6 +861,7 @@ interface SessionPayload {
   readonly userId: string;
   readonly mfaLevel: 'NONE' | 'MFA' | 'STEPUP';
   readonly stepUpFresh: boolean;
+  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION';
 }
 
 interface CredentialsArgs {
@@ -934,6 +948,17 @@ const MFA_LEVEL_GQL: Record<MfaLevel, SessionPayload['mfaLevel']> = {
   none: 'NONE',
   mfa: 'MFA',
   stepup: 'STEPUP',
+};
+
+/**
+ * An exhaustive Record, so a fourth audience is a COMPILE ERROR here rather
+ * than a value that silently reaches the client unmapped — the same shape as
+ * MFA_LEVEL_GQL above and the reason both are written this way.
+ */
+const AUDIENCE_GQL: Record<SessionAudience, SessionPayload['audience']> = {
+  account: 'ACCOUNT',
+  vault: 'VAULT',
+  extension: 'EXTENSION',
 };
 
 const OK = { ok: true } as const;
@@ -1092,6 +1117,7 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           return {
             userId: session.userId,
             mfaLevel: MFA_LEVEL_GQL[session.mfaLevel],
+            audience: AUDIENCE_GQL[session.audience],
             stepUpFresh: Number.isFinite(expiresAt) && expiresAt > now(),
           };
         },

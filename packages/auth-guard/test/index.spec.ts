@@ -23,10 +23,16 @@ describe('@estate/auth-guard public surface', () => {
     // them through the barrel, so the re-export getters were uncovered and the
     // package fell under its own functions floor. Every one of these is
     // consumed by a service or a fence, so the barrel is load-bearing.
-    expect(authGuard.SESSION_AUDIENCES).toEqual(['account', 'vault']);
+    expect(authGuard.SESSION_AUDIENCES).toEqual(['account', 'vault', 'extension']);
     expect(authGuard.DEFAULT_SESSION_AUDIENCE).toBe('account');
     // The declaration the fence checks source against — vault, and only vault.
     expect(authGuard.AUDIENCE_ADMITTERS.vault).toEqual(['vault']);
+    // M16's extension audience is admitted PER ROUTE and nowhere service-wide,
+    // so its service-wide entry is deliberately empty. Asserted here rather than
+    // left implicit: an `extension: ['vault']` slipped into that table would
+    // open all 23 vault routes at once, and this is the barrel test that would
+    // notice.
+    expect(authGuard.AUDIENCE_ADMITTERS.extension).toEqual([]);
     // The DI token a service binds to widen its guard. Absence is the secure
     // setting, so the symbol existing is what makes opting in explicit.
     expect(typeof authGuard.ALLOWED_SESSION_AUDIENCES).toBe('symbol');

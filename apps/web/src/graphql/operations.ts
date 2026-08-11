@@ -71,6 +71,7 @@ export const SESSION_QUERY = `query Session {
     userId
     mfaLevel
     stepUpFresh
+    audience
   }
 }`;
 

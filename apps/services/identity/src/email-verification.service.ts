@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from 'node:crypto';
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
 import { AuthEventsRepo } from './auth-events.repo';
@@ -9,6 +8,7 @@ import {
   VerificationRaceError,
 } from './email-verification.repo';
 import { EventsService } from './events.service';
+import { canonicalLengthFor, canonicalCode, readableCode, sha256 } from './readable-code';
 
 /** How long a mailed code stays usable. */
 export const VERIFICATION_TTL_MS = 30 * 60 * 1000;
@@ -188,7 +188,7 @@ export class EmailVerificationService {
       await this.authEvents.insert({ userId, kind: 'email_verification.reissued' });
     }
 
-    const code = readableCode();
+    const code = readableCode(EV_PREFIX);
     const expiresAt = new Date(now.getTime() + VERIFICATION_TTL_MS);
     try {
       await this.codes.insert({
@@ -332,81 +332,16 @@ function invalidCode(): BadRequestException {
   return new BadRequestException({ error: 'invalid_code' });
 }
 
-function sha256(value: string): Buffer {
-  return createHash('sha256').update(value, 'utf8').digest();
-}
-
 /**
- * Reduce a code to the one form that gets hashed — M13's `canonicalCode`,
- * applied to this ceremony for the same reason and with the same proof.
- *
- * The alphabet excludes I, L, O and U so a code can survive being read off a
- * screen and typed, or read aloud. Redemption must therefore fold the same way
- * the mint did, or the very confusions the alphabet exists to survive
- * (lowercase, a typed "O" for zero, dropped grouping dashes) fail with the
- * uniform refusal and the user's only remedy is a fresh code — the exact
- * usability defect the M13 review found hiding behind a security property.
- *
- * IT CANNOT COLLIDE, and the argument is M13's: the fold is INJECTIVE ON
- * MINTED CODES. The `EV1-` prefix is constant, so it folds identically for
- * every code and distinguishes nothing; the 32-character body is drawn from an
- * alphabet excluding I, L, O and U, so within the body the fold is the
- * identity. Two different minted codes therefore differ in their bodies both
- * before and after folding. Case-folding costs no entropy either: the
- * generator only ever emits uppercase.
+ * The code primitives moved to `readable-code.ts` in M16, when the extension
+ * pairing ceremony became the THIRD consumer of a derivation that existed twice
+ * byte-identically. Re-exported here so every existing importer — this
+ * service's spec among them — is unchanged, and so there is still exactly one
+ * definition rather than one definition and a forwarding copy.
  */
-export function canonicalCode(code: string): string {
-  return code
-    .toUpperCase()
-    .replace(/[^0-9A-Z]/g, '')
-    .replace(/[IL]/g, '1')
-    .replace(/O/g, '0');
-}
+export { canonicalCode, CODE_RANDOM_BYTES } from './readable-code';
 
-const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+/** This ceremony's prefix. Constant, so it folds identically for every code. */
+const EV_PREFIX = 'EV1-';
 
-export const CODE_RANDOM_BYTES = 20;
-
-/**
- * What a minted code folds to: the constant prefix plus the derived body, both
- * MEASURED rather than counted by hand, and pinned by a spec against a real
- * mint. Redemption checks this instead of trusting the request schema's own
- * length bound, which measures the raw submission.
- */
-export const CANONICAL_CODE_LENGTH = canonicalCode('EV1-').length + (CODE_RANDOM_BYTES * 8) / 5;
-
-/**
- * A 160-bit code in Crockford-style base32, grouped for reading: `EV1-K7MN-…`.
- *
- * THE WIDTH IS THE SECURITY PARAMETER, so it is derived, not asserted: 20 bytes
- * expanded at 5 bits per character is 32 characters exactly, and the assertion
- * below fails loudly rather than silently shipping a short code. M6's grantee
- * fingerprint carried 50 bits where its spec said 80, and M13's first link code
- * mapped one character per BYTE for a real width of 100; both were found by
- * looking at what a running system actually minted, so the derivation is
- * written down and tested rather than trusted.
- *
- * 160 bits is far more than a mailed short code needs — the attempt cap and
- * the 30-minute TTL are what actually bound guessing — but it is what the
- * repo's other ceremony uses, it costs the user nothing beyond a longer
- * copy-paste, and choosing a smaller number would mean defending it.
- */
-function readableCode(): string {
-  const bytes = randomBytes(CODE_RANDOM_BYTES);
-  let bits = 0;
-  let acc = 0;
-  let out = '';
-  for (const byte of bytes) {
-    acc = (acc << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += ALPHABET[(acc >> bits) & 31];
-    }
-  }
-  // 160 % 5 === 0, so nothing is left over; assert rather than assume.
-  if (bits !== 0 || out.length !== (CODE_RANDOM_BYTES * 8) / 5) {
-    throw new Error('verification code derivation is broken');
-  }
-  return `EV1-${(out.match(/.{1,4}/g) ?? []).join('-')}`;
-}
+export const CANONICAL_CODE_LENGTH = canonicalLengthFor(EV_PREFIX);

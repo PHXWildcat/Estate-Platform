@@ -26,7 +26,9 @@ Most fintech threat models optimize for "attacker steals money today." This plat
 
 ## 3. Trust boundaries
 
-TB1: Internet → Edge (CloudFront/WAF/API GW) · TB2: Edge → Services (authn/z) · TB3: Service ↔ Service (mesh) · TB4: Services → Data stores · TB5: Platform → Third parties (Plaid, LLM providers, death-data providers, notification carriers) · TB6: Client device (Zone A crypto happens here) · TB7: Human operators → Production · TB8: Role-holders → Owner's estate data.
+TB1: Internet → Edge (CloudFront/WAF/API GW) · TB2: Edge → Services (authn/z) · TB3: Service ↔ Service (mesh) · TB4: Services → Data stores · TB5: Platform → Third parties (Plaid, LLM providers, death-data providers, notification carriers) · TB6: Client device (Zone A crypto happens here) · TB7: Human operators → Production · TB8: Role-holders → Owner's estate data · TB9: Vault extension ↔ arbitrary web pages (added by M16).
+
+TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE, whose adversary is malware or injected script on a surface we serve. TB9's adversary is an arbitrary PAGE the user visits — code we did not write, on an origin we do not control, reached over a channel (an extension that can read and write that page's DOM) which did not exist before M16. The two fail differently: TB6 is defended by the isolated origin, its CSP and its empty dependency tree, none of which apply to a page, while TB9 is defended by origin matching, a gesture requirement and a permission set. See §6j.
 
 ## 4. STRIDE highlights per boundary (top findings, not exhaustive)
 
@@ -49,6 +51,13 @@ TB1: Internet → Edge (CloudFront/WAF/API GW) · TB2: Edge → Services (authn/
 **TB6 — Client**
 - *Vault key theft via malware/XSS:* Strict CSP, Trusted Types, no third-party scripts on vault surfaces, WebCrypto non-extractable keys where platform allows, memory zeroization best-effort, clipboard auto-clear, re-auth on vault open.
 - *Coercion/shoulder-surfing of elderly users:* Optional "trusted-contact review" mode where high-risk changes (new beneficiary + address change + export within 24h) trigger a notification hold.
+
+**TB9 — Vault extension ↔ arbitrary web pages** (M16)
+- *Filling the wrong origin (credential exfiltration):* This is the boundary's defining failure, because a filled credential belongs to the page that received it — the isolated world protects the extension's variables, not the DOM value, so the origin decision IS the disclosure decision. → Registrable domain via a vendored, digest-pinned Public Suffix List snapshot (never a substring, never label stripping); scheme binding, so an `https`-saved credential is never offered on `http`; cross-origin iframes refused by default with a per-item opt-in; confusable domains REFUSED rather than warned about.
+- *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address, and nothing is ever auto-submitted.
+- *A hostile page reading the vault by breadth of access:* → `activeTab` + `scripting` only, with no declared content scripts, so the extension has no view of any page until the user clicks it — and any later broadening is a required-permission increase the browser surfaces as re-consent.
+- *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy a vault), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
+- *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and are a separate milestone; the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
 
 **TB7 — Operators**
 - No standing prod access; JIT elevation with peer approval and session recording; all operator reads of user data are themselves audit events surfaced to the user ("Anthropic-style" transparency: users can see that support accessed X on date Y); separation of duties between deploy, data, and key administration.
@@ -1106,6 +1115,75 @@ key in memory is not something to settle inside a fix round.
 client at both layers. The protocol and the service support it; collecting
 several grantees' shares does not exist, and arming an arrangement nobody can
 open would be worse than declining to arm it.
+
+## 6j. Threat-model delta — M16 the vault browser extension (2026-08-10)
+
+M16 opens **TB9** (§3, §4): the extension against arbitrary web pages. This
+section is written as PR1 begins and is updated by each PR as its controls land,
+rather than assembled after the review — the M14 rule that a milestone which
+invalidates a sentence owns that sentence.
+
+**Why this is not TB6 with a new client.** TB6's controls are the isolated
+origin, its CSP, enforced Trusted Types and an empty dependency tree. None of
+them reaches a page we do not serve. An extension is code of ours running beside
+code of theirs, on their origin, with read and write access to their DOM — a
+channel with no counterpart anywhere else in the platform.
+
+**Decisions and their residuals.** The full list is in docs/04 M16 and the
+CLAUDE.md decision log; the security-relevant shape is:
+
+- *Keys* live as non-extractable `CryptoKey`s in an offscreen document, the only
+  extension context that loads `@estate/vault-crypto`. Persisting a `CryptoKey`
+  in extension IndexedDB — possible, and the option the brief's premise hid — is
+  REFUSED, because it yields a vault permanently open with no password, no
+  Secret Key and no TOTP, defeating 2SKD and §5 of docs/01. *Residual:* while
+  unlocked, code in that context decrypts everything; non-extractability stops
+  exfiltration, not use.
+- *The extension is server-anchored.* It caches item ciphertext and nothing that
+  enables an offline unlock, so the offline brute-force target M15 kept off the
+  disk stays off it. *Residual:* no unlock without connectivity.
+- *Origin matching* is the boundary's defining control; see §4 TB9.
+- *The credential* is a refresh-capable `extension`-audience session, admitted
+  PER HANDLER to FIVE vault routes (`keysetStatus`, both SRP legs, `listItems`,
+  `lock`) and THREE identity ones (`session`, `stepUp`, `logout`). What a stolen
+  copy buys, end to end: the ability to attempt an SRP handshake, which
+  additionally requires a fresh step-up, the vault password and the Secret Key —
+  and no item, because every read is behind `VaultSessionGuard`. EIGHTEEN vault
+  routes refuse it, including `reset`, both keyset routes, `deleteItem` and
+  every emergency-access route; so does `mintHandoff`, so a leaked extension
+  session cannot chain itself into a vault one.
+  `POST /v1/auth/refresh` is deliberately absent from that count and is not an
+  omission: it carries no guard at all, being unauthenticated by construction,
+  so there is no audience decision to declare there. What keeps it safe is a
+  different property — refresh ROTATES IN PLACE, updating the same session row,
+  so a refreshed session cannot change what it is for. That was true by accident
+  of an UPDATE's SET list until M16 pinned it with a test.
+
+**What M16 closes that predates it.**
+
+- *§6a's rate-limiting residual, in part.* Step-up now carries an attempt cap
+  derived from the append-only `auth_events` ledger, which bounds the vault's SRP
+  legs TRANSITIVELY because both are step-up gated. The half that remains open is
+  a caller with a genuine step-up burning handshakes.
+- *No user-reachable session revocation.* Before M16, `revokeAllForUser` had one
+  caller behind a service credential, and identity exposed no session listing, no
+  revoke-by-id and no password-change or password-reset route — so the only way
+  to revoke a session was to present it. Tolerable while every session was one
+  cookie-bound browser; not tolerable beside a long-lived credential on a device.
+  PR1 ships the first paired-devices list with per-row revoke.
+- *A fence that was documented and never written.* `004_session_audience_and_
+  handoffs.sql` claimed a spec pinned its `CHECK` to `SESSION_AUDIENCES`; none
+  existed. PR1 writes it, mutation-tested.
+
+**Residuals carried, not closed.**
+
+- *A compromised store update is undetectable by the platform.* Reproducible
+  builds and published provenance make it discoverable by a third party.
+- *Autofill does not resist phishing.*
+- *App-origin script can read a pairing code out of the DOM*, buying a paired
+  extension that reaches ciphertext only and appears in the owner's device list.
+- *Rotation-reuse detection can self-revoke* an extension whose service worker
+  died mid-rotation. The behaviour is correct; the cost is a re-pair.
 
 ## 7. Validation program
 

@@ -8,6 +8,7 @@ import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
 import type { SessionRow, SessionsRepo } from '../src/sessions.repo';
+import { STEPUP_DENIAL_WINDOW_MS, STEPUP_MAX_DENIALS } from '../src/stepup';
 import { generateOpaqueToken, hashToken } from '../src/tokens';
 import type { UsersRepo } from '../src/users.repo';
 
@@ -30,13 +31,14 @@ function makeFakes(): {
     findActiveTotp: jest.Mock;
     markVerified: jest.Mock;
   };
-  authEvents: { insert: jest.Mock };
+  authEvents: { insert: jest.Mock; deniedSinceLastGrant: jest.Mock };
   hasher: { hashPassword: jest.Mock; verifyPassword: jest.Mock; dummyVerify: jest.Mock };
   events: {
     userRegistered: jest.Mock;
     loginSucceeded: jest.Mock;
     loginFailed: jest.Mock;
     stepUpGranted: jest.Mock;
+    stepUpRateLimited: jest.Mock;
     sessionRevoked: jest.Mock;
   };
   fieldCrypto: { getOrCreateDek: jest.Mock; encryptField: jest.Mock; decryptField: jest.Mock };
@@ -67,7 +69,7 @@ function makeFakes(): {
       findActiveTotp: jest.fn().mockResolvedValue(null),
       markVerified: jest.fn(),
     },
-    authEvents: { insert: jest.fn() },
+    authEvents: { insert: jest.fn(), deniedSinceLastGrant: jest.fn().mockResolvedValue(0) },
     hasher: {
       hashPassword: jest.fn().mockResolvedValue('argon2-hash'),
       verifyPassword: jest.fn().mockResolvedValue(false),
@@ -78,6 +80,7 @@ function makeFakes(): {
       loginSucceeded: jest.fn(),
       loginFailed: jest.fn(),
       stepUpGranted: jest.fn(),
+      stepUpRateLimited: jest.fn(),
       sessionRevoked: jest.fn(),
     },
     fieldCrypto: {
@@ -269,6 +272,87 @@ describe('AuthService.refresh rotation + reuse detection', () => {
     expect(rotation.newRefreshTokenH.equals(hashToken(result.refreshToken))).toBe(true);
     expect(rotation.newAccessTokenH.equals(hashToken(result.accessToken))).toBe(true);
     expect(fakes.sessions.revoke).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE STEP-UP ATTEMPT CAP — the DECISION layer only (M16).
+   *
+   * These fake the repo, so they say nothing about whether the COUNT is right:
+   * that predicate lives in SQL and is proven in `stepup-cap.int.spec.ts`
+   * against real Postgres. Stated here rather than left implied, because "a
+   * green unit test is not evidence about a repo layer" is a rule this codebase
+   * has had to relearn (M13), and a suite named for a cap that only ever sees a
+   * stubbed number is exactly how it gets relearned again.
+   *
+   * What IS proven here: when the count is at the cap, the service refuses
+   * before touching the secret, refuses with the right token and status, and
+   * does not write the kind it counts.
+   */
+  describe('the step-up attempt cap', () => {
+    it('refuses at the cap with 429 too_many_attempts, before reading the TOTP secret', async () => {
+      const fakes = makeFakes();
+      fakes.authEvents.deniedSinceLastGrant.mockResolvedValue(STEPUP_MAX_DENIALS);
+      const service = makeService(fakes);
+
+      await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toMatchObject({
+        status: 429,
+        response: { error: 'too_many_attempts' },
+      });
+      // The secret is never fetched: an exhausted caller must not be able to
+      // make the refusal's timing depend on whether their guess was right.
+      expect(fakes.mfa.findActiveTotp).not.toHaveBeenCalled();
+      expect(fakes.sessions.grantStepUp).not.toHaveBeenCalled();
+    });
+
+    it('records the refusal as its OWN kind, never as a denial', async () => {
+      // The counter must not feed itself. If a refusal wrote `stepup.denied`,
+      // every refused attempt would extend the window that refused it and a
+      // retrying client would lock its own user out permanently.
+      const fakes = makeFakes();
+      fakes.authEvents.deniedSinceLastGrant.mockResolvedValue(STEPUP_MAX_DENIALS + 3);
+      const service = makeService(fakes);
+
+      await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toBeDefined();
+
+      const kinds = fakes.authEvents.insert.mock.calls.map(
+        (call: [{ kind: string }]) => call[0].kind,
+      );
+      expect(kinds).toEqual(['stepup.rate_limited']);
+      expect(kinds).not.toContain('stepup.denied');
+      expect(fakes.events.stepUpRateLimited).toHaveBeenCalledWith(
+        'u-1',
+        's-1',
+        STEPUP_MAX_DENIALS + 3,
+      );
+    });
+
+    it('below the cap, a wrong code is still an ordinary denial', async () => {
+      // The permissive path must stay unchanged, or the cap has quietly become
+      // a different control. One below the cap is the interesting boundary.
+      const fakes = makeFakes();
+      fakes.authEvents.deniedSinceLastGrant.mockResolvedValue(STEPUP_MAX_DENIALS - 1);
+      const service = makeService(fakes);
+
+      await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toThrow(UnauthorizedException);
+      expect(fakes.authEvents.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'stepup.denied', decision: 'invalid_code' }),
+      );
+      expect(fakes.events.stepUpRateLimited).not.toHaveBeenCalled();
+    });
+
+    it('asks for denials within the configured window, not for all time', async () => {
+      // A cap that counted every failure a user ever had would lock out an
+      // honest long-lived account rather than a guesser — the difference
+      // between a rate limit and a permanent ban, decided by one argument.
+      const fakes = makeFakes();
+      const service = makeService(fakes);
+      await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toBeDefined();
+
+      expect(fakes.authEvents.deniedSinceLastGrant).toHaveBeenCalledWith(
+        'u-1',
+        new Date(NOW.getTime() - STEPUP_DENIAL_WINDOW_MS),
+      );
+    });
   });
 
   it('revokes the session when a previously-used refresh token is replayed', async () => {

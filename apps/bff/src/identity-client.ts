@@ -1,6 +1,12 @@
 import { GraphQLError } from 'graphql';
 import { z } from 'zod';
-import { MfaLevelSchema, type MfaLevel } from '@estate/contracts';
+import {
+  DEFAULT_SESSION_AUDIENCE,
+  MfaLevelSchema,
+  SessionAudienceSchema,
+  type MfaLevel,
+  type SessionAudience,
+} from '@estate/contracts';
 
 /**
  * Client for the identity service's internal REST API (apps/services/identity).
@@ -24,6 +30,16 @@ export interface IdentitySession {
   readonly mfaLevel: MfaLevel;
   /** ISO timestamp, or null when the session has no active step-up. */
   readonly stepupExpiresAt: string | null;
+  /**
+   * What the session may be spent on (M15's audience, carried in M16).
+   *
+   * Identity has RETURNED this since M15 and the BFF silently dropped it:
+   * `z.object` strips unknown keys, so there was no parse error, no log and no
+   * failing test — "the BFF has no audience" read like a missing identity field
+   * when it was a missing line in one schema. It matters now because a session
+   * list has to be able to say "browser extension" rather than "a session".
+   */
+  readonly audience: SessionAudience;
 }
 
 export interface TotpEnrollment {
@@ -281,6 +297,11 @@ const SessionSchema = z.object({
   sessionId: z.string().min(1),
   mfaLevel: MfaLevelSchema,
   stepupExpiresAt: z.string().nullable(),
+  // Tolerant of an identity that predates the field, for the same reason
+  // auth-guard's verifier is: only identity mints a non-account audience, so an
+  // identity old enough to omit it has none to describe. An UNRECOGNISED value
+  // is a different matter and fails the parse.
+  audience: SessionAudienceSchema.default(DEFAULT_SESSION_AUDIENCE),
 });
 
 const EnrollSchema = z.object({

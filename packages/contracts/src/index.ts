@@ -9,14 +9,18 @@ export {
 } from './audit';
 export {
   AuthEventSchema,
+  DEFAULT_SESSION_AUDIENCE,
   LoginFailedEvent,
   LoginSucceededEvent,
   MfaLevelSchema,
+  SESSION_AUDIENCES,
+  SessionAudienceSchema,
   SessionRevokedEvent,
   StepUpGrantedEvent,
   UserRegisteredEvent,
   type AuthEvent,
   type MfaLevel,
+  type SessionAudience,
 } from './auth-events';
 export {
   ASSET_CATEGORIES,

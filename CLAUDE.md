@@ -2765,3 +2765,423 @@ deviating from them, stop and propose the change with rationale — do not silen
   owner's master key in memory needs its own retention decision, and appending it
   to a fix round is how that decision gets skipped.
 
+- 2026-08-10 — M16 is THE VAULT BROWSER EXTENSION, and it is a milestone rather
+  than a PR because three things in it are decisions rather than
+  implementations. Autofill is a docs/00 §7 deliverable that M15 deferred with a
+  reason; the extension is the SECOND client of the SRP/2SKD protocol, which is
+  why it waited for M15 to settle the first. Five PRs: PR1 the boundary, the
+  credential and the debts that credential makes acute; PR2 unlock + read; PR3
+  matching + fill; PR4 writes + the release pipeline; PR5 the security review.
+  Each PR carries its OWN docs delta — the M14 rule that a milestone which
+  invalidates a sentence owns that sentence, and that deferring docs to the
+  review means shipping code citing documentation that contradicts it. Full
+  record in docs/04 M16.
+- 2026-08-10 — M16 problem 1 (MV3 terminates service workers): KEYS LIVE AS
+  NON-EXTRACTABLE `CryptoKey`s IN AN OFFSCREEN DOCUMENT, which is the only
+  extension context that loads @estate/vault-crypto; the service worker holds
+  nothing, `chrome.storage.session` holds no key material, and an offscreen
+  teardown is a LOCK (fail closed). The brief's premise — "a non-extractable
+  CryptoKey cannot be serialized" — is false in the direction that matters: it
+  cannot go into `chrome.storage.session` (JSON) but it CAN be structured-cloned
+  into IndexedDB and stay non-extractable across browser restarts. That fifth
+  option is the one that "happens to work" and is REJECTED — not on
+  serializability grounds but because it yields a vault permanently open with no
+  password, no Secret Key and no TOTP, defeating 2SKD and docs/01 §5's
+  re-auth-on-vault-open. Recorded as a claim to MEASURE in PR1, not as a fact.
+  Raw bytes in `chrome.storage.session` rejected because docs/03 §4 TB6 says
+  "where the platform allows" and here it does; a native-messaging host rejected
+  as a second distribution artifact with keys outside the browser sandbox.
+  Residual: while unlocked, code in the offscreen document decrypts everything —
+  non-extractability stops EXFILTRATION, not USE. Chromium only, and the
+  key-holder is one module so a second host is a port rather than a redesign.
+- 2026-08-10 — M16 problem 1, second half: THE EXTENSION IS SERVER-ANCHORED, NOT
+  A LOCAL VAULT. It caches item CIPHERTEXT and caches nothing that enables an
+  offline unlock — no `wrapped_master_key`, no `srp_salt`, no `kdf_params` — so
+  unlock is a real SRP-6a run with the step-up `srp/start` and `srp/verify`
+  already require. MEASURED, and it confirms the shape rather than merely
+  allowing it: `VAULT_SESSION_TTL_MS` is 15 minutes and vault's `sessions.repo.ts`
+  has NO renewal path, so the ceremony is necessarily step-up → SRP → full sync
+  (one `listItems` call returns full ciphertext blobs) → the vault session
+  expires and stops mattering, after which the extension fills from the mirror
+  until the client idle lock. REJECTED: caching the wrapped master key, which
+  puts an offline brute-force target on disk and bypasses docs/01 §5 — a
+  legitimate product choice, but one needing an approved deviation and a
+  reversal of M15's persist-the-Secret-Key default, not a default. Residuals,
+  stated rather than hidden: no unlock without connectivity, and picking up a
+  credential saved on another device costs a full re-unlock. The client idle
+  lock is 15 MINUTES, configurable 1–60 and never "never" — deliberately unlike
+  the vault origin's 5, because a page you visit and an ambient extension are
+  different things and a 5-minute extension lock trains people to raise it to
+  the maximum.
+- 2026-08-10 — M16 problem 2, ORIGIN MATCHING IS THE SECURITY PROPERTY, because
+  filling the wrong origin IS credential exfiltration. Registrable domain via a
+  VENDORED Public Suffix List snapshot — never a substring, never label
+  stripping — carrying source/fetchedAt/sha256 with the digest pinned by a test
+  and a staleness check, vendored because the extension has no runtime
+  dependencies and must not fetch a security parameter at runtime. Scheme
+  binding: an `https`-saved credential is never offered on `http`. Cross-origin
+  iframes refused by default with a per-item opt-in. NEVER auto-submit, and
+  never fill without a gesture in extension-owned UI: the content script is
+  structurally unable to REQUEST a credential (its message union has no such
+  variant and it cannot import the key-holder), and the fill is a one-shot
+  `chrome.scripting.executeScript` into a specific frame at the moment of the
+  gesture, so there is no standing channel a page can address. Page access is
+  `activeTab` + `scripting` with NO declared content scripts — which also makes
+  any later broadening a required-permission increase the browser surfaces as
+  re-consent, the one supply-chain control the browser itself gives us.
+  CONSEQUENCE, and it narrows a CLAIM rather than a control: with `activeTab`
+  the extension has no view of a page until the user clicks it, so the
+  lookalike check fires AT CLICK TIME. The extension REFUSES to fill on a
+  confusable domain (UTS #39 skeletons, punycode, edit-distance-1 against the
+  user's own saved domains) — refusing beats warning, the M12 rule — but it
+  cannot warn someone sitting on a phishing page who never opens it. docs/03
+  §6j must therefore say "refuses to fill on a confusable domain" and never
+  "warns the user about phishing sites". Unchanged and stated on screen:
+  AUTOFILL DOES NOT RESIST PHISHING, and filling a credential into a page gives
+  that page the credential — the isolated world protects the extension's
+  variables, not the DOM value.
+- 2026-08-10 — M16 problem 3, THE SUPPLY CHAIN INVERTS M15's CENTRAL ARGUMENT:
+  the vault origin's case is "what ships is what a reviewer reads", and an
+  extension is a signed artifact auto-updated through a vendor store with no CSP
+  in the path. The only control that works UNATTENDED is blast-radius reduction,
+  so it comes first — a new `extension` audience admitted PER HANDLER to a
+  strict subset, so AN EXTENSION SESSION CANNOT DESTROY A VAULT. Then minimum
+  permissions held constant (the manifest's set declared as data and pinned by a
+  test), reproducible builds (CI builds twice and compares digests), SLSA
+  provenance via GitHub OIDC, and a verification procedure a third party can
+  actually run, published in-repo and at a `/.well-known/` path. Residual,
+  unsoftened: a compromised update keeping the same permissions exfiltrates
+  everything the user unlocks and THE PLATFORM CANNOT DETECT IT — a self-check
+  is written by the same artifact and a reported version is one it controls.
+  Reproducible builds make it discoverable by a third party, not prevented.
+- 2026-08-10 — M16's `extension` route-admitter table, and why guard shape
+  cannot be the discriminator. The vault service has 23 owner-facing routes —
+  NOT the 22 this log has cited since M15, `GET /v1/vault/recovery-key` having
+  arrived in PR3 — and the step-up-alone set contains BOTH the destructive
+  routes (`reset`, `createKeyset`, `configure`, `rearm`, `revoke`,
+  `publishRecoveryKey`) AND the two SRP legs an extension cannot function
+  without. ADMITTED: vault's `keysetStatus`, `startUnlock`, `finishUnlock`,
+  `listItems`, `lock`, plus identity's `session`, `stepUp`, `logout`,
+  `refresh`; PR4 adds `createItem` and `updateItem` in the same change as the
+  callers. `getItem` is deliberately OUT — `listItems` already returns full
+  ciphertext blobs, so it buys nothing an autofill client needs and every
+  handler left out is authority not granted. The extension must NOT be added to
+  vault's `ALLOWED_SESSION_AUDIENCES`: `CallerGuard.audiencesFor` returns
+  `[...new Set([...serviceWide, ...perRoute])]`, a union that widens and can
+  never narrow, so a service-wide grant would hand it all 23 routes including
+  `release` (the one moment the platform half of a recovery key leaves the
+  service) and `request` (which starts a §5.2 waiting period). EIGHTEEN vault
+  routes are refused — corrected from the "sixteen" first written here, which
+  came from a hand-listed set that silently omitted `createItem`, `getItem` and
+  `updateItem`; `apps/services/vault/test/session-audience.spec.ts` DERIVES the
+  refused set from the controller prototypes and asserts the count, so the
+  number is measured rather than remembered, with the worst fourteen also named
+  individually on the `mintHandoff` precedent.
+- 2026-08-10 — M16 credential model, TAKEN AGAINST THE RECOMMENDATION AND
+  RECORDED AS SUCH: pairing yields a refresh-capable `extension`-audience
+  session rather than a device credential exchanged per unlock. Verified in
+  shipped code before building, and the verification changed what has to ship.
+  (1) The escalation question is CLOSED but only accidentally: `AuthService.refresh`
+  never creates a session — `rotateTokens` is an in-place `UPDATE … WHERE id = $1`
+  whose SET list omits `audience` — so the audience survives because there is no
+  new row to carry it to. Nothing checks it and no test mentions it
+  (`IssuedTokens` carries no audience field, so no caller of refresh can observe
+  what it refreshed), and the standard hardening for a long-lived refresh token —
+  rotating the session id, not just the tokens — would replace that UPDATE with
+  an INSERT and silently mint an `account` session. PR1 pins the property with a
+  test rather than leaving it an implementation accident. (2) `rotateTokens`
+  does not write `expires_at`, so a session's absolute lifetime is fixed at
+  creation: "long-lived" means choosing that number deliberately, and a paired
+  extension HARD-EXPIRES and must be re-paired. (3) ROTATION-REUSE DETECTION IS
+  A SELF-REVOCATION HAZARD UNDER MV3 — a service worker killed between receiving
+  a rotated pair and persisting it presents the old token on next wake and
+  revokes its own session. The security behaviour is right and is not weakened;
+  the extension persists before use and treats revocation as "re-pair required",
+  never as something to retry. That hazard does not exist in the per-unlock
+  exchange model and is a direct cost of the choice.
+- 2026-08-10 — M16 pairing is A TYPED HUMAN-READABLE CODE, MINTED ON THE APP
+  ORIGIN — and the second half of that is a correction to the plan I proposed.
+  The MECHANISM is M13's link-code shape (Crockford alphabet + canonical fold,
+  already built) rather than `externally_connectable`, because for a
+  once-per-browser ceremony the control is an ABSENCE: no permanent
+  page→extension channel any script on the origin can address, and no extension
+  id in the vault origin's config. The LOCATION was going to be the vault origin
+  behind an open vault, and reading the shipped code showed it cannot be and
+  should not be: the vault edge allowlists three EXACT identity routes and
+  deliberately excludes `/v1/auth/handoff` because a vault session must not mint
+  another credential — "a leaked one cannot chain itself forward". Minting there
+  needs a fourth proxy entry plus a new identity route widened to the `vault`
+  audience, and it would make that sentence false, chaining a leaked 15-minute
+  no-refresh session into a 30-day refreshing one — the M15 PR4 shape
+  re-committed. So pairing is an APP-ORIGIN ceremony on the `VaultLaunch`
+  pattern (mint → shape-guard → step-up prompt with retry), account-audience +
+  step-up, and the vault origin is untouched. Residual: app-origin script can
+  read the code out of the DOM, which buys a paired extension that reaches
+  CIPHERTEXT and still needs the vault password, the Secret Key and a TOTP —
+  and which appears in the owner's device list.
+- 2026-08-10 — M16: THE VAULT ORIGIN'S EDGE IS THE EXTENSION'S SINGLE FRONT
+  DOOR, gaining an `Authorization: Bearer` path alongside its `__Host-` cookie
+  path. Forced rather than chosen — the extension cannot use the BFF (it
+  authenticates from cookies, so a bearer-bearing request arrives cookie-less
+  and throws UNAUTHENTICATED), and identity and vault are private-subnet
+  services with no other public front door. The edge already holds no
+  credential, forwards the caller's own bearer and matches an exact allowlist,
+  so this reuses the reviewed thing instead of opening a second door into Zone
+  A, and it means the extension needs `host_permissions` for exactly ONE origin.
+  The safety argument is that a hostile PAGE cannot set an `Authorization`
+  header cross-origin without a CORS opt-in this edge must never give, while an
+  extension with host permission bypasses CORS by design. `/api/auth/refresh`
+  joins the allowlist: it is a rotation of an existing credential rather than a
+  mint, so it confers nothing on a vault session, which has no refresh token by
+  construction.
+- 2026-08-10 — M16 adds STEP-UP ATTEMPT COUNTING, closing the half of docs/03
+  §6a's rate-limiting residual that a long-lived extension credential makes
+  reachable. Capping step-up bounds the SRP path TRANSITIVELY, because vault's
+  `srp/start` and `srp/verify` are themselves step-up gated — one chokepoint for
+  both. DERIVED from the append-only `auth_events` ledger (`stepup.denied` newer
+  than the latest `stepup.granted`, in a rolling window) rather than a new
+  counter: no new table, no new write path, and a count an attacker cannot
+  reset. Keyed on the USER, never the session or a resolved row — the M14
+  round-2 lesson, where the email-verification cap was decorative because a
+  wrong guess produced a different digest and no counter moved. A cap-refusal
+  emits its OWN kind (`stepup.rate_limited`) and NOT `stepup.denied`, or the
+  counter feeds itself and a retrying client locks its own user out
+  permanently. A rolling cooldown, NEVER a sticky lock: a sticky step-up lock
+  would be a denial-of-service primitive against the OWNER, reachable by anyone
+  holding a stolen credential, blocking vault open, document generation, export,
+  beneficiary changes and deletion at once — the M6 rule pointed the wrong way.
+  5 denials / 15 minutes as reviewed CONSTANTS, not config (the
+  `TEMPLATE_CACHE_TTL_MS` precedent). WebAuthn writes the same `stepup.granted`
+  kind so both factors clear the window; failed WebAuthn assertions are
+  deliberately NOT counted (not brute-forceable, and they emit their own kind).
+  NO owner notification, deliberately: identity is not a holder of the
+  notifications SEND credential (M14 — "the service that mints sessions must not
+  be able to ring 'a death report was filed on your account'"), and adding it
+  for a nice-to-have would contradict a decision one milestone old. The failure
+  mode is moot by construction — the count is an indexed read on the connection
+  the step-up already needs.
+- 2026-08-10 — FIVE DEFECTS IN SHIPPED CODE, found by verifying M16's plan
+  before writing any of it, all fixed in PR1 because every one sits in machinery
+  M16's credential model leans on. (1) A FENCE THAT WAS DOCUMENTED AND NEVER
+  WRITTEN: `004_session_audience_and_handoffs.sql` states the audience
+  vocabulary is closed in three places and that "a spec reads this file to pin
+  the first to the second" — no such spec exists anywhere;
+  `session-audience.spec.ts` imports `SESSION_AUDIENCES` and scans SERVICE
+  SOURCE, never a `.sql` file. Latent only because the two lists agree today,
+  and M16 is exactly the change that diverges them. The 2026-08-07 lesson one
+  degree worse: not a fence that stopped matching, but one that never existed
+  while a migration cited it. (2) `SessionsRepo.create` takes
+  `audience?: SessionAudience` and binds `input.audience ?? 'account'` — a
+  FAIL-OPEN DEFAULT in the one function that decides what a session may be spent
+  on, in a repo whose rule is deny by default. Made required; two call sites.
+  (3) THERE IS NO USER-REACHABLE WAY TO REVOKE ANY SESSION BUT YOUR OWN:
+  `revokeAllForUser` has exactly one caller, behind `ServiceCredentialGuard` on
+  the settlement lock, and identity exposes no session listing, no revoke-by-id,
+  and no password-change or password-reset route at all — so the classic
+  implicit mass-revoke does not exist either. Tolerable while every session is
+  one cookie-bound browser; acute the moment a 30-day rotating credential sits
+  on a device, invisible on every screen and killable only by presenting its own
+  token, i.e. not killable at all in the stolen-laptop and compromised-update
+  cases the M16 roadmap entry itself names. (4) `HandoffService.mint`'s
+  `audience` parameter is typed as the FULL union, so `mint(u, s, 'account')`
+  type-checks and only `auth_handoffs`' `CHECK (audience IN ('vault'))` stops
+  it — the one constraint an audience-widening milestone is tempted to touch.
+  (5) NO INDEX ON `auth_events` EXISTS in identity's migrations at all, so M7's
+  owner-liveness interlock scans that table today on the docs/03 §5.1 path; the
+  index the step-up counter needs pays a debt it did not create.
+- 2026-08-10 — M16 PR1 therefore SHIPS THE PRODUCT'S FIRST SESSION-MANAGEMENT
+  VERTICAL, as a precondition rather than a feature: a paired-devices list with
+  per-row revoke, which needs a live-sessions read in `sessions.repo.ts` (which
+  does not exist), a new identity route with its own audience decision,
+  `audience` added to `IdentitySession`, `SessionSchema`, the `Session` GraphQL
+  type and its persisted operation, and a REGENERATED APQ manifest — the M8 PR5
+  defect class, where an operation added to `operations.ts` but not regenerated
+  is green in dev, tests and CI and dead in production. It is also the first
+  place the product surfaces "revoke someone else's session", a verb identity
+  has reserved for the settlement lock. The M6 asymmetry applies verbatim:
+  pairing is step-up gated, revoking is one ungated click.
+- 2026-08-10 — M16 says NO to displacing autofill with passkey provisioning, and
+  corrects the premise that made the swap look cheap. docs/00 §7 lists autofill
+  as a deliverable and passkeys appear nowhere in docs/00. More to the point,
+  identity's WebAuthn machinery is a RELYING PARTY (`@simplewebauthn/server`,
+  `verifyRegistrationResponse`, credentials for Estate's own login);
+  provisioning passkeys for third-party sites means implementing an
+  AUTHENTICATOR — conditional-mediation interception, per-RP keypair generation,
+  a sync format, and an RP-id matching rule at least as strict as M16's origin
+  rule — and essentially none of identity's code is reused. It is a LARGER
+  milestone, not a cheaper swap, and it gets its own. The estate's institutions
+  (banks, brokerages, insurers, transfer agents, county recorders)
+  overwhelmingly do not offer passkeys, and a vault that cannot fill them is a
+  vault nobody uses — which means the estate's credentials never get recorded,
+  which is the whole reason feature 7 exists in an estate product. Running both
+  in one milestone was rejected too: two authenticator surfaces in one milestone
+  is how both get half-reviewed.
+- 2026-08-10 — M16 adds a TRUST BOUNDARY the model does not have: TB9, the
+  extension against arbitrary web pages, in docs/03 §3 with its own §4 STRIDE
+  block and a §6j delta. §3 enumerates TB1–TB8 and none of them is this — TB6 is
+  the client DEVICE, and the adversary here is an arbitrary PAGE reached over a
+  channel that did not previously exist. Writes from the extension are
+  `createItem` + `updateItem` and never `deleteItem`, deferred to PR4 so PR3 can
+  prove the page boundary read-only first: `vault_items_versions` captures
+  `UPDATE OR DELETE`, so an overwrite is recoverable and deletion is the
+  step-up-gated destructive verb. And `@estate/vault-crypto` gains its SECOND
+  declared importer, so the fence asserting WHO MAY IMPORT IT — the one M15 PR1
+  did not ship among its seven — lands as data in PR1, BEFORE the second
+  importer exists.
+- 2026-08-10 — M16 PR1 slice A: the SESSION-AUDIENCE VOCABULARY MOVED to
+  @estate/contracts and the ENFORCEMENT stayed in @estate/auth-guard, because a
+  consumer exists that cannot follow it — the BFF labels sessions with the
+  audience and deliberately does not depend on auth-guard, a NestJS guard
+  package having no business inside the edge. `MfaLevelSchema` travelled the
+  same way for the same reason and sits on the adjacent line. auth-guard
+  re-exports, so every existing importer is unchanged and there is still exactly
+  one definition. `DEFAULT_SESSION_AUDIENCE` is typed as the LITERAL rather than
+  widened to the union, so `audience === DEFAULT_SESSION_AUDIENCE` narrows the
+  other branch — the fence that walks the audience tables needs that narrowing,
+  and the annotation was throwing away which member it is.
+  Also in slice A: `SessionsRepo.create`'s `audience` is REQUIRED (the compile
+  error immediately found a THIRD mint path, in an int spec, that had been
+  silently receiving `account`); `HandoffService.mint`'s audience parameter was
+  DELETED rather than narrowed, since nothing passed it and M16 pairs extensions
+  through their own ceremony — a future audience adds it back in the same change
+  as its DDL widening, which is strictly better than finding the knob already
+  there and assuming the database agrees; and `005_auth_events_index.sql` adds
+  the first index `auth_events` has ever had, which is a debt rather than a
+  feature (M7's owner-liveness read has been a sequential scan on the docs/03
+  §5.1 chain since it shipped). Recorded in that migration: the migrator runs
+  every file inside BEGIN/COMMIT, so `CREATE INDEX CONCURRENTLY` is structurally
+  inexpressible — fine on an empty table, and whoever first runs it against a
+  populated one must build the index out of band and let `IF NOT EXISTS` make
+  the migration a no-op.
+- 2026-08-10 — TWO WAYS TO FAKE A MUTATION TEST, both committed by me in one
+  session and both worth the entry because neither is visible in a green run.
+  (1) `git checkout --` IS NOT A MUTATION-REVERT FOR UNCOMMITTED WORK. Mutating
+  a fence and reverting with git works only while the file is clean; used on the
+  fence I was in the middle of writing, it silently restored HEAD and deleted
+  the fence, and the "baseline" that followed was green because it was testing
+  the OLD file — the count dropping from 15 to 10 was the only tell. Revert from
+  a saved copy when the file under test is itself the work. (2) A MUTATION THAT
+  DOES NOT MUTATE READS EXACTLY LIKE A TEST THAT CANNOT FAIL. A column-order
+  mutation of `005` appeared to prove the ordering assertion toothless; in fact
+  `String.replace` with a string argument replaces the FIRST occurrence, which
+  was the same tuple written in the comment above the DDL. The statement was
+  never touched. Both cases produce the same symptom — a mutation that stays
+  green — and the response has to be to verify the artifact actually changed
+  before concluding anything about the test.
+- 2026-08-10 — M16 PR1 slice C, the step-up cap AS BUILT. `deniedSinceLastGrant`
+  counts `stepup.denied` newer than the latest `stepup.granted` within a rolling
+  window, both branches served by the index `005` added; the refusal is 429
+  `too_many_attempts` with its own ledger kind and its own audit action
+  (`auth.stepup.rate_limited`, the FIRST step-up outcome audited — individual
+  denials are deliberately not, being ordinary noise, while hitting the cap is
+  at most one event per window and is the burst signal docs/03 §4 TB1 asks for).
+  The gate runs BEFORE the code is checked, so an exhausted caller never causes
+  the TOTP secret to be read and the refusal's timing cannot vary with whether
+  the guess was right. Proven at BOTH layers and said out loud in both files:
+  the unit suite fakes the repo and therefore proves only the DECISION, and
+  `stepup-cap.int.spec.ts` drives the real `AuthService` over the real repo
+  against Postgres — the M14 round-2 lesson applied before it could bite, since
+  a test that called the repo directly would prove the primitive that was
+  already right and say nothing about the decision that could be wrong.
+- 2026-08-10 — M16 PR1 slice C, THE PAIRING CEREMONY. A readable `EP1-…` code
+  minted on the APP origin under step-up (account audience only, undecorated =
+  deny by default, named by its own test for the same reason `mintHandoff` is),
+  displayed for the user to type into the extension, redeemed UNAUTHENTICATED —
+  the extension has no session yet, so the code is the only selector and there
+  is nowhere in the request to name an account (§6g). Redemption yields an
+  `extension`-audience session with a REAL refresh token, which is the whole
+  difference from M15's handoff and the reason the audience is admitted per
+  handler to a set that yields ciphertext and cannot destroy. NO STEP-UP is
+  granted, per the M15 PR4 rule that an unauthenticated redeem route must not
+  produce a step-up-fresh session while `POST /v1/vault/reset` is gated on
+  step-up alone. Session lifetime is a HARD 30 days — `rotateTokens` does not
+  write `expires_at`, so refresh cannot extend it and a paired extension must be
+  re-paired, which costs a fresh step-up. TTL is 10 MINUTES, taken from the
+  journey (screen → popup, one sitting) rather than from M14's mailbox or M13's
+  phone call or M15's sixty seconds for a code no human ever sees. NO ATTEMPT
+  CAP COLUMN, deliberately: a cap can only count attempts it can ATTRIBUTE, and
+  a wrong guess against an unauthenticated route resolves no row — the exact
+  shape that made M14's cap decorative until it was re-keyed onto the user, and
+  there is no user here until redemption succeeds. The bound is 160 bits plus
+  the short TTL, which is `auth_handoffs`' argument unchanged.
+- 2026-08-10 — M16 PR1 slice C, THE PRODUCT'S FIRST SESSION-MANAGEMENT VERTICAL:
+  `GET /v1/auth/sessions` and `DELETE /v1/auth/sessions/:id`. It is a
+  precondition rather than a feature — before M16 a session was a cookie in one
+  browser and the only thing anyone could do to it was present it, so there was
+  nothing to list; a 30-day extension credential that outlives the browser and
+  appears on no screen is what makes the absence intolerable. THE LOAD-BEARING
+  PIECE IS `revokeOwned`: the existing `revoke(sessionId, …)` takes an id and NO
+  owner, which is right for its callers (logout already holds a verified
+  session, the settlement lock is a service credential acting on a whole
+  account) and catastrophic for a route where the id arrives in the URL — any
+  authenticated caller could have killed any session in the product. The owner
+  predicate rides the UPDATE rather than sitting in a check above it (the M13
+  `contact_in_use` race), and the boolean it returns is what lets the route
+  answer a UNIFORM 404 for "no such session" and "not yours" alike, so the reply
+  is no oracle for whether an id names something real. Revocation is NOT
+  step-up gated while minting a pairing is — the M6 asymmetry, and the reason is
+  concrete here: a user who thinks their extension is compromised must not be
+  sent to find an authenticator first. Both routes are account-audience only; an
+  extension enumerating the owner's other devices is reconnaissance, not
+  function. The list deliberately returns ids, audience and timestamps and NOT
+  `ip_ct`/`device_id`, which exist as columns and are written by nothing —
+  returning them would be a promise the data cannot keep.
+- 2026-08-10 — M16 PR1: `audience` FINALLY CROSSES THE BFF, and the defect was
+  an absence rather than a mistake. Identity has RETURNED the field on its
+  introspection response since M15 and the BFF silently discarded it — `z.object`
+  strips unknown keys, so there was no parse error, no log and no failing test,
+  and "the BFF has no audience" read like a missing identity field when it was a
+  missing line in one schema. It matters now because a paired-devices list has
+  to say "browser extension" rather than "a session". Threaded through
+  `IdentitySession`, `SessionSchema` (tolerant `.default()` for an identity that
+  predates the field, on the verifier's reasoning — only identity mints a
+  non-account audience, so an identity old enough to omit it has none to
+  describe; an UNRECOGNISED value still fails the parse), a `SessionAudience`
+  GraphQL enum, `SessionPayload`, and an exhaustive `AUDIENCE_GQL` Record so a
+  fourth audience is a COMPILE error rather than an unmapped value reaching a
+  client. THE APQ MANIFEST WAS REGENERATED, which is the M8 PR5 trap paid rather
+  than re-sprung: a field added to the document without it is green in dev,
+  tests and CI and dead in production with "Operation not allowed". And
+  `apps/bff/test/helpers.ts` held a HAND-COPY of the same document, which
+  `persisted.spec.ts` hashes — so the suite would have stayed green while
+  executing a document no client sends. Updated, with the hazard written next to
+  it, because the BFF does not depend on the web app and the copy cannot be
+  derived away without a package neither wants.
+- 2026-08-10 — `readable-code.ts` EXTRACTED, because M16 would have been the
+  THIRD byte-identical copy of the same base32 derivation and fold (M13's
+  `ESL1-`, M14's `EV1-`, now `EP1-`) — the M8 PR2 shape where seven audit
+  producers shared one bug because there was one behaviour and several places to
+  fix it. Identity's two ceremonies now share it and `email-verification.service`
+  re-exports the old symbols so every importer is unchanged. PROFILE'S COPY
+  REMAINS, and that is stated in the module rather than left to be discovered:
+  it is a different service, sharing would need a package, and unifying a
+  shipped M13 ceremony is a change to M13 rather than a part of M16. Two copies
+  is worse than one and better than three.
+- 2026-08-10 — MY MUTATION HARNESS LIED TO ME TWICE MORE, in the two remaining
+  ways it can, and both made RED LOOK GREEN — the dangerous direction. (1) THE
+  OBSERVATION was broken: passing two spec files to jest drops it out of verbose
+  mode, so no `✕` lines are printed, and a grep for `✕` reported nothing while
+  four tests were failing. Six mutations in a row read as "no test catches
+  this". (2) THE MUTATION was broken, again — a `node -e` inside shell quotes
+  lost `$1` to expansion, so the SQL predicate was never changed and its green
+  read as a coverage gap. The fix for both is the same shape and it is now the
+  rule: a mutation harness is a FILE, not a `node -e` string; it VERIFIES the
+  bytes changed and throws if they did not; and the observation asserts on the
+  summary line, not on a decoration that depends on jest's output mode. With
+  that in place all six mutations turn red on the assertions that name the
+  property. A corollary worth keeping: the guard caught a third case honestly —
+  an anchor of `const ok = await this.checkTotp` also matches the TOTP-ENROLMENT
+  path earlier in the file, so `end < start` and the harness refused rather than
+  silently mutating nothing.
+- 2026-08-10 — AND A TEST OF M15's THAT WAS ALREADY NAMED FOR A PROPERTY IT
+  NEVER TOUCHED, found by slice A rather than by the review. `handoffs.int.spec`
+  asserted "a session created without an audience IS an account session" and
+  commented that it proved "the migration's DEFAULT" — but its row was seeded
+  through `SessionsRepo.create`, which bound `input.audience ?? 'account'`, so
+  the INSERT always named the column and the DDL default was never once
+  exercised. It measured the TypeScript fallback while claiming to measure the
+  DDL. Deleting that fallback left it asserting that a value written two lines
+  earlier comes back. It inserts in RAW SQL with the column omitted now, which
+  is the only path that reaches the default, and a mutation of the DDL default
+  turns it red — a mutation the previous version was blind to.
+

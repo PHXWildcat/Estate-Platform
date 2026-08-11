@@ -19,9 +19,15 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { AUDIENCE_ADMITTERS, AUDIENCE_ROUTE_ADMITTERS, SESSION_AUDIENCES } from '../src/session';
+import {
+  AUDIENCE_ADMITTERS,
+  AUDIENCE_ROUTE_ADMITTERS,
+  DEFAULT_SESSION_AUDIENCE,
+  SESSION_AUDIENCES,
+} from '../src/session';
 
 const SERVICES_DIR = join(__dirname, '..', '..', '..', 'apps', 'services');
+const IDENTITY_MIGRATIONS = join(SERVICES_DIR, 'identity', 'migrations');
 const TOKEN = 'ALLOWED_SESSION_AUDIENCES';
 
 function serviceNames(): string[] {
@@ -215,5 +221,177 @@ describe('session-audience grants match the declaration', () => {
         }
       }
     });
+  });
+
+  /**
+   * NO AUDIENCE IS DECLARED WITH NOBODY TO HOLD IT (M16).
+   *
+   * Both tables are `Record`s over the non-default audiences, so widening the
+   * union is a compile error until each is filled in — which is the fence
+   * working. But an EMPTY ARRAY satisfies the type, and every assertion above
+   * iterates the arrays, so a declaration of `{ …, extension: [] }` makes the
+   * whole suite pass over an audience nothing admits.
+   *
+   * That is not a tidiness point. An audience with no admitter anywhere is a
+   * session identity can mint and no service will ever accept — a credential
+   * that fails closed everywhere while reading, from the table, like a granted
+   * capability. The M8 rule about a zero-holder credential edge applies: it may
+   * exist, but only as a DELIBERATE subtraction somebody wrote down, never as
+   * the default an empty literal hands you.
+   */
+  it('every declared audience is admitted by at least one service or route', () => {
+    for (const audience of SESSION_AUDIENCES) {
+      if (audience === DEFAULT_SESSION_AUDIENCE) continue;
+      const serviceWide = AUDIENCE_ADMITTERS[audience] ?? [];
+      const perRoute = AUDIENCE_ROUTE_ADMITTERS[audience] ?? [];
+      expect({ audience, admitted: serviceWide.length + perRoute.length > 0 }).toEqual({
+        audience,
+        admitted: true,
+      });
+    }
+  });
+});
+
+/**
+ * THE VOCABULARY IS CLOSED IN SQL AS WELL AS IN TYPESCRIPT (M16).
+ *
+ * `004_session_audience_and_handoffs.sql` states that the audience vocabulary is
+ * closed in three places — this CHECK, the `SESSION_AUDIENCES` union, and the
+ * zod enum on the introspection response — and that "a spec reads this file to
+ * pin the first to the second".
+ *
+ * NO SUCH SPEC EXISTED. A grep of the repo for the migration's name returns
+ * nothing; the suite above imports `SESSION_AUDIENCES` and scans SERVICE SOURCE,
+ * never a `.sql` file. The claim was false for the life of M15 — worse than the
+ * 2026-08-07 lesson, where a fence stopped matching, because this one never
+ * matched while a migration cited it. This is that spec.
+ *
+ * The third place needs no pinning and is deliberately not checked here: the
+ * introspection enum is `z.enum(SESSION_AUDIENCES)` in `verifier.ts`, DERIVED
+ * from the union rather than restating it, so it cannot drift by construction.
+ * Only the SQL is a second hand-written copy.
+ *
+ * IT FOLLOWS THE MIGRATION CHAIN RATHER THAN ONE FILE, which is the whole reason
+ * this is not three lines. Migrations are append-only under checksum drift
+ * detection, so widening the vocabulary means a LATER migration dropping and
+ * re-adding the constraint — a fence pinned to 004's text would go red on the
+ * first legitimate widening and be deleted by whoever hit it. What is checked is
+ * the EFFECTIVE constraint: the last statement, in filename order, that
+ * constrains that table's `audience` column.
+ */
+describe('the SQL audience vocabulary matches the TypeScript union', () => {
+  /**
+   * One statement's contribution to the audience column's shape.
+   *
+   * `values` and `defaultValue` are OPTIONAL and tracked separately, because
+   * they are independent properties with independent histories — which this
+   * suite learned the hard way. M16's widening migration is
+   * `ALTER TABLE … DROP CONSTRAINT` + `ADD CONSTRAINT`, touching the CHECK and
+   * saying nothing about the DEFAULT; a first draft took "the last statement
+   * mentioning audience" as authoritative for both and duly reported that the
+   * column had lost its default. Collapsing two facts into one lookup is the
+   * same shape as the mistakes this file exists to catch.
+   */
+  interface AudienceConstraint {
+    readonly file: string;
+    readonly table: string;
+    /** Present when this statement (re)defines the CHECK. */
+    readonly values?: string[];
+    /** Present when this statement decides the DEFAULT; null means DROP DEFAULT. */
+    readonly defaultValue?: string | null;
+  }
+
+  /**
+   * Every audience CHECK in identity's migrations, in application order.
+   *
+   * `$$…$$` bodies and `--` comments are stripped BEFORE splitting on `;`,
+   * because 001 defines trigger functions whose bodies contain semicolons and a
+   * naive split would attribute half a function body to the wrong table.
+   */
+  function audienceConstraints(): AudienceConstraint[] {
+    const files = readdirSync(IDENTITY_MIGRATIONS)
+      .filter((name) => name.endsWith('.sql'))
+      .sort();
+    const found: AudienceConstraint[] = [];
+    for (const file of files) {
+      const sql = readFileSync(join(IDENTITY_MIGRATIONS, file), 'utf8')
+        .replace(/\$\$[\s\S]*?\$\$/g, ' ')
+        .replace(/--[^\n]*/g, ' ');
+      for (const statement of sql.split(';')) {
+        const check = /CHECK\s*\(\s*audience\s+IN\s*\(([^)]*)\)\s*\)/i.exec(statement);
+        const setsDefault = /audience[^;]*?DEFAULT\s+'([^']+)'/i.exec(statement);
+        const dropsDefault = /ALTER\s+COLUMN\s+audience\s+DROP\s+DEFAULT/i.test(statement);
+        if (!check && !setsDefault && !dropsDefault) continue;
+        const target =
+          /(?:ALTER|CREATE)\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)/i.exec(statement);
+        found.push({
+          file,
+          table: (target?.[1] ?? '<unparsed>').toLowerCase(),
+          ...(check
+            ? { values: [...(check[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1] ?? '').sort() }
+            : {}),
+          ...(dropsDefault
+            ? { defaultValue: null }
+            : setsDefault
+              ? { defaultValue: setsDefault[1] as string }
+              : {}),
+        });
+      }
+    }
+    return found;
+  }
+
+  /** The CHECK actually in force for a table: the last statement to define one. */
+  function effectiveCheck(table: string): string[] | undefined {
+    return audienceConstraints()
+      .filter((c) => c.table === table && c.values !== undefined)
+      .at(-1)?.values;
+  }
+
+  /** The DEFAULT in force: the last statement to decide one. `null` = dropped. */
+  function effectiveDefault(table: string): string | null | undefined {
+    return audienceConstraints()
+      .filter((c) => c.table === table && c.defaultValue !== undefined)
+      .at(-1)?.defaultValue;
+  }
+
+  it('finds the constraints it is meant to be checking', () => {
+    // Anti-vacuity, the credential-graph lesson: a scan that silently matches
+    // nothing passes every assertion below it.
+    const all = audienceConstraints();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.filter((c) => c.table === '<unparsed>')).toEqual([]);
+    expect(all.map((c) => c.table)).toContain('sessions');
+    expect(all.map((c) => c.table)).toContain('auth_handoffs');
+  });
+
+  it('sessions.audience admits EXACTLY the declared union', () => {
+    // Both directions in one assertion. A value in the union and not the CHECK
+    // means identity cannot mint what its own types say exists — a runtime
+    // 23514 on the first session of that kind. A value in the CHECK and not the
+    // union means the database accepts an audience `CallerGuard` has never
+    // heard of, which the verifier's enum then fails closed on: an outage
+    // shaped like a bug rather than a control.
+    expect(effectiveCheck('sessions')).toEqual([...SESSION_AUDIENCES].sort());
+  });
+
+  it('sessions.audience defaults to the same value the TypeScript default names', () => {
+    // The column default exists so M15's ALTER could populate pre-existing
+    // rows, and `DEFAULT_SESSION_AUDIENCE` is what an absent field parses to.
+    // Two statements of one fact, which must not drift.
+    expect(effectiveDefault('sessions')).toBe(DEFAULT_SESSION_AUDIENCE);
+  });
+
+  it('a handoff can never mint the DEFAULT audience', () => {
+    // `HandoffService.mint` types its `audience` parameter as the FULL union,
+    // so `mint(user, session, 'account')` type-checks and this CHECK is the only
+    // thing stopping it. Whoever widens it for a future audience trips this test
+    // rather than discovering the consequence.
+    const handoffs = effectiveCheck('auth_handoffs');
+    expect(handoffs?.length).toBeGreaterThan(0);
+    expect(handoffs).not.toContain(DEFAULT_SESSION_AUDIENCE);
+    for (const value of handoffs ?? []) {
+      expect(SESSION_AUDIENCES).toContain(value);
+    }
   });
 });
