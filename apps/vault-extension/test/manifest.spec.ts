@@ -20,6 +20,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { PACKAGED_VAULT_ORIGIN as DEV_ORIGIN } from '../src/origin';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -150,6 +151,16 @@ describe('the build bakes the origin, and only a real origin', () => {
       for (const entry of ['main.js', 'offscreen.js', 'background.js']) {
         if (entry !== options.omitEntry) writeFileSync(join(out, entry), '');
       }
+      // `origin.js` carries the dev default from source and the build
+      // substitutes into it, so the stub has to contain the string that gets
+      // replaced — a stub of `''` would make the substitution a silent no-op
+      // and this test would prove nothing about it.
+      if (options.omitEntry !== 'origin.js') {
+        writeFileSync(
+          join(out, 'origin.js'),
+          `export const PACKAGED_VAULT_ORIGIN = '${DEV_ORIGIN}';\n`,
+        );
+      }
       execFileSync(process.execPath, [join(ROOT, 'scripts', 'build-package.mjs')], {
         cwd: ROOT,
         env: { ...process.env, VAULT_ORIGIN: origin, OUT_DIR: out },
@@ -186,5 +197,83 @@ describe('the build bakes the origin, and only a real origin', () => {
     ['https://vault.estate.test/path', 'carries a path'],
   ])('refuses %s (%s)', (origin) => {
     expect(() => build(origin)).toThrow();
+  });
+});
+
+describe('the packaged origin and the manifest are ONE value', () => {
+  /**
+   * THE CHECK THAT MAKES TWO PLACES SAFE.
+   *
+   * The origin is written twice by the build — into `manifest.json`, which the
+   * browser enforces, and into `origin.js`, which the code composes URLs
+   * against. It has to be: an offscreen document cannot read the manifest back
+   * (measured in Chrome 151 — it gets `chrome.runtime`'s messaging surface and
+   * nothing else), and the key holder lives in one.
+   *
+   * Two places holding one value is the drift shape this repo keeps finding, so
+   * it is asserted against a REAL build rather than argued about. A wrong
+   * constant cannot widen what the extension reaches — `host_permissions` is
+   * what the browser enforces, so the failure would be refused requests — but it
+   * would be refused requests nobody could explain, which is how the defect this
+   * check exists for presented in the first place.
+   */
+  const ORIGIN = 'https://vault.parity.test';
+
+  it('substitutes the same origin into both', () => {
+    const out = mkdtempSync(join(tmpdir(), 'vault-parity-'));
+    try {
+      for (const entry of ['main.js', 'offscreen.js', 'background.js']) {
+        writeFileSync(join(out, entry), '');
+      }
+      writeFileSync(
+        join(out, 'origin.js'),
+        `export const PACKAGED_VAULT_ORIGIN = '${DEV_ORIGIN}';\n`,
+      );
+      execFileSync(process.execPath, [join(ROOT, 'scripts', 'build-package.mjs')], {
+        cwd: ROOT,
+        env: { ...process.env, VAULT_ORIGIN: ORIGIN, OUT_DIR: out },
+        stdio: 'pipe',
+      });
+
+      const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')) as {
+        host_permissions: string[];
+      };
+      const module_ = readFileSync(join(out, 'origin.js'), 'utf8');
+
+      expect(manifest.host_permissions).toEqual([`${ORIGIN}/*`]);
+      expect(module_).toContain(`'${ORIGIN}'`);
+      // And the dev default is GONE from the packaged module — a substitution
+      // that appended rather than replaced would satisfy the line above.
+      expect(module_).not.toContain(DEV_ORIGIN);
+
+      // The two are the same value, derived from each other rather than both
+      // compared to a literal in this test.
+      const fromManifest = (manifest.host_permissions[0] ?? '').replace(/\/\*$/, '');
+      const fromModule = /PACKAGED_VAULT_ORIGIN = '([^']+)'/.exec(module_)?.[1];
+      expect(fromModule).toBe(fromManifest);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to package when the substitution would be a no-op', () => {
+    // A stub that does not contain the string to replace means the build would
+    // ship a module pointing somewhere else entirely. It fails instead.
+    const out = mkdtempSync(join(tmpdir(), 'vault-parity-'));
+    try {
+      for (const entry of ['main.js', 'offscreen.js', 'background.js']) {
+        writeFileSync(join(out, entry), '');
+      }
+      writeFileSync(join(out, 'origin.js'), "export const PACKAGED_VAULT_ORIGIN = 'nope';\n");
+      expect(() =>
+        execFileSync(process.execPath, [join(ROOT, 'scripts', 'build-package.mjs')], {
+          cwd: ROOT,
+          env: { ...process.env, VAULT_ORIGIN: ORIGIN, OUT_DIR: out },
+          stdio: 'pipe',
+        }),
+      ).toThrow();
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
   });
 });

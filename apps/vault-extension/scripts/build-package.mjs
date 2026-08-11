@@ -8,9 +8,12 @@
  * from runtime configuration. What M8 PR5 taught is that a baked value must
  * then be ASSERTED rather than assumed, which `test/manifest.spec.ts` does.
  *
- * There is deliberately no SECOND copy of the origin in the source: `config.ts`
- * reads it back out of the manifest at runtime, so this script is the only
- * place it is written and there is nothing for it to drift against.
+ * IT IS WRITTEN TWICE, into the manifest and into `origin.js`, because an
+ * offscreen document cannot read the manifest back (measured in Chrome 151:
+ * it gets `chrome.runtime`'s messaging surface and nothing else), and the key
+ * holder lives in one. Two places holding one value is a drift risk, so it is
+ * CHECKED rather than trusted — `test/manifest.spec.ts` builds a real package
+ * and asserts the two agree.
  */
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -72,11 +75,36 @@ await Promise.all(statics.map((name) => copyFile(join(publicDir, name), join(dis
  * `web.Dockerfile` lesson (2026-08-06), where a file the build silently did not
  * copy became a runtime 404 nothing checked for.
  */
-const required = ['popup.html', 'offscreen.html', 'main.js', 'offscreen.js', 'background.js'];
+const required = [
+  'popup.html',
+  'offscreen.html',
+  'main.js',
+  'offscreen.js',
+  'background.js',
+  // The generated origin. Missing it would otherwise surface as an ENOENT from
+  // the substitution below, naming a path instead of the omission.
+  'origin.js',
+];
 const present = new Set(await readdir(dist));
 const missing = required.filter((name) => !present.has(name));
 if (missing.length > 0) {
   throw new Error(`packaged extension is missing: ${missing.join(', ')}`);
+}
+
+/*
+ * The compiled `origin.js` carries the dev default from source; the packaged one
+ * carries whatever this build was given. Substituted by exact string, and the
+ * result is REPARSED from the file so a silent no-op cannot pass for a write.
+ */
+const originModule = join(dist, 'origin.js');
+const compiled = await readFile(originModule, 'utf8');
+const substituted = compiled.replace(DEFAULT_ORIGIN, origin);
+if (!substituted.includes(origin)) {
+  throw new Error(`origin.js substitution produced no ${origin}`);
+}
+await writeFile(originModule, substituted);
+if (origin !== DEFAULT_ORIGIN && (await readFile(originModule, 'utf8')).includes(DEFAULT_ORIGIN)) {
+  throw new Error('origin.js still carries the default after substitution');
 }
 
 process.stdout.write(

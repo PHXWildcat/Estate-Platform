@@ -13,7 +13,18 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const TEST_ORIGIN = 'https://vault.estate.test';
+/*
+ * THE ORIGIN THE CODE ACTUALLY USES, imported rather than restated.
+ *
+ * It used to be an invented value (`https://vault.estate.test`) that the double
+ * fed back through `getManifest`, which worked while `config.ts` read the
+ * manifest. It no longer does — an offscreen document cannot call
+ * `getManifest`, so the value is packaged into `origin.ts` — and a double that
+ * kept asserting an invented origin would be testing the double.
+ */
+export { PACKAGED_VAULT_ORIGIN as TEST_ORIGIN } from '../src/origin';
+import { PACKAGED_VAULT_ORIGIN } from '../src/origin';
+const TEST_ORIGIN = PACKAGED_VAULT_ORIGIN;
 
 const TEMPLATE = readFileSync(join(__dirname, '..', 'manifest.template.json'), 'utf8');
 

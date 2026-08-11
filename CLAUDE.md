@@ -3812,3 +3812,63 @@ deviating from them, stop and propose the change with rationale — do not silen
   transit even had the probes run. A measurement rig needs the same "did this
   actually report, or merely not fail" discipline as a fence — which is why the
   extension now announces its own load.
+- 2026-08-11 — M16 PR3b WAS DRIVEN IN A REAL CHROME AND FOUND THE DEFECT THAT
+  MADE PR2b INERT: AN OFFSCREEN DOCUMENT CANNOT READ ITS OWN MANIFEST. Measured,
+  with the popup as the control — the popup's `chrome` carries
+  `action, dom, extension, i18n, management, offscreen, permissions, runtime`
+  while the offscreen document's carries `loadTimes, csi, runtime` and nothing
+  else: no `getManifest`, no `chrome.storage`. `config.ts`'s `vaultOrigin()` read
+  the origin back out of `chrome.runtime.getManifest()` — deliberately, so there
+  was ONE copy of the value and nothing to drift against — and the key holder
+  lives in an offscreen document, so every vault request threw there. `api.ts`
+  caught it and returned `NETWORK`, so the product told the user to CHECK THEIR
+  CONNECTION. M16 PR2b shipped an extension that could never unlock a vault.
+  Nothing in jsdom could have caught it: `test/chrome-double.ts` supplies
+  `getManifest` unconditionally, so THE DOUBLE WAS MORE GENEROUS THAN THE
+  PLATFORM — the fixture lesson this repo keeps relearning, one layer beneath
+  the fixtures, and the reason a double must be faithful about absences and not
+  only about values.
+  A SECOND, MASKING DEFECT sat on top: `vaultOrigin()` was called INSIDE the
+  `try` whose `catch` returns `NETWORK`, so a CONFIGURATION error wore a
+  CONNECTION error's words. That is what hid it for a whole PR — the message
+  named the one thing that was not wrong. It is resolved before the `try` now.
+  FIXED BY GENERATING THE ORIGIN AT BUILD TIME (approved): `src/origin.ts` holds
+  the dev default and `build-package.mjs` substitutes the same `VAULT_ORIGIN` it
+  writes into the manifest, after the same validation. That is a SECOND PLACE
+  the value appears, which is exactly what the old design existed to avoid, so
+  it is a second place that is CHECKED rather than trusted: `manifest.spec.ts`
+  builds a real package and asserts the two agree — derived from each other, not
+  both compared to a literal — plus a case proving the build REFUSES when the
+  substitution would be a no-op. A wrong constant cannot widen reach, because
+  `host_permissions` is what the browser enforces; it would produce refused
+  requests, which is how this presented in the first place.
+  The obsolete describe was REWRITTEN, not deleted (the third time this PR),
+  and it now includes a case that calls `vaultOrigin()` with NO `chrome` at all
+  — stricter than the offscreen document, where it exists but is nearly empty.
+  THE END-TO-END DRIVE, against the running stack with a real account, a real
+  TOTP step-up, a real SRP unlock and an item sealed by the same
+  `@estate/vault-crypto` the worker opens: pairing 200, step-up 200, unlock
+  `{status: unlocked}`, PR3a matching `{kind: match, domain: example.test}`, and
+  PR3b's fill returning the credential for its own page while refusing BOTH
+  `other.test` and the lookalike `exarnple.test` with an indistinguishable
+  `null` — even though the caller named the item explicitly, which is the whole
+  shape of the variant. Then the injection itself, verified IN THE PAGE rather
+  than from the popup's own message: the password and username filled, the
+  page's React-style value tracker FIRED (`data-change-count` 1 — so a naive
+  `el.value =` from the isolated world really is enough, and the prototype-setter
+  dance really is unnecessary), `document.activeElement` still `BODY` (nothing
+  focused, therefore no `blur`), the URL unchanged with nothing submitted, and
+  the SAME-ORIGIN SUBFRAME LEFT EMPTY — the top-frame-only decision holding in
+  reality rather than in a comment.
+  THREE FALSE STARTS, all mine, all worth the entry because each was a wrong
+  thing to believe rather than a wrong thing to type. (1) The stack's `vault-web`
+  container predated PR2a's pass-through table, so pairing 404'd — a STALE
+  ARTIFACT, diagnosed by comparing the edge (404) against identity directly
+  (401) rather than by reading code. (2) I stored the paired session under a key
+  I INVENTED (`estate.vault.session`); the real one is `estate.session`, so the
+  popup kept showing "Connect to Estate" while I insisted it was paired. (3) The
+  rig's own `run.mjs` exits after its wait window and took the page server with
+  it, so the tab became a Chrome error page and the fill correctly reported "no
+  password field was found" — the extension behaving WELL under a condition I
+  had broken, and the distinction `inject.ts` draws between "the injection ran"
+  and "it filled something" earning its place.
