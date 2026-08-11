@@ -43,6 +43,8 @@ export type ApiFailure =
   | 'VAULT_LOCKED'
   | 'NOT_FOUND'
   | 'UNAVAILABLE'
+  | 'VERSION_CONFLICT'
+  | 'ITEM_EXISTS'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -70,6 +72,16 @@ function failureFor(status: number, token: string | null): ApiFailure {
     if (token === 'vault_locked') return 'VAULT_LOCKED';
     return 'UNKNOWN';
   }
+  if (status === 409) {
+    // TWO 409s, KEPT APART (M16 PR4a). `version_conflict` means somebody else
+    // changed the item since it was read — the user must look again before
+    // overwriting. `item_exists` means this exact create already succeeded, so
+    // a retry is a NO-OP rather than a failure: the client-generated UUID makes
+    // create idempotent, and the vault service says so in its own comment.
+    if (token === 'version_conflict') return 'VERSION_CONFLICT';
+    if (token === 'item_exists') return 'ITEM_EXISTS';
+    return 'UNKNOWN';
+  }
   if (status === 404) return 'NOT_FOUND';
   if (status === 502 || status === 503) return 'UNAVAILABLE';
   return 'UNKNOWN';
@@ -83,6 +95,15 @@ export interface RequestOptions {
    * (pairing redemption and refresh), whose authority is in the body.
    */
   readonly bearer?: string | undefined;
+  /**
+   * `If-Match: <blobVersion>` — REQUIRED by the vault service on an item update
+   * and refused as `invalid_request` when absent, so it is an explicit option
+   * rather than something a caller can forget into a 400. It is the version the
+   * caller READ, not the one it sealed under: the service writes
+   * `locked.blob_version + 1`, and the blob must already be sealed for that
+   * number because the version is inside the AEAD's AAD.
+   */
+  readonly ifMatch?: number | undefined;
   /**
    * The opaque vault-session token from a completed SRP unlock (M16 PR2b).
    *
@@ -104,6 +125,7 @@ export async function request<T>(
   if (options.vaultSession !== undefined) {
     headers['x-estate-vault-session'] = options.vaultSession;
   }
+  if (options.ifMatch !== undefined) headers['if-match'] = String(options.ifMatch);
 
   /*
    * RESOLVED BEFORE THE TRY, and that placement is a fix rather than a tidy-up.

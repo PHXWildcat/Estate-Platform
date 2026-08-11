@@ -171,7 +171,12 @@ describe('unlocking through the host', () => {
     expect(listed).toEqual({
       ok: true,
       data: [
-        { id: '05555555-0000-4000-8000-000000000000', itemType: 'password', title: 'Bank login' },
+        {
+          id: '05555555-0000-4000-8000-000000000000',
+          itemType: 'password',
+          title: 'Bank login',
+          blobVersion: 1,
+        },
       ],
     });
 

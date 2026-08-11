@@ -65,8 +65,10 @@ function ifMatchOf(req: CallerRequest): number {
  *
  * M16 ADDS A THIRD GATE, and it runs across the other two rather than beside
  * them: the SESSION AUDIENCE. This service admits `account` and `vault`
- * service-wide, and five handlers here additionally admit `extension` —
- * `keysetStatus`, both SRP legs, `listItems` and `lock`. That set is not a
+ * service-wide, and seven handlers here additionally admit `extension` —
+ * `keysetStatus`, both SRP legs, `listItems`, `createItem`, `updateItem` and
+ * `lock`. `createItem` and `updateItem` arrived with M16 PR4a; `deleteItem` did
+ * NOT and does not, because it is the destructive verb. That set is not a
  * subset of either guard above, which is exactly why it is declared per handler:
  * the step-up-alone routes include both `reset` and the two SRP legs, so no
  * guard-shaped rule could admit an extension to the second without handing it
@@ -74,10 +76,19 @@ function ifMatchOf(req: CallerRequest): number {
  *
  * Read the decorators as a bound on a COMPROMISED CLIENT rather than as
  * permissions for a trusted one. A browser extension is delivered by a vendor
- * store that can update it silently, so what matters is that everything it can
- * reach yields ciphertext — `listItems` sits behind VaultSessionGuard, which
- * only a completed SRP unlock satisfies, and that needs the vault password and
- * the device Secret Key, neither of which this platform holds. The declaration
+ * store that can update it silently, so what matters is WHAT THE CREDENTIAL
+ * ALONE BUYS: nothing. Every item route it reaches — read or write — sits
+ * behind VaultSessionGuard, which only a completed SRP unlock satisfies, and
+ * that needs the vault password, the device Secret Key and a fresh step-up,
+ * none of which this platform holds.
+ *
+ * WHAT AN UNLOCKED VAULT BUYS IS LARGER SINCE PR4a, and the docstring said
+ * "everything it can reach yields ciphertext" until then. It no longer does: an
+ * unlocked extension can overwrite an item's blob with any bytes, so the
+ * contents are at risk even though the KEYSET is not (`reset` and both keyset
+ * routes stay refused, as do all eleven emergency routes). `vault_items_versions`
+ * keeps the prior image, but nothing in the product reads it — see docs/03 §6j.
+ * The declaration
  * lives in `AUDIENCE_ROUTE_ADMITTERS`; `test/session-audience.spec.ts` names
  * every route that must refuse it.
  */

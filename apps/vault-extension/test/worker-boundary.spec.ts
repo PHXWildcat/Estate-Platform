@@ -172,7 +172,8 @@ describe('the port over the worker', () => {
       isUnlocked: true,
       prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
       finish: () => Promise.resolve(),
-      summarise: () => Promise.resolve([{ id: 'i', itemType: 'password', title: 'Zed' }]),
+      summarise: () =>
+        Promise.resolve([{ id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1 }]),
       matchesFor: () => Promise.resolve([]),
       fillFor: () => Promise.resolve(null),
       lock: () => undefined,
@@ -192,7 +193,9 @@ describe('the port over the worker', () => {
       port.finish({ serverM2: 'a', wrappedMasterKey: 'b', vaultSessionId: 'c' }),
     ).resolves.toBeUndefined();
     expect(port.isUnlocked).toBe(true);
-    expect(await port.summarise([])).toEqual([{ id: 'i', itemType: 'password', title: 'Zed' }]);
+    expect(await port.summarise([])).toEqual([
+      { id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1 },
+    ]);
 
     // Every message that crossed, searched: no key, no password, no secret.
     const crossed = JSON.stringify(worker.posted);
@@ -213,6 +216,7 @@ describe('the port over the worker', () => {
             id: 'i',
             itemType: 'password',
             title: 'Bank',
+            blobVersion: 1,
             verdict: { kind: 'match' as const, domain: 'example.com' },
           },
         ]),
@@ -225,6 +229,7 @@ describe('the port over the worker', () => {
         id: 'i',
         itemType: 'password',
         title: 'Bank',
+        blobVersion: 1,
         verdict: { kind: 'match', domain: 'example.com' },
       },
     ]);

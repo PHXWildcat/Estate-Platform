@@ -71,6 +71,19 @@ export interface OpenedSummary {
   readonly id: string;
   readonly itemType: string;
   readonly title: string;
+  /**
+   * The version this summary was read AT (M16 PR4a).
+   *
+   * An edit sends it back as `If-Match`, which is the whole of the optimistic
+   * concurrency: the service compares it to the row it locks and answers 409
+   * `version_conflict` if they differ. Re-reading the version at write time
+   * instead would make the check pass every time and defeat it, so the number
+   * has to travel with the thing the user opened.
+   *
+   * Not a secret — a monotonic counter the service already returns on every
+   * list.
+   */
+  readonly blobVersion: number;
   readonly unreadable?: boolean;
 }
 
@@ -187,7 +200,7 @@ export class VaultKeyHolder {
     if (!vault || !userId) throw new Error('vault is locked');
     const out: OpenedSummary[] = [];
     for (const row of rows) {
-      const base = { id: row.id, itemType: row.itemType };
+      const base = { id: row.id, itemType: row.itemType, blobVersion: row.blobVersion };
       let plaintext: Uint8Array | null = null;
       try {
         plaintext = await decryptItem(
@@ -237,7 +250,13 @@ export class VaultKeyHolder {
         );
         const verdict = matchOrigin(urlOf(plaintext), pageUrl);
         if (verdict.kind === 'no-match' || verdict.kind === 'unusable') continue;
-        out.push({ id: row.id, itemType: row.itemType, title: titleOf(plaintext), verdict });
+        out.push({
+          id: row.id,
+          itemType: row.itemType,
+          title: titleOf(plaintext),
+          blobVersion: row.blobVersion,
+          verdict,
+        });
       } catch {
         // An unopenable blob cannot be matched against anything, and saying so
         // here would be a claim about an item this build cannot read.

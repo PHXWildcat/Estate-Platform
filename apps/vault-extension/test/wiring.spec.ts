@@ -36,13 +36,15 @@ function openHolder(): KeyHolderPort {
     isUnlocked: true,
     prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
     finish: () => Promise.resolve(),
-    summarise: () => Promise.resolve([{ id: 'i-1', itemType: 'password', title: 'Zed' }]),
+    summarise: () =>
+      Promise.resolve([{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1 }]),
     matchesFor: () =>
       Promise.resolve([
         {
           id: 'i-1',
           itemType: 'password',
           title: 'Zed',
+          blobVersion: 1,
           verdict: { kind: 'match' as const, domain: 'example.com' },
         },
       ]),
@@ -141,7 +143,7 @@ describe('the offscreen router', () => {
 
     expect(await deliver({ target: 'offscreen', kind: 'list', bearer: 'b' })).toEqual({
       ok: true,
-      items: [{ id: 'i-1', itemType: 'password', title: 'Zed' }],
+      items: [{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1 }],
     });
   });
 
@@ -205,6 +207,7 @@ describe('the offscreen router', () => {
           id: 'i-1',
           itemType: 'password',
           title: 'Zed',
+          blobVersion: 1,
           verdict: { kind: 'match', domain: 'example.com' },
         },
       ],
@@ -329,12 +332,12 @@ describe('the popup’s view of the vault', () => {
   it('returns items and the state on the happy paths', async () => {
     messaging((message) =>
       (message as { kind?: string }).kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: 'A' }] }
+        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1 }] }
         : { ok: true, state: { status: 'locked' } },
     );
     expect(await listItems('b')).toEqual({
       ok: true,
-      data: [{ id: 'i', itemType: 'password', title: 'A' }],
+      data: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1 }],
     });
     expect(await lockVault('b')).toEqual({ ok: true, data: { status: 'locked' } });
   });

@@ -222,7 +222,7 @@ describe('the key holder', () => {
       updatedAt: '2026-08-11T00:00:00.000Z',
     };
     expect(await holder.summarise([row])).toEqual([
-      { id: ITEM, itemType: 'password', title: 'Sealed here' },
+      { id: ITEM, itemType: 'password', title: 'Sealed here', blobVersion: 1 },
     ]);
     // And the whole content survives, which `summarise` alone would not show.
     expect(await holder.fillFor([row], ITEM, 'https://bank.example.com/login')).toEqual({
@@ -254,7 +254,7 @@ describe('the key holder', () => {
     // Presented as version 1 it does not open — listed as unreadable rather than
     // silently accepted.
     expect(await holder.summarise([claimingV1])).toEqual([
-      { id: ITEM, itemType: 'password', title: '', unreadable: true },
+      { id: ITEM, itemType: 'password', title: '', blobVersion: 1, unreadable: true },
     ]);
   });
 
@@ -298,7 +298,9 @@ describe('the key holder', () => {
     });
     const summaries = await holder.summarise([row]);
 
-    expect(summaries).toEqual([{ id: row.id, itemType: 'password', title: 'Bank login' }]);
+    expect(summaries).toEqual([
+      { id: row.id, itemType: 'password', title: 'Bank login', blobVersion: 1 },
+    ]);
     // THE SECRET HALF IS NOT IN THE RESPONSE. PR2b lists what a person is
     // choosing between; reading one is PR3's concern, with the gesture
     // requirement that governs it.
@@ -342,7 +344,9 @@ describe('the key holder', () => {
     const rolledBack: VaultItemRow = { ...row, blobVersion: 2 };
     const summaries = await holder.summarise([rolledBack]);
 
-    expect(summaries).toEqual([{ id: row.id, itemType: 'password', title: '', unreadable: true }]);
+    expect(summaries).toEqual([
+      { id: row.id, itemType: 'password', title: '', blobVersion: 2, unreadable: true },
+    ]);
   });
 
   it('refuses to summarise while locked, and locking drops the key', async () => {
@@ -382,7 +386,7 @@ describe('an item whose content is not what this build expects', () => {
     await unlock(holder, enrolled, enrolled.secretKey);
     const row = await sealItem(enrolled, '77777777-0000-4000-8000-000000000000', content);
     expect(await holder.summarise([row])).toEqual([
-      { id: row.id, itemType: 'password', title: '', unreadable: true },
+      { id: row.id, itemType: 'password', title: '', blobVersion: 1, unreadable: true },
     ]);
   });
 
@@ -394,7 +398,7 @@ describe('an item whose content is not what this build expects', () => {
     await unlock(holder, enrolled, enrolled.secretKey);
     const row = await sealItem(enrolled, '88888888-0000-4000-8000-000000000000', { note: 'x' });
     expect(await holder.summarise([row])).toEqual([
-      { id: row.id, itemType: 'password', title: '' },
+      { id: row.id, itemType: 'password', title: '', blobVersion: 1 },
     ]);
   });
 });

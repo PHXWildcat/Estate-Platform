@@ -57,7 +57,7 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 section originally described, and the narrowing is the result of measuring the platform in Chrome 151 rather than reasoning about it. The old text promised "cross-origin iframes refused by default with a per-item opt-in", and both halves turned out to be wrong. `activeTab` grants exactly the main frame's ORIGIN, host-exact, so a same-site subframe on a different host (`pay.example.com` under `example.com`) is refused by Chrome outright; PR3a's `frameIsAllowed` would have computed "allowed" for a frame the fill could only ever fail on. And the per-item opt-in CANNOT BE BUILT on `activeTab` at all: honouring it needs host permissions for the third-party origin (`optional_host_permissions` plus a runtime `chrome.permissions.request()`), a manifest key and a consent surface this milestone does not have. `frameIsAllowed` IS DELETED rather than kept, because wiring it showed it can have no caller: the popup cannot enumerate frames (that needs `webNavigation` or `tabs`, deliberately not held), and the injected function cannot import it (`func` is serialized). A rule with nowhere to run is the M4 zero-callers shape. What replaces it is stronger than a rule of ours — THE PLATFORM ENFORCES IT, and refuses an injection into any frame the grant does not cover. **Accepted cost, stated rather than hidden:** a login form inside an iframe is not filled, including a same-origin one, because the extension cannot name the frame without a permission it refuses to hold. confusable domains REFUSED rather than warned about. **Confusable detection is PARTIAL as shipped (M16 PR3a)** and this sentence is narrowed rather than left implying otherwise: punycode hosts that are not the saved domain, an ASCII homoglyph skeleton (`rn`/`m`, `vv`/`w`, `cl`/`d`, digit-for-letter), and edit-distance-1 are caught; the general Unicode confusable case needs UTS #39 skeletons over a vendored confusables table and is a named follow-up. A miss is a `no-match`, so it is still REFUSED for filling — what is lost is the explanation, never the boundary.
 - *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address, and nothing is ever auto-submitted.
 - *A hostile page reading the vault by breadth of access:* → `activeTab` + `scripting` only, with no declared content scripts, so the extension has no view of any page until the user clicks it — and any later broadening is a required-permission increase the browser surfaces as re-consent.
-- *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy a vault), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
+- *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy the VAULT — narrowed in M16 PR4a, which admitted `createItem` and `updateItem`: `reset`, both keyset routes and all eleven emergency routes stay refused, so the keyset survives and the vault still opens, but an unlocked extension can overwrite every ITEM with bytes that are not ciphertext and each one becomes permanently unreadable. `vault_items_versions` holds the prior image and NO PRODUCTION CODE READS IT, so recovery today means an operator with psql. The mitigation and the residual below describe the same moment — an unlocked vault — and this clause used to overclaim against it), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
 - *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and are a separate milestone; the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
 
 **TB7 — Operators**
@@ -1145,14 +1145,25 @@ CLAUDE.md decision log; the security-relevant shape is:
   disk stays off it. *Residual:* no unlock without connectivity.
 - *Origin matching* is the boundary's defining control; see §4 TB9.
 - *The credential* is a refresh-capable `extension`-audience session, admitted
-  PER HANDLER to FIVE vault routes (`keysetStatus`, both SRP legs, `listItems`,
+  PER HANDLER to SEVEN vault routes (`keysetStatus`, both SRP legs, `listItems`,
+  `createItem`, `updateItem`,
   `lock`) and THREE identity ones (`session`, `stepUp`, `logout`). What a stolen
   copy buys, end to end: the ability to attempt an SRP handshake, which
   additionally requires a fresh step-up, the vault password and the Secret Key —
-  and no item, because every read is behind `VaultSessionGuard`. EIGHTEEN vault
-  routes refuse it, including `reset`, both keyset routes, `deleteItem` and
-  every emergency-access route; so does `mintHandoff`, so a leaked extension
-  session cannot chain itself into a vault one.
+  and no item, because every item route — read OR write — is behind
+  `VaultSessionGuard`. SIXTEEN vault routes refuse it, including `reset`, both
+  keyset routes, `deleteItem` and every emergency-access route; so does
+  `mintHandoff`, so a leaked extension session cannot chain itself into a vault
+  one. (It was eighteen until M16 PR4a admitted the two writes; the count is
+  derived from the controllers by `session-audience.spec.ts`, so it cannot drift
+  from the code — only from this sentence, which is why the sentence is edited
+  with it.)
+  *Stale by construction, and deliberately not edited:*
+  `apps/services/identity/migrations/006_extension_audience.sql` still says
+  "five vault routes". The migrator checksums applied files and raises
+  `MigrationDriftError` on a mismatch, so correcting it would break every
+  deployment that has already run it. A migration is a record of what was true
+  when it ran; the live count lives here and in the spec that derives it.
   `POST /v1/auth/refresh` is deliberately absent from that count and is not an
   omission: it carries no guard at all, being unauthenticated by construction,
   so there is no audience decision to declare there. What keeps it safe is a
@@ -1226,7 +1237,7 @@ CLAUDE.md decision log; the security-relevant shape is:
   credential outlives the screen that says it is gone.
 
   Bounded rather than alarming: what survives the window is a session that
-  reaches five vault routes, every one of which yields ciphertext — the item
+  reaches seven vault routes, five of which yield ciphertext and two of which WRITE it — the item
   reads sit behind `VaultSessionGuard`, which needs a completed SRP unlock, and
   that needs the vault password and the device Secret Key. It cannot reset a
   vault, replace a keyset, delete an item, touch emergency access, or mint
@@ -1251,7 +1262,7 @@ CLAUDE.md decision log; the security-relevant shape is:
   browser and repeating it needs a step-up on the APP origin, so a device that
   forgot its pairing on every browser restart would push people through that
   ceremony daily and, predictably, into not using the extension. WHAT BOUNDS IT
-  IS THE AUDIENCE, not the storage — the credential reaches five vault routes and
+  IS THE AUDIENCE, not the storage — the credential reaches seven vault routes and
   three identity ones and nothing else, cannot reset a vault, replace a keyset,
   delete an item, touch emergency access, mint another handoff or enumerate the
   owner's other devices, and still decrypts nothing, because every item read sits

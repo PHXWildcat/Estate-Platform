@@ -122,3 +122,58 @@ describe('failures narrow to a closed set', () => {
     expect(await request('/api/vault/lock', { method: 'POST' })).toEqual({ ok: true, data: {} });
   });
 });
+
+describe('writing an item (M16 PR4a)', () => {
+  afterEach(clearChromeDouble);
+
+  it('sends If-Match as the version the caller READ, because update requires it', async () => {
+    // The vault service refuses an update with no `If-Match` as
+    // `invalid_request`, so this is an explicit option rather than something a
+    // caller can forget into a 400.
+    installChromeDouble();
+    const { calls } = replyWith({ status: 200, body: '{}' });
+    await request('/api/vault/items/i-1', {
+      method: 'PUT',
+      body: { itemType: 'password', blob: 'AAAA' },
+      bearer: 'b',
+      vaultSession: 'vs',
+      ifMatch: 3,
+    });
+    expect((calls[0]?.init.headers as Record<string, string>)['if-match']).toBe('3');
+  });
+
+  it('omits If-Match entirely when there is none, rather than sending a blank', async () => {
+    // A create has no version to match on, and `If-Match: ` would be a header
+    // the service has to interpret rather than one it never sees.
+    installChromeDouble();
+    const { calls } = replyWith({ status: 201, body: '{}' });
+    await request('/api/vault/items', { method: 'POST', body: {}, bearer: 'b' });
+    expect(Object.keys(calls[0]?.init.headers as Record<string, string>)).not.toContain('if-match');
+  });
+
+  it('keeps the two 409s apart, because their remedies differ', async () => {
+    installChromeDouble();
+    replyWith({ status: 409, body: JSON.stringify({ error: 'version_conflict' }) });
+    expect(await request('/api/vault/items/i-1', { method: 'PUT' })).toEqual({
+      ok: false,
+      code: 'VERSION_CONFLICT',
+    });
+
+    replyWith({ status: 409, body: JSON.stringify({ error: 'item_exists' }) });
+    expect(await request('/api/vault/items', { method: 'POST' })).toEqual({
+      ok: false,
+      code: 'ITEM_EXISTS',
+    });
+  });
+
+  it('does not invent a code for a 409 it does not recognise', async () => {
+    // The closed set is the point: an unknown token becomes UNKNOWN rather than
+    // being guessed into one of the two that carry advice.
+    installChromeDouble();
+    replyWith({ status: 409, body: JSON.stringify({ error: 'something_new' }) });
+    expect(await request('/api/vault/items', { method: 'POST' })).toEqual({
+      ok: false,
+      code: 'UNKNOWN',
+    });
+  });
+});
