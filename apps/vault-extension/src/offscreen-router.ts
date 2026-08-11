@@ -61,6 +61,20 @@ async function answer(host: VaultHost, message: VaultRequest): Promise<VaultResp
       const filled = await host.fillFor(message.bearer, message.itemId, message.pageUrl);
       return filled.ok ? { ok: true, credential: filled.data } : { ok: false, code: filled.code };
     }
+    case 'create': {
+      const made = await host.createItem(message.bearer, message.itemType, message.content);
+      return made.ok ? { ok: true, item: made.data } : { ok: false, code: made.code };
+    }
+    case 'update': {
+      const saved = await host.updateItem({
+        bearer: message.bearer,
+        itemId: message.itemId,
+        itemType: message.itemType,
+        changes: message.changes,
+        blobVersion: message.blobVersion,
+      });
+      return saved.ok ? { ok: true, item: saved.data } : { ok: false, code: saved.code };
+    }
     case 'lock':
       await host.lock(message.bearer);
       return { ok: true, state: host.state };

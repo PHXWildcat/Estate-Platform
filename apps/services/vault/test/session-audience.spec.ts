@@ -48,8 +48,30 @@ function admittedAudiences(
   return Reflect.getMetadata(SESSION_AUDIENCE_METADATA, handler) as readonly string[] | undefined;
 }
 
-/** The five, and the whole of what a paired extension can do at this service. */
-const EXTENSION_ROUTES = ['keysetStatus', 'startUnlock', 'finishUnlock', 'listItems', 'lock'];
+/**
+ * The SEVEN, and the whole of what a paired extension can do at this service.
+ *
+ * It was five until M16 PR4a, which admitted `createItem` and `updateItem` —
+ * the writes PR1 deliberately left for PR4 to decide rather than deciding by
+ * omission. Both sit behind `VaultSessionGuard`, so they belong to an UNLOCKED
+ * vault and not to the credential: a stolen extension session still cannot
+ * reach them without the vault password, the device Secret Key and a fresh
+ * step-up.
+ *
+ * `deleteItem` is NOT here and is asserted below to be refused. It is the
+ * destructive verb, it carries `StepUpGuard` as well, and an overwrite is not
+ * equivalent to it — `vault_items_versions` captures BEFORE UPDATE OR DELETE,
+ * so a write through this audience is recoverable.
+ */
+const EXTENSION_ROUTES = [
+  'keysetStatus',
+  'startUnlock',
+  'finishUnlock',
+  'listItems',
+  'createItem',
+  'updateItem',
+  'lock',
+];
 
 /**
  * Named refusals, with the reason each one matters. Not the complete refused
@@ -64,9 +86,11 @@ const MUST_REFUSE: ReadonlyArray<{
   { controller: VaultController, route: 'reset', why: 'crypto-shreds the vault on step-up alone' },
   { controller: VaultController, route: 'createKeyset', why: 'enrolls key material' },
   { controller: VaultController, route: 'replaceKeyset', why: 'replaces key material' },
-  { controller: VaultController, route: 'deleteItem', why: 'destroys an item' },
-  { controller: VaultController, route: 'createItem', why: 'writes; PR4 decides this, not PR1' },
-  { controller: VaultController, route: 'updateItem', why: 'writes; PR4 decides this, not PR1' },
+  {
+    controller: VaultController,
+    route: 'deleteItem',
+    why: 'destroys an item — the line PR4a did NOT cross when it admitted create and update',
+  },
   { controller: VaultController, route: 'getItem', why: 'listItems already returns the blob' },
   {
     controller: EmergencyAccessController,
@@ -115,7 +139,7 @@ describe('vault route audiences match the declaration', () => {
     expect(vault.length + emergency.length).toBe(23);
   });
 
-  it('exactly five handlers admit an extension session', () => {
+  it('exactly seven handlers admit an extension session', () => {
     const admitting = routeNames(VaultController).filter((route) =>
       admittedAudiences(VaultController, route)?.includes('extension'),
     );
@@ -143,10 +167,16 @@ describe('vault route audiences match the declaration', () => {
     },
   );
 
-  it('every route that is not one of the five refuses the extension', () => {
+  it('every route that is not one of the seven refuses the extension', () => {
     // The derived half, so the named list above cannot go stale into a false
     // sense of coverage: a 24th route added tomorrow is refused by default and
     // this notices if it is not.
+    //
+    // SIXTEEN, down from eighteen when PR4a admitted `createItem` and
+    // `updateItem`. The number is asserted rather than computed from
+    // EXTENSION_ROUTES on purpose: deriving it from the admitted list would make
+    // this test agree with any widening automatically, which is the one thing it
+    // exists to refuse. Moving it is meant to cost a deliberate edit.
     const refused = [
       ...routeNames(VaultController).map((route) => ({ c: VaultController, route })),
       ...routeNames(EmergencyAccessController).map((route) => ({
@@ -154,7 +184,7 @@ describe('vault route audiences match the declaration', () => {
         route,
       })),
     ].filter(({ route }) => !EXTENSION_ROUTES.includes(route));
-    expect(refused).toHaveLength(18);
+    expect(refused).toHaveLength(16);
     for (const { c, route } of refused) {
       expect({
         route,

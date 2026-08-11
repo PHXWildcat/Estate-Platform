@@ -23,7 +23,7 @@ import {
   toBase64,
   verifyClientSession,
 } from '@estate/vault-crypto';
-import { VaultHost } from '../src/vault-host';
+import { VaultHost, type KeyHolderPort } from '../src/vault-host';
 import { VaultKeyHolder } from '../src/vault-worker-core';
 import { clearChromeDouble, installChromeDouble, TEST_ORIGIN } from './chrome-double';
 
@@ -134,6 +134,26 @@ async function stubService(
       );
     }
     if (path.startsWith('/api/vault/items')) {
+      const method = init.method ?? 'GET';
+      if (method === 'POST') {
+        const sent = JSON.parse(body) as { id: string; itemType: string };
+        // The service's own shape: version 1 on insert, echoed back.
+        return Promise.resolve(reply(201, { ...sent, blobVersion: 1 }));
+      }
+      if (method === 'PUT') {
+        const sent = JSON.parse(body) as { itemType: string };
+        const headers = (init.headers ?? {}) as Record<string, string>;
+        // And the service's own rule: it writes `locked.blob_version + 1`,
+        // having first compared `If-Match` to the row it locked.
+        const ifMatch = Number(headers['if-match']);
+        return Promise.resolve(
+          reply(200, {
+            id: path.split('/').pop(),
+            itemType: sent.itemType,
+            blobVersion: ifMatch + 1,
+          }),
+        );
+      }
       return Promise.resolve(reply(200, { items: rows }));
     }
     if (path === '/api/vault/lock') return Promise.resolve(reply(204, {}));
@@ -171,7 +191,12 @@ describe('unlocking through the host', () => {
     expect(listed).toEqual({
       ok: true,
       data: [
-        { id: '05555555-0000-4000-8000-000000000000', itemType: 'password', title: 'Bank login' },
+        {
+          id: '05555555-0000-4000-8000-000000000000',
+          itemType: 'password',
+          title: 'Bank login',
+          blobVersion: 1,
+        },
       ],
     });
 
@@ -544,5 +569,174 @@ describe('unlocking through the host', () => {
     // No network call is needed to make an idle lock real — the keys are the
     // thing, and the server session expires on its own clock.
     expect(await vault.list(BEARER)).toEqual({ ok: false, code: 'VAULT_LOCKED' });
+  });
+});
+
+describe('writing an item through the host (M16 PR4a)', () => {
+  jest.setTimeout(60_000);
+  afterEach(clearChromeDouble);
+
+  /**
+   * A holder that records what it was asked to seal, so the VERSION the blob is
+   * sealed FOR can be asserted. That number is the subtle part of the write
+   * path: it lives inside the AEAD's AAD, and the service writes
+   * `locked.blob_version + 1` after checking `If-Match` against the row it
+   * locked — so sealing for the version we READ produces a blob that no longer
+   * opens once it lands, and nothing in the response would say so.
+   */
+  function recordingHost(): {
+    host: VaultHost;
+    sealed: Array<{ itemId: string; blobVersion: number }>;
+  } {
+    const sealed: Array<{ itemId: string; blobVersion: number }> = [];
+    const holder: KeyHolderPort = {
+      isUnlocked: true,
+      prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
+      finish: () => Promise.resolve(),
+      summarise: () => Promise.resolve([]),
+      matchesFor: () => Promise.resolve([]),
+      fillFor: () => Promise.resolve(null),
+      sealItem: (input: { itemId: string; blobVersion: number }) => {
+        sealed.push({ itemId: input.itemId, blobVersion: input.blobVersion });
+        return Promise.resolve('c2VhbGVk');
+      },
+      resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
+      lock: () => undefined,
+    };
+    const host = new VaultHost({ holder });
+    return { host, sealed };
+  }
+
+  it('refuses to write at all when the vault is locked, and seals nothing', async () => {
+    installChromeDouble();
+    const { host, sealed } = recordingHost();
+    // No unlock has happened, so there is no vault session.
+    expect(await host.createItem(BEARER, 'password', { title: 'x' })).toEqual({
+      ok: false,
+      code: 'VAULT_LOCKED',
+    });
+    expect(
+      await host.updateItem({
+        bearer: BEARER,
+        itemId: 'i-1',
+        itemType: 'password',
+        changes: { title: 'x' },
+        blobVersion: 3,
+      }),
+    ).toEqual({ ok: false, code: 'VAULT_LOCKED' });
+    // And crucially it did not hand plaintext to the holder on the way to
+    // finding that out.
+    expect(sealed).toEqual([]);
+  });
+});
+
+describe('a write, sealed for the version the service will write (M16 PR4a)', () => {
+  jest.setTimeout(60_000);
+  afterEach(clearChromeDouble);
+
+  it('creates: mints an id, seals at version 1, and POSTs that id', async () => {
+    installChromeDouble();
+    const { calls, secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const made = await vault.createItem(BEARER, 'password', { title: 'Typed here' });
+    expect(made.ok).toBe(true);
+    const data = (
+      made as { data: { id: string; itemType: string; title: string; blobVersion: number } }
+    ).data;
+    expect({ itemType: data.itemType, title: data.title, blobVersion: data.blobVersion }).toEqual({
+      itemType: 'password',
+      title: 'Typed here',
+      blobVersion: 1,
+    });
+    // A UUID the HOST minted, not one the caller supplied.
+    expect(data.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    const post = calls.find((c) => c.method === 'POST' && c.url.endsWith('/api/vault/items'));
+    const sent = JSON.parse(post?.body ?? '{}') as { id: string; blob: string };
+    // The id in the request is the id that came back, because it is bound into
+    // the blob's AAD and the two must be the same value.
+    expect(data.id).toBe(sent.id);
+    // A create carries no If-Match: there is no version to match on.
+    expect(Object.keys(post?.headers ?? {})).not.toContain('if-match');
+  });
+
+  it('updates: sends If-Match with the version READ, and seals for its successor', async () => {
+    installChromeDouble();
+    const { calls, secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const saved = await vault.updateItem({
+      bearer: BEARER,
+      itemId: '05555555-0000-4000-8000-000000000000',
+      itemType: 'password',
+      changes: { title: 'Edited' },
+      blobVersion: 4,
+    });
+
+    const put = calls.find((c) => c.method === 'PUT');
+    // The version the caller READ goes in the header...
+    expect(put?.headers['if-match']).toBe('4');
+    // ...and the service answers with its successor, which is what the blob was
+    // sealed for. If those two ever disagreed the row would land unopenable and
+    // nothing in the response would say so.
+    expect(saved).toEqual({
+      ok: true,
+      data: {
+        id: '05555555-0000-4000-8000-000000000000',
+        itemType: 'password',
+        title: 'Edited',
+        blobVersion: 5,
+      },
+    });
+  });
+
+  it('reports an item it cannot merge into as not found, and writes nothing', async () => {
+    installChromeDouble();
+    const { calls, secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const before = calls.filter((c) => c.method === 'PUT').length;
+    expect(
+      await vault.updateItem({
+        bearer: BEARER,
+        itemId: '99999999-0000-4000-8000-000000000000',
+        itemType: 'password',
+        changes: { title: 'Edited' },
+        blobVersion: 1,
+      }),
+    ).toEqual({ ok: false, code: 'NOT_FOUND' });
+    // And crucially it did not PUT anything: a merge that found nothing must not
+    // become a write that replaces something.
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(before);
+  });
+
+  it('passes a version conflict through as itself', async () => {
+    installChromeDouble();
+    const { secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    // The service answers 409 when the row moved under the caller.
+    const previous = globalThis.fetch;
+    (globalThis as { fetch?: unknown }).fetch = () =>
+      Promise.resolve({
+        ok: false,
+        status: 409,
+        text: () => Promise.resolve(JSON.stringify({ error: 'version_conflict' })),
+      } as unknown as Response);
+    expect(
+      await vault.updateItem({
+        bearer: BEARER,
+        itemId: '05555555-0000-4000-8000-000000000000',
+        itemType: 'password',
+        changes: { title: 'Edited' },
+        blobVersion: 1,
+      }),
+    ).toEqual({ ok: false, code: 'VERSION_CONFLICT' });
+    (globalThis as { fetch?: unknown }).fetch = previous;
   });
 });

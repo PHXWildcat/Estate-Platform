@@ -3872,3 +3872,98 @@ deviating from them, stop and propose the change with rationale — do not silen
   password field was found" — the extension behaving WELL under a condition I
   had broken, and the distinction `inject.ts` draws between "the injection ran"
   and "it filled something" earning its place.
+- 2026-08-11 — M16 PR4a (extension writes) TOOK TWO DECISIONS THAT NARROWED IT,
+  and an adversarial pass caught a defect in my own first commit before either.
+  THE GRANT SHIPPED AHEAD OF ITS CALLERS: the audience widening for
+  `vault:createItem`/`vault:updateItem` landed while `sealItem` was reachable
+  from nothing — the M8 zero-holder-edge shape, against the rule that same
+  commit quoted ("in the same change as the callers"). It resolves at PR
+  granularity because the repo squash-merges, but the observation was right and
+  the callers followed immediately rather than next week. The same pass found
+  FIVE SENTENCES I had falsified and not fixed (the controller docstring plus
+  four counts in docs/03), and two claims that were overclaiming: docs/03 §4's
+  "cannot destroy a vault" survives only for the KEYSET — an unlocked extension
+  can overwrite every item — and migration `006_extension_audience.sql` also
+  says "five vault routes" and must NOT be corrected, because the migrator
+  checksums applied files and would raise `MigrationDriftError` on every
+  deployment that has run it. A migration records what was true when it ran; the
+  live count lives in the spec that derives it.
+  DECISION 1 — AUTHORING IS TYPED IN THE POPUP, never captured from a page.
+  Capture needs a page observing form submissions, i.e. a standing content
+  script, which PR3b refused and the manifest fence forbids. So the write
+  surface adds NO page surface. The cost is a missing "save this login?" prompt,
+  which is what people expect from a password manager, and it is stated rather
+  than quietly absent.
+  DECISION 2 — AN EDIT NEEDS NO READ, and this is the one I would defend
+  hardest. Editing normally means reading the item back and rewriting it whole,
+  which would have made the popup a GENERAL VAULT READER — today it cannot open
+  an item at all (`summarise` gives titles, `fillFor` gives one credential and
+  only for a matching page). Instead the key holder MERGES: the caller sends
+  only the fields it is changing, decryption and re-sealing happen inside, and
+  the plaintext it did not send is never sent back. Absent means unchanged,
+  because a blank field must not erase a password the user cannot see; an
+  explicit empty string is a real value (the profile-SSN distinction). The cost,
+  on screen: clearing a field is not expressible in the extension.
+  THE VERSION IS THE SUBTLE PART. The service writes `locked.blob_version + 1`
+  after comparing `If-Match` to the row it locks, and the version is inside the
+  AEAD's AAD — so an update must seal for the SUCCESSOR of what it read while
+  sending what it read in the header. Reversed, the row lands unopenable and
+  NOTHING IN THE RESPONSE SAYS SO. The item summary therefore carries the
+  version it was read at: re-reading it at write time would make `If-Match` pass
+  every time and defeat the whole check.
+  SHARPEST CONSEQUENCE, named by the critique rather than by me: the item's
+  `url` lives INSIDE the blob and `fillFor` re-decides the origin from it, so
+  ANYTHING THAT CAN WRITE AN ITEM CAN REPOINT WHERE ITS CREDENTIAL FILLS. The
+  origin control is not bypassed, it is FED. It buys persistence rather than
+  access — writing already needs an unlocked vault — but it outlives the session
+  in which it was done. Write and fill are one trust level.
+  Three closed-set fences fired, once per widening (`seal`, `reseal`,
+  `create`/`update`), each a compile error naming the new variant; the popup
+  union had NO exhaustive test before this PR and now has one. And the refusing
+  test double refuses each new variant — last time I gave one a double that
+  quietly SUCCEEDED, which made a locked-vault assertion pass for the wrong
+  reason.
+  TWO SHELL MISTAKES WORTH THE ENTRY, both the same class as the mutation
+  harness lying: I committed once with an eslint error present because
+  `cmd && echo ok` does not gate the NEXT line, and I read `eslint | tail` as
+  passing when `$?` was `tail`'s exit and eslint had reported six errors. Check
+  the exit of the thing under test, not of what you piped it into.
+- 2026-08-11 — M16 PR4a DRIVEN IN A REAL BROWSER, and the drive proved the
+  milestone's residual by accidentally causing it. The audience change went
+  first, over HTTP against a vault image REBUILT from the branch, with a genuine
+  extension-audience session: pair 200, step-up 200, both SRP legs, `listItems`
+  200, `createItem` 201 and `updateItem` 200 — while `deleteItem` and `reset`
+  answered 401 to the same session. The two writes are admitted, the destructive
+  verb and the crypto-shred are not, and the writes only worked AFTER a
+  completed SRP unlock, which is the whole shape of the claim: the capability
+  belongs to an unlocked vault, not to the credential.
+  THEN THE UI, and the merge is correct where it counts. An item sealed with all
+  four fields, edited in the popup by typing ONLY a new password: decrypting the
+  row afterwards shows `secret` changed and `username`, `url` and `title`
+  UNTOUCHED, at version 2, still opening — so blank fields were omitted rather
+  than sent as empty strings, and the blob was sealed for the successor the
+  service actually wrote. The edited item still matches its page and fills with
+  the new password and the preserved username, which closes the loop: authored
+  in the popup, edited by merge, still fillable.
+  I CORRUPTED AN ITEM AND IT WAS THE MOST USEFUL THING THAT HAPPENED. My HTTP
+  probe re-sent a row's EXISTING blob with `If-Match: 1`; the service stored it
+  at version 2 and answered 200, and because the version is inside the AEAD's
+  AAD a blob sealed for v1 does not open at v2. The item is permanently
+  unreadable. That is exactly the failure the code comment describes — "reversed,
+  the row lands unopenable and nothing in the response says so" — and exactly
+  the docs/03 §6j residual written hours earlier: an unlocked session can
+  overwrite items with bytes that do not decrypt and the platform cannot tell.
+  Two of four rows ended unreadable, recoverable only by an operator reading
+  `vault_items_versions`, which no production code does. Evidence for the
+  restore-surface follow-up, obtained by doing the thing rather than arguing it.
+  THE UI WAS RIGHT ABOUT THE BIT THAT LOOKED WRONG: the corrupted item showed no
+  Edit control, which is deliberate — there is nothing to merge into, and
+  offering an edit would turn a display problem into data loss.
+  STALE ARTIFACTS, TWICE MORE. The stack's vault container was 18 hours old and
+  predated the audience change, so writes would have 401'd and proved nothing —
+  rebuilt from the branch with `--no-deps` so nothing else moved. And the FIRST
+  rebuild silently failed: `docker-credential-desktop` is not on PATH from this
+  shell (it lives in the Docker.app bundle), and after the failed build compose
+  still printed `Container Running`, which reads like success. The tell was the
+  container's uptime still saying 18 hours. Check what you built, not what the
+  orchestrator says about it.

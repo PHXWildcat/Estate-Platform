@@ -75,6 +75,38 @@ export type VaultRequest =
       readonly pageUrl: string;
     }
   /** Drop every key. Also what an idle timeout and a teardown do. */
+  /**
+   * AUTHORING, TYPED IN THE POPUP (M16 PR4a).
+   *
+   * The content is whatever the user entered in extension-owned UI. It is NOT
+   * captured from a page: doing that needs a page observing submissions, which
+   * PR3b refused (no standing channel a page can address, and the manifest fence
+   * keeps `content_scripts` absent). So these two variants add no page surface
+   * at all — they are the popup talking about its own form.
+   */
+  | {
+      readonly target: typeof OFFSCREEN;
+      readonly kind: 'create';
+      readonly bearer: string;
+      readonly itemType: string;
+      readonly content: Record<string, unknown>;
+    }
+  | {
+      readonly target: typeof OFFSCREEN;
+      readonly kind: 'update';
+      readonly bearer: string;
+      readonly itemId: string;
+      readonly itemType: string;
+      /** Only what is CHANGING — absent means unchanged, so a blank field in a
+       * form the user did not fill cannot erase a password they cannot see. */
+      readonly changes: Record<string, unknown>;
+      /**
+       * The version the popup READ, sent on as `If-Match`. The blob is sealed
+       * for `blobVersion + 1`, because that is what the service will write and
+       * the number is inside the AEAD's AAD.
+       */
+      readonly blobVersion: number;
+    }
   | { readonly target: typeof OFFSCREEN; readonly kind: 'lock'; readonly bearer?: string };
 
 /** One item as the popup sees it: enough to recognise, never enough to use. */
@@ -82,6 +114,8 @@ export interface ItemSummary {
   readonly id: string;
   readonly itemType: string;
   readonly title: string;
+  /** The version this summary was read at; an edit sends it back as If-Match. */
+  readonly blobVersion: number;
   /**
    * The blob decrypted but its content did not parse. Listed rather than
    * hidden — a user must be able to see that something is there (M15 PR2).
@@ -112,6 +146,8 @@ export type VaultResponse =
       readonly ok: true;
       readonly credential: { readonly username: string; readonly secret: string } | null;
     }
+  /** A create or an update, answered with the row as it now stands. */
+  | { readonly ok: true; readonly item: ItemSummary }
   | { readonly ok: false; readonly code: string };
 
 /** Narrowing helpers, so a stray message from anywhere is simply ignored. */
@@ -125,6 +161,8 @@ export function isVaultRequest(value: unknown): value is VaultRequest {
       kind === 'list' ||
       kind === 'matches' ||
       kind === 'fill' ||
+      kind === 'create' ||
+      kind === 'update' ||
       kind === 'lock')
   );
 }

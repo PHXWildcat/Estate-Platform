@@ -193,6 +193,174 @@ describe('the key holder', () => {
     expect(await holder.fillFor([corrupted], ITEM, 'https://bank.example.com/')).toBeNull();
   });
 
+  /*
+   * SEALING (M16 PR4a) — the first plaintext to travel INTO the key holder.
+   *
+   * Round-tripped through the holder's OWN reader rather than asserted against a
+   * fixture: sealing is only correct if what comes back out is what went in,
+   * under the same AAD, and a test that checked the ciphertext against a
+   * recorded blob would be checking the recording.
+   */
+  it('seals content the same holder can open again', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+
+    const content = {
+      title: 'Sealed here',
+      username: 'someone',
+      secret: 'the-secret',
+      url: 'https://bank.example.com/',
+    };
+    const blob = await holder.sealItem({ itemId: ITEM, blobVersion: 1, content });
+
+    const row: VaultItemRow = {
+      id: ITEM,
+      itemType: 'password',
+      blob,
+      blobVersion: 1,
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    };
+    expect(await holder.summarise([row])).toEqual([
+      { id: ITEM, itemType: 'password', title: 'Sealed here', blobVersion: 1 },
+    ]);
+    // And the whole content survives, which `summarise` alone would not show.
+    expect(await holder.fillFor([row], ITEM, 'https://bank.example.com/login')).toEqual({
+      username: 'someone',
+      secret: 'the-secret',
+    });
+  });
+
+  it('binds the blob version into the AAD, so a blob cannot move between slots', async () => {
+    // docs/04 M6: create = 1, an update of N encrypts under N+1. If the version
+    // were not bound, a blob sealed for one slot would open in another — which
+    // is what lets an old ciphertext be replayed over a newer one.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+
+    const blob = await holder.sealItem({
+      itemId: ITEM,
+      blobVersion: 2,
+      content: { title: 'v2' },
+    });
+    const claimingV1: VaultItemRow = {
+      id: ITEM,
+      itemType: 'password',
+      blob,
+      blobVersion: 1,
+      updatedAt: 'now',
+    };
+    // Presented as version 1 it does not open — listed as unreadable rather than
+    // silently accepted.
+    expect(await holder.summarise([claimingV1])).toEqual([
+      { id: ITEM, itemType: 'password', title: '', blobVersion: 1, unreadable: true },
+    ]);
+  });
+
+  it('refuses a version that is not a positive integer, rather than sealing under it', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      await expect(
+        holder.sealItem({ itemId: ITEM, blobVersion: bad, content: { title: 'x' } }),
+      ).rejects.toThrow('blobVersion');
+    }
+  });
+
+  /*
+   * MERGING INSIDE THE HOLDER (M16 PR4a) — what makes an edit possible without
+   * the popup ever receiving the content it is not changing.
+   */
+  const sealedLogin = async (enrolled: Enrolled): Promise<VaultItemRow> =>
+    sealItem(enrolled, ITEM, {
+      title: 'Bank login',
+      username: 'someone',
+      secret: 'the-original',
+      url: 'https://bank.example.com/',
+    });
+
+  it('changes only what it was given, and leaves the rest alone', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+
+    const blob = await holder.resealItem({
+      rows: [row],
+      itemId: ITEM,
+      changes: { secret: 'the-new-one' },
+    });
+    const next: VaultItemRow = { ...row, blob: blob as string, blobVersion: row.blobVersion + 1 };
+
+    // The changed field changed...
+    expect(await holder.fillFor([next], ITEM, 'https://bank.example.com/')).toEqual({
+      username: 'someone',
+      secret: 'the-new-one',
+    });
+    // ...and the untouched ones survived, including the url the fill depends on
+    // and the title the list shows.
+    expect(await holder.summarise([next])).toEqual([
+      { id: ITEM, itemType: 'password', title: 'Bank login', blobVersion: 2 },
+    ]);
+  });
+
+  it('treats an EXPLICIT empty string as a real value, unlike an absent field', async () => {
+    // A form field left blank must not erase a password the user cannot see, so
+    // absent means unchanged. Clearing one on purpose has to remain possible,
+    // and the two are told apart by presence — the profile-SSN distinction.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+
+    const blob = await holder.resealItem({
+      rows: [row],
+      itemId: ITEM,
+      changes: { username: '' },
+    });
+    const next: VaultItemRow = { ...row, blob: blob as string, blobVersion: row.blobVersion + 1 };
+    expect(await holder.fillFor([next], ITEM, 'https://bank.example.com/')).toEqual({
+      username: '',
+      secret: 'the-original',
+    });
+  });
+
+  it('refuses an item it was not given, rather than creating one', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+    expect(
+      await holder.resealItem({
+        rows: [row],
+        itemId: '77777777-0000-4000-8000-000000000000',
+        changes: { secret: 'x' },
+      }),
+    ).toBeNull();
+  });
+
+  it('refuses an item this build cannot read, rather than REPLACING it', async () => {
+    // An edit must not turn a display problem into data loss: if the existing
+    // content will not open, there is nothing to merge into.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+    const wrongVersion: VaultItemRow = { ...row, blobVersion: row.blobVersion + 5 };
+    expect(
+      await holder.resealItem({ rows: [wrongVersion], itemId: ITEM, changes: { secret: 'x' } }),
+    ).toBeNull();
+  });
+
+  it('refuses to seal into a locked vault', async () => {
+    const holder = new VaultKeyHolder();
+    await expect(
+      holder.sealItem({ itemId: ITEM, blobVersion: 1, content: { title: 'x' } }),
+    ).rejects.toThrow('vault is locked');
+  });
+
   it('refuses to fill a locked vault', async () => {
     const holder = new VaultKeyHolder();
     await expect(holder.fillFor([], ITEM, 'https://bank.example.com/')).rejects.toThrow(
@@ -215,7 +383,9 @@ describe('the key holder', () => {
     });
     const summaries = await holder.summarise([row]);
 
-    expect(summaries).toEqual([{ id: row.id, itemType: 'password', title: 'Bank login' }]);
+    expect(summaries).toEqual([
+      { id: row.id, itemType: 'password', title: 'Bank login', blobVersion: 1 },
+    ]);
     // THE SECRET HALF IS NOT IN THE RESPONSE. PR2b lists what a person is
     // choosing between; reading one is PR3's concern, with the gesture
     // requirement that governs it.
@@ -259,7 +429,9 @@ describe('the key holder', () => {
     const rolledBack: VaultItemRow = { ...row, blobVersion: 2 };
     const summaries = await holder.summarise([rolledBack]);
 
-    expect(summaries).toEqual([{ id: row.id, itemType: 'password', title: '', unreadable: true }]);
+    expect(summaries).toEqual([
+      { id: row.id, itemType: 'password', title: '', blobVersion: 2, unreadable: true },
+    ]);
   });
 
   it('refuses to summarise while locked, and locking drops the key', async () => {
@@ -299,7 +471,7 @@ describe('an item whose content is not what this build expects', () => {
     await unlock(holder, enrolled, enrolled.secretKey);
     const row = await sealItem(enrolled, '77777777-0000-4000-8000-000000000000', content);
     expect(await holder.summarise([row])).toEqual([
-      { id: row.id, itemType: 'password', title: '', unreadable: true },
+      { id: row.id, itemType: 'password', title: '', blobVersion: 1, unreadable: true },
     ]);
   });
 
@@ -311,7 +483,7 @@ describe('an item whose content is not what this build expects', () => {
     await unlock(holder, enrolled, enrolled.secretKey);
     const row = await sealItem(enrolled, '88888888-0000-4000-8000-000000000000', { note: 'x' });
     expect(await holder.summarise([row])).toEqual([
-      { id: row.id, itemType: 'password', title: '' },
+      { id: row.id, itemType: 'password', title: '', blobVersion: 1 },
     ]);
   });
 });

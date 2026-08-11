@@ -131,7 +131,7 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
   /**
    * THE BROWSER EXTENSION'S ENTIRE REACH (M16).
    *
-   * Eight handlers, chosen by what each one DOES rather than by its guard shape
+   * Ten handlers, chosen by what each one DOES rather than by its guard shape
    * — because guard shape cannot discriminate here. Eight vault routes are gated
    * on step-up ALONE, and that set contains both the destructive routes and the
    * two SRP legs an extension cannot function without, so "refuse everything
@@ -139,12 +139,33 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    * "admit everything step-up-alone" would hand it `reset`.
    *
    * WHAT AN EXTENSION SESSION CAN DO, exhaustively: discover whether a vault
-   * exists, run the two SRP legs, list items, and lock. Everything it can read
-   * is CIPHERTEXT — `listItems` sits behind `VaultSessionGuard`, which only a
-   * completed SRP unlock satisfies, and the unlock needs the vault password and
-   * the device Secret Key, neither of which this platform has ever held. So a
-   * stolen extension credential yields the ability to ATTEMPT a handshake that
-   * additionally requires a fresh step-up, and nothing else.
+   * exists, run the two SRP legs, list items, CREATE and UPDATE an item, and
+   * lock.
+   *
+   * THAT SENTENCE USED TO END AT "list items", and PR4a is the change that
+   * made the old one false — it read "everything it can read is CIPHERTEXT …
+   * and nothing else", which stopped being true the moment a write was
+   * admitted. Restated rather than left standing (the M14 rule):
+   *
+   *   · EVERY ADMITTED ITEM ROUTE SITS BEHIND `VaultSessionGuard`, which only a
+   *     completed SRP unlock satisfies — and that unlock needs the vault
+   *     password and the device Secret Key, neither of which this platform has
+   *     ever held, plus a fresh step-up. So a STOLEN EXTENSION CREDENTIAL still
+   *     yields the ability to attempt a handshake and nothing more. The write
+   *     capability belongs to an UNLOCKED vault, not to the credential.
+   *   · `deleteItem` IS ABSENT AND STAYS ABSENT. It is the one item route gated
+   *     on `StepUpGuard` as well, it is the destructive verb, and docs/04 fixes
+   *     its exclusion. An overwrite is not equivalent: `vault_items_versions`
+   *     captures BEFORE UPDATE OR DELETE (`001_vault_schema.sql`), so a write
+   *     through this audience is recoverable and a delete would not be.
+   *   · `updateItem` CARRIES `If-Match`, so an overwrite is conditional on the
+   *     version the caller read rather than blind.
+   *
+   * RESIDUAL, STATED: with the vault unlocked, this audience can overwrite every
+   * item the user has. The rows survive in `vault_items_versions`, but NO
+   * RESTORE SURFACE EXISTS anywhere in the product, so recovery today means an
+   * operator reading that table. That is a real gap and it is recorded in
+   * docs/03 §6j rather than implied by the word "recoverable".
    *
    * `vault:getItem` is deliberately absent: `listItems` already returns each
    * item's full ciphertext blob, so it buys an autofill client nothing, and
@@ -170,6 +191,10 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
     'vault:startUnlock',
     'vault:finishUnlock',
     'vault:listItems',
+    // PR4a, and admitted in the same change as their callers — the rule the
+    // graph's own comment sets for a new capability.
+    'vault:createItem',
+    'vault:updateItem',
     'vault:lock',
     'identity:session',
     'identity:stepUp',

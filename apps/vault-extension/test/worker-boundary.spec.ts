@@ -19,6 +19,8 @@ const refusing: KeyHolderPort = {
   summarise: () => Promise.reject(new Error('vault is locked')),
   matchesFor: () => Promise.reject(new Error('vault is locked')),
   fillFor: () => Promise.reject(new Error('vault is locked')),
+  sealItem: () => Promise.reject(new Error('vault is locked')),
+  resealItem: () => Promise.reject(new Error('vault is locked')),
   lock: () => undefined,
 };
 
@@ -81,6 +83,12 @@ describe('the worker protocol', () => {
       // ADDED IN PR3b, and the compile error that forced this line is the fence
       // doing its job: the previous form let a seventh variant through silently.
       fill: true,
+      // ADDED IN PR4a. It forced this line the same way — which is the second
+      // and third time this fence has caught a widening of the boundary it
+      // guards. `reseal` merges INSIDE the holder so an edit needs no read:
+      // the caller sends what it is changing and never receives the rest.
+      seal: true,
+      reseal: true,
       lock: true,
       state: true,
     };
@@ -90,6 +98,8 @@ describe('the worker protocol', () => {
       'lock',
       'matches',
       'prepare',
+      'reseal',
+      'seal',
       'state',
       'summarise',
     ]);
@@ -172,9 +182,12 @@ describe('the port over the worker', () => {
       isUnlocked: true,
       prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
       finish: () => Promise.resolve(),
-      summarise: () => Promise.resolve([{ id: 'i', itemType: 'password', title: 'Zed' }]),
+      summarise: () =>
+        Promise.resolve([{ id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1 }]),
       matchesFor: () => Promise.resolve([]),
       fillFor: () => Promise.resolve(null),
+      sealItem: () => Promise.resolve('c2VhbGVk'),
+      resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
       lock: () => undefined,
     };
     const worker = fakeWorker(open);
@@ -192,7 +205,9 @@ describe('the port over the worker', () => {
       port.finish({ serverM2: 'a', wrappedMasterKey: 'b', vaultSessionId: 'c' }),
     ).resolves.toBeUndefined();
     expect(port.isUnlocked).toBe(true);
-    expect(await port.summarise([])).toEqual([{ id: 'i', itemType: 'password', title: 'Zed' }]);
+    expect(await port.summarise([])).toEqual([
+      { id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1 },
+    ]);
 
     // Every message that crossed, searched: no key, no password, no secret.
     const crossed = JSON.stringify(worker.posted);
@@ -213,10 +228,13 @@ describe('the port over the worker', () => {
             id: 'i',
             itemType: 'password',
             title: 'Bank',
+            blobVersion: 1,
             verdict: { kind: 'match' as const, domain: 'example.com' },
           },
         ]),
       fillFor: () => Promise.resolve(null),
+      sealItem: () => Promise.resolve('c2VhbGVk'),
+      resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
       lock: () => undefined,
     };
     const port = new WorkerKeyHolder(fakeWorker(open));
@@ -225,6 +243,7 @@ describe('the port over the worker', () => {
         id: 'i',
         itemType: 'password',
         title: 'Bank',
+        blobVersion: 1,
         verdict: { kind: 'match', domain: 'example.com' },
       },
     ]);
@@ -250,6 +269,8 @@ describe('the port over the worker', () => {
       matchesFor: () => Promise.resolve([]),
       fillFor: (_rows, itemId) =>
         Promise.resolve(itemId === 'yes' ? { username: 'u', secret: 's3cret' } : null),
+      sealItem: () => Promise.resolve('c2VhbGVk'),
+      resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
       lock: () => undefined,
     };
     const port = new WorkerKeyHolder(fakeWorker(filling));
@@ -288,5 +309,78 @@ describe('the port over the worker', () => {
     ]);
     const ids = (worker.posted as { id: number }[]).map((m) => m.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('sealing across the worker boundary (M16 PR4a)', () => {
+  it('carries the blob back, and a refusal goes locked like every other variant', async () => {
+    const sealing: KeyHolderPort = {
+      isUnlocked: true,
+      prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
+      finish: () => Promise.resolve(),
+      summarise: () => Promise.resolve([]),
+      matchesFor: () => Promise.resolve([]),
+      fillFor: () => Promise.resolve(null),
+      sealItem: (input) => Promise.resolve(`sealed-${String(input.blobVersion)}`),
+      resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
+      lock: () => undefined,
+    };
+    const port = new WorkerKeyHolder(fakeWorker(sealing));
+    expect(await port.sealItem({ itemId: 'i', blobVersion: 7, content: { title: 't' } })).toBe(
+      'sealed-7',
+    );
+
+    const refused = new WorkerKeyHolder(fakeWorker(refusing));
+    await expect(
+      refused.sealItem({ itemId: 'i', blobVersion: 1, content: { title: 't' } }),
+    ).rejects.toThrow('vault is locked');
+    expect(refused.isUnlocked).toBe(false);
+  });
+
+  it('carries a reseal across, and passes its refusal through as null', async () => {
+    const merging: KeyHolderPort = {
+      isUnlocked: true,
+      prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
+      finish: () => Promise.resolve(),
+      summarise: () => Promise.resolve([]),
+      matchesFor: () => Promise.resolve([]),
+      fillFor: () => Promise.resolve(null),
+      sealItem: () => Promise.resolve('c2VhbGVk'),
+      resealItem: (input) => Promise.resolve(input.itemId === 'known' ? 'bWVyZ2Vk' : null),
+      lock: () => undefined,
+    };
+    const port = new WorkerKeyHolder(fakeWorker(merging));
+    expect(await port.resealItem({ rows: [], itemId: 'known', changes: {} })).toBe('bWVyZ2Vk');
+    // `null` is the holder declining — no such item, or content it cannot read —
+    // and crosses as null rather than as an error, like every other refusal here.
+    expect(await port.resealItem({ rows: [], itemId: 'other', changes: {} })).toBeNull();
+
+    const refused = new WorkerKeyHolder(fakeWorker(refusing));
+    await expect(refused.resealItem({ rows: [], itemId: 'known', changes: {} })).rejects.toThrow(
+      'vault is locked',
+    );
+  });
+
+  it('answers a seal request through the real handler', async () => {
+    const holder = new VaultKeyHolder();
+    // Locked: the handler must turn the throw into a bare refusal, not a stack.
+    expect(
+      await handleWorkerRequest(holder, {
+        id: 9,
+        kind: 'seal',
+        itemId: 'i',
+        blobVersion: 1,
+        content: { title: 't' },
+      }),
+    ).toEqual({ id: 9, ok: false });
+    expect(
+      await handleWorkerRequest(holder, {
+        id: 10,
+        kind: 'reseal',
+        rows: [],
+        itemId: 'i',
+        changes: {},
+      }),
+    ).toEqual({ id: 10, ok: false });
   });
 });

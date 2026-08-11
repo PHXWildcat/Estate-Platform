@@ -490,3 +490,139 @@ describe('what is saved for the page you are on', () => {
     expect(text()).not.toContain('Nothing saved for this site');
   });
 });
+
+describe('authoring an item in the popup (M16 PR4a)', () => {
+  const ITEM = {
+    id: 'i-1',
+    itemType: 'password',
+    title: 'Bank login',
+    blobVersion: 4,
+  };
+
+  function composing(reply: (m: { kind?: string }) => unknown): Wired {
+    return wire(
+      (message) =>
+        message.kind === 'list'
+          ? { ok: true, items: [ITEM] }
+          : message.kind === 'matches'
+            ? { ok: true, matched: [] }
+            : (reply(message) ?? { ok: true, state: { status: 'unlocked', expiresAt: 'x' } }),
+      { status: 200 },
+      null,
+    );
+  }
+
+  const typeInto = (id: string, value: string): void => {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    if (!input) throw new Error(`no field ${id}. Saw: ${text()}`);
+    input.value = value;
+  };
+  const press = (label: string): void => {
+    const button = [...document.querySelectorAll('button')].find(
+      (b) => (b.textContent ?? '') === label,
+    );
+    if (!button) throw new Error(`no button ${label}. Saw: ${text()}`);
+    button.click();
+  };
+
+  it('creates from what was typed, and says the address decides where it fills', async () => {
+    const wired = composing((m) => (m.kind === 'create' ? { ok: true, item: ITEM } : undefined));
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Vault open'), 'the vault');
+
+    press('New item');
+    await until(() => text().includes('New item'), 'the form');
+    // The one sentence the form owes: the url is what governs the fill.
+    expect(text()).toContain('decides where this can be filled');
+
+    typeInto('item-title', 'Typed here');
+    typeInto('item-secret', 's3cret');
+    press('Add to vault');
+    await until(() => wired.sent.some((m) => (m as { kind?: string }).kind === 'create'), 'create');
+
+    const sent = wired.sent.find((m) => (m as { kind?: string }).kind === 'create');
+    expect(sent).toMatchObject({
+      kind: 'create',
+      itemType: 'password',
+      content: { title: 'Typed here', secret: 's3cret', username: '', url: '' },
+    });
+  });
+
+  it('refuses a create with no title rather than saving an unfindable item', async () => {
+    composing(() => undefined);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Vault open'), 'the vault');
+    press('New item');
+    await until(() => text().includes('New item'), 'the form');
+    press('Add to vault');
+    await until(() => text().includes('Give it a title'), 'the refusal');
+  });
+
+  it('EDIT SENDS ONLY WHAT CHANGED, so a blank field cannot erase what it cannot see', async () => {
+    const wired = composing((m) => (m.kind === 'update' ? { ok: true, item: ITEM } : undefined));
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Bank login'), 'the list');
+
+    press('Edit');
+    await until(() => text().includes('Edit item'), 'the form');
+    expect(text()).toContain('Leave a field empty to keep what is already saved');
+
+    // Only the password is typed. Title is pre-filled and unchanged; username
+    // and url are left blank — and must NOT be sent as empty strings, or the
+    // holder would merge them and wipe values the user never saw.
+    typeInto('item-secret', 'a-new-password');
+    press('Save changes');
+    await until(() => wired.sent.some((m) => (m as { kind?: string }).kind === 'update'), 'update');
+
+    const sent = wired.sent.find((m) => (m as { kind?: string }).kind === 'update') as {
+      changes: Record<string, unknown>;
+      blobVersion: number;
+    };
+    expect(sent.changes).toEqual({ secret: 'a-new-password' });
+    expect(Object.keys(sent.changes)).not.toContain('username');
+    expect(Object.keys(sent.changes)).not.toContain('url');
+    // And the version the popup READ travels, which is what makes If-Match mean
+    // anything.
+    expect(sent.blobVersion).toBe(4);
+  });
+
+  it('keeps the typed form on screen when a create is refused', async () => {
+    // Losing what someone just typed because the server said no is the worst
+    // possible answer on a form holding a password.
+    composing((m) => (m.kind === 'create' ? { ok: false, code: 'VAULT_LOCKED' } : undefined));
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Vault open'), 'the vault');
+    press('New item');
+    await until(() => text().includes('New item'), 'the form');
+    typeInto('item-title', 'Typed here');
+    press('Add to vault');
+    await until(() => text().includes('Your vault is locked'), 'the refusal');
+    // Still the form, not the list.
+    expect(text()).toContain('New item');
+  });
+
+  it('explains a version conflict in its own words, and offers no overwrite', async () => {
+    composing((m) => (m.kind === 'update' ? { ok: false, code: 'VERSION_CONFLICT' } : undefined));
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Bank login'), 'the list');
+    press('Edit');
+    await until(() => text().includes('Edit item'), 'the form');
+    typeInto('item-secret', 'x');
+    press('Save changes');
+    await until(() => text().includes('changed somewhere else'), 'the conflict');
+    // Deliberately NO "overwrite anyway": seeing the newer value first is the
+    // whole point of If-Match.
+    expect(text().toLowerCase()).not.toContain('overwrite');
+  });
+
+  it('sends nothing at all when an edit changed nothing', async () => {
+    const wired = composing(() => undefined);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Bank login'), 'the list');
+    press('Edit');
+    await until(() => text().includes('Edit item'), 'the form');
+    press('Save changes');
+    await until(() => text().includes('Vault open'), 'back to the list');
+    expect(wired.sent.some((m) => (m as { kind?: string }).kind === 'update')).toBe(false);
+  });
+});

@@ -1,10 +1,12 @@
 import { isFillable, matchOrigin, type MatchVerdict } from './origin-match.js';
 import {
   decryptItem,
+  encryptItem,
   finishUnlock,
   fromBase64,
   prepareUnlock,
   proveUnlock,
+  toBase64,
   wipe,
   type UnlockPreparation,
   type UnlockedVault,
@@ -69,6 +71,19 @@ export interface OpenedSummary {
   readonly id: string;
   readonly itemType: string;
   readonly title: string;
+  /**
+   * The version this summary was read AT (M16 PR4a).
+   *
+   * An edit sends it back as `If-Match`, which is the whole of the optimistic
+   * concurrency: the service compares it to the row it locks and answers 409
+   * `version_conflict` if they differ. Re-reading the version at write time
+   * instead would make the check pass every time and defeat it, so the number
+   * has to travel with the thing the user opened.
+   *
+   * Not a secret — a monotonic counter the service already returns on every
+   * list.
+   */
+  readonly blobVersion: number;
   readonly unreadable?: boolean;
 }
 
@@ -185,7 +200,7 @@ export class VaultKeyHolder {
     if (!vault || !userId) throw new Error('vault is locked');
     const out: OpenedSummary[] = [];
     for (const row of rows) {
-      const base = { id: row.id, itemType: row.itemType };
+      const base = { id: row.id, itemType: row.itemType, blobVersion: row.blobVersion };
       let plaintext: Uint8Array | null = null;
       try {
         plaintext = await decryptItem(
@@ -235,7 +250,13 @@ export class VaultKeyHolder {
         );
         const verdict = matchOrigin(urlOf(plaintext), pageUrl);
         if (verdict.kind === 'no-match' || verdict.kind === 'unusable') continue;
-        out.push({ id: row.id, itemType: row.itemType, title: titleOf(plaintext), verdict });
+        out.push({
+          id: row.id,
+          itemType: row.itemType,
+          title: titleOf(plaintext),
+          blobVersion: row.blobVersion,
+          verdict,
+        });
       } catch {
         // An unopenable blob cannot be matched against anything, and saying so
         // here would be a claim about an item this build cannot read.
@@ -245,6 +266,116 @@ export class VaultKeyHolder {
       }
     }
     return out;
+  }
+
+  /**
+   * SEAL AN ITEM (M16 PR4a) — the first time plaintext travels INTO this module.
+   *
+   * Until now the traffic was one-way: the password and Secret Key arrive to be
+   * consumed by a derivation, and item content only ever comes OUT (`summarise`
+   * returns titles, `fillFor` returns one credential). A create or an update
+   * reverses that, and two things follow that are worth naming rather than
+   * discovering.
+   *
+   * IT CROSSES A BROADCAST. `chrome.runtime.sendMessage` delivers to every
+   * extension context with a listener, so item content transits the same channel
+   * the unlock password already does — `messages.ts` calls that "a filter, not
+   * an isolation boundary", and it remains true. This adds traffic of an
+   * existing class, not a new class: anyone who can read that channel has
+   * already compromised the artifact and could ask the worker to decrypt.
+   *
+   * THE AAD BINDS THE VERSION, so the caller must say which one it is sealing
+   * for. `encryptItem` takes `blobVersion` into the AAD (docs/04 M6: create = 1,
+   * an update of N encrypts under N+1), which is what stops a blob being
+   * replayed into a different version slot. This module refuses to guess it:
+   * the number comes from the row the caller read, and an update that does not
+   * carry one is a bug rather than a create.
+   *
+   * NOTHING HERE DECIDES WHETHER THE WRITE IS ALLOWED. That is the vault
+   * service's `VaultSessionGuard` plus the `If-Match` the host sends; this
+   * module only turns content into ciphertext under the key it holds.
+   */
+  async sealItem(input: {
+    readonly itemId: string;
+    readonly blobVersion: number;
+    readonly content: Record<string, unknown>;
+  }): Promise<string> {
+    const vault = this.#vault;
+    const userId = this.#userId;
+    if (!vault || !userId) throw new Error('vault is locked');
+    if (!Number.isInteger(input.blobVersion) || input.blobVersion < 1) {
+      throw new Error('blobVersion must be a positive integer');
+    }
+    const plaintext = new TextEncoder().encode(JSON.stringify(input.content));
+    try {
+      const blob = await encryptItem(
+        vault.masterKey,
+        { userId, itemId: input.itemId, blobVersion: input.blobVersion },
+        plaintext,
+      );
+      return toBase64(blob);
+    } finally {
+      // The caller's copy is theirs to drop; this one is ours.
+      plaintext.fill(0);
+    }
+  }
+
+  /**
+   * UPDATE BY MERGING INSIDE THE HOLDER, so an edit needs no read (M16 PR4a).
+   *
+   * THE OBVIOUS DESIGN WOULD HAVE COST A NEW CAPABILITY. To edit an item a
+   * client normally reads it back, shows the fields, and writes the whole thing
+   * again — which would mean the popup receiving every item's full plaintext on
+   * request. Today it cannot: `summarise` gives titles, and `fillFor` gives ONE
+   * credential and only for a page the item actually matches. A general "open
+   * this item" variant would make the popup a full vault reader, which is a
+   * disclosure widening the milestone has no need to buy.
+   *
+   * So the merge happens HERE. The caller sends only the fields it is CHANGING;
+   * this module decrypts the existing content, applies them, and re-seals. The
+   * plaintext it did not send is never sent back to it.
+   *
+   * ABSENT MEANS UNCHANGED, and it has to: a blank field in a form the user did
+   * not fill must not erase a password they cannot see. An explicit empty
+   * string is a real value and does clear the field — the same distinction
+   * profile's SSN carry makes, for the same reason.
+   *
+   * Sealed for `blobVersion + 1` because that is what the service will write
+   * after checking `If-Match`, and the number is inside the AAD.
+   */
+  async resealItem(input: {
+    readonly rows: readonly VaultItemRow[];
+    readonly itemId: string;
+    readonly changes: Record<string, unknown>;
+  }): Promise<string | null> {
+    const vault = this.#vault;
+    const userId = this.#userId;
+    if (!vault || !userId) throw new Error('vault is locked');
+    const row = input.rows.find((candidate) => candidate.id === input.itemId);
+    if (!row) return null;
+
+    let plaintext: Uint8Array | null = null;
+    try {
+      plaintext = await decryptItem(
+        vault.masterKey,
+        { userId, itemId: row.id, blobVersion: row.blobVersion },
+        fromBase64(row.blob),
+      );
+      const existing = contentOf(plaintext);
+      if (!existing) return null;
+      // An item this build cannot read must not be silently REPLACED by an edit
+      // — that would turn a display problem into data loss.
+      const merged = { ...existing, ...input.changes };
+      return await this.sealItem({
+        itemId: row.id,
+        blobVersion: row.blobVersion + 1,
+        content: merged,
+      });
+    } catch {
+      return null;
+    } finally {
+      if (plaintext) plaintext.fill(0);
+    }
   }
 
   /**

@@ -107,3 +107,48 @@ export async function lockVault(bearer: string): Promise<VaultOutcome<VaultState
   const reply = await ask<{ state: VaultState }>({ target: OFFSCREEN, kind: 'lock', bearer });
   return reply.ok ? { ok: true, data: reply.data.state } : reply;
 }
+
+/**
+ * Add an item the user typed in the popup (M16 PR4a).
+ *
+ * The id is minted in the offscreen host, not here, because it is bound into
+ * the blob's AAD and the same value must reach both the seal and the POST.
+ */
+export async function createItem(
+  bearer: string,
+  itemType: string,
+  content: Record<string, unknown>,
+): Promise<VaultOutcome<ItemSummary>> {
+  const reply = await ask<{ item: ItemSummary }>({
+    target: OFFSCREEN,
+    kind: 'create',
+    bearer,
+    itemType,
+    content,
+  });
+  return reply.ok ? { ok: true, data: reply.data.item } : reply;
+}
+
+/**
+ * Change an item, sending ONLY what changed.
+ *
+ * `blobVersion` is the version the popup read; it travels on as `If-Match`, so
+ * an edit against a stale view is refused rather than silently absorbed.
+ */
+export async function updateItem(
+  bearer: string,
+  input: {
+    itemId: string;
+    itemType: string;
+    changes: Record<string, unknown>;
+    blobVersion: number;
+  },
+): Promise<VaultOutcome<ItemSummary>> {
+  const reply = await ask<{ item: ItemSummary }>({
+    target: OFFSCREEN,
+    kind: 'update',
+    bearer,
+    ...input,
+  });
+  return reply.ok ? { ok: true, data: reply.data.item } : reply;
+}
