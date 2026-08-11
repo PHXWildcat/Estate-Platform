@@ -1,0 +1,22 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    /*
+     * THE PERMISSIVE HALF. This config drives the editor and ts-jest, and the
+     * SUITE genuinely runs in Node — the fences read source with `node:fs`, and
+     * the manifest test spawns the real build script.
+     *
+     * It is deliberately NOT the fence. `tsconfig.build.json`, which emits the
+     * artifact that actually ships, sets `types: []` so a `src` module reaching
+     * for `process` or `Buffer` fails the build. Same split as `vault-web` and
+     * `@estate/vault-crypto`, for the same reason: a permissive config for
+     * tests, a strict one for the thing that runs in a browser.
+     */
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "jest"],
+    "module": "es2022",
+    "moduleResolution": "bundler"
+  },
+  "include": ["src", "test", "jest.config.js"]
+}

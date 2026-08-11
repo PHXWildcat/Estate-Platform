@@ -2,7 +2,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import type { VaultWebConfig } from './config';
-import { CSRF_HEADER, clearSessionCookie, sessionTokenFrom, setSessionCookie } from './cookies';
+import {
+  CSRF_HEADER,
+  bearerFrom,
+  clearSessionCookie,
+  sessionTokenFrom,
+  setSessionCookie,
+} from './cookies';
 import { SECURITY_HEADERS } from './security-headers';
 import { Upstream } from './upstream';
 
@@ -49,6 +55,60 @@ const PROXY_ROUTES: ReadonlyArray<{
   { prefix: '/api/auth/stepup', upstream: 'identity', rewriteTo: '/v1/auth/stepup', tree: false },
   { prefix: '/api/auth/logout', upstream: 'identity', rewriteTo: '/v1/auth/logout', tree: false },
 ];
+
+/**
+ * THE TWO ROUTES THAT CARRY NO CREDENTIAL (M16 PR2a).
+ *
+ * The extension's single front door is this origin — one `host_permission`, one
+ * origin — and two of the things it must do have no bearer to forward, by the
+ * design of the routes themselves:
+ *
+ *   · redeeming a pairing code, which is unauthenticated BECAUSE the code is
+ *     the authority and there is no field in the request that could name an
+ *     account (the §6g anti-enumeration shape), and
+ *   · refreshing, whose authority is the refresh token in the body.
+ *
+ * A SEPARATE TABLE rather than entries in `PROXY_ROUTES`, because that table's
+ * handler requires a credential and admitting these would mean weakening the
+ * requirement for every route in it. These reach `Upstream.passThrough`, which
+ * has no bearer parameter to pass.
+ *
+ * EXACT paths, no suffix, no tree — the `logout`/`logout/refresh` lesson.
+ * Identity's `POST /v1/auth/logout/refresh` remains unreachable from here, and
+ * `/v1/auth/refresh` being reachable is not a route to it: they are different
+ * routes with different bodies and different effects.
+ */
+const PASS_THROUGH_ROUTES: ReadonlyArray<{
+  readonly path: string;
+  readonly upstreamPath: string;
+}> = [
+  { path: '/api/auth/extension/pairing/redeem', upstreamPath: '/v1/auth/extension/pairing/redeem' },
+  { path: '/api/auth/refresh', upstreamPath: '/v1/auth/refresh' },
+];
+
+/**
+ * WHICH CREDENTIAL A PROXIED REQUEST TRAVELS ON, and in which order.
+ *
+ * `Authorization: Bearer` WINS when present; the cookie is read only in its
+ * absence. One rule, no fallback chain, no merging — a request carrying both
+ * uses the header and never looks at the cookie, which `test/server.spec.ts`
+ * pins. The alternative (cookie first, bearer as fallback) would mean a
+ * paired extension's request could silently travel on a browser session that
+ * happened to be present, and "which credential did that actually use" is not
+ * a question this edge should ever be ambiguous about.
+ *
+ * Both are the CALLER'S OWN token. Neither is a service credential, this edge
+ * still holds none, and it still cannot reach anything the caller could not.
+ *
+ * WHAT THIS DOES NOT DO: it does not re-implement the audience table. Which
+ * routes an `extension` session may reach is decided by the services
+ * (`AUDIENCE_ROUTE_ADMITTERS` and the per-handler decorators), was measured
+ * end to end in PR1, and a second copy here is a second copy that drifts. This
+ * edge forwards; the callee decides.
+ */
+function credentialFrom(req: IncomingMessage): string | null {
+  return bearerFrom(req.headers['authorization']) ?? sessionTokenFrom(req.headers['cookie']);
+}
 
 /**
  * THE ONE ZONE B READ ON THIS ORIGIN (M15 PR3).
@@ -283,7 +343,7 @@ export function createVaultWebServer(options: VaultWebServerOptions): Server {
       sendJson(res, 403, { error: 'forbidden' });
       return;
     }
-    const bearer = sessionTokenFrom(req.headers['cookie']);
+    const bearer = credentialFrom(req);
     if (!bearer) {
       sendJson(res, 401, { error: 'unauthorized' });
       return;
@@ -316,14 +376,65 @@ export function createVaultWebServer(options: VaultWebServerOptions): Server {
       headers: forwarded,
     });
     // Signing out upstream must also clear the cookie here, or the browser
-    // keeps presenting a revoked token and the UI says "signed in".
-    if (pathname === '/api/auth/logout' && result.status >= 200 && result.status < 300) {
+    // keeps presenting a revoked token and the UI says "signed in". Only when
+    // the request actually CARRIED one: the extension logs out on a bearer and
+    // has no cookie to clear, and answering it with a Set-Cookie would be a
+    // header about a credential it does not have.
+    if (
+      pathname === '/api/auth/logout' &&
+      result.status >= 200 &&
+      result.status < 300 &&
+      sessionTokenFrom(req.headers['cookie']) !== null
+    ) {
       clearSessionCookie(res);
     }
     send(res, result.status, result.body, result.contentType);
   }
 
-  /** Profile's contact summary, narrowed to what a grantee picker needs. */
+  /**
+   * The extension's two credential-free identity calls (see PASS_THROUGH_ROUTES).
+   *
+   * THE CSRF HEADER IS STILL REQUIRED, and the comment matters more than the
+   * check: for these two routes it is NOT the control, because neither carries
+   * an ambient credential and therefore neither is CSRF-able in the first
+   * place. It stays because every other `/api/` route has it, one rule is
+   * easier to keep than two, and it costs the extension nothing — extension
+   * contexts bypass CORS for hosts in `host_permissions`, so no preflight is
+   * involved and this edge still answers none.
+   */
+  async function handlePassThrough(
+    req: IncomingMessage,
+    res: ServerResponse,
+    upstreamPath: string,
+  ): Promise<void> {
+    if (req.headers[CSRF_HEADER] !== '1') {
+      sendJson(res, 403, { error: 'forbidden' });
+      return;
+    }
+    const body = await readBody(req);
+    if (body === null) {
+      sendJson(res, 413, { error: 'payload_too_large' });
+      return;
+    }
+    const result = await upstream.passThrough({
+      baseUrl: upstreamUrl.identity,
+      path: upstreamPath,
+      body: body.length === 0 ? undefined : body,
+    });
+    send(res, result.status, result.body, result.contentType);
+  }
+
+  /**
+   * Profile's contact summary, narrowed to what a grantee picker needs.
+   *
+   * COOKIE ONLY, deliberately — this is the one route on the edge that does NOT
+   * accept a bearer. The Zone B read on this origin belongs to the interactive
+   * vault session that a person is sitting in front of choosing grantees, not to
+   * a credential stored on a device. Defence in depth rather than the control:
+   * profile admits only the `vault` audience on that route, so an extension
+   * session would be refused upstream anyway — but the edge should not be the
+   * thing that has to be asked.
+   */
   async function handleGranteeCandidates(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.headers[CSRF_HEADER] !== '1') {
       sendJson(res, 403, { error: 'forbidden' });
@@ -369,6 +480,14 @@ export function createVaultWebServer(options: VaultWebServerOptions): Server {
       }
       if (req.method === 'GET' && pathname === GRANTEE_CANDIDATES_PATH) {
         await handleGranteeCandidates(req, res);
+        return;
+      }
+      // BEFORE the `/api/` proxy, because that handler requires a credential
+      // and these two routes have none to require.
+      const passThrough =
+        req.method === 'POST' ? PASS_THROUGH_ROUTES.find((r) => r.path === pathname) : undefined;
+      if (passThrough) {
+        await handlePassThrough(req, res, passThrough.upstreamPath);
         return;
       }
       if (pathname.startsWith('/api/')) {

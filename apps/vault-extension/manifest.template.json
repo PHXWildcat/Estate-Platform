@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Estate Vault",
+  "version": "0.0.1",
+  "description": "Look up items in your Estate vault. Your vault password and Secret Key never leave this device.",
+  "permissions": ["storage"],
+  "host_permissions": ["__VAULT_ORIGIN__/*"],
+  "action": {
+    "default_title": "Estate Vault",
+    "default_popup": "popup.html"
+  }
+}

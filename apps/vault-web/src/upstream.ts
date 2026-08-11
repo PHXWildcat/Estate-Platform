@@ -1,7 +1,7 @@
 /**
  * Everything this edge says to another service.
  *
- * There are exactly two shapes, and the difference between them is the whole
+ * There are exactly three shapes, and the difference between them is the whole
  * trust story of this origin:
  *
  *   · `redeemHandoff` — the ONE call made with no user credential, because the
@@ -11,6 +11,11 @@
  *     reach anything the calling user could not reach themselves. A compromised
  *     vault edge replays the sessions it is currently serving; it cannot mint
  *     one.
+ *   · `passThrough` — the extension's two unauthenticated identity routes
+ *     (M16 PR2a). It TAKES NO BEARER PARAMETER AT ALL, which is the point: an
+ *     optional credential on `proxy` would be a fail-open shape, where the next
+ *     caller forgets the argument and the request silently goes out anonymous.
+ *     Here anonymity is the contract, so it is expressed in the type.
  */
 
 /** Minimal fetch shape so tests inject a transport double (no real network). */
@@ -133,6 +138,51 @@ export class Upstream {
     } catch {
       // 502 rather than a fabricated answer: an unreachable vault must never
       // look like an empty one.
+      return {
+        status: 502,
+        body: JSON.stringify({ error: 'upstream_unavailable' }),
+        contentType: 'application/json',
+      };
+    }
+    return {
+      status: response.status,
+      body: await response.text(),
+      contentType: response.headers.get('content-type') ?? 'application/json',
+    };
+  }
+
+  /**
+   * Forward one request to an upstream route that is UNAUTHENTICATED BY
+   * CONSTRUCTION (M16 PR2a): extension pairing redemption, and token refresh.
+   *
+   * Both are identity routes with no bearer to forward — the pairing code is
+   * the authority for one and the refresh token in the body is the authority
+   * for the other. Neither is reachable through `PROXY_ROUTES`, which requires
+   * a credential and would have to be weakened to carry them.
+   *
+   * NO BEARER PARAMETER EXISTS on this method. That is deliberate and is the
+   * only reason it is a separate method rather than `proxy` with an optional
+   * argument: a credential you can forget to pass is a credential that gets
+   * forgotten, and the direction that fails there is silent.
+   *
+   * The response is passed back VERBATIM, exactly as `proxy` does. It carries
+   * the tokens the extension needs, and identity's own uniform refusals — this
+   * edge distinguishes nothing that identity chose not to.
+   */
+  async passThrough(input: {
+    baseUrl: string;
+    path: string;
+    body: string | undefined;
+  }): Promise<ProxyResult> {
+    const base = input.baseUrl.replace(/\/$/, '');
+    let response: Awaited<ReturnType<FetchLike>>;
+    try {
+      response = await this.fetchImpl(`${base}${input.path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: input.body ?? '{}',
+      });
+    } catch {
       return {
         status: 502,
         body: JSON.stringify({ error: 'upstream_unavailable' }),

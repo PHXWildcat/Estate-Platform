@@ -3269,9 +3269,17 @@ audience parameter, and the absence of any user-reachable session revocation.
 IndexedDB key persistence, passkey provisioning (its own milestone), and writes
 before PR3 has proved the page boundary read-only.
 
-**PRs.** PR1 the boundary, the credential and the debts it makes acute · PR2
-unlock + read · PR3 matching + fill · PR4 writes + release pipeline · PR5 the
-security review. Each carries its own docs delta.
+**PRs.** PR1 the boundary, the credential and the debts it makes acute · **PR2a
+the extension and its transport · PR2b unlock + read** · PR3 matching + fill ·
+PR4 writes + release pipeline · PR5 the security review. Each carries its own
+docs delta.
+
+**PR2 SPLIT IN TWO — a recorded deviation, making this six PRs.** "Unlock +
+read" assumed the extension existed; PR1 shipped the boundary and no extension
+at all, so PR2 as written would have created the artifact, its transport, its
+fences AND its crypto in one change. Splitting is the M15 PR1→PR2 precedent
+verbatim — *prove the boundary first, put no key material behind it yet* — and
+it means PR2b's SRP unlock lands on a path already driven end to end.
 
 **Its own docs/03 delta:** TB9 (the extension against arbitrary web pages) in §3
 with a §4 STRIDE block, and §6j.
@@ -3358,6 +3366,67 @@ is a `schema_violation` to it, indistinguishable from malformed input. That is a
 rolling-deploy consequence rather than a defect in this change, and the old
 container's logs did not survive its restart, so the rejection was inferred from
 `ingestor.ts` rather than observed.
+
+#### PR2a — the extension exists, and its transport is proven
+
+`apps/vault-extension` is the tenth app and the first artifact in the product
+that will be distributed as a signed blob through a vendor store. PR2a ships it
+holding **no key material at all**: it pairs, stores an `extension`-audience
+session, refreshes it, and reads one fact — whether the account has a vault —
+through the vault origin's edge. That single sentence exercises the whole chain
+the milestone's boundary was built for, with nothing cryptographic in it.
+
+**The edge becomes the extension's front door.** `apps/vault-web` gains a bearer
+path (`Authorization: Bearer` wins when present, the `__Host-` cookie only in its
+absence — one rule, never a fallback chain) and two credential-free
+exact-match routes for pairing redemption and refresh. Those reach a new
+`Upstream.passThrough` that has **no bearer parameter at all**, so anonymity is a
+property of the type rather than of remembering to omit an argument.
+`/api/grantee-candidates` stays cookie-only: the one Zone B read on this origin
+belongs to the interactive vault session, not to a credential on a device. The
+edge does **not** re-implement the audience table — the services decide, PR1
+measured it, and a second copy drifts.
+
+**Verified rather than assumed:** extension pages and service workers bypass CORS
+for hosts in `host_permissions` (chromium.org), while content scripts do not — so
+the edge answers no preflight and its CSRF property survives untouched, and the
+platform already enforces half of TB9's "the content script cannot reach the
+vault".
+
+**The manifest is the permission set, pinned as data:** `storage` and one host,
+with `content_scripts`, `activeTab`, `scripting`, `offscreen`,
+`externally_connectable` and `background` all absent and each named in the test
+with the PR that would introduce it. The origin is read back out of the manifest
+at runtime, so there is no second copy to drift (the M8 PR5 baked-value lesson).
+
+**Seven fences**, each mutation-tested red: no dependency tree (the package
+declares *zero* dependencies — even the Chrome API surface is four hand-written
+declarations rather than `@types/chrome`), no HTML/script sink with zero
+exemptions, one network call site, no `console.*`, no inline script or style in
+the shell, no `*_INTERNAL_TOKEN`, and the shipped artifact compiled with
+`types: []` so a browser module reaching for `process` fails the build.
+
+**Found on the way, and fixed:** `turbo.json` declared only `dist/**` as build
+output, so `@estate/vault-crypto`'s `dist-esm` and `vault-web`'s `public/app` and
+`public/lib` were absent after any cache hit — turbo reporting a package built
+that was missing half of itself. Proven by deleting all three and watching a
+`FULL TURBO` hit restore them.
+
+**Proven live** against the running stack, with the edge run as a host process so
+the shared containers were untouched: a real pairing code minted through a real
+TOTP step-up, redeemed through the edge; a replay refused with the uniform
+`invalid_code`; `keyset` 200 while `items`/`lock` answered 403 `vault_locked`
+(admitted by audience, stopped by the next control); `reset` and
+`grantee-candidates` 401; `handoff` and `logout/refresh` 404 without leaving the
+process; refresh rotating the pair in place with `audience: extension` intact.
+The drive also reproduced the revocation residual with numbers — identity refused
+the revoked token at t+0 while the vault honoured it until t+20, the tail of the
+30s introspection cache.
+
+**Not proven, stated:** CI cannot load a packed extension, so the extension's own
+logic is proven against a `chrome` API double in jsdom and the transport is
+proven at the edge. Loading `dist/` unpacked in a real Chrome is a manual step —
+the honesty the repo applies to the Plaid live client and the Anthropic adapter.
 
 ### M17 — Subscription manager (planned)
 

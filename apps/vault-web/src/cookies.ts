@@ -95,3 +95,29 @@ export function clearSessionCookie(res: ServerResponse): void {
 export function sessionTokenFrom(cookieHeader: string | undefined): string | null {
   return parseCookies(cookieHeader).get(VAULT_SESSION_COOKIE) ?? null;
 }
+
+/**
+ * The OTHER way a caller presents a credential to this edge (M16 PR2a).
+ *
+ * The browser client has a cookie because it was handed one on arrival. The
+ * browser EXTENSION cannot have one: it lives on `chrome-extension://…`, so
+ * nothing this origin Set-Cookies is ever sent back to it. It holds an
+ * `extension`-audience access token from the pairing ceremony and presents that
+ * as a bearer instead.
+ *
+ * Deliberately strict about the shape: `Bearer ` with exactly one space, the
+ * scheme matched case-insensitively (RFC 7235 — the scheme is case-insensitive,
+ * the token is not), and a non-empty remainder containing no whitespace. A
+ * token arriving with a stray space is one somebody constructed wrong, and
+ * forwarding it would turn a client bug into an upstream 401 nobody can place.
+ *
+ * Returns null for everything else, and null means "no credential here" — never
+ * "try something else". The precedence rule lives in `server.ts`; this function
+ * takes no decision of its own.
+ */
+export function bearerFrom(authorizationHeader: string | undefined): string | null {
+  if (typeof authorizationHeader !== 'string') {
+    return null;
+  }
+  return /^Bearer (\S+)$/i.exec(authorizationHeader)?.[1] ?? null;
+}

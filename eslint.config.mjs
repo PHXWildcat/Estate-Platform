@@ -23,6 +23,7 @@ export default tseslint.config(
       // Plain Node ESM build scripts, outside every tsconfig project — the
       // same status .github/scripts has.
       'apps/vault-web/scripts/**',
+      'apps/vault-extension/scripts/**',
       // The vault-crypto BROWSER emit. Same sources as dist/, different module
       // format; linting the output reports the compiler's JS back as untyped.
       '**/dist-esm/**',

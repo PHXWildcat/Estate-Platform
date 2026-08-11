@@ -1,0 +1,105 @@
+/*
+ * Minimal, and in its own file for a reason rather than for tidiness: MV3's
+ * default extension CSP forbids inline script and inline style, and
+ * `test/fences.spec.ts` asserts the shell carries neither — the vault origin's
+ * rule, applied to the artifact that has no CSP header of its own to lean on.
+ *
+ * The palette is the app's Evergreen rail, copied rather than imported. The
+ * same argument the vault origin makes: a surface asking about the most
+ * valuable secret in the product should not look unfamiliar, because an
+ * unfamiliar-looking surface asking for a code is what a phishing page looks
+ * like — and importing a stylesheet across a package boundary would be a
+ * dependency this artifact refuses to have.
+ */
+:root {
+  --ink: #10231b;
+  --ink-muted: #55665e;
+  --line: #d9e2dc;
+  --accent: #1f6f4e;
+  --danger: #8c2f2f;
+  --surface: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8f0ea;
+    --ink-muted: #9db0a6;
+    --line: #2a3a33;
+    --accent: #5fbf8f;
+    --danger: #e08b8b;
+    --surface: #101815;
+  }
+}
+
+body {
+  width: 20rem;
+  margin: 0;
+  padding: 1rem;
+  background: var(--surface);
+  color: var(--ink);
+  font:
+    0.875rem/1.5 system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 0 0 0.75rem;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.status {
+  margin: 0 0 0.5rem;
+  font-weight: 500;
+}
+
+.label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.code {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+button {
+  margin-top: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+  font-weight: 500;
+}
+
+.error {
+  margin: 0.75rem 0 0;
+  color: var(--danger);
+  font-size: 0.8125rem;
+}

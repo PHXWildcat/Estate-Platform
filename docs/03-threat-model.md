@@ -1241,6 +1241,36 @@ CLAUDE.md decision log; the security-relevant shape is:
   revocation as taking effect rather than as complete, is the right one. Left
   open deliberately, and named here so whoever writes that copy knows why.
 
+**Added by PR2a (the extension and its transport).**
+
+- *The refresh token is on disk.* `chrome.storage.local` is not memory-backed, so
+  a paired device keeps a refresh-capable credential for up to its 30-day life
+  where local malware or another process running as the user can read it.
+  `chrome.storage.session` was rejected for it: pairing is deliberately once per
+  browser and repeating it needs a step-up on the APP origin, so a device that
+  forgot its pairing on every browser restart would push people through that
+  ceremony daily and, predictably, into not using the extension. WHAT BOUNDS IT
+  IS THE AUDIENCE, not the storage — the credential reaches five vault routes and
+  three identity ones and nothing else, cannot reset a vault, replace a keyset,
+  delete an item, touch emergency access, mint another handoff or enumerate the
+  owner's other devices, and still decrypts nothing, because every item read sits
+  behind a vault session that only a completed SRP unlock produces. It is also
+  visible in the owner's paired-devices list and revocable from there in one
+  click. No key material is ever written there, in PR2b or later.
+- *One more unauthenticated identity route is reachable through the vault
+  origin.* The edge proxies `POST /v1/auth/refresh` (and pairing redemption) as
+  credential-free pass-throughs, so that the extension needs one
+  `host_permission` and one origin rather than addressing identity directly. Both
+  are exact-match paths carrying no bearer, neither can be READ cross-site
+  because this edge sets no CORS headers and answers no preflight, and identity's
+  own uniform refusals are unchanged. `POST /v1/auth/logout/refresh` remains
+  deliberately unreachable.
+- *The revocation window above, confirmed from the other end.* PR2a's live drive
+  measured it from the extension's side rather than the owner's: after logout,
+  identity refused the token at t+0 while the vault — reached through the edge on
+  the same token — answered 200 at t+0 and t+10 and 401 from t+20. Same 30-second
+  positive cache, same conclusion, two independent measurements.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

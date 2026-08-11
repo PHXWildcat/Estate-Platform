@@ -43,5 +43,8 @@ module.exports = require('@estate/config/jest')(__dirname, {
      */
     '^/lib/vault-crypto/index\\.js$': '<rootDir>/../../packages/vault-crypto/src/index.ts',
   },
-  coverageThreshold: { global: { statements: 90, branches: 78, functions: 86, lines: 91 } },
+  // M16 PR2a re-measured with the bearer path and the two credential-free
+  // pass-throughs under test: 90.26/78.21/87.22/92. Functions and lines
+  // ratcheted up; never down.
+  coverageThreshold: { global: { statements: 90, branches: 78, functions: 87, lines: 92 } },
 });

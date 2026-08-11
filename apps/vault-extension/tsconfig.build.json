@@ -1,0 +1,32 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+
+    /*
+     * NATIVE ES MODULES, SHIPPED AS WRITTEN — no bundler, the vault origin's
+     * argument applied to the artifact that needs it most.
+     *
+     * A bundler is a build-time code generator with its own dependency tree,
+     * and this package will eventually load Zone A crypto (PR2b). It is also
+     * the one artifact in the product distributed as a SIGNED BLOB through a
+     * vendor store with no CSP in its path, where docs/03 §4 TB9 records that a
+     * compromised update is undetectable by the platform. The compensating
+     * control is that what ships is exactly what a reviewer reads, file for
+     * file — which a bundler destroys.
+     *
+     * Cost: relative imports need explicit `.js`. That fails loudly at load
+     * time rather than quietly, and `test/fences.spec.ts` catches it earlier.
+     */
+    "target": "ES2023",
+    "types": [],
+    "declaration": false,
+    "declarationMap": false,
+    // Same reason as vault-web: the artifact is unminified, so what a reviewer
+    // sees in devtools IS the source, and a map is a file with no other job.
+    "sourceMap": false
+  },
+  "include": ["src"]
+}

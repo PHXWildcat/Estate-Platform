@@ -3356,3 +3356,130 @@ deviating from them, stop and propose the change with rationale — do not silen
   crediting with more than it does. The `/Confirm/` matcher was left alone: the
   busy labels are signal, and loosening the query would have deleted the only
   thing that made the wedge visible at all.
+- 2026-08-10 — M16 PR2 SPLIT IN TWO (approved), making the milestone six PRs
+  rather than five. docs/04 lists PR2 as "unlock + read", a reading that assumed
+  the extension already existed — PR1 shipped the BOUNDARY (the audience, the
+  pairing ceremony, the paired-devices surface) and no extension at all. PR2a is
+  therefore the M15 PR1→PR2 precedent verbatim: the artifact, its transport and
+  its fences, with NO key material behind them, so PR2b lands SRP unlock and item
+  read on a path that already works. What PR2a visibly does is one sentence —
+  type a pairing code, and the popup reports whether the account has a vault —
+  and that sentence exercises pairing → token storage → refresh → the vault
+  edge's new bearer path → the vault service's per-handler audience admission,
+  end to end, with nothing cryptographic in the way.
+- 2026-08-10 — THE MV3 OFFSCREEN `reason` ENUM HAS NO VALUE THAT DESCRIBES
+  HOLDING VAULT KEYS, which the M16 brief did not know when it chose an offscreen
+  document. The enum is closed (TESTING, AUDIO_PLAYBACK, IFRAME_SCRIPTING,
+  DOM_SCRAPING, BLOBS, DOM_PARSER, USER_MEDIA, DISPLAY_MEDIA, WEB_RTC, CLIPBOARD,
+  LOCAL_STORAGE, WORKERS, BATTERY_STATUS, MATCH_MEDIA, GEOLOCATION) and the
+  honest options were: declare something untrue, drop the offscreen document and
+  re-unlock on every popup open (TOTP + vault password + Secret Key each time —
+  unusable), or move the UI to a side panel. DECIDED: keep the offscreen
+  document, declare `WORKERS`, and MAKE THAT TRUE by running the blocking
+  2048-bit SRP `modPow` in a real `Worker` — synchronous bigint math that wants
+  off-thread anyway. The residual is stated rather than hidden: a Worker that
+  exists partly to make a manifest declaration accurate. Applies to PR2b; PR2a
+  declares no `offscreen` permission because it holds nothing. Measured while
+  deciding: an offscreen document with a non-`AUDIO_PLAYBACK` reason has NO
+  lifetime limit, and only one may exist per extension.
+- 2026-08-10 — THE EXTENSION BYPASSES CORS, AND THAT IS WHY THE EDGE NEEDS NO
+  PREFLIGHT. Verified against chromium.org rather than assumed: extension PAGES
+  and service workers bypass CORS for hosts in `host_permissions`, while CONTENT
+  SCRIPTS do not and are subject to the page's own origin policy. Two
+  consequences. The vault edge answers no preflight and sets no
+  `Access-Control-Allow-Origin` — the property its CSRF defence rests on stays
+  exactly as M15 left it. And the asymmetry aligns with docs/03 TB9, where the
+  content script must be structurally unable to reach the vault: the platform
+  enforces half of that before we write a line.
+- 2026-08-10 — THE EDGE'S CREDENTIAL PRECEDENCE IS ONE RULE, NOT A FALLBACK
+  CHAIN: `Authorization: Bearer` wins when present, the `__Host-` cookie is read
+  only in its absence, and a request carrying both never looks at the cookie.
+  Cookie-first-with-bearer-fallback was rejected because it would let a paired
+  device's request silently travel on whatever browser session happened to be in
+  the jar, and "which credential did that actually use" is not a question this
+  edge should ever be ambiguous about. `GET /api/grantee-candidates` stays
+  COOKIE-ONLY — the one Zone B read on this origin belongs to the interactive
+  vault session someone is sitting in front of choosing grantees, not to a
+  credential stored on a device — and that is defence in depth rather than the
+  control, since profile admits only the `vault` audience there anyway. THE EDGE
+  DOES NOT RE-IMPLEMENT THE AUDIENCE TABLE: the services decide what an
+  `extension` session may reach, PR1 measured it end to end, and a second copy
+  here is a second copy that drifts.
+- 2026-08-10 — TWO CREDENTIAL-FREE ROUTES ON THE EDGE, AND A METHOD THAT CANNOT
+  CARRY A CREDENTIAL. Pairing redemption and refresh are unauthenticated BY
+  CONSTRUCTION at identity — the code is the authority for one, the refresh token
+  in the body for the other — so neither fits `PROXY_ROUTES`, whose handler
+  requires one. They are a separate exact-match table reaching a new
+  `Upstream.passThrough` that HAS NO BEARER PARAMETER AT ALL: an optional
+  credential on `proxy` would be a fail-open shape where the next caller forgets
+  the argument and the request silently goes out anonymous, so anonymity is
+  expressed in the type instead. Both keep the CSRF header — free for the
+  extension, one rule for every `/api/` route — with a comment saying plainly
+  that for these two it is noise reduction and not the control. Refresh through
+  the edge is what keeps docs/04's "one `host_permission`, one origin"; the
+  residual is one more unauthenticated identity route reachable from the vault
+  origin, unreadable cross-site because the edge sets no CORS headers.
+- 2026-08-10 — THE EXTENSION'S ORIGIN IS READ BACK OUT OF ITS OWN MANIFEST.
+  A `host_permissions` entry is a literal the browser reads before any code
+  runs, so it cannot come from runtime configuration — and M8 PR5's lesson is
+  that a baked value must then be ASSERTED rather than assumed, because the web
+  image once shipped a rewrite pointing at itself and every test passed over it.
+  So there is no second constant: `config.ts` reads the manifest, refuses
+  anything but exactly one exact origin, and the code physically cannot address
+  a host the manifest does not permit. Tokens live in `chrome.storage.local` and
+  not `session`, because pairing is deliberately once per browser and needs a
+  step-up on the APP origin to repeat — a device that forgot its pairing on every
+  restart would send people through that ceremony daily, and the predictable
+  result is an unpaired extension. THE REFRESH TOKEN IS THEREFORE ON DISK, and
+  what bounds it is the AUDIENCE rather than the storage (docs/03 §6j).
+- 2026-08-10 — AN OUTAGE MUST NOT WEAR THE FACE OF A REVOCATION, which is the M9
+  rule pointed the other way and the sharpest decision in PR2a's client. The
+  popup FORGETS the credential on `UNAUTHENTICATED`, because after a refresh
+  attempt that code means the session is genuinely gone — revoked from the
+  owner's paired-devices list, or expired. So `withSession` distinguishes a
+  REFUSED refresh from an UNREACHABLE one and reports the transport failure as
+  itself: without that, a wifi blip would un-pair a perfectly good device and
+  send someone back through a step-up ceremony because their connection dropped
+  for a second. Disconnect follows the M8 PR5 logout rule in the same shape —
+  revoke first, clear storage only if something was actually revoked — and
+  refreshes a stale access token BEFORE spending it, because identity's logout
+  needs a live one and the unauthenticated `logout/refresh` route M8 added for
+  exactly this case is one the vault edge deliberately refuses to proxy.
+- 2026-08-10 — TURBO WAS NOT CACHING HALF OF TWO PACKAGES' BUILDS, found by
+  building the repo in a fresh git worktree. `outputs` listed `dist/**` only, so
+  `@estate/vault-crypto`'s `dist-esm` (the BROWSER build) and `vault-web`'s
+  `public/app` + `public/lib` were undeclared — and an undeclared output is not
+  merely uncached, it is ABSENT after a cache hit, because turbo skips the build
+  and restores nothing. Turbo then reports a package successfully built that is
+  missing half of itself: the failure is silent in the direction that matters,
+  and it surfaced as `vault-web`'s copy step failing ENOENT against a dependency
+  turbo considered done. A restored cache would also have served the Zone A
+  origin with no browser client at all. Declared per package rather than
+  globally, so `public/app`/`public/lib` cannot start meaning something in
+  `apps/web`, which has a `public/` of checked-in assets. Proven by deleting all
+  three directories and watching a `FULL TURBO` hit restore them.
+- 2026-08-10 — M16 PR2a driven live against the running stack, with the edge run
+  as a HOST process from the worktree so the shared containers were not
+  disturbed. A real pairing code minted through a real TOTP step-up, then every
+  assertion made THROUGH THE NEW EDGE: redemption returned a token pair; a
+  replay of the same code returned the uniform `{"error":"invalid_code"}`;
+  `GET /api/vault/keyset` answered 200 while `items` and `lock` answered 403
+  `vault_locked` (admitted by audience, stopped by the next control — reaching
+  the API is still not opening a vault); `vault/reset` and `grantee-candidates`
+  answered 401; `handoff` and `logout/refresh` answered 404 without leaving the
+  process. Refresh rotated the pair IN PLACE (same session id, new access token)
+  and `/v1/auth/session` still reported `audience: extension`, so a refreshed
+  credential cannot become something more powerful. Precedence held: bearer +
+  junk cookie 200, junk bearer + junk cookie 401, malformed Authorization 401,
+  no CSRF header 403. Logout returned 200 and sent NO Set-Cookie to a caller
+  that has no cookie.
+- 2026-08-10 — AND THE LIVE DRIVE REPRODUCED THE REVOCATION RESIDUAL, WITH
+  NUMBERS. After logout, identity refused the token IMMEDIATELY (401 at t+0)
+  while the VAULT kept honouring it through the edge at t+0 and t+10 and refused
+  it from t+20 — the tail of `HttpSessionVerifier`'s 30-second positive
+  introspection cache, which had an entry because the boundary probes moments
+  earlier had populated it. This is the same residual the other M16 session
+  recorded in docs/03 §6j from the paired-devices surface, and the same one that
+  made my own PR1 sentence ("dead everywhere a second later") an
+  over-generalisation of a run that happened to miss the window. Now measured
+  rather than reasoned about, from both ends.

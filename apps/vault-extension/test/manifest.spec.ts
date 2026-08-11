@@ -1,0 +1,113 @@
+/**
+ * THE MANIFEST IS THE PERMISSION SET, PINNED AS DATA.
+ *
+ * docs/04's supply-chain decision for M16 names "minimum permissions pinned as
+ * data" among the controls that work unattended, and this is that: the declared
+ * literal below is the whole of what this artifact may do, and widening it
+ * fails a test before it reaches a review. Chrome surfaces a permission
+ * increase to the USER as a re-consent prompt on update — this makes it
+ * surface to US first.
+ *
+ * EVERY ABSENCE HERE IS DELIBERATE. No `content_scripts`, no `activeTab`, no
+ * `scripting` — the extension has no view of any page in PR2a and PR3 is where
+ * the page boundary is proved read-only. No `offscreen` — there is no key
+ * material yet, so there is nothing to hold. Each arrives with the PR that
+ * needs it, which is what makes each one a reviewable increase rather than a
+ * line nobody remembers adding.
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const ROOT = join(__dirname, '..');
+const TEMPLATE = JSON.parse(readFileSync(join(ROOT, 'manifest.template.json'), 'utf8')) as Record<
+  string,
+  unknown
+>;
+
+/** The permission set, as data. Changing this is the reviewable act. */
+const PERMISSIONS = ['storage'];
+
+/** Keys that must NOT appear at all, each with the PR that would introduce it. */
+const FORBIDDEN_KEYS = [
+  'content_scripts', // PR3
+  'web_accessible_resources', // PR3
+  'externally_connectable', // rejected outright (docs/04: the control is an absence)
+  'background', // PR2b, when the offscreen document needs a lifecycle owner
+  'declarative_net_request',
+  'oauth2',
+  'key',
+];
+
+describe('the manifest declares the minimum, and says so as data', () => {
+  it('is Manifest V3', () => {
+    expect(TEMPLATE['manifest_version']).toBe(3);
+  });
+
+  it('requests exactly the declared permissions', () => {
+    expect(TEMPLATE['permissions']).toEqual(PERMISSIONS);
+  });
+
+  it('requests exactly ONE host, and it is the placeholder the build substitutes', () => {
+    // One `host_permission`, one origin — docs/04's transport decision, and the
+    // property `config.ts` relies on when it reads the origin back at runtime.
+    expect(TEMPLATE['host_permissions']).toEqual(['__VAULT_ORIGIN__/*']);
+  });
+
+  it.each(FORBIDDEN_KEYS)('declares no %s', (key) => {
+    expect(Object.keys(TEMPLATE)).not.toContain(key);
+  });
+
+  it('has no page access of any kind, stated as a whole rather than key by key', () => {
+    // The key-by-key cases above catch a known list; this catches the shape.
+    const serialized = JSON.stringify(TEMPLATE);
+    expect(serialized).not.toContain('<all_urls>');
+    expect(serialized).not.toContain('activeTab');
+    expect(serialized).not.toContain('scripting');
+    expect(serialized).not.toContain('tabs');
+  });
+});
+
+describe('the build bakes the origin, and only a real origin', () => {
+  /**
+   * Builds into a TEMP directory, never the package's own `dist`.
+   *
+   * These cases build with a TEST origin, so writing to `dist` would leave a
+   * loadable extension addressing `vault.estate.test` behind every test run —
+   * an artifact that looks built and silently points nowhere.
+   */
+  function build(origin: string): Record<string, unknown> {
+    const out = mkdtempSync(join(tmpdir(), 'vault-ext-'));
+    try {
+      execFileSync(process.execPath, [join(ROOT, 'scripts', 'build-package.mjs')], {
+        cwd: ROOT,
+        env: { ...process.env, VAULT_ORIGIN: origin, OUT_DIR: out },
+        stdio: 'pipe',
+      });
+      return JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  }
+
+  it('substitutes the configured origin into the host permission', () => {
+    // The M8 PR5 lesson: a value baked into an artifact must be ASSERTED, not
+    // assumed. The web image once shipped a rewrite pointing at itself because
+    // nothing checked the baked value.
+    const manifest = build('https://vault.estate.test');
+    expect(manifest['host_permissions']).toEqual(['https://vault.estate.test/*']);
+    expect(JSON.stringify(manifest)).not.toContain('__VAULT_ORIGIN__');
+  });
+
+  it.each([
+    ['not-a-url', 'not a URL'],
+    ['https://*.estate.test', 'wildcard host'],
+    ['https://vault.estate.test/path', 'carries a path'],
+  ])('refuses %s (%s)', (origin) => {
+    expect(() => build(origin)).toThrow();
+  });
+});
