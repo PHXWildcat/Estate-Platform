@@ -126,7 +126,7 @@ describe('the vault screens', () => {
       message.kind === 'unlock'
         ? { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } }
         : message.kind === 'list'
-          ? { ok: true, items: [{ id: 'i-1', itemType: 'login', title: 'Bank login' }] }
+          ? { ok: true, items: [{ id: 'i-1', itemType: 'password', title: 'Bank login' }] }
           : LOCKED,
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
@@ -240,7 +240,7 @@ describe('the vault screens', () => {
   it('shows an unreadable item as present rather than hiding it', async () => {
     wire((message) =>
       message.kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'login', title: '', unreadable: true }] }
+        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: '', unreadable: true }] }
         : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
@@ -250,7 +250,7 @@ describe('the vault screens', () => {
   it('renders an item title as TEXT, whatever it contains', async () => {
     wire((message) =>
       message.kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'login', title: '<img src=x onerror=1>' }] }
+        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: '<img src=x onerror=1>' }] }
         : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
@@ -301,7 +301,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'match', domain: 'example.com' },
       },
@@ -318,7 +318,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'confusable', savedDomain: 'example.com', pageDomain: 'exarnple.com' },
       },
@@ -332,7 +332,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
       },
@@ -360,19 +360,19 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'match', domain: 'example.com' },
       },
       {
         id: 'j',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Lookalike',
         verdict: { kind: 'confusable', savedDomain: 'example.com', pageDomain: 'exarnple.com' },
       },
       {
         id: 'k',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Insecure',
         verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
       },
@@ -398,7 +398,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'match', domain: 'example.com' },
       },
@@ -412,7 +412,7 @@ describe('what is saved for the page you are on', () => {
   const MATCH = [
     {
       id: 'i',
-      itemType: 'login',
+      itemType: 'password',
       title: 'Bank login',
       verdict: { kind: 'match', domain: 'example.com' },
     },

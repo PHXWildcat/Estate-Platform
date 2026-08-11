@@ -69,7 +69,7 @@ async function stubService(
       );
       return {
         id,
-        itemType: 'login',
+        itemType: 'password',
         blob: toBase64(
           await encryptItem(masterKey, { userId: USER, itemId: id, blobVersion: 1 }, plaintext),
         ),
@@ -171,7 +171,7 @@ describe('unlocking through the host', () => {
     expect(listed).toEqual({
       ok: true,
       data: [
-        { id: '05555555-0000-4000-8000-000000000000', itemType: 'login', title: 'Bank login' },
+        { id: '05555555-0000-4000-8000-000000000000', itemType: 'password', title: 'Bank login' },
       ],
     });
 
@@ -363,7 +363,7 @@ describe('unlocking through the host', () => {
                 items: [
                   {
                     id: '99999999-0000-4000-8000-000000000000',
-                    itemType: 'login',
+                    itemType: 'password',
                     blob: 'AAAAAAAAAAAAAAAAAAAAAA==',
                     blobVersion: 1,
                     updatedAt: '2026-08-10T00:00:00Z',

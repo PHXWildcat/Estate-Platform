@@ -42,6 +42,8 @@ function filesUnder(dir: string): string[] {
 }
 
 const sourceFiles = filesUnder(SRC);
+/** The specs themselves, for the fences that are about what the FIXTURES claim. */
+const testFiles = filesUnder(__dirname);
 
 /**
  * The ONE non-relative specifier this artifact may import. A leading slash
@@ -324,6 +326,57 @@ describe('the network has exactly one call site', () => {
 
   it('api.ts really is the module that calls fetch (so the fence is not vacuous)', () => {
     expect(code(join(SRC, 'api.ts'))).toContain('fetch(');
+  });
+});
+
+describe('the fixtures use item types the vault service would accept', () => {
+  /**
+   * A FIXTURE THAT INVENTS AN ENUM TESTS THE FIXTURE.
+   *
+   * Every test in this package used `itemType: 'login'`. There is no such type:
+   * the vocabulary is `password | pin | recovery_codes | seed_phrase |
+   * private_key | secure_note | license | attachment`, and the service answers
+   * `400 invalid_request` for anything else. Found by seeding the real stack for
+   * PR3b's browser drive, where the seed was refused — 31 fixtures across five
+   * files had been describing a vault the service would reject.
+   *
+   * It was LATENT rather than broken: the extension never writes an item, so
+   * `itemType` only ever arrives FROM the server and is passed through. That is
+   * exactly the condition under which an invented value survives — nothing in
+   * this package validates it, so nothing here could notice.
+   *
+   * The vocabulary is READ FROM THE SERVICE'S OWN SOURCE rather than copied,
+   * which is the compose-parity mechanism: this package cannot import from
+   * `apps/services/vault` (no dependency, and it should not gain one), so the
+   * declaration is scanned. A copy would be a second place for one fact.
+   */
+  const SCHEMAS = join(__dirname, '..', '..', 'services', 'vault', 'src', 'schemas.ts');
+
+  const declared = (): readonly string[] => {
+    const source = readFileSync(SCHEMAS, 'utf8');
+    const block = /export const VAULT_ITEM_TYPES = \[([\s\S]*?)\] as const;/.exec(source)?.[1];
+    if (!block) throw new Error(`VAULT_ITEM_TYPES not found in ${SCHEMAS}`);
+    return [...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1] as string);
+  };
+
+  it('finds the service vocabulary, so the check is not vacuous', () => {
+    const types = declared();
+    expect(types.length).toBeGreaterThan(4);
+    expect(types).toContain('password');
+    // The value the fixtures used to invent is NOT one of them, which is the
+    // whole point of this fence.
+    expect(types).not.toContain('login');
+  });
+
+  it.each(sourceFiles.concat(testFiles))('%s uses only real item types', (file) => {
+    const used = [...code(file).matchAll(/itemType:\s*'([a-z_]+)'/g)].map((m) => m[1] as string);
+    for (const type of used) {
+      expect({ file, type, known: declared().includes(type) }).toEqual({
+        file,
+        type,
+        known: true,
+      });
+    }
   });
 });
 

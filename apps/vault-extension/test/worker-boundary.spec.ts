@@ -172,7 +172,7 @@ describe('the port over the worker', () => {
       isUnlocked: true,
       prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
       finish: () => Promise.resolve(),
-      summarise: () => Promise.resolve([{ id: 'i', itemType: 'login', title: 'Zed' }]),
+      summarise: () => Promise.resolve([{ id: 'i', itemType: 'password', title: 'Zed' }]),
       matchesFor: () => Promise.resolve([]),
       fillFor: () => Promise.resolve(null),
       lock: () => undefined,
@@ -192,7 +192,7 @@ describe('the port over the worker', () => {
       port.finish({ serverM2: 'a', wrappedMasterKey: 'b', vaultSessionId: 'c' }),
     ).resolves.toBeUndefined();
     expect(port.isUnlocked).toBe(true);
-    expect(await port.summarise([])).toEqual([{ id: 'i', itemType: 'login', title: 'Zed' }]);
+    expect(await port.summarise([])).toEqual([{ id: 'i', itemType: 'password', title: 'Zed' }]);
 
     // Every message that crossed, searched: no key, no password, no secret.
     const crossed = JSON.stringify(worker.posted);
@@ -211,7 +211,7 @@ describe('the port over the worker', () => {
         Promise.resolve([
           {
             id: 'i',
-            itemType: 'login',
+            itemType: 'password',
             title: 'Bank',
             verdict: { kind: 'match' as const, domain: 'example.com' },
           },
@@ -223,7 +223,7 @@ describe('the port over the worker', () => {
     expect(await port.matchesFor([], 'https://example.com/')).toEqual([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank',
         verdict: { kind: 'match', domain: 'example.com' },
       },
