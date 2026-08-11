@@ -1350,6 +1350,24 @@ CLAUDE.md decision log; the security-relevant shape is:
   multi-label registry compare equal. The staleness check is deliberately a
   one-year bound rather than a weekly one, because a check that fails constantly
   is one people learn to bump.
+- *THE SAME OVER-MATCH HAPPENED FOR EVERY INTERNATIONALISED SUFFIX, and it was
+  neither narrow nor hypothetical — found while scoping PR3b, fixed before it.*
+  The published list writes internationalised rules as U-LABELS (`公司.cn`)
+  while `URL.hostname` applies IDNA and always returns the A-LABEL
+  (`a.公司.cn` → `a.xn--55qx5d.cn`). `labelsMatch` compares raw strings and
+  nothing converted, so 459 of the 10,239 rules were absent from the algorithm
+  entirely: the longest match fell back to the bare TLD, every registrant under
+  those registries collapsed onto ONE registrable domain, and `matchOrigin`
+  answered `match` for two different registrants. Measured, not reasoned about —
+  `bank.公司.cn` and `shop.公司.cn` both resolved to `xn--55qx5d.cn` and
+  compared equal, which is a credential offered on somebody else's site. That is
+  the label-stripping failure this section calls the boundary's defining one,
+  reached by a route the ASCII tests could never take, which is why every one of
+  them passed over it. Rules are converted at GENERATION time now, so the
+  vendored `.dat` stays byte-for-byte as published, the runtime stays a plain
+  string compare, and no IDN implementation enters a package with no
+  dependencies. It was latent while PR3a had no fill; PR3b is what would have
+  made it exploitable.
 - *`activeTab` discloses the active tab's URL to the extension.* That is the
   minimum origin matching can run on, and it is bounded by the permission itself:
   granted only when the user clicks the extension, revoked on navigation, and

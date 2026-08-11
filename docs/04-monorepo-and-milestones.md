@@ -3521,6 +3521,14 @@ stays byte-for-byte as published (MPL-2.0 header included) and is the pinned
 artifact; the test regenerates from it in a subprocess and compares, so the
 committed generated module cannot drift.
 
+*Corrected after the fact:* that sentence was FALSE for 459 of the 10,239 rules.
+The list writes internationalised suffixes as U-labels and `URL.hostname` always
+returns A-labels, so those rules could never match and every registrant under
+those registries collapsed onto one registrable domain — label stripping by
+another route, in the paragraph claiming it could not happen. Found while scoping
+PR3b, measured, and fixed at generation time before PR3b was written; the
+sentence is true now. Full record in docs/03 §6j.
+
 **A verdict, not a boolean.** `match`, `no-match`, `scheme-downgrade`,
 `confusable`, `unusable` — because a refusal that reads as an absence is the
 shape this repo keeps finding. §4 TB9 refuses confusables rather than warning, so

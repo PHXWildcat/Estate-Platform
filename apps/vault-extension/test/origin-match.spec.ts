@@ -91,6 +91,35 @@ describe('matchOrigin', () => {
     expect(matchOrigin('https://bank.co.uk/', 'https://shop.co.uk/').kind).not.toBe('match');
   });
 
+  /*
+   * THE SAME REFUSAL UNDER AN INTERNATIONALISED SUFFIX, which is where it was
+   * NOT happening.
+   *
+   * `公司.cn` is a registry suffix exactly as `co.uk` is, and the list contains
+   * it — but the list stores it as a U-label while `URL.hostname` always hands
+   * back the A-label (`xn--55qx5d.cn`). Nothing converted, so the rule could
+   * never match, the longest match fell back to `cn`, and the registrable
+   * domain of BOTH registrants became `xn--55qx5d.cn`. Two different
+   * registrants compared equal and `matchOrigin` said `match` — a credential
+   * offered on somebody else's site, which is the failure §4 TB9 calls the
+   * boundary's defining one and which `registrable-domain.ts` names in its own
+   * docstring as the reason it uses the list at all.
+   *
+   * 459 of the list's 10,239 rules are affected; the ASCII path was always
+   * correct, which is why every existing test passed over it.
+   */
+  it('refuses a sibling site under an INTERNATIONALISED multi-label suffix', () => {
+    expect(matchOrigin('https://bank.公司.cn/', 'https://shop.公司.cn/').kind).not.toBe('match');
+  });
+
+  it('still matches a site under an internationalised suffix against itself', () => {
+    // The refusal above must not be bought by making every IDN host unusable:
+    // one registrant is still one registrant across its own subdomains.
+    expect(matchOrigin('https://bank.公司.cn/login', 'https://www.bank.公司.cn/').kind).toBe(
+      'match',
+    );
+  });
+
   it('binds the scheme: https-saved is never offered on http', () => {
     expect(matchOrigin(saved, 'http://www.example.com/')).toEqual({
       kind: 'scheme-downgrade',
