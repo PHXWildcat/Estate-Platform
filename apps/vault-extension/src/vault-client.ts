@@ -80,6 +80,29 @@ export async function matchesFor(
   return reply.ok ? { ok: true, data: reply.data.matched } : reply;
 }
 
+/**
+ * Ask the key holder to fill one item into one page (PR3b).
+ *
+ * `null` data is the holder REFUSING — the item does not belong to that page,
+ * or could not be opened — and it is passed through as itself rather than
+ * turned into a failure, because the two need different words on screen and
+ * neither may say which of the several reasons applied.
+ */
+export async function fillFor(
+  bearer: string,
+  itemId: string,
+  pageUrl: string,
+): Promise<VaultOutcome<{ username: string; secret: string } | null>> {
+  const reply = await ask<{ credential: { username: string; secret: string } | null }>({
+    target: OFFSCREEN,
+    kind: 'fill',
+    bearer,
+    itemId,
+    pageUrl,
+  });
+  return reply.ok ? { ok: true, data: reply.data.credential } : reply;
+}
+
 export async function lockVault(bearer: string): Promise<VaultOutcome<VaultState>> {
   const reply = await ask<{ state: VaultState }>({ target: OFFSCREEN, kind: 'lock', bearer });
   return reply.ok ? { ok: true, data: reply.data.state } : reply;

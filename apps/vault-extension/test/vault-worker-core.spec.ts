@@ -181,6 +181,18 @@ describe('the key holder', () => {
     ).toBeNull();
   });
 
+  it('fills nothing from a blob it cannot open', async () => {
+    // The catch path: a row whose ciphertext is not ours decrypts to nothing, and
+    // the answer is the same `null` as a wrong page — no reason, by design.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await login(enrolled);
+    const corrupted = { ...row, blob: row.blob.slice(0, -8) + 'AAAAAAAA' };
+
+    expect(await holder.fillFor([corrupted], ITEM, 'https://bank.example.com/')).toBeNull();
+  });
+
   it('refuses to fill a locked vault', async () => {
     const holder = new VaultKeyHolder();
     await expect(holder.fillFor([], ITEM, 'https://bank.example.com/')).rejects.toThrow(

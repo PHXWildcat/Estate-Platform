@@ -57,6 +57,10 @@ async function answer(host: VaultHost, message: VaultRequest): Promise<VaultResp
       const matched = await host.matchesFor(message.bearer, message.pageUrl);
       return matched.ok ? { ok: true, matched: matched.data } : { ok: false, code: matched.code };
     }
+    case 'fill': {
+      const filled = await host.fillFor(message.bearer, message.itemId, message.pageUrl);
+      return filled.ok ? { ok: true, credential: filled.data } : { ok: false, code: filled.code };
+    }
     case 'lock':
       await host.lock(message.bearer);
       return { ok: true, state: host.state };
