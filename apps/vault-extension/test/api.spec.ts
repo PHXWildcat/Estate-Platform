@@ -101,6 +101,21 @@ describe('failures narrow to a closed set', () => {
     expect(await request('/api/vault/keyset')).toEqual({ ok: true, data: {} });
   });
 
+  it('survives a body that cannot be read at all', async () => {
+    // A truncated or aborted response: `text()` rejects rather than resolving.
+    // Treated as no document, not as a crash — this module is the extension's
+    // error firewall and must not let a transport failure become an exception
+    // somewhere with no handler.
+    installChromeDouble();
+    (globalThis as { fetch?: unknown }).fetch = () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.reject(new Error('aborted')),
+      } as unknown as Response);
+    expect(await request('/api/vault/keyset')).toEqual({ ok: true, data: {} });
+  });
+
   it('treats an empty 204 as a successful call with no document', async () => {
     installChromeDouble();
     replyWith({ status: 204, body: '' });

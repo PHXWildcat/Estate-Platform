@@ -38,5 +38,9 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // neither executed nor covered, so counting it would drag the number down
   // with a file no test could ever reach.
   coveragePathIgnorePatterns: ['\\.d\\.ts$'],
-  coverageThreshold: { global: { statements: 95, branches: 88, functions: 96, lines: 96 } },
+  // M16 PR2b re-measured with the key holder, the host and a real SRP round
+  // trip under test: 96.03/89.86/97.72/97.79. Ratcheted up, never down — and
+  // the gap that took it there was closed by ADDING cases (the popup entry, an
+  // unreadable body, the sort comparator) rather than by moving the floor.
+  coverageThreshold: { global: { statements: 96, branches: 89, functions: 97, lines: 97 } },
 });

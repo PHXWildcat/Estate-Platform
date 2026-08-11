@@ -78,7 +78,13 @@ export interface OpenedSummary {
  */
 function titleOf(plaintext: Uint8Array): string {
   const decoded: unknown = JSON.parse(new TextDecoder().decode(plaintext));
-  if (typeof decoded !== 'object' || decoded === null) throw new Error('unparseable item');
+  // An ARRAY passes a bare `typeof === 'object'` check, and letting it through
+  // would list it as an item with no title — which claims a different fact from
+  // the true one. "A record with no title" and "content this build cannot read"
+  // are two things a user acts on differently, so they stay apart.
+  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) {
+    throw new Error('unparseable item');
+  }
   const { title } = decoded as { title?: unknown };
   return typeof title === 'string' ? title : '';
 }

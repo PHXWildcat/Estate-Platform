@@ -21,6 +21,10 @@ export const messages: Record<ApiFailure, string> = {
     'That code wasn’t accepted. Codes work once and expire after ten minutes — create a new one in Estate under Security.',
   UNAUTHENTICATED:
     'This device is no longer connected to your account. It may have been disconnected from Estate under Security. Connect it again to continue.',
+  // ONE sentence for a wrong password and a wrong Secret Key alike — the 2SKD
+  // rule the unlock screen shares with the server's single `srp_failed`.
+  SRP_FAILED:
+    'That didn’t open this vault. Check your vault password and your Secret Key — we can’t tell you which one was wrong.',
   STEPUP_REQUIRED: 'Estate needs a fresh identity check before this device can continue.',
   VAULT_LOCKED: 'Your vault is locked.',
   NOT_FOUND: 'That isn’t available.',

@@ -205,3 +205,30 @@ describe('the key holder', () => {
     ).rejects.toThrow('no handshake in progress');
   });
 });
+
+describe('an item whose content is not what this build expects', () => {
+  jest.setTimeout(60_000);
+
+  it.each([
+    ['a JSON array rather than an object', ['not', 'an', 'object']],
+    ['a bare string', 'just a string'],
+  ])('lists %s as unreadable', async (_label, content) => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealItem(enrolled, '77777777-0000-4000-8000-000000000000', content);
+    expect(await holder.summarise([row])).toEqual([
+      { id: row.id, itemType: 'login', title: '', unreadable: true },
+    ]);
+  });
+
+  it('names an item with NO title as the empty string rather than refusing it', async () => {
+    // A real record with a missing optional field is not a corrupt one, and a
+    // user still has to be able to see the row.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealItem(enrolled, '88888888-0000-4000-8000-000000000000', { note: 'x' });
+    expect(await holder.summarise([row])).toEqual([{ id: row.id, itemType: 'login', title: '' }]);
+  });
+});
