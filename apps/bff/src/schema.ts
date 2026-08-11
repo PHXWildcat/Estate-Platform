@@ -506,6 +506,13 @@ export const typeDefs = /* GraphQL */ `
     every call in the product.
     """
     emailVerification: EmailVerificationStatus!
+    """
+    Every live credential on the caller's account (M16) — the paired-devices
+    surface. The first read of its kind in the product: until an extension
+    credential could outlive the browser, a session was a cookie and there was
+    nothing to list.
+    """
+    sessions: [UserSession!]!
     "The caller's assets. The BFF forwards the caller's own bearer token."
     assets: [Asset!]!
     netWorth: NetWorth!
@@ -577,6 +584,25 @@ export const typeDefs = /* GraphQL */ `
     vaultOrigin: String!
   }
 
+  "One live credential on this account (M16). The current one is the session you are using."
+  type UserSession {
+    sessionId: ID!
+    audience: SessionAudience!
+    createdAt: String!
+    expiresAt: String!
+    current: Boolean!
+  }
+
+  """
+  A single-use code the user types into the browser extension. Returned in the
+  body and never placed in a URL, so it cannot land in history, a Referer, or an
+  intermediary's log. Ten minutes, single use, burned on the attempt.
+  """
+  type ExtensionPairing {
+    code: String!
+    expiresAt: String!
+  }
+
   type Mutation {
     register(email: String!, password: String!): Ok!
     "Sets httpOnly session cookies; no token material in the response body."
@@ -597,6 +623,20 @@ export const typeDefs = /* GraphQL */ `
     Sixty seconds, single use, burned on the attempt.
     """
     startVaultHandoff: VaultHandoff!
+    """
+    Mint a pairing code for the browser extension. Step-up gated at identity and
+    account-audience only: a non-account session cannot mint one, or a
+    short-lived credential could chain itself into a long-lived one.
+    """
+    startExtensionPairing: ExtensionPairing!
+    """
+    Revoke one of your own sessions. NOT step-up gated — minting a credential is
+    the gated action and taking one away can only reduce authority, so the
+    protective action stays one click (the M6 rule). Answers NOT_FOUND for an
+    unknown id and for someone else's alike, because identity's own answer is
+    uniform and the edge adds no distinction of its own.
+    """
+    revokeSession(sessionId: ID!): Ok!
     "Step-up-gated demo action (stands in for data export)."
     exportDemo: Ok!
     """
@@ -855,6 +895,14 @@ export interface SchemaDeps {
   vaultOrigin: string;
   /** Clock override for tests. */
   now?: () => number;
+}
+
+interface UserSessionPayload {
+  readonly sessionId: string;
+  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION';
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly current: boolean;
 }
 
 interface SessionPayload {
@@ -1127,6 +1175,14 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<string> =>
           (await identity.emailVerificationStatus(requireAccessToken(ctx))).toUpperCase(),
+        sessions: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<UserSessionPayload[]> => {
+          const rows = await identity.sessions(requireAccessToken(ctx));
+          return rows.map((row) => ({ ...row, audience: AUDIENCE_GQL[row.audience] }));
+        },
         assets: async (_parent: unknown, _args: unknown, ctx: RequestContext): Promise<Asset[]> =>
           assets.list(requireAccessToken(ctx)),
         netWorth: async (
@@ -1636,6 +1692,20 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<typeof OK> => {
           await identity.stepUp(requireAccessToken(ctx), args.code);
+          return OK;
+        },
+        startExtensionPairing: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<{ code: string; expiresAt: string }> =>
+          identity.startExtensionPairing(requireAccessToken(ctx)),
+        revokeSession: async (
+          _parent: unknown,
+          args: { sessionId: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await identity.revokeSession(requireAccessToken(ctx), args.sessionId);
           return OK;
         },
         startVaultHandoff: async (

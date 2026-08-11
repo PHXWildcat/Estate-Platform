@@ -100,6 +100,20 @@ export interface IdentityClient {
    * identity, so a stale session raises STEPUP_REQUIRED and the UI prompts.
    */
   mintVaultHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }>;
+  /** The caller's live sessions — the paired-devices surface (M16). */
+  sessions(accessToken: string): Promise<LiveSession[]>;
+  /** Revoke ONE of the caller's own sessions. 404 ⇒ unknown OR not theirs. */
+  revokeSession(accessToken: string, sessionId: string): Promise<void>;
+  /** Mint a browser-extension pairing code. Step-up gated at identity. */
+  startExtensionPairing(accessToken: string): Promise<{ code: string; expiresAt: string }>;
+}
+
+export interface LiveSession {
+  readonly sessionId: string;
+  readonly audience: SessionAudience;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly current: boolean;
 }
 
 export type BffErrorCode =
@@ -319,12 +333,24 @@ const VaultHandoffSchema = z.object({
   expiresAt: z.string().min(1),
 });
 
+const LiveSessionsSchema = z.object({
+  sessions: z.array(
+    z.object({
+      sessionId: z.string().min(1),
+      audience: SessionAudienceSchema,
+      createdAt: z.string().min(1),
+      expiresAt: z.string().min(1),
+      current: z.boolean(),
+    }),
+  ),
+});
+
 const ErrorBodySchema = z.object({ error: z.string() });
 
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
 interface RequestOptions {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'DELETE';
   path: string;
   accessToken?: string;
   body?: Record<string, string>;
@@ -488,6 +514,48 @@ export class FetchIdentityClient implements IdentityClient {
     return parsed.data;
   }
 
+  async sessions(accessToken: string): Promise<LiveSession[]> {
+    const res = await this.request({ method: 'GET', path: '/v1/auth/sessions', accessToken });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, LiveSessionsSchema)).sessions;
+  }
+
+  /**
+   * Revoke one session. Identity answers a UNIFORM 404 for "no such session"
+   * and "not yours" alike — the owner predicate is in its UPDATE — so this
+   * surfaces NOT_FOUND for both and the edge adds no distinction of its own.
+   */
+  async revokeSession(accessToken: string, sessionId: string): Promise<void> {
+    const res = await this.request({
+      method: 'DELETE',
+      path: `/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  async startExtensionPairing(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/extension/pairing',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    // The shape guard VaultLaunch's defect taught: a pairing code rendered as
+    // `undefined` is worse than an error, because the user copies it.
+    const parsed = VaultHandoffSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      throw bffError('VAULT_UNAVAILABLE');
+    }
+    return parsed.data;
+  }
+
   async logout(accessToken: string): Promise<boolean> {
     const res = await this.request({ method: 'POST', path: '/v1/auth/logout', accessToken });
     if (res.status === 401) {
@@ -574,6 +642,13 @@ export class FetchIdentityClient implements IdentityClient {
     }
     if (res.status === 400) {
       return bffError('INVALID_REQUEST');
+    }
+    // M16: identity's first 404-returning route is session revocation, whose
+    // answer is deliberately uniform across "unknown" and "not yours". Mapped
+    // rather than left to the generic branch, which would surface a control
+    // answering correctly as an opaque server error.
+    if (res.status === 404) {
+      return bffError('NOT_FOUND');
     }
     return new Error(`identity responded with status ${res.status}`);
   }

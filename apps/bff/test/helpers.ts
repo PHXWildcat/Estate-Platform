@@ -40,6 +40,7 @@ import type {
   TotpEnrollment,
   EmailVerificationStatus,
   ResendOutcome,
+  LiveSession,
 } from '../src/identity-client';
 import type { PersistedOperationsManifest } from '../src/persisted';
 import type {
@@ -190,6 +191,37 @@ export class FakeIdentityClient implements IdentityClient {
     return this.vaultHandoffError
       ? Promise.reject(this.vaultHandoffError)
       : Promise.resolve(this.vaultHandoff);
+  }
+
+  // M16 paired devices + extension pairing. Same convention as above: a calls
+  // recorder so a spec can assert THE CALLER'S OWN token was forwarded, a
+  // mutable result, and an optional error so a peer refusal can be simulated.
+  sessionsResult: LiveSession[] = [];
+  sessionsError: Error | null = null;
+  sessionsCalls: string[] = [];
+  revokeSessionCalls: Array<{ accessToken: string; sessionId: string }> = [];
+  revokeSessionError: Error | null = null;
+  extensionPairing = { code: 'EP1-TEST', expiresAt: '2026-08-10T12:10:00.000Z' };
+  extensionPairingError: Error | null = null;
+  startExtensionPairingCalls: string[] = [];
+
+  sessions(accessToken: string): Promise<LiveSession[]> {
+    this.sessionsCalls.push(accessToken);
+    return this.sessionsError
+      ? Promise.reject(this.sessionsError)
+      : Promise.resolve(this.sessionsResult);
+  }
+
+  revokeSession(accessToken: string, sessionId: string): Promise<void> {
+    this.revokeSessionCalls.push({ accessToken, sessionId });
+    return this.revokeSessionError ? Promise.reject(this.revokeSessionError) : Promise.resolve();
+  }
+
+  startExtensionPairing(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    this.startExtensionPairingCalls.push(accessToken);
+    return this.extensionPairingError
+      ? Promise.reject(this.extensionPairingError)
+      : Promise.resolve(this.extensionPairing);
   }
 
   logoutByRefresh(refreshToken: string): Promise<void> {

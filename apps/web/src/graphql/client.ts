@@ -371,6 +371,25 @@ interface OperationSignatures {
     data: { login: { ok: boolean } };
   };
   Refresh: { variables: EmptyVariables; data: { refresh: { ok: boolean } } };
+  Sessions: {
+    variables: EmptyVariables;
+    data: {
+      sessions: Array<{
+        sessionId: string;
+        // The audience is what lets a row say "browser extension" rather than
+        // "a session" — the whole reason M16 carried the field to the client.
+        audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION';
+        createdAt: string;
+        expiresAt: string;
+        current: boolean;
+      }>;
+    };
+  };
+  RevokeSession: { variables: { sessionId: string }; data: { revokeSession: { ok: boolean } } };
+  StartExtensionPairing: {
+    variables: EmptyVariables;
+    data: { startExtensionPairing: { code: string; expiresAt: string } };
+  };
   TotpEnroll: { variables: EmptyVariables; data: { totpEnroll: { otpauthUri: string } } };
   TotpVerify: { variables: { code: string }; data: { totpVerify: { ok: boolean } } };
   StepUp: { variables: { code: string }; data: { stepUp: { ok: boolean } } };
