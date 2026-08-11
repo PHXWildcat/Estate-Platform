@@ -1,4 +1,5 @@
 import { request, type ApiResult } from './api.js';
+import { forgetSecretKey } from './secret-key-store.js';
 
 /**
  * THE PAIRED SESSION: what this device was granted, and how it is given back.
@@ -192,5 +193,8 @@ export async function disconnect(session: PairedSession): Promise<ApiResult<{ ok
     return { ok: false, code: result.code };
   }
   await forgetSession();
+  // A device that is no longer paired has no business holding half the key
+  // material for an account it can no longer reach.
+  await forgetSecretKey(session.userId);
   return { ok: true, data: { ok: true } };
 }

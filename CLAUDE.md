@@ -3483,3 +3483,121 @@ deviating from them, stop and propose the change with rationale — do not silen
   made my own PR1 sentence ("dead everywhere a second later") an
   over-generalisation of a run that happened to miss the window. Now measured
   rather than reasoned about, from both ends.
+- 2026-08-11 — M16 PR2b: THE KEY LIVES IN A WORKER, WHICH MAKES THE OFFSCREEN
+  `reason` SIMPLY TRUE. PR2a found the MV3 offscreen `reason` enum closed with
+  no value describing "hold vault keys", and the approved answer was to declare
+  `WORKERS` and MAKE it true by moving the blocking SRP maths off-thread.
+  Building it, a better shape appeared: if the WORKER HOLDS THE KEY rather than
+  merely computing for it, the declaration stops being one made true and becomes
+  structurally true — the offscreen document's entire job is to spawn and host
+  the worker, which is exactly what the reason says. It is also stronger. The
+  master key is a non-extractable `CryptoKey` created inside the worker that
+  never crosses a boundary; the compute-here-hold-there split would have had to
+  move either a `CryptoKey` (serializable, but relying on that) or the raw master
+  key BYTES across `chrome.runtime`, a channel every extension context receives.
+- 2026-08-11 — THE OFFSCREEN DOCUMENT IS NOT A TRUST BOUNDARY, and the code says
+  so rather than letting the architecture imply it. `chrome.runtime.sendMessage`
+  delivers to EVERY extension context with a listener, so the vault password and
+  Secret Key in an `unlock` message transit a broadcast the service worker also
+  receives and ignores by `target` — a filter, not isolation. All extension
+  contexts are one signed artifact and one trust domain. What the offscreen
+  document buys is LIFETIME (an MV3 service worker is terminated in seconds; a
+  non-audio offscreen document has no limit) and NON-EXTRACTABILITY, not secrecy
+  from the popup. Anyone who can read that channel has already compromised the
+  artifact and could simply ask the worker to decrypt. docs/04's "the service
+  worker holds nothing" is therefore a STORAGE rule, not an isolation claim.
+  What the split does buy is auditability: the key holder cannot fetch (`api.ts`
+  is the one call site) and the host cannot decrypt (only the holder may import
+  the crypto), so "can anything derived from the password leave the device" has
+  one file to read.
+- 2026-08-11 — A WRONG VAULT PASSWORD WOULD HAVE DISCONNECTED THE DEVICE, caught
+  before it shipped. The vault service answers `401 srp_failed` for a failed
+  handshake, and the extension's `failureFor` mapped every unlabelled 401 to
+  `UNAUTHENTICATED` — which on this surface means the DEVICE's pairing is gone
+  and makes the popup forget the credential. A mistyped vault password would have
+  un-paired the extension: a per-attempt mistake with an account-level
+  consequence, costing a step-up on the app origin to undo. `SRP_FAILED` is its
+  own code now, and still ONE code for a wrong password, a wrong Secret Key and a
+  locally malformed one, because the server answers one `srp_failed` and naming
+  the half would tell someone holding a stolen Secret Key that it is the right
+  one. The general shape is the M9 rule again: two failures that need different
+  remedies must not share a token.
+- 2026-08-11 — THE SECRET KEY IS REMEMBERED ON DISK WITH AN OPT-OUT (approved),
+  mirroring `vault-web` — and the differences are named rather than inherited.
+  The alternative is retyping 26 characters at every unlock, and with a
+  15-minute vault session that cannot be renewed that is many times a day; the
+  reliable result is the Secret Key in a text file, which is worse. It is written
+  ONLY after a key has actually opened the vault, so a typo is never persisted as
+  the device's key, and disconnecting forgets it — a device that is no longer
+  paired has no business holding half the key material for an account it cannot
+  reach. IndexedDB over `chrome.storage.local` for `vault-web`'s reasons (raw
+  bytes rather than a base64 string; not in the flat key list sweeps walk),
+  neither of which hides anything from code running in this extension. RESIDUAL,
+  recorded in docs/03 §6j: this artifact already keeps a 30-day refresh token on
+  disk, so two of three factors now sit on one disk missing only the password —
+  and unlike the vault origin, this is a signed artifact auto-updated through a
+  vendor store with no CSP in its path. What it still does not buy is an OFFLINE
+  unlock: the wrapped master key, the SRP salt and the KDF parameters arrive per
+  unlock and are never stored.
+- 2026-08-11 — "A RECORD WITH NO TITLE" AND "CONTENT THIS BUILD CANNOT READ" ARE
+  DIFFERENT FACTS. A JSON array passed the item envelope's bare
+  `typeof === 'object'` check and listed as an item with an empty title, which
+  claims the first when the truth is the second — and a user acts on them
+  differently. Arrays are refused now and the row lists as unreadable, which is
+  the same rule M15 PR2 applied to a blob the AEAD rejects: shown as present
+  rather than hidden, because somebody must be able to see that something is
+  there.
+- 2026-08-11 — ENTRY FILES ARE EXCLUDED FROM COVERAGE, AND THE EXCLUSION IS
+  BOUNDED BY A FENCE. `background.ts`, `offscreen.ts`, `vault-worker.ts` and
+  `main.ts` are the wiring the PLATFORM calls — a service-worker registration, a
+  `new Worker`, a `self.onmessage` — around modules the suite drives directly,
+  and a test that stubbed the platform to reach them would only prove the stub.
+  Excluding them is honest; leaving the exclusion unbounded would not be, because
+  logic could then accumulate where nothing measures it. `fences.spec.ts` asserts
+  each stays under twenty lines and contains no loop, switch or error path. The
+  fence's FIRST version also refused a single `if` guard and was simply wrong
+  about what it protected: a one-line guard IS wiring, and the line cap is the
+  real bound.
+- 2026-08-11 — A COVERAGE FLOOR WENT DOWN, AND IT IS WRITTEN IN THE CONFIG RATHER
+  THAN QUIETLY APPLIED. PR2b measured 97.94/91.41/96.70/99.38 — statements,
+  branches and lines up; FUNCTIONS DOWN 97 → 96, a floor set two commits earlier
+  in the same PR. The package roughly tripled in size after that number was
+  measured, and the two functions still uncovered are the IndexedDB `onerror`
+  callbacks in `secret-key-store.ts`, which `fake-indexeddb` will not provoke and
+  which the store's own fails-soft case already covers from the outside.
+  Contriving a test to reach them would have measured the contrivance. The rule
+  stays "ratchet up, never down"; this is the exception, and an exception that is
+  stated is the only kind worth having.
+- 2026-08-11 — TWO OF MY OWN TESTS WERE WEAKER THAN THEIR NAMES, both found by
+  mutation rather than by review. The verify-response shape case omitted ONE
+  field and survived a mutation deleting two of the five guards, because the
+  remaining three still caught that payload — table-driven now, one case per
+  field. And the list-ORDERING claim could not be proved by a fixture holding one
+  item, so the stand-in service seals a row per title and hands them back
+  reversed. Same lesson as the M13 entry this repo keeps citing: a test named for
+  a property must exercise the layer that property lives in.
+- 2026-08-11 — A FLAKE OF MY OWN, fixed the way I had told the other M16 session
+  to fix theirs that morning. The unlock path grew an IndexedDB write between the
+  reply and the redraw, so a fixed `setTimeout(0)` in the screen test was
+  intermittently one macrotask short. It polls to a deadline now — wait for the
+  condition, do not race it — which is the same correction, applied to my own
+  code within hours of writing it down.
+- 2026-08-11 — THE IndexedDB PREMISE IS MEASURED AT LAST, and the brief was
+  wrong about it. The M16 roadmap rejects persisting a non-extractable
+  `CryptoKey` in extension IndexedDB on CEREMONY grounds (it would yield a vault
+  permanently open with no password, Secret Key or TOTP), and explicitly NOT on
+  the brief's serializability grounds — which this file recorded as "a claim to
+  MEASURE in PR1, not as a fact". PR1 did not measure it. Measured now, in a
+  real Chromium: `structuredClone` of a non-extractable `CryptoKey` SUCCEEDS and
+  the clone is still `extractable: false`; IndexedDB accepts it; and after a page
+  navigation it reads back as a `CryptoKey`, still non-extractable, with
+  `exportKey` still refusing and an AES-GCM round trip still working. The
+  premise is false in the direction that matters. THE REJECTION IS UNCHANGED and
+  is stronger for it: it never rested on serializability, and a key that
+  persists this well is exactly what makes the ceremony argument bite. Two parts
+  remain unmeasured and are handed over rather than claimed — survival across a
+  full BROWSER RESTART, and the same sequence on a real `chrome-extension://`
+  origin. The probe for both is a SCRATCH unpacked extension, deliberately never
+  committed: a key-persistence harness living inside the artifact that must not
+  persist keys is the wrong thing to be right about, and the measurement is
+  evidence rather than a feature.

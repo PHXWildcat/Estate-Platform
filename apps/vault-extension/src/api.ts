@@ -27,6 +27,18 @@ import { vaultOrigin } from './config.js';
 export type ApiFailure =
   | 'UNAUTHENTICATED'
   | 'INVALID_CODE'
+  /**
+   * The vault did not open (M16 PR2b). ONE code for a wrong vault password, a
+   * wrong Secret Key and a locally malformed one, because the server answers
+   * one `srp_failed` for the first two and naming which half was wrong would
+   * tell someone holding a stolen Secret Key that it is the right one.
+   *
+   * KEPT OUT OF `UNAUTHENTICATED`, which on this surface means the DEVICE's own
+   * pairing is gone and makes the popup forget the credential. Folding them
+   * together would disconnect an extension because somebody mistyped a vault
+   * password — an account-level consequence for a per-attempt mistake.
+   */
+  | 'SRP_FAILED'
   | 'STEPUP_REQUIRED'
   | 'VAULT_LOCKED'
   | 'NOT_FOUND'
@@ -48,7 +60,11 @@ const CSRF_HEADER = 'x-estate-vault-csrf';
  * real.
  */
 function failureFor(status: number, token: string | null): ApiFailure {
-  if (status === 401) return token === 'invalid_code' ? 'INVALID_CODE' : 'UNAUTHENTICATED';
+  if (status === 401) {
+    if (token === 'invalid_code') return 'INVALID_CODE';
+    if (token === 'srp_failed') return 'SRP_FAILED';
+    return 'UNAUTHENTICATED';
+  }
   if (status === 403) {
     if (token === 'stepup_required') return 'STEPUP_REQUIRED';
     if (token === 'vault_locked') return 'VAULT_LOCKED';
@@ -67,6 +83,15 @@ export interface RequestOptions {
    * (pairing redemption and refresh), whose authority is in the body.
    */
   readonly bearer?: string | undefined;
+  /**
+   * The opaque vault-session token from a completed SRP unlock (M16 PR2b).
+   *
+   * A SECOND, NARROWER authority on top of the bearer: the bearer says which
+   * account is calling, and this says that this device has actually opened the
+   * vault. Item reads require both, which is why a stolen extension credential
+   * reaches the API and still decrypts nothing.
+   */
+  readonly vaultSession?: string | undefined;
 }
 
 export async function request<T>(
@@ -76,6 +101,9 @@ export async function request<T>(
   const headers: Record<string, string> = { [CSRF_HEADER]: '1' };
   if (options.body !== undefined) headers['content-type'] = 'application/json';
   if (options.bearer !== undefined) headers['authorization'] = `Bearer ${options.bearer}`;
+  if (options.vaultSession !== undefined) {
+    headers['x-estate-vault-session'] = options.vaultSession;
+  }
 
   let response: Response;
   try {

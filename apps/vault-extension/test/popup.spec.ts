@@ -120,7 +120,9 @@ describe('the popup', () => {
     await mountPopup({ root: root() });
 
     expect(text()).toContain('cannot reset your vault');
-    expect(text()).toContain('Unlocking is not available yet');
+    // The vault half mounts underneath, and says what it is doing rather than
+    // rendering nothing while it asks.
+    expect(text()).toContain('Checking your vault');
   });
 
   it('shows the uniform refusal for every way a code is rejected', async () => {

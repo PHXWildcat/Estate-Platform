@@ -1194,12 +1194,18 @@ importers:
       '@estate/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@estate/vault-crypto':
+        specifier: workspace:*
+        version: link:../../packages/vault-crypto
       '@types/jest':
         specifier: 'catalog:'
         version: 29.5.14
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.1
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
       jest:
         specifier: 'catalog:'
         version: 29.7.0(@types/node@22.20.1)

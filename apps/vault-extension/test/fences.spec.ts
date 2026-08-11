@@ -43,6 +43,14 @@ function filesUnder(dir: string): string[] {
 
 const sourceFiles = filesUnder(SRC);
 
+/**
+ * The ONE non-relative specifier this artifact may import. A leading slash
+ * resolves against the extension's own root, so vault-crypto ships inside the
+ * signed package (MV3 forbids remotely hosted code) and no bare specifier ever
+ * reaches the browser.
+ */
+const VAULT_CRYPTO_SPECIFIER = '/lib/vault-crypto/index.js';
+
 /** Comments name these things constantly; only real code counts. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
@@ -70,9 +78,16 @@ describe('the extension has no dependency tree', () => {
     expect(sourceFiles.length).toBeGreaterThan(4);
   });
 
-  it.each(sourceFiles)('%s imports only relative paths', (file) => {
+  it.each(sourceFiles)('%s imports only relative paths or the vault crypto', (file) => {
     for (const specifier of importSpecifiers(file)) {
-      const permitted = specifier.startsWith('./') || specifier.startsWith('../');
+      // Relative (with an explicit .js, since these are native ES modules), or
+      // the ONE workspace package this artifact may load — by an absolute path
+      // that resolves against the EXTENSION's own root, so no bare specifier
+      // reaches the browser and there is no import map for a CSP to admit.
+      const permitted =
+        specifier.startsWith('./') ||
+        specifier.startsWith('../') ||
+        specifier === VAULT_CRYPTO_SPECIFIER;
       expect({ file, specifier, permitted }).toEqual({ file, specifier, permitted: true });
     }
   });
@@ -100,6 +115,14 @@ describe('the extension has no dependency tree', () => {
      * `@types/chrome` is deliberately ABSENT. The four platform members this
      * package uses are declared by hand in `src/chrome.d.ts`, which makes the
      * extension-API surface as visible in review as the manifest's permissions.
+     *
+     * `@estate/vault-crypto` is a DEV dependency and not a runtime one, which
+     * is a statement rather than a technicality — the `vault-web` precedent,
+     * for the same reason. Nothing resolves it as a package at runtime: the
+     * offscreen worker loads it by absolute path from the extension's own root,
+     * and it is here so turbo orders that package's build first and so the
+     * suite can drive the server half of SRP. Promoting it to `dependencies`
+     * would erase that distinction.
      */
     // Read rather than imported, like every other scan here: the manifest is
     // checked as the bytes on disk, not as a shape TypeScript inferred.
@@ -110,8 +133,12 @@ describe('the extension has no dependency tree', () => {
     expect(manifest.dependencies).toBeUndefined();
     expect(Object.keys(manifest.devDependencies).sort()).toEqual([
       '@estate/config',
+      '@estate/vault-crypto',
       '@types/jest',
       '@types/node',
+      // Test-only, like jest itself: the Secret Key store talks to IndexedDB,
+      // which jsdom does not implement.
+      'fake-indexeddb',
       'jest',
       'jest-environment-jsdom',
       'ts-jest',
@@ -119,16 +146,30 @@ describe('the extension has no dependency tree', () => {
     ]);
   });
 
-  it('imports no vault crypto YET, and PR2b adding it must be a declared change', () => {
-    // PR2a is transport only. When the offscreen document lands, the extension
-    // becomes @estate/vault-crypto's next importer, and the declaration that
-    // permits it is edited deliberately rather than discovered afterwards.
-    for (const file of sourceFiles) {
-      expect({ file, imports: code(file).includes('vault-crypto') }).toEqual({
-        file,
-        imports: false,
-      });
-    }
+  /**
+   * EXACTLY ONE FILE MAY LOAD ZONE A's CRYPTO (M16 PR2b).
+   *
+   * PR2a's version of this asserted the extension imported it NOWHERE, and
+   * said that PR2b adding it had to be a declared change rather than a
+   * discovery. It was: writing `vault-worker-core.ts` turned that assertion
+   * red, and this is the deliberate edit — narrowed rather than deleted.
+   *
+   * Narrowed to the KEY HOLDER, because "which file can construct a vault key"
+   * is the whole security shape of this artifact. Anything that can import the
+   * crypto can derive from a password and a Secret Key; keeping that to one
+   * module is what makes the popup, the service worker and (in PR3) the content
+   * script structurally incapable of it, rather than merely not currently doing
+   * it.
+   */
+  it('only the key holder may import the vault crypto', () => {
+    const importers = sourceFiles.filter((file) =>
+      importSpecifiers(file).includes(VAULT_CRYPTO_SPECIFIER),
+    );
+    expect(importers.map((f) => f.slice(SRC.length + 1))).toEqual(['vault-worker-core.ts']);
+  });
+
+  it('and it really does import it, so the fence is not vacuous', () => {
+    expect(importSpecifiers(join(SRC, 'vault-worker-core.ts'))).toContain(VAULT_CRYPTO_SPECIFIER);
   });
 });
 
@@ -172,6 +213,44 @@ describe('the SHIPPED artifact is compiled against a browser surface only', () =
 
   it('really resolved a config (so the assertions are not true of nothing)', () => {
     expect((resolved.files ?? []).length).toBeGreaterThan(4);
+  });
+});
+
+/**
+ * THE ENTRY FILES ARE EXCLUDED FROM COVERAGE, SO THEY ARE BOUNDED HERE.
+ *
+ * Each is the wiring the platform calls — a service-worker registration, a
+ * `new Worker`, a `self.onmessage` — around a module the suite drives directly.
+ * Excluding them is honest; leaving the exclusion unbounded would not be, since
+ * logic could then accumulate in a file nothing measures. These assertions are
+ * what keep "thin" true.
+ */
+describe('the platform entry files stay wiring', () => {
+  const ENTRIES = ['background.ts', 'offscreen.ts', 'vault-worker.ts', 'main.ts'];
+
+  it.each(ENTRIES)('%s is small enough to read at a glance', (name) => {
+    const lines = code(join(SRC, name))
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    expect(lines.length).toBeLessThanOrEqual(20);
+  });
+
+  it.each(ENTRIES)('%s accumulates no logic of its own', (name) => {
+    /*
+     * A single guard — `if (root)`, or a `target` filter — IS wiring, and an
+     * earlier version of this refused those and was simply wrong about what it
+     * was protecting. What must not appear is anything that ACCUMULATES: a
+     * loop, a switch, an error path. Those belong in a module the suite
+     * measures, and the line cap above is the real bound.
+     */
+    const source = code(join(SRC, name));
+    for (const construct of ['for (', 'while (', 'switch (', 'try {', 'catch']) {
+      expect({ name, construct, found: source.includes(construct) }).toEqual({
+        name,
+        construct,
+        found: false,
+      });
+    }
   });
 });
 
