@@ -1271,6 +1271,56 @@ CLAUDE.md decision log; the security-relevant shape is:
   the same token — answered 200 at t+0 and t+10 and 401 from t+20. Same 30-second
   positive cache, same conclusion, two independent measurements.
 
+**Added by PR2b (unlock and read).**
+
+- *The Secret Key is remembered on disk, so two of three factors sit on one
+  disk.* 2SKD derives every vault key from the vault password AND a 128-bit
+  device Secret Key; the extension keeps the latter in its IndexedDB by default,
+  with an explicit opt-out and copy saying what that costs. The alternative —
+  retyping 26 characters at every unlock, against a 15-minute vault session that
+  cannot be renewed — reliably pushes people to a text file, which is worse. But
+  this artifact ALREADY holds a 30-day refresh token on disk, so local malware
+  or another process running as the user now finds both, missing only the
+  password; and unlike the vault ORIGIN, whose defence is an empty dependency
+  tree, `script-src 'self'` and enforced Trusted Types, this is a signed artifact
+  auto-updated through a vendor store with no CSP in its path (§4 TB9). WHAT IT
+  STILL DOES NOT BUY IS AN OFFLINE UNLOCK: the wrapped master key, the SRP salt
+  and the KDF parameters arrive from the server per unlock and are never stored,
+  so opening a vault needs the password and a live handshake on a live extension
+  session — which appears in the owner's paired-devices list and is revocable
+  from there in one click. The Secret Key is forgotten when the device is
+  disconnected.
+- *The offscreen document is not a boundary against the rest of the extension,
+  and must not be read as one.* `chrome.runtime.sendMessage` delivers to every
+  extension context with a listener, so the vault password and Secret Key transit
+  a broadcast the service worker also receives and ignores by `target`. That is
+  a routing filter. All extension contexts are one signed artifact and one trust
+  domain: the offscreen document buys LIFETIME (an MV3 service worker is
+  terminated in seconds) and NON-EXTRACTABLE key storage, not secrecy from the
+  popup. Anyone who can read that channel has already compromised the artifact
+  and could ask the worker to decrypt instead. What the split does buy is
+  auditability — the key holder cannot reach the network and the host cannot
+  decrypt, so "can anything derived from the password leave the device" is a
+  one-file question.
+- *NOTHING HERE HAS RUN IN A BROWSER.* CI cannot load a packed extension, so the
+  crypto is exercised against Node's WebCrypto and the platform against a
+  `chrome` API double in jsdom, with the transport proven live at the vault edge
+  in PR2a. Unexercised: the offscreen document's lifecycle,
+  `chrome.offscreen.createDocument` from a service worker, the worker boundary,
+  and IndexedDB under a real extension origin. This is the same status the
+  repository gives the Plaid live client and the Anthropic adapter — the first
+  real load is a deployment event, not a test result — and it is stated here
+  rather than left to be inferred from a green suite.
+- *The IndexedDB measurement PR1 owes is still owed.* The roadmap REJECTS
+  persisting a non-extractable `CryptoKey` in extension IndexedDB on CEREMONY
+  grounds — it would yield a vault permanently open with no password, Secret Key
+  or TOTP, defeating 2SKD and docs/01 §5 — and explicitly not on the brief's
+  serializability grounds, which CLAUDE.md records as a claim to MEASURE.
+  Neither PR1 nor PR2b measured it. The rejection stands on the ceremony
+  argument, which does not depend on the answer; what the measurement would
+  settle is whether the decision-log entry describing the alternative is
+  accurate.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

@@ -3428,6 +3428,79 @@ logic is proven against a `chrome` API double in jsdom and the transport is
 proven at the edge. Loading `dist/` unpacked in a real Chrome is a manual step —
 the honesty the repo applies to the Plaid live client and the Anthropic adapter.
 
+#### PR2b — unlock and read
+
+The extension opens a vault. Step-up → SRP-6a → a full sync → titles on screen,
+with the master key living in a worker that the offscreen document exists to
+host.
+
+**The offscreen `reason` is now simply true.** PR2a's answer to the closed enum
+was to declare `WORKERS` and MAKE it true by moving the blocking SRP maths
+off-thread. Building it produced a better shape: the WORKER HOLDS THE KEY, so
+the declaration is structurally accurate — the document's whole job is to spawn
+and host it. It is also stronger, because the master key is a non-extractable
+`CryptoKey` created inside the worker that never crosses a boundary. The
+alternative would have had to move a `CryptoKey` or the raw master key bytes
+across `chrome.runtime`, which every extension context receives.
+
+**It is not a trust boundary, and the code says so.** `sendMessage` broadcasts,
+so the password and Secret Key transit a channel the service worker also
+receives and ignores by `target` — a filter, not isolation. All extension
+contexts are one signed artifact. What the offscreen document buys is LIFETIME
+and NON-EXTRACTABILITY. What the split buys is auditability: the key holder
+cannot fetch and the host cannot decrypt, so the milestone's central claim has
+one file to read.
+
+**The manifest gained exactly the two keys PR2a named** — `offscreen` and
+`background`, each listed there as forbidden with the PR that would introduce
+it. The test moved them rather than deleting the rule. No content scripts, no
+`activeTab`, no `scripting`: no page access of any kind until PR3.
+
+**The Secret Key is remembered on disk with an opt-out** (approved), written only
+after a key has actually opened the vault and forgotten on disconnect. Residual
+in docs/03 §6j: two of three factors now sit on one disk, missing only the
+password. It still buys no OFFLINE unlock — the wrapped master key, the SRP salt
+and the KDF parameters arrive per unlock and are never stored.
+
+**Defects found and fixed in the writing.** A wrong vault password would have
+DISCONNECTED the device: the service answers `401 srp_failed`, the client mapped
+every unlabelled 401 to `UNAUTHENTICATED`, and the popup forgets the pairing on
+that — a per-attempt mistake with an account-level consequence. `SRP_FAILED` is
+its own code, still one code for both halves of 2SKD. And a JSON array passed the
+item envelope's `typeof === 'object'` check and listed as an item with no title,
+claiming a different fact from the true one.
+
+**Proven:** a genuine SRP-6a round trip in process against the server half
+`vault-crypto` also ships — a wrong Secret Key refused BY THE SERVER, the master
+key non-extractable, titles returned with no secret half, a version-rolled blob
+listed as unreadable, locking dropping the key. `test/vault-host.spec.ts` then
+searches every recorded byte for the password, the Secret Key, its ungrouped
+form and the item secret. Mutations confirmed red throughout, including one that
+plants the password in a request body — so the central claim's test is known to
+detect a leak.
+
+**Two of my own tests were weaker than their names**, both caught by mutation: a
+shape case that omitted one field survived deleting two of five guards, and an
+ordering claim could not be proved by a fixture with one item. Both rewritten.
+
+**Coverage 97.94/91.41/96.70/99.38.** Functions went DOWN 97 → 96, a floor set
+two commits earlier in the same PR — stated in `jest.config.js` rather than
+quietly applied, because the package tripled after that measurement and the two
+remaining uncovered functions are IndexedDB error callbacks `fake-indexeddb`
+will not provoke. Entry files are excluded from coverage and the exclusion is
+BOUNDED by a fence asserting each stays under twenty lines with no loop, switch
+or error path.
+
+**Not done, and owed:** the extension has never been loaded in a browser. CI
+cannot load a packed artifact, so every claim above rests on the real crypto and
+a `chrome` API double in jsdom, plus the transport proven live at the edge in
+PR2a. The offscreen document's lifecycle, `chrome.offscreen.createDocument` from
+a service worker, and the worker boundary in a real browser are all UNEXERCISED.
+So is the IndexedDB measurement PR1 owes — whether a non-extractable `CryptoKey`
+survives a structured clone into extension IndexedDB across a restart, which the
+roadmap rejects on ceremony grounds while recording the serializability premise
+as unmeasured. Both are hand-over steps with instructions, not claims.
+
 ### M17 — Subscription manager (planned)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
