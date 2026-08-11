@@ -3582,3 +3582,22 @@ deviating from them, stop and propose the change with rationale — do not silen
   intermittently one macrotask short. It polls to a deadline now — wait for the
   condition, do not race it — which is the same correction, applied to my own
   code within hours of writing it down.
+- 2026-08-11 — THE IndexedDB PREMISE IS MEASURED AT LAST, and the brief was
+  wrong about it. The M16 roadmap rejects persisting a non-extractable
+  `CryptoKey` in extension IndexedDB on CEREMONY grounds (it would yield a vault
+  permanently open with no password, Secret Key or TOTP), and explicitly NOT on
+  the brief's serializability grounds — which this file recorded as "a claim to
+  MEASURE in PR1, not as a fact". PR1 did not measure it. Measured now, in a
+  real Chromium: `structuredClone` of a non-extractable `CryptoKey` SUCCEEDS and
+  the clone is still `extractable: false`; IndexedDB accepts it; and after a page
+  navigation it reads back as a `CryptoKey`, still non-extractable, with
+  `exportKey` still refusing and an AES-GCM round trip still working. The
+  premise is false in the direction that matters. THE REJECTION IS UNCHANGED and
+  is stronger for it: it never rested on serializability, and a key that
+  persists this well is exactly what makes the ceremony argument bite. Two parts
+  remain unmeasured and are handed over rather than claimed — survival across a
+  full BROWSER RESTART, and the same sequence on a real `chrome-extension://`
+  origin. The probe for both is a SCRATCH unpacked extension, deliberately never
+  committed: a key-persistence harness living inside the artifact that must not
+  persist keys is the wrong thing to be right about, and the measurement is
+  evidence rather than a feature.

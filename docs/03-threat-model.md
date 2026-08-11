@@ -1311,15 +1311,25 @@ CLAUDE.md decision log; the security-relevant shape is:
   repository gives the Plaid live client and the Anthropic adapter — the first
   real load is a deployment event, not a test result — and it is stated here
   rather than left to be inferred from a green suite.
-- *The IndexedDB measurement PR1 owes is still owed.* The roadmap REJECTS
-  persisting a non-extractable `CryptoKey` in extension IndexedDB on CEREMONY
-  grounds — it would yield a vault permanently open with no password, Secret Key
-  or TOTP, defeating 2SKD and docs/01 §5 — and explicitly not on the brief's
-  serializability grounds, which CLAUDE.md records as a claim to MEASURE.
-  Neither PR1 nor PR2b measured it. The rejection stands on the ceremony
-  argument, which does not depend on the answer; what the measurement would
-  settle is whether the decision-log entry describing the alternative is
-  accurate.
+- *The IndexedDB premise is now MEASURED, and the brief was wrong about it.* The
+  roadmap REJECTS persisting a non-extractable `CryptoKey` in extension
+  IndexedDB on CEREMONY grounds — it would yield a vault permanently open with
+  no password, Secret Key or TOTP, defeating 2SKD and docs/01 §5 — and
+  explicitly NOT on the brief's serializability grounds, which CLAUDE.md
+  recorded as a claim to measure. PR1 did not measure it; PR2b has, in a real
+  Chromium: a non-extractable `CryptoKey` structured-clones successfully and the
+  clone is still `extractable: false`; IndexedDB accepts it; and after a page
+  navigation it comes back as a `CryptoKey`, still non-extractable, with
+  `exportKey` still refusing and an AES-GCM round trip still working. So the
+  brief's premise is FALSE in the direction that matters, exactly as docs/04's
+  correction claimed — now demonstrated rather than asserted. THE REJECTION IS
+  UNAFFECTED: it never rested on that premise, and a key that persists this well
+  is precisely what makes the ceremony argument bite.
+  *Still unmeasured, and handed over rather than claimed:* survival across a full
+  BROWSER RESTART, and the same sequence under a real `chrome-extension://`
+  origin. A scratch unpacked probe exists for both; it is deliberately not
+  committed, because a key-persistence harness inside an artifact that must not
+  persist keys is the wrong thing to be right about.
 
 ## 7. Validation program
 
