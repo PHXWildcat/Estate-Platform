@@ -3255,11 +3255,25 @@ deviating from them, stop and propose the change with rationale — do not silen
   mint another), `GET /v1/auth/sessions` (it cannot enumerate the owner's
   devices), and on assets, profile, documents, the assistant, plaid and
   settlement. It then appeared in the owner's own list as "Browser extension",
-  was revoked in one click with no prompt, and was dead everywhere a second
-  later. The trail carried `stepup.granted` → `pairing_minted {retired:false}` →
-  `paired {audience:extension}` → four `pairing_failed` with NO actor and EMPTY
-  detail — the uniform refusal preserved in the audit stream as well as on the
-  wire.
+  was revoked in one click with no prompt, and answered 401 on every route
+  probed afterwards. The trail carried `stepup.granted` →
+  `pairing_minted {retired:false}` → `paired {audience:extension}` → four
+  `pairing_failed` with NO actor and EMPTY detail — the uniform refusal
+  preserved in the audit stream as well as on the wire.
+  NARROWED, because the first version of this sentence said the credential was
+  "dead everywhere a second later" and that does not generalize.
+  `HttpSessionVerifier` caches POSITIVE introspections for
+  `DEFAULT_CACHE_TTL_MS` (30s), so a peer that introspected the token inside
+  that window keeps accepting it for the remainder of the TTL; my probe missed
+  the window only because minutes of image rebuilding sat between the boundary
+  probes and the revoke. What was measured is what is now claimed. The general
+  rule this repo keeps restating, turned on myself in the same session I applied
+  it to somebody else's diagnosis: a run that happened to observe a property is
+  not evidence that the property holds. The downstream half — that a user
+  pressing Revoke is told "immediately" while a peer may honour the credential
+  for up to 30 more seconds — is a docs/03 §6j residual whose fix is COPY rather
+  than a shorter TTL, since shortening it would put an introspection on every
+  request in the product.
 - 2026-08-10 — The live drive found two things no unit test had, the pattern
   holding for the ninth milestone running. THE SESSION CARD LIED ABOUT ITSELF:
   it kept reading "Step-up not fresh" immediately after a pairing code had been
