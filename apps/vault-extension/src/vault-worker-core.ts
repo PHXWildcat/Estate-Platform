@@ -1,10 +1,12 @@
 import { isFillable, matchOrigin, type MatchVerdict } from './origin-match.js';
 import {
   decryptItem,
+  encryptItem,
   finishUnlock,
   fromBase64,
   prepareUnlock,
   proveUnlock,
+  toBase64,
   wipe,
   type UnlockPreparation,
   type UnlockedVault,
@@ -245,6 +247,58 @@ export class VaultKeyHolder {
       }
     }
     return out;
+  }
+
+  /**
+   * SEAL AN ITEM (M16 PR4a) — the first time plaintext travels INTO this module.
+   *
+   * Until now the traffic was one-way: the password and Secret Key arrive to be
+   * consumed by a derivation, and item content only ever comes OUT (`summarise`
+   * returns titles, `fillFor` returns one credential). A create or an update
+   * reverses that, and two things follow that are worth naming rather than
+   * discovering.
+   *
+   * IT CROSSES A BROADCAST. `chrome.runtime.sendMessage` delivers to every
+   * extension context with a listener, so item content transits the same channel
+   * the unlock password already does — `messages.ts` calls that "a filter, not
+   * an isolation boundary", and it remains true. This adds traffic of an
+   * existing class, not a new class: anyone who can read that channel has
+   * already compromised the artifact and could ask the worker to decrypt.
+   *
+   * THE AAD BINDS THE VERSION, so the caller must say which one it is sealing
+   * for. `encryptItem` takes `blobVersion` into the AAD (docs/04 M6: create = 1,
+   * an update of N encrypts under N+1), which is what stops a blob being
+   * replayed into a different version slot. This module refuses to guess it:
+   * the number comes from the row the caller read, and an update that does not
+   * carry one is a bug rather than a create.
+   *
+   * NOTHING HERE DECIDES WHETHER THE WRITE IS ALLOWED. That is the vault
+   * service's `VaultSessionGuard` plus the `If-Match` the host sends; this
+   * module only turns content into ciphertext under the key it holds.
+   */
+  async sealItem(input: {
+    readonly itemId: string;
+    readonly blobVersion: number;
+    readonly content: Record<string, unknown>;
+  }): Promise<string> {
+    const vault = this.#vault;
+    const userId = this.#userId;
+    if (!vault || !userId) throw new Error('vault is locked');
+    if (!Number.isInteger(input.blobVersion) || input.blobVersion < 1) {
+      throw new Error('blobVersion must be a positive integer');
+    }
+    const plaintext = new TextEncoder().encode(JSON.stringify(input.content));
+    try {
+      const blob = await encryptItem(
+        vault.masterKey,
+        { userId, itemId: input.itemId, blobVersion: input.blobVersion },
+        plaintext,
+      );
+      return toBase64(blob);
+    } finally {
+      // The caller's copy is theirs to drop; this one is ours.
+      plaintext.fill(0);
+    }
   }
 
   /**

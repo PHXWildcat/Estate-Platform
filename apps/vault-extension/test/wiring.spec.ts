@@ -9,7 +9,7 @@
  */
 import 'fake-indexeddb/auto';
 import { ensureOffscreenDocument } from '../src/offscreen-lifecycle';
-import { isVaultRequest } from '../src/messages';
+import { isVaultRequest, type VaultRequest } from '../src/messages';
 import { installOffscreenListener } from '../src/offscreen-router';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from '../src/secret-key-store';
 import { VaultHost, type KeyHolderPort } from '../src/vault-host';
@@ -495,5 +495,59 @@ describe('the fill message', () => {
     // `isVaultRequest` carries a hardcoded list of kinds; a variant added to the
     // union and forgotten here is silently ignored rather than answered.
     expect(isVaultRequest(FILL)).toBe(true);
+  });
+});
+
+describe('the popup to offscreen union is closed, exhaustively', () => {
+  /**
+   * THE OTHER HALF OF THE CAPABILITY SURFACE, and it had no such test.
+   *
+   * `worker-boundary.spec.ts` enumerates what may be asked of the KEY HOLDER;
+   * this union is what may be asked of the OFFSCREEN HOST, and the same argument
+   * applies to it — `messages.ts` says the union's closure is what keeps §4 TB9's
+   * "the content script must be structurally unable to REQUEST a credential"
+   * true. Until now only one variant was spot-checked against `isVaultRequest`.
+   *
+   * A `Record` keyed by the union, for the reason the worker one uses it: a
+   * missing key is a compile error and an unknown key is a compile error, where
+   * a literal array and a hand-counted length are both subset checks that a new
+   * variant passes silently.
+   *
+   * `isVaultRequest` carries its OWN hardcoded list, so the two are pinned to
+   * each other here — a kind in the union that the gate does not admit is a
+   * message the router will never answer, which presents as a dead feature
+   * rather than an error.
+   */
+  const KINDS: Record<VaultRequest['kind'], true> = {
+    state: true,
+    unlock: true,
+    list: true,
+    matches: true,
+    fill: true,
+    lock: true,
+  };
+
+  it('names every kind, and the narrowing gate admits every one it names', () => {
+    expect(Object.keys(KINDS).sort()).toEqual([
+      'fill',
+      'list',
+      'lock',
+      'matches',
+      'state',
+      'unlock',
+    ]);
+    for (const kind of Object.keys(KINDS)) {
+      // Shape beyond `kind` does not matter to the gate; what is asserted is
+      // that the gate has heard of every member of the union.
+      expect({ kind, admitted: isVaultRequest({ target: 'offscreen', kind }) }).toEqual({
+        kind,
+        admitted: true,
+      });
+    }
+  });
+
+  it('refuses a kind that is not in the union, and anything not addressed here', () => {
+    expect(isVaultRequest({ target: 'offscreen', kind: 'getKey' })).toBe(false);
+    expect(isVaultRequest({ target: 'background', kind: 'list' })).toBe(false);
   });
 });

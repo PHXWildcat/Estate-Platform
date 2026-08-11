@@ -181,6 +181,7 @@ export class VaultController {
   }
 
   @Post('vault/items')
+  @AllowSessionAudiences('extension')
   @UseGuards(VaultSessionGuard)
   @HttpCode(201)
   createItem(@Req() req: VaultRequest, @Body() body: unknown): Promise<VaultItemDto> {
@@ -197,6 +198,7 @@ export class VaultController {
   }
 
   @Put('vault/items/:itemId')
+  @AllowSessionAudiences('extension')
   @UseGuards(VaultSessionGuard)
   @HttpCode(200)
   updateItem(
