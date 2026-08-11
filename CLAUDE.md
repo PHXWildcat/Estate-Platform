@@ -2849,7 +2849,13 @@ deviating from them, stop and propose the change with rationale — do not silen
   permissions held constant (the manifest's set declared as data and pinned by a
   test), reproducible builds (CI builds twice and compares digests), SLSA
   provenance via GitHub OIDC, and a verification procedure a third party can
-  actually run, published in-repo and at a `/.well-known/` path. Residual,
+  actually run, published in-repo and at a `/.well-known/` path. (CORRECTED in
+  PR4b: the `/.well-known/` half was not a thing anyone may do — RFC 8615
+  requires a well-known URI to be IANA-REGISTERED, so a path we invent is not
+  one; the registered mechanism is `security.txt`'s `Policy:` field, and the
+  vault edge's static handler additionally serves only four extensions, none of
+  them `.txt`. Published in-repo, and the served path deferred with both
+  obstacles named rather than the commitment quietly dropped.) Residual,
   unsoftened: a compromised update keeping the same permissions exfiltrates
   everything the user unlocks and THE PLATFORM CANNOT DETECT IT — a self-check
   is written by the same artifact and a reported version is one it controls.
@@ -3967,3 +3973,103 @@ deviating from them, stop and propose the change with rationale — do not silen
   still printed `Container Running`, which reads like success. The tell was the
   container's uptime still saying 18 hours. Check what you built, not what the
   orchestrator says about it.
+- 2026-08-11 — M16 PR4b (the release pipeline) rests on one claim — WHAT SHIPS IS
+  WHAT A REVIEWER READS — and that claim is only worth stating if somebody with
+  no relationship to this project can check it. So the artifact is packed by
+  `scripts/pack-extension.mjs` rather than by `zip`. Not a preference: a ZIP is
+  non-deterministic in FIVE independent ways, each MEASURED against `zip 3.0` by
+  producing two differing archives — per-entry MS-DOS mtime, filesystem walk
+  order, the Unix mode (which `-X` does NOT strip), Info-ZIP's default UID/GID
+  and extended-timestamp extra fields, and deflate. With all five pinned the CLI
+  is reproducible on ONE machine, so it was not disqualified for being a CLI;
+  it was disqualified because three of the five then depend on whichever
+  Info-ZIP and zlib the runner ships, which is precisely the variable a
+  reproducibility claim must not rest on. Writing the archive on `node:zlib`
+  pins deflate to the Node the repo already pins — the node:crypto webhook
+  verifier and node:net clamd precedent, applied to a path whose entire job is
+  to be checkable. The COMPILE was measured as already reproducible (no
+  `incremental`/`composite`, so no `.tsbuildinfo` state; TypeScript emits LF
+  regardless of platform); the ZIP was the only step that was not.
+- 2026-08-11 — "TWO RUNS MATCHED" IS THE WEAKEST POSSIBLE REPRODUCIBILITY TEST,
+  and it is what almost shipped. Two runs on one machine seconds apart match for
+  reasons that have nothing to do with the writer: the mtimes did not change,
+  the walk order did not change, the umask did not change — and a third party on
+  another machine on another day hits all three. So `pack.spec.ts` CHANGES each
+  variable and asserts the digest does not move (clock forward eleven years,
+  `chmod`, creation order), reads the entry names and the extra-length fields
+  out of the archive BYTES rather than inferring them, and carries an
+  anti-vacuity case proving a content change DOES move the digest. The fifth
+  factor cannot be tested from inside one Node and is handled by pinning +
+  labelling instead of by a test that would only measure this machine.
+  MY OWN ORDER TEST MEASURED THE FILESYSTEM: it built one tree in two creation
+  orders and compared digests, which PASSES with the writer's `.sort()` removed,
+  because APFS returns directory entries in codepoint order anyway. Rewritten to
+  assert the CONTRACT over the bytes — and then honestly recorded as a branch
+  this machine cannot exercise at all, rather than credited with coverage it
+  does not have (the M16 PR3a shape).
+- 2026-08-11 — TURBO WAS SILENTLY DISCARDING THE EXTENSION'S ORIGIN, found while
+  writing the CI job and fixed as part of it. Turbo 2 runs tasks in STRICT env
+  mode, `VAULT_ORIGIN` was undeclared, and `build-package.mjs` bakes it into
+  both `manifest.json` and `origin.js`. MEASURED:
+  `VAULT_ORIGIN=https://vault.example.test pnpm build --filter=@estate/vault-extension
+  --force` produced a package saying `http://vault.localhost:3010`. The script
+  VALIDATES the value it reads and throws on a malformed one, so its own guard
+  could not help — it never received the variable and fell through to its dev
+  default. Exit 0, green everywhere, wrong artifact. This is the M8 PR5 `BFF_URL`
+  defect verbatim, one milestone later, in the same `turbo.json` whose own
+  comment describes it — which is why the fix is not "declare VAULT_ORIGIN".
+  `test/turbo-env.spec.ts` reads the build COMMAND out of `package.json`,
+  follows it to the scripts it actually runs, scans those for `process.env`
+  reads and requires each to be declared, with an anti-vacuity floor; a new
+  build-time input arrives declared or the build goes red. Mutation-tested four
+  ways (drop the variable, drop the task entry, add an undeclared input, break
+  the command so the scan sees nothing) — each red on the assertion that names
+  the property. Declaring it also puts it in the task HASH, without which a
+  build for one origin would be served from the cache of a build for another.
+- 2026-08-11 — THE CI JOB IS ITS OWN WORKFLOW, and the reason is the permission:
+  `.github/workflows/extension.yml` is the only place in the repo asking for
+  `id-token: write`, and an escalation like that belongs in a file whose subject
+  is the thing being signed rather than folded into one about container images.
+  It builds TWICE with `--force` on both (a cache hit restores outputs without
+  running the compile, which would compare a build against a copy of itself),
+  deletes `dist` between them (repacking the same tree only re-proves the packer
+  is a pure function of its input, which its own spec covers), and fails on a
+  digest mismatch. WHAT THAT PROVES IS BOUNDED AND SAID SO: two builds on one
+  runner show the pipeline is deterministic given one toolchain; cross-machine
+  reproducibility is what a third party's own rebuild tests, which is why the
+  published procedure asks them to do it rather than to trust this job. The
+  attestation is skipped on `pull_request` — a signed statement that an unmerged
+  branch built something is a statement nobody should act on — and the
+  notify-on-failure wiring was deliberately NOT copied over: its gate can only
+  fire on `workflow_dispatch`, which by definition has a human watching, and the
+  reusable workflow's own header says those must not open issues. Dead machinery
+  is the zero-callers shape this repo keeps closing, not a spare tyre.
+- 2026-08-11 — NODE IS DELIBERATELY NOT PINNED TO A PATCH, which is the one place
+  reproducibility loses an argument to something else. Deflate output is not
+  guaranteed stable across Node patch releases (measured as UNVERIFIED, not as
+  safe), so freezing the patch is what a purist reproducibility claim wants —
+  and it would mean building a SECURITY artifact on a runtime that cannot take
+  security patches for as long as the pin stood. So the digest is LABELLED
+  instead: the Node version, the commit and the baked origin all travel in the
+  `.sha256` file beside the archive and in the job summary, a Node bump that
+  moves the digest is a reviewed republish rather than an alarm, and
+  `VERIFYING.md` lists a version mismatch as the FIRST thing to check. A claim
+  that is true and qualified beats one that is absolute and quietly false.
+- 2026-08-11 — `apps/vault-extension/VERIFYING.md` states up front what it CANNOT
+  establish, because a verification procedure that oversells itself is worse than
+  none. It can show the archive came from this repo's `Extension` workflow at a
+  named commit (`gh attestation verify --signer-workflow …`, and the flag is the
+  part that carries weight — without it you learn only that SOME workflow in the
+  repo built it), and that the archive is byte-for-byte what that source
+  produces. It cannot show the source is safe, and — the one most likely to be
+  assumed — IT CANNOT SHOW THE COPY YOUR BROWSER IS RUNNING IS THAT ARCHIVE:
+  stores repackage, Chrome converts the upload to a CRX3 with its own signature
+  and adds `_metadata/verified_contents.json`, so a store install is compared
+  file-by-file against an extracted rebuild, never by zip digest. Also carried
+  over from the PR3b measurement rather than left to be rediscovered: the load
+  step is MANUAL, because Chrome 151 has disabled `--load-extension` and the
+  feature override is gone with it, so any recipe built on that flag is not
+  runnable — docs/04 recorded that this PR owed the difference, and this is it.
+  Every command was run: `shasum -a 256 -c` tolerates the `#` comment lines the
+  digest file carries, and the job's whole sequence reproduces locally
+  (two clean builds, 42 entries, 118,875 bytes, identical digests).

@@ -3648,9 +3648,10 @@ not in `VAULT_ITEM_TYPES` — found when the seed was refused `400`. Latent, sin
 the extension never writes an item, and now fenced by scanning the service's own
 declaration rather than copying it.
 
-**Not done, and owed by whoever ships next:** `--load-extension` is disabled in
-Chrome 151, so PR4's "third-party-runnable verification procedure" cannot be
-phrased as loading unpacked from the command line.
+**Owed by whoever ships next — discharged in PR4b:** `--load-extension` is
+disabled in Chrome 151, so PR4's "third-party-runnable verification procedure"
+cannot be phrased as loading unpacked from the command line. `VERIFYING.md`
+step 5 is a manual `chrome://extensions` load, and says why.
 
 #### PR4a — writes
 
@@ -3698,6 +3699,87 @@ and now has one. PR1's own "writes; PR4 decides this, not PR1" cases were
 rewritten rather than deleted, and the derived refused count moved 18 → 16 —
 still a hand-written number, because deriving it from the admitted list would
 make it agree with any widening automatically.
+
+#### PR4b — the release pipeline
+
+The milestone's supply-chain claim is **what ships is what a reviewer reads**,
+and it is worth nothing unless somebody with no relationship to this project can
+check it. Three pieces: a reproducible archive, a CI job that proves it and
+attests the result, and a procedure a third party can actually run.
+
+**THE ARCHIVE IS WRITTEN, NOT `zip`-ED.** A ZIP is non-deterministic in five
+independent ways, each *measured* against `zip 3.0` by producing two differing
+archives: per-entry MS-DOS mtime, filesystem walk order, the Unix mode (which
+`-X` does **not** strip), Info-ZIP's default UID/GID and extended-timestamp
+extra fields, and deflate. With all five pinned the CLI is reproducible on one
+machine, so it was not disqualified for being a CLI — it was disqualified
+because three of the five then depend on whichever Info-ZIP and zlib the runner
+ships, which is exactly the variable a reproducibility claim must not rest on.
+`scripts/pack-extension.mjs` writes the archive on `node:zlib`, pinning deflate
+to the Node the repo already pins (the node:crypto webhook verifier and node:net
+clamd precedent, on a path whose whole job is to be checkable). The compile was
+measured as already reproducible: no `incremental`/`composite`, so no
+`.tsbuildinfo` state, and TypeScript emits LF regardless of platform.
+
+**"Two runs matched" is the weakest possible test of this,** and it is what
+almost shipped — two runs on one machine seconds apart match because the mtimes,
+the walk order and the umask did not change, all three of which a third party
+hits. So `pack.spec.ts` *changes* each variable and asserts the digest does not
+move, reads entry names and extra-length fields out of the archive bytes rather
+than inferring them, and carries an anti-vacuity case proving content still
+moves the digest. The order case originally measured APFS rather than the
+writer (it passes with the `.sort()` removed, because APFS returns names in
+codepoint order anyway); rewritten to assert the contract, and then recorded as
+a branch this machine cannot exercise rather than credited with coverage.
+
+**Turbo was silently discarding the origin,** found while writing the CI job.
+Strict env mode stripped `VAULT_ORIGIN`, so
+`VAULT_ORIGIN=https://vault.example.test pnpm build …` produced a package saying
+`http://vault.localhost:3010`. The build script validates what it reads and
+throws on a bad value, so its own guard could not help: it never received the
+variable. Exit 0, green everywhere, wrong artifact — the M8 PR5 `BFF_URL` defect
+verbatim, in the same `turbo.json` whose comment describes it. Fixed by a fence
+rather than by a line: `test/turbo-env.spec.ts` reads the build command out of
+`package.json`, follows it to the scripts it runs, scans those for `process.env`
+reads and requires each to be declared, with an anti-vacuity floor.
+Mutation-tested four ways.
+
+**The CI job is its own workflow** because it is the only place in the repo
+asking for `id-token: write`, and that escalation belongs beside its subject
+rather than inside a file about container images. It builds twice with `--force`
+on both (a cache hit restores outputs without compiling, which would compare a
+build against a copy of itself), deletes `dist` between them, and fails on a
+mismatch. *Bounded, and said so:* two builds on one runner prove determinism
+given one toolchain; cross-machine reproducibility is what the third-party
+rebuild tests. Attestation is skipped on `pull_request`. The notify-on-failure
+wiring was deliberately not copied — its gate can only fire on
+`workflow_dispatch`, which has a human watching by definition.
+
+**Node is deliberately not pinned to a patch.** Deflate stability across Node
+patch releases is unverified, so a purist claim wants it frozen — and freezing
+it means building a *security* artifact on a runtime that cannot take security
+patches. The digest is labelled instead: Node version, commit and baked origin
+travel in the `.sha256` beside the archive, and a Node bump that moves the
+digest is a reviewed republish.
+
+**`VERIFYING.md` leads with what it cannot establish.** It can show the archive
+came from this repo's `Extension` workflow at a named commit — via
+`gh attestation verify --signer-workflow`, and that flag is the load-bearing
+part, since without it you learn only that *some* workflow here built it — and
+that the archive is byte-for-byte what the source produces. It cannot show the
+source is safe, and it **cannot show the copy your browser is running is that
+archive**: stores repackage into CRX3 with their own signature and add
+`_metadata/verified_contents.json`, so a store install is compared file-by-file
+against an extracted rebuild, never by zip digest. The load step is manual,
+which discharges the debt PR3b recorded — Chrome 151 has disabled
+`--load-extension`, so no recipe may be phrased around it.
+
+**Correction carried by this PR:** the M16 roadmap promised the procedure "at a
+`/.well-known/` path". RFC 8615 requires well-known URIs to be IANA-registered,
+so a path we invent is not one; the registered mechanism is `security.txt`'s
+`Policy:` field (RFC 9116), and the vault edge's static handler serves exactly
+four extensions, none of them `.txt`. Published in-repo, with the served path
+deferred and both obstacles named.
 
 ### M17 — Subscription manager (planned)
 
