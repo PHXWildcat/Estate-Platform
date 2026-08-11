@@ -230,6 +230,24 @@ const submitForm = (index = 0): void => {
   form?.dispatchEvent(new Event('submit', { cancelable: true }));
 };
 
+/**
+ * SUBMIT THE STEP-UP PROMPT BY THE FORM THAT OWNS ITS FIELD.
+ *
+ * The prompt renders into a `<div>` inside the form of the action it guards, so
+ * the step-up form is NESTED — and the ancestor's `querySelector('#stepup-code')`
+ * finds it too. Selecting "every form CONTAINING the field" therefore matched
+ * both and submitted the guarded action a SECOND time, unawaited. That is what
+ * made `screens-stepup.spec.ts` fail intermittently on CI; the same loop was
+ * here, and the same targeting fixes it. `input.form` is the HTML form owner —
+ * the nearest ancestor form, which is the prompt's own.
+ */
+const submitStepUp = (code = '123456'): void => {
+  const input = document.getElementById('stepup-code') as HTMLInputElement | null;
+  if (!input) throw new Error(`no step-up prompt. Saw: ${document.body.textContent}`);
+  input.value = code;
+  input.form?.dispatchEvent(new Event('submit', { cancelable: true }));
+};
+
 const waitForText = async (pattern: string | RegExp, deadlineMs = 30_000): Promise<void> => {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
@@ -934,12 +952,7 @@ describe('the emergency-access screens', () => {
 
     await waitForText(/arming emergency access needs a fresh identity check/i);
     service.fail.delete('POST /api/vault/emergency-access');
-    (document.getElementById('stepup-code') as HTMLInputElement).value = '123456';
-    document.querySelectorAll('form').forEach((f) => {
-      if (f.querySelector('#stepup-code')) {
-        f.dispatchEvent(new Event('submit', { cancelable: true }));
-      }
-    });
+    submitStepUp();
     await waitForText(/1 contact\(s\) named/i);
     expect(service.calls.some((c) => c.path === '/api/auth/stepup')).toBe(true);
   });

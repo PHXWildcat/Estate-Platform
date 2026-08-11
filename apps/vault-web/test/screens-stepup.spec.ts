@@ -10,15 +10,20 @@
  * iterations — the shipped parameter, deliberately not lowered, because a
  * test-only iteration count would put a seam into the one derivation Zone A
  * rests on. Adding two more full enrollments to `screens-actions.spec.ts`
- * roughly doubled that file\'s real crypto work, and on a CI runner executing 48
- * turbo tasks at once the click that advances past the Secret Key screen stopped
- * arriving inside the harness deadline — failing whichever test happened to
- * reach it first, which is why raising the deadline moved the failure instead of
- * curing it. Splitting the file halves the work in each.
+ * roughly doubled that file\'s real crypto work.
  *
  * A separate file is also a separate module registry, so the vault session, the
  * device store and the rendered tree do not carry between these tests and those.
  * Both concerns, one move.
+ *
+ * CORRECTED, because this header previously claimed a cause it had not proved.
+ * It said the CI failure was the advancing click "not arriving inside the
+ * harness deadline" under contention, and that splitting the file cured it by
+ * halving the work. Splitting did reduce the failure RATE; it did not remove the
+ * cause, and the failure went on appearing on `main`. The real mechanism was a
+ * stray THIRD enrollment started by this file\'s own step-up submission — see
+ * `submitStepUp` below. Contention was what made it visible, not what made
+ * it happen, and a deadline can never fix a screen that is being repainted.
  */
 import 'fake-indexeddb/auto';
 import {
@@ -194,6 +199,32 @@ const submitForm = (index = 0): void => {
   forms[index]?.dispatchEvent(new Event('submit', { cancelable: true }));
 };
 
+/**
+ * SUBMIT THE STEP-UP PROMPT BY THE FORM THAT OWNS ITS FIELD.
+ *
+ * The prompt renders into a `<div>` inside the form of the action it guards, so
+ * the step-up form is NESTED — and the ancestor's `querySelector('#stepup-code')`
+ * finds it too. Selecting "every form CONTAINING the field" therefore matched
+ * both and submitted the guarded action a second time. In the setup case that
+ * silently started a THIRD enrollment: a full PBKDF2 at 650k that nothing
+ * awaits, whose `renderSecretKey` continuation repaints "Save your Secret Key"
+ * over whatever screen is showing whenever it lands.
+ *
+ * On a fast machine it landed inside its own test and merely repainted a screen
+ * already showing. On a loaded CI runner it outlived the test and repainted the
+ * NEXT one's unlock screen, so `openVaultWithItem` waited out its full deadline
+ * looking at the save screen it had already clicked past.
+ *
+ * `input.form` is the HTML form owner — the nearest ancestor form, which is the
+ * prompt's own. One dispatch, one submission.
+ */
+const submitStepUp = (code = '123456'): void => {
+  const input = document.getElementById('stepup-code') as HTMLInputElement | null;
+  if (!input) throw new Error(`no step-up prompt. Saw: ${document.body.textContent}`);
+  input.value = code;
+  input.form?.dispatchEvent(new Event('submit', { cancelable: true }));
+};
+
 const waitForText = async (pattern: string | RegExp, deadlineMs = 30_000): Promise<void> => {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
@@ -261,14 +292,18 @@ describe('proving a factor on this origin', () => {
 
     await waitForText(/setting up your vault needs a fresh identity check/i);
     service.fail.delete('POST /api/vault/keyset');
-    (document.getElementById('stepup-code') as HTMLInputElement).value = '123456';
-    document.querySelectorAll('form').forEach((f) => {
-      if (f.querySelector('#stepup-code')) {
-        f.dispatchEvent(new Event('submit', { cancelable: true }));
-      }
-    });
+    submitStepUp();
     await waitForText('Save your Secret Key');
     expect(service.calls.some((c) => c.path === '/api/auth/stepup')).toBe(true);
+    /*
+     * And the count is asserted, because that is what makes the trap above fail
+     * DETERMINISTICALLY. A stray enrollment is invisible on a fast machine and
+     * intermittent on a slow one; the number never varies. Two POSTs: the one
+     * step-up refused, and the one the retry made.
+     */
+    expect(
+      service.calls.filter((c) => c.path === '/api/vault/keyset' && c.method === 'POST'),
+    ).toHaveLength(2);
 
     // Finish the flow. A test that stops mid-ceremony leaves this module — and
     // the device store behind it — in a state the NEXT test inherits, and these
@@ -303,11 +338,7 @@ describe('proving a factor on this origin', () => {
 
     // Elevate, and the refused action runs again without being re-typed.
     service.fail.delete('POST /api/vault/reset');
-    (document.getElementById('stepup-code') as HTMLInputElement).value = '123456';
-    document.querySelectorAll('form').forEach((f) => {
-      if (f.querySelector('#stepup-code'))
-        f.dispatchEvent(new Event('submit', { cancelable: true }));
-    });
+    submitStepUp();
     await waitForText(/save your secret key/i);
     expect(service.resets).toBe(1);
     expect(service.calls.some((c) => c.method === 'POST' && c.path === '/api/auth/stepup')).toBe(

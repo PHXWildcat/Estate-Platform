@@ -3601,3 +3601,30 @@ deviating from them, stop and propose the change with rationale — do not silen
   committed: a key-persistence harness living inside the artifact that must not
   persist keys is the wrong thing to be right about, and the measurement is
   evidence rather than a feature.
+- 2026-08-11 — A CI FAILURE ON `main` WAS A TEST SELECTOR MATCHING AN ANCESTOR,
+  and the previous diagnosis was wrong in a way worth keeping. `vault-web`'s
+  step-up specs advanced the prompt with `querySelectorAll('form')` filtered by
+  `querySelector('#stepup-code')` — but the prompt renders into a `<div>` INSIDE
+  the form of the action it guards, so the step-up form is NESTED and the
+  ancestor's `querySelector` finds the field too. The filter matched BOTH and
+  dispatched submit on the guarded form as well, silently starting a THIRD
+  enrollment: a full PBKDF2 at 650k that nothing awaits, whose `renderSecretKey`
+  continuation repaints "Save your Secret Key" over whatever screen is showing
+  whenever it lands. On a fast machine it landed inside its own test and merely
+  repainted a screen already there; on a loaded CI runner it OUTLIVED the test
+  and repainted the NEXT one's unlock screen, so the following test waited out
+  its full 30s deadline looking at a screen it had already clicked past — going
+  BACKWARD through the flow, which is the detail that ruled out slowness. MEASURED
+  rather than reasoned about: three `POST /api/vault/keyset` where two are
+  legitimate, dropping to two under the fix. Fixed with `input.form` — the HTML
+  form owner, i.e. the nearest ancestor form, which is the prompt's own — hoisted
+  into a `submitStepUp` helper so the pattern cannot be copied again.
+  THE PIN IS A COUNT, not a wait: a stray async action is invisible on a fast
+  machine and intermittent on a slow one, and only the number never varies. The
+  file header had blamed contention and credited a file split with curing it;
+  splitting reduced the RATE and removed nothing, and the header now says so —
+  a comment claiming an unproved cause is what stops the next person looking.
+  Also measured and reported as a NON-finding: the identical loop in
+  `screens-emergency.spec.ts` fired no duplicate (2 calls either way, the arming
+  action being a button rather than a submit), so that change is the pattern
+  removed, not a second defect fixed.
