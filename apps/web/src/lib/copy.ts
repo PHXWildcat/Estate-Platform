@@ -72,6 +72,11 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   VAULT_UNAVAILABLE:
     'We couldn’t open the vault just now. Nothing about your vault has changed — please try again in a moment.',
   VERIFICATION_UNAVAILABLE: 'We couldn’t confirm that address just now. Please try again shortly.',
+  // M16. Says what did NOT happen, because the alternative reading — that a
+  // code was created and lost — would have someone waiting for one, or
+  // wondering whether a stranger now holds it.
+  PAIRING_UNAVAILABLE:
+    'We couldn’t create a pairing code just now. No code was created — try again in a moment.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

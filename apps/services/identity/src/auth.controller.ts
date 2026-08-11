@@ -2,8 +2,10 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
+  Param,
   Post,
   Req,
   UseGuards,
@@ -18,6 +20,7 @@ import type {
 import { z } from 'zod';
 import { AuthService, type IssuedTokens, type StepUpResult } from './auth.service';
 import { EmailVerificationService, type ReissueOutcome } from './email-verification.service';
+import { ExtensionPairingService } from './extension-pairing.service';
 import { HandoffService, type MintedHandoff } from './handoff.service';
 import { AllowSessionAudiences } from './session-audience.decorator';
 import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
@@ -57,6 +60,16 @@ const HandoffCodeSchema = z.object({
 });
 
 /**
+ * The extension pairing code (M16). Shape only and generous, for the handoff's
+ * reason: the AUTHORITY is the digest lookup, the length is measured on the
+ * CANONICAL form inside the service, and a shape rejection that differed from a
+ * wrong-code rejection would be a free oracle for the format.
+ */
+const PairingCodeSchema = z.object({
+  code: z.string().min(1).max(128),
+});
+
+/**
  * The mailed verification code. Shape only, bounded generously: the AUTHORITY
  * is the digest lookup and the length is measured on the CANONICAL form inside
  * the service, so a strict pattern here would only add a second place for the
@@ -81,6 +94,23 @@ const WebAuthnResponseSchema = z
     authenticatorAttachment: z.enum(['platform', 'cross-platform']).optional(),
   })
   .passthrough();
+
+/**
+ * A path parameter is untrusted input exactly as a body is, so it is parsed the
+ * same way and refused with the same token. Not a security control on its own —
+ * the value travels as a bound SQL parameter regardless — but a malformed id
+ * should be `invalid_request` at the edge rather than a miss deep in a query
+ * that then reads as "no such session".
+ */
+const UuidSchema = z.string().uuid();
+
+function parseParam<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new BadRequestException({ error: 'invalid_request' });
+  }
+  return parsed.data as z.infer<T>;
+}
 
 function parseBody<T extends z.ZodTypeAny>(schema: T, body: unknown): z.infer<T> {
   const parsed = schema.safeParse(body);
@@ -107,6 +137,7 @@ export class AuthController {
     private readonly webauthn: WebAuthnService,
     private readonly emailVerification: EmailVerificationService,
     private readonly handoff: HandoffService,
+    private readonly extensionPairing: ExtensionPairingService,
   ) {}
 
   @Post('register')
@@ -146,7 +177,7 @@ export class AuthController {
   @Get('session')
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  @AllowSessionAudiences('vault')
+  @AllowSessionAudiences('vault', 'extension')
   session(@Req() request: AuthedRequest): {
     userId: string;
     sessionId: string;
@@ -175,7 +206,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  @AllowSessionAudiences('vault')
+  @AllowSessionAudiences('vault', 'extension')
   async logout(@Req() request: AuthedRequest): Promise<{ status: string }> {
     const auth = requireAuth(request);
     await this.auth.logout(auth.userId, auth.sessionId);
@@ -302,7 +333,7 @@ export class AuthController {
   @Post('stepup')
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  @AllowSessionAudiences('vault')
+  @AllowSessionAudiences('vault', 'extension')
   async stepUp(@Req() request: AuthedRequest, @Body() body: unknown): Promise<StepUpResult> {
     const auth = requireAuth(request);
     const { code } = parseBody(CodeSchema, body);
@@ -353,6 +384,107 @@ export class AuthController {
       userId: redeemed.userId,
       sessionId: redeemed.sessionId,
       expiresAt: redeemed.expiresAt.toISOString(),
+    };
+  }
+
+  /**
+   * The caller's live sessions — the paired-devices surface (M16).
+   *
+   * ACCOUNT AUDIENCE ONLY (undecorated = deny by default). An extension has no
+   * business enumerating the user's other devices: its whole reach is five
+   * vault routes and three identity ones, and a list of live credentials is
+   * reconnaissance rather than something it needs to function.
+   */
+  @Get('sessions')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async listSessions(@Req() request: AuthedRequest): Promise<{
+    sessions: Array<{
+      sessionId: string;
+      audience: string;
+      createdAt: string;
+      expiresAt: string;
+      current: boolean;
+    }>;
+  }> {
+    const auth = requireAuth(request);
+    return { sessions: await this.auth.listSessions(auth.userId, auth.sessionId) };
+  }
+
+  /**
+   * Revoke one of the caller's own sessions.
+   *
+   * NO StepUpGuard, deliberately — the M6 rule that the protective action must
+   * never be harder than the permissive one. Minting a pairing is step-up
+   * gated; killing one is a single click, because a user who believes their
+   * extension is compromised must not be sent to find an authenticator first.
+   *
+   * A UNIFORM 404 covers "no such session" and "not yours" alike; the owner
+   * predicate is in the UPDATE, so this is not a check-then-act and the answer
+   * is no oracle for whether an id names a real session.
+   */
+  @Delete('sessions/:sessionId')
+  @HttpCode(204)
+  @UseGuards(SessionGuard)
+  async revokeSession(
+    @Req() request: AuthedRequest,
+    @Param('sessionId') sessionId: string,
+  ): Promise<void> {
+    const auth = requireAuth(request);
+    await this.auth.revokeOwnSession(auth.userId, parseParam(UuidSchema, sessionId));
+  }
+
+  /**
+   * Mint a pairing code for the BROWSER EXTENSION (M16).
+   *
+   * SessionGuard + StepUpGuard, and ACCOUNT AUDIENCE ONLY — undecorated, which
+   * is the deny-by-default answer. That is the same posture as `mintHandoff`
+   * and for a stronger reason: this ceremony produces a credential with a REAL
+   * refresh token, so a non-account session able to mint one could chain a
+   * short-lived credential into a long-lived one. `test/session-audience.spec.ts`
+   * names the fact rather than leaving it to the sweep.
+   *
+   * The code is returned IN THE BODY, for the app origin to display and the
+   * user to type into the extension. It is never put in a URL, so it does not
+   * land in history, a Referer, or an intermediary's access log.
+   */
+  @Post('extension/pairing')
+  @HttpCode(201)
+  @UseGuards(SessionGuard, StepUpGuard)
+  async mintExtensionPairing(
+    @Req() request: AuthedRequest,
+  ): Promise<{ code: string; expiresAt: string }> {
+    const auth = requireAuth(request);
+    const minted = await this.extensionPairing.mint(auth.userId, auth.sessionId);
+    return { code: minted.code, expiresAt: minted.expiresAt.toISOString() };
+  }
+
+  /**
+   * Spend one. UNAUTHENTICATED by construction — the extension has no session
+   * yet, so the code is the authority and there is no field in this request
+   * that could name an account (the M13 §6g anti-enumeration shape).
+   *
+   * Every failure is one `invalid_code`: unknown, expired, already spent,
+   * revoked, mis-shaped and lost-a-race are indistinguishable here and in the
+   * audit trail.
+   */
+  @Post('extension/pairing/redeem')
+  @HttpCode(200)
+  async redeemExtensionPairing(@Body() body: unknown): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    userId: string;
+    sessionId: string;
+    expiresAt: string;
+  }> {
+    const { code } = parseBody(PairingCodeSchema, body);
+    const paired = await this.extensionPairing.redeem(code);
+    return {
+      accessToken: paired.accessToken,
+      refreshToken: paired.refreshToken,
+      userId: paired.userId,
+      sessionId: paired.sessionId,
+      expiresAt: paired.expiresAt.toISOString(),
     };
   }
 

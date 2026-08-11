@@ -1,4 +1,9 @@
-import type { MfaLevel } from '@estate/contracts';
+import {
+  DEFAULT_SESSION_AUDIENCE,
+  SESSION_AUDIENCES,
+  type MfaLevel,
+  type SessionAudience,
+} from '@estate/contracts';
 
 /**
  * WHAT A SESSION IS FOR, not just who it belongs to (M15).
@@ -10,9 +15,17 @@ import type { MfaLevel } from '@estate/contracts';
  * rest of the estate — so the session it redeems for is minted for the vault
  * and is refused everywhere else.
  *
- * `account` is the ordinary session every existing flow uses. `vault` is minted
- * only by identity's handoff redemption, carries no refresh token, and lives 15
- * minutes.
+ * THE VOCABULARY MOVED TO @estate/contracts IN M16, and only the vocabulary —
+ * everything below this line, which is the enforcement, stays here. The reason
+ * is a consumer that cannot follow it: the BFF labels sessions with the
+ * audience and deliberately does not depend on this package, since a NestJS
+ * guard package has no business inside the edge. Leaving the list here would
+ * have meant the BFF hand-copying three string literals, which is the drift
+ * class this repo has recorded four times. `MfaLevel` travelled the same way
+ * for the same reason and is imported on the line above.
+ *
+ * Re-exported rather than re-declared, so every existing importer of
+ * `@estate/auth-guard` is unchanged and there is still exactly one definition.
  *
  * The enforcement is DENY BY DEFAULT and lives in `CallerGuard`: a service
  * admits `account` and nothing else unless it is explicitly constructed with a
@@ -20,20 +33,8 @@ import type { MfaLevel } from '@estate/contracts';
  * the nine services that never opt in reject a vault session without any of
  * them changing a line.
  */
-export const SESSION_AUDIENCES = ['account', 'vault'] as const;
-
-export type SessionAudience = (typeof SESSION_AUDIENCES)[number];
-
-/**
- * What a session is when nothing says otherwise.
- *
- * Also what an ABSENT `audience` field means on the introspection response, and
- * that is sound rather than lax: a non-`account` audience can only exist
- * because identity minted one, and an identity old enough to omit the field has
- * no handoff route and therefore no such session to describe. An UNRECOGNISED
- * value is a different matter and fails closed — see the verifier's enum.
- */
-export const DEFAULT_SESSION_AUDIENCE: SessionAudience = 'account';
+export { DEFAULT_SESSION_AUDIENCE, SESSION_AUDIENCES };
+export type { SessionAudience };
 
 /**
  * WHO MAY ADMIT A NON-DEFAULT AUDIENCE, declared as data.
@@ -61,6 +62,27 @@ export const AUDIENCE_ADMITTERS: Readonly<
   Record<Exclude<SessionAudience, 'account'>, readonly string[]>
 > = {
   vault: ['vault'],
+  /**
+   * EMPTY ON PURPOSE, and it is the most important entry in this file (M16).
+   *
+   * The obvious way to let a browser extension reach the vault is to add
+   * `extension` to that service's `ALLOWED_SESSION_AUDIENCES`. It is one word
+   * and it is wrong: `CallerGuard.audiencesFor` UNIONS the service-wide grant
+   * with any route-level one and can never subtract, so a service-wide grant
+   * here would open all 23 vault routes at once — including `reset`
+   * (crypto-shreds the vault on step-up alone), both keyset routes, `deleteItem`,
+   * `request` (starts a §5.2 waiting period) and `release` (the single moment
+   * the platform half of a recovery key leaves the service). None of those needs
+   * an open vault, so a long-lived extension credential would reach them with no
+   * SRP unlock at all.
+   *
+   * The extension is therefore admitted PER HANDLER, below. An empty array here
+   * is a deliberate subtraction rather than an oversight — the M8 zero-holder
+   * rule — and the suite asserts separately that every declared audience is
+   * admitted SOMEWHERE, so this cannot silently become an audience nothing
+   * accepts.
+   */
+  extension: [],
 };
 
 /**
@@ -105,6 +127,53 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
     // Profile's one, added by M15 PR3. Its whole response is a contact id, an
     // account id and a name — see the route's own comment.
     'profile:granteeCandidates',
+  ],
+  /**
+   * THE BROWSER EXTENSION'S ENTIRE REACH (M16).
+   *
+   * Eight handlers, chosen by what each one DOES rather than by its guard shape
+   * — because guard shape cannot discriminate here. Eight vault routes are gated
+   * on step-up ALONE, and that set contains both the destructive routes and the
+   * two SRP legs an extension cannot function without, so "refuse everything
+   * step-up-alone" would make the extension unable to open a vault while
+   * "admit everything step-up-alone" would hand it `reset`.
+   *
+   * WHAT AN EXTENSION SESSION CAN DO, exhaustively: discover whether a vault
+   * exists, run the two SRP legs, list items, and lock. Everything it can read
+   * is CIPHERTEXT — `listItems` sits behind `VaultSessionGuard`, which only a
+   * completed SRP unlock satisfies, and the unlock needs the vault password and
+   * the device Secret Key, neither of which this platform has ever held. So a
+   * stolen extension credential yields the ability to ATTEMPT a handshake that
+   * additionally requires a fresh step-up, and nothing else.
+   *
+   * `vault:getItem` is deliberately absent: `listItems` already returns each
+   * item's full ciphertext blob, so it buys an autofill client nothing, and
+   * every handler left out is authority not granted.
+   *
+   * Identity's three are the same three the vault origin gets, for the same
+   * reasons — introspection must admit every audience or the audience is
+   * unusable; step-up STRENGTHENS the session presenting it and confers nothing
+   * else; logout can only reduce authority. `mintHandoff` is absent here as it
+   * is for `vault`: no non-account session may mint a credential.
+   *
+   * NOT LISTED AND NOT AN OMISSION: `POST /v1/auth/refresh`. It carries no guard
+   * at all — it is unauthenticated by construction, since the refresh token is
+   * the authority — so there is no decorator to declare and this table, which is
+   * about guarded routes, has nothing to say about it. Its audience safety comes
+   * from a different property: refresh ROTATES IN PLACE (`UPDATE … WHERE id`),
+   * so a refreshed session is the same row and cannot change what it is for.
+   * That property is pinned by its own test rather than left as an accident of
+   * the SET list.
+   */
+  extension: [
+    'vault:keysetStatus',
+    'vault:startUnlock',
+    'vault:finishUnlock',
+    'vault:listItems',
+    'vault:lock',
+    'identity:session',
+    'identity:stepUp',
+    'identity:logout',
   ],
 };
 

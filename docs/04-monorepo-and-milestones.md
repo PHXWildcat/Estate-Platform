@@ -3169,53 +3169,195 @@ routes.
 
 Coverage: vault-web 90/78/86/91, ratcheted up.
 
-### M16 — The vault browser extension (planned)
+### M16 — The vault browser extension (approved 2026-08-10, in progress)
 
 Autofill, which M15 deferred with a reason rather than an omission: it needs a
 browser extension, which is a separate distribution artifact with its own supply
 chain, and an extension holding vault-origin access reopens TB6 from a direction
 no CSP can see. Sequenced AFTER M15 completes because the extension is a SECOND
 CLIENT of the same SRP/2SKD protocol — building it before that protocol has one
-settled client would fork it.
+settled client would fork it. Autofill is a docs/00 §7 deliverable.
 
-**Shape.** `apps/vault-extension`, Manifest V3. The background service worker is
-the only key holder and the only network caller; the content script is a
-zero-trust filler that can never REQUEST a credential, only receive one after a
-user gesture in extension-owned UI. Same zero-dependency posture as the vault
-origin, and `@estate/vault-crypto` gains a SECOND declared importer — as data in
-a fence, on the credential-graph habit, not as an exception someone remembers.
+**Shape.** `apps/vault-extension`, Manifest V3, Chromium-first and port-shaped.
+Zero runtime dependencies, hand-written DOM, no bundler — the vault origin's
+posture, for the vault origin's reason. `@estate/vault-crypto` gains a SECOND
+declared importer, so the fence asserting WHO MAY IMPORT IT (the one M15 PR1 did
+not ship among its seven) lands as data before that importer exists —
+`packages/vault-crypto/test/declared-importers.spec.ts`, a table with a reason
+per entry, checked in both directions and counting the browser consumer by the
+absolute path it actually loads. It was promised here and in the decision log
+before it was written, and shipped only at the end of PR1; that gap is recorded
+in the log as the same defect PR1 opens by fixing.
 
-**The three problems that make this a milestone rather than a PR.**
+**Two corrections to this brief, made before any code was written.**
 
-1. *MV3 service workers are terminated, and that collides with a control M6
-   shipped.* A password manager needs keys warm across arbitrary browsing.
-   Persisting them means `chrome.storage.session`, and a non-extractable
-   `CryptoKey` CANNOT be serialized — so persistence means storing raw key bytes
-   and surrendering the "non-extractable keys where the platform allows" property
-   of docs/03 §4 TB6. The alternatives (frequent re-unlock, a kept-alive
-   offscreen document, or a native-messaging host) each cost something different.
-   This decision must be taken explicitly, with its residual recorded; it must
-   not arrive as the default that happened to work.
-2. *Origin matching IS the security property.* Filling the wrong origin is
-   credential exfiltration. Non-negotiable: match on eTLD+1 through the Public
-   Suffix List and never a substring; no filling into a cross-origin iframe
-   without explicit opt-in; never downgrade an `https`-saved credential into
-   `http`; never auto-submit.
-3. *The supply chain inverts M15's central argument.* The vault origin's case is
-   "no bundler, no dependency tree, CSP and Trusted Types enforceable, what ships
-   is what a reviewer reads." An extension is a signed artifact auto-updated
-   through a vendor store, with no CSP in the path — a compromised update is full
-   Zone A compromise for every user, silently. Reproducible builds and a
-   published build attestation are the compensating controls to design for.
+- *"A non-extractable `CryptoKey` cannot be serialized" is false in the direction
+  that matters.* It cannot go into `chrome.storage.session` (JSON), but it CAN be
+  structured-cloned into IndexedDB and stay non-extractable across restarts —
+  a fifth option the brief's premise hid, and the one that "happens to work". It
+  is refused for a different reason than the brief supposes: see decision 1.
+- *"Identity already has WebAuthn machinery" is true and not load-bearing.*
+  `webauthn.service.ts` is a RELYING PARTY (`@simplewebauthn/server`,
+  `verifyRegistrationResponse`) for Estate's own logins. Provisioning passkeys
+  for third-party sites means implementing an AUTHENTICATOR, reusing essentially
+  none of it. The "cheap because we already have it" premise does not survive
+  contact with the code.
 
-**Stated up front: autofill does not resist phishing.** It fills a lookalike
-domain if the user saved a credential there. Passkeys are origin-bound by
-construction and identity already has WebAuthn machinery, so a lookalike-domain
-warning is the minimum this milestone owes, and passkey provisioning is a
-legitimate competing priority for the same slot.
+**The three problems, decided.**
 
-**Needs its own docs/03 delta**, because it adds a trust boundary the model does
-not have: the extension against arbitrary web pages.
+1. *MV3 termination.* Keys live as non-extractable `CryptoKey`s in an OFFSCREEN
+   DOCUMENT — the only extension context that loads vault-crypto. The service
+   worker holds nothing; `chrome.storage.session` holds no key material; an
+   offscreen teardown is a LOCK. IndexedDB persistence is refused because it
+   yields a vault permanently open with no password, Secret Key or TOTP,
+   defeating 2SKD and docs/01 §5. Raw session bytes refused because TB6 says
+   "where the platform allows" and here it does. Native host refused as a second
+   distribution artifact with keys outside the browser sandbox. *Residual:* while
+   unlocked, code in that context decrypts everything — non-extractability stops
+   exfiltration, not use. Chromium only.
+   Paired with it: the extension is SERVER-ANCHORED, caching item ciphertext and
+   nothing that enables an offline unlock. `VAULT_SESSION_TTL_MS` is 15 minutes
+   with no renewal path, so the ceremony is step-up → SRP → full sync → the vault
+   session expires and stops mattering. Client idle lock 15 min, 1–60,
+   never "never". *Residual:* no unlock without connectivity; a credential saved
+   on another device costs a full re-unlock.
+2. *Origin matching.* Registrable domain via a VENDORED, digest-pinned Public
+   Suffix List snapshot. Scheme binding, cross-origin iframes refused by default,
+   never auto-submit, and a content script structurally unable to REQUEST a
+   credential. Page access is `activeTab` + `scripting`, no declared content
+   scripts — which also makes any later broadening a browser-enforced re-consent.
+   Confusable domains are REFUSED, not warned about. *Consequence:* with
+   `activeTab` the check fires at CLICK time, so the milestone refuses to fill on
+   a lookalike and cannot warn someone who never opens the extension. *Residual,
+   on screen:* autofill does not resist phishing.
+3. *Supply chain.* Blast-radius reduction first, because it is the only control
+   that works unattended: an `extension` audience admitted PER HANDLER, so an
+   extension session cannot destroy a vault. Then minimum permissions pinned as
+   data, reproducible builds, SLSA provenance, and a third-party-runnable
+   verification procedure. *Residual, unsoftened:* a compromised update keeping
+   the same permissions exfiltrates everything the user unlocks and the platform
+   cannot detect it.
+
+**Credential model — taken against the recommendation.** Pairing yields a
+refresh-capable `extension`-audience session rather than a device credential
+exchanged per unlock. Verification of shipped code found the escalation question
+closed only accidentally (refresh rotates in place, so `audience` survives
+because there is no new row), `expires_at` unextendable by refresh, and
+rotation-reuse detection to be a self-revocation hazard under MV3. All three are
+addressed in PR1 rather than discovered later.
+
+**Pairing** is a typed human-readable code on M13's alphabet, minted on the APP
+origin (`VaultLaunch`'s pattern) under step-up. Not the vault origin: its edge
+excludes `/v1/auth/handoff` precisely so a vault session cannot mint another
+credential, and minting there would chain a 15-minute no-refresh session into a
+30-day refreshing one. Not `externally_connectable`: for a once-per-browser
+ceremony the control is an absence.
+
+**Transport.** The vault origin's edge gains an `Authorization: Bearer` path and
+becomes the extension's single front door — one `host_permission`, reusing an
+allowlist and a holds-no-credential property that already exist.
+
+**Also in scope, because M16 makes them acute:** step-up attempt counting derived
+from `auth_events` (which transitively bounds the SRP path), the first index on
+that table, and the product's FIRST session-management vertical — a paired-devices
+list with per-row revoke. Plus four defects found in shipped code while verifying
+this plan: a fence migration 004 documents and that was never written, a fail-open
+`audience` default in `SessionsRepo.create`, `HandoffService.mint`'s full-union
+audience parameter, and the absence of any user-reachable session revocation.
+
+**Deliberately NOT done:** offline unlock, Firefox, a native-messaging host,
+IndexedDB key persistence, passkey provisioning (its own milestone), and writes
+before PR3 has proved the page boundary read-only.
+
+**PRs.** PR1 the boundary, the credential and the debts it makes acute · PR2
+unlock + read · PR3 matching + fill · PR4 writes + release pipeline · PR5 the
+security review. Each carries its own docs delta.
+
+**Its own docs/03 delta:** TB9 (the extension against arbitrary web pages) in §3
+with a §4 STRIDE block, and §6j.
+
+#### PR1 — the boundary (the Security surface)
+
+The `extension` audience, its pairing ceremony and the paired-devices list ship
+with a UI in the same PR, so the milestone does not open a zero-callers gap of
+its own while closing others: three routes with no consumer would be the M4
+legal-hold shape, in the milestone that cites it.
+
+**One step-up prompt on the page, and that is structural.** The Security page can
+be refused for three different reasons now (a demo export, the standalone
+elevation, and minting a pairing code), and `StepUpPrompt` labels its field
+"Confirm it's you" for every caller — so two open at once are two identical
+inputs neither a person nor a query can tell apart, which is the M15 PR3 defect
+verbatim. A single `StepUpTarget` state admits one at a time and every other
+opener is disabled while it is up. The action is bound WHERE IT IS RENDERED
+rather than selected from state afterwards, so the M13 review's worse defect (a
+shared retry that ran a different action than the one refused, minting a
+designation the owner never chose) has no shape to reoccur in.
+
+The page's own pre-M13 step-up form is REPLACED rather than joined, which fixed
+two live defects on the way. It labelled its input "6-digit code" — the same
+label as the enrollment field, two ambiguous inputs already — and it reported a
+rejected TOTP code through `messageFor`, so identity's `invalid_credentials`
+became "that email and password combination didn't work" on a form with neither.
+That is the M12 finding, which had landed on the consent controls and the
+document generator and never come back here; the enrollment form had it too, and
+now both use `stepUpMessageFor`. The standalone "Verify your identity" control
+STAYS, because it is the §5.1 rescue path the people surface links to by name —
+a step-up is what writes `stepup.granted` and voids a death case.
+
+**Revoking the credential you are HOLDING goes through logout.** Both kill the
+same row; only logout also expires the two cookies carrying it, and revoking
+without clearing them leaves a browser that still looks signed in over a dead
+session — what M8's logout entry calls the worst outcome. Every other row is one
+ungated click, the M6 rule: minting a pairing code is the gated half.
+
+**`PAIRING_UNAVAILABLE` is a new BFF code**, because `startExtensionPairing`
+reused `VAULT_UNAVAILABLE` for a malformed identity response — copy that
+reassures the reader "nothing about your vault has changed" on a screen where
+nothing was opening a vault. The M12 finding again, one surface over.
+`MintedCodeSchema` is named for the wire shape rather than for the first
+ceremony that used it.
+
+**A fence for the hand-maintained copy.** `GQL_ERROR_CODES` in the web app is a
+second copy of `BffErrorCode` that nothing checked, and a code the BFF adds and
+the app misses degrades to `UNKNOWN` — a control firing rendered as an outage
+(the M9 rule inverted). `apps/web/src/graphql/error-codes.test.ts` reads
+`identity-client.ts` and asserts EQUALITY in both directions, on the
+compose-parity mechanism, with an anti-vacuity floor that earned its place
+immediately: the first version anchored the union's end on the next `;` and one
+member's doc comment has a semicolon in its prose, so it silently scanned nine
+codes of twenty-eight.
+
+**Proven live**, against a stack rebuilt so every service runs M16 code and the
+refusals are the audience table rather than version skew. A pairing code minted
+through a real TOTP step-up, redeemed against identity, producing an
+`extension`-audience session that answers 200 on `GET /v1/vault/keyset`, 403
+`stepup_required` on both SRP legs, 403 `vault_locked` on `items` and `lock` —
+admitted by audience and stopped by the next control, so reaching the API is
+still not opening a vault — and 401 on `vault/reset`, both keyset writes,
+`recovery-key`, every emergency-access route, `POST /v1/auth/handoff`,
+`POST /v1/auth/extension/pairing`, `GET /v1/auth/sessions`, and on assets,
+profile, documents, the assistant, plaid and settlement. It then appeared in the
+owner's own device list as "Browser extension", was revoked in one click with no
+prompt, and was dead on every route a second later. The audit trail carried
+`stepup.granted` → `pairing_minted {retired:false}` → `paired {audience:
+extension}` → four `pairing_failed` with no actor and empty detail, the uniform
+refusal preserved in the trail as well as on the wire.
+
+Two things the drive found that no unit test had. The Session card kept reading
+"Step-up not fresh" straight after a pairing code had been minted through a
+genuine step-up, because only the standalone verify path re-read the session —
+a security page stating the opposite of its own current state, about exactly the
+thing the page exists to report. And the row whose description was longest
+wrapped its button onto the next line while its neighbours kept theirs on the
+right, so the button moved with the prose.
+
+*Noted, not fixed:* events emitted while the audit CONSUMER was still running
+pre-M16 code never reached `audit_events` — an action the consumer does not know
+is a `schema_violation` to it, indistinguishable from malformed input. That is a
+rolling-deploy consequence rather than a defect in this change, and the old
+container's logs did not survive its restart, so the rejection was inferred from
+`ingestor.ts` rather than observed.
 
 ### M17 — Subscription manager (planned)
 

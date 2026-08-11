@@ -69,7 +69,10 @@ describeIfPg('auth_handoffs against Postgres (auth cluster)', () => {
        VALUES ($1, $2, $3, 'x', $4)`,
       [user, Buffer.from('ct'), Buffer.from('bidx'), randomUUID()],
     );
-    // auth_handoffs.minted_from references sessions(id).
+    // auth_handoffs.minted_from references sessions(id). The audience is named
+    // rather than defaulted (M16) and `account` is the only correct value here:
+    // a handoff is minted FROM an account session, and the route that mints one
+    // is account-only precisely so a vault session cannot chain forward.
     await sessions.create({
       id: accountSession,
       userId: user,
@@ -77,6 +80,7 @@ describeIfPg('auth_handoffs against Postgres (auth cluster)', () => {
       accessTokenH: hashToken('a'),
       accessExpiresAt: SOON,
       expiresAt: SOON,
+      audience: 'account',
     });
   });
 
@@ -106,13 +110,96 @@ describeIfPg('auth_handoffs against Postgres (auth cluster)', () => {
       expiresAt,
     });
 
-  it('a session created without an audience IS an account session', async () => {
-    // The migration's DEFAULT, which is what makes the column additive.
+  it('an INSERT that omits the audience column gets the migration’s DEFAULT', async () => {
+    /*
+     * WHAT THIS PROVES, and what it used to pretend to prove.
+     *
+     * The case was called "a session created without an audience IS an account
+     * session" and it read the row seeded through `SessionsRepo.create` — which
+     * bound `input.audience ?? 'account'`, so the INSERT ALWAYS named the
+     * column and the DDL default was never once exercised. Its own comment said
+     * "the migration's DEFAULT"; it was measuring the TypeScript fallback. M16
+     * deleted that fallback (the audience is now a required argument), which
+     * left the case asserting that a value written two lines earlier comes
+     * back — the "test named for a property it never touched" shape, in the
+     * file whose header cites that very rule.
+     *
+     * So it inserts in RAW SQL with no audience column, which is the only way
+     * to reach the default. That default is not decoration: it is what made
+     * M15's `ALTER TABLE … ADD COLUMN` additive for every session that already
+     * existed, and `packages/auth-guard/test/session-audience.spec.ts` pins its
+     * value to `DEFAULT_SESSION_AUDIENCE` on the TypeScript side.
+     */
+    const legacy = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.sessions
+         (id, user_id, refresh_token_h, access_token_h, access_expires_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [legacy, user, hashToken('legacy-r'), hashToken('legacy-a'), SOON, SOON],
+    );
     const rows = await admin.query<{ audience: string }>(
       `SELECT audience FROM ${schema}.sessions WHERE id = $1`,
-      [accountSession],
+      [legacy],
     );
     expect(rows.rows[0]?.audience).toBe('account');
+  });
+
+  it('ROTATING TOKENS PRESERVES THE AUDIENCE, which is what makes refresh safe', async () => {
+    /*
+     * THE PROPERTY M16's CREDENTIAL MODEL RESTS ON, and it had no test.
+     *
+     * An extension session carries a long-lived refresh token, so it rides
+     * `POST /v1/auth/refresh` repeatedly. That route is unauthenticated by
+     * construction, has no guard, and applies no audience predicate anywhere —
+     * `findLiveByRefreshHash` selects `audience` without filtering on it. What
+     * keeps it from being an audience-blind mint of ORDINARY ACCOUNT SESSIONS
+     * is that refresh does not create a session at all: `rotateTokens` is an
+     * in-place `UPDATE … WHERE id = $1` whose SET list omits `audience`, so the
+     * value survives because there is no new row to carry it to.
+     *
+     * That is a guarantee resting on the ABSENCE of a column from a statement.
+     * Nothing checked it and nothing could: `IssuedTokens` carries no audience
+     * field, so no caller of refresh can observe what it refreshed, and the two
+     * existing refresh tests fake the repo — where there is no SET list to omit
+     * anything from. The hardening a reviewer would reach for first (rotate the
+     * session id, not just the tokens, so a stolen token cannot be shadowed)
+     * replaces that UPDATE with an INSERT, and an INSERT that omits `audience`
+     * mints an `account` session from two independent defaults.
+     *
+     * So: real Postgres, a non-account session, rotate, and read the column
+     * back. Pinned at the repo because that is where the statement is.
+     */
+    const rotating = randomUUID();
+    await sessions.create({
+      id: rotating,
+      userId: user,
+      refreshTokenH: hashToken('rot-r1'),
+      accessTokenH: hashToken('rot-a1'),
+      accessExpiresAt: SOON,
+      expiresAt: SOON,
+      audience: 'vault',
+    });
+
+    await sessions.rotateTokens(rotating, {
+      newRefreshTokenH: hashToken('rot-r2'),
+      previousRefreshTokenH: hashToken('rot-r1'),
+      newAccessTokenH: hashToken('rot-a2'),
+      accessExpiresAt: SOON,
+    });
+
+    const { rows } = await admin.query<{ audience: string; id: string }>(
+      `SELECT id, audience FROM ${schema}.sessions WHERE id = $1`,
+      [rotating],
+    );
+    // Same row, same audience. Both halves matter: an implementation that
+    // created a NEW row would leave this one behind with its audience intact
+    // and still be the defect, so the id is asserted too.
+    expect(rows).toEqual([{ id: rotating, audience: 'vault' }]);
+
+    // And the rotation really happened — otherwise this passes over a no-op.
+    const found = await sessions.findLiveByRefreshHash(hashToken('rot-r2'), NOW);
+    expect(found?.id).toBe(rotating);
+    expect(found?.audience).toBe('vault');
   });
 
   it('claims a live code exactly once — the second attempt gets nothing', async () => {

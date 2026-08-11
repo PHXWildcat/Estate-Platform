@@ -1,0 +1,46 @@
+-- ---------------------------------------------------------------------------
+-- M16 — an index on auth_events, which has never had one.
+--
+-- `auth_events` was created in 001 with no index of any kind. That was invisible
+-- while nothing read it back: it is an append-only ledger (REVOKE UPDATE,
+-- DELETE) and every consumer wrote to it. M7 changed that and nobody noticed —
+-- `AuthEventsRepo.lastOccurredAt(userId, kind)` is the OWNER-LIVENESS READ on
+-- the docs/03 §5.1 chain, the query that decides whether a step-up newer than a
+-- death case exists and therefore whether that case is void. It has been a
+-- sequential scan over the whole ledger since the day it shipped, on the path
+-- where an owner is being entombed by mistake.
+--
+-- So this is not new schema for a new feature. It pays a debt M16 found while
+-- verifying its own plan, and the M3 no-dormant-schema rule is satisfied by a
+-- consumer that already exists rather than by one arriving later.
+--
+-- The second consumer is M16's step-up attempt cap, which counts `stepup.denied`
+-- rows newer than the latest `stepup.granted` for one user. Same three columns,
+-- same order, one index.
+--
+-- COLUMN ORDER IS THE QUERY'S. Both readers filter `user_id` and `kind` for
+-- equality and then care about recency, so (user_id, kind, occurred_at DESC)
+-- serves `ORDER BY occurred_at DESC LIMIT 1` and a bounded-window COUNT without
+-- a sort. DESC is written out rather than left to the planner's ability to scan
+-- backwards, because it costs nothing and states the intent.
+--
+-- NOT CONCURRENTLY, AND THAT IS A CONSTRAINT RATHER THAN A CHOICE.
+-- `packages/db/src/migrator.ts` runs every migration inside BEGIN/COMMIT (line
+-- 74), and CREATE INDEX CONCURRENTLY cannot run in a transaction block — so the
+-- migrator structurally cannot express it. A plain CREATE INDEX takes a SHARE
+-- lock, which blocks INSERT on auth_events for the duration: reads are fine,
+-- but logins and step-ups WRITE to this table, so on a large live table this
+-- statement stalls authentication until it completes.
+--
+-- That is acceptable here and only here, because no deployment of this platform
+-- exists (the M5 cloud deferral) and the table is empty or near it everywhere
+-- it will run. RECORDED FOR WHOEVER RUNS IT AGAINST A POPULATED DATABASE: build
+-- the index out of band with CREATE INDEX CONCURRENTLY first, then apply this
+-- migration, whose IF NOT EXISTS makes it a no-op. Do not "fix" this by
+-- teaching the migrator to skip its transaction for one file — losing
+-- all-or-nothing application is a far worse property than a lock on an empty
+-- table.
+-- ---------------------------------------------------------------------------
+
+CREATE INDEX IF NOT EXISTS ix_auth_events_user_kind_time
+  ON auth_events (user_id, kind, occurred_at DESC);

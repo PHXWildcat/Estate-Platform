@@ -185,9 +185,129 @@ describe('retrying past the session-cache delay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     onElevated.mockClear();
 
+    // WAIT for the form to come back rather than assuming the previous attempt
+    // has finished tearing down. This test failed in CI and passed everywhere
+    // else, because `submitCode` queries the button by /Confirm/ and the label is
+    // `waiting ? 'Applying…' : busy ? 'Checking…' : submitLabel` — so whether it
+    // matched depended on how many microtask ticks `advanceTimersByTimeAsync(0)`
+    // drained versus how many the gqlRequest chain needed. Waiting states the
+    // precondition instead of racing it; loosening the matcher would have deleted
+    // the signal that the form is mid-flight, which is a thing worth being able
+    // to see.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+    });
+
     // Cancelling one attempt must not veto the next one the user chooses to make.
     submitCode();
     await jest.advanceTimersByTimeAsync(STEP_UP_RETRY_INTERVAL_MS);
     expect(onElevated).toHaveBeenCalled();
+  });
+});
+
+/**
+ * CANCEL RESTORES THE FORM ON ITS OWN.
+ *
+ * These are the other end of the same fact the flaky test above was tripping
+ * over. `abandon()` used to set the abort flag and call `onCancel`, leaving
+ * `busy` to be cleared by the continuation of the request being cancelled —
+ * which works whenever that request settles, and neither await in `submit` has a
+ * timeout. The protective action must not be contingent on the permissive one
+ * finishing, which is the same rule the paired-devices list follows by keeping
+ * revocation ungated.
+ */
+describe('cancel does not leave the form wedged', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /** A step-up call that never answers: a stalled peer, or a dead connection. */
+  function mountWithHangingStepUp(onElevated: () => Promise<'applied' | 'stale'>): void {
+    installGraphqlFetchMock({ StepUp: () => new Promise<Response>(() => undefined) });
+    render(
+      <StepUpPrompt
+        idPrefix="t"
+        hint="because reasons"
+        submitLabel="Confirm"
+        onElevated={onElevated}
+        onCancel={() => undefined}
+      />,
+    );
+  }
+
+  it('comes back immediately even when the request never answers', async () => {
+    const onElevated = jest.fn(() => Promise.resolve<'applied' | 'stale'>('applied'));
+    mountWithHangingStepUp(onElevated);
+    submitCode();
+    expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // SYNCHRONOUSLY, with nothing awaited: there is nothing to wait FOR. Before
+    // this fix the only way out of this state was a page reload.
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+
+    await jest.advanceTimersByTimeAsync(STEP_UP_PROPAGATION_BUDGET_MS * 2);
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+    expect(onElevated).not.toHaveBeenCalled();
+  });
+
+  it('comes back when cancelled from inside the retry loop, not just the first call', async () => {
+    const onElevated = jest.fn(() => Promise.resolve<'applied' | 'stale'>('stale'));
+    mount(onElevated);
+    submitCode();
+
+    // Get the loop genuinely running, so `waiting` is set and not just `busy`.
+    await jest.advanceTimersByTimeAsync(STEP_UP_RETRY_INTERVAL_MS * 2);
+    expect(screen.getByRole('button', { name: 'Applying…' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  });
+
+  /**
+   * The hazard clearing `busy` on cancel INTRODUCES, and why the abort flag had
+   * to become a counter. With the form interactive again the owner can start a
+   * second attempt while the first is still in flight; `submit()` re-arms consent
+   * on the way in, so a boolean flag would have the abandoned request see consent
+   * restored — by a different submission — and apply the action a second time.
+   */
+  it('never applies an abandoned attempt, even once a newer one has re-armed consent', async () => {
+    let releaseFirst: () => void = () => undefined;
+    let stepUpCalls = 0;
+    const onElevated = jest.fn(() => Promise.resolve<'applied' | 'stale'>('applied'));
+    installGraphqlFetchMock({
+      StepUp: () => {
+        stepUpCalls += 1;
+        if (stepUpCalls > 1) return jsonResponse({ data: { stepUp: { ok: true } } });
+        return new Promise<Response>((resolve) => {
+          releaseFirst = () => {
+            resolve(jsonResponse({ data: { stepUp: { ok: true } } }));
+          };
+        });
+      },
+    });
+    render(
+      <StepUpPrompt
+        idPrefix="t"
+        hint="because reasons"
+        submitLabel="Confirm"
+        onElevated={onElevated}
+        onCancel={() => undefined}
+      />,
+    );
+
+    submitCode(); // attempt 1 — hangs
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    submitCode(); // attempt 2 — the consent that actually counts
+    await jest.advanceTimersByTimeAsync(0);
+    expect(onElevated).toHaveBeenCalledTimes(1);
+
+    releaseFirst(); // the abandoned attempt finally answers
+    await jest.advanceTimersByTimeAsync(STEP_UP_PROPAGATION_BUDGET_MS);
+    expect(onElevated).toHaveBeenCalledTimes(1);
   });
 });

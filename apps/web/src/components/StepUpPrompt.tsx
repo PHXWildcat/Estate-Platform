@@ -49,6 +49,19 @@ import { validateTotpCode } from '../lib/validation';
  * nowhere). A step-up prompt is a CONSENT ceremony; an action that proceeds after
  * consent is withdrawn is the one thing it must never do.
  *
+ * CANCEL ALSO RESTORES THE FORM ITSELF, rather than leaving that to the thing it
+ * is cancelling. It used to set the abort flag and call `onCancel`, and nothing
+ * else — every path of the in-flight `submit()` does clear `busy`, so the form
+ * came back whenever the promise settled. WHENEVER IT SETTLED. Neither await in
+ * here carries a timeout, so a stalled identity call or a dead connection left
+ * the prompt after Cancel with its submit button disabled and reading
+ * "Checking…" forever, with a page reload as the only way out — a consent form
+ * that the owner has declined and cannot use. The same rule this milestone
+ * applies to revoking a session applies to cancelling a step-up: THE PROTECTIVE
+ * ACTION MUST NOT BE CONTINGENT ON THE PERMISSIVE ONE FINISHING. Seen at a much
+ * shorter timescale first, as a flaky test that re-submitted before the previous
+ * attempt had torn down and found a disabled button.
+ *
  * WHAT IT DOES NOT COVER, stated rather than left to be discovered: the two
  * earlier callers keep their own copies. `ConsentControls` could adopt this
  * as-is; `DocumentGenerator` cannot, because its prompt is rendered INSIDE the
@@ -86,24 +99,41 @@ export function StepUpPrompt({
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
   /**
-   * Set the moment consent is withdrawn — by Cancel, or by this component going
-   * away. A ref rather than state because the running loop needs to read the
-   * CURRENT value, and a state variable captured in its closure would be forever
-   * false.
+   * WHICH SUBMISSION CURRENTLY OWNS THIS FORM.
+   *
+   * A counter rather than the `abandoned` boolean it replaces, and the reason is
+   * that Cancel now clears `busy`: with the form interactive again, the owner can
+   * start a SECOND attempt while the first is still in flight, and a boolean
+   * cannot tell "nobody owns this any more" from "somebody else does". The first
+   * attempt's `submit()` re-arms the flag on the way in, so when the abandoned
+   * request finally answered it would see consent restored — by a different
+   * submission — and run the action a second time. Every abandon and every submit
+   * bumps this, so a continuation proceeds only while the number it captured is
+   * still the live one, which is strictly the question each of them is asking.
+   *
+   * A ref rather than state because the running loop needs the CURRENT value; a
+   * state variable captured in its closure would be forever whatever it was when
+   * the loop started.
    */
-  const abandoned = useRef(false);
+  const activeAttempt = useRef(0);
 
   // Unmounting is withdrawal too: a user who navigates away has not consented to
-  // whatever the loop was still about to try.
+  // whatever the loop was still about to try. No state is touched here — there
+  // is nothing left to render — only the ownership claim is retired.
   useEffect(
     () => () => {
-      abandoned.current = true;
+      activeAttempt.current += 1;
     },
     [],
   );
 
   function abandon(): void {
-    abandoned.current = true;
+    activeAttempt.current += 1;
+    // Restore the form HERE rather than in the continuation of the thing being
+    // cancelled: neither await in `submit` has a timeout, so a request that never
+    // answers would otherwise leave a declined consent form permanently disabled.
+    setBusy(false);
+    setWaiting(false);
     onCancel();
   }
 
@@ -115,15 +145,26 @@ export function StepUpPrompt({
       return;
     }
     // A fresh submission re-arms: Cancel on a PREVIOUS attempt must not veto this
-    // one. Set before the first await, so a double submit cannot interleave.
-    abandoned.current = false;
+    // one, and this attempt takes ownership from any that is still in flight.
+    // Claimed before the first await, so a double submit cannot interleave.
+    activeAttempt.current += 1;
+    const mine = activeAttempt.current;
+    /**
+     * Is this continuation still the one the form belongs to? False after a
+     * Cancel, after an unmount, and after the owner has started a newer attempt
+     * — three situations that share the only consequence that matters here:
+     * nothing this continuation does may be applied or rendered.
+     */
+    const owns = (): boolean => activeAttempt.current === mine;
+
     setBusy(true);
     const stepUp = await gqlRequest('StepUp', { code });
-    if (abandoned.current) {
-      // Cancelled while identity was deciding. The elevation may well have been
-      // granted — that is harmless, it grants no action by itself — but the
-      // action the owner declined must not run.
-      setBusy(false);
+    if (!owns()) {
+      // Cancelled (or superseded) while identity was deciding. The elevation may
+      // well have been granted — that is harmless, it grants no action by itself
+      // — but the action the owner declined must not run. `busy` is deliberately
+      // NOT cleared: either `abandon` already cleared it, or a newer attempt owns
+      // it and clearing it here would re-enable a form that is mid-flight.
       return;
     }
     if (!stepUp.ok) {
@@ -138,21 +179,21 @@ export function StepUpPrompt({
     // prompt after an accepted code reads as "nothing happened".
     const deadline = Date.now() + STEP_UP_PROPAGATION_BUDGET_MS;
     let outcome = await onElevated();
-    while (outcome === 'stale' && Date.now() < deadline && !abandoned.current) {
+    while (outcome === 'stale' && Date.now() < deadline && owns()) {
       setWaiting(true);
       await new Promise((resolve) => setTimeout(resolve, STEP_UP_RETRY_INTERVAL_MS));
       // Checked AFTER the wait as well as in the condition: the whole point is
       // that Cancel lands while we are sleeping.
-      if (abandoned.current) {
+      if (!owns()) {
         break;
       }
       outcome = await onElevated();
     }
-    setWaiting(false);
-    setBusy(false);
-    if (abandoned.current) {
+    if (!owns()) {
       return;
     }
+    setWaiting(false);
+    setBusy(false);
     if (outcome === 'stale') {
       // Past the deadline and still refused. Honest, and actionable: nothing was
       // lost, and pressing again is the remedy.

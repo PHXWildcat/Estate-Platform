@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { DEFAULT_SESSION_AUDIENCE, type SessionAudience } from '@estate/auth-guard';
 import {
   emailBlindIndex,
   normalizeEmail,
@@ -15,7 +23,13 @@ import { EventsService } from './events.service';
 import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
 import { SessionsRepo } from './sessions.repo';
-import { ACCESS_TOKEN_TTL_MS, SESSION_TTL_MS, STEPUP_WINDOW_MS } from './stepup';
+import {
+  ACCESS_TOKEN_TTL_MS,
+  SESSION_TTL_MS,
+  STEPUP_DENIAL_WINDOW_MS,
+  STEPUP_MAX_DENIALS,
+  STEPUP_WINDOW_MS,
+} from './stepup';
 import { generateOpaqueToken, hashToken } from './tokens';
 import { generateTotpSecretBase32, totpProvisioningUri, verifyTotpCode } from './totp';
 import { UsersRepo } from './users.repo';
@@ -197,6 +211,10 @@ export class AuthService {
       accessTokenH: hashToken(accessToken),
       accessExpiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS),
       expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+      // Stated rather than defaulted (M16). A login is the ordinary session,
+      // and this is the line that says so — `SessionsRepo.create` no longer
+      // decides on a caller's behalf.
+      audience: DEFAULT_SESSION_AUDIENCE,
     });
 
     await this.authEvents.insert({ userId: user.id, sessionId, kind: 'login.succeeded' });
@@ -330,6 +348,69 @@ export class AuthService {
     return true;
   }
 
+  /**
+   * The user's live sessions — the paired-devices surface (M16).
+   *
+   * `current` is computed here rather than left to the client, because the
+   * caller's own session id is something the SERVER knows and the browser would
+   * otherwise have to be told separately. A row that is `current` is the one
+   * revoking would sign you out of.
+   */
+  async listSessions(
+    userId: string,
+    currentSessionId: string,
+  ): Promise<
+    Array<{
+      sessionId: string;
+      audience: SessionAudience;
+      createdAt: string;
+      expiresAt: string;
+      current: boolean;
+    }>
+  > {
+    const rows = await this.sessions.listLiveForUser(userId, this.clock());
+    return rows.map((row) => ({
+      sessionId: row.id,
+      audience: row.audience,
+      createdAt: row.created_at.toISOString(),
+      expiresAt: row.expires_at.toISOString(),
+      current: row.id === currentSessionId,
+    }));
+  }
+
+  /**
+   * Revoke one of the caller's own sessions.
+   *
+   * NOT STEP-UP GATED, and that asymmetry is the M6 rule rather than an
+   * oversight: minting a pairing IS gated, because it hands out a long-lived
+   * credential, while taking one away can only ever reduce authority. The
+   * protective action must never be the harder one — a user who thinks their
+   * extension is compromised must not be sent to find an authenticator first.
+   *
+   * A UNIFORM NOT-FOUND covers both "no such session" and "not yours". The
+   * owner predicate lives in the UPDATE (see `revokeOwned`), so this is not a
+   * check-then-act, and the answer cannot be used to discover whether a session
+   * id names something real.
+   */
+  async revokeOwnSession(userId: string, sessionId: string): Promise<void> {
+    const revoked = await this.sessions.revokeOwned(
+      sessionId,
+      userId,
+      'user_revoked',
+      this.clock(),
+    );
+    if (!revoked) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    await this.authEvents.insert({
+      userId,
+      sessionId,
+      kind: 'session.revoked',
+      decision: 'user_revoked',
+    });
+    await this.events.sessionRevoked(userId, sessionId, 'admin');
+  }
+
   /** One revocation path: row, append-only ledger, audit event, in that order. */
   private async revokeSession(userId: string, sessionId: string): Promise<void> {
     await this.sessions.revoke(sessionId, 'user_logout', this.clock());
@@ -343,6 +424,41 @@ export class AuthService {
   }
 
   async stepUp(userId: string, sessionId: string, code: string): Promise<StepUpResult> {
+    /*
+     * THE ATTEMPT CAP, BEFORE THE CODE IS EVEN LOOKED AT (M16).
+     *
+     * Order matters twice over. Checking first means an exhausted caller never
+     * causes the stored TOTP secret to be read, and it means the refusal cannot
+     * vary in timing with whether the submitted code happened to be right —
+     * which would turn the rate limiter into the oracle it exists to close.
+     *
+     * `stepup.rate_limited` IS NOT `stepup.denied`, and that is load-bearing
+     * rather than tidy. `deniedSinceLastGrant` counts denials; if a refusal
+     * emitted one, every refused attempt would extend the window it was refused
+     * by, and a client retrying in a loop would lock its own user out
+     * permanently. The counter must not be able to feed itself. (This is the
+     * M14 shape from the other side: there, a control's outcome was recorded as
+     * a user failure and poisoned an investigation; here it would poison the
+     * control.)
+     *
+     * The refusal is 429 with its own token — never `invalid_code`, which
+     * already means "that code was wrong" and would send a user to re-read an
+     * authenticator when the remedy is to wait (the M12 lesson about one token
+     * changing meaning with the surface).
+     */
+    const windowStart = new Date(this.clock().getTime() - STEPUP_DENIAL_WINDOW_MS);
+    const denials = await this.authEvents.deniedSinceLastGrant(userId, windowStart);
+    if (denials >= STEPUP_MAX_DENIALS) {
+      await this.authEvents.insert({
+        userId,
+        sessionId,
+        kind: 'stepup.rate_limited',
+        decision: 'too_many_attempts',
+      });
+      await this.events.stepUpRateLimited(userId, sessionId, denials);
+      throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
+    }
+
     const ok = await this.checkTotp(userId, code, 'auth.totp.stepup', { verifiedOnly: true });
     if (!ok.valid) {
       await this.authEvents.insert({

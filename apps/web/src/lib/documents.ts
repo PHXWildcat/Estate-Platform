@@ -206,12 +206,10 @@ export function sortDocuments(documents: readonly DocumentInfo[]): DocumentInfo[
   return [...documents].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-export function formatDateTime(iso: string): string {
-  const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime())
-    ? ''
-    : parsed.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
+// Moved to lib/datetime.ts when the paired-devices list (M16) became its second
+// consumer. Re-exported rather than copied, and rather than churning every
+// import site: one implementation, whichever path a caller reaches it by.
+export { formatDateTime } from './datetime';
 
 /** Byte sizes as they appear on a version row. No parsing of anything. */
 export function formatBytes(bytes: number): string {

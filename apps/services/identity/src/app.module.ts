@@ -21,6 +21,8 @@ import { AuthEventsRepo } from './auth-events.repo';
 import { EmailVerificationRepo } from './email-verification.repo';
 import { EmailVerificationService } from './email-verification.service';
 import { HandoffService } from './handoff.service';
+import { ExtensionPairingService } from './extension-pairing.service';
+import { ExtensionPairingsRepo } from './extension-pairings.repo';
 import { HandoffsRepo } from './handoffs.repo';
 import { AuthService } from './auth.service';
 import { InMemoryAuditProducer, KafkaAuditProducer } from '@estate/kafka';
@@ -138,6 +140,8 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     EmailVerificationService,
     // M15: the cross-origin vault handoff.
     HandoffsRepo,
+    ExtensionPairingsRepo,
+    ExtensionPairingService,
     HandoffService,
     SettlementLockService,
     SessionGuard,

@@ -1,6 +1,12 @@
 import { GraphQLError } from 'graphql';
 import { z } from 'zod';
-import { MfaLevelSchema, type MfaLevel } from '@estate/contracts';
+import {
+  DEFAULT_SESSION_AUDIENCE,
+  MfaLevelSchema,
+  SessionAudienceSchema,
+  type MfaLevel,
+  type SessionAudience,
+} from '@estate/contracts';
 
 /**
  * Client for the identity service's internal REST API (apps/services/identity).
@@ -24,6 +30,16 @@ export interface IdentitySession {
   readonly mfaLevel: MfaLevel;
   /** ISO timestamp, or null when the session has no active step-up. */
   readonly stepupExpiresAt: string | null;
+  /**
+   * What the session may be spent on (M15's audience, carried in M16).
+   *
+   * Identity has RETURNED this since M15 and the BFF silently dropped it:
+   * `z.object` strips unknown keys, so there was no parse error, no log and no
+   * failing test — "the BFF has no audience" read like a missing identity field
+   * when it was a missing line in one schema. It matters now because a session
+   * list has to be able to say "browser extension" rather than "a session".
+   */
+  readonly audience: SessionAudience;
 }
 
 export interface TotpEnrollment {
@@ -84,6 +100,20 @@ export interface IdentityClient {
    * identity, so a stale session raises STEPUP_REQUIRED and the UI prompts.
    */
   mintVaultHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }>;
+  /** The caller's live sessions — the paired-devices surface (M16). */
+  sessions(accessToken: string): Promise<LiveSession[]>;
+  /** Revoke ONE of the caller's own sessions. 404 ⇒ unknown OR not theirs. */
+  revokeSession(accessToken: string, sessionId: string): Promise<void>;
+  /** Mint a browser-extension pairing code. Step-up gated at identity. */
+  startExtensionPairing(accessToken: string): Promise<{ code: string; expiresAt: string }>;
+}
+
+export interface LiveSession {
+  readonly sessionId: string;
+  readonly audience: SessionAudience;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly current: boolean;
 }
 
 export type BffErrorCode =
@@ -213,7 +243,21 @@ export type BffErrorCode =
    * surface where a user who is bounced needs to know it was the platform and
    * not their credentials.
    */
-  | 'VAULT_UNAVAILABLE';
+  | 'VAULT_UNAVAILABLE'
+  /**
+   * M16. The extension pairing code could not be minted — identity answered
+   * something this client could not read.
+   *
+   * ITS OWN CODE, and the reason is the M12 finding rather than a taste for
+   * granularity. This path first reused `VAULT_UNAVAILABLE`, whose copy reads
+   * "we couldn't open the vault just now — nothing about your vault has
+   * changed", on a screen that is about connecting a browser extension and
+   * where nothing was opening a vault. One code changing meaning with the
+   * surface is exactly what produced copy about a password on a form that has
+   * none; and the remedy differs too, because there is no vault state to
+   * reassure anyone about here, only a code that did not arrive.
+   */
+  | 'PAIRING_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -240,6 +284,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   INVALID_VERIFICATION_CODE: 'That code was not accepted',
   VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
   VAULT_UNAVAILABLE: 'We could not open the vault right now',
+  PAIRING_UNAVAILABLE: 'We could not create a pairing code right now',
 };
 
 /**
@@ -281,6 +326,11 @@ const SessionSchema = z.object({
   sessionId: z.string().min(1),
   mfaLevel: MfaLevelSchema,
   stepupExpiresAt: z.string().nullable(),
+  // Tolerant of an identity that predates the field, for the same reason
+  // auth-guard's verifier is: only identity mints a non-account audience, so an
+  // identity old enough to omit it has none to describe. An UNRECOGNISED value
+  // is a different matter and fails the parse.
+  audience: SessionAudienceSchema.default(DEFAULT_SESSION_AUDIENCE),
 });
 
 const EnrollSchema = z.object({
@@ -289,13 +339,32 @@ const EnrollSchema = z.object({
 });
 
 /**
- * M15. Shape-checked rather than trusted, like every other identity response
- * here: a malformed body must become a failure, never a form the browser
- * submits with `code=undefined` to the vault origin.
+ * A minted single-use code and when it dies — M15's vault handoff and M16's
+ * extension pairing have the same wire shape.
+ *
+ * Shape-checked rather than trusted, like every other identity response here: a
+ * malformed body must become a failure, never a form the browser submits with
+ * `code=undefined` to the vault origin, and never a pairing code the user
+ * copies as the literal string "undefined". Named for the shape rather than for
+ * the first ceremony that used it, because the second one already exists — a
+ * `VaultHandoffSchema` parsing extension pairings is how a reader concludes the
+ * two ceremonies are the same thing.
  */
-const VaultHandoffSchema = z.object({
+const MintedCodeSchema = z.object({
   code: z.string().min(1),
   expiresAt: z.string().min(1),
+});
+
+const LiveSessionsSchema = z.object({
+  sessions: z.array(
+    z.object({
+      sessionId: z.string().min(1),
+      audience: SessionAudienceSchema,
+      createdAt: z.string().min(1),
+      expiresAt: z.string().min(1),
+      current: z.boolean(),
+    }),
+  ),
 });
 
 const ErrorBodySchema = z.object({ error: z.string() });
@@ -303,7 +372,7 @@ const ErrorBodySchema = z.object({ error: z.string() });
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
 interface RequestOptions {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'DELETE';
   path: string;
   accessToken?: string;
   body?: Record<string, string>;
@@ -460,9 +529,51 @@ export class FetchIdentityClient implements IdentityClient {
     if (!res.ok) {
       throw await this.mapError(res);
     }
-    const parsed = VaultHandoffSchema.safeParse(await res.json());
+    const parsed = MintedCodeSchema.safeParse(await res.json());
     if (!parsed.success) {
       throw bffError('VAULT_UNAVAILABLE');
+    }
+    return parsed.data;
+  }
+
+  async sessions(accessToken: string): Promise<LiveSession[]> {
+    const res = await this.request({ method: 'GET', path: '/v1/auth/sessions', accessToken });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, LiveSessionsSchema)).sessions;
+  }
+
+  /**
+   * Revoke one session. Identity answers a UNIFORM 404 for "no such session"
+   * and "not yours" alike — the owner predicate is in its UPDATE — so this
+   * surfaces NOT_FOUND for both and the edge adds no distinction of its own.
+   */
+  async revokeSession(accessToken: string, sessionId: string): Promise<void> {
+    const res = await this.request({
+      method: 'DELETE',
+      path: `/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  async startExtensionPairing(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/extension/pairing',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    // The shape guard VaultLaunch's defect taught: a pairing code rendered as
+    // `undefined` is worse than an error, because the user copies it.
+    const parsed = MintedCodeSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      throw bffError('PAIRING_UNAVAILABLE');
     }
     return parsed.data;
   }
@@ -553,6 +664,13 @@ export class FetchIdentityClient implements IdentityClient {
     }
     if (res.status === 400) {
       return bffError('INVALID_REQUEST');
+    }
+    // M16: identity's first 404-returning route is session revocation, whose
+    // answer is deliberately uniform across "unknown" and "not yours". Mapped
+    // rather than left to the generic branch, which would surface a control
+    // answering correctly as an opaque server error.
+    if (res.status === 404) {
+      return bffError('NOT_FOUND');
     }
     return new Error(`identity responded with status ${res.status}`);
   }

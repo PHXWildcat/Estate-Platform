@@ -25,6 +25,25 @@ export const HANDOFF_TTL_MS = 60 * 1000;
 /** 160 bits, the M13/M14 width. */
 const HANDOFF_CODE_BYTES = 20;
 
+/**
+ * THE ONE AUDIENCE A HANDOFF MAY MINT — a constant, not a parameter (M16).
+ *
+ * This was `mint(userId, sessionId, audience: SessionAudience = 'vault')`, and
+ * the parameter was typed as the FULL union while no caller ever passed one. So
+ * `mint(user, session, 'account')` type-checked, and the only thing standing
+ * between that call and an ordinary account session minted by an unauthenticated
+ * redeem route was `auth_handoffs`' `CHECK (audience IN ('vault'))` — a
+ * constraint any milestone widening the vocabulary is tempted to touch.
+ *
+ * Deleted rather than narrowed, because narrowing leaves a knob nobody turns.
+ * M16 pairs extensions with a typed code and its own table, deliberately NOT
+ * through this ceremony, so there is no prospective caller either. If a future
+ * audience does need a handoff, it adds the parameter back in the same change
+ * as the DDL widening — which is strictly better than finding the parameter
+ * already there and assuming the database agrees.
+ */
+const HANDOFF_AUDIENCE: SessionAudience = 'vault';
+
 export interface MintedHandoff {
   readonly code: string;
   readonly expiresAt: Date;
@@ -108,12 +127,9 @@ export class HandoffService {
    * Retires the caller's outstanding handoff first, so pressing the button
    * twice leaves one live credential rather than two — see `retireLive`.
    */
-  async mint(
-    userId: string,
-    sessionId: string,
-    audience: SessionAudience = 'vault',
-  ): Promise<MintedHandoff> {
+  async mint(userId: string, sessionId: string): Promise<MintedHandoff> {
     const now = this.clock();
+    const audience = HANDOFF_AUDIENCE;
     // base64url: this value only ever travels inside a form field, so it needs
     // no human-legible alphabet and no canonical fold. What it must not be is
     // shorter than the 160 bits the other ceremonies use.

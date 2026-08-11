@@ -71,6 +71,30 @@ export const SESSION_QUERY = `query Session {
     userId
     mfaLevel
     stepUpFresh
+    audience
+  }
+}`;
+
+export const SESSIONS_QUERY = `query Sessions {
+  sessions {
+    sessionId
+    audience
+    createdAt
+    expiresAt
+    current
+  }
+}`;
+
+export const REVOKE_SESSION_MUTATION = `mutation RevokeSession($sessionId: ID!) {
+  revokeSession(sessionId: $sessionId) {
+    ok
+  }
+}`;
+
+export const START_EXTENSION_PAIRING_MUTATION = `mutation StartExtensionPairing {
+  startExtensionPairing {
+    code
+    expiresAt
   }
 }`;
 
@@ -584,6 +608,9 @@ export const operations = {
   ResendEmailVerification: RESEND_EMAIL_VERIFICATION_MUTATION,
   VerifyEmail: VERIFY_EMAIL_MUTATION,
   Session: SESSION_QUERY,
+  Sessions: SESSIONS_QUERY,
+  RevokeSession: REVOKE_SESSION_MUTATION,
+  StartExtensionPairing: START_EXTENSION_PAIRING_MUTATION,
   Assets: ASSETS_QUERY,
   NetWorth: NET_WORTH_QUERY,
   CreateAsset: CREATE_ASSET_MUTATION,

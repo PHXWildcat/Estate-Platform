@@ -174,6 +174,25 @@ export const AUDIT_ACTIONS = [
   'auth.handoff.minted',
   'auth.handoff.redeemed',
   'auth.handoff.failed',
+  // M16, the step-up attempt cap firing. Individual DENIALS are deliberately
+  // not audited — they are ordinary noise (a mistyped code, a phone whose clock
+  // drifted) and one per attempt would drown the stream. Hitting the CAP is the
+  // opposite: it is at most one event per window by construction, and it means
+  // somebody is working through a user's codes, which is exactly the burst
+  // signal docs/03 §4 TB1 asks for. Distinct from `stepup.denied` in the local
+  // ledger AND from any outage token, per the M9 rule — a control firing must
+  // never read as either an ordinary failure or a fault.
+  'auth.stepup.rate_limited',
+  // M16, extension pairing. `paired` names the SESSION the ceremony produced,
+  // so an owner reviewing their trail can follow it into the vault events that
+  // session later causes. `pairing_failed` carries no actor and no reason —
+  // the redeem route is unauthenticated and resolves a code or nothing, so it
+  // does not know whose code it was, and naming which of
+  // unknown/expired/spent/raced applied would tell whoever is guessing that
+  // their guess named something real (the M14 PR1 rule).
+  'auth.extension.pairing_minted',
+  'auth.extension.paired',
+  'auth.extension.pairing_failed',
   // The M6/M7 capability gates firing (503 notifications_unavailable) — a
   // control refusing is a fact the audit stream must carry, or it reads as an
   // outage.

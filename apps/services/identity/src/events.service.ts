@@ -120,6 +120,32 @@ export class EventsService {
     });
   }
 
+  /**
+   * The step-up attempt cap firing (M16).
+   *
+   * AUDIT ONLY, with no domain event: nothing consumes "someone is guessing" on
+   * the bus, and adding a topic for it would be the dormant-schema shape. The
+   * audit stream is where a burst signal belongs (docs/03 §4 TB1).
+   *
+   * Its own action, deliberately NOT reusing anything that means "a step-up
+   * failed" — a control firing must not read as an ordinary failure (M9), and
+   * an investigator reading this trail needs to tell "this user mistyped" from
+   * "this account is being worked through". IDS AND ENUMS ONLY, as everywhere:
+   * the count is a fact about volume, never the codes and never the address.
+   */
+  async stepUpRateLimited(userId: string, sessionId: string, denials: number): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.stepup.rate_limited',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'session',
+      resourceId: sessionId,
+      sessionId,
+      detail: { denials: String(denials) },
+    });
+  }
+
   async stepUpGranted(
     userId: string,
     sessionId: string,
@@ -145,6 +171,57 @@ export class EventsService {
       resourceId: sessionId,
       sessionId,
       detail: { method },
+    });
+  }
+
+  /**
+   * M16, extension pairing. Ids and enums only, and — as with the handoff —
+   * NEVER the code and never its digest. No domain event on the bus: nothing
+   * consumes one, and the M9/M13 rule is that a topic gets a payload when a
+   * consumer needs it.
+   */
+  async extensionPairingMinted(userId: string, sessionId: string, retired: boolean): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.extension.pairing_minted',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'session',
+      resourceId: sessionId,
+      sessionId,
+      // `retired` is how an owner sees a second code minted while one was
+      // outstanding — the receipt for a button pressed twice, and the signal
+      // if it was pressed by someone else.
+      detail: { retired: String(retired) },
+    });
+  }
+
+  async extensionPaired(userId: string, sessionId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.extension.paired',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'session',
+      // The session the pairing PRODUCED — the long-lived credential itself,
+      // and the row the paired-devices surface will offer to revoke.
+      resourceId: sessionId,
+      sessionId,
+      detail: { audience: 'extension' },
+    });
+  }
+
+  /** A refused redemption. No actor, no subject, no reason — see the action. */
+  async extensionPairingFailed(): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.extension.pairing_failed',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: null,
+      resourceType: 'session',
+      resourceId: null,
+      sessionId: null,
+      detail: {},
     });
   }
 

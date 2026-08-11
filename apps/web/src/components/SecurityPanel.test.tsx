@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { errorCopy } from '../lib/copy';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { errorCopy, stepUpMessageFor } from '../lib/copy';
+import { STEP_UP_PROPAGATION_BUDGET_MS, STEP_UP_RETRY_INTERVAL_MS } from '../lib/step-up';
 import {
   graphqlError,
   installGraphqlFetchMock,
@@ -7,6 +8,12 @@ import {
   type OperationHandler,
 } from '../test-utils/graphql-fetch-mock';
 import { SecurityPanel } from './SecurityPanel';
+
+const pushMock = jest.fn();
+const refreshMock = jest.fn();
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: pushMock, refresh: refreshMock }),
+}));
 
 const session = {
   userId: 'a0c8f6de-0000-4000-8000-000000000001',
@@ -18,16 +25,46 @@ function sessionHandler(): Response {
   return jsonResponse({ data: { session } });
 }
 
+/**
+ * The live-credential rows, in identity's own vocabulary. `current` is the
+ * session this browser holds — the one row whose revoke button is a sign-out.
+ */
+const CURRENT_BROWSER = {
+  sessionId: '11111111-0000-4000-8000-000000000001',
+  audience: 'ACCOUNT',
+  createdAt: '2026-08-10T09:00:00.000Z',
+  expiresAt: '2026-09-09T09:00:00.000Z',
+  current: true,
+};
+const PAIRED_EXTENSION = {
+  sessionId: '22222222-0000-4000-8000-000000000002',
+  audience: 'EXTENSION',
+  createdAt: '2026-08-10T10:00:00.000Z',
+  expiresAt: '2026-09-09T10:00:00.000Z',
+  current: false,
+};
+
+function sessionsHandler(rows: unknown[] = [CURRENT_BROWSER, PAIRED_EXTENSION]): OperationHandler {
+  return () => jsonResponse({ data: { sessions: rows } });
+}
+
+async function rowFor(name: string): Promise<HTMLElement> {
+  return (await screen.findByText(name)).closest('li') as HTMLElement;
+}
+
 describe('SecurityPanel', () => {
   it('shows a sign-in prompt when the session is unauthenticated', async () => {
-    installGraphqlFetchMock({ Session: () => graphqlError('UNAUTHENTICATED') });
+    installGraphqlFetchMock({
+      Session: () => graphqlError('UNAUTHENTICATED'),
+      Sessions: () => graphqlError('UNAUTHENTICATED'),
+    });
     render(<SecurityPanel />);
 
     expect(await screen.findByText('Sign in required')).toBeInTheDocument();
     expect(screen.queryByText('Export data (demo)')).not.toBeInTheDocument();
   });
 
-  it('reveals the step-up form when export fails with STEPUP_REQUIRED, then succeeds after step-up', async () => {
+  it('reveals the step-up prompt when export fails with STEPUP_REQUIRED, then succeeds after step-up', async () => {
     let exportCalls = 0;
     const exportHandler: OperationHandler = () => {
       exportCalls += 1;
@@ -37,41 +74,34 @@ describe('SecurityPanel', () => {
     };
     installGraphqlFetchMock({
       Session: sessionHandler,
+      Sessions: sessionsHandler(),
       ExportDemo: exportHandler,
       StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
     });
     render(<SecurityPanel />);
 
-    // Step-up form is hidden until needed.
+    // The prompt is hidden until an action is actually refused.
     const exportButton = await screen.findByRole('button', { name: 'Export data (demo)' });
-    expect(screen.queryByLabelText('6-digit code')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
 
-    // First export attempt: blocked, step-up form revealed with generic copy.
     fireEvent.click(exportButton);
     expect(await screen.findByText(errorCopy.STEPUP_REQUIRED)).toBeInTheDocument();
-    const codeInput = screen.getByLabelText('6-digit code');
-    expect(codeInput).toBeInTheDocument();
+    const codeInput = screen.getByLabelText('Confirm it’s you');
     expect(screen.queryByText(/Export started/)).not.toBeInTheDocument();
 
-    // Complete step-up.
+    // The prompt RETRIES THE REFUSED ACTION itself — no second press.
     fireEvent.change(codeInput, { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm identity' }));
-    expect(
-      await screen.findByText('Identity verified. You can retry the protected action now.'),
-    ).toBeInTheDocument();
-
-    // Retry export: success only now that step-up is fresh.
-    fireEvent.click(screen.getByRole('button', { name: 'Export data (demo)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and export' }));
     expect(await screen.findByText(/Export started/)).toBeInTheDocument();
     expect(exportCalls).toBe(2);
   });
 
   it('rejects a malformed step-up code client-side', async () => {
-    installGraphqlFetchMock({ Session: sessionHandler });
+    installGraphqlFetchMock({ Session: sessionHandler, Sessions: sessionsHandler() });
     render(<SecurityPanel />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Verify your identity' }));
-    fireEvent.change(screen.getByLabelText('6-digit code'), { target: { value: '12ab' } });
+    fireEvent.change(screen.getByLabelText('Confirm it’s you'), { target: { value: '12ab' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm identity' }));
 
     expect(await screen.findByText('The code is 6 digits, numbers only.')).toBeInTheDocument();
@@ -80,6 +110,7 @@ describe('SecurityPanel', () => {
   it('shows the otpauth URI as copyable text after enrollment begins', async () => {
     installGraphqlFetchMock({
       Session: sessionHandler,
+      Sessions: sessionsHandler(),
       TotpEnroll: () =>
         jsonResponse({
           data: { totpEnroll: { otpauthUri: 'otpauth://totp/Estate:demo?secret=ABC123' } },
@@ -94,5 +125,355 @@ describe('SecurityPanel', () => {
     expect(uriField).toHaveAttribute('readonly');
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
     expect(screen.getByLabelText('6-digit code')).toBeInTheDocument();
+  });
+
+  /**
+   * The M12 finding, which had never been applied to this page: identity answers
+   * `invalid_credentials` for a rejected TOTP code exactly as for a rejected
+   * password, so the generic copy told someone to re-check "that email and
+   * password combination" about a form with neither field on it.
+   */
+  it('tells an enrolling user their CODE was refused, not their password', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      TotpEnroll: () => jsonResponse({ data: { totpEnroll: { otpauthUri: 'otpauth://x' } } }),
+      TotpVerify: () => graphqlError('INVALID_CREDENTIALS'),
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-enroll authenticator app' }));
+    fireEvent.change(await screen.findByLabelText('6-digit code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm enrollment' }));
+
+    expect(await screen.findByText(stepUpMessageFor('INVALID_CREDENTIALS'))).toBeInTheDocument();
+    expect(screen.queryByText(errorCopy.INVALID_CREDENTIALS)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The M15 PR3 defect this page was one edit away from reproducing: two fields
+   * on one screen carrying the same label. `StepUpPrompt` labels its input
+   * "Confirm it's you" for every caller, so two prompts open at once are two
+   * inputs neither a person nor a query can tell apart.
+   */
+  it('never has two step-up prompts open at once', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StartExtensionPairing: () => graphqlError('STEPUP_REQUIRED'),
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Verify your identity' }));
+    expect(screen.getAllByLabelText('Confirm it’s you')).toHaveLength(1);
+    // Every other action that could open one is closed off while it is up.
+    expect(screen.getByRole('button', { name: 'Create a pairing code' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Export data (demo)' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe('paired devices', () => {
+  it('lists each live credential with what it can reach, and marks this browser', async () => {
+    installGraphqlFetchMock({ Session: sessionHandler, Sessions: sessionsHandler() });
+    render(<SecurityPanel />);
+
+    const current = await rowFor('Signed-in browser');
+    expect(within(current).getByText('This browser')).toBeInTheDocument();
+    expect(within(current).getByText(/revoking it signs you out of this browser/i)).toBeVisible();
+    expect(within(current).getByRole('button', { name: 'Sign out of this browser' })).toBeVisible();
+
+    const extension = await rowFor('Browser extension');
+    expect(within(extension).queryByText('This browser')).not.toBeInTheDocument();
+    // The row says what the credential REACHES — the boundary M16 exists to
+    // create, in the one place a user reads it.
+    expect(within(extension).getByText(/cannot reset your vault/i)).toBeVisible();
+    expect(within(extension).getByRole('button', { name: 'Revoke' })).toBeVisible();
+  });
+
+  it('revokes another credential on one click — no step-up — and re-reads the list', async () => {
+    let listCalls = 0;
+    const revoked: unknown[] = [];
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: () => {
+        listCalls += 1;
+        return jsonResponse({
+          data: {
+            sessions: listCalls === 1 ? [CURRENT_BROWSER, PAIRED_EXTENSION] : [CURRENT_BROWSER],
+          },
+        });
+      },
+      RevokeSession: (variables) => {
+        revoked.push(variables);
+        return jsonResponse({ data: { revokeSession: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(
+      within(await rowFor('Browser extension')).getByRole('button', { name: 'Revoke' }),
+    );
+
+    await waitFor(() => {
+      expect(revoked).toEqual([{ sessionId: PAIRED_EXTENSION.sessionId }]);
+    });
+    // No prompt was ever raised: the protective action is never harder than the
+    // permissive one (M6).
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Browser extension')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Revoking the credential you are HOLDING goes through logout, because only
+   * logout also expires the cookies carrying it. Revoking without clearing them
+   * leaves a browser that still looks signed in over a dead session — what M8's
+   * logout entry calls the worst outcome.
+   */
+  it('signs out through logout when the row is this browser’s own session', async () => {
+    const calls: string[] = [];
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RevokeSession: () => {
+        calls.push('RevokeSession');
+        return jsonResponse({ data: { revokeSession: { ok: true } } });
+      },
+      Logout: () => {
+        calls.push('Logout');
+        return jsonResponse({ data: { logout: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(
+      within(await rowFor('Signed-in browser')).getByRole('button', {
+        name: 'Sign out of this browser',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/login');
+    });
+    expect(calls).toEqual(['Logout']);
+  });
+
+  it('reads a response with no sessions field as NO DATA, never as an empty list', async () => {
+    // A BFF that predates this query answers {"data":{}}. An empty list here
+    // would read as "nothing else can reach your account" — the most reassuring
+    // sentence on the page, said on the strength of a version skew.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: () => jsonResponse({ data: {} }),
+    });
+    render(<SecurityPanel />);
+
+    expect(await screen.findByText(/isn’t a complete picture/)).toBeInTheDocument();
+  });
+
+  it('renders an audience this build has never heard of, and still offers to revoke it', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler([{ ...PAIRED_EXTENSION, audience: 'SOMETHING_NEW' }]),
+    });
+    render(<SecurityPanel />);
+
+    const row = await rowFor('Unrecognised credential');
+    expect(within(row).getByRole('button', { name: 'Revoke' })).toBeVisible();
+  });
+});
+
+describe('extension pairing', () => {
+  const MINTED = { code: 'EP1-ABCD-EFGH-JKMN', expiresAt: '2026-08-10T12:10:00.000Z' };
+
+  it('shows the code once, having prompted for a step-up and retried the SAME action', async () => {
+    let mintCalls = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      StartExtensionPairing: () => {
+        mintCalls += 1;
+        return mintCalls === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { startExtensionPairing: MINTED } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a pairing code' }));
+    const codeInput = await screen.findByLabelText('Confirm it’s you');
+    expect(screen.queryByText(MINTED.code)).not.toBeInTheDocument();
+
+    fireEvent.change(codeInput, { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and create the code' }));
+
+    expect(await screen.findByText(MINTED.code)).toBeInTheDocument();
+    expect(mintCalls).toBe(2);
+    expect(screen.getByText(/only time we can show it to you/i)).toBeVisible();
+    // The prompt closes on success rather than sitting under the code it minted.
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Peers learn of an elevation through a 30-second positive introspection
+   * cache, so the retry must POLL. Returning 'applied' on a still-refused
+   * action would put back the M13 single-shot defect: an accepted code and a
+   * prompt that sits there doing nothing.
+   */
+  it('keeps retrying while the peer still refuses, then shows the code', async () => {
+    jest.useFakeTimers();
+    try {
+      let mintCalls = 0;
+      installGraphqlFetchMock({
+        Session: sessionHandler,
+        Sessions: sessionsHandler(),
+        StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+        StartExtensionPairing: () => {
+          mintCalls += 1;
+          return mintCalls < 3
+            ? graphqlError('STEPUP_REQUIRED')
+            : jsonResponse({ data: { startExtensionPairing: MINTED } });
+        },
+      });
+      render(<SecurityPanel />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a pairing code' }));
+      const codeInput = await screen.findByLabelText('Confirm it’s you');
+      fireEvent.change(codeInput, { target: { value: '123456' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm and create the code' }));
+
+      await jest.advanceTimersByTimeAsync(STEP_UP_PROPAGATION_BUDGET_MS);
+      await waitFor(() => {
+        expect(screen.getByText(MINTED.code)).toBeInTheDocument();
+      });
+      expect(mintCalls).toBe(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  /**
+   * CANCEL MUST CANCEL. The M13 review's round-3 finding was a prompt whose
+   * retry loop kept running after the owner declined and applied the action
+   * anyway — measured there as a designation appearing on the §5.1 executor
+   * chain with no UI signal, because React makes the post-unmount `setState` a
+   * silent no-op. Here the action mints a credential, so the same defect would
+   * hand out a pairing code the owner had just refused to create.
+   */
+  it('mints nothing after the owner cancels mid-retry', async () => {
+    jest.useFakeTimers();
+    try {
+      let mintCalls = 0;
+      installGraphqlFetchMock({
+        Session: sessionHandler,
+        Sessions: sessionsHandler(),
+        StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+        StartExtensionPairing: () => {
+          mintCalls += 1;
+          return graphqlError('STEPUP_REQUIRED');
+        },
+      });
+      render(<SecurityPanel />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a pairing code' }));
+      fireEvent.change(await screen.findByLabelText('Confirm it’s you'), {
+        target: { value: '123456' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm and create the code' }));
+
+      await jest.advanceTimersByTimeAsync(STEP_UP_RETRY_INTERVAL_MS * 2);
+      const beforeCancel = mintCalls;
+      expect(beforeCancel).toBeGreaterThan(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await jest.advanceTimersByTimeAsync(STEP_UP_PROPAGATION_BUDGET_MS);
+
+      expect(mintCalls).toBe(beforeCancel);
+      expect(screen.queryByText(/only time we can show it to you/i)).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  /**
+   * Found by driving the real app: the Session card kept reading "Step-up not
+   * fresh" straight after a pairing code had been minted through a genuine
+   * step-up, because only the standalone verify path re-read the session. A
+   * security page stating the opposite of its own current state is quiet,
+   * plausible, and about exactly the thing the page exists to report.
+   */
+  it('re-reads the session after an elevation, so the freshness chip is not stale', async () => {
+    let sessionCalls = 0;
+    installGraphqlFetchMock({
+      Session: () => {
+        sessionCalls += 1;
+        return jsonResponse({ data: { session: { ...session, stepUpFresh: sessionCalls > 1 } } });
+      },
+      Sessions: sessionsHandler(),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      StartExtensionPairing: () =>
+        sessionCalls > 0 && screen.queryByLabelText('Confirm it’s you') !== null
+          ? jsonResponse({ data: { startExtensionPairing: MINTED } })
+          : graphqlError('STEPUP_REQUIRED'),
+    });
+    render(<SecurityPanel />);
+
+    expect(await screen.findByText('Step-up not fresh')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Create a pairing code' }));
+    fireEvent.change(await screen.findByLabelText('Confirm it’s you'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and create the code' }));
+
+    expect(await screen.findByText('Step-up fresh')).toBeInTheDocument();
+  });
+
+  it('never renders a code it did not receive', async () => {
+    // The VaultLaunch defect, one surface over: a version skew arrives as
+    // {"data":{}} and a pairing code is a value people COPY, so "undefined" on
+    // screen is worse than any refusal.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StartExtensionPairing: () => jsonResponse({ data: {} }),
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a pairing code' }));
+
+    expect(await screen.findByText(errorCopy.PAIRING_UNAVAILABLE)).toBeInTheDocument();
+    expect(screen.queryByText('undefined')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create a pairing code' })).toBeVisible();
+  });
+
+  /**
+   * A pairing failure must not say "nothing about your vault has changed" on a
+   * screen about a browser extension — the M12 finding, which is why
+   * PAIRING_UNAVAILABLE exists rather than reusing VAULT_UNAVAILABLE.
+   */
+  it('says what failed in the words of the thing that failed', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StartExtensionPairing: () => graphqlError('PAIRING_UNAVAILABLE'),
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a pairing code' }));
+
+    expect(await screen.findByText(errorCopy.PAIRING_UNAVAILABLE)).toBeInTheDocument();
+    // Specifically NOT the vault's sentence, which reassures the reader that
+    // "nothing about your vault has changed" on a screen where nothing was
+    // touching a vault.
+    expect(screen.queryByText(errorCopy.VAULT_UNAVAILABLE)).not.toBeInTheDocument();
   });
 });
