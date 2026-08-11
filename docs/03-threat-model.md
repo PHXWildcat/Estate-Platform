@@ -1208,6 +1208,38 @@ CLAUDE.md decision log; the security-relevant shape is:
   contracts consumers first — is the mitigation, and it is not enforced anywhere.
 - *Rotation-reuse detection can self-revoke* an extension whose service worker
   died mid-rotation. The behaviour is correct; the cost is a re-pair.
+- *REVOKING A PAIRED DEVICE IS NOT INSTANT DOWNSTREAM.* Identity revokes the row
+  synchronously and answers 401 immediately, but every other service resolves a
+  caller through `HttpSessionVerifier`, whose positive cache is keyed by
+  sha256(token) with `DEFAULT_CACHE_TTL_MS` of 30 seconds (2026-07-23). So a
+  revoked extension session keeps working at the vault service for up to that
+  window. MEASURED in PR1's live drive rather than reasoned about: immediately
+  after the revoke, identity answered 401 and the vault answered 200; 33 seconds
+  later the vault answered 401.
+
+  The cache itself is a deliberate trade and is not the problem — negatives are
+  never cached, precisely so a transient identity outage cannot lock out valid
+  tokens. What M16 changes is the COST of that window. Before, it meant a
+  revoked browser session lingered briefly. Now the product ships a control whose
+  stated purpose is "I think my extension is compromised, kill it", and the
+  credential outlives the screen that says it is gone.
+
+  Bounded rather than alarming: what survives the window is a session that
+  reaches five vault routes, every one of which yields ciphertext — the item
+  reads sit behind `VaultSessionGuard`, which needs a completed SRP unlock, and
+  that needs the vault password and the device Secret Key. It cannot reset a
+  vault, replace a keyset, delete an item, touch emergency access, or mint
+  another credential. The 30 seconds buy an attacker who already holds the token
+  nothing they did not have a moment earlier.
+
+  What is OWED is that the surface not promise more than the platform delivers.
+  A revoke control that reads as instantaneous while a downstream service still
+  admits the token is the M9 shape inverted — not a control reading as an
+  outage, but an outage-free UI reading as a stronger control than it is.
+  Shortening the TTL is the wrong fix (it trades a stated availability property
+  for a cosmetic one); saying so on the screen, or having the surface report
+  revocation as taking effect rather than as complete, is the right one. Left
+  open deliberately, and named here so whoever writes that copy knows why.
 
 ## 7. Validation program
 
