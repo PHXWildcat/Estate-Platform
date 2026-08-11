@@ -62,6 +62,11 @@ export interface KeyHolderPort {
     itemId: string,
     pageUrl: string,
   ): Promise<{ username: string; secret: string } | null>;
+  sealItem(input: {
+    itemId: string;
+    blobVersion: number;
+    content: Record<string, unknown>;
+  }): Promise<string>;
   lock(): void;
 }
 
@@ -81,6 +86,32 @@ export interface VaultHostOptions {
   /** Injected so the idle clock is drivable in a test. */
   readonly setTimer?: (run: () => void, ms: number) => number;
   readonly clearTimer?: (handle: number) => void;
+}
+
+/**
+ * The row the service returns, plus the title we already know.
+ *
+ * The response carries the blob we just sent, and opening it again to read back
+ * a title we typed would be a decrypt for nothing. `blobVersion` comes from the
+ * SERVICE, because it is the authority on what it wrote.
+ */
+/** What `POST`/`PUT /v1/vault/items` answers with. */
+interface VaultItemDto {
+  readonly id: string;
+  readonly itemType: string;
+  readonly blobVersion: number;
+}
+
+function summaryOf(
+  dto: { id: string; itemType: string; blobVersion: number },
+  content: Record<string, unknown>,
+): ItemSummary {
+  return {
+    id: dto.id,
+    itemType: dto.itemType,
+    title: typeof content['title'] === 'string' ? content['title'] : '',
+    blobVersion: dto.blobVersion,
+  };
 }
 
 export class VaultHost {
@@ -208,6 +239,77 @@ export class VaultHost {
   }
 
   /** List items, opening each blob inside the worker. */
+  /**
+   * CREATE, and the id is minted HERE (M16 PR4a).
+   *
+   * The primary key is client-generated and bound into the blob's AAD, so the
+   * same value has to reach both the seal and the POST — minting it in the
+   * popup and passing it through would be one more thing a caller could get
+   * wrong for no gain. It also makes a retry IDEMPOTENT: the service answers
+   * `409 item_exists` for a repeat of an id it already has, which is a request
+   * that already succeeded rather than a failure, and `createItem` reports it
+   * as such.
+   */
+  async createItem(
+    bearer: string,
+    itemType: string,
+    content: Record<string, unknown>,
+  ): Promise<ApiResult<ItemSummary>> {
+    const token = this.#token;
+    if (!token || !this.#holder.isUnlocked) return { ok: false, code: 'VAULT_LOCKED' };
+    this.#touch();
+    const itemId = crypto.randomUUID();
+    // Version 1, because that is what the service's INSERT hardcodes and the
+    // AAD must agree with it.
+    const blob = await this.#holder.sealItem({ itemId, blobVersion: 1, content });
+    const created = await request<VaultItemDto>('/api/vault/items', {
+      method: 'POST',
+      body: { id: itemId, itemType, blob },
+      bearer,
+      vaultSession: token,
+    });
+    if (!created.ok) return created;
+    return { ok: true, data: summaryOf(created.data, content) };
+  }
+
+  /**
+   * UPDATE, sealed for the version the service is about to write.
+   *
+   * `blobVersion` is what the caller READ. The service writes
+   * `locked.blob_version + 1` after checking `If-Match` against the row it
+   * locked, so the blob must already be sealed for that successor — the number
+   * is inside the AAD, and sealing for the version we read would produce a blob
+   * that no longer opens once it lands.
+   */
+  async updateItem(input: {
+    bearer: string;
+    itemId: string;
+    itemType: string;
+    content: Record<string, unknown>;
+    blobVersion: number;
+  }): Promise<ApiResult<ItemSummary>> {
+    const token = this.#token;
+    if (!token || !this.#holder.isUnlocked) return { ok: false, code: 'VAULT_LOCKED' };
+    this.#touch();
+    const blob = await this.#holder.sealItem({
+      itemId: input.itemId,
+      blobVersion: input.blobVersion + 1,
+      content: input.content,
+    });
+    const saved = await request<VaultItemDto>(
+      `/api/vault/items/${encodeURIComponent(input.itemId)}`,
+      {
+        method: 'PUT',
+        body: { itemType: input.itemType, blob },
+        bearer: input.bearer,
+        vaultSession: token,
+        ifMatch: input.blobVersion,
+      },
+    );
+    if (!saved.ok) return saved;
+    return { ok: true, data: summaryOf(saved.data, input.content) };
+  }
+
   async list(bearer: string): Promise<ApiResult<readonly ItemSummary[]>> {
     const token = this.#token;
     if (!token || !this.#holder.isUnlocked) {

@@ -59,6 +59,18 @@ export type WorkerRequest =
       readonly itemId: string;
       readonly pageUrl: string;
     }
+  /**
+   * SEAL, and it is the only variant that carries plaintext INWARD (M16 PR4a).
+   * The holder turns content into ciphertext under the key it holds; it decides
+   * nothing about whether the write is allowed, which is the service's job.
+   */
+  | {
+      readonly id: number;
+      readonly kind: 'seal';
+      readonly itemId: string;
+      readonly blobVersion: number;
+      readonly content: Record<string, unknown>;
+    }
   | { readonly id: number; readonly kind: 'lock' }
   | { readonly id: number; readonly kind: 'state' };
 
@@ -77,6 +89,7 @@ export type WorkerResponse =
       readonly ok: true;
       readonly credential: { readonly username: string; readonly secret: string } | null;
     }
+  | { readonly id: number; readonly ok: true; readonly blob: string }
   | { readonly id: number; readonly ok: false };
 
 /**
@@ -121,6 +134,17 @@ export async function handleWorkerRequest(
           id,
           ok: true,
           credential: await holder.fillFor(request.rows, request.itemId, request.pageUrl),
+        };
+      }
+      case 'seal': {
+        return {
+          id,
+          ok: true,
+          blob: await holder.sealItem({
+            itemId: request.itemId,
+            blobVersion: request.blobVersion,
+            content: request.content,
+          }),
         };
       }
       case 'lock': {

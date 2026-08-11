@@ -123,6 +123,19 @@ export class WorkerKeyHolder implements KeyHolderPort {
     return response.credential;
   }
 
+  async sealItem(input: {
+    itemId: string;
+    blobVersion: number;
+    content: Record<string, unknown>;
+  }): Promise<string> {
+    const response = await this.#send({ kind: 'seal', ...input });
+    if (!response.ok || !('blob' in response)) {
+      this.#unlocked = false;
+      throw new Error('vault is locked');
+    }
+    return response.blob;
+  }
+
   lock(): void {
     // Optimistic by design: the mirror goes false FIRST, so nothing can read
     // through it while the message is in flight. A `lock` that never arrives

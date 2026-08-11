@@ -50,6 +50,7 @@ function openHolder(): KeyHolderPort {
       ]),
     fillFor: (_rows, itemId) =>
       Promise.resolve(itemId === 'i-1' ? { username: 'someone', secret: 's3cret' } : null),
+    sealItem: () => Promise.resolve('c2VhbGVk'),
     lock: () => undefined,
   };
 }
@@ -527,17 +528,23 @@ describe('the popup to offscreen union is closed, exhaustively', () => {
     list: true,
     matches: true,
     fill: true,
+    // ADDED IN PR4a. The same compile error that named `seal` at the worker
+    // boundary named these here — two fences, one widening, both loud.
+    create: true,
+    update: true,
     lock: true,
   };
 
   it('names every kind, and the narrowing gate admits every one it names', () => {
     expect(Object.keys(KINDS).sort()).toEqual([
+      'create',
       'fill',
       'list',
       'lock',
       'matches',
       'state',
       'unlock',
+      'update',
     ]);
     for (const kind of Object.keys(KINDS)) {
       // Shape beyond `kind` does not matter to the gate; what is asserted is
@@ -552,5 +559,64 @@ describe('the popup to offscreen union is closed, exhaustively', () => {
   it('refuses a kind that is not in the union, and anything not addressed here', () => {
     expect(isVaultRequest({ target: 'offscreen', kind: 'getKey' })).toBe(false);
     expect(isVaultRequest({ target: 'background', kind: 'list' })).toBe(false);
+  });
+});
+
+describe('the router answers a write (M16 PR4a)', () => {
+  /** A router over a host stubbed for whichever write is under test. */
+  function routerFor(host: Partial<VaultHost>): (message: unknown) => Promise<unknown> {
+    let listener: Parameters<Parameters<typeof installOffscreenListener>[1]>[0] | null = null;
+    installOffscreenListener(host as VaultHost, (l) => {
+      listener = l;
+    });
+    return (message) =>
+      new Promise((resolve) => {
+        const kept = (listener as NonNullable<typeof listener>)(message, null, resolve);
+        if (kept !== true) resolve(undefined);
+      });
+  }
+
+  const CREATE = {
+    target: 'offscreen' as const,
+    kind: 'create' as const,
+    bearer: 'b',
+    itemType: 'password',
+    content: { title: 'Typed' },
+  };
+  const UPDATE = {
+    target: 'offscreen' as const,
+    kind: 'update' as const,
+    bearer: 'b',
+    itemId: 'i-1',
+    itemType: 'password',
+    content: { title: 'Edited' },
+    blobVersion: 2,
+  };
+
+  it('carries a created item back, and a refusal back as a code', async () => {
+    const made = { id: 'i-9', itemType: 'password', title: 'Typed', blobVersion: 1 };
+    const ok = routerFor({ createItem: () => Promise.resolve({ ok: true, data: made }) });
+    expect(await ok(CREATE)).toEqual({ ok: true, item: made });
+
+    const refused = routerFor({
+      createItem: () => Promise.resolve({ ok: false, code: 'VAULT_LOCKED' }),
+    });
+    expect(await refused(CREATE)).toEqual({ ok: false, code: 'VAULT_LOCKED' });
+  });
+
+  it('carries an updated item back, and a version conflict as its own code', async () => {
+    const saved = { id: 'i-1', itemType: 'password', title: 'Edited', blobVersion: 3 };
+    const ok = routerFor({ updateItem: () => Promise.resolve({ ok: true, data: saved }) });
+    expect(await ok(UPDATE)).toEqual({ ok: true, item: saved });
+
+    const stale = routerFor({
+      updateItem: () => Promise.resolve({ ok: false, code: 'VERSION_CONFLICT' }),
+    });
+    expect(await stale(UPDATE)).toEqual({ ok: false, code: 'VERSION_CONFLICT' });
+  });
+
+  it('admits both kinds at the narrowing gate', () => {
+    expect(isVaultRequest(CREATE)).toBe(true);
+    expect(isVaultRequest(UPDATE)).toBe(true);
   });
 });
