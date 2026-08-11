@@ -257,6 +257,194 @@ describe('the vault edge', () => {
     });
   });
 
+  /**
+   * THE EXTENSION'S FRONT DOOR (M16 PR2a).
+   *
+   * The extension lives on `chrome-extension://…`, so nothing this origin
+   * Set-Cookies ever reaches it; it presents its `extension`-audience access
+   * token as a bearer instead. What is pinned here is the PRECEDENCE (one rule,
+   * no fallback chain), and the one route that deliberately still refuses one.
+   */
+  describe('the bearer path', () => {
+    const withBearer = (path: string, init: RequestInit = {}): Promise<Response> =>
+      fetch(`${base}${path}`, {
+        ...init,
+        headers: {
+          authorization: 'Bearer extension-access-token',
+          'x-estate-vault-csrf': '1',
+          ...(init.headers ?? {}),
+        },
+      });
+
+    it('forwards a bearer with no cookie in sight', async () => {
+      await boot(() => ({ status: 200, body: JSON.stringify({ enrolled: true }) }));
+      const res = await withBearer('/api/vault/keyset');
+      expect(res.status).toBe(200);
+      expect(calls[0]?.url).toBe('http://vault:3006/v1/vault/keyset');
+      expect(calls[0]?.headers['authorization']).toBe('Bearer extension-access-token');
+    });
+
+    it('prefers the HEADER when both are present, and never mixes them', async () => {
+      // Cookie-first-with-bearer-fallback would let a paired device's request
+      // silently travel on whatever browser session happened to be in the jar.
+      await boot(() => ({ status: 200, body: '{}' }));
+      await withBearer('/api/vault/keyset', {
+        headers: { cookie: '__Host-estate_vault=browser-session-token' },
+      });
+      expect(calls[0]?.headers['authorization']).toBe('Bearer extension-access-token');
+      expect(JSON.stringify(calls[0]?.headers)).not.toContain('browser-session-token');
+    });
+
+    it.each([
+      ['Bearer', 'no token'],
+      ['Bearer ', 'empty token'],
+      ['Bearer  two-spaces', 'padded'],
+      ['Bearer tok en', 'whitespace inside'],
+      ['Basic dXNlcjpwdw==', 'wrong scheme'],
+    ])('refuses a malformed Authorization (%s — %s)', async (header) => {
+      await boot();
+      const res = await fetch(`${base}/api/vault/keyset`, {
+        headers: { authorization: header, 'x-estate-vault-csrf': '1' },
+      });
+      expect(res.status).toBe(401);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('accepts a case-insensitive scheme, because RFC 7235 says the scheme is', async () => {
+      await boot(() => ({ status: 200, body: '{}' }));
+      const res = await fetch(`${base}/api/vault/keyset`, {
+        headers: { authorization: 'bearer extension-access-token', 'x-estate-vault-csrf': '1' },
+      });
+      expect(res.status).toBe(200);
+      expect(calls[0]?.headers['authorization']).toBe('Bearer extension-access-token');
+    });
+
+    it('still refuses without the CSRF header', async () => {
+      await boot();
+      const res = await fetch(`${base}/api/vault/keyset`, {
+        headers: { authorization: 'Bearer extension-access-token' },
+      });
+      expect(res.status).toBe(403);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('does not widen the allowlist — an unlisted path is still 404 on a bearer', async () => {
+      await boot();
+      for (const path of [
+        '/api/auth/handoff',
+        '/api/auth/logout/refresh',
+        '/api/profile/v1/profile',
+      ]) {
+        const res = await withBearer(path);
+        expect({ path, status: res.status }).toEqual({ path, status: 404 });
+      }
+      expect(calls).toHaveLength(0);
+    });
+
+    it('sends no Set-Cookie when a bearer caller signs out', async () => {
+      // There is no cookie to clear, and a header about a credential the caller
+      // does not have is noise at best.
+      await boot(() => ({ status: 200, body: JSON.stringify({ status: 'ok' }) }));
+      const res = await withBearer('/api/auth/logout', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(res.headers.getSetCookie()).toEqual([]);
+    });
+
+    it('REFUSES a bearer on the grantee-candidates read', async () => {
+      // The one Zone B read on this origin belongs to the interactive vault
+      // session, not to a credential stored on a device.
+      await boot(() => ({ status: 200, body: '[]' }));
+      const res = await fetch(`${base}/api/grantee-candidates`, {
+        headers: { authorization: 'Bearer extension-access-token', 'x-estate-vault-csrf': '1' },
+      });
+      expect(res.status).toBe(401);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe('the credential-free pass-throughs', () => {
+    const post = (path: string, body: unknown, csrf = true): Promise<Response> =>
+      fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(csrf ? { 'x-estate-vault-csrf': '1' } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    it.each([
+      [
+        '/api/auth/extension/pairing/redeem',
+        'http://identity:3001/v1/auth/extension/pairing/redeem',
+      ],
+      ['/api/auth/refresh', 'http://identity:3001/v1/auth/refresh'],
+    ])('forwards %s to identity carrying NO credential', async (path, upstreamUrl) => {
+      await boot(() => ({ status: 200, body: JSON.stringify({ accessToken: 'a' }) }));
+      const res = await post(path, { code: 'EP1-XXXX' });
+      expect(res.status).toBe(200);
+      expect(calls[0]?.url).toBe(upstreamUrl);
+      expect(calls[0]?.method).toBe('POST');
+      // The whole point of `passThrough` having no bearer parameter.
+      expect(calls[0]?.headers['authorization']).toBeUndefined();
+    });
+
+    it('passes identity’s uniform refusal back verbatim', async () => {
+      await boot(() => ({ status: 401, body: JSON.stringify({ error: 'invalid_code' }) }));
+      const res = await post('/api/auth/extension/pairing/redeem', { code: 'EP1-NOPE' });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'invalid_code' });
+    });
+
+    it('ignores any credential a caller attaches — it is not forwarded', async () => {
+      await boot(() => ({ status: 200, body: '{}' }));
+      await fetch(`${base}/api/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'x-estate-vault-csrf': '1',
+          authorization: 'Bearer someone-elses-token',
+          cookie: '__Host-estate_vault=browser-session-token',
+        },
+        body: '{}',
+      });
+      expect(JSON.stringify(calls[0]?.headers)).not.toContain('someone-elses-token');
+      expect(JSON.stringify(calls[0]?.headers)).not.toContain('browser-session-token');
+    });
+
+    it('requires the CSRF header, like every other /api route', async () => {
+      await boot();
+      const res = await post('/api/auth/refresh', {}, false);
+      expect(res.status).toBe(403);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('is POST-only and exact — no GET, no suffix, no sibling route', async () => {
+      await boot();
+      const get = await fetch(`${base}/api/auth/refresh`, {
+        headers: { 'x-estate-vault-csrf': '1' },
+      });
+      // Falls through to the credentialed proxy, which has no such route.
+      expect(get.status).toBe(404);
+      for (const path of [
+        '/api/auth/refresh/extra',
+        '/api/auth/extension/pairing',
+        '/api/auth/extension/pairing/redeemx',
+      ]) {
+        const res = await post(path, {});
+        expect({ path, status: res.status }).toEqual({ path, status: 404 });
+      }
+      expect(calls).toHaveLength(0);
+    });
+
+    it('answers 502 rather than nothing when identity is unreachable', async () => {
+      const fetchImpl: FetchLike = () => Promise.reject(new Error('ECONNREFUSED'));
+      ({ server, base } = await start(fetchImpl));
+      const res = await post('/api/auth/refresh', {});
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: 'upstream_unavailable' });
+    });
+  });
+
   describe('static serving', () => {
     it('serves the shell', async () => {
       await boot();

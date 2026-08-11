@@ -23,6 +23,38 @@
     "dev": {
       "cache": false,
       "persistent": true
+    },
+
+    /*
+     * TWO PACKAGES BUILD SOMEWHERE OTHER THAN `dist`, AND SAID SO NOWHERE.
+     *
+     * An undeclared output is not cached — and worse, a cache HIT then skips
+     * the build and leaves that directory absent, so turbo reports a package
+     * successfully built that is missing half of itself. The failure is silent
+     * in the direction that matters.
+     *
+     * Found by building the repo in a fresh git worktree (M16 PR2a): turbo
+     * restored `@estate/vault-crypto`'s `dist`, skipped the build because the
+     * hash matched, and `dist-esm` — the BROWSER build that `vault-web` copies
+     * into its served tree — simply did not exist. `vault-web`'s copy step
+     * failed with ENOENT against a dependency turbo considered done.
+     *
+     * `vault-web` has the same shape twice over: it compiles its browser client
+     * into `public/app` and receives vault-crypto's modules in `public/lib`.
+     * Both are gitignored build output, so a restored cache would have served
+     * the Zone A origin with no client at all.
+     *
+     * Declared per package rather than globally, so these paths cannot start
+     * meaning something in a package that happens to have a `public/`
+     * directory of checked-in assets — which `apps/web` does.
+     */
+    "@estate/vault-crypto#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "dist-esm/**"]
+    },
+    "@estate/vault-web#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "public/app/**", "public/lib/**"]
     }
   }
 }
