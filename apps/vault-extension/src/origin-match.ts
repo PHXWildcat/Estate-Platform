@@ -173,35 +173,51 @@ export function isFillable(verdict: MatchVerdict): boolean {
 }
 
 /**
- * CROSS-ORIGIN IFRAMES ARE REFUSED BY DEFAULT (§4 TB9), decided here so the
- * rule is one function rather than a condition remembered at each call site.
+ * A SUBFRAME IS FILLABLE ONLY IF IT IS SAME-ORIGIN WITH THE TOP FRAME (§4 TB9).
  *
- * PR3a has no page contact, so nothing calls this yet — it is declared with the
- * matcher because the frame's origin is part of the same decision, and PR3b
- * wiring it is then an act of using an existing rule rather than inventing one.
- * A per-item opt-in is the documented escape hatch and is not implemented until
- * an item can carry the flag.
+ * NARROWED IN PR3b FROM SAME-SITE TO SAME-ORIGIN, because the platform was
+ * measured and the old rule was more permissive than the platform is. PR3a
+ * allowed any subframe sharing a registrable domain and scheme, on the reasoning
+ * that "a same-site iframe is the page". Chrome disagrees: `activeTab` grants
+ * exactly the main frame's ORIGIN — Chromium builds the pattern as
+ * `origin.Serialize() + "/*"`, which is host-exact and does not match
+ * subdomains. Measured in Chrome 151 against a page carrying all three shapes:
+ *
+ *   http://example.test/        top          INJECTED
+ *   http://example.test/        same origin  INJECTED
+ *   http://pay.example.test/    same site    REFUSED — "Cannot access contents
+ *                                            of the page. Extension manifest
+ *                                            must request permission to access
+ *                                            the respective host."
+ *   http://other.test/          cross origin REFUSED
+ *
+ * So the old rule computed "allowed" for a frame the fill could only ever fail
+ * on. A rule that disagrees with the platform is worse than no rule: it puts
+ * the refusal at the bottom of the stack, as an opaque platform error, instead
+ * of at the top as a decision this code took on purpose.
+ *
+ * THE PER-ITEM OPT-IN IS GONE, not deferred. It was documented as the escape
+ * hatch for a cross-origin frame, and the same measurement shows it cannot be
+ * built on `activeTab` at all — honouring it needs host permissions for the
+ * third-party origin, i.e. `optional_host_permissions` plus a runtime
+ * `chrome.permissions.request()`: a new manifest key and a new consent surface,
+ * neither of which this milestone has. A flag that can never be honoured is the
+ * M4 zero-callers shape with an extra step, so it is removed here and docs/03
+ * §6j is corrected rather than left describing a capability that cannot exist.
  */
 export function frameIsAllowed(input: {
   readonly isTopFrame: boolean;
   readonly topUrl: string;
   readonly frameUrl: string;
-  readonly optedIn?: boolean;
 }): boolean {
   if (input.isTopFrame) return true;
-  if (input.optedIn === true) return true;
   const top = parse(input.topUrl);
   const frame = parse(input.frameUrl);
   if (!top || !frame) return false;
-  const topDomain = registrableDomain(top.hostname);
-  const frameDomain = registrableDomain(frame.hostname);
-  // Same registrable domain AND same scheme: a same-site iframe is the page.
-  return (
-    topDomain !== null &&
-    frameDomain !== null &&
-    topDomain === frameDomain &&
-    top.protocol === frame.protocol
-  );
+  // `URL.origin` is scheme + host + port, which is exactly what the grant is
+  // keyed on — so this asks the platform's own question rather than a proxy for
+  // it. It also keeps the scheme binding the old rule checked separately.
+  return top.origin === frame.origin && top.origin !== 'null';
 }
 
 export { normaliseHost };

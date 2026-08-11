@@ -3757,3 +3757,58 @@ deviating from them, stop and propose the change with rationale — do not silen
   own precedent), after which all three mutations turn red.
   Latent while PR3a had no fill. PR3b is what would have made it exploitable,
   which is the whole argument for fixing it first rather than alongside.
+- 2026-08-11 — M16 PR3b BEGAN BY MEASURING THE PLATFORM IN A REAL CHROME 151,
+  and the measurement corrected shipped code, two documents and one of my own
+  research agents. A scratch unpacked extension (never committed — the PR2b
+  precedent) against a page carrying all three frame shapes on
+  resolver-mapped fake hosts, with `host_permissions` deliberately ABSENT so
+  `activeTab` was the only grant in play. FOUR ANSWERS, none of them assumed.
+  (1) THE GRANT IS HOST-EXACT AND DOES COVER SAME-ORIGIN SUBFRAMES: top and a
+  same-origin child injected; `pay.example.test` under `example.test` and
+  `other.test` were both refused with "Cannot access contents of the page".
+  So PR3a's `frameIsAllowed` — same registrable domain plus same scheme, on the
+  reasoning that "a same-site iframe is the page" — was MORE PERMISSIVE THAN THE
+  PLATFORM, computing "allowed" for a frame the fill could only ever fail on,
+  which puts the refusal at the bottom of the stack as an opaque platform error
+  instead of at the top as a decision. Narrowed to same-ORIGIN via `URL.origin`,
+  which asks the platform's own question rather than a proxy for it. The
+  per-item cross-origin OPT-IN IS DELETED, not deferred: honouring it needs
+  `optional_host_permissions` + a runtime `chrome.permissions.request()`, a
+  manifest key and consent surface this milestone does not have, so the flag
+  could never be honoured — the M4 zero-callers shape with an extra step.
+  docs/03 §6j described it as a live control and is corrected.
+  (2) `allFrames: true` RETURNS PARTIAL RESULTS SILENTLY — two of four frames
+  came back, `ok: true`, no error. MDN states the opposite for Chrome ("any
+  missing permission prevents any execution"); that is false on 151. The shape
+  is the dangerous one, because a caller cannot tell "no such frame" from "not
+  permitted", so the fill targets ONE named frame and infers nothing from a
+  count.
+  (3) THE ISOLATED WORLD SOLVES THE REACT-TRACKER PROBLEM FOR FREE, which
+  contradicts the recommendation I was given. Both a naive `el.value =` and the
+  prototype-setter dance fired the change event, because the page's
+  own-property `value` setter lives in the page's world and is INVISIBLE from
+  the isolated world — so a naive assignment already reaches the native setter
+  and leaves the tracker stale. The "you must use
+  `HTMLInputElement.prototype`'s setter" advice is correct for page-context
+  scripts and unnecessary for an extension. Scoped honestly: measured against a
+  faithful mimic of React's tracker mechanism, not against React itself.
+  (4) AN INJECTION OUTLIVES THE POPUP: issued and not awaited, with the popup
+  closing in the same turn, it was still delivered and executed. Only the
+  popup's own promise continuation dies with its context — so a popup may issue
+  a fill and close, and may not observe the outcome.
+  AND A FIFTH, UNPLANNED: Chrome 151 has DISABLED `--load-extension` (removed
+  ~137 after malware abuse) and the `DisableLoadExtensionCommandLineSwitch`
+  override is gone. Three rig attempts produced nothing until that was
+  diagnosed rather than guessed at — no extension in the profile, none among
+  the CDP targets. It is not a rig annoyance: docs/04 commits PR4 to a
+  "third-party-runnable verification procedure", and any recipe phrased as
+  "load it unpacked with `--load-extension`" is no longer runnable by anyone.
+  Both docs/04 passages are corrected.
+  TWO OF THE THREE FAILED ATTEMPTS WERE MY OWN ERRORS, recorded because the
+  second is the more instructive: a leftover `--disable-extensions-except`
+  whitelisting one path refused the manual load I had just asked for, and my
+  results endpoint omitted `Access-Control-Allow-Methods`, so the JSON POST
+  would have failed its CORS preflight and the findings would have vanished in
+  transit even had the probes run. A measurement rig needs the same "did this
+  actually report, or merely not fail" discipline as a fence — which is why the
+  extension now announces its own load.

@@ -210,17 +210,40 @@ describe('withinOneEdit', () => {
   });
 });
 
-describe('cross-origin frames are refused by default', () => {
+describe('a subframe is fillable only if it is SAME-ORIGIN with the top frame', () => {
+  /*
+   * NARROWED IN PR3b, from same-site to same-origin, because the platform was
+   * measured and PR3a's rule was more permissive than the platform is.
+   * `activeTab` grants exactly the main frame's ORIGIN (host-exact), so a
+   * subframe on `pay.example.com` under `example.com` is refused by Chrome with
+   * "Cannot access contents of the page". A rule that says otherwise computes
+   * "allowed" for a frame the fill can only ever fail on.
+   */
   const top = 'https://example.com/';
 
   it('allows the top frame', () => {
     expect(frameIsAllowed({ isTopFrame: true, topUrl: top, frameUrl: top })).toBe(true);
   });
 
-  it('allows a same-site subframe', () => {
+  it('allows a SAME-ORIGIN subframe, which the grant does cover', () => {
+    // Measured: injecting into a same-origin subframe succeeds, which settles
+    // the ambiguity in the widely-repeated "activeTab grants only the tab".
+    expect(
+      frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'https://example.com/inner' }),
+    ).toBe(true);
+  });
+
+  it('REFUSES a same-site subframe on a different host', () => {
+    // The case PR3a allowed and Chrome refuses. This is the regression pin.
     expect(
       frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'https://pay.example.com/' }),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it('refuses a subframe on a different port, because the origin includes it', () => {
+    expect(
+      frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'https://example.com:8443/' }),
+    ).toBe(false);
   });
 
   it('refuses a cross-origin subframe', () => {
@@ -229,25 +252,14 @@ describe('cross-origin frames are refused by default', () => {
     );
   });
 
-  it('refuses a same-domain subframe on a different scheme', () => {
+  it('refuses a same-host subframe on a different scheme', () => {
     expect(
       frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'http://example.com/' }),
     ).toBe(false);
   });
 
-  it('honours a per-item opt-in', () => {
-    expect(
-      frameIsAllowed({
-        isTopFrame: false,
-        topUrl: top,
-        frameUrl: 'https://evil.net/',
-        optedIn: true,
-      }),
-    ).toBe(true);
-  });
-
   it('refuses when either URL will not parse', () => {
-    expect(frameIsAllowed({ isTopFrame: false, topUrl: 'nope', frameUrl: top })).toBe(false);
-    expect(frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'nope' })).toBe(false);
+    expect(frameIsAllowed({ isTopFrame: false, topUrl: 'nonsense', frameUrl: top })).toBe(false);
+    expect(frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'nonsense' })).toBe(false);
   });
 });

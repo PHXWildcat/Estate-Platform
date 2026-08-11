@@ -3234,7 +3234,14 @@ in the log as the same defect PR1 opens by fixing.
    that works unattended: an `extension` audience admitted PER HANDLER, so an
    extension session cannot destroy a vault. Then minimum permissions pinned as
    data, reproducible builds, SLSA provenance, and a third-party-runnable
-   verification procedure. *Residual, unsoftened:* a compromised update keeping
+   verification procedure. *Constrained by a measurement taken in PR3b:* Chrome
+   151 has DISABLED the `--load-extension` command-line switch (removed around
+   137 after malware abuse), and the `DisableLoadExtensionCommandLineSwitch`
+   feature override is gone with it — measured, by watching an extension fail to
+   appear in the profile or among the CDP targets. So the procedure PR4 publishes
+   cannot be "load it unpacked with `--load-extension`"; it has to be a digest
+   comparison against the published artifact plus a manual `chrome://extensions`
+   load, and whoever writes it owes that difference. *Residual, unsoftened:* a compromised update keeping
    the same permissions exfiltrates everything the user unlocks and the platform
    cannot detect it.
 
@@ -3431,6 +3438,9 @@ the revoked token at t+0 while the vault honoured it until t+20, the tail of the
 logic is proven against a `chrome` API double in jsdom and the transport is
 proven at the edge. Loading `dist/` unpacked in a real Chrome is a manual step —
 the honesty the repo applies to the Plaid live client and the Anthropic adapter.
+*Measured in PR3b and worse than this implies:* it is manual **and** it cannot be
+scripted, because Chrome 151 refuses `--load-extension` outright. Developer mode
+plus "Load unpacked" is the only route, so no CI job can ever stand in for it.
 
 #### PR2b — unlock and read
 
