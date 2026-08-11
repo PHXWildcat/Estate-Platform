@@ -16,6 +16,7 @@ const USER = '11111111-2222-4333-8444-555555555555';
 const BEARER = 'extension-access-token';
 
 interface Wired {
+  injected: unknown[];
   sent: unknown[];
   fetched: { url: string; body: string }[];
 }
@@ -34,9 +35,18 @@ function wire(
 ): Wired {
   const sent: unknown[] = [];
   const fetched: { url: string; body: string }[] = [];
+  const injected: unknown[] = [];
   (globalThis as { chrome?: unknown }).chrome = {
     tabs: {
       query: () => Promise.resolve(pageUrl === null ? [] : [{ id: 1, url: pageUrl }]),
+    },
+    scripting: {
+      executeScript: (injection: unknown) => {
+        injected.push(injection);
+        return Promise.resolve([
+          { frameId: 0, result: { filledUsername: true, filledSecret: true } },
+        ]);
+      },
     },
     runtime: {
       getManifest: () => ({ host_permissions: [`${TEST_ORIGIN}/*`] }),
@@ -56,7 +66,7 @@ function wire(
       text: () => Promise.resolve(JSON.stringify(fetchStatus.body ?? {})),
     } as unknown as Response);
   };
-  return { sent, fetched };
+  return { sent, fetched, injected };
 }
 
 function host(): HTMLElement {
@@ -116,7 +126,7 @@ describe('the vault screens', () => {
       message.kind === 'unlock'
         ? { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } }
         : message.kind === 'list'
-          ? { ok: true, items: [{ id: 'i-1', itemType: 'login', title: 'Bank login' }] }
+          ? { ok: true, items: [{ id: 'i-1', itemType: 'password', title: 'Bank login' }] }
           : LOCKED,
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
@@ -230,7 +240,7 @@ describe('the vault screens', () => {
   it('shows an unreadable item as present rather than hiding it', async () => {
     wire((message) =>
       message.kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'login', title: '', unreadable: true }] }
+        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: '', unreadable: true }] }
         : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
@@ -240,7 +250,7 @@ describe('the vault screens', () => {
   it('renders an item title as TEXT, whatever it contains', async () => {
     wire((message) =>
       message.kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'login', title: '<img src=x onerror=1>' }] }
+        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: '<img src=x onerror=1>' }] }
         : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
@@ -268,14 +278,20 @@ describe('what is saved for the page you are on', () => {
     state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' },
   };
 
-  function openWith(matched: unknown, pageUrl: string | null = 'https://example.com/login'): void {
-    wire(
+  function openWith(
+    matched: unknown,
+    pageUrl: string | null = 'https://example.com/login',
+    fill: unknown = { ok: true, credential: { username: 'someone', secret: 's3cret' } },
+  ): Wired {
+    return wire(
       (message) =>
         message.kind === 'list'
           ? { ok: true, items: [] }
           : message.kind === 'matches'
             ? { ok: true, matched }
-            : unlocked,
+            : message.kind === 'fill'
+              ? fill
+              : unlocked,
       { status: 200 },
       pageUrl,
     );
@@ -285,7 +301,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'match', domain: 'example.com' },
       },
@@ -302,7 +318,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'confusable', savedDomain: 'example.com', pageDomain: 'exarnple.com' },
       },
@@ -316,7 +332,7 @@ describe('what is saved for the page you are on', () => {
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
       },
@@ -331,20 +347,137 @@ describe('what is saved for the page you are on', () => {
     await until(() => text().includes('Nothing saved for this site'), 'the empty state');
   });
 
-  it('offers no fill button anywhere — that is PR3b', async () => {
+  it('offers a fill button on a MATCH, and on nothing else', async () => {
+    /*
+     * REWRITTEN IN PR3b, not deleted. This case was named "offers no fill button
+     * anywhere — that is PR3b", and PR3b makes that false; deleting it would
+     * leave the one screen that decides what is offered with no test of what it
+     * offers. What it asserts now is the property that replaced the absence:
+     * `isFillable` is the only predicate, so a refusal gets no control at all —
+     * not even a disabled one, because a greyed-out button invites "how do I
+     * enable it" and the answer is "you cannot, on purpose".
+     */
     openWith([
       {
         id: 'i',
-        itemType: 'login',
+        itemType: 'password',
+        title: 'Bank login',
+        verdict: { kind: 'match', domain: 'example.com' },
+      },
+      {
+        id: 'j',
+        itemType: 'password',
+        title: 'Lookalike',
+        verdict: { kind: 'confusable', savedDomain: 'example.com', pageDomain: 'exarnple.com' },
+      },
+      {
+        id: 'k',
+        itemType: 'password',
+        title: 'Insecure',
+        verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
+      },
+    ]);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For example.com'), 'the per-page section');
+
+    const fills = [...document.querySelectorAll('button')].filter((b) =>
+      /^fill$/i.test(b.textContent ?? ''),
+    );
+    // Exactly one, for exactly the matching row.
+    expect(fills).toHaveLength(1);
+    expect(fills[0]?.closest('li')?.textContent).toContain('Bank login');
+    // And no disabled control smuggled onto the refusals.
+    expect([...document.querySelectorAll('button')].some((b) => b.hasAttribute('disabled'))).toBe(
+      false,
+    );
+  });
+
+  it('says on screen that filling does not make a site genuine', async () => {
+    // docs/04 records this as a residual "*on screen*". This is the screen, and
+    // the sentence is asserted rather than left to whoever writes the copy next.
+    openWith([
+      {
+        id: 'i',
+        itemType: 'password',
         title: 'Bank login',
         verdict: { kind: 'match', domain: 'example.com' },
       },
     ]);
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
     await until(() => text().includes('For example.com'), 'the per-page section');
-    expect(text()).toContain('Filling is not available yet');
-    const labels = [...document.querySelectorAll('button')].map((b) => b.textContent ?? '');
-    expect(labels.some((l) => /fill/i.test(l))).toBe(false);
+    expect(text()).toContain('gives this page the password');
+    expect(text()).toContain('cannot tell whether the site itself is genuine');
+  });
+
+  const MATCH = [
+    {
+      id: 'i',
+      itemType: 'password',
+      title: 'Bank login',
+      verdict: { kind: 'match', domain: 'example.com' },
+    },
+  ];
+
+  const pressFill = async (): Promise<void> => {
+    await until(() => text().includes('For example.com'), 'the per-page section');
+    const button = [...document.querySelectorAll('button')].find((b) =>
+      /^fill$/i.test(b.textContent ?? ''),
+    );
+    if (!button) throw new Error(`no Fill button. Saw: ${text()}`);
+    button.click();
+  };
+
+  it('fills, and says plainly that nothing was submitted', async () => {
+    const wired = openWith(MATCH);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await pressFill();
+    await until(() => text().includes('Filled'), 'the outcome');
+
+    // The credential reached the page exactly once, as an argument.
+    expect(wired.injected).toHaveLength(1);
+    expect(JSON.stringify(wired.injected[0])).toContain('s3cret');
+    // And the user is told the thing that matters most about an autofill.
+    expect(text()).toContain('Nothing was submitted');
+  });
+
+  it('asks for a FILL, naming the item and the page, never for a secret', async () => {
+    const wired = openWith(MATCH);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await pressFill();
+    await until(() => text().includes('Filled'), 'the outcome');
+
+    const ask = wired.sent.find((m) => (m as { kind?: string }).kind === 'fill');
+    expect(ask).toEqual({
+      target: 'offscreen',
+      kind: 'fill',
+      bearer: BEARER,
+      itemId: 'i',
+      pageUrl: 'https://example.com/login',
+    });
+  });
+
+  it('says the holder declined WITHOUT calling it an error, and injects nothing', async () => {
+    // `credential: null` is the key holder refusing — the item does not belong
+    // to this page, or could not be opened. The user did nothing wrong and there
+    // is nothing to retry, so it must not read as a failure (the M9 rule).
+    const wired = openWith(MATCH, 'https://example.com/login', { ok: true, credential: null });
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await pressFill();
+    await until(() => text().includes('not offered for this page'), 'the refusal');
+
+    expect(wired.injected).toEqual([]);
+    expect(document.querySelector('.error')).toBeNull();
+  });
+
+  it('shows a locked vault as an ERROR, because that one is worth retrying', async () => {
+    const wired = openWith(MATCH, 'https://example.com/login', {
+      ok: false,
+      code: 'VAULT_LOCKED',
+    });
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await pressFill();
+    await until(() => document.querySelector('.error') !== null, 'the error');
+    expect(wired.injected).toEqual([]);
   });
 
   it('renders the whole vault normally when the page cannot be seen', async () => {

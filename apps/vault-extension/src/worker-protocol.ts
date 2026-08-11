@@ -12,9 +12,15 @@ import type {
  * A closed union again, and for the reason the message union has one: the
  * worker is the only thing that can decrypt, so what it will do on request IS
  * the capability. There is deliberately no variant meaning "give me the key" or
- * "give me an item's secret" — `summarise` returns titles, and PR3's fill will
- * arrive with the gesture requirement that governs it rather than by widening
- * this quietly.
+ * "give me an item's secret" — `summarise` returns titles.
+ *
+ * `fill` ARRIVED IN PR3b, and it is the first and only variant that can produce
+ * a secret. It is written the way this docstring promised it would be: the
+ * caller names AN ITEM AND A PAGE, never a secret, and the holder re-takes the
+ * origin decision itself before answering. So the widest thing a compromised
+ * popup can ask for is a fill it could already have driven with the user's own
+ * gesture — not the key, not an arbitrary item's password, and not a credential
+ * for a page the item does not belong to.
  *
  * EVERY RESPONSE IS A VALUE, NEVER AN ERROR OBJECT. A thrown error crossing
  * `postMessage` loses its type and can carry a stack naming internals, so
@@ -46,6 +52,13 @@ export type WorkerRequest =
       readonly rows: readonly VaultItemRow[];
       readonly pageUrl: string;
     }
+  | {
+      readonly id: number;
+      readonly kind: 'fill';
+      readonly rows: readonly VaultItemRow[];
+      readonly itemId: string;
+      readonly pageUrl: string;
+    }
   | { readonly id: number; readonly kind: 'lock' }
   | { readonly id: number; readonly kind: 'state' };
 
@@ -54,6 +67,16 @@ export type WorkerResponse =
   | { readonly id: number; readonly ok: true; readonly summaries: readonly OpenedSummary[] }
   | { readonly id: number; readonly ok: true; readonly matched: readonly MatchedSummary[] }
   | { readonly id: number; readonly ok: true; readonly unlocked: boolean }
+  /**
+   * The ONE arm carrying a secret. `credential: null` is a REFUSAL — the item
+   * does not belong to that page, or cannot be opened — and it is deliberately
+   * indistinguishable between those, like every other refusal here.
+   */
+  | {
+      readonly id: number;
+      readonly ok: true;
+      readonly credential: { readonly username: string; readonly secret: string } | null;
+    }
   | { readonly id: number; readonly ok: false };
 
 /**
@@ -92,6 +115,13 @@ export async function handleWorkerRequest(
       }
       case 'matches': {
         return { id, ok: true, matched: await holder.matchesFor(request.rows, request.pageUrl) };
+      }
+      case 'fill': {
+        return {
+          id,
+          ok: true,
+          credential: await holder.fillFor(request.rows, request.itemId, request.pageUrl),
+        };
       }
       case 'lock': {
         holder.lock();

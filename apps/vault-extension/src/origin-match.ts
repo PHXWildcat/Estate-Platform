@@ -172,36 +172,31 @@ export function isFillable(verdict: MatchVerdict): boolean {
   return verdict.kind === 'match';
 }
 
-/**
- * CROSS-ORIGIN IFRAMES ARE REFUSED BY DEFAULT (§4 TB9), decided here so the
- * rule is one function rather than a condition remembered at each call site.
+/*
+ * `frameIsAllowed` LIVED HERE AND IS GONE (M16 PR3b).
  *
- * PR3a has no page contact, so nothing calls this yet — it is declared with the
- * matcher because the frame's origin is part of the same decision, and PR3b
- * wiring it is then an act of using an existing rule rather than inventing one.
- * A per-item opt-in is the documented escape hatch and is not implemented until
- * an item can carry the flag.
+ * PR3a declared it for PR3b to wire, and PR3b narrowed it from same-site to
+ * same-origin after measuring the platform. Then wiring it showed it cannot
+ * have a caller at all, which is a better answer than either:
+ *
+ *   · The popup cannot enumerate frames. Reading frame ids needs `webNavigation`
+ *     or `tabs`, and this extension deliberately holds neither — the only
+ *     permission-free route is `executeScript({allFrames:true})`, which is an
+ *     injection into every reachable frame BEFORE any origin decision, i.e. the
+ *     opposite order from the one TB9 wants.
+ *   · The injected function cannot import it. `func` is serialized for
+ *     injection, so it closes over nothing and carries no module.
+ *
+ * So the rule had nowhere to run, and a rule with nowhere to run is the M4
+ * zero-callers shape — the thing this milestone keeps closing. It is deleted
+ * rather than kept "for later", and what replaces it is not a weaker rule but a
+ * stronger one: THE PLATFORM ENFORCES THIS ITSELF, measured in Chrome 151. An
+ * `executeScript` at a frame the activeTab grant does not cover is refused with
+ * "Cannot access contents of the page", and the grant is the top frame's origin,
+ * host-exact. PR3b fills the TOP FRAME ONLY; a login form inside even a
+ * same-origin subframe is not filled, and that limitation is stated in docs/03
+ * §6j rather than papered over with a rule that would only have agreed with the
+ * platform when the platform was already saying no.
  */
-export function frameIsAllowed(input: {
-  readonly isTopFrame: boolean;
-  readonly topUrl: string;
-  readonly frameUrl: string;
-  readonly optedIn?: boolean;
-}): boolean {
-  if (input.isTopFrame) return true;
-  if (input.optedIn === true) return true;
-  const top = parse(input.topUrl);
-  const frame = parse(input.frameUrl);
-  if (!top || !frame) return false;
-  const topDomain = registrableDomain(top.hostname);
-  const frameDomain = registrableDomain(frame.hostname);
-  // Same registrable domain AND same scheme: a same-site iframe is the page.
-  return (
-    topDomain !== null &&
-    frameDomain !== null &&
-    topDomain === frameDomain &&
-    top.protocol === frame.protocol
-  );
-}
 
 export { normaliseHost };

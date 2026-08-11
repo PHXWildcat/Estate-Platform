@@ -8,9 +8,12 @@
  * from runtime configuration. What M8 PR5 taught is that a baked value must
  * then be ASSERTED rather than assumed, which `test/manifest.spec.ts` does.
  *
- * There is deliberately no SECOND copy of the origin in the source: `config.ts`
- * reads it back out of the manifest at runtime, so this script is the only
- * place it is written and there is nothing for it to drift against.
+ * IT IS WRITTEN TWICE, into the manifest and into `origin.js`, because an
+ * offscreen document cannot read the manifest back (measured in Chrome 151:
+ * it gets `chrome.runtime`'s messaging surface and nothing else), and the key
+ * holder lives in one. Two places holding one value is a drift risk, so it is
+ * CHECKED rather than trusted — `test/manifest.spec.ts` builds a real package
+ * and asserts the two agree.
  */
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -72,11 +75,43 @@ await Promise.all(statics.map((name) => copyFile(join(publicDir, name), join(dis
  * `web.Dockerfile` lesson (2026-08-06), where a file the build silently did not
  * copy became a runtime 404 nothing checked for.
  */
-const required = ['popup.html', 'offscreen.html', 'main.js', 'offscreen.js', 'background.js'];
+const required = [
+  'popup.html',
+  'offscreen.html',
+  'main.js',
+  'offscreen.js',
+  'background.js',
+  // The generated origin. Missing it would otherwise surface as an ENOENT from
+  // the substitution below, naming a path instead of the omission.
+  'origin.js',
+];
 const present = new Set(await readdir(dist));
 const missing = required.filter((name) => !present.has(name));
 if (missing.length > 0) {
   throw new Error(`packaged extension is missing: ${missing.join(', ')}`);
+}
+
+/*
+ * The compiled `origin.js` carries the dev default from source; the packaged one
+ * carries whatever this build was given.
+ *
+ * THE RESULT IS PARSED BACK, NOT SEARCHED FOR. The first version asserted with
+ * `text.includes(origin)`, which CodeQL flagged as incomplete URL substring
+ * sanitization — and while this is a build-time assertion about a file rather
+ * than a security check on a request, the complaint is right about the method:
+ * a URL is not something to reason about with substrings, and `includes` would
+ * be satisfied by an origin that merely APPEARED somewhere in the file. Reading
+ * the exported value back and comparing it EXACTLY is both stricter and says
+ * what it means: after this, `origin.js` exports the origin this build was
+ * given, or the build failed.
+ */
+const originModule = join(dist, 'origin.js');
+const compiled = await readFile(originModule, 'utf8');
+await writeFile(originModule, compiled.replace(DEFAULT_ORIGIN, origin));
+
+const written = /PACKAGED_VAULT_ORIGIN = '([^']*)'/.exec(await readFile(originModule, 'utf8'))?.[1];
+if (written !== origin) {
+  throw new Error(`origin.js exports ${String(written)} after substitution, expected ${origin}`);
 }
 
 process.stdout.write(

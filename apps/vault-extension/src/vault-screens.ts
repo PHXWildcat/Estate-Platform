@@ -1,9 +1,18 @@
 import { request } from './api.js';
 import { messageFor } from './copy.js';
 import { el, render } from './dom.js';
+import { injectFill } from './inject.js';
 import type { ItemSummary } from './messages.js';
+import { isFillable } from './origin-match.js';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from './secret-key-store.js';
-import { listItems, lockVault, matchesFor, unlockVault, vaultState } from './vault-client.js';
+import {
+  fillFor,
+  listItems,
+  lockVault,
+  matchesFor,
+  unlockVault,
+  vaultState,
+} from './vault-client.js';
 import type { MatchedItem } from './messages.js';
 
 /**
@@ -37,7 +46,9 @@ type View =
       items: readonly ItemSummary[];
       matched?: readonly MatchedItem[];
       pageUrl?: string;
+      tabId?: number;
       error?: string;
+      note?: string;
     };
 
 /** Six digits, the only shape identity's CodeSchema accepts. */
@@ -62,22 +73,27 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
    * rather than an error, because "we cannot tell what page this is" is not a
    * failure of the vault.
    */
-  async function activePageUrl(): Promise<string | undefined> {
+  async function activeTab(): Promise<{ id?: number; url?: string }> {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      return typeof tab?.url === 'string' && tab.url.length > 0 ? tab.url : undefined;
+      return {
+        ...(tab?.id === undefined ? {} : { id: tab.id }),
+        ...(typeof tab?.url === 'string' && tab.url.length > 0 ? { url: tab.url } : {}),
+      };
     } catch {
-      return undefined;
+      return {};
     }
   }
 
   async function refresh(): Promise<void> {
     const listed = await listItems(bearer);
     if (listed.ok) {
-      const pageUrl = await activePageUrl();
+      const tab = await activeTab();
+      const pageUrl = tab.url;
       const matched = pageUrl === undefined ? undefined : await matchesFor(bearer, pageUrl);
       show({
         kind: 'unlocked',
+        ...(tab.id === undefined ? {} : { tabId: tab.id }),
         items: listed.data,
         ...(pageUrl === undefined ? {} : { pageUrl }),
         ...(matched?.ok === true ? { matched: matched.data } : {}),
@@ -209,11 +225,22 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
    *
    * A `confusable` or a `scheme-downgrade` is SHOWN and never offered, because
    * §4 TB9 commits to refusing rather than warning, and because a refusal the
-   * user cannot see is indistinguishable from having nothing saved. PR3b will
-   * offer a fill button on `match` rows only; there is no button here yet, and
-   * the copy says so rather than implying one is coming imminently.
+   * user cannot see is indistinguishable from having nothing saved. PR3b adds
+   * the fill button, and it appears on `match` rows ONLY — `isFillable` is the
+   * one predicate that decides, so a fourth verdict added later is not offered
+   * by accident.
+   *
+   * THE PHISHING SENTENCE IS ON THIS SCREEN AND NOT IN A DOC. docs/04 records it
+   * as a residual "*on screen*", and this is the screen: autofill does not
+   * resist phishing, because it fills the site the user themselves saved. The
+   * origin rule stops a credential going to a DIFFERENT domain; it cannot stop
+   * one going to a domain the user was persuaded to save.
    */
-  function drawMatches(matched: readonly MatchedItem[], pageUrl: string): HTMLElement {
+  function drawMatches(
+    matched: readonly MatchedItem[],
+    pageUrl: string,
+    tabId: number | undefined,
+  ): HTMLElement {
     let host: string;
     try {
       host = new URL(pageUrl).host;
@@ -228,7 +255,17 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
           : item.verdict.kind === 'scheme-downgrade'
             ? `${item.title || '(no title)'} — not offered: this page is not secure`
             : `${item.title || '(no title)'} — not offered: this address only looks like the saved one`;
-      list.append(el('li', {}, label));
+      const row = el('li', {}, label);
+      // ONLY a fillable verdict gets a control. A refusal is shown with no
+      // button at all, rather than a disabled one: a greyed-out button invites
+      // the question "how do I enable it", and the answer must never be "you
+      // cannot" for something we are refusing on purpose.
+      if (isFillable(item.verdict) && tabId !== undefined) {
+        const fill = el('button', { class: 'secondary' }, 'Fill');
+        fill.addEventListener('click', () => void doFill(item.id, pageUrl, tabId));
+        row.append(' ', fill);
+      }
+      list.append(row);
     }
     return el(
       'div',
@@ -237,8 +274,47 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       matched.length === 0
         ? el('p', { class: 'hint' }, 'Nothing saved for this site.')
         : (list as HTMLElement),
-      el('p', { class: 'hint' }, 'Filling is not available yet.'),
+      el(
+        'p',
+        { class: 'hint' },
+        'Filling gives this page the password. Estate checks the address matches the one you saved — it cannot tell whether the site itself is genuine.',
+      ),
     );
+  }
+
+  /**
+   * Ask the key holder to fill, then hand what comes back to the page.
+   *
+   * THREE OUTCOMES, KEPT APART. A credential fills; a `null` credential means
+   * the holder DECLINED — the item does not belong to this page, or could not be
+   * opened — and that is not an error the user caused; a failure means the vault
+   * is shut or unreachable and is worth retrying. Collapsing any two of them
+   * would be the M9 shape where a control firing reads as an outage.
+   *
+   * The popup stays OPEN and reports. The injection would survive its closing
+   * (measured), but the outcome would not be observable, and a fill that
+   * silently did nothing is the worst of the three.
+   */
+  async function doFill(itemId: string, pageUrl: string, tabId: number): Promise<void> {
+    const filled = await fillFor(bearer, itemId, pageUrl);
+    if (!filled.ok) {
+      show({ ...(view as Extract<View, { kind: 'unlocked' }>), error: messageFor(filled.code) });
+      return;
+    }
+    if (filled.data === null) {
+      show({
+        ...(view as Extract<View, { kind: 'unlocked' }>),
+        note: 'That item is not offered for this page.',
+      });
+      return;
+    }
+    const outcome = await injectFill(tabId, filled.data);
+    show({
+      ...(view as Extract<View, { kind: 'unlocked' }>),
+      note: outcome.filledSecret
+        ? 'Filled. Nothing was submitted — check it and sign in yourself.'
+        : 'No password field was found on this page.',
+    });
   }
 
   function drawUnlocked(
@@ -246,6 +322,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     error: string | undefined,
     matched: readonly MatchedItem[] | undefined,
     pageUrl: string | undefined,
+    note: string | undefined,
   ): void {
     const lock = el('button', { class: 'secondary' }, 'Lock');
     lock.addEventListener('click', () => {
@@ -265,10 +342,16 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     render(
       host,
       el('h2', {}, 'Vault open'),
-      ...(matched !== undefined && pageUrl !== undefined ? [drawMatches(matched, pageUrl)] : []),
+      ...(matched !== undefined && pageUrl !== undefined
+        ? [drawMatches(matched, pageUrl, view.kind === 'unlocked' ? view.tabId : undefined)]
+        : []),
       items.length === 0 ? el('p', { class: 'hint' }, 'No items in this vault yet.') : list,
       el('p', { class: 'hint' }, 'Reading an item is not available yet.'),
       lock,
+      // A NOTE IS NOT AN ERROR. "That item is not offered for this page" and
+      // "filled, nothing was submitted" are outcomes the user asked for; styling
+      // them as failures would make a working refusal look like a fault.
+      ...(note === undefined ? [] : [el('p', { class: 'hint' }, note)]),
       ...(error === undefined ? [] : [el('p', { class: 'error' }, error)]),
     );
   }
@@ -286,7 +369,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       drawLocked(view.error, view.stepUp);
       return;
     }
-    drawUnlocked(view.items, view.error, view.matched, view.pageUrl);
+    drawUnlocked(view.items, view.error, view.matched, view.pageUrl, view.note);
   }
 
   draw();

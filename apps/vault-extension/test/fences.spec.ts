@@ -42,6 +42,8 @@ function filesUnder(dir: string): string[] {
 }
 
 const sourceFiles = filesUnder(SRC);
+/** The specs themselves, for the fences that are about what the FIXTURES claim. */
+const testFiles = filesUnder(__dirname);
 
 /**
  * The ONE non-relative specifier this artifact may import. A leading slash
@@ -325,7 +327,106 @@ describe('the network has exactly one call site', () => {
   it('api.ts really is the module that calls fetch (so the fence is not vacuous)', () => {
     expect(code(join(SRC, 'api.ts'))).toContain('fetch(');
   });
+});
 
+describe('the fixtures use item types the vault service would accept', () => {
+  /**
+   * A FIXTURE THAT INVENTS AN ENUM TESTS THE FIXTURE.
+   *
+   * Every test in this package used `itemType: 'login'`. There is no such type:
+   * the vocabulary is `password | pin | recovery_codes | seed_phrase |
+   * private_key | secure_note | license | attachment`, and the service answers
+   * `400 invalid_request` for anything else. Found by seeding the real stack for
+   * PR3b's browser drive, where the seed was refused — 31 fixtures across five
+   * files had been describing a vault the service would reject.
+   *
+   * It was LATENT rather than broken: the extension never writes an item, so
+   * `itemType` only ever arrives FROM the server and is passed through. That is
+   * exactly the condition under which an invented value survives — nothing in
+   * this package validates it, so nothing here could notice.
+   *
+   * The vocabulary is READ FROM THE SERVICE'S OWN SOURCE rather than copied,
+   * which is the compose-parity mechanism: this package cannot import from
+   * `apps/services/vault` (no dependency, and it should not gain one), so the
+   * declaration is scanned. A copy would be a second place for one fact.
+   */
+  const SCHEMAS = join(__dirname, '..', '..', 'services', 'vault', 'src', 'schemas.ts');
+
+  const declared = (): readonly string[] => {
+    const source = readFileSync(SCHEMAS, 'utf8');
+    const block = /export const VAULT_ITEM_TYPES = \[([\s\S]*?)\] as const;/.exec(source)?.[1];
+    if (!block) throw new Error(`VAULT_ITEM_TYPES not found in ${SCHEMAS}`);
+    return [...block.matchAll(/'([a-z_]+)'/g)].map((m) => m[1] as string);
+  };
+
+  it('finds the service vocabulary, so the check is not vacuous', () => {
+    const types = declared();
+    expect(types.length).toBeGreaterThan(4);
+    expect(types).toContain('password');
+    // The value the fixtures used to invent is NOT one of them, which is the
+    // whole point of this fence.
+    expect(types).not.toContain('login');
+  });
+
+  it.each(sourceFiles.concat(testFiles))('%s uses only real item types', (file) => {
+    const used = [...code(file).matchAll(/itemType:\s*'([a-z_]+)'/g)].map((m) => m[1] as string);
+    for (const type of used) {
+      expect({ file, type, known: declared().includes(type) }).toEqual({
+        file,
+        type,
+        known: true,
+      });
+    }
+  });
+});
+
+describe('running code in a page has exactly one call site too', () => {
+  /**
+   * THE SECOND WAY SOMETHING LEAVES THIS EXTENSION (M16 PR3b).
+   *
+   * `api.ts` is the one network call site, and the fence above is what makes
+   * "nothing derived from the vault password leaves the device" a one-file
+   * question. `chrome.scripting.executeScript` is an egress the network fence
+   * cannot see: it puts a credential into ANOTHER PROCESS, as a JSON `args`
+   * value, with no fetch anywhere. So it gets the same treatment for the same
+   * reason — one call site, named here, auditable in one file.
+   *
+   * `fill-into-page.ts` is deliberately NOT the call site. It is the payload
+   * that runs in the page: it is serialized by `executeScript`, so it closes
+   * over nothing, imports nothing, and holds no reference to `chrome` at all.
+   */
+  const INJECTION = ['executeScript', 'chrome.scripting'];
+  /*
+   * `chrome.d.ts` is exempt, and it is the only exemption: DECLARING an API is
+   * not calling it, and the declaration is itself the reviewable statement of
+   * how much platform this artifact touches (its own docstring says so). A
+   * `.d.ts` emits no code, so nothing there can inject anything.
+   */
+  const outside = sourceFiles.filter(
+    (file) => !file.endsWith(join('src', 'inject.ts')) && !file.endsWith('.d.ts'),
+  );
+
+  it.each(outside)('%s runs no code in any page', (file) => {
+    const source = code(file);
+    for (const sink of INJECTION) {
+      expect({ file, sink, found: source.includes(sink) }).toEqual({ file, sink, found: false });
+    }
+  });
+
+  it('inject.ts really is the module that injects (so the fence is not vacuous)', () => {
+    expect(code(join(SRC, 'inject.ts'))).toContain('executeScript');
+  });
+
+  it('the injected payload holds no chrome reference and imports no module of ours', () => {
+    // If it could reach `chrome` it could message; if it could import, it could
+    // import the crypto. It is a leaf on purpose.
+    const payload = code(join(SRC, 'fill-into-page.ts'));
+    expect(payload).not.toContain('chrome.');
+    expect(payload).not.toMatch(/^\s*import\s/m);
+  });
+});
+
+describe('the rest of the fences', () => {
   it('nothing logs, because a log is an exfiltration channel too', () => {
     // A `console.log(session)` survives review far more easily than a fetch —
     // and in an extension the console is readable by anything with devtools

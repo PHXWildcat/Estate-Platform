@@ -7,7 +7,7 @@
  * naive `includes()` passes and a naive "last two labels" passes — both named
  * in §4 TB9, both exploitable rather than sloppy.
  */
-import { matchOrigin, frameIsAllowed, isFillable, withinOneEdit } from '../src/origin-match';
+import { matchOrigin, isFillable, withinOneEdit } from '../src/origin-match';
 import { publicSuffix, registrableDomain } from '../src/registrable-domain';
 
 describe('the registrable domain comes from the list, not from string surgery', () => {
@@ -207,47 +207,5 @@ describe('withinOneEdit', () => {
     ['a.com', 'bbbb.com'],
   ])('%s is NOT within one edit of %s', (a, b) => {
     expect(withinOneEdit(a, b)).toBe(false);
-  });
-});
-
-describe('cross-origin frames are refused by default', () => {
-  const top = 'https://example.com/';
-
-  it('allows the top frame', () => {
-    expect(frameIsAllowed({ isTopFrame: true, topUrl: top, frameUrl: top })).toBe(true);
-  });
-
-  it('allows a same-site subframe', () => {
-    expect(
-      frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'https://pay.example.com/' }),
-    ).toBe(true);
-  });
-
-  it('refuses a cross-origin subframe', () => {
-    expect(frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'https://evil.net/' })).toBe(
-      false,
-    );
-  });
-
-  it('refuses a same-domain subframe on a different scheme', () => {
-    expect(
-      frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'http://example.com/' }),
-    ).toBe(false);
-  });
-
-  it('honours a per-item opt-in', () => {
-    expect(
-      frameIsAllowed({
-        isTopFrame: false,
-        topUrl: top,
-        frameUrl: 'https://evil.net/',
-        optedIn: true,
-      }),
-    ).toBe(true);
-  });
-
-  it('refuses when either URL will not parse', () => {
-    expect(frameIsAllowed({ isTopFrame: false, topUrl: 'nope', frameUrl: top })).toBe(false);
-    expect(frameIsAllowed({ isTopFrame: false, topUrl: top, frameUrl: 'nope' })).toBe(false);
   });
 });

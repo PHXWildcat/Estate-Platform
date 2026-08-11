@@ -57,6 +57,11 @@ export interface KeyHolderPort {
   }): Promise<void>;
   summarise(rows: readonly VaultItemRow[]): Promise<OpenedSummary[]>;
   matchesFor(rows: readonly VaultItemRow[], pageUrl: string): Promise<MatchedSummary[]>;
+  fillFor(
+    rows: readonly VaultItemRow[],
+    itemId: string,
+    pageUrl: string,
+  ): Promise<{ username: string; secret: string } | null>;
   lock(): void;
 }
 
@@ -247,6 +252,39 @@ export class VaultHost {
     const rows = page.data.items;
     if (!Array.isArray(rows)) return { ok: false, code: 'UNKNOWN' };
     return { ok: true, data: await this.#holder.matchesFor(rows as VaultItemRow[], pageUrl) };
+  }
+
+  /**
+   * FETCH THE ROWS AND ASK THE HOLDER TO FILL ONE (PR3b).
+   *
+   * The rows are re-fetched rather than remembered, exactly as `matchesFor`
+   * does — this host caches no ciphertext (docs/04's "server-anchored" is about
+   * what it does NOT keep locally, and there is deliberately no local store to
+   * go stale or to answer from after a revoke).
+   *
+   * This method takes no view on WHETHER the fill is allowed. It cannot: the
+   * item's `url` is inside the blob and only the holder can read it. All this
+   * does is carry rows in and a decision out.
+   */
+  async fillFor(
+    bearer: string,
+    itemId: string,
+    pageUrl: string,
+  ): Promise<ApiResult<{ username: string; secret: string } | null>> {
+    const token = this.#token;
+    if (!token || !this.#holder.isUnlocked) return { ok: false, code: 'VAULT_LOCKED' };
+    this.#touch();
+    const page = await request<VaultItemPage>('/api/vault/items?limit=200', {
+      bearer,
+      vaultSession: token,
+    });
+    if (!page.ok) return page;
+    const rows = page.data.items;
+    if (!Array.isArray(rows)) return { ok: false, code: 'UNKNOWN' };
+    return {
+      ok: true,
+      data: await this.#holder.fillFor(rows as VaultItemRow[], itemId, pageUrl),
+    };
   }
 
   /**

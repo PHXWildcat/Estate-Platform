@@ -105,9 +105,18 @@ export async function request<T>(
     headers['x-estate-vault-session'] = options.vaultSession;
   }
 
+  /*
+   * RESOLVED BEFORE THE TRY, and that placement is a fix rather than a tidy-up.
+   * `vaultOrigin()` throws on a malformed packaged origin, and while the call
+   * sat inside the block below, a CONFIGURATION error came back as `NETWORK` —
+   * so the one message the user saw was "check your connection" about a fault
+   * their connection had nothing to do with. That is exactly how the offscreen
+   * document's missing `getManifest` hid for a whole PR.
+   */
+  const url = `${vaultOrigin()}${path}`;
   let response: Response;
   try {
-    response = await fetch(`${vaultOrigin()}${path}`, {
+    response = await fetch(url, {
       method: options.method ?? 'GET',
       headers,
       /*

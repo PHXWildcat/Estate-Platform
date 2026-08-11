@@ -2,7 +2,8 @@
  * The paired session: what it stores, what it refuses to store, and the one
  * distinction that decides whether a user gets un-paired by a wifi blip.
  */
-import { vaultOrigin, ExtensionConfigError } from '../src/config';
+import { assertExactOrigin, vaultOrigin, ExtensionConfigError } from '../src/config';
+import { PACKAGED_VAULT_ORIGIN } from '../src/origin';
 import {
   disconnect,
   forgetSession,
@@ -48,29 +49,46 @@ const TOKENS = {
 
 const SESSION: PairedSession = TOKENS;
 
-describe('the vault origin comes from the manifest', () => {
+describe('the vault origin is packaged, not read back from the manifest', () => {
+  /*
+   * REWRITTEN, not deleted. This describe was named "comes from the manifest"
+   * and asserted exactly that, which was the right design and did not work: an
+   * OFFSCREEN DOCUMENT gets only `chrome.runtime`'s messaging surface — no
+   * `getManifest` — and the key holder lives in one, so `vaultOrigin()` threw on
+   * every vault request and `api.ts` reported it as `NETWORK`. Measured in
+   * Chrome 151, with the popup as the control; jsdom could never have shown it,
+   * because the chrome double supplies `getManifest` unconditionally.
+   *
+   * The value is written into `origin.ts` by the build now, from the same
+   * `VAULT_ORIGIN` the manifest gets. That is two places holding one value, so
+   * `manifest.spec.ts` asserts they agree in a REAL build.
+   */
   afterEach(clearChromeDouble);
 
-  it('reads the single host permission back, stripped of the match suffix', () => {
-    installChromeDouble();
-    expect(vaultOrigin()).toBe(TEST_ORIGIN);
+  it('returns the packaged origin', () => {
+    expect(vaultOrigin()).toBe(PACKAGED_VAULT_ORIGIN);
   });
 
-  it.each([
-    [[], 'none'],
-    [['https://a.test/*', 'https://b.test/*'], 'two'],
-  ])('refuses %s host permissions (%s)', (hosts) => {
-    const double = installChromeDouble();
-    double.setManifest({ host_permissions: hosts });
-    // "One host_permission, one origin" is the transport decision; with two,
-    // which one to use is a question nobody has answered.
-    expect(() => vaultOrigin()).toThrow(ExtensionConfigError);
+  it('does not consult the manifest at all, so an offscreen context can call it', () => {
+    // No chrome double installed: `chrome` is undefined here, which is stricter
+    // than the offscreen document (where it exists but is nearly empty). If
+    // this throws, the regression is back.
+    expect(() => vaultOrigin()).not.toThrow();
+    expect(vaultOrigin()).toBe(PACKAGED_VAULT_ORIGIN);
   });
 
-  it.each(['https://*.estate.test/*', 'not-a-url'])('refuses the inexact host %s', (host) => {
-    const double = installChromeDouble();
-    double.setManifest({ host_permissions: [host] });
-    expect(() => vaultOrigin()).toThrow(ExtensionConfigError);
+  it.each(['https://*.estate.test', 'not-a-url', '', 'https://vault.estate.test/some/path'])(
+    'refuses %s as a packaged origin',
+    (value) => {
+      // Exercised through the exported validator rather than by mocking the
+      // constant: a mocked constant would prove that a mock throws.
+      expect(() => assertExactOrigin(value)).toThrow(ExtensionConfigError);
+    },
+  );
+
+  it('accepts an exact origin, with or without the manifest match suffix', () => {
+    expect(assertExactOrigin('https://vault.estate.test')).toBe('https://vault.estate.test');
+    expect(assertExactOrigin('https://vault.estate.test/*')).toBe('https://vault.estate.test');
   });
 });
 

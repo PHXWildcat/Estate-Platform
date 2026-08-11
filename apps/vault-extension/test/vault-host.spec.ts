@@ -69,7 +69,7 @@ async function stubService(
       );
       return {
         id,
-        itemType: 'login',
+        itemType: 'password',
         blob: toBase64(
           await encryptItem(masterKey, { userId: USER, itemId: id, blobVersion: 1 }, plaintext),
         ),
@@ -171,7 +171,7 @@ describe('unlocking through the host', () => {
     expect(listed).toEqual({
       ok: true,
       data: [
-        { id: '05555555-0000-4000-8000-000000000000', itemType: 'login', title: 'Bank login' },
+        { id: '05555555-0000-4000-8000-000000000000', itemType: 'password', title: 'Bank login' },
       ],
     });
 
@@ -363,7 +363,7 @@ describe('unlocking through the host', () => {
                 items: [
                   {
                     id: '99999999-0000-4000-8000-000000000000',
-                    itemType: 'login',
+                    itemType: 'password',
                     blob: 'AAAAAAAAAAAAAAAAAAAAAA==',
                     blobVersion: 1,
                     updatedAt: '2026-08-10T00:00:00Z',
@@ -377,6 +377,59 @@ describe('unlocking through the host', () => {
     };
     const matched = await vault.matchesFor(BEARER, 'https://example.com/');
     expect(matched).toEqual({ ok: true, data: [] });
+  });
+
+  it('FILLS through the holder, and refuses a page the item does not belong to', async () => {
+    /*
+     * The full path with real crypto again, because the property is that the
+     * HOLDER decides from the item's own encrypted url. The host carries rows in
+     * and a decision out; it cannot see the url and takes no view.
+     */
+    installChromeDouble();
+    const { secretKey } = await stubService({
+      titles: ['Bank'],
+      urls: ['https://www.example.com/login'],
+    });
+    const itemId = '05555555-0000-4000-8000-000000000000'; // the stub's first row
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const filled = await vault.fillFor(BEARER, itemId, 'https://example.com/account');
+    expect(filled).toEqual({ ok: true, data: { username: '', secret: SECRET_ITEM } });
+
+    // Same item, a page it has nothing to do with: refused, and the refusal is
+    // `null` data rather than an error, so nothing explains which reason applied.
+    const refused = await vault.fillFor(BEARER, itemId, 'https://evil.test/');
+    expect(refused).toEqual({ ok: true, data: null });
+  });
+
+  it('an item list it cannot read is not a fill', async () => {
+    // Same rule as `list`: an unreachable or malformed page of rows is UNKNOWN,
+    // never an empty set that would read as "nothing is saved for this page".
+    installChromeDouble();
+    const { secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+    (globalThis as { fetch?: unknown }).fetch = () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{}'),
+      } as unknown as Response);
+    expect(await vault.fillFor(BEARER, 'i-1', 'https://example.com/')).toEqual({
+      ok: false,
+      code: 'UNKNOWN',
+    });
+  });
+
+  it('refuses to fill while locked', async () => {
+    installChromeDouble();
+    await stubService();
+    const vault = host();
+    expect(await vault.fillFor(BEARER, 'i-1', 'https://example.com/')).toEqual({
+      ok: false,
+      code: 'VAULT_LOCKED',
+    });
   });
 
   it('refuses to match while locked', async () => {

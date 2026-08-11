@@ -56,6 +56,24 @@ export type VaultRequest =
       readonly bearer: string;
       readonly pageUrl: string;
     }
+  /**
+   * FILL one named item into one named page (PR3b) — the only variant whose
+   * response can carry a credential, and the shape is what keeps §4 TB9's
+   * promise that a content script is structurally unable to REQUEST one.
+   *
+   * There is no `itemId`-to-secret variant here and never will be: the caller
+   * names an item AND the page it believes it is on, and the key holder
+   * re-reads the item's own encrypted `url` and decides for itself. So the most
+   * this message can buy is a fill the user's own gesture could already have
+   * driven.
+   */
+  | {
+      readonly target: typeof OFFSCREEN;
+      readonly kind: 'fill';
+      readonly bearer: string;
+      readonly itemId: string;
+      readonly pageUrl: string;
+    }
   /** Drop every key. Also what an idle timeout and a teardown do. */
   | { readonly target: typeof OFFSCREEN; readonly kind: 'lock'; readonly bearer?: string };
 
@@ -83,6 +101,17 @@ export type VaultResponse =
   | { readonly ok: true; readonly state: VaultState }
   | { readonly ok: true; readonly items: readonly ItemSummary[] }
   | { readonly ok: true; readonly matched: readonly MatchedItem[] }
+  /**
+   * The one response arm that carries a credential, and it exists so the popup
+   * can hand it straight to `chrome.scripting` — the popup is the only context
+   * that may call it, since an offscreen document has `chrome.runtime` alone.
+   * `credential: null` is the holder REFUSING, and is deliberately the same
+   * answer for "wrong page" and "could not open it".
+   */
+  | {
+      readonly ok: true;
+      readonly credential: { readonly username: string; readonly secret: string } | null;
+    }
   | { readonly ok: false; readonly code: string };
 
 /** Narrowing helpers, so a stray message from anywhere is simply ignored. */
@@ -95,6 +124,7 @@ export function isVaultRequest(value: unknown): value is VaultRequest {
       kind === 'unlock' ||
       kind === 'list' ||
       kind === 'matches' ||
+      kind === 'fill' ||
       kind === 'lock')
   );
 }

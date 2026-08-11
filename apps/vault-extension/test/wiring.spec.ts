@@ -9,10 +9,18 @@
  */
 import 'fake-indexeddb/auto';
 import { ensureOffscreenDocument } from '../src/offscreen-lifecycle';
+import { isVaultRequest } from '../src/messages';
 import { installOffscreenListener } from '../src/offscreen-router';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from '../src/secret-key-store';
 import { VaultHost, type KeyHolderPort } from '../src/vault-host';
-import { listItems, lockVault, matchesFor, unlockVault, vaultState } from '../src/vault-client';
+import {
+  fillFor,
+  listItems,
+  lockVault,
+  matchesFor,
+  unlockVault,
+  vaultState,
+} from '../src/vault-client';
 import { clearChromeDouble, installChromeDouble } from './chrome-double';
 
 const USER = '11111111-2222-4333-8444-555555555555';
@@ -28,16 +36,18 @@ function openHolder(): KeyHolderPort {
     isUnlocked: true,
     prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
     finish: () => Promise.resolve(),
-    summarise: () => Promise.resolve([{ id: 'i-1', itemType: 'login', title: 'Zed' }]),
+    summarise: () => Promise.resolve([{ id: 'i-1', itemType: 'password', title: 'Zed' }]),
     matchesFor: () =>
       Promise.resolve([
         {
           id: 'i-1',
-          itemType: 'login',
+          itemType: 'password',
           title: 'Zed',
           verdict: { kind: 'match' as const, domain: 'example.com' },
         },
       ]),
+    fillFor: (_rows, itemId) =>
+      Promise.resolve(itemId === 'i-1' ? { username: 'someone', secret: 's3cret' } : null),
     lock: () => undefined,
   };
 }
@@ -131,7 +141,7 @@ describe('the offscreen router', () => {
 
     expect(await deliver({ target: 'offscreen', kind: 'list', bearer: 'b' })).toEqual({
       ok: true,
-      items: [{ id: 'i-1', itemType: 'login', title: 'Zed' }],
+      items: [{ id: 'i-1', itemType: 'password', title: 'Zed' }],
     });
   });
 
@@ -193,7 +203,7 @@ describe('the offscreen router', () => {
       matched: [
         {
           id: 'i-1',
-          itemType: 'login',
+          itemType: 'password',
           title: 'Zed',
           verdict: { kind: 'match', domain: 'example.com' },
         },
@@ -267,7 +277,7 @@ describe('the popup’s view of the vault', () => {
             matched: [
               {
                 id: 'i',
-                itemType: 'login',
+                itemType: 'password',
                 title: 'A',
                 verdict: { kind: 'match', domain: 'example.com' },
               },
@@ -280,7 +290,7 @@ describe('the popup’s view of the vault', () => {
       data: [
         {
           id: 'i',
-          itemType: 'login',
+          itemType: 'password',
           title: 'A',
           verdict: { kind: 'match', domain: 'example.com' },
         },
@@ -294,15 +304,37 @@ describe('the popup’s view of the vault', () => {
     });
   });
 
+  it('asks for a fill, and reads a refusal as null rather than as a failure', async () => {
+    // Three outcomes, and the client must keep them apart: a credential, a
+    // holder that declined, and a vault that is shut. Only the last is worth a
+    // retry, and only the middle two mean the user did nothing wrong.
+    messaging((message) =>
+      (message as { itemId?: string }).itemId === 'i-1'
+        ? { ok: true, credential: { username: 'someone', secret: 's3cret' } }
+        : { ok: true, credential: null },
+    );
+    expect(await fillFor('b', 'i-1', 'https://example.com/')).toEqual({
+      ok: true,
+      data: { username: 'someone', secret: 's3cret' },
+    });
+    expect(await fillFor('b', 'other', 'https://example.com/')).toEqual({ ok: true, data: null });
+
+    messaging(() => ({ ok: false, code: 'VAULT_LOCKED' }));
+    expect(await fillFor('b', 'i-1', 'https://example.com/')).toEqual({
+      ok: false,
+      code: 'VAULT_LOCKED',
+    });
+  });
+
   it('returns items and the state on the happy paths', async () => {
     messaging((message) =>
       (message as { kind?: string }).kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'login', title: 'A' }] }
+        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: 'A' }] }
         : { ok: true, state: { status: 'locked' } },
     );
     expect(await listItems('b')).toEqual({
       ok: true,
-      data: [{ id: 'i', itemType: 'login', title: 'A' }],
+      data: [{ id: 'i', itemType: 'password', title: 'A' }],
     });
     expect(await lockVault('b')).toEqual({ ok: true, data: { status: 'locked' } });
   });
@@ -399,5 +431,69 @@ describe('the Secret Key store', () => {
     } finally {
       (globalThis as { indexedDB?: unknown }).indexedDB = real;
     }
+  });
+});
+
+describe('the fill message', () => {
+  afterEach(clearChromeDouble);
+
+  /**
+   * A stand-in HOST, not a stand-in holder.
+   *
+   * What is under test here is the ROUTER's mapping — that a credential crosses
+   * as `credential` and that a refusal crosses as `null` rather than becoming an
+   * error. The real host's own fill path (fetch the rows, ask the holder, and
+   * refuse while locked) is exercised against real crypto in `vault-host.spec`,
+   * so reproducing its unlock ceremony here would test that a second time and
+   * this mapping not at all.
+   */
+  function routerOver(fillFor: VaultHost['fillFor']): (message: unknown) => Promise<unknown> {
+    let listener: Parameters<Parameters<typeof installOffscreenListener>[1]>[0] | null = null;
+    installOffscreenListener({ fillFor } as unknown as VaultHost, (l) => {
+      listener = l;
+    });
+    return (message) =>
+      new Promise((resolve) => {
+        const kept = (listener as NonNullable<typeof listener>)(message, null, resolve);
+        if (kept !== true) resolve(undefined);
+      });
+  }
+
+  const FILL = {
+    target: 'offscreen',
+    kind: 'fill',
+    bearer: 'b',
+    itemId: 'i-1',
+    pageUrl: 'https://example.com/',
+  };
+
+  it('carries a credential across as `credential`', async () => {
+    const deliver = routerOver(() =>
+      Promise.resolve({ ok: true, data: { username: 'someone', secret: 's3cret' } }),
+    );
+    expect(await deliver(FILL)).toEqual({
+      ok: true,
+      credential: { username: 'someone', secret: 's3cret' },
+    });
+  });
+
+  it('carries a REFUSAL across as null, not as a failure', async () => {
+    // The distinction the popup needs: "the holder declined" and "the vault is
+    // shut" are different sentences, and only one of them is worth retrying.
+    const deliver = routerOver(() => Promise.resolve({ ok: true, data: null }));
+    expect(await deliver(FILL)).toEqual({ ok: true, credential: null });
+  });
+
+  it('carries a failure across as a code, with no credential field at all', async () => {
+    const deliver = routerOver(() => Promise.resolve({ ok: false, code: 'VAULT_LOCKED' }));
+    const answer = await deliver(FILL);
+    expect(answer).toEqual({ ok: false, code: 'VAULT_LOCKED' });
+    expect(Object.keys(answer as object)).not.toContain('credential');
+  });
+
+  it('is a kind the narrowing gate admits, so the router can ever see it', () => {
+    // `isVaultRequest` carries a hardcoded list of kinds; a variant added to the
+    // union and forgotten here is silently ignored rather than answered.
+    expect(isVaultRequest(FILL)).toBe(true);
   });
 });

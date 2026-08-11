@@ -107,6 +107,22 @@ export class WorkerKeyHolder implements KeyHolderPort {
     return [...response.matched];
   }
 
+  async fillFor(
+    rows: readonly VaultItemRow[],
+    itemId: string,
+    pageUrl: string,
+  ): Promise<{ username: string; secret: string } | null> {
+    const response = await this.#send({ kind: 'fill', rows, itemId, pageUrl });
+    if (!response.ok || !('credential' in response)) {
+      this.#unlocked = false;
+      throw new Error('vault is locked');
+    }
+    // `null` is the holder REFUSING (wrong page, unopenable item) and is passed
+    // through as itself: a refusal is not an error, and turning it into one
+    // would make the caller's failure path explain which it was.
+    return response.credential;
+  }
+
   lock(): void {
     // Optimistic by design: the mirror goes false FIRST, so nothing can read
     // through it while the message is in flight. A `lock` that never arrives

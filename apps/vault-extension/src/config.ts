@@ -1,45 +1,46 @@
 /**
- * WHERE THIS EXTENSION IS ALLOWED TO TALK, READ FROM THE MANIFEST ITSELF.
+ * WHERE THIS EXTENSION IS ALLOWED TO TALK.
  *
- * The origin is not a second constant compiled in beside the manifest — it IS
- * the manifest's `host_permissions` entry, read back at runtime. That removes
- * the whole class of defect M8 PR5 found the hard way, where a value baked into
- * an artifact at build time disagreed with the value the rest of the system
- * used and every test passed over it: here there is only one value, so there is
- * nothing to disagree with. It is also self-enforcing — code cannot reach an
- * origin the manifest does not permit, because the browser refuses the request
- * regardless of what this module returns.
+ * The value comes from `origin.ts`, which the build writes from the same
+ * `VAULT_ORIGIN` it puts in the manifest — see that file for why it is no
+ * longer read back out of `chrome.runtime.getManifest()` (an offscreen document
+ * cannot call it, and the key holder lives in one).
  *
- * EXACTLY ONE entry is permitted, and a second is a hard failure rather than a
- * choice of the first. "One `host_permission`, one origin" is docs/04's stated
- * transport decision, and the moment there are two, which one this function
- * should return is a question nobody has answered — so it refuses instead of
- * guessing.
+ * IT IS STILL PARSED RATHER THAN TRUSTED. A wildcard host or a value that is
+ * not an exact origin would mean this artifact could be pointed somewhere
+ * nobody reviewed, and the build is not the only way this constant could ever
+ * be edited.
  *
- * The trailing `/*` that Chrome requires in a host permission is stripped, so
- * callers compose URLs against a bare origin.
+ * `test/manifest.spec.ts` asserts the constant and the manifest's
+ * `host_permissions` agree in a REAL build, which is what keeps two places
+ * holding one value honest.
  */
+import { PACKAGED_VAULT_ORIGIN } from './origin.js';
+
 export class ExtensionConfigError extends Error {}
 
-export function vaultOrigin(): string {
-  const declared = chrome.runtime.getManifest().host_permissions ?? [];
-  if (declared.length !== 1) {
-    throw new ExtensionConfigError(
-      `expected exactly one host permission, found ${String(declared.length)}`,
-    );
-  }
-  const pattern = declared[0] as string;
-  const origin = pattern.replace(/\/\*$/, '').replace(/\/$/, '');
-  // A match pattern is not a URL, and a wildcard host would mean this artifact
-  // could be pointed at an origin nobody reviewed. Parsed rather than trusted.
+/**
+ * Exported so the refusals are testable WITHOUT mocking a module constant.
+ *
+ * The alternative was `jest.mock` over `origin.ts`, which would prove that a
+ * mocked constant produces a thrown error and nothing about the real one. This
+ * way the validation is exercised directly with the values it exists to refuse,
+ * and `vaultOrigin` is the one-line application of it.
+ */
+export function assertExactOrigin(value: string): string {
+  const declared = value.replace(/\/\*$/, '').replace(/\/$/, '');
   let parsed: URL;
   try {
-    parsed = new URL(origin);
+    parsed = new URL(declared);
   } catch {
-    throw new ExtensionConfigError('host permission is not an origin');
+    throw new ExtensionConfigError('packaged vault origin is not a URL');
   }
-  if (parsed.hostname.includes('*') || `${parsed.origin}` !== origin) {
-    throw new ExtensionConfigError('host permission is not an exact origin');
+  if (parsed.hostname.includes('*') || parsed.origin !== declared) {
+    throw new ExtensionConfigError('packaged vault origin is not an exact origin');
   }
   return parsed.origin;
+}
+
+export function vaultOrigin(): string {
+  return assertExactOrigin(PACKAGED_VAULT_ORIGIN);
 }

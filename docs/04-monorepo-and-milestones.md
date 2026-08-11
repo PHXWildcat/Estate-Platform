@@ -3234,7 +3234,14 @@ in the log as the same defect PR1 opens by fixing.
    that works unattended: an `extension` audience admitted PER HANDLER, so an
    extension session cannot destroy a vault. Then minimum permissions pinned as
    data, reproducible builds, SLSA provenance, and a third-party-runnable
-   verification procedure. *Residual, unsoftened:* a compromised update keeping
+   verification procedure. *Constrained by a measurement taken in PR3b:* Chrome
+   151 has DISABLED the `--load-extension` command-line switch (removed around
+   137 after malware abuse), and the `DisableLoadExtensionCommandLineSwitch`
+   feature override is gone with it — measured, by watching an extension fail to
+   appear in the profile or among the CDP targets. So the procedure PR4 publishes
+   cannot be "load it unpacked with `--load-extension`"; it has to be a digest
+   comparison against the published artifact plus a manual `chrome://extensions`
+   load, and whoever writes it owes that difference. *Residual, unsoftened:* a compromised update keeping
    the same permissions exfiltrates everything the user unlocks and the platform
    cannot detect it.
 
@@ -3431,6 +3438,9 @@ the revoked token at t+0 while the vault honoured it until t+20, the tail of the
 logic is proven against a `chrome` API double in jsdom and the transport is
 proven at the edge. Loading `dist/` unpacked in a real Chrome is a manual step —
 the honesty the repo applies to the Plaid live client and the Anthropic adapter.
+*Measured in PR3b and worse than this implies:* it is manual **and** it cannot be
+scripted, because Chrome 151 refuses `--load-extension` outright. Developer mode
+plus "Load unpacked" is the only route, so no CI job can ever stand in for it.
 
 #### PR2b — unlock and read
 
@@ -3561,6 +3571,86 @@ frames — each confirmed red. 300 tests, 97.24/90.83/96.52/98.91.
 **Unchanged and still owed:** the extension has never run in a browser, and the
 IndexedDB restart measurement is outstanding. PR3a adds no code that runs in a
 page, so neither moves.
+
+#### PR3b — fill
+
+The decision PR3a landed with no page contact now touches a page, and PR3b
+opened by MEASURING the platform rather than designing against documentation —
+which corrected shipped code, two documents, and one of this milestone's own
+research findings.
+
+**What `activeTab` actually grants**, in Chrome 151, against a page carrying all
+three frame shapes on resolver-mapped hosts, with `host_permissions` absent so
+the grant was the only thing in play:
+
+| frame | result |
+| --- | --- |
+| top, `example.test` | injected |
+| same-origin subframe | injected |
+| `pay.example.test` (same site, different host) | **refused** |
+| `other.test` | **refused** |
+
+Host-exact, and it *does* cover same-origin subframes — which settles the
+widely-repeated "activeTab grants only the tab". So `frameIsAllowed` was MORE
+PERMISSIVE THAN THE PLATFORM, and then turned out to have no possible caller:
+the popup cannot enumerate frames without `webNavigation` or `tabs` (the only
+permission-free route is an injection into every frame *before* any origin
+decision), and the injected function cannot import it because `func` is
+serialized. It is DELETED, and the platform enforces the boundary instead.
+**Accepted cost, stated:** a login form inside an iframe is not filled, including
+a same-origin one. The per-item cross-origin opt-in is deleted too — it cannot be
+built on `activeTab` at all, needing `optional_host_permissions` and a runtime
+consent prompt this milestone does not have.
+
+`allFrames: true` returns **partial results silently** (two of four frames,
+`ok: true`, no error — MDN says Chrome fails the whole call; false on 151), so a
+caller cannot tell "no such frame" from "not permitted". It is not in the type
+declaration at all, and the fill names one frame.
+
+**The first worker variant that returns a secret**, arriving with the gesture
+requirement `worker-protocol.ts` promised since PR2b. The caller names an ITEM
+and a PAGE, never a secret, and the holder re-reads the item's own encrypted
+`url` and re-decides — it re-decides even after `matchesFor` just said `match`,
+because the page can navigate between the two calls. So the most a compromised
+popup can ask for is a fill the user's own gesture could already have driven.
+The fence guarding that boundary was rewritten FIRST: `satisfies` plus a
+hand-counted length are both subset checks, and a seventh variant passed both.
+
+**The injected function is mostly absences** — no closure, no `chrome`, no fetch,
+no crypto import, never submits, and never dispatches `blur` (a page may submit
+on one). The first draft called `focus()` to look like a user, which is itself
+how a blur fires; its own test caught it. A naive `el.value =` is enough, because
+React's value tracker lives in the page's world and is invisible from an isolated
+one — the usual prototype-setter advice is for page-context scripts.
+`inject.ts` is the one module that may run code in a page, fenced like `api.ts`
+is for the network, because `executeScript` is a second egress that fence cannot
+see.
+
+**A defect in PR2b that only a browser could show.** An offscreen document gets
+only `chrome.runtime`'s messaging surface — no `getManifest` — and the key holder
+lives in one, so `config.ts` threw on every vault request and `api.ts` reported
+it as `NETWORK`. **The extension could never have unlocked a vault.** jsdom could
+not have caught it: the chrome double supplies `getManifest` unconditionally, so
+the double was more generous than the platform. The origin is generated at build
+time now, with a real build asserting it and the manifest agree.
+
+**Proven end to end** against the running stack — real account, real TOTP
+step-up, real SRP unlock, item sealed by the same `@estate/vault-crypto` the
+worker opens: pairing, unlock, `{kind: match, domain: example.test}`, the fill
+returning the credential for its own page and refusing both `other.test` and the
+lookalike `exarnple.test` with an indistinguishable `null`. Then the injection
+verified IN THE PAGE: filled, the page's React-style tracker fired,
+`activeElement` still `BODY`, URL unchanged, nothing submitted, same-origin
+subframe left empty.
+
+**Also fixed:** every fixture in the package used `itemType: 'login'`, which is
+not in `VAULT_ITEM_TYPES` — found when the seed was refused `400`. Latent, since
+the extension never writes an item, and now fenced by scanning the service's own
+declaration rather than copying it.
+
+**Not done, and owed by whoever ships next:** `--load-extension` is disabled in
+Chrome 151, so PR4's "third-party-runnable verification procedure" cannot be
+phrased as loading unpacked from the command line.
 
 ### M17 — Subscription manager (planned)
 
