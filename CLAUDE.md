@@ -3928,3 +3928,42 @@ deviating from them, stop and propose the change with rationale — do not silen
   `cmd && echo ok` does not gate the NEXT line, and I read `eslint | tail` as
   passing when `$?` was `tail`'s exit and eslint had reported six errors. Check
   the exit of the thing under test, not of what you piped it into.
+- 2026-08-11 — M16 PR4a DRIVEN IN A REAL BROWSER, and the drive proved the
+  milestone's residual by accidentally causing it. The audience change went
+  first, over HTTP against a vault image REBUILT from the branch, with a genuine
+  extension-audience session: pair 200, step-up 200, both SRP legs, `listItems`
+  200, `createItem` 201 and `updateItem` 200 — while `deleteItem` and `reset`
+  answered 401 to the same session. The two writes are admitted, the destructive
+  verb and the crypto-shred are not, and the writes only worked AFTER a
+  completed SRP unlock, which is the whole shape of the claim: the capability
+  belongs to an unlocked vault, not to the credential.
+  THEN THE UI, and the merge is correct where it counts. An item sealed with all
+  four fields, edited in the popup by typing ONLY a new password: decrypting the
+  row afterwards shows `secret` changed and `username`, `url` and `title`
+  UNTOUCHED, at version 2, still opening — so blank fields were omitted rather
+  than sent as empty strings, and the blob was sealed for the successor the
+  service actually wrote. The edited item still matches its page and fills with
+  the new password and the preserved username, which closes the loop: authored
+  in the popup, edited by merge, still fillable.
+  I CORRUPTED AN ITEM AND IT WAS THE MOST USEFUL THING THAT HAPPENED. My HTTP
+  probe re-sent a row's EXISTING blob with `If-Match: 1`; the service stored it
+  at version 2 and answered 200, and because the version is inside the AEAD's
+  AAD a blob sealed for v1 does not open at v2. The item is permanently
+  unreadable. That is exactly the failure the code comment describes — "reversed,
+  the row lands unopenable and nothing in the response says so" — and exactly
+  the docs/03 §6j residual written hours earlier: an unlocked session can
+  overwrite items with bytes that do not decrypt and the platform cannot tell.
+  Two of four rows ended unreadable, recoverable only by an operator reading
+  `vault_items_versions`, which no production code does. Evidence for the
+  restore-surface follow-up, obtained by doing the thing rather than arguing it.
+  THE UI WAS RIGHT ABOUT THE BIT THAT LOOKED WRONG: the corrupted item showed no
+  Edit control, which is deliberate — there is nothing to merge into, and
+  offering an edit would turn a display problem into data loss.
+  STALE ARTIFACTS, TWICE MORE. The stack's vault container was 18 hours old and
+  predated the audience change, so writes would have 401'd and proved nothing —
+  rebuilt from the branch with `--no-deps` so nothing else moved. And the FIRST
+  rebuild silently failed: `docker-credential-desktop` is not on PATH from this
+  shell (it lives in the Docker.app bundle), and after the failed build compose
+  still printed `Container Running`, which reads like success. The tell was the
+  container's uptime still saying 18 hours. Check what you built, not what the
+  orchestrator says about it.
