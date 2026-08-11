@@ -107,6 +107,84 @@ describe('the vendored Public Suffix List', () => {
     expect(PUBLIC_SUFFIX_RULES.some((r) => r.startsWith('!'))).toBe(true);
   });
 
+  /**
+   * EVERY RULE IS IN A-LABEL FORM, because that is the only form a host ever
+   * arrives in.
+   *
+   * `URL.hostname` applies IDNA and hands back punycode — `a.公司.cn` becomes
+   * `a.xn--55qx5d.cn` — while the published list writes its internationalised
+   * rules as U-labels. `labelsMatch` compares raw strings, so a U-label rule in
+   * this module is a rule that can NEVER match: 459 of them, silently absent
+   * from the algorithm, collapsing every registrant under those registries onto
+   * one registrable domain.
+   *
+   * The conversion happens at GENERATION time, so the vendored `.dat` stays
+   * byte-for-byte as published (it is the digest-pinned artifact) and the
+   * runtime comparison stays a plain string compare with no IDNA in the hot
+   * path — and no IDN implementation in a package that has no dependencies.
+   *
+   * Asserted over the SHIPPED data rather than over the generator, because this
+   * is a property of what runs.
+   */
+  it('is entirely A-labels, so a host from URL.hostname can match', () => {
+    // A codepoint test rather than a regex: the range that means "not ASCII"
+    // starts at NUL, and `no-control-regex` rightly refuses that in a pattern.
+    const unicode = PUBLIC_SUFFIX_RULES.filter((rule) =>
+      [...rule].some((character) => character.charCodeAt(0) > 127),
+    );
+    expect(unicode).toEqual([]);
+    // Anti-vacuity: the conversion really did happen, rather than the list
+    // having no internationalised rules to convert.
+    expect(PUBLIC_SUFFIX_RULES).toContain('xn--55qx5d.cn');
+    expect(PUBLIC_SUFFIX_RULES.filter((rule) => rule.includes('xn--')).length).toBeGreaterThan(400);
+  });
+
+  /**
+   * THE MARKER HANDLING AND THE REFUSAL, EXERCISED RATHER THAN ASSUMED.
+   *
+   * `!` and `*.` are not part of a domain and are stripped before conversion.
+   * Measured against this snapshot, NO rule combines a marker with a non-ASCII
+   * label, so nothing in the shipped list reaches those branches — which is
+   * exactly the condition under which they rot: mutating either one leaves the
+   * whole suite green. They exist for the next list refresh, and this is where
+   * somebody reads them.
+   *
+   * A subprocess because ts-jest cannot import a plain `.mjs` — the same
+   * precedent as the drift check above.
+   */
+  it('strips rule markers before converting, and refuses a rule with no A-label form', () => {
+    const probe = `
+      const m = await import(${JSON.stringify(join(ROOT, 'scripts', 'build-psl.mjs'))});
+      const out = {};
+      for (const c of ['*.公司.cn', '!www.公司.cn', 'com', '*.ck', 'xn--55qx5d.cn']) {
+        out[c] = m.toALabels(c);
+      }
+      for (const bad of ['!', '*.', '']) {
+        try { out[bad] = m.toALabels(bad); } catch (e) { out[bad] = 'THREW'; }
+      }
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const raw = execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(JSON.parse(raw)).toEqual({
+      // The marker survives; only the domain is converted.
+      '*.公司.cn': '*.xn--55qx5d.cn',
+      '!www.公司.cn': '!www.xn--55qx5d.cn',
+      // ASCII rules are untouched, which is what keeps the regenerated diff to
+      // exactly the lines that had to change.
+      com: 'com',
+      '*.ck': '*.ck',
+      'xn--55qx5d.cn': 'xn--55qx5d.cn',
+      // A rule with no domain left after the markers is REFUSED, never emitted:
+      // a rule that matches nothing is the failure this conversion exists to end.
+      '!': 'THREW',
+      '*.': 'THREW',
+      '': 'THREW',
+    });
+  });
+
   it('contains no comments or blanks — the parse happened at build time', () => {
     for (const rule of PUBLIC_SUFFIX_RULES) {
       expect(rule.startsWith('//')).toBe(false);

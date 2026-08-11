@@ -3722,3 +3722,38 @@ deviating from them, stop and propose the change with rationale — do not silen
   re-parents it straight out, so a faithful revert needs both halves. The
   2026-08-10 rule restated: a mutation that does not mutate reads exactly like a
   test that cannot fail.
+- 2026-08-11 — THE PSL SHIPPED U-LABELS AND EVERY HOST ARRIVES AS AN A-LABEL, so
+  459 of the vendored list's 10,239 rules could NEVER MATCH — found while
+  scoping M16 PR3b, fixed as its own PR before it. `URL.hostname` applies IDNA
+  (`a.公司.cn` → `a.xn--55qx5d.cn`) while the published list writes
+  internationalised suffixes in Unicode, and `labelsMatch` compares raw strings.
+  So for every IDN registry the longest match fell back to the bare TLD, every
+  registrant under it collapsed onto ONE registrable domain, and `matchOrigin`
+  answered `match` for two different registrants: `bank.公司.cn` and
+  `shop.公司.cn` both resolved to `xn--55qx5d.cn` and compared EQUAL — a
+  credential offered on somebody else's site, which docs/03 §4 TB9 calls the
+  boundary's defining failure and which `registrable-domain.ts` names in its own
+  docstring as the reason it uses the list at all. The ASCII path was always
+  correct, which is exactly why 300 tests passed over it, and why the milestone
+  doc's own sentence ("never from a substring and never from label stripping")
+  was false in the paragraph asserting it. MEASURED BEFORE BELIEVED: an agent
+  found it by reading and said plainly it had not executed the module; running
+  it is what turned a plausible reading into a defect, and the same run supplied
+  the numbers. Converted at GENERATION time — the vendored `.dat` stays
+  byte-for-byte as published (it is what the digest pins), the runtime stays a
+  plain string compare with no IDNA in the hot path, and no IDN implementation
+  enters a package whose whole posture is zero dependencies; `!` and `*.` are
+  stripped before conversion, and a rule with no A-label form is REFUSED rather
+  than emitted, because a rule that matches nothing is the failure being fixed.
+  The regenerated diff is exactly 459 lines, which is the measured count and not
+  a target: conversion is a verified no-op on all 9,780 ASCII rules.
+  THE MUTATION HARNESS EARNED ITS PLACE TWICE. It caught that two of the three
+  branches — marker stripping and the refusal — were untestable by the shipped
+  list (no rule combines a marker with a non-ASCII label, and none fails
+  conversion), so both went green under mutation and would have rotted unread:
+  the M13 round-3 rule that an exception nobody triggers in a test is an
+  exception nobody has read, arriving in the same session that cites it. Pinned
+  now by a subprocess probe (ts-jest cannot import a `.mjs` — the drift check's
+  own precedent), after which all three mutations turn red.
+  Latent while PR3a had no fill. PR3b is what would have made it exploitable,
+  which is the whole argument for fixing it first rather than alongside.
