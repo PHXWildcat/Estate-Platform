@@ -71,6 +71,14 @@ export type WorkerRequest =
       readonly blobVersion: number;
       readonly content: Record<string, unknown>;
     }
+  /** Merge changes into an item's existing content and re-seal it (PR4a). */
+  | {
+      readonly id: number;
+      readonly kind: 'reseal';
+      readonly rows: readonly VaultItemRow[];
+      readonly itemId: string;
+      readonly changes: Record<string, unknown>;
+    }
   | { readonly id: number; readonly kind: 'lock' }
   | { readonly id: number; readonly kind: 'state' };
 
@@ -90,6 +98,8 @@ export type WorkerResponse =
       readonly credential: { readonly username: string; readonly secret: string } | null;
     }
   | { readonly id: number; readonly ok: true; readonly blob: string }
+  /** `null` = no such item, or content this build cannot read. */
+  | { readonly id: number; readonly ok: true; readonly resealed: string | null }
   | { readonly id: number; readonly ok: false };
 
 /**
@@ -144,6 +154,17 @@ export async function handleWorkerRequest(
             itemId: request.itemId,
             blobVersion: request.blobVersion,
             content: request.content,
+          }),
+        };
+      }
+      case 'reseal': {
+        return {
+          id,
+          ok: true,
+          resealed: await holder.resealItem({
+            rows: request.rows,
+            itemId: request.itemId,
+            changes: request.changes,
           }),
         };
       }

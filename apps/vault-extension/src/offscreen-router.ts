@@ -70,7 +70,7 @@ async function answer(host: VaultHost, message: VaultRequest): Promise<VaultResp
         bearer: message.bearer,
         itemId: message.itemId,
         itemType: message.itemType,
-        content: message.content,
+        changes: message.changes,
         blobVersion: message.blobVersion,
       });
       return saved.ok ? { ok: true, item: saved.data } : { ok: false, code: saved.code };

@@ -321,6 +321,64 @@ export class VaultKeyHolder {
   }
 
   /**
+   * UPDATE BY MERGING INSIDE THE HOLDER, so an edit needs no read (M16 PR4a).
+   *
+   * THE OBVIOUS DESIGN WOULD HAVE COST A NEW CAPABILITY. To edit an item a
+   * client normally reads it back, shows the fields, and writes the whole thing
+   * again — which would mean the popup receiving every item's full plaintext on
+   * request. Today it cannot: `summarise` gives titles, and `fillFor` gives ONE
+   * credential and only for a page the item actually matches. A general "open
+   * this item" variant would make the popup a full vault reader, which is a
+   * disclosure widening the milestone has no need to buy.
+   *
+   * So the merge happens HERE. The caller sends only the fields it is CHANGING;
+   * this module decrypts the existing content, applies them, and re-seals. The
+   * plaintext it did not send is never sent back to it.
+   *
+   * ABSENT MEANS UNCHANGED, and it has to: a blank field in a form the user did
+   * not fill must not erase a password they cannot see. An explicit empty
+   * string is a real value and does clear the field — the same distinction
+   * profile's SSN carry makes, for the same reason.
+   *
+   * Sealed for `blobVersion + 1` because that is what the service will write
+   * after checking `If-Match`, and the number is inside the AAD.
+   */
+  async resealItem(input: {
+    readonly rows: readonly VaultItemRow[];
+    readonly itemId: string;
+    readonly changes: Record<string, unknown>;
+  }): Promise<string | null> {
+    const vault = this.#vault;
+    const userId = this.#userId;
+    if (!vault || !userId) throw new Error('vault is locked');
+    const row = input.rows.find((candidate) => candidate.id === input.itemId);
+    if (!row) return null;
+
+    let plaintext: Uint8Array | null = null;
+    try {
+      plaintext = await decryptItem(
+        vault.masterKey,
+        { userId, itemId: row.id, blobVersion: row.blobVersion },
+        fromBase64(row.blob),
+      );
+      const existing = contentOf(plaintext);
+      if (!existing) return null;
+      // An item this build cannot read must not be silently REPLACED by an edit
+      // — that would turn a display problem into data loss.
+      const merged = { ...existing, ...input.changes };
+      return await this.sealItem({
+        itemId: row.id,
+        blobVersion: row.blobVersion + 1,
+        content: merged,
+      });
+    } catch {
+      return null;
+    } finally {
+      if (plaintext) plaintext.fill(0);
+    }
+  }
+
+  /**
    * THE ONE OPERATION THAT LETS A SECRET LEAVE THIS MODULE (M16 PR3b).
    *
    * Every other variant deliberately returns none, and `worker-protocol.ts` has

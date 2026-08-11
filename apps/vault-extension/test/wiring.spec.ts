@@ -51,6 +51,7 @@ function openHolder(): KeyHolderPort {
     fillFor: (_rows, itemId) =>
       Promise.resolve(itemId === 'i-1' ? { username: 'someone', secret: 's3cret' } : null),
     sealItem: () => Promise.resolve('c2VhbGVk'),
+    resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
     lock: () => undefined,
   };
 }

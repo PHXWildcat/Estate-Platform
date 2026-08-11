@@ -269,6 +269,91 @@ describe('the key holder', () => {
     }
   });
 
+  /*
+   * MERGING INSIDE THE HOLDER (M16 PR4a) — what makes an edit possible without
+   * the popup ever receiving the content it is not changing.
+   */
+  const sealedLogin = async (enrolled: Enrolled): Promise<VaultItemRow> =>
+    sealItem(enrolled, ITEM, {
+      title: 'Bank login',
+      username: 'someone',
+      secret: 'the-original',
+      url: 'https://bank.example.com/',
+    });
+
+  it('changes only what it was given, and leaves the rest alone', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+
+    const blob = await holder.resealItem({
+      rows: [row],
+      itemId: ITEM,
+      changes: { secret: 'the-new-one' },
+    });
+    const next: VaultItemRow = { ...row, blob: blob as string, blobVersion: row.blobVersion + 1 };
+
+    // The changed field changed...
+    expect(await holder.fillFor([next], ITEM, 'https://bank.example.com/')).toEqual({
+      username: 'someone',
+      secret: 'the-new-one',
+    });
+    // ...and the untouched ones survived, including the url the fill depends on
+    // and the title the list shows.
+    expect(await holder.summarise([next])).toEqual([
+      { id: ITEM, itemType: 'password', title: 'Bank login', blobVersion: 2 },
+    ]);
+  });
+
+  it('treats an EXPLICIT empty string as a real value, unlike an absent field', async () => {
+    // A form field left blank must not erase a password the user cannot see, so
+    // absent means unchanged. Clearing one on purpose has to remain possible,
+    // and the two are told apart by presence — the profile-SSN distinction.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+
+    const blob = await holder.resealItem({
+      rows: [row],
+      itemId: ITEM,
+      changes: { username: '' },
+    });
+    const next: VaultItemRow = { ...row, blob: blob as string, blobVersion: row.blobVersion + 1 };
+    expect(await holder.fillFor([next], ITEM, 'https://bank.example.com/')).toEqual({
+      username: '',
+      secret: 'the-original',
+    });
+  });
+
+  it('refuses an item it was not given, rather than creating one', async () => {
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+    expect(
+      await holder.resealItem({
+        rows: [row],
+        itemId: '77777777-0000-4000-8000-000000000000',
+        changes: { secret: 'x' },
+      }),
+    ).toBeNull();
+  });
+
+  it('refuses an item this build cannot read, rather than REPLACING it', async () => {
+    // An edit must not turn a display problem into data loss: if the existing
+    // content will not open, there is nothing to merge into.
+    const enrolled = await enrol();
+    const holder = new VaultKeyHolder();
+    await unlock(holder, enrolled, enrolled.secretKey);
+    const row = await sealedLogin(enrolled);
+    const wrongVersion: VaultItemRow = { ...row, blobVersion: row.blobVersion + 5 };
+    expect(
+      await holder.resealItem({ rows: [wrongVersion], itemId: ITEM, changes: { secret: 'x' } }),
+    ).toBeNull();
+  });
+
   it('refuses to seal into a locked vault', async () => {
     const holder = new VaultKeyHolder();
     await expect(

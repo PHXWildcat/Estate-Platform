@@ -136,6 +136,19 @@ export class WorkerKeyHolder implements KeyHolderPort {
     return response.blob;
   }
 
+  async resealItem(input: {
+    rows: readonly VaultItemRow[];
+    itemId: string;
+    changes: Record<string, unknown>;
+  }): Promise<string | null> {
+    const response = await this.#send({ kind: 'reseal', ...input });
+    if (!response.ok || !('resealed' in response)) {
+      this.#unlocked = false;
+      throw new Error('vault is locked');
+    }
+    return response.resealed;
+  }
+
   lock(): void {
     // Optimistic by design: the mirror goes false FIRST, so nothing can read
     // through it while the message is in flight. A `lock` that never arrives

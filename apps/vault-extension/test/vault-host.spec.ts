@@ -600,6 +600,7 @@ describe('writing an item through the host (M16 PR4a)', () => {
         sealed.push({ itemId: input.itemId, blobVersion: input.blobVersion });
         return Promise.resolve('c2VhbGVk');
       },
+      resealItem: () => Promise.resolve('cmVzZWFsZWQ='),
       lock: () => undefined,
     };
     const host = new VaultHost({ holder });
@@ -619,7 +620,7 @@ describe('writing an item through the host (M16 PR4a)', () => {
         bearer: BEARER,
         itemId: 'i-1',
         itemType: 'password',
-        content: { title: 'x' },
+        changes: { title: 'x' },
         blobVersion: 3,
       }),
     ).toEqual({ ok: false, code: 'VAULT_LOCKED' });
@@ -671,7 +672,7 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
       bearer: BEARER,
       itemId: '05555555-0000-4000-8000-000000000000',
       itemType: 'password',
-      content: { title: 'Edited' },
+      changes: { title: 'Edited' },
       blobVersion: 4,
     });
 
@@ -690,6 +691,27 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
         blobVersion: 5,
       },
     });
+  });
+
+  it('reports an item it cannot merge into as not found, and writes nothing', async () => {
+    installChromeDouble();
+    const { calls, secretKey } = await stubService();
+    const vault = host();
+    await vault.unlock({ userId: USER, password: PASSWORD, secretKey, bearer: BEARER });
+
+    const before = calls.filter((c) => c.method === 'PUT').length;
+    expect(
+      await vault.updateItem({
+        bearer: BEARER,
+        itemId: '99999999-0000-4000-8000-000000000000',
+        itemType: 'password',
+        changes: { title: 'Edited' },
+        blobVersion: 1,
+      }),
+    ).toEqual({ ok: false, code: 'NOT_FOUND' });
+    // And crucially it did not PUT anything: a merge that found nothing must not
+    // become a write that replaces something.
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(before);
   });
 
   it('passes a version conflict through as itself', async () => {
@@ -711,7 +733,7 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
         bearer: BEARER,
         itemId: '05555555-0000-4000-8000-000000000000',
         itemType: 'password',
-        content: { title: 'Edited' },
+        changes: { title: 'Edited' },
         blobVersion: 1,
       }),
     ).toEqual({ ok: false, code: 'VERSION_CONFLICT' });

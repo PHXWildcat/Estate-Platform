@@ -97,7 +97,9 @@ export type VaultRequest =
       readonly bearer: string;
       readonly itemId: string;
       readonly itemType: string;
-      readonly content: Record<string, unknown>;
+      /** Only what is CHANGING — absent means unchanged, so a blank field in a
+       * form the user did not fill cannot erase a password they cannot see. */
+      readonly changes: Record<string, unknown>;
       /**
        * The version the popup READ, sent on as `If-Match`. The blob is sealed
        * for `blobVersion + 1`, because that is what the service will write and

@@ -67,6 +67,11 @@ export interface KeyHolderPort {
     blobVersion: number;
     content: Record<string, unknown>;
   }): Promise<string>;
+  resealItem(input: {
+    rows: readonly VaultItemRow[];
+    itemId: string;
+    changes: Record<string, unknown>;
+  }): Promise<string | null>;
   lock(): void;
 }
 
@@ -285,17 +290,28 @@ export class VaultHost {
     bearer: string;
     itemId: string;
     itemType: string;
-    content: Record<string, unknown>;
+    changes: Record<string, unknown>;
     blobVersion: number;
   }): Promise<ApiResult<ItemSummary>> {
     const token = this.#token;
     if (!token || !this.#holder.isUnlocked) return { ok: false, code: 'VAULT_LOCKED' };
     this.#touch();
-    const blob = await this.#holder.sealItem({
-      itemId: input.itemId,
-      blobVersion: input.blobVersion + 1,
-      content: input.content,
+    // The rows are re-read so the holder has the CURRENT ciphertext to merge
+    // into. `If-Match` still carries the version the USER read, so a change
+    // that landed in between is refused rather than silently absorbed.
+    const page = await request<VaultItemPage>('/api/vault/items?limit=200', {
+      bearer: input.bearer,
+      vaultSession: token,
     });
+    if (!page.ok) return page;
+    const rows = page.data.items;
+    if (!Array.isArray(rows)) return { ok: false, code: 'UNKNOWN' };
+    const blob = await this.#holder.resealItem({
+      rows: rows as VaultItemRow[],
+      itemId: input.itemId,
+      changes: input.changes,
+    });
+    if (blob === null) return { ok: false, code: 'NOT_FOUND' };
     const saved = await request<VaultItemDto>(
       `/api/vault/items/${encodeURIComponent(input.itemId)}`,
       {
@@ -307,7 +323,7 @@ export class VaultHost {
       },
     );
     if (!saved.ok) return saved;
-    return { ok: true, data: summaryOf(saved.data, input.content) };
+    return { ok: true, data: summaryOf(saved.data, input.changes) };
   }
 
   async list(bearer: string): Promise<ApiResult<readonly ItemSummary[]>> {
