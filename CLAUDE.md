@@ -3628,3 +3628,63 @@ deviating from them, stop and propose the change with rationale — do not silen
   `screens-emergency.spec.ts` fired no duplicate (2 calls either way, the arming
   action being a button rather than a submit), so that change is the pattern
   removed, not a second defect fixed.
+- 2026-08-11 — M16 PR3 SPLIT IN TWO (approved), making the milestone seven PRs.
+  Origin matching is the boundary's DEFINING control — docs/03 §4 TB9 puts it
+  first because *a filled credential belongs to the page that received it*, and
+  the isolated world protects the extension's variables rather than the DOM
+  value, so the origin decision IS the disclosure decision. PR3a therefore lands
+  the decision logic and proves it with NO code running in any page; PR3b lands
+  the content script, the one-shot injection and the gesture requirement. Same
+  reasoning as the PR2a/PR2b split: the review of the matcher is not tangled up
+  with the review of the page boundary.
+- 2026-08-11 — MY OWN SCOPE CLAIM WAS WRONG, and the test caught it before the
+  code shipped. The confusables decision was taken on the stated basis that
+  "punycode + edit-distance-1" catches the realistic cases, `rn`/`m` named among
+  them. It does not: `exarnple.com` is TWO edits from `example.com` (substitute
+  `m`→`r`, insert `n`), so a distance-1 check calls it `no-match` — refused for
+  filling, but never FLAGGED, and `rn`/`m` is the most-cited homograph there is.
+  Rather than weaken the test to match the code, the code gained a POOR MAN'S
+  SKELETON: fold the short list of ASCII sequences that actually get used
+  (`rn`→`m`, `vv`→`w`, `cl`→`d`, `1`→`l`, `0`→`o`) on BOTH sides and compare.
+  Deliberately not UTS #39 — the full skeleton algorithm needs a vendored
+  Unicode confusables table and is a named follow-up (docs/03 §6j) — and every
+  miss remains a REFUSAL, so the failure is a missing explanation and never a
+  wrongful fill.
+- 2026-08-11 — MATCHING HAPPENS IN THE KEY HOLDER, because the item's `url`
+  lives inside the encrypted blob. The alternative — return each item's domain
+  to the popup and match there — would disclose a list of every site the user
+  has an account with in order to answer a question about ONE origin. So the
+  worker protocol gains a single `matches(rows, pageUrl)` variant returning only
+  what relates to the page: a `match`, or a refusal worth explaining. `no-match`
+  and `unusable` are dropped, so the caller learns nothing about unrelated
+  items, and NO variant returns a secret — that stays PR3b's deliberate act.
+- 2026-08-11 — A VERDICT, NOT A BOOLEAN. `no-match` and `confusable` are
+  different facts: one means nothing is saved here, the other means something is
+  saved somewhere that LOOKS like here, which is the moment worth telling
+  someone about. `scheme-downgrade` is a third. Collapsing them would make a
+  refusal indistinguishable from an absence — the shape this repo keeps finding
+  (M10 PR4's readiness statuses, M9's "a control firing must not read as an
+  outage"). §4 TB9 commits to REFUSING a confusable rather than warning, so the
+  popup SHOWS the refusal and offers nothing on it; `isFillable` is true for
+  exactly one verdict.
+- 2026-08-11 — THE PUBLIC SUFFIX LIST IS VENDORED, DIGEST-PINNED, AND COMPILED
+  TO A MODULE — the last part forced by a fence rather than chosen. `api.ts` is
+  the extension's only network call site, so reading the packaged `.dat` at
+  runtime would mean `fetch(chrome.runtime.getURL(...))` and either a breach of
+  that fence or a widening of it to admit "local" fetches. The fence is worth
+  more, so `scripts/build-psl.mjs` emits `src/psl-data.ts` and the transformation
+  is deliberately trivial (drop comments and blanks, exactly what the PSL spec
+  says a parser does). `vendor/public-suffix-list.dat` stays byte-for-byte as
+  published, licence header included, and is the pinned artifact; the test
+  regenerates from it in a subprocess and compares, so a committed generated file
+  cannot drift from the bytes the digest covers. Staleness is reported with a
+  DELIBERATELY GENEROUS one-year bound: a stale list fails in one narrow
+  direction (an unknown new suffix yields a shorter registrable domain), and a
+  check that fails weekly is one people learn to bump.
+- 2026-08-11 — `activeTab` IS THE NARROWEST THING THAT COULD WORK, verified
+  before it was relied on: it grants the active tab's URL at INVOCATION and is
+  revoked on navigation, and no `tabs` permission is needed to read `url` that
+  way. Script injection additionally requires `scripting` — which is exactly the
+  PR3a/PR3b line, so PR3a adds `activeTab` alone and the manifest fence still
+  refuses `scripting`, `content_scripts` and `web_accessible_resources` with
+  PR3b named against each. Reading a URL is not running code in a page.

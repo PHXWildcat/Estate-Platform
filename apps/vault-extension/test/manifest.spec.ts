@@ -8,12 +8,15 @@
  * increase to the USER as a re-consent prompt on update — this makes it
  * surface to US first.
  *
- * EVERY ABSENCE HERE IS DELIBERATE. No `content_scripts`, no `activeTab`, no
- * `scripting` — the extension has no view of any page in PR2a and PR3 is where
- * the page boundary is proved read-only. No `offscreen` — there is no key
- * material yet, so there is nothing to hold. Each arrives with the PR that
- * needs it, which is what makes each one a reviewable increase rather than a
- * line nobody remembers adding.
+ * EVERY ABSENCE HERE IS DELIBERATE, AND EACH ARRIVAL IS DATED. `offscreen`
+ * came with PR2b, which needed somewhere for a key to live; `activeTab` comes
+ * with PR3a, which needs the active tab's URL to decide what is saved for this
+ * page. Still absent: `scripting` and `content_scripts` — the two that turn
+ * "read the URL" into "run code in the page", and PR3b's deliberate act.
+ *
+ * The discipline is that each one is a reviewable increase rather than a line
+ * nobody remembers adding, and that this file names the PR against every
+ * absence so the next arrival has to edit a declaration.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -34,12 +37,12 @@ const TEMPLATE = JSON.parse(readFileSync(join(ROOT, 'manifest.template.json'), '
  * that would introduce it, and this is that PR. `storage` is still the only
  * other one — no page access of any kind until PR3.
  */
-const PERMISSIONS = ['storage', 'offscreen'];
+const PERMISSIONS = ['storage', 'offscreen', 'activeTab'];
 
 /** Keys that must NOT appear at all, each with the PR that would introduce it. */
 const FORBIDDEN_KEYS = [
-  'content_scripts', // PR3
-  'web_accessible_resources', // PR3
+  'content_scripts', // PR3b
+  'web_accessible_resources', // PR3b
   'externally_connectable', // rejected outright (docs/04: the control is an absence)
   'declarative_net_request',
   'oauth2',
@@ -76,13 +79,20 @@ describe('the manifest declares the minimum, and says so as data', () => {
     expect(Object.keys(TEMPLATE)).not.toContain(key);
   });
 
-  it('has no page access of any kind, stated as a whole rather than key by key', () => {
-    // The key-by-key cases above catch a known list; this catches the shape.
+  /**
+   * `activeTab` ARRIVED IN PR3a, and it is the narrowest thing that could:
+   * it grants the active tab's URL only at the moment the user clicks the
+   * extension, and is revoked on navigation. Reading a URL is not running code
+   * in a page — `scripting` is what would allow that, and it is still absent.
+   */
+  it('can read the active tab but CANNOT run code in any page', () => {
     const serialized = JSON.stringify(TEMPLATE);
-    expect(serialized).not.toContain('<all_urls>');
-    expect(serialized).not.toContain('activeTab');
+    expect(TEMPLATE['permissions']).toContain('activeTab');
+    // The one that turns "read the URL" into "run code there" — PR3b's act.
     expect(serialized).not.toContain('scripting');
-    expect(serialized).not.toContain('tabs');
+    // Standing access to every page, and to tab state generally: never.
+    expect(serialized).not.toContain('<all_urls>');
+    expect(TEMPLATE['permissions']).not.toContain('tabs');
   });
 });
 

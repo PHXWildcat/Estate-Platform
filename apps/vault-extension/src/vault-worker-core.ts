@@ -1,3 +1,4 @@
+import { matchOrigin, type MatchVerdict } from './origin-match.js';
 import {
   decryptItem,
   finishUnlock,
@@ -69,6 +70,19 @@ export interface OpenedSummary {
   readonly itemType: string;
   readonly title: string;
   readonly unreadable?: boolean;
+}
+
+/** A summary plus why it is being shown for a particular page. */
+export interface MatchedSummary extends OpenedSummary {
+  readonly verdict: MatchVerdict;
+}
+
+/** The item's own `url`, which never leaves this module. */
+function urlOf(plaintext: Uint8Array): string | undefined {
+  const decoded: unknown = JSON.parse(new TextDecoder().decode(plaintext));
+  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) return undefined;
+  const { url } = decoded as { url?: unknown };
+  return typeof url === 'string' ? url : undefined;
 }
 
 /**
@@ -173,6 +187,46 @@ export class VaultKeyHolder {
         // content did not parse. Listed as unreadable rather than hidden: a
         // user must be able to see that something is there.
         out.push({ ...base, title: '', unreadable: true });
+      } finally {
+        if (plaintext) plaintext.fill(0);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * WHICH SAVED ITEMS RELATE TO THIS PAGE — decided HERE, in the key holder.
+   *
+   * The item's `url` lives inside the encrypted blob, so this is the only
+   * context that can read it. The alternative — hand every item's domain to the
+   * popup and match there — would disclose a list of every site the user has an
+   * account with in order to answer a question about ONE origin.
+   *
+   * Returns only what is worth showing: a `match`, or a refusal the user should
+   * understand (`confusable`, `scheme-downgrade`). `no-match` and `unusable`
+   * are dropped, so the caller learns nothing about items unrelated to the page
+   * it asked about. NO SECRET IS RETURNED — that is PR3b's deliberate act.
+   */
+  async matchesFor(rows: readonly VaultItemRow[], pageUrl: string): Promise<MatchedSummary[]> {
+    const vault = this.#vault;
+    const userId = this.#userId;
+    if (!vault || !userId) throw new Error('vault is locked');
+    const out: MatchedSummary[] = [];
+    for (const row of rows) {
+      let plaintext: Uint8Array | null = null;
+      try {
+        plaintext = await decryptItem(
+          vault.masterKey,
+          { userId, itemId: row.id, blobVersion: row.blobVersion },
+          fromBase64(row.blob),
+        );
+        const verdict = matchOrigin(urlOf(plaintext), pageUrl);
+        if (verdict.kind === 'no-match' || verdict.kind === 'unusable') continue;
+        out.push({ id: row.id, itemType: row.itemType, title: titleOf(plaintext), verdict });
+      } catch {
+        // An unopenable blob cannot be matched against anything, and saying so
+        // here would be a claim about an item this build cannot read.
+        continue;
       } finally {
         if (plaintext) plaintext.fill(0);
       }

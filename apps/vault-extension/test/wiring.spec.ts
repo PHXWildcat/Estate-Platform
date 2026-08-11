@@ -12,7 +12,7 @@ import { ensureOffscreenDocument } from '../src/offscreen-lifecycle';
 import { installOffscreenListener } from '../src/offscreen-router';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from '../src/secret-key-store';
 import { VaultHost, type KeyHolderPort } from '../src/vault-host';
-import { listItems, lockVault, unlockVault, vaultState } from '../src/vault-client';
+import { listItems, lockVault, matchesFor, unlockVault, vaultState } from '../src/vault-client';
 import { clearChromeDouble, installChromeDouble } from './chrome-double';
 
 const USER = '11111111-2222-4333-8444-555555555555';
@@ -29,6 +29,15 @@ function openHolder(): KeyHolderPort {
     prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
     finish: () => Promise.resolve(),
     summarise: () => Promise.resolve([{ id: 'i-1', itemType: 'login', title: 'Zed' }]),
+    matchesFor: () =>
+      Promise.resolve([
+        {
+          id: 'i-1',
+          itemType: 'login',
+          title: 'Zed',
+          verdict: { kind: 'match' as const, domain: 'example.com' },
+        },
+      ]),
     lock: () => undefined,
   };
 }
@@ -145,6 +154,53 @@ describe('the offscreen router', () => {
     ).toEqual({ ok: false, code: 'NETWORK' });
   });
 
+  it('routes a MATCHES request and returns verdicts, never secrets', async () => {
+    installChromeDouble();
+    (globalThis as { fetch?: unknown }).fetch = (url: unknown) =>
+      Promise.resolve({
+        ok: true,
+        status: String(url).includes('srp/start') ? 201 : 200,
+        text: () =>
+          Promise.resolve(
+            String(url).includes('srp/start')
+              ? JSON.stringify({ handshakeId: 'h', srpSalt: 's', kdfParams: {}, serverPublic: 'B' })
+              : String(url).includes('srp/verify')
+                ? JSON.stringify({
+                    serverProof: 'p',
+                    wrappedMasterKey: 'w',
+                    vaultSession: { id: 'i', token: 't', expiresAt: '2099-01-01T00:00:00.000Z' },
+                  })
+                : JSON.stringify({ items: [] }),
+          ),
+      } as unknown as Response);
+    const { deliver } = wire();
+    await deliver({
+      target: 'offscreen',
+      kind: 'unlock',
+      userId: USER,
+      password: 'p',
+      secretKey: 's',
+      bearer: 'b',
+    });
+    const answer = await deliver({
+      target: 'offscreen',
+      kind: 'matches',
+      bearer: 'b',
+      pageUrl: 'https://example.com/',
+    });
+    expect(answer).toEqual({
+      ok: true,
+      matched: [
+        {
+          id: 'i-1',
+          itemType: 'login',
+          title: 'Zed',
+          verdict: { kind: 'match', domain: 'example.com' },
+        },
+      ],
+    });
+  });
+
   it('carries a lock through and reports the state back', async () => {
     const { deliver } = wire();
     expect(await deliver({ target: 'offscreen', kind: 'lock' })).toEqual({
@@ -201,6 +257,41 @@ describe('the popup’s view of the vault', () => {
     expect(await unlockVault({ userId: USER, password: 'p', secretKey: 's', bearer: 'b' })).toEqual(
       { ok: false, code: 'SRP_FAILED' },
     );
+  });
+
+  it('carries matches back to the popup, and a refusal as a code', async () => {
+    messaging((message) =>
+      (message as { kind?: string }).kind === 'matches'
+        ? {
+            ok: true,
+            matched: [
+              {
+                id: 'i',
+                itemType: 'login',
+                title: 'A',
+                verdict: { kind: 'match', domain: 'example.com' },
+              },
+            ],
+          }
+        : { ok: true, state: { status: 'locked' } },
+    );
+    expect(await matchesFor('b', 'https://example.com/')).toEqual({
+      ok: true,
+      data: [
+        {
+          id: 'i',
+          itemType: 'login',
+          title: 'A',
+          verdict: { kind: 'match', domain: 'example.com' },
+        },
+      ],
+    });
+
+    messaging(() => ({ ok: false, code: 'VAULT_LOCKED' }));
+    expect(await matchesFor('b', 'https://example.com/')).toEqual({
+      ok: false,
+      code: 'VAULT_LOCKED',
+    });
   });
 
   it('returns items and the state on the happy paths', async () => {

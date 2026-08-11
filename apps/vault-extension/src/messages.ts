@@ -26,6 +26,8 @@
  * artifact, and could simply ask the offscreen document to decrypt instead.
  */
 
+import type { MatchVerdict } from './origin-match.js';
+
 /** Which context a broadcast message is addressed to. */
 export const OFFSCREEN = 'offscreen' as const;
 export const BACKGROUND = 'background' as const;
@@ -44,6 +46,16 @@ export type VaultRequest =
     }
   /** Decrypt and return item TITLES. No item secret is ever in a response. */
   | { readonly target: typeof OFFSCREEN; readonly kind: 'list'; readonly bearer: string }
+  /**
+   * Which saved items relate to a page. Still titles only — the verdict says
+   * whether PR3b would be allowed to fill, never the credential itself.
+   */
+  | {
+      readonly target: typeof OFFSCREEN;
+      readonly kind: 'matches';
+      readonly bearer: string;
+      readonly pageUrl: string;
+    }
   /** Drop every key. Also what an idle timeout and a teardown do. */
   | { readonly target: typeof OFFSCREEN; readonly kind: 'lock'; readonly bearer?: string };
 
@@ -59,12 +71,18 @@ export interface ItemSummary {
   readonly unreadable?: boolean;
 }
 
+/** A summary plus the verdict that explains why it is on screen. */
+export interface MatchedItem extends ItemSummary {
+  readonly verdict: MatchVerdict;
+}
+
 export type VaultState =
   { readonly status: 'locked' } | { readonly status: 'unlocked'; readonly expiresAt: string };
 
 export type VaultResponse =
   | { readonly ok: true; readonly state: VaultState }
   | { readonly ok: true; readonly items: readonly ItemSummary[] }
+  | { readonly ok: true; readonly matched: readonly MatchedItem[] }
   | { readonly ok: false; readonly code: string };
 
 /** Narrowing helpers, so a stray message from anywhere is simply ignored. */
@@ -73,6 +91,10 @@ export function isVaultRequest(value: unknown): value is VaultRequest {
   const { target, kind } = value as { target?: unknown; kind?: unknown };
   return (
     target === OFFSCREEN &&
-    (kind === 'state' || kind === 'unlock' || kind === 'list' || kind === 'lock')
+    (kind === 'state' ||
+      kind === 'unlock' ||
+      kind === 'list' ||
+      kind === 'matches' ||
+      kind === 'lock')
   );
 }
