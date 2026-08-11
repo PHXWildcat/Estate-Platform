@@ -93,18 +93,25 @@ if (missing.length > 0) {
 
 /*
  * The compiled `origin.js` carries the dev default from source; the packaged one
- * carries whatever this build was given. Substituted by exact string, and the
- * result is REPARSED from the file so a silent no-op cannot pass for a write.
+ * carries whatever this build was given.
+ *
+ * THE RESULT IS PARSED BACK, NOT SEARCHED FOR. The first version asserted with
+ * `text.includes(origin)`, which CodeQL flagged as incomplete URL substring
+ * sanitization — and while this is a build-time assertion about a file rather
+ * than a security check on a request, the complaint is right about the method:
+ * a URL is not something to reason about with substrings, and `includes` would
+ * be satisfied by an origin that merely APPEARED somewhere in the file. Reading
+ * the exported value back and comparing it EXACTLY is both stricter and says
+ * what it means: after this, `origin.js` exports the origin this build was
+ * given, or the build failed.
  */
 const originModule = join(dist, 'origin.js');
 const compiled = await readFile(originModule, 'utf8');
-const substituted = compiled.replace(DEFAULT_ORIGIN, origin);
-if (!substituted.includes(origin)) {
-  throw new Error(`origin.js substitution produced no ${origin}`);
-}
-await writeFile(originModule, substituted);
-if (origin !== DEFAULT_ORIGIN && (await readFile(originModule, 'utf8')).includes(DEFAULT_ORIGIN)) {
-  throw new Error('origin.js still carries the default after substitution');
+await writeFile(originModule, compiled.replace(DEFAULT_ORIGIN, origin));
+
+const written = /PACKAGED_VAULT_ORIGIN = '([^']*)'/.exec(await readFile(originModule, 'utf8'))?.[1];
+if (written !== origin) {
+  throw new Error(`origin.js exports ${String(written)} after substitution, expected ${origin}`);
 }
 
 process.stdout.write(
