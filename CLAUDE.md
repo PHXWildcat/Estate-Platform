@@ -4551,3 +4551,42 @@ deviating from them, stop and propose the change with rationale — do not silen
   the DECISION the three inputs combine into — including that a LAPSED step-up
   is refused, not merely an absent one, which no int case isolates. Floor
   re-measured at 68.59/68.19/39.90/66.89 and ratcheted UP.
+- 2026-08-12 — `activeTab` REVOCATION MEASURED AT LAST, closing the residual the
+  M16 PR5 review recorded as owed. Chrome 151.0.7922.110 on macOS, a scratch
+  probe extension holding `activeTab` and `scripting` and NO host permissions so
+  the grant was the only thing in play. Result: the grant is ORIGIN-scoped and
+  ANY cross-origin navigation revokes it — same-origin survives, a different
+  host is revoked, a different PORT on the same host is revoked, and a SUBDOMAIN
+  of the same registrable domain is revoked. Two consequences. The pre-fix
+  TOCTOU really was being held shut by the platform rather than by the
+  extension's own logic, which is why re-reading the tab at the gesture was the
+  right fix regardless: it makes the code's stated claim true instead of resting
+  on undocumented behaviour nobody had checked. And THE PLATFORM IS STRICTER
+  THAN OUR OWN MATCHER — `matchOrigin` treats a subdomain as the same
+  registrable domain and would fill there, while the grant does not survive
+  navigating to it.
+  THE CONTROL IS WHY THIS IS BELIEVABLE, and the first run failed it. Calling
+  `chrome.action.openPopup()` programmatically from the service worker OPENS THE
+  POPUP AND DOES NOT GRANT — measured, `tab.url` stayed null and the popup
+  target was present. Every scenario in that run said "refused", and reported
+  without the control it would have read as a clean confirmation of revocation
+  from a rig that never granted anything. The grant needed a real OS-level
+  invocation (an `osascript` keystroke bound to `_execute_action`), after which
+  `tab.url` populated and injection succeeded. A second confound was caught the
+  same way: the first cross-PORT case navigated to a port with no server, so its
+  refusal could have been an error page rather than a port rule — re-run against
+  a real second server, it still revokes.
+- 2026-08-12 — AND A DOCUMENTED CONCLUSION WAS WRONG: extension loading IS
+  scriptable on Chrome 151. PR3b measured that `--load-extension` is refused —
+  true, and re-confirmed by launching with it and watching no extension appear
+  among the CDP targets — and concluded from that that loading "cannot be
+  scripted" and "no CI job can ever stand in for it". The CDP command
+  `Extensions.loadUnpacked` works, returns the extension id, and the probe was
+  driven end to end through it: service worker attached, action invoked,
+  `executeScript` run against a live page. THE FLAG IS GONE AND THE CAPABILITY
+  IS NOT. The lesson is narrow and worth keeping: a removed ENTRY POINT is not a
+  removed CAPABILITY, and "cannot be done" deserves the same standard of
+  evidence as "can" — PR3b measured one route and generalised to all of them.
+  `VERIFYING.md` still tells a human to use developer mode, deliberately: asking
+  a third-party verifier to attach a debugging protocol would be a worse
+  instruction, not a better one.

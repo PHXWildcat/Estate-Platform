@@ -1544,14 +1544,44 @@ older than M16.
   additionally asserting the metadata key has exactly one route into it,
   mutation-tested with a real alias.
 
-- *STATED, NOT FIXED — WHAT THIS REVIEW DID NOT DO.* Nothing here ran in a real
-  browser: the extension's own claims rest on jsdom, the crypto on Node's
-  WebCrypto, and the platform behaviours PR3b measured in Chrome 151 were not
-  re-measured. In particular **whether Chromium revokes `activeTab` on a
-  cross-origin navigation is still unmeasured in this repository** — the
-  fill-time re-read now makes the boundary hold independently of the answer,
-  which is why it was fixed rather than measured, but the answer is still owed
-  by whoever next drives this in a browser.
+- *STATED, NOT FIXED — WHAT THIS REVIEW DID NOT DO.* Nothing in the review ran
+  in a real browser: the extension's own claims rest on jsdom and the crypto on
+  Node's WebCrypto. One of the two things it recorded as owed has since been
+  MEASURED; the rest stands.
+
+- *`activeTab` REVOCATION, MEASURED — Chrome 151.0.7922.110, macOS.* The review
+  left this open, noting that the fill-time re-read makes the boundary hold
+  either way but that the platform's actual behaviour was unmeasured here. It
+  is measured now, with a scratch probe extension holding `activeTab` and
+  `scripting` and NO host permissions, so the grant was the only thing in play.
+  The grant was taken with a real OS-level keyboard invocation of the action —
+  a programmatic `chrome.action.openPopup()` from the service worker opens the
+  popup and does NOT grant, which the run's control caught before any result was
+  believed.
+
+  | navigation from `a.test:8899` | grant |
+  | --- | --- |
+  | same origin (`a.test:8899/three`) | **survives** — still injects |
+  | different host (`b.test:8899`) | **revoked** |
+  | same host, different port (`a.test:8900`) | **revoked** |
+  | subdomain, same site (`sub.a.test:8899`) | **revoked** |
+
+  So the grant is ORIGIN-scoped and any cross-origin navigation revokes it. Two
+  consequences worth keeping. First, the pre-fix TOCTOU really was being held
+  shut by the platform rather than by the extension's own logic, exactly as the
+  review suspected — which is why re-reading the tab at the gesture was the
+  right fix regardless: it makes the code's stated claim true instead of resting
+  on undocumented behaviour nobody here had checked. Second, THE PLATFORM IS
+  STRICTER THAN OUR OWN MATCHER: `matchOrigin` treats a subdomain as the same
+  registrable domain and would fill there, while the grant does not survive the
+  navigation to it. Nothing depends on that asymmetry, but it means a same-site
+  redirect loses the grant, which is a refusal a user may see and which is
+  correct.
+
+  *Bounded, and stated as such:* one Chrome build, one platform, a probe
+  extension rather than the shipped artifact, and a keyboard invocation rather
+  than a toolbar click. Both are user invocations; if the two ever diverge, this
+  measured the keyboard one.
 
 - *`activeTab` discloses the active tab's URL to the extension.* That is the
   minimum origin matching can run on, and it is bounded by the permission itself:

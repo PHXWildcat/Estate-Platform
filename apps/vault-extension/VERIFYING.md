@@ -267,6 +267,12 @@ around version 137, after malware abuse) and the
 recipe built on that flag — including older versions of this one — is not
 runnable on a current Chrome. Loading is a manual step:
 
+> Automation note, for completeness rather than for you: an unpacked extension
+> CAN still be loaded programmatically, via the CDP `Extensions.loadUnpacked`
+> command (measured on 151). That is a route for a test harness, not for a
+> verifier — you should not have to attach a debugging protocol to check an
+> artifact, and the steps below are what this procedure asks of you.
+
 1. Extract: `unzip -d estate-vault vault-extension.zip`
 2. Open `chrome://extensions`
 3. Turn on **Developer mode** (top right)
