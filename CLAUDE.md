@@ -4418,3 +4418,55 @@ deviating from them, stop and propose the change with rationale — do not silen
   the line because the repo's habit is to trust a green suite: for a spec that
   constructs a domain type by hand, the suite and the compiler are different
   gates and the compiler is the one that knows the vocabulary.
+- 2026-08-12 — A COVERAGE FLOOR CALIBRATED AGAINST THE ONE CONFIGURATION NOTHING
+  RUNS. `apps/services/identity/jest.config.js` says its threshold is "set near
+  the LOCAL number (the full-flow integration suites only run with
+  PG_TEST_URL)" — and `ci.yml` sets `PG_TEST_URL`, so CI measured the HIGH
+  number and the number the floor exists for was evaluated by no gate at all.
+  It had rotted to 62.24/66.60/28.43/60.24 against a 65/66/30/63 floor, under on
+  statements, lines AND functions, failing for anyone who ran the suite without
+  a database. THE FENCE-THAT-NEVER-RUNS SHAPE FROM THE OTHER DIRECTION: not a
+  scan that stopped matching (2026-08-07) but a threshold nothing evaluates.
+  Closed by giving `auth.controller.ts` its FIRST unit spec — 23 route handlers
+  at 0% functions without Postgres, because only the int suites reached them,
+  which is M9 PR2's remedy for the identical thing in notifications where the
+  floor "was set from a number CI never produced". Local 67.91/67.55/39.25/66.23,
+  CI 89.96/79.31/83.64/89.57, floor ratcheted UP to 67/67/39/66. The spec is not
+  coverage-shaped: it pins the controller's whole contribution to authorization
+  — every authenticated handler takes its subject from the context SessionGuard
+  attached, never from the body, which the guard itself does not check — and
+  each case drives a body that TRIES to name somebody else. Mutation-tested:
+  making `verifyTotp` prefer a body-supplied userId turns one case red,
+  defeating `requireAuth` turns six red.
+- 2026-08-12 — AND THEN THE FLOOR WAS GIVEN SOMETHING THAT RUNS IT, which is the
+  half that stops it rotting again: a `ci.yml` step running identity with NO
+  database. Two things about it are the lesson rather than the feature.
+  (1) THE OBVIOUS SPELLING WOULD HAVE BEEN VACUOUS. `pnpm --filter
+  @estate/identity test -- --coverage` DOES NOT FORWARD THOSE FLAGS — measured:
+  no coverage collected, no output file written, exit 0. Since thresholds only
+  arm when coverage is collected, the step would have been a gate that could
+  never fail, in a commit whose whole subject is a gate that never ran. Caught by
+  refusing to ship it until it had been seen RED: raising the statements floor to
+  99 makes the real command exit 1. It runs the package's own jest from
+  `working-directory` instead. (2) IT MUST PROVE IT RAN THE CONFIGURATION IT
+  NAMES, or it is the same class of thing — a step that quietly acquired a
+  database would go green while measuring what the step above already covers. So
+  `PG_TEST_URL` is asserted empty, the `describeIfPg` suites are asserted to have
+  SKIPPED (pending > 0), and a passed-count floor catches a run that executed
+  almost nothing; all three were confirmed to exit 1.
+- 2026-08-12 — THE NEW STEP FAILED ITS FIRST CI RUN, AND THAT WAS THE STEP
+  WORKING. `test/ci-guard.spec.ts` asserts that in CI `PG_TEST_URL` must be set,
+  so integration suites cannot skip silently — and the new step deliberately
+  runs without one. Two correct gates wanting opposite things from the same
+  environment, which no amount of local running would have shown, because the
+  guard keys on `CI`. Reconciled with a DECLARED exemption that asserts its own
+  precondition: `IDENTITY_NO_DB_RUN` exempts the guard's first case and arms a
+  second requiring that such a run really has no database — so the flag cannot be
+  pasted into the ordinary Test step as a mute button, since it would then fail
+  the other case. All four configurations proven rather than argued: CI without a
+  database and without the flag still fails, CI with a database AND the flag
+  fails, and the two legitimate combinations pass. Only identity's copy is
+  exempted; the other ten refuse outright. (Eleven near-identical copies of that
+  guard is this repo's own copy-pasted-line drift class, noted in the spec rather
+  than fixed there — unifying them touches ten packages for reasons unrelated to
+  why this one was edited.)
