@@ -29,6 +29,28 @@ export class MfaRepo {
     );
   }
 
+  /**
+   * Does this account already hold a proof-carrying second factor?
+   *
+   * The question `AuthService.enrollTotp` asks to decide whether ADDING one is
+   * step-up gated: the first factor cannot be, because there is nothing to
+   * prove with, and every one after it must be. Deliberately a boolean rather
+   * than a row — the caller needs the fact, not the secret, and returning a
+   * method here would put a `secret_ct` on a path that has no business
+   * decrypting one.
+   */
+  async hasVerifiedTotp(userId: string): Promise<boolean> {
+    const rows = await this.db.query<{ present: boolean }>(
+      `SELECT true AS present
+         FROM mfa_methods
+        WHERE user_id = $1 AND kind = 'totp'
+          AND verified_at IS NOT NULL AND revoked_at IS NULL
+        LIMIT 1`,
+      [userId],
+    );
+    return rows.length > 0;
+  }
+
   async findActiveTotp(
     userId: string,
     opts: { verifiedOnly: boolean },

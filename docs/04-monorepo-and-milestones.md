@@ -3803,6 +3803,30 @@ so a path we invent is not one; the registered mechanism is `security.txt`'s
 four extensions, none of them `.txt`. Published in-repo, with the served path
 deferred and both obstacles named.
 
+#### PR5 — the security review
+
+**The worst finding is older than M16, and M16 is what made it matter.**
+`POST /v1/auth/totp/enroll` has been `SessionGuard`-only since M2.
+`revokeUnverifiedTotp` spares a VERIFIED method while `findActiveTotp` takes the
+NEWEST, so a caller holding nothing but a stolen session could enrol a secret OF
+THEIR OWN, confirm it with a code they computed themselves, and step up. Three
+ordinary requests, no guessing, and step-up stops being a second factor for
+anyone holding a session — vault reset, document generation, export, beneficiary
+changes, deletion. Measured end to end against real Postgres, including the half
+that makes it a lockout as well as a takeover: the owner's own authenticator
+answers 401 afterwards, which is docs/03 §5.1's liveness proof gone.
+
+The repository had already SEEN the mechanism and filed it as a test-seeding
+nuisance (CLAUDE.md 2026-08-06, on why the settlement e2e caches TOTP
+enrolment). M16 is what made it acute — it built an attempt cap whose whole
+premise is that step-up bounds a stolen credential. Enrolment is now step-up
+gated WHEN A VERIFIED FACTOR EXISTS; the first enrolment cannot be gated, and
+that residual is stated rather than implied.
+
+Shipped on its own commit ahead of the rest of the review, because it is
+pre-existing, independent of everything else in the range, and touches
+identity's auth surface rather than the extension's.
+
 ### M17 — Subscription manager (planned)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
