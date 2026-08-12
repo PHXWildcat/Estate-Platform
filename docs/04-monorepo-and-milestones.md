@@ -3438,9 +3438,21 @@ the revoked token at t+0 while the vault honoured it until t+20, the tail of the
 logic is proven against a `chrome` API double in jsdom and the transport is
 proven at the edge. Loading `dist/` unpacked in a real Chrome is a manual step —
 the honesty the repo applies to the Plaid live client and the Anthropic adapter.
-*Measured in PR3b and worse than this implies:* it is manual **and** it cannot be
-scripted, because Chrome 151 refuses `--load-extension` outright. Developer mode
-plus "Load unpacked" is the only route, so no CI job can ever stand in for it.
+*Measured in PR3b:* `--load-extension` is refused outright by Chrome 151, so any
+recipe built on that flag is dead — re-confirmed since, by launching with it and
+watching no extension appear among the CDP targets.
+
+*CORRECTED AFTERWARDS, and the correction matters:* PR3b concluded from that
+that loading "cannot be scripted" and "no CI job can ever stand in for it".
+Only the first half is true. The CDP `Extensions.loadUnpacked` command works on
+151 and returns the extension id, and a probe extension loaded that way was
+driven end to end — service worker attached, action invoked, `executeScript`
+run against a live page. So the FLAG is gone and the CAPABILITY is not, and a CI
+job driving an unpacked extension over CDP is possible after all. What remains
+true is that a HUMAN following `VERIFYING.md` should still use developer mode
+and "Load unpacked": telling a third-party verifier to drive a debugging
+protocol would be a worse instruction, not a better one. The dead sentence was
+"no CI job can ever stand in for it".
 
 #### PR2b — unlock and read
 
