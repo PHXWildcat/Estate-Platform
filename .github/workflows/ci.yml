@@ -108,6 +108,14 @@ jobs:
         working-directory: apps/services/identity
         env:
           PG_TEST_URL: ''
+          # DECLARES this run to `test/ci-guard.spec.ts`, which otherwise
+          # (correctly) fails any CI run with no PG_TEST_URL — the two gates
+          # want opposite things from the same environment, and the first real
+          # run of this step proved it by failing there. The flag is checked in
+          # BOTH directions: a run that sets it and still has a database fails
+          # the guard's other case, so it cannot be pasted into the step above
+          # as a mute button.
+          IDENTITY_NO_DB_RUN: '1'
         run: |
           set -euo pipefail
           if [ -n "${PG_TEST_URL:-}" ]; then
