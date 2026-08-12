@@ -55,6 +55,34 @@
     "@estate/vault-web#build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**", "public/app/**", "public/lib/**"]
+    },
+
+    /*
+     * AND THE EXTENSION BAKES AN ORIGIN, so strict env mode was silently
+     * discarding it — the same defect as BFF_URL above, in the same file, one
+     * milestone later.
+     *
+     * MEASURED, not inferred: `VAULT_ORIGIN=https://vault.example.test pnpm
+     * build --filter=@estate/vault-extension --force` produced a package whose
+     * manifest and `origin.js` both said `http://vault.localhost:3010`. The
+     * build script validates the value it reads and throws on a bad one, so it
+     * cannot catch this — it never saw the variable at all and fell through to
+     * its dev default. Exit 0, green everywhere, wrong artifact.
+     *
+     * Declaring it here also puts it in the task HASH, which the caching half
+     * of this needs: without that, a build for one origin would be served from
+     * the cache of a build for another.
+     *
+     * `OUT_DIR` is declared for the same rule rather than because turbo passes
+     * it — only the specs set it, to build into a temp directory. The fence in
+     * `test/turbo-env.spec.ts` derives this list from the script's own
+     * `process.env` reads, so the next build-time input is declared or the
+     * build goes red.
+     */
+    "@estate/vault-extension#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "env": ["VAULT_ORIGIN", "OUT_DIR"]
     }
   }
 }
