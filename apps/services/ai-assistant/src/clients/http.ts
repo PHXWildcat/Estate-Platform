@@ -12,7 +12,7 @@ import type { z } from 'zod';
  */
 export type FetchLike = (
   url: string,
-  init: { method: 'GET'; headers: Record<string, string> },
+  init: { method: 'GET' | 'POST'; headers: Record<string, string>; body?: string },
 ) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
 
 /** Real transport. Injected by default; every client accepts an override. */
@@ -91,14 +91,66 @@ export async function readJsonOrAbsent<T extends z.ZodTypeAny>(
   bearer: string,
   schema: T,
 ): Promise<z.infer<T> | typeof ABSENT | null> {
+  return requestJson(fetchImpl, url, bearer, schema, { method: 'GET' });
+}
+
+/**
+ * POST `url` with a JSON payload, on the CALLER'S OWN bearer.
+ *
+ * WHY A READ IS A POST AT ALL, since every other peer read here is a GET: the
+ * documents service moved encrypted search off the query string in M12, because
+ * THE SEARCH TERM IS PII BY CONSTRUCTION — it is a word out of the caller's own
+ * estate, and a query string is the part of a request intermediaries log by
+ * default (CloudFront + WAF, docs/01 §2). The route is `@Post('documents/search')`
+ * and has no `@Get`.
+ *
+ * This function exists because that decision was applied to the service and not
+ * to its one caller. `DocumentsClient.search` built `?q=…` and handed it to
+ * `readJson`, whose transport is hardcoded GET — so the request fell through to
+ * `@Get('documents/:documentId')`, failed `UuidSchema`, and 400'd. Search
+ * reported unavailable on EVERY call, and the term it was not supposed to put
+ * in a URL went into one anyway.
+ *
+ * The taxonomy is deliberately IDENTICAL to `readJson`'s — same uniform null,
+ * same refusal to discriminate on status, same reasons. Only the verb and the
+ * payload differ. A second taxonomy is a second thing to keep in step.
+ */
+export async function postJson<T extends z.ZodTypeAny>(
+  fetchImpl: FetchLike,
+  url: string,
+  bearer: string,
+  payload: unknown,
+  schema: T,
+): Promise<z.infer<T> | null> {
+  const result = await requestJson(fetchImpl, url, bearer, schema, { method: 'POST', payload });
+  return result === ABSENT ? null : result;
+}
+
+/**
+ * The shared body of both verbs. Split out rather than duplicated so the flat
+ * taxonomy above has exactly one implementation: every branch that turns a peer
+ * response into `null` or `ABSENT` is written once and applies to GET and POST
+ * alike.
+ */
+async function requestJson<T extends z.ZodTypeAny>(
+  fetchImpl: FetchLike,
+  url: string,
+  bearer: string,
+  schema: T,
+  init: { method: 'GET' } | { method: 'POST'; payload: unknown },
+): Promise<z.infer<T> | typeof ABSENT | null> {
   if (!bearer) {
     return null;
   }
   let response: Awaited<ReturnType<FetchLike>>;
   try {
     response = await fetchImpl(url, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${bearer}` },
+      method: init.method,
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        ...(init.method === 'POST' ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(init.method === 'POST' ? { body: JSON.stringify(init.payload) } : {}),
     });
   } catch {
     return null; // network/DNS failure ⇒ no data
