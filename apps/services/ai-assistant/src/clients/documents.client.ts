@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { z } from 'zod';
-import { defaultFetch, pathSegment, readJson, type FetchLike } from './http';
+import { defaultFetch, pathSegment, postJson, readJson, type FetchLike } from './http';
 
 /**
  * Read-only client for the documents service (apps/services/documents),
@@ -108,9 +108,19 @@ export class DocumentsClient {
    * cannot reach another user's corpus even in principle.
    */
   search(bearer: string, q: string): Promise<DocumentView[] | null> {
-    const query = new URLSearchParams({ q });
-    const url = `${this.baseUrl}/v1/documents/search?${query.toString()}`;
-    return readJson(this.fetchImpl, url, bearer, DocumentListSchema);
+    // A POST WITH THE TERM IN THE BODY, never a query string. M12 moved this
+    // off the URL because the term is by construction a word out of the
+    // caller's own estate and a query string is what intermediaries log by
+    // default; the route has been POST-only since, with no `@Get`. The body key
+    // is `query` because documents parses it with a `.strict()` schema, so `q`
+    // is rejected outright.
+    return postJson(
+      this.fetchImpl,
+      `${this.baseUrl}/v1/documents/search`,
+      bearer,
+      { query: q },
+      DocumentListSchema,
+    );
   }
 
   /** One version's decrypted content. See DocumentContentViewSchema — UNTRUSTED. */
