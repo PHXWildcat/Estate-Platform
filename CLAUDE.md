@@ -4470,3 +4470,27 @@ deviating from them, stop and propose the change with rationale — do not silen
   guard is this repo's own copy-pasted-line drift class, noted in the spec rather
   than fixed there — unifying them touches ten packages for reasons unrelated to
   why this one was edited.)
+- 2026-08-12 — ELEVEN COPIES OF THE `ci-guard` SPEC UNIFIED, and the interesting
+  part is what the drift turned out to be. MEASURED before touching anything:
+  the ASSERTION was byte-identical in all ten service copies, so nothing
+  behavioural had broken. What had drifted was TEXT — three docstring wordings,
+  and vault's copy had lost its docstring entirely, so the one file explaining
+  WHY the guard exists was the one that no longer said it. Two had also grown
+  real clauses (identity's database-free run, e2e's stack gate), so eleven files
+  under one name were becoming three different things. This is the point BEFORE
+  a copy-pasted line costs something, which is the only cheap time to fix it.
+  THE TRADE-OFF IS THE ENTRY. Eleven copies have one virtue — an edit breaks one
+  of them — and unifying trades that for the drift. Demonstrated rather than
+  asserted: making `evaluate` return `satisfied: true` silences the gate in ALL
+  ELEVEN at once (audit goes from exit 1 to exit 0 in CI with no database). So
+  the shared thing gets the tests THE COPIES NEVER HAD, which is the only way
+  that trade is worth taking: `evaluate` is a PURE function of an environment,
+  driven over fabricated environments in `packages/config/test/ci-guard.spec.ts`
+  — fourteen cases, most of them a configuration that MUST FAIL — and both
+  weakening mutations are caught by it. The rule generalizes: UNIFYING N COPIES
+  OF A GUARD IS ONLY SAFE IF THE UNIFIED ONE IS TESTED HARDER THAN THE COPIES
+  WERE, because the blast radius is now N. Each package keeps a thin spec (jest
+  projects are per-package, so a spec in `@estate/config` would run nowhere) and
+  the two parameterised cases read as parameters rather than as forks. Verified
+  PER PACKAGE rather than centrally, because a central green would prove the
+  helper and not the wiring.
