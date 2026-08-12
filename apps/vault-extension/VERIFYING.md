@@ -117,6 +117,38 @@ four rows — build repo, build workflow, signer repo, signer workflow — and n
 commit at all. `--source-digest` makes the tool do that comparison, which is the
 only way it actually happens.
 
+**Judge this by the exit status, not by the output.** `gh` prints a summary
+when it is attached to a terminal and prints _nothing at all_ when it is piped
+or run in a script — so a silent, successful run looks exactly like a command
+that did nothing. It is not:
+
+```bash
+gh attestation verify vault-extension.zip --repo … --source-ref … --source-digest …
+echo $?     # 0 = verified, 1 = refused
+```
+
+On a terminal it also prints the policy it is about to apply, which is the best
+way to see that your flags took effect — and to see for yourself why
+`--signer-workflow` is not sufficient alone:
+
+```
+- Source repo digest digest must match:..... 6a23f79aceb9e3c51a622cd1e911a93f24878b9d
+- Source repo ref must match:............... refs/heads/main
+- Subject Alternative Name must match regex: ^https://github\.com/PHXWildcat/Estate-Platform/\.github/workflows/extension\.yml
+```
+
+That last line is the anchored prefix described above: no `$`, and no room for a
+ref, while the certificate it is matched against reads
+`…/extension.yml@refs/heads/main`. The two lines above it are the ones doing
+that half of the work.
+
+Measured against this repository's own published artifact: a wrong
+`--source-digest` exits 1 with `expected SourceRepositoryDigest to be …, got
+<real commit>`, a wrong `--source-ref` exits 1 the same way, and a single byte
+appended to the archive exits 1 with **HTTP 404** — which reads oddly but is the
+right answer, because attestations are looked up _by_ the artifact's digest, so
+altered bytes simply have none.
+
 To verify offline, or to keep the evidence:
 
 ```bash

@@ -4224,3 +4224,20 @@ deviating from them, stop and propose the change with rationale — do not silen
   differing digests means; and step 1's snippet returned an empty run id with no
   explanation, which is the state the repository is in until this very workflow
   first runs on main.
+- 2026-08-12 — RUNNING THE PUBLISHED PROCEDURE AGAINST THE REAL ARTIFACT found
+  the last defect, and it is the one a reader is most likely to be defeated by:
+  `gh attestation verify` prints a summary on a TTY and NOTHING AT ALL when
+  piped or scripted, so a successful verification is byte-for-byte
+  indistinguishable from a command that did nothing. VERIFYING.md said what to
+  look for in the output and never said to check the exit status. Confirmed to
+  be a real pass rather than a no-op by the anti-vacuity discipline this repo
+  applies to its own fences, pointed at somebody else's tool: a wrong
+  `--source-digest` exits 1 naming the true commit, a wrong `--source-ref` exits
+  1 naming the true ref, and one appended byte exits 1 with HTTP 404 — which
+  reads oddly and is correct, since attestations are looked up BY the artifact's
+  digest, so altered bytes have none. All three are now in the doc, because a
+  procedure whose success and whose no-op look the same is a procedure nobody
+  can rely on. The first `attest` job also ran for the first time here: it had
+  skipped on every pull-request run by design, so its first real execution was
+  on main after the merge, which is exactly the shape of thing this repo keeps
+  finding — machinery that has never once executed.
