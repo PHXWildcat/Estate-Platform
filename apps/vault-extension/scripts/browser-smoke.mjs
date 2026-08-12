@@ -74,9 +74,20 @@ const withDeadline = (promise, ms, what) =>
   ]);
 
 const checks = [];
+/**
+ * A FAILURE MUST SAY WHY. `ev` reports a thrown or timed-out evaluation as
+ * `{__error}`, and a caller doing `String(v)` renders that `[object Object]` —
+ * which is what the first CI failure of this job printed, throwing away the one
+ * fact that would have explained it. Details render through `describe`, so an
+ * error arrives as its text wherever it is reported.
+ */
+const describe = (v) =>
+  v && typeof v === 'object' && '__error' in v ? `ERROR: ${v.__error}` : String(v ?? '');
+
 const check = (name, ok, detail = '') => {
-  checks.push({ name, ok, detail });
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
+  const shown = describe(detail);
+  checks.push({ name, ok, detail: shown });
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${shown ? `  — ${shown}` : ''}`);
 };
 
 /** Poll until `fn` is truthy or the deadline passes. No bare sleeps. */
@@ -174,8 +185,6 @@ try {
     const at = await b.send('Target.attachToTarget', { targetId: sw.targetId, flatten: true });
     return at.result.sessionId;
   }, 'the extension service worker');
-  check('its service worker boots', Boolean(swSession));
-
   const ev = async (expression, session = swSession) => {
     const r = await withDeadline(
       b.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, session),
@@ -183,17 +192,43 @@ try {
       expression.slice(0, 60).replace(/\s+/g, ' '),
     );
     if (r?.__timeout) return { __error: r.__timeout };
-    if (r.result?.exceptionDetails) return { __error: r.result.exceptionDetails.text };
+    if (r.result?.exceptionDetails) {
+      // `text` is bare "Uncaught"; the message a reader needs is on the
+      // exception object. Prefer it, and keep `text` as the fallback.
+      const d = r.result.exceptionDetails;
+      return { __error: d.exception?.description ?? d.text };
+    }
     return r.result?.result?.value;
   };
+
+  // ATTACHED IS NOT READY, and the difference cost this job its first red run.
+  // `Target.attachToTarget` succeeds as soon as the target EXISTS, while the
+  // worker's `chrome` bindings are installed a moment later — so the next
+  // `Runtime.evaluate` can throw, and every check after it inherits that. CI
+  // failed exactly there (`chrome.runtime.getManifest` 55ms after attach) while
+  // passing on the run before and passing locally, which is the signature of a
+  // race rather than a defect in what is being asserted.
+  //
+  // The readiness predicate is therefore the thing actually needed: the worker
+  // EVALUATES. Polled to a deadline, never slept at — the rule this repo keeps
+  // restating about flaky gates.
+  const swReady = await until(
+    async () => {
+      const id = await ev(`chrome.runtime.id`);
+      return typeof id === 'string' && id.length > 0 ? id : null;
+    },
+    'the service worker to evaluate',
+    15000,
+  );
+  check('its service worker boots', Boolean(swSession) && Boolean(swReady), swReady);
 
   // 3. THE MANIFEST CHROME PARSED is the one that was built — the M8 PR5
   //    baked-value lesson, asserted against the platform rather than a file.
   const perms = await ev(`JSON.stringify(chrome.runtime.getManifest().host_permissions)`);
   check(
     'the origin Chrome sees is the one that was baked',
-    String(perms).includes(String(PORT)),
-    String(perms),
+    typeof perms === 'string' && perms.includes(String(PORT)),
+    perms,
   );
 
   // 4. Seed the paired session. Pairing itself is proven live at the edge
