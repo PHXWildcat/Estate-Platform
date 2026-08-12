@@ -19,6 +19,7 @@ import {
   type FieldCrypto,
 } from '@estate/crypto';
 import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
+import { AddressAttemptBound } from './address-bound';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { IdentityConfig } from './config';
 import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
@@ -27,15 +28,16 @@ import { EventsService } from './events.service';
 import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
 import { SecondFactorGate } from './second-factor-gate';
-import { SessionsRepo } from './sessions.repo';
 import {
-  ACCESS_TOKEN_TTL_MS,
-  SESSION_TTL_MS,
-  STEPUP_DENIAL_WINDOW_MS,
-  STEPUP_MAX_ACCOUNT_DENIALS,
-  STEPUP_MAX_DENIALS,
-  STEPUP_WINDOW_MS,
-} from './stepup';
+  LOGIN_ADDRESS_BOUND,
+  LOGIN_BOUND,
+  REGISTER_ADDRESS_BOUND,
+  REGISTER_REFUSAL_KIND,
+  STEP_UP_BOUND,
+  type LedgerRateBound,
+} from './rate-bounds';
+import { SessionsRepo } from './sessions.repo';
+import { ACCESS_TOKEN_TTL_MS, SESSION_TTL_MS, STEPUP_WINDOW_MS } from './stepup';
 import { generateOpaqueToken, hashToken } from './tokens';
 import { generateTotpSecretBase32, totpProvisioningUri, verifyTotpCode } from './totp';
 import { UsersRepo } from './users.repo';
@@ -79,6 +81,21 @@ export class AuthService {
   ) {}
 
   /**
+   * The two ADDRESS-keyed bounds, constructed here rather than provided.
+   *
+   * They are per-process state and Nest services are singletons, so an instance
+   * field IS the process-wide bound — no module wiring, and the injected clock
+   * (which every test already controls) reaches them for free. `rate-bounds.ts`
+   * carries why they are in memory rather than on the ledger.
+   */
+  private readonly loginAddresses = new AddressAttemptBound(LOGIN_ADDRESS_BOUND, () =>
+    this.clock(),
+  );
+  private readonly registerAddresses = new AddressAttemptBound(REGISTER_ADDRESS_BOUND, () =>
+    this.clock(),
+  );
+
+  /**
    * Feed the notifications recipient store (M9) — fire-and-forget on the two
    * paths where the USER supplied the plaintext address, so no service ever
    * needs an email-ciphertext read path. Deliberately not awaited: the client
@@ -96,9 +113,12 @@ export class AuthService {
    *
    * NOT at registration, which is unauthenticated: a notification kind firing
    * there would be a mail-bomb primitive addressable by anyone holding a
-   * victim's address, and this repo has no rate-limiting machinery to bound it.
-   * docs/03 §6c's mitigation, "no notification kind fires at registration",
-   * stays literally true.
+   * victim's address. (This used to add "and this repo has no rate-limiting
+   * machinery to bound it", which M17 made false — register now carries an
+   * address-keyed bound. The decision stands on the first clause alone: that
+   * bound is per-process and best-effort, which is not what a mail-bomb defence
+   * should rest on.) docs/03 §6c's mitigation, "no notification kind fires at
+   * registration", stays literally true.
    *
    * CHAINED ONTO THE UPSERT, not fired beside it. The verification send
    * resolves the address from the recipient store, so on a user's FIRST login
@@ -141,6 +161,30 @@ export class AuthService {
   async register(email: string, password: string): Promise<void> {
     const normalized = normalizeEmail(email);
     const emailBidx = emailBlindIndex(this.config.emailIndexKey, normalized);
+
+    // ═══ THE ADDRESS BOUND, BEFORE ARGON2 ═══
+    //
+    // This route is the most expensive unauthenticated thing in the product:
+    // Argon2id at 64 MiB × parallelism 4, paid BEFORE the existence probe
+    // below (deliberately — probing first would leak existence by timing). No
+    // ledger-derived bound can cover it, because the duplicate path returns
+    // having written no row in either direction, so there is nothing to count.
+    //
+    // COUNTED PER ATTEMPT, NOT PER FAILURE, because register has no failure to
+    // speak of: it answers the same 201 whether the address was new or already
+    // had an account, and that identical answer is the anti-enumeration control.
+    // The bound is therefore on COST and on address probing, not on guessing.
+    //
+    // 429 IS SAFE HERE, unlike on login. The count depends only on how many
+    // times this caller submitted this address, which they already know, so the
+    // refusal tells them nothing about whether an account exists.
+    if (this.registerAddresses.exhausted(emailBidx)) {
+      await this.authEvents.insert({ userId: null, kind: REGISTER_REFUSAL_KIND });
+      await this.events.registerRateLimited();
+      throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
+    }
+    this.registerAddresses.record(emailBidx);
+
     const passwordHash = await this.hasher.hashPassword(password);
 
     const existing = await this.users.findByEmailBidx(emailBidx);
@@ -173,20 +217,56 @@ export class AuthService {
 
   /**
    * Password login. Every failure path (unknown email, bad password, locked
-   * account) costs one Argon2 verification and returns the same generic 401.
+   * account, rate-limited) costs one Argon2 verification and returns the same
+   * generic 401.
+   *
+   * ═══ WHERE THE TWO BOUNDS SIT, AND WHY IT IS NOT THE OBVIOUS PLACE (M17) ═══
+   *
+   * The ADDRESS bound is checked first and short-circuits before anything
+   * expensive. That is safe because its answer is EXISTENCE-INDEPENDENT: an
+   * address with no account reaches its cap on exactly the same schedule as one
+   * with, so the fast refusal cannot be correlated with whether the account is
+   * real, and `dummyVerify`'s timing equalization is untouched.
+   *
+   * The ACCOUNT bound is checked AFTER the password verification, which looks
+   * wasteful and is the only correct placement. It can only be evaluated once
+   * the user is resolved, so checking it before `verifyPassword` would make an
+   * over-cap account answer fast while an unknown address still paid a full
+   * Argon2 — the account-existence timing oracle this route burns a dummy
+   * verification to close, re-opened by the control added to protect it. It
+   * costs one hash on a path that is refusing anyway.
+   *
+   * BOTH REFUSALS ARE THE SAME 401 as a wrong password. A 429 on login is an
+   * account-existence oracle however the counter is keyed, because past the
+   * threshold a real address would answer differently from one that was never
+   * counted at all. `rate-bounds.ts` carries the full reasoning; the bound's
+   * visibility is the audit trail, not the status code.
    */
   async login(email: string, password: string): Promise<IssuedTokens> {
     const emailBidx = emailBlindIndex(this.config.emailIndexKey, normalizeEmail(email));
+
+    if (this.loginAddresses.exhausted(emailBidx)) {
+      await this.refuseLoginForRate(null, 'address');
+    }
+
     const user = await this.users.findByEmailBidx(emailBidx);
 
     if (!user || user.password_hash === null) {
       await this.hasher.dummyVerify(); // timing equalization: unknown identifier still burns a verify
+      this.loginAddresses.record(emailBidx);
       await this.recordLoginFailure(null, 'bad_credentials');
       throw invalidCredentials();
     }
 
     const passwordOk = await this.hasher.verifyPassword(user.password_hash, password);
+
+    const overCap = await this.boundExceeded(LOGIN_BOUND, user.id, null);
+    if (overCap) {
+      await this.refuseLoginForRate(user.id, 'account', overCap.count);
+    }
+
     if (!passwordOk) {
+      this.loginAddresses.record(emailBidx);
       await this.recordLoginFailure(user.id, 'bad_credentials');
       throw invalidCredentials();
     }
@@ -203,6 +283,7 @@ export class AuthService {
         user.status === 'settlement' || user.status === 'closed'
           ? 'account_settled'
           : 'account_locked';
+      this.loginAddresses.record(emailBidx);
       await this.recordLoginFailure(user.id, reason);
       throw invalidCredentials();
     }
@@ -224,6 +305,11 @@ export class AuthService {
       audience: DEFAULT_SESSION_AUDIENCE,
     });
 
+    // The address's budget is forgiven by a success, mirroring the ledger
+    // bound's "count since the last success": a user who fumbles twice and then
+    // gets it right must not spend the rest of the window one attempt from a
+    // refusal.
+    this.loginAddresses.clear(emailBidx);
     await this.authEvents.insert({ userId: user.id, sessionId, kind: 'login.succeeded' });
     await this.events.loginSucceeded(user.id, sessionId, 'none');
     // The address a login carries is by construction the one already on file —
@@ -344,11 +430,11 @@ export class AuthService {
    * The M16 review measured this route as an uncapped oracle: forty wrong codes
    * produced forty 401s, never a 429, and left the step-up counter at zero —
    * after which the code the guessing found elevated at `stepup` on the first
-   * try, spending none of the five. `assertFactorAttemptsAvailable` is the one
+   * try, spending none of the five. `assertStepUpAttemptsAvailable` is the one
    * gate both routes now pass through.
    */
   async verifyTotp(userId: string, sessionId: string, code: string): Promise<void> {
-    await this.assertFactorAttemptsAvailable(userId, sessionId);
+    await this.assertStepUpAttemptsAvailable(userId, sessionId);
     const ok = await this.checkTotp(userId, code, 'auth.totp.verify', { verifiedOnly: false });
     if (!ok.valid) {
       await this.authEvents.insert({ userId, sessionId, kind: 'totp.verify_failed' });
@@ -514,30 +600,100 @@ export class AuthService {
    * authenticator when the remedy is to wait (the M12 lesson about one token
    * changing meaning with the surface).
    */
-  private async assertFactorAttemptsAvailable(userId: string, sessionId: string): Promise<void> {
-    const windowStart = new Date(this.clock().getTime() - STEPUP_DENIAL_WINDOW_MS);
-    const mine = await this.authEvents.failedFactorAttempts(userId, windowStart, { sessionId });
-    if (mine < STEPUP_MAX_DENIALS) {
-      const account = await this.authEvents.failedFactorAttempts(userId, windowStart);
-      if (account < STEPUP_MAX_ACCOUNT_DENIALS) return;
-      await this.refuseForRate(userId, sessionId, account);
+  /**
+   * The step-up gate, unchanged in behaviour: two scopes, session first, before
+   * the code is even looked at. `stepup.ts` carries the reasoning and the
+   * measurement that forced the pair.
+   *
+   * Kept as a named method with one call per reader so the fence can still
+   * assert that every route reading the factor passes a gate FIRST — the check
+   * that caught `POST /v1/auth/totp/verify` being an uncapped oracle.
+   */
+  private async assertStepUpAttemptsAvailable(userId: string, sessionId: string): Promise<void> {
+    const overCap = await this.boundExceeded(STEP_UP_BOUND, userId, sessionId);
+    if (overCap) {
+      await this.refuseStepUpForRate(userId, sessionId, overCap.count);
     }
-    await this.refuseForRate(userId, sessionId, mine);
   }
 
-  private async refuseForRate(userId: string, sessionId: string, denials: number): Promise<never> {
+  private async boundExceeded(
+    bound: LedgerRateBound,
+    userId: string,
+    scopeId: string | null,
+  ): Promise<{ scope: 'session' | 'account'; count: number } | null> {
+    const windowStart = new Date(this.clock().getTime() - bound.windowMs);
+    const counted = { failures: bound.failures, successes: bound.successes };
+
+    if (scopeId !== null && bound.maxPerScope !== null) {
+      const mine = await this.authEvents.failedAttempts(userId, windowStart, {
+        ...counted,
+        sessionId: scopeId,
+      });
+      if (mine >= bound.maxPerScope) {
+        return { scope: 'session', count: mine };
+      }
+    }
+    const account = await this.authEvents.failedAttempts(userId, windowStart, counted);
+    return account >= bound.maxPerAccount ? { scope: 'account', count: account } : null;
+  }
+
+  /**
+   * The step-up refusal: 429 with its own token.
+   *
+   * Never `invalid_code`, which already means "that code was wrong" and would
+   * send a user to re-read an authenticator when the remedy is to wait (the M12
+   * lesson about one token changing meaning with the surface). A distinct status
+   * is safe HERE and not on login, because this route already required a
+   * resolved, authenticated caller — it tells them something about themselves.
+   */
+  private async refuseStepUpForRate(
+    userId: string,
+    sessionId: string,
+    denials: number,
+  ): Promise<never> {
     await this.authEvents.insert({
       userId,
       sessionId,
-      kind: 'stepup.rate_limited',
+      kind: STEP_UP_BOUND.refusalKind,
       decision: 'too_many_attempts',
     });
     await this.events.stepUpRateLimited(userId, sessionId, denials);
     throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
   }
 
+  /**
+   * The login refusal: the SAME 401 `invalid_credentials` a wrong password
+   * gets, and this is the single most important line in the milestone.
+   *
+   * A 429 here would be an account-existence oracle regardless of how the
+   * counter is keyed, because it is a state reachable only by naming something
+   * the platform counted. The address half counts everything and so is safe on
+   * its own — but making the two halves answer differently would let an
+   * attacker tell which fired, and the ordering that keeps that harmless is an
+   * invariant nobody would think to preserve through a later edit. One uniform
+   * answer is robust to that; two are correct only by accident.
+   *
+   * The control's visibility is HERE, in the trail: a ledger row under a kind
+   * no bound counts (so the counter cannot feed itself), plus an audit action
+   * distinct from `auth.login.failed` — a control firing must not read as an
+   * ordinary failure (the M9 rule).
+   */
+  private async refuseLoginForRate(
+    userId: string | null,
+    scope: 'address' | 'account',
+    attempts?: number,
+  ): Promise<never> {
+    await this.authEvents.insert({
+      userId,
+      kind: LOGIN_BOUND.refusalKind,
+      decision: scope === 'address' ? 'address_rate' : 'account_rate',
+    });
+    await this.events.loginRateLimited(userId, scope, attempts ?? null);
+    throw invalidCredentials();
+  }
+
   async stepUp(userId: string, sessionId: string, code: string): Promise<StepUpResult> {
-    await this.assertFactorAttemptsAvailable(userId, sessionId);
+    await this.assertStepUpAttemptsAvailable(userId, sessionId);
 
     const ok = await this.checkTotp(userId, code, 'auth.totp.stepup', { verifiedOnly: true });
     if (!ok.valid) {

@@ -146,6 +146,63 @@ export class EventsService {
     });
   }
 
+  /**
+   * The LOGIN bound firing (M17). Audit only, on `stepUpRateLimited`'s terms —
+   * nothing consumes "somebody is guessing" on the bus.
+   *
+   * THE WIRE SAYS NOTHING AND THIS SAYS WHAT IT CAN. Login answers the same 401
+   * whichever half refused, because a distinct status would be an
+   * account-existence oracle; the trail is where the control becomes visible to
+   * the people entitled to see it. `actorId` is the user when the ACCOUNT half
+   * refused and null when the ADDRESS half did — which resolves nobody, so
+   * there is nobody to name. That unevenness is not a leak: this trail has
+   * carried exactly the same distinction since M1, where `auth.login.failed`
+   * takes a null actor for an unknown identifier, and an unauthenticated
+   * attacker cannot read any of it.
+   *
+   * NEVER THE ADDRESS. `scope` says which half fired, `attempts` is a volume
+   * number for the account half and null for the other — the address half's
+   * count lives only in a process's memory and putting it here would be a
+   * number about somebody who may have no account at all.
+   */
+  async loginRateLimited(
+    userId: string | null,
+    scope: 'address' | 'account',
+    attempts: number | null,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.login.rate_limited',
+      actorId: userId,
+      actorType: userId === null ? 'system' : 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: attempts === null ? { scope } : { scope, attempts: String(attempts) },
+    });
+  }
+
+  /**
+   * The REGISTER bound firing (M17). No actor and no subject, on
+   * `handoffFailed`'s terms: this route deliberately never resolves a user, and
+   * the whole point of its identical-response contract is that the platform does
+   * not say whether the address it was handed belongs to anyone. An audit row
+   * naming one would answer through the trail the question the route refuses to
+   * answer on the wire.
+   */
+  async registerRateLimited(): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.register.rate_limited',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: null,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
   async stepUpGranted(
     userId: string,
     sessionId: string,

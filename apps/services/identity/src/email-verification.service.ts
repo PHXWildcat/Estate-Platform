@@ -16,8 +16,11 @@ export const VERIFICATION_TTL_MS = 30 * 60 * 1000;
 /**
  * The floor between two mints for one user.
  *
- * It is the ONLY rate limit on this path and it is doing real work, because
- * there is no rate-limiting machinery anywhere in this repo. Without it,
+ * It is STILL the only rate limit on this path and it is doing real work. M17
+ * added bounds to login and register (docs/03 §6k); this route is authenticated
+ * and behind neither of them, so the sentence that used to read "because there
+ * is no rate-limiting machinery anywhere in this repo" is now narrower and no
+ * weaker: the machinery exists and does not reach here. Without this floor,
  * anyone able to authenticate to an account can mail its address once per
  * request: for an account standing on somebody else's address — which is
  * precisely the situation verification exists to detect — that turns a stranger
@@ -61,9 +64,14 @@ export type ReissueOutcome = 'sent' | 'too_soon' | 'already_verified' | 'unavail
  * IT FIRES AT FIRST AUTHENTICATED LOGIN, NOT AT REGISTRATION, and that is a
  * decision rather than a convenience. Registration is unauthenticated; a
  * notification kind firing there would be a mail-bomb primitive addressable by
- * anyone with a victim's address and would need rate-limiting machinery this
- * repo does not have. docs/03 §6c's existing mitigation — "no notification kind
- * fires at registration" — stays literally true.
+ * anyone with a victim's address. This used to continue "and would need
+ * rate-limiting machinery this repo does not have", which M17 falsified —
+ * register carries an address-keyed bound now (docs/03 §6k). The decision is
+ * unchanged and rests on the first clause: that bound is per-process and
+ * best-effort, evadable by restart and by spraying, which is not what should
+ * stand between an anonymous caller and the platform's outbound mail. docs/03
+ * §6c's existing mitigation — "no notification kind fires at registration" —
+ * stays literally true.
  *
  * THE PATTERN IS M13's, near-verbatim: randomBytes, a canonical fold onto a
  * read-aloud alphabet, store only sha256, a TTL, an attempt cap, ONE uniform

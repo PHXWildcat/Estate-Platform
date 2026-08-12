@@ -36,5 +36,9 @@
 //
 // Re-measured at 68.59/68.19/39.90/66.89 and ratcheted UP.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 68, branches: 68, functions: 39, lines: 66 } },
+  // Ratcheted UP for M17's bounds (was 68/68/39/66). Measured on the
+  // DATABASE-FREE run, which is the configuration `ci.yml` evaluates this
+  // against — the 2026-08-12 lesson that a floor calibrated for a run nothing
+  // performs is a floor nothing evaluates.
+  coverageThreshold: { global: { statements: 70, branches: 68, functions: 41, lines: 68 } },
 });

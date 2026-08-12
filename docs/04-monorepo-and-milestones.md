@@ -3940,8 +3940,13 @@ pinning would hide exactly what it is there to notice.
 
 ### M17 — Account recovery and abuse bounds (approved 2026-08-12)
 
-**Identity declares 23 routes and not one of them changes a password, resets a
-forgotten one, or changes an address.** Every "password reset" string in these
+**Identity declares 23 owner-facing routes and not one of them changes a
+password, resets a forgotten one, or changes an address.** (Precisely: 23 on
+`AuthController` plus 2 service-credential-guarded settlement-lock routes, so 25
+handlers in all. The 23 is the number that matters here — it is the user-facing
+surface — but a bound that treated "every identity route" uniformly would
+throttle settlement's own account-lock calls on the §5.1 chain.) Every
+"password reset" string in these
 docs refers to the VAULT password (Zone A, M6) — the account half is not even
 recorded as a deferral, which is how it stayed invisible for sixteen milestones.
 And there is no rate limiting anywhere: no throttler dependency in any
@@ -4003,16 +4008,44 @@ needs it, not in the review.
    NOT a holder of the notifications SEND credential (M14: the service that
    mints sessions must not be able to ring "a death report was filed on your
    account"). A silent password change is unacceptable and so is undoing that
-   split — so this is a fifth credential-graph edge with a closed
-   account-security kind subset, or a route through an existing holder. Update
-   `credential-graph.ts` as data and make the fence red before green.
+   split. **SETTLED, and this bullet's second option was false as written.**
+   There are THREE real options, not two, and "a route through an existing
+   holder" is not one of them: `SendSchema` is built per-ROUTE from
+   `ESTATE_NOTIFICATION_KINDS` (`notifications/src/schemas.ts`), so there is no
+   mechanism anywhere to grant one holder a SUBSET of the estate kinds — adding
+   identity to the SEND edge hands it all ten, including `settlement.case_opened`
+   and every `emergency.*`. Nor is there a peer path: notifications has no Kafka
+   consumer, and identity holds no credential to profile, settlement or vault.
+   The three real options are (a) a fifth NOTIFICATIONS edge, (b) widening the
+   existing VERIFY edge, whose holder is already identity alone, or (c) a new
+   reverse edge to a peer. **(a) is approved**, and (b) is explicitly declined
+   on the VERIFY edge's own recorded reasoning: splitting it from RECIPIENTS
+   exists so that "the first future holder of a resend capability" does not
+   inherit a power it should not, and a support tool or BFF-side resend is
+   exactly the plausible future holder that must not also inherit "mail an
+   account-security alert". Note also that this is the FIFTH edge on the
+   NOTIFICATIONS callee and the EIGHTH in the graph overall — it currently has
+   seven, four of them on notifications. Update `credential-graph.ts` as data
+   and make the fence red before green.
 2. *Does redeeming a reset code grant step-up?* Almost certainly no. This is
    exactly the M15 PR4 shape: an unauthenticated redeem route granted step-up
    while `POST /v1/vault/reset` is gated on step-up ALONE, so a stolen handoff
    code crypto-shredded a Zone A vault. A reset code that grants step-up is a
-   vault-destruction primitive delivered by email. Whatever is chosen, PR3 must
-   assert what a reset session CANNOT do, the way `session-audience.spec.ts`
-   derives its refused set.
+   vault-destruction primitive delivered by email. **SETTLED STRUCTURALLY: the
+   reset MINTS NO SESSION AT ALL** — one request takes `{code, newPassword}`,
+   sets the hash, revokes sessions and returns 200 with no tokens; the user logs
+   in. There is then no session to withhold a step-up from. This also avoids a
+   trap the two-step shape walks into: `AllowSessionAudiences` unconditionally
+   PREPENDS `account`, and identity binds no service-wide audience list, so a
+   fourth `recovery` audience could not be made exclusive on an identity route —
+   a reset-completion route admitting it would ALSO be reachable by every
+   ordinary account session, i.e. a set-a-new-password-without-the-current-one
+   route behind a stolen bearer. **The last sentence of this bullet is therefore
+   rewritten rather than satisfied:** "assert what a reset session cannot do"
+   presumes a session exists. PR3 ships a MINT-PATH FENCE instead — a scan
+   asserting `sessions.create(` has exactly three call sites, with an
+   anti-vacuity floor, mutation-tested by adding a fourth inside the reset
+   service.
 3. *What does a reset revoke, and what does it explicitly not recover?* Every
    session including 30-day paired extensions. But the Zone A master key derives
    from the vault password + Secret Key under 2SKD, not from the account
@@ -4029,12 +4062,29 @@ needs it, not in the review.
    records, and `sessions.ip_ct` would gain its first writer — a PII column with
    an envelope-encryption obligation. If not taken, write the residual: a
    distributed attacker walks around a per-account bound on `register`.
+   **SETTLED: per-account plus per-ADDRESS, and no per-IP.** A per-account bound
+   alone is blind to exactly the attack it looks like it stops —
+   `recordLoginFailure(null, …)` writes a NULL user for every unresolved
+   identifier, and register's duplicate path writes no row at all — so the
+   address-keyed half is the PRIMARY bound rather than a nicety. It is
+   per-process and in memory: the selector that would make it durable is the
+   email blind index, and putting THAT in an append-only table with no `dek_id`
+   would permanently record a correlatable identifier for addresses belonging to
+   no account. Per-IP stays WAF work blocked on the M5 cloud half, and §4 TB1 —
+   which asserted "per-IP+per-account rate limits" as an existing control — is
+   corrected rather than left standing. Residual written in docs/03 §6k.
 6. *How does the bound avoid being a DoS against the owner?* This is the trap
    M16 PR5 hit and the reason for two scopes. A per-account login cap is
    reachable by anyone who knows the email address, and five wrong passwords
-   from an attacker must not lock the owner out. Prove the owner's own session
-   survives an attacker exhausting the cap, the way `stepup-cap.int.spec.ts`
-   does.
+   from an attacker must not lock the owner out. **SETTLED, and M16's escape
+   does NOT port**: login has no credential at the point of failure, so there is
+   no per-session scope to fall back on and no restructuring invents one. What
+   replaces it is that the bound touches the login ROUTE only — a session that
+   already exists keeps working and keeps refreshing, because the session
+   lookups consult no counter. `test/login-bound.int.spec.ts` drives an attacker
+   to the ceiling and shows the owner's live access token and refresh token
+   still resolving. The residual (a sustained attack denies NEW logins for that
+   account) is stated in docs/03 §6k rather than softened.
 7. *Does password change require the current password, step-up, or both?*
    Recommendation: current password AND step-up where a factor exists; current
    password alone where none does. An account with no verified second factor
@@ -4044,6 +4094,38 @@ needs it, not in the review.
    where one exists removes email as a takeover channel for exactly the users who
    invested in security. Decide it in PR5 or state that it is deliberately not
    taken.
+
+#### PR1 as built — the bound (2026-08-12)
+
+**No DDL.** `auth_events.kind` is unconstrained `TEXT` (verified against the
+live cluster: no CHECK, no FK on `user_id`, which is nullable), so new ledger
+kinds need no migration, and `005_auth_events_index.sql` already serves every
+user-keyed count. The only shared-vocabulary change is two new members of
+`AUDIT_ACTIONS` — a closed enum, so the audit consumer must be deployed before
+identity emits them (the 2026-08-10 deploy-order hazard).
+
+**The load-bearing discovery, measured before any code was written:** the M16
+cap does NOT generalize by adding kinds to `SECOND_FACTOR_FAILURES`/`SUCCESSES`.
+The "since the last success" watermark is one shared subquery, so folding
+login's kinds in takes a user with four `stepup.denied` rows plus one
+`login.succeeded` row from **four denials to zero** — a plain password login,
+proving no second factor at all, silently resetting the second-factor cap. The
+kind sets became PARAMETERS to `failedAttempts` because of that number, and
+`test/rate-bounds.spec.ts` asserts pairwise disjointness across declared bounds.
+
+**Shipped:** `src/rate-bounds.ts` (the bounds as data), `src/address-bound.ts`
+(the in-memory half), a parameterized `AuthEventsRepo.failedAttempts`, login and
+register wired, and `assertFactorAttemptsAvailable` generalized to
+`boundExceeded` + per-bound refusals. `second-factor-kinds.spec.ts` became
+`rate-bounds.spec.ts`, with a successor for every assertion it carried plus the
+disjointness case and two source-level ordering assertions (address check before
+the user lookup; account check after the password verification — both produce a
+working limiter, only one closes the timing channel). Twelve mutations
+confirmed red, including one that caught a test of mine named for a property it
+never reached: the address-forgiveness case stopped one short of the cap and so
+passed with the forgiveness deleted.
+
+Coverage floor ratcheted 68/68/39/66 → 70/68/41/68 on the database-free run.
 
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 

@@ -31,14 +31,26 @@ import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
 import type { SessionsRepo } from '../src/sessions.repo';
+import { STEP_UP_BOUND } from '../src/rate-bounds';
 import {
   STEPUP_DENIAL_WINDOW_MS,
   STEPUP_MAX_ACCOUNT_DENIALS,
   STEPUP_MAX_DENIALS,
 } from '../src/stepup';
+
 import { SecondFactorGate } from '../src/second-factor-gate';
 import type { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
+
+/**
+ * The kind sets are PARAMETERS now (M17), so a direct repo assertion has to say
+ * which bound it is asking about. Taken from the declared bound rather than
+ * written out, so a case here cannot measure a set the service does not use.
+ */
+const STEP_UP_KINDS = {
+  failures: STEP_UP_BOUND.failures,
+  successes: STEP_UP_BOUND.successes,
+};
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -153,12 +165,12 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
 
   it('counts recent denials for this user', async () => {
     for (let i = 0; i < 3; i += 1) await ledger(user, 'stepup.denied', RECENT);
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(3);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(3);
   });
 
   it('IGNORES denials older than the window — a rate limit, not a permanent ban', async () => {
     for (let i = 0; i < 9; i += 1) await ledger(user, 'stepup.denied', STALE);
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(0);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(0);
   });
 
   it('IGNORES denials from before the last SUCCESSFUL step-up', async () => {
@@ -170,13 +182,13 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     }
     await ledger(user, 'stepup.granted', new Date(RECENT.getTime() - 5_000));
     await ledger(user, 'stepup.denied', RECENT);
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(1);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(1);
   });
 
   it('IGNORES another user’s denials', async () => {
     // Keyed on the user, so one account under attack cannot lock out another.
     for (let i = 0; i < 8; i += 1) await ledger(other, 'stepup.denied', RECENT);
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(0);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(0);
   });
 
   it('DOES NOT COUNT ITS OWN REFUSALS — the counter cannot feed itself', async () => {
@@ -186,7 +198,7 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     // one turns a 15-minute cooldown into a permanent lockout that a retrying
     // client inflicts on its own user.
     for (let i = 0; i < 20; i += 1) await ledger(user, 'stepup.rate_limited', RECENT);
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(0);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(0);
   });
 
   it('THE SERVICE refuses at the cap and admits below it, over this real predicate', async () => {
@@ -202,7 +214,9 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
       response: { error: 'invalid_code' },
     });
     expect(rateLimited).toEqual([]);
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(STEPUP_MAX_DENIALS);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(
+      STEPUP_MAX_DENIALS,
+    );
 
     // At the cap: refused, with the distinct token and status.
     await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({
@@ -212,7 +226,9 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     expect(rateLimited).toEqual([{ userId: user, denials: STEPUP_MAX_DENIALS }]);
 
     // And the refusal did not raise the count it was refused by.
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(STEPUP_MAX_DENIALS);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(
+      STEPUP_MAX_DENIALS,
+    );
 
     const { rows } = await admin.query<{ kind: string; n: string }>(
       `SELECT kind, count(*)::text AS n FROM ${schema}.auth_events
@@ -261,7 +277,9 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
 
     // And the attacker's refusals never fed the account total, so the ceiling
     // is still four exhausted-credentials away.
-    expect(await events.failedFactorAttempts(user, windowStart())).toBe(STEPUP_MAX_DENIALS + 1);
+    expect(await events.failedAttempts(user, windowStart(), STEP_UP_KINDS)).toBe(
+      STEPUP_MAX_DENIALS + 1,
+    );
   });
 
   it('the ACCOUNT ceiling still bounds an attacker who can spread across sessions', async () => {

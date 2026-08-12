@@ -13,6 +13,12 @@ export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /**
  * THE STEP-UP ATTEMPT CAP (M16). Reviewed CONSTANTS, deliberately not config.
  *
+ * NO LONGER THE ONLY BOUND IN THE PRODUCT: M17 added login and register bounds,
+ * declared in `rate-bounds.ts`, which is also where this one is now expressed as
+ * data. The kind sets below became PARAMETERS to the repo predicate in that
+ * change — a second bound sharing them would let one bound's success clear the
+ * other's window, which was measured rather than reasoned about.
+ *
  * docs/03 §6a has recorded "no rate limiting on failed SRP proofs yet" since
  * M6, tracked against identity's login rate limiting. M16 makes that reachable:
  * a browser extension holds a long-lived refresh token, so an attacker with a
