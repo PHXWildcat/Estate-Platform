@@ -4296,3 +4296,125 @@ deviating from them, stop and propose the change with rationale — do not silen
   holder (M14); and a legitimate re-enrolment silently retires the previous
   authenticator, which is now owner-only but still one behaviour for two
   intentions.
+- 2026-08-12 — THE M16 STEP-UP CAP WAS BYPASSABLE AND WAS ALSO A LOCKOUT, two
+  independent defects in machinery M16 introduced, both measured. (1) AN UNCAPPED
+  ORACLE ONE ROUTE OVER: `POST /v1/auth/totp/verify` resolves the same
+  `mfa_methods` row and calls the same `verifyTotpCode`, had no cap at all, and
+  wrote `totp.verify_failed` — a kind `deniedSinceLastGrant` did not count. Forty
+  guesses, forty 401s, never a 429, counter still zero; the code the guessing
+  found then elevated at `stepup` on the first try, spending none of the five.
+  `stepup.ts`'s "one chokepoint covers both" was wrong by exactly one route. The
+  chokepoint is the SET of routes that read the factor, so failures and successes
+  are both sets now, one gate serves both callers, and
+  `test/second-factor-kinds.spec.ts` scans the service for every kind it writes
+  so a third checker arrives declared or turns it red. (2) THE ROLLING WINDOW DID
+  NOT ESCAPE THE OWNER-DoS ITS OWN DOCSTRING REJECTED A STICKY LOCK FOR: the
+  count was keyed on the USER and every live session wrote into it, so five wrong
+  codes from ONE credential — the 30-day extension token on disk being the
+  cheapest — refused every OTHER session, measured as the owner's untouched
+  session getting 429 where it should have got 401. The only thing that clears
+  the window is a success, which the 429 prevents, so five denials a quarter-hour
+  hold it there indefinitely. Fixed with TWO SCOPES rather than a different
+  number: a per-session cap a stolen credential exhausts on itself (its refusals
+  are `stepup.rate_limited`, which is not counted, so the account total rests
+  where it was), under an account ceiling that stays keyed on the user for M14's
+  reason and remains the real bound. Residual: an attacker who can MINT sessions
+  still walks the account total to its ceiling — a strictly higher bar, and the
+  one that cap exists for.
+- 2026-08-12 — ONE INTERNATIONALISED PAGE RETURNED THE WHOLE VAULT, and the fix
+  was to DELETE a rule rather than improve it. `isConfusable` began "any punycode
+  on either side, against a domain that is not identical, is refused as
+  confusable" — which is not a comparison at all, because it never looks at the
+  other domain. Since `matchesFor` keeps `confusable` and drops only `no-match`,
+  every saved item's title and registrable domain came back from the key holder
+  on any IDN page: precisely the disclosure that function's own docstring says
+  the design exists to prevent ("would disclose a list of every site the user has
+  an account with in order to answer a question about ONE origin"). It also fired
+  the lookalike refusal — the one phishing bound §4 TB9 commits to — on every
+  item at once, on ordinary pages, which is how an alarm stops being read.
+  Deleting it gave up NOTHING the boundary needed: filling requires
+  `savedDomain === pageDomain`, so a punycode host that is not the saved domain
+  was already unfillable and the clause only decided the LABEL on the refusal.
+  The general case (a real punycode homograph) needs decoding plus UTS #39 and
+  stays a named follow-up, which §6j already declares the accepted failure
+  direction. What replaces it is a fact about the PAGE said once, not a claim
+  about each credential. THE GENERAL SHAPE: a rule that takes one argument
+  cannot be a verdict about a pair, however cautious it looks.
+- 2026-08-12 — A FUNCTION CALLED TWICE MUST AGREE WITH ITSELF. `normaliseHost`
+  stripped ONE trailing dot, and `registrableDomain` normalises and then calls
+  `publicSuffix`, which normalises AGAIN — so the two ran on DIFFERENT strings.
+  `publicSuffix` saw `bank.com` and its empty-label guard never fired, while
+  `registrableDomain` counted labels on `['bank','com','']` and returned the last
+  two: `bank.com..` and `evil.com..` both became `com.` and `matchOrigin`
+  answered `match`. A bare public suffix, which that file's own docstring
+  promises never to return, shared by two different registrants. `URL.hostname`
+  preserves the doubled dot, so the input is reachable (both sides must carry it,
+  which is what keeps it medium rather than high). One `+` in a regex.
+- 2026-08-12 — "NOTHING IS EVER AUTO-SUBMITTED" WAS NEVER THE EXTENSION'S TO
+  PROMISE. `fill-into-page.ts` withholds `blur` because "a page is free to submit
+  on blur, so dispatching one would be auto-submission by proxy" — and that
+  reasoning is true verbatim of `input` and `change`, which a fill MUST dispatch
+  or no field notices the value. Measured under jsdom against the real module: a
+  page's `change` listener held the real secret. There is no fix, because the
+  events ARE the fill, so the CLAIM was narrowed in §4 TB9 and on screen ("Estate
+  didn't submit anything" rather than "Nothing was submitted"). What WAS fixable
+  is ORDER: the password was written FIRST, so a page committing on its `change`
+  posted the real secret with the username field still empty — measured as
+  `username at submit: ""`. Username first now, so whichever field an eager page
+  acts on, the pair is complete. The lesson is the one about absolutes: a control
+  that must produce an observable effect cannot also promise the effect is
+  unobservable.
+- 2026-08-12 — THE FILL'S ORIGIN DECISION RAN ON A STALE URL, and the docstring
+  claiming otherwise named the exact scenario it could not see. `fillFor` says it
+  re-decides "because the page can navigate between the two calls" — but
+  `vault-screens.ts` reads the tab ONCE in `refresh()` and the Fill button closes
+  over that string, so `matchesFor` and `fillFor` were handed the SAME value and
+  the second decision was f(x) === f(x) over the page URL. What actually stood
+  between a navigated tab and a misfill was Chromium revoking `activeTab` on a
+  cross-origin navigation — real, plausibly sufficient, and UNMEASURED in this
+  repository with no test asserting it. The tab is re-read at the gesture now, so
+  the claim is true independently of the platform; a tab that changed is a
+  REFUSAL rather than a fallback to the captured value, because the grant is
+  revoked exactly when the thing you would fall back on has become wrong.
+  Recorded rather than closed: whether that revocation happens is still owed by
+  whoever next drives this in a browser.
+- 2026-08-12 — Three smaller M16 findings that share one shape — THE PROTECTIVE
+  PATH WAS THE WEAKER ONE. (1) Key material survived a failed unlock: `prepare()`
+  runs before the second SRP leg, so a refused or malformed `srp/verify` returned
+  with the AUK and the SRP private key resident, and because the idle clock is
+  armed only on SUCCESS nothing was scheduled to collect them — only an offscreen
+  teardown ever would have. (2) A REVOKED pairing forgot the session and kept the
+  Secret Key on disk: `forgetSecretKey` had two callers, the explicit opt-out and
+  the VOLUNTARY disconnect, so the path an owner takes when they believe a device
+  is compromised did less than the one they take when they do not. (3) A refused
+  injection rendered as "No password field was found on this page" — `doFill`
+  never read `outcome.ok`, so the platform REFUSING and the page having no login
+  form said the identical sentence, on the one signal that would tell anyone the
+  grant had lapsed. All three closed.
+- 2026-08-12 — THE ROUTE-AUDIENCE FENCE WAS NAME-KEYED, which is the shape the
+  credential graph was fixed for twice (2026-07-28, 2026-08-07) arriving in a
+  third place. It scanned source for the literal `@AllowSessionAudiences`, while
+  `CallerGuard.audiencesFor` and identity's `SessionGuard` both resolve
+  `SESSION_AUDIENCE_METADATA` through `Reflector.getAllAndOverride` — so a route
+  is widened by CARRYING THE KEY, however it got it: an aliased import, or a raw
+  `SetMetadata`, is honoured at runtime and matched by nothing. Only `vault` and
+  `identity` have a second-layer spec reading real handler metadata; for the
+  other seven services that regex is the whole enforcement. Closed by also
+  asserting the metadata key has exactly ONE route into it, mutation-tested by
+  aliasing the decorator for real. The rule generalises past this repo: anchor a
+  fence on what the RUNTIME reads, never on the identifier a caller chose.
+- 2026-08-12 — MY OWN MUTATION GUARD LIED TO ME, in a new way, and the fix is one
+  word. The harness asserted `len(mutated) != len(original)` — so a mutation that
+  SWAPS TWO LINES (exactly the fill-order revert) reported "MUTATION IS A NO-OP"
+  and I nearly concluded the test was toothless. Length is not identity. It
+  compares CONTENT now. This is the third distinct way this repo has caught a
+  mutation harness misreporting (2026-08-10: `git checkout --` on uncommitted
+  work; a `node -e` losing `$1` to shell expansion; a grep for `✕` in a
+  non-verbose jest run) and they all produce the same symptom — a conclusion
+  about a test drawn from a measurement that never happened.
+- 2026-08-12 — A GREEN JEST RUN IS NOT A TYPECHECK. `totp-enrollment-gate.int.spec.ts`
+  passed under ts-jest with `mfaLevel: 'password'` — a value not in `MfaLevel`
+  (`'none' | 'mfa' | 'stepup'`) — and only `pnpm -r run typecheck` caught it. Worth
+  the line because the repo's habit is to trust a green suite: for a spec that
+  constructs a domain type by hand, the suite and the compiler are different
+  gates and the compiler is the one that knows the vocabulary.

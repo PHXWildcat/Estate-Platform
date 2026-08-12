@@ -54,8 +54,8 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 
 **TB9 — Vault extension ↔ arbitrary web pages** (M16)
 - *Filling the wrong origin (credential exfiltration):* This is the boundary's defining failure, because a filled credential belongs to the page that received it — the isolated world protects the extension's variables, not the DOM value, so the origin decision IS the disclosure decision. → Registrable domain via a vendored, digest-pinned Public Suffix List snapshot (never a substring, never label stripping); scheme binding, so an `https`-saved credential is never offered on `http`; THE FILL TOUCHES THE TOP FRAME AND NOTHING ELSE — which is narrower than this
-section originally described, and the narrowing is the result of measuring the platform in Chrome 151 rather than reasoning about it. The old text promised "cross-origin iframes refused by default with a per-item opt-in", and both halves turned out to be wrong. `activeTab` grants exactly the main frame's ORIGIN, host-exact, so a same-site subframe on a different host (`pay.example.com` under `example.com`) is refused by Chrome outright; PR3a's `frameIsAllowed` would have computed "allowed" for a frame the fill could only ever fail on. And the per-item opt-in CANNOT BE BUILT on `activeTab` at all: honouring it needs host permissions for the third-party origin (`optional_host_permissions` plus a runtime `chrome.permissions.request()`), a manifest key and a consent surface this milestone does not have. `frameIsAllowed` IS DELETED rather than kept, because wiring it showed it can have no caller: the popup cannot enumerate frames (that needs `webNavigation` or `tabs`, deliberately not held), and the injected function cannot import it (`func` is serialized). A rule with nowhere to run is the M4 zero-callers shape. What replaces it is stronger than a rule of ours — THE PLATFORM ENFORCES IT, and refuses an injection into any frame the grant does not cover. **Accepted cost, stated rather than hidden:** a login form inside an iframe is not filled, including a same-origin one, because the extension cannot name the frame without a permission it refuses to hold. confusable domains REFUSED rather than warned about. **Confusable detection is PARTIAL as shipped (M16 PR3a)** and this sentence is narrowed rather than left implying otherwise: punycode hosts that are not the saved domain, an ASCII homoglyph skeleton (`rn`/`m`, `vv`/`w`, `cl`/`d`, digit-for-letter), and edit-distance-1 are caught; the general Unicode confusable case needs UTS #39 skeletons over a vendored confusables table and is a named follow-up. A miss is a `no-match`, so it is still REFUSED for filling — what is lost is the explanation, never the boundary.
-- *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address, and nothing is ever auto-submitted.
+section originally described, and the narrowing is the result of measuring the platform in Chrome 151 rather than reasoning about it. The old text promised "cross-origin iframes refused by default with a per-item opt-in", and both halves turned out to be wrong. `activeTab` grants exactly the main frame's ORIGIN, host-exact, so a same-site subframe on a different host (`pay.example.com` under `example.com`) is refused by Chrome outright; PR3a's `frameIsAllowed` would have computed "allowed" for a frame the fill could only ever fail on. And the per-item opt-in CANNOT BE BUILT on `activeTab` at all: honouring it needs host permissions for the third-party origin (`optional_host_permissions` plus a runtime `chrome.permissions.request()`), a manifest key and a consent surface this milestone does not have. `frameIsAllowed` IS DELETED rather than kept, because wiring it showed it can have no caller: the popup cannot enumerate frames (that needs `webNavigation` or `tabs`, deliberately not held), and the injected function cannot import it (`func` is serialized). A rule with nowhere to run is the M4 zero-callers shape. What replaces it is stronger than a rule of ours — THE PLATFORM ENFORCES IT, and refuses an injection into any frame the grant does not cover. **Accepted cost, stated rather than hidden:** a login form inside an iframe is not filled, including a same-origin one, because the extension cannot name the frame without a permission it refuses to hold. confusable domains REFUSED rather than warned about. **Confusable detection is PARTIAL as shipped, and NARROWER after the M16 PR5 review than PR3a claimed.** Caught: an ASCII homoglyph skeleton (`rn`/`m`, `vv`/`w`, `cl`/`d`, digit-for-letter) and edit-distance-1. **Punycode is no longer flagged as confusable at all**, and removing it made the control stronger rather than weaker. The old rule returned `confusable` whenever EITHER side carried an `xn--` label, without comparing the two — so it was not a comparison, and on any internationalised page every saved item matched it. Because `matchesFor` keeps confusable verdicts and drops only `no-match`, the measured effect was that ONE VISIT TO ANY IDN PAGE returned the WHOLE VAULT from the key holder — every title and every saved registrable domain — which is exactly the disclosure `matchesFor` exists to prevent. It also fired the lookalike refusal, the one phishing bound this section commits to, on every item at once on ordinary pages. Nothing was given up: filling requires the registrable domains to be EQUAL, so a punycode host that is not the saved domain was already unfillable and the clause only decided the LABEL on the refusal. The general Unicode confusable case (including a genuine punycode homograph) needs UTS #39 skeletons over a vendored confusables table plus punycode decoding, and remains a named follow-up. A miss is a `no-match`, so it is still REFUSED for filling — what is lost is the explanation, never the boundary. What replaces the per-item claim is a single page-level notice when the page's own registrable domain is internationalised.
+- *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address. **THE EXTENSION NEVER SUBMITS, AND THAT IS NOT THE SAME AS "NOTHING IS EVER AUTO-SUBMITTED"** — which is what this sentence used to say, and the M16 review measured the difference. A fill must dispatch `input` and `change` or no field notices the value, and the reasoning that withholds `blur` ("a page is free to submit on blur, so dispatching one would be auto-submission by proxy") is true of those verbatim: a jsdom probe against the real module showed a page's `change` listener holding the real secret. There is no fix, because the events ARE the fill; what M16 PR5 changed is ORDER — the username is written before the password, so a page that commits early can no longer get the secret with the username field still empty, which is what it used to get. The on-screen copy no longer asserts "Nothing was submitted" either; it says what Estate did and points the user at the address. Also narrowed: the fill's origin decision is now re-read AT THE GESTURE. It used to run on a page URL captured when the popup rendered, so the key holder's re-decision — documented as defending against "the page navigating between the two calls" — compared the same stale string twice and could not see a navigation at all; what actually stood in the way was Chromium revoking `activeTab`, which nobody measured and no test asserted.
 - *A hostile page reading the vault by breadth of access:* → `activeTab` + `scripting` only, with no declared content scripts, so the extension has no view of any page until the user clicks it — and any later broadening is a required-permission increase the browser surfaces as re-consent.
 - *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy the VAULT — narrowed in M16 PR4a, which admitted `createItem` and `updateItem`: `reset`, both keyset routes and all eleven emergency routes stay refused, so the keyset survives and the vault still opens, but an unlocked extension can overwrite every ITEM with bytes that are not ciphertext and each one becomes permanently unreadable. `vault_items_versions` holds the prior image and NO PRODUCTION CODE READS IT, so recovery today means an operator with psql. The mitigation and the residual below describe the same moment — an unlocked vault — and this clause used to overclaim against it), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
 - *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and are a separate milestone; the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
@@ -1405,31 +1405,113 @@ CLAUDE.md decision log; the security-relevant shape is:
   string compare, and no IDN implementation enters a package with no
   dependencies. It was latent while PR3a had no fill; PR3b is what would have
   made it exploitable.
-**Found by the M16 PR5 security review — and OLDER than M16.**
+**Added by PR5 (the security review).**
 
-- *A STOLEN SESSION COULD ENROL ITS OWN SECOND FACTOR.*
-  `POST /v1/auth/totp/enroll` had been `SessionGuard`-only since M2.
-  `revokeUnverifiedTotp` spares a VERIFIED method while `findActiveTotp` takes
-  the NEWEST one, so a caller holding nothing but a session could enrol a secret
-  of their own, confirm it with a code they computed themselves, and step up —
-  three ordinary requests, no guessing. Measured end to end against real
-  Postgres, including the second half: the owner's own authenticator answered
-  401 afterwards, so it was a takeover AND a lockout, of every docs/01 §5 action
-  and of §5.1's liveness proof. The repository had already seen the mechanism
-  and read it as a test-seeding nuisance (CLAUDE.md 2026-08-06, on why the
-  settlement e2e caches enrolment). M16 is what made it acute: it built an
-  attempt cap whose entire premise is that step-up bounds a stolen credential,
-  and widened `stepup` to two more audiences. **Closed** by gating enrolment on
-  a fresh step-up WHEN A VERIFIED FACTOR ALREADY EXISTS. *Residual, and it
-  cannot be closed here:* for an account that never enrolled a factor, a stolen
-  session still buys the bootstrap — there is no proof to demand, and identity
-  cannot warn the owner because M14 deliberately made it not a holder of the
-  notifications SEND credential. Such an account had no second factor to defeat.
-  *Second residual, recorded not fixed:* a legitimate re-enrolment silently
-  retires the previous authenticator, because `findActiveTotp` takes the newest.
-  "Add a device" and "replace a device" are different intentions and the
-  platform offers one behaviour for both; it is behind step-up now, so only the
-  owner can cause it.
+Seven file-scoped discovery lenses over the M16 range, then every candidate
+confirmed by MEASUREMENT — mutation or execution against real Postgres, a real
+jsdom page, or the modules run directly — before anything was changed. TENTH
+milestone running where every confirmed finding sits in machinery the milestone
+introduced, with one exception that is the most serious thing in the list and is
+older than M16.
+
+- *THE WORST FINDING IS PRE-EXISTING AND M16 IS WHAT MADE IT MATTER: a stolen
+  session could ENROL ITS OWN SECOND FACTOR.* `POST /v1/auth/totp/enroll` had
+  been `SessionGuard`-only since M2. `revokeUnverifiedTotp` spares a VERIFIED
+  method while `findActiveTotp` takes the NEWEST one, so a caller holding
+  nothing but a session could enrol a secret of their own, confirm it with a
+  code they computed themselves, and step up — three ordinary requests, no
+  guessing. Measured end to end against real Postgres, including the second
+  half: the owner's own authenticator answered 401 afterwards, so it was a
+  takeover AND a lockout, of every docs/01 §5 action and of §5.1's liveness
+  proof. The repository had already seen the mechanism and read it as a
+  test-seeding nuisance (CLAUDE.md 2026-08-06, on why the settlement e2e caches
+  enrolment). M16 is what made it acute: it built an attempt cap whose entire
+  premise is that step-up bounds a stolen credential, and widened `stepup` to
+  two more audiences. **Closed** by gating enrolment on a fresh step-up WHEN A
+  VERIFIED FACTOR ALREADY EXISTS. *Residual, and it cannot be closed here:* for
+  an account that never enrolled a factor, a stolen session still buys the
+  bootstrap — there is no proof to demand, and identity cannot warn the owner
+  because M14 deliberately made it not a holder of the notifications SEND
+  credential. Such an account had no second factor to defeat. *Second residual,
+  recorded not fixed:* a legitimate re-enrolment silently retires the previous
+  authenticator, because `findActiveTotp` takes the newest. "Add a device" and
+  "replace a device" are different intentions and the platform offers one
+  behaviour for both; it is behind step-up now, so only the owner can cause it.
+
+- *THE ATTEMPT CAP WAS BYPASSABLE BY ONE ROUTE.* `POST /v1/auth/totp/verify`
+  checks the SAME `mfa_methods` row and had no cap of any kind, and its failures
+  are a kind the counter did not count. Measured: forty wrong codes, forty 401s,
+  never a 429, counter still zero — after which the code the guessing found
+  elevated at `stepup` on the first try, spending none of the five.
+  `stepup.ts`'s own "one chokepoint covers both" was wrong by one route.
+  **Closed** — the failure and success kinds are SETS, both routes pass one
+  gate, and `test/second-factor-kinds.spec.ts` scans the service so a third
+  checker of the secret arrives declared or turns red.
+
+- *THE CAP WAS A RENEWABLE LOCKOUT AGAINST THE OWNER, which its own docstring
+  claimed a rolling window avoided.* The count was keyed on the USER and every
+  live session wrote into it, so five wrong codes from ONE credential — the
+  30-day extension token on disk being the cheapest — refused every OTHER
+  session of the account. Measured: the owner's untouched session got 429 where
+  it should have got 401. The only thing that clears the window is a success,
+  which is what the 429 prevents, so five denials each quarter-hour hold it
+  there indefinitely: the sticky lock the file says it refused to build,
+  re-armed on a timer, blocking vault open, document generation, export,
+  beneficiary changes, deletion and §5.1's rescue path. **Closed** with two
+  scopes — a per-session cap a stolen credential exhausts on itself, under an
+  account-wide ceiling that stays the real bound on guessing. *Residual:* an
+  attacker who can MINT sessions (i.e. holds the password) can still walk the
+  account total to its ceiling. That is the bar the account cap exists for.
+
+- *ONE IDN PAGE DISCLOSED THE WHOLE VAULT.* See §4 TB9 above; **closed**, and
+  the page-level notice replaces the per-item claim.
+
+- *A DOUBLED TRAILING DOT COLLAPSED TWO REGISTRANTS ONTO A BARE SUFFIX.*
+  `normaliseHost` stripped ONE trailing dot and was called twice on different
+  strings, so `publicSuffix`'s empty-label guard never fired: `bank.com..` and
+  `evil.com..` both resolved to `com.` and `matchOrigin` answered `match`.
+  `URL.hostname` preserves the doubled dot, so the input is reachable, though
+  both sides must carry it. **Closed** by making normalisation idempotent — a
+  function called twice must agree with itself.
+
+- *KEY MATERIAL SURVIVED A FAILED UNLOCK.* `prepare()` runs before the second
+  SRP leg, so a refused or malformed `srp/verify` returned with the AUK and the
+  SRP private key still resident — and because the idle clock is armed only on
+  SUCCESS, nothing was scheduled to collect them. Only an offscreen teardown
+  would ever have taken them. **Closed**: every non-success exit drops them.
+
+- *A REVOKED PAIRING KEPT THE SECRET KEY ON DISK.* `forgetSecretKey` had two
+  callers — the explicit opt-out and the VOLUNTARY disconnect. The path an owner
+  takes when they revoke a device they believe is compromised forgot the session
+  and left half the key material behind, so the protective route was the weaker
+  of the two. **Closed.**
+
+- *SMALLER, ALL CLOSED:* a refused injection rendered as "no password field was
+  found on this page", collapsing a control into an absence on the one signal
+  that says the platform refused; the vault edge's credential precedence fell
+  through to the cookie on a MALFORMED `Authorization` header, so "never looks
+  at the cookie" held only for well-formed input; and two shipped docstrings
+  still said the extension credential "reaches five vault routes" four PRs after
+  PR4a made it seven.
+
+- *THE ROUTE-AUDIENCE FENCE WAS NAME-KEYED.* It scanned source for the literal
+  `@AllowSessionAudiences`, while both guards resolve `SESSION_AUDIENCE_METADATA`
+  through `Reflector.getAllAndOverride` — so an aliased import or a raw
+  `SetMetadata` widens a route and is matched by nothing. Only `vault` and
+  `identity` have a second-layer spec reading real handler metadata; for the
+  other seven services that scan is the whole enforcement. This is the shape the
+  credential graph was fixed for twice (2026-07-28, 2026-08-07). **Closed** by
+  additionally asserting the metadata key has exactly one route into it,
+  mutation-tested with a real alias.
+
+- *STATED, NOT FIXED — WHAT THIS REVIEW DID NOT DO.* Nothing here ran in a real
+  browser: the extension's own claims rest on jsdom, the crypto on Node's
+  WebCrypto, and the platform behaviours PR3b measured in Chrome 151 were not
+  re-measured. In particular **whether Chromium revokes `activeTab` on a
+  cross-origin navigation is still unmeasured in this repository** — the
+  fill-time re-read now makes the boundary hold independently of the answer,
+  which is why it was fixed rather than measured, but the answer is still owed
+  by whoever next drives this in a browser.
 
 - *`activeTab` discloses the active tab's URL to the extension.* That is the
   minimum origin matching can run on, and it is bounded by the permission itself:

@@ -297,6 +297,31 @@ describe('the vault edge', () => {
 
     it.each([
       ['Bearer', 'no token'],
+      ['Basic dXNlcjpwdw==', 'wrong scheme'],
+      ['Bearer  two-spaces', 'padded'],
+    ])(
+      'a malformed Authorization (%s) does NOT fall through to a cookie that IS present',
+      async (header) => {
+        // The case above sends no cookie, so it could not see this: `??` fell
+        // through whenever `bearerFrom` returned null, and a request carrying
+        // an Authorization header travelled on the browser session instead.
+        // Nothing is escalated — both are the caller's own credential — but
+        // "never looks at the cookie" held only for a well-formed header.
+        await boot(() => ({ status: 200, body: '{}' }));
+        const res = await fetch(`${base}/api/vault/keyset`, {
+          headers: {
+            authorization: header,
+            cookie: '__Host-estate_vault=browser-session-token',
+            'x-estate-vault-csrf': '1',
+          },
+        });
+        expect(res.status).toBe(401);
+        expect(calls).toHaveLength(0);
+      },
+    );
+
+    it.each([
+      ['Bearer', 'no token'],
       ['Bearer ', 'empty token'],
       ['Bearer  two-spaces', 'padded'],
       ['Bearer tok en', 'whitespace inside'],

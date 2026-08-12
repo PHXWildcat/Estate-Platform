@@ -209,7 +209,20 @@ export class VaultHost {
         clientProof: proof.m1,
       },
     });
-    if (!opened.ok) return opened;
+    if (!opened.ok) {
+      // KEY MATERIAL DOES NOT SURVIVE A FAILED UNLOCK (M16 review).
+      //
+      // `prepare()` has already run, so the holder is sitting on the AUK — the
+      // key that unwraps the master key — and the SRP private key, both derived
+      // from the vault password AND the device Secret Key. This return used to
+      // leave them there, and because `#touch()` only runs on SUCCESS, no idle
+      // clock was armed either: a second leg that 401s, or times out, or comes
+      // back malformed, left 2SKD-derived material resident in the worker with
+      // nothing scheduled to clear it. "An offscreen teardown is a LOCK" was
+      // true and was the only thing that would ever have collected it.
+      this.#dropKeys();
+      return opened;
+    }
 
     // A response missing its fields is NO DATA, never data. Here the cost of
     // getting it wrong is feeding `undefined` into the unwrap path.
@@ -224,6 +237,7 @@ export class VaultHost {
       typeof token !== 'string' ||
       typeof expiresAt !== 'string'
     ) {
+      this.#dropKeys(); // same reason as the branch above
       return { ok: false, code: 'UNKNOWN' };
     }
 

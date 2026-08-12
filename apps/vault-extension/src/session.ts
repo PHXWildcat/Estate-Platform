@@ -19,8 +19,10 @@ import { forgetSecretKey } from './secret-key-store.js';
  *
  * SO THE REFRESH TOKEN IS ON DISK, for up to its 30-day life, and that is a
  * real residual rather than an oversight (docs/03 §6j). What bounds it is the
- * AUDIENCE, not the storage: the credential reaches five vault routes and three
- * identity ones and NOTHING else — it cannot reset a vault, replace a keyset,
+ * AUDIENCE, not the storage: the credential reaches SEVEN vault routes and three
+ * identity ones and NOTHING else (five until M16 PR4a admitted `createItem` and
+ * `updateItem`; the live count is derived by
+ * `apps/services/vault/test/session-audience.spec.ts`) — it cannot reset a vault, replace a keyset,
  * delete an item, touch emergency access, mint another handoff, or enumerate
  * the owner's other devices — and it still decrypts nothing, because every item
  * read is behind a vault session that only a completed SRP unlock produces, and

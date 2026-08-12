@@ -34,7 +34,7 @@ describe('filling a page', () => {
     expect((document.getElementById('p') as HTMLInputElement).value).toBe('s3cret');
   });
 
-  it('NEVER SUBMITS — the absolute §4 TB9 states', () => {
+  it('THIS CODE never submits — narrowed from an absolute, because a page may', () => {
     render(LOGIN);
     const submits: Event[] = [];
     document.getElementById('login')?.addEventListener('submit', (event) => {
@@ -116,5 +116,55 @@ describe('filling a page', () => {
     fillIntoPage({ username: 'someone', secret: 's3cret' });
     expect((document.getElementById('near') as HTMLInputElement).value).toBe('someone');
     expect((document.getElementById('first') as HTMLInputElement).value).toBe('');
+  });
+
+  /**
+   * ORDER, AND THE CLAIM THAT HAD TO BE NARROWED WITH IT (M16 review).
+   *
+   * A fill has to dispatch `input` and `change` or no framework notices the
+   * value — and the module's own reason for withholding `blur` ("a page is free
+   * to submit on blur") is true of those too. So "nothing is ever
+   * auto-submitted" was never the extension's to promise. What IS its to
+   * promise is which field is written last.
+   */
+  it('writes the USERNAME first, so a page that commits on the password has both', () => {
+    document.body.innerHTML = `
+      <form>
+        <input id="u" type="text">
+        <input id="p" type="password">
+      </form>`;
+    const seen: Array<{ on: string; username: string; secret: string }> = [];
+    const snap = (on: string) => (): void => {
+      seen.push({
+        on,
+        username: (document.getElementById('u') as HTMLInputElement).value,
+        secret: (document.getElementById('p') as HTMLInputElement).value,
+      });
+    };
+    document.getElementById('p')?.addEventListener('change', snap('password change'));
+    document.getElementById('u')?.addEventListener('change', snap('username change'));
+
+    fillIntoPage({ username: 'alice@example.com', secret: 'REAL-PASSWORD' });
+
+    // The password's change is the LAST event and the one a login form acts on.
+    expect(seen.at(-1)?.on).toBe('password change');
+    // And by then the username is present. It used to be '' — the page got the
+    // real secret with a field the user never filled.
+    expect(seen.at(-1)?.username).toBe('alice@example.com');
+    // The username's own change fired before the secret existed, which is the
+    // harmless direction.
+    expect(seen[0]).toEqual({ on: 'username change', username: 'alice@example.com', secret: '' });
+  });
+
+  it('a page CAN observe the fill — stated, because the extension cannot prevent it', () => {
+    // Not a defect and not fixable: the events are what make a fill work. It is
+    // pinned so nobody re-asserts the absolute the docs used to carry.
+    document.body.innerHTML = `<form><input id="p" type="password"></form>`;
+    let observed = '';
+    document.getElementById('p')?.addEventListener('input', () => {
+      observed = (document.getElementById('p') as HTMLInputElement).value;
+    });
+    fillIntoPage({ username: '', secret: 'REAL-PASSWORD' });
+    expect(observed).toBe('REAL-PASSWORD');
   });
 });

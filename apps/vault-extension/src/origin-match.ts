@@ -106,32 +106,61 @@ export function homoglyphSkeleton(domain: string): string {
   return folded.replace(/1/g, 'l').replace(/0/g, 'o').replace(/5/g, 's');
 }
 
-/** Is this host an internationalised (punycode) label? */
-function hasPunycode(host: string): boolean {
+/**
+ * Is this host an internationalised (punycode) label?
+ *
+ * A FACT ABOUT ONE DOMAIN, and after the M16 review it is used as one. It used
+ * to feed `isConfusable` directly — "any punycode on either side, against a
+ * domain that is not identical, is refused as confusable" — which read as
+ * cautious and was not a comparison at all: it took no account of the OTHER
+ * domain, so it answered true for every unrelated pair. See `isConfusable`.
+ */
+export function hasPunycode(host: string): boolean {
   return host.split('.').some((label) => label.startsWith('xn--'));
 }
 
 /**
- * WHAT THIS CATCHES AND WHAT IT DOES NOT — stated here because the gap is real.
+ * IS THIS PAGE'S DOMAIN A LOOKALIKE OF THIS SAVED ONE — a question about a PAIR.
  *
- * Caught: a punycode host that is not the saved one (so a homograph of
- * `example.com` never matches it); a domain whose ASCII homoglyph SKELETON
- * equals the saved one (`exarnple.com`, `paypa1.com`, `vvells.com`); and a
- * domain within one edit (a doubled or dropped character).
+ * ═══ THE PUNYCODE CLAUSE IS GONE, AND REMOVING IT MADE THIS STRONGER ═══
  *
- * NOT caught: the general Unicode confusable case. Full UTS #39 skeletons need a
- * vendored confusables table, which is a named follow-up (docs/03 §6j). A
- * multi-character homograph that is neither punycode nor within one edit will
- * simply be `no-match` — refused for filling, but not FLAGGED as confusable.
- * That is the safe direction: the failure is a missing explanation, never a
- * wrongful fill.
+ * It used to begin "any punycode on either side, against a domain that is not
+ * identical, is refused as confusable". That is not a comparison: it ignores
+ * the other domain entirely, so it answered TRUE for every unrelated pair. The
+ * M16 review measured what that cost. Because `matchesFor` keeps `confusable`
+ * verdicts and drops only `no-match`, ONE VISIT TO ANY INTERNATIONALISED PAGE
+ * returned the WHOLE VAULT from the key holder — every item's title and every
+ * item's registrable domain — which is precisely the disclosure `matchesFor`'s
+ * own docstring says the design exists to prevent ("would disclose a list of
+ * every site the user has an account with in order to answer a question about
+ * ONE origin"). Five saved items, five `confusable` rows, on a page related to
+ * none of them.
+ *
+ * It cost the control as well as the secret. A lookalike refusal that fires on
+ * every item at once, on ordinary pages, is an alarm nobody reads — and this
+ * refusal is the one bound §4 TB9 says M16 owes against phishing.
+ *
+ * IT GAVE UP NOTHING THE BOUNDARY NEEDED, which is why the answer is deletion
+ * rather than a cleverer rule. Filling requires `savedDomain === pageDomain`,
+ * so a punycode host that is not the saved domain was ALREADY unfillable; the
+ * clause only decided how the refusal was LABELLED. What is lost is the
+ * explanation for a genuine punycode homograph, and §6j already names that as
+ * the accepted failure direction for the general Unicode case: "a miss is a
+ * `no-match`, so it is still REFUSED for filling — what is lost is the
+ * explanation, never the boundary."
+ *
+ * Telling a user their page is internationalised is a fact about the PAGE, so
+ * it belongs to the page and not to each item: `hasPunycode` is exported and
+ * the popup says it once. Deciding whether a specific IDN is a homograph OF a
+ * specific saved domain needs punycode decoding plus UTS #39 skeletons, which
+ * remains the named follow-up.
+ *
+ * WHAT THIS CATCHES: a domain whose ASCII homoglyph SKELETON equals the saved
+ * one (`exarnple.com`, `paypa1.com`, `vvells.com`), and a domain within one
+ * edit (a doubled or dropped character).
  */
 function isConfusable(savedDomain: string, pageDomain: string): boolean {
   if (savedDomain === pageDomain) return false;
-  // Any punycode on either side, against a domain that is not identical, is
-  // refused as confusable — an IDN that is not the saved domain has no business
-  // being offered the saved domain's credential.
-  if (hasPunycode(pageDomain) || hasPunycode(savedDomain)) return true;
   if (homoglyphSkeleton(savedDomain) === homoglyphSkeleton(pageDomain)) return true;
   return withinOneEdit(savedDomain, pageDomain);
 }
