@@ -1314,12 +1314,27 @@ CLAUDE.md decision log; the security-relevant shape is:
   auditability — the key holder cannot reach the network and the host cannot
   decrypt, so "can anything derived from the password leave the device" is a
   one-file question.
-- *NOTHING HERE HAS RUN IN A BROWSER.* CI cannot load a packed extension, so the
-  crypto is exercised against Node's WebCrypto and the platform against a
-  `chrome` API double in jsdom, with the transport proven live at the vault edge
-  in PR2a. Unexercised: the offscreen document's lifecycle,
-  `chrome.offscreen.createDocument` from a service worker, the worker boundary,
-  and IndexedDB under a real extension origin. This is the same status the
+- *IT HAS RUN IN A BROWSER NOW, AND CI RUNS IT EVERY TIME.* This paragraph used
+  to open "NOTHING HERE HAS RUN IN A BROWSER" and to explain that CI could not
+  load a packed extension. The second half was wrong — `--load-extension` is
+  refused by Chrome 151, but the CDP command `Extensions.loadUnpacked` is not —
+  and the `browser-smoke` job in `.github/workflows/extension.yml` is what that
+  correction bought. It EXTRACTS THE PACKED ARCHIVE and drives those bytes: the
+  manifest is accepted by Chrome, the service worker boots,
+  `chrome.offscreen.createDocument` succeeds from it, the offscreen document
+  comes up, `/lib/vault-crypto/index.js` resolves at the absolute path the
+  client actually loads, and a REAL SRP-6a unlock against a stand-in speaking
+  the real protocol returns an unlocked vault whose item decrypts to its title.
+  A wrong Secret Key is refused BY THE SERVER. Finally the central claim —
+  nothing derived from the vault password or the Secret Key leaves the device —
+  is asserted over bytes that crossed a real socket out of a real browser, which
+  is a materially stronger statement than the same assertion against a recording
+  transport in Node.
+  *Still not exercised, and named rather than implied:* the FILL, because
+  `activeTab` needs a genuine user invocation and a programmatic
+  `chrome.action.openPopup()` grants nothing (measured); IndexedDB under the
+  extension origin; and anything about the real vault SERVICE, since the
+  stand-in has no sessions, audiences, step-up or guards. This is the same status the
   repository gives the Plaid live client and the Anthropic adapter — the first
   real load is a deployment event, not a test result — and it is stated here
   rather than left to be inferred from a green suite.

@@ -224,3 +224,93 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: ${{ runner.temp }}/art/vault-extension.zip
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # THE ARTIFACT, OPENING A VAULT IN A REAL BROWSER.
+  #
+  # M16 PR2b listed as owed: the offscreen document's lifecycle,
+  # `chrome.offscreen.createDocument` from a service worker, and the worker
+  # boundary. Everything the extension claimed rested on a hand-written
+  # `chrome` double in jsdom — which PR3b then showed was MORE GENEROUS THAN
+  # THE PLATFORM, because the double supplied `getManifest` unconditionally and
+  # an offscreen document does not have it. The extension consequently could
+  # never have unlocked a vault, and 477 green tests said nothing about it.
+  #
+  # THIS JOB EXISTS BECAUSE A DOCUMENTED CONCLUSION WAS WRONG. PR3b measured
+  # that Chrome refuses `--load-extension` — true — and concluded that loading
+  # "cannot be scripted" and "no CI job can ever stand in for it". The CDP
+  # command `Extensions.loadUnpacked` works. The flag is gone; the capability
+  # is not.
+  #
+  # IT IS A SEPARATE JOB FROM `package`, and not because of permissions this
+  # time: it needs a browser, a server and a profile directory, none of which
+  # the reproducibility job should have to carry. It holds `contents: read` and
+  # nothing else — it signs nothing.
+  #
+  # CHROME IS DELIBERATELY NOT PINNED HERE, which inverts this workflow's rule
+  # for the packaging jobs. Those must pin, because a moving toolchain moves the
+  # digest. This one is watching for the PLATFORM to change under the extension
+  # — a headless mode that stops loading extensions, an offscreen `reason` that
+  # stops being accepted, a CDP command that moves. Pinning would hide exactly
+  # what it is here to notice. The version is printed with the results.
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # A distinctive port: the origin is baked into the manifest at build time,
+      # so the artifact under test is built FOR the stand-in. That is the same
+      # pipeline with a different origin, and the job says so rather than
+      # implying the released package was driven.
+      VAULT_PORT: '3111'
+      VAULT_ORIGIN: 'http://vault.localhost:3111'
+      CHROME_NO_SANDBOX: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and pack for the stand-in origin
+        run: |
+          set -euo pipefail
+          pnpm build --filter=@estate/vault-extension --force
+          node apps/vault-extension/scripts/pack-extension.mjs
+
+      # THE PACKED BYTES ARE WHAT RUNS, not the source tree. A packaging slip
+      # that drops a file from the archive — the class that shipped once, when
+      # `web.Dockerfile` lost the vendored fonts — is only visible if the thing
+      # under test is the archive.
+      - name: Extract the package
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/ext"
+          unzip -q apps/vault-extension/vault-extension.zip -d "${RUNNER_TEMP}/ext"
+          test -f "${RUNNER_TEMP}/ext/manifest.json"
+          test -f "${RUNNER_TEMP}/ext/lib/vault-crypto/index.js"
+
+      - name: Drive it in Chrome
+        run: |
+          set -euo pipefail
+          google-chrome --version
+          # The stand-in speaks the real SRP protocol and emits one JSON line of
+          # state — including the Secret Key the harness must type and which
+          # must never come back on the wire.
+          node apps/vault-extension/scripts/stand-in-vault.mjs > "${RUNNER_TEMP}/vault.json" &
+          for i in $(seq 1 40); do
+            [ -s "${RUNNER_TEMP}/vault.json" ] && break
+            sleep 0.5
+          done
+          if [ ! -s "${RUNNER_TEMP}/vault.json" ]; then
+            echo "::error::the stand-in vault never reported ready" && exit 1
+          fi
+          VAULT_STATE="$(head -1 "${RUNNER_TEMP}/vault.json")" \
+          EXT_DIR="${RUNNER_TEMP}/ext" \
+          CHROME_BIN="$(command -v google-chrome)" \
+            node apps/vault-extension/scripts/browser-smoke.mjs
