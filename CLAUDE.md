@@ -4241,3 +4241,28 @@ deviating from them, stop and propose the change with rationale — do not silen
   skipped on every pull-request run by design, so its first real execution was
   on main after the merge, which is exactly the shape of thing this repo keeps
   finding — machinery that has never once executed.
+- 2026-08-12 — HOW TO RUN AN ADVERSARIAL REVIEW IN THIS REPO, written down
+  because PR4b's review taught three things that cost real time and none of
+  which is discoverable from the tooling. (1) GIVE EVERY AGENT
+  `isolation: 'worktree'`. A review is told to mutate production files to prove
+  a fence catches something, and a shared tree means one of those mutations can
+  be swept into a commit — which happened, and shipped a uid/gid field to a
+  pushed branch. (2) AND THEN PIN THE AGENTS TO THE COMMIT UNDER REVIEW: an
+  isolated worktree is created at MAIN, not at the branch, so four agents
+  spent their first run reading code that contained none of the change. They
+  cannot `git checkout <branch>` either — it is checked out in the session's own
+  worktree and git refuses — so the first instruction in the prompt must be
+  `git checkout --detach <sha>`, with a "confirm with git log before you read
+  anything" beside it. Verified in a scratch worktree before relying on it.
+  (3) SIZE THE FAN-OUT FOR PARTIAL LOSS. PR4b's review lost 22 of 50 agents to a
+  session limit mid-run, all in the verify phase, so the discovery findings
+  arrived unverified. That is survivable only if the findings are confirmed by
+  hand afterwards — which is what happened, by mutation and execution rather
+  than by reading a verdict. Plan for it: fewer, better-scoped lenses beat a
+  wide fan-out that dies half way, and the journal (`journal.jsonl`, one result
+  row per completed agent) is what survives a stop, so read it rather than
+  assuming a killed run produced nothing.
+  Two cleanup consequences worth knowing: isolated worktrees are LEFT BEHIND
+  (44 of them, 9.9G, cleared with `git worktree remove --force` + a branch
+  sweep), and the agents are told not to restore what they change, so the
+  scratch branches `worktree-wf_*` accumulate too.
