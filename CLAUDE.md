@@ -4590,3 +4590,46 @@ deviating from them, stop and propose the change with rationale — do not silen
   `VERIFYING.md` still tells a human to use developer mode, deliberately: asking
   a third-party verifier to attach a debugging protocol would be a worse
   instruction, not a better one.
+- 2026-08-12 — A CI STEP THAT DOWNLOADS ITS OWN TOOL IS A DEPENDENCY ON A THIRD
+  PARTY'S UPTIME, and `main` went red on one. `anchore/sbom-action` fetches the
+  syft BINARY from GitHub releases on every matrix job; that endpoint answered
+  503 and took down three of fourteen jobs on one run and a DIFFERENT three on
+  the next, none of them for any reason to do with the images being built.
+  RE-RUNNING IS A COIN FLIP, WHICH IS WORSE THAN A REMEDY THAT PLAINLY FAILS:
+  of the two re-runs measured, main's failed the same way and the PR's passed —
+  so the honest reading is not "retrying does not work" but that green depends
+  on somebody else's CDN at the moment it is asked, which is the
+  permanently-flaky shape the M5 base-image-gate entry warns about arrived from
+  a new direction. THE FIX WAS ALREADY IN THE FILE, one step down: the
+  vulnerability scan has never had this problem because it runs a PINNED
+  CONTAINER (`anchore/grype:v0.97.1`) instead of downloading anything, so the
+  SBOM now runs `anchore/syft:v1.42.3` the same way. That removes the failure
+  mode rather than tolerating it and pins the generator's version, which the
+  action resolved fresh each day. The retry is the BELT, not the fix — three
+  attempts with backoff for registry blips, and the last is NOT swallowed,
+  because nothing downstream reads the SBOM (grype scans the archive directly;
+  it becomes an attestation only once images are pushed to a registry) and a
+  gate with no consumer that silently stops producing is the rot this repo
+  keeps closing. ANTI-VACUITY, because syft can exit 0 having catalogued
+  nothing and an empty document looks exactly like a good one: the step counts
+  packages and treats zero as a failed attempt. Both failure modes were driven
+  locally before shipping — an unreachable syft image and an empty document
+  each exit 1 — and the two `docker save` calls became one, the scan step
+  having been building its own copy of an archive the SBOM step now needs.
+- 2026-08-12 — AND MY GREP FOR THE EVIDENCE MATCHED THE PROSE DESCRIBING THE
+  EVIDENCE. Checking the above in CI, a scan for `SBOM: [0-9]+ packages` across
+  13 jobs returned 26 lines, thirteen of them an identical `288` — which read
+  like every job cataloguing the same image, the one defect that would make an
+  SBOM worthless while every job stayed green. It was not: the checkout step
+  logs the PR event payload, and the PR BODY I had written contained the string
+  `SBOM: 288 packages` in its results table. The real evidence was the other
+  thirteen, one per job, and their VARIATION is what proves each SBOM describes
+  its own image — `vault-web` reporting 14 packages against `identity`'s 193 is
+  the zero-runtime-dependency origin showing up in its own bill of materials.
+  Two rules. A grep over CI logs is searching a document that CONTAINS YOUR OWN
+  WRITING about what you expect to find, so anchor it on the log's job/step
+  columns rather than on a phrase. And a count that is suspiciously uniform
+  deserves the same "measure it" reflex as one that is suspiciously wrong —
+  here the uniformity was an artifact of the observer, and the same instinct
+  applied to `if-no-files-found: warn` (4 of 13 artifacts, which was only the
+  API's 30-per-page default) stopped a second false alarm.

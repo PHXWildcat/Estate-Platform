@@ -195,15 +195,61 @@ jobs:
             exit 1
           fi
 
+      # ONE `docker save`, TWO consumers. The scan step below used to produce
+      # its own copy; these archives are hundreds of megabytes and building
+      # each twice was pure cost.
+      - name: Freeze the image for analysis
+        run: docker save estate/${{ matrix.app }}:ci -o /tmp/${{ matrix.app }}.tar
+
       # What shipped, in machine-readable form. Retained as an artifact now;
       # it becomes an attached attestation once images are pushed to a registry.
+      #
+      # A PINNED CONTAINER RATHER THAN `anchore/sbom-action`, and the reason is
+      # a failure this file already knew how to avoid. The action downloads the
+      # syft BINARY from GitHub releases on every job, and when that endpoint
+      # answered 503 it took `main` red twice over — three of fourteen matrix
+      # jobs on one run, a different three on the next, all of them at the
+      # download and none of them for any reason to do with the images. The scan
+      # step directly below has never had that problem because it runs a PINNED
+      # CONTAINER, so the fix is to do here what the next step already does.
+      # It also pins the SBOM generator's version, which the action left to
+      # whatever it resolved that day.
+      #
+      # THE RETRY IS THE BELT, not the fix. Pulling from a registry can blip
+      # too, and a bounded backoff costs nothing when everything is well. The
+      # LAST attempt is not swallowed: a persistent failure still fails the job,
+      # because an SBOM that silently stops being produced is exactly the sort
+      # of gate that rots unnoticed.
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0
+        run: |
+          set -uo pipefail
+          out="/tmp/sbom-${{ matrix.app }}.spdx.json"
+          for attempt in 1 2 3; do
+            if docker run --rm -v /tmp:/w anchore/syft:v1.42.3 \
+                 "docker-archive:/w/${{ matrix.app }}.tar" -o spdx-json --quiet > "$out"; then
+              # ANTI-VACUITY: syft can exit 0 having catalogued nothing, and an
+              # empty document is a useless artifact that looks like a good one.
+              count=$(node -e 'const d=require(process.argv[1]);console.log((d.packages||[]).length)' "$out" 2>/dev/null || echo 0)
+              if [ "${count:-0}" -gt 0 ]; then
+                echo "SBOM: ${count} packages"
+                exit 0
+              fi
+              echo "::warning::attempt ${attempt} produced an SBOM with no packages"
+            else
+              echo "::warning::syft attempt ${attempt} failed"
+            fi
+            sleep $((attempt * 10))
+          done
+          echo "::error::syft produced no usable SBOM after 3 attempts"
+          exit 1
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          image: estate/${{ matrix.app }}:ci
-          format: spdx-json
-          artifact-name: sbom-${{ matrix.app }}.spdx.json
-          output-file: sbom-${{ matrix.app }}.spdx.json
+          name: sbom-${{ matrix.app }}
+          path: /tmp/sbom-${{ matrix.app }}.spdx.json
+          if-no-files-found: warn
 
       # Scan, then gate by OWNERSHIP rather than by severity alone: application
       # dependencies are ours to bump and block the build; base-image packages
@@ -213,7 +259,6 @@ jobs:
       # .github/scripts/gate-image-scan.mjs for the full rationale.
       - name: Scan image for vulnerabilities
         run: |
-          docker save estate/${{ matrix.app }}:ci -o /tmp/${{ matrix.app }}.tar
           docker run --rm -v /tmp:/w anchore/grype:v0.97.1 \
             "docker-archive:/w/${{ matrix.app }}.tar" -o json --quiet \
             > /tmp/grype-${{ matrix.app }}.json
