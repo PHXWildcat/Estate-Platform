@@ -108,12 +108,31 @@ function captures(source: string, pattern: RegExp): string[] {
   return out;
 }
 
-/** The `.mjs` scripts the package's `build` command actually invokes. */
+/**
+ * The `.mjs` scripts the package's `build` command actually invokes.
+ *
+ * IT DOES NOT FOLLOW IMPORTS, which a review raised as a way for a new
+ * build-time input to escape: a script could read `process.env` from a module
+ * it imports rather than in its own text. Recorded rather than closed, with the
+ * reason measured — neither build script imports anything but `node:` builtins
+ * today, so the two files ARE the input surface, and the case below asserts
+ * that so the exemption cannot rot silently. Following imports properly wants a
+ * module graph rather than a regex; the assertion is the cheap half that keeps
+ * the claim honest.
+ */
 function buildScripts(): string[] {
   const pkg = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')) as {
     scripts: { build: string };
   };
   return captures(pkg.scripts.build, /node\s+(\S+\.mjs)/g);
+}
+
+/** Non-builtin imports, i.e. files the scan would have to follow but does not. */
+function localImportsIn(source: string): string[] {
+  return [
+    ...captures(source, /^\s*import[^'"]*['"]([^'"]+)['"]/gm),
+    ...captures(source, /require\(\s*['"]([^'"]+)['"]\s*\)/g),
+  ].filter((spec) => !spec.startsWith('node:'));
 }
 
 /** Environment variables a source file reads, in either access form. */
@@ -139,6 +158,15 @@ describe('turbo is told about every build-time input', () => {
     const reads = scripts.flatMap((s) => envReadsIn(readFileSync(join(PKG_ROOT, s), 'utf8')));
     expect(new Set(reads).size).toBeGreaterThanOrEqual(2);
     expect(reads).toContain('VAULT_ORIGIN');
+  });
+
+  it.each(scripts)('%s imports nothing the scan would have to follow', (script) => {
+    // The exemption above, made falsifiable. The moment a build script imports
+    // a local module, this goes red and whoever added it has to decide whether
+    // the scan must follow imports rather than discovering later that it never
+    // did.
+    const local = localImportsIn(readFileSync(join(PKG_ROOT, script), 'utf8'));
+    expect({ script, local }).toEqual({ script, local: [] });
   });
 
   it('declares a package-specific build task at all', () => {
