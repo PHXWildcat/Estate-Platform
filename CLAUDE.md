@@ -4672,3 +4672,56 @@ deviating from them, stop and propose the change with rationale — do not silen
   now, and the same mutation fails in 31 seconds naming the crypto load. Both
   mutations are confirmed red; a third, planting the vault password in a request
   body, is caught by name ("LEAKED: the vault password").
+- 2026-08-12 — ATTACHED IS NOT READY, and `browser-smoke`'s first red run was
+  MY HARNESS rather than the extension. `Target.attachToTarget` succeeds as soon
+  as the service-worker target EXISTS, while the worker's `chrome` bindings are
+  installed a moment later — so readiness was asserted with a proxy, the very
+  next `Runtime.evaluate` threw (`chrome.runtime.getManifest`, 55ms after
+  attach), and every check downstream inherited it. The predicate is the
+  capability actually needed now — the worker EVALUATES — polled to a deadline.
+  A SECOND DEFECT HID THE FIRST: `ev` reports a thrown evaluation as `{__error}`
+  and the caller did `String(v)`, so CI printed `[object Object]`. The failure
+  could not say why, so the cause had to be REPRODUCED LOCALLY instead of read —
+  which is the whole cost of a gate that cannot report itself. Details render
+  through `describe` now, and `ev` prefers the exception's `description` over
+  `text`, whose value is the bare word "Uncaught"; mutation-tested through all
+  three states (`[object Object]` → `ERROR: Uncaught` → the real TypeError).
+- 2026-08-12 — THE SOAK IS THE EVIDENCE THE MERGE SAID IT OWED, and it is worth
+  the entry mostly for what it nearly measured instead. At merge the only
+  post-fix run was green on Chrome 151 while the failure had been on Chrome 150,
+  so it moved two variables at once and established nothing about the fix —
+  recorded that way rather than claimed. Seven runs later, ALL SEVEN DREW
+  Chrome 150.0.7871.128, the exact build that flaked, and all seven passed
+  11/11: that version went from 1-pass-1-fail before the fix to 7-for-7 after
+  it. Not proof — an intermittent failure hides, and a rate estimated from two
+  runs is a terrible estimator — but it is a sample ON THE BUILD THAT FAILED,
+  which is the only kind that could bear on the question at all.
+  TWO NEAR-SILENT FAILURES IN THE SOAK ITSELF, both of which would have INFLATED
+  the result. The workflow's `concurrency` group is keyed on event + ref with
+  `cancel-in-progress`, so six dispatches on ONE branch cancelled each other and
+  left a single run: "6 dispatched" followed by a green reads as six passes
+  unless the conclusions are checked, and five of them said `cancelled`.
+  Distinct refs give distinct groups. And the collection loop DID NOTHING —
+  `for r in $RUNS` does not word-split in zsh, so it ran once with the whole
+  string as one run id and every `gh run view` failed quietly; the background
+  watcher carried the same bug and would have polled a nonexistent run forever
+  rather than ever reporting. The tell was one line of output where seven were
+  expected.
+  THE SOAK STAYED OFF `main` DELIBERATELY: `attest` fires on any non-pull_request
+  event there, so six dispatches would have minted six duplicate signed
+  attestations for an artifact that already has one. A supply-chain artifact is
+  not something to churn for a measurement.
+- 2026-08-12 — THREE PREDICATES IN ONE SESSION WERE WEAKER THAN WHAT THEY
+  CLAIMED, all of them mine, and the pattern is worth more than any one of them.
+  The smoke harness waited for a service-worker TARGET TO EXIST rather than for
+  the worker to RUN CODE. A CI watcher exited on `pending == 0`, which is also
+  true before anything has started, and reported "no checks reported" as a
+  settled result. Its fix — a floor of 20 checks — then still accepted 26 checks
+  belonging to the PREVIOUS COMMIT, which is how a stale failure was reported as
+  current. Each fix addressed the instance rather than asking what the predicate
+  was supposed to MEAN, which for the watcher is "every check FOR THIS COMMIT has
+  finished" and for the harness is "the worker can execute". That is the M16
+  review's own rule — a rule applied to one member of a category is a rule
+  half-applied — arriving three times in the session that recorded it. The
+  watcher binds to the HEAD sha now, where staleness cannot satisfy it by
+  construction.
