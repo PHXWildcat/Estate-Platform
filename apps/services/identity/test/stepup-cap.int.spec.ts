@@ -31,7 +31,11 @@ import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
 import type { SessionsRepo } from '../src/sessions.repo';
-import { STEPUP_DENIAL_WINDOW_MS, STEPUP_MAX_DENIALS } from '../src/stepup';
+import {
+  STEPUP_DENIAL_WINDOW_MS,
+  STEPUP_MAX_ACCOUNT_DENIALS,
+  STEPUP_MAX_DENIALS,
+} from '../src/stepup';
 import type { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
 
@@ -55,12 +59,20 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
   const user = randomUUID();
   const other = randomUUID();
   const session = randomUUID();
+  /** A SECOND credential of the same user — the owner's own browser. */
+  const ownerSession = randomUUID();
 
   /** Write a ledger row at a chosen instant — `insert` always stamps now(). */
-  async function ledger(userId: string, kind: string, at: Date): Promise<void> {
+  async function ledger(
+    userId: string,
+    kind: string,
+    at: Date,
+    sessionId: string | null = session,
+  ): Promise<void> {
     await admin.query(
-      `INSERT INTO ${schema}.auth_events (user_id, kind, occurred_at) VALUES ($1, $2, $3)`,
-      [userId, kind, at],
+      `INSERT INTO ${schema}.auth_events (user_id, session_id, kind, occurred_at)
+       VALUES ($1, $2, $3, $4)`,
+      [userId, sessionId, kind, at],
     );
   }
 
@@ -136,12 +148,12 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
 
   it('counts recent denials for this user', async () => {
     for (let i = 0; i < 3; i += 1) await ledger(user, 'stepup.denied', RECENT);
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(3);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(3);
   });
 
   it('IGNORES denials older than the window — a rate limit, not a permanent ban', async () => {
     for (let i = 0; i < 9; i += 1) await ledger(user, 'stepup.denied', STALE);
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(0);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(0);
   });
 
   it('IGNORES denials from before the last SUCCESSFUL step-up', async () => {
@@ -153,13 +165,13 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     }
     await ledger(user, 'stepup.granted', new Date(RECENT.getTime() - 5_000));
     await ledger(user, 'stepup.denied', RECENT);
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(1);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(1);
   });
 
   it('IGNORES another user’s denials', async () => {
     // Keyed on the user, so one account under attack cannot lock out another.
     for (let i = 0; i < 8; i += 1) await ledger(other, 'stepup.denied', RECENT);
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(0);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(0);
   });
 
   it('DOES NOT COUNT ITS OWN REFUSALS — the counter cannot feed itself', async () => {
@@ -169,7 +181,7 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     // one turns a 15-minute cooldown into a permanent lockout that a retrying
     // client inflicts on its own user.
     for (let i = 0; i < 20; i += 1) await ledger(user, 'stepup.rate_limited', RECENT);
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(0);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(0);
   });
 
   it('THE SERVICE refuses at the cap and admits below it, over this real predicate', async () => {
@@ -185,7 +197,7 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
       response: { error: 'invalid_code' },
     });
     expect(rateLimited).toEqual([]);
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(STEPUP_MAX_DENIALS);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(STEPUP_MAX_DENIALS);
 
     // At the cap: refused, with the distinct token and status.
     await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({
@@ -195,7 +207,7 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     expect(rateLimited).toEqual([{ userId: user, denials: STEPUP_MAX_DENIALS }]);
 
     // And the refusal did not raise the count it was refused by.
-    expect(await events.deniedSinceLastGrant(user, windowStart())).toBe(STEPUP_MAX_DENIALS);
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(STEPUP_MAX_DENIALS);
 
     const { rows } = await admin.query<{ kind: string; n: string }>(
       `SELECT kind, count(*)::text AS n FROM ${schema}.auth_events
@@ -216,5 +228,67 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
     // Back under the cap, so the next attempt is judged on its merits again —
     // here an ordinary denial, since the stub holds no TOTP method.
     await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({ status: 401 });
+  });
+
+  /**
+   * THE M16 REVIEW'S TWO FINDINGS, each pinned at the layer it lived in.
+   *
+   * Both were invisible to every case above, and for the same reason: all seven
+   * used ONE session and ONE route. A cap is a claim about who is bounded and
+   * where, and a test that varies neither cannot see it.
+   */
+  it('a session that exhausts the cap does NOT refuse the OWNER’s other sessions', async () => {
+    // The attacker's credential burns its five.
+    for (let i = 0; i < STEPUP_MAX_DENIALS; i += 1) {
+      await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({ status: 401 });
+    }
+    // It is now capped, and stays capped however long it keeps trying.
+    await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({ status: 429 });
+    await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({ status: 429 });
+
+    // THE OWNER'S OWN SESSION IS UNAFFECTED. Before the fix this was a 429 —
+    // measured against this database — which is docs/03 §5.1's rescue path
+    // suppressed by anyone holding one stolen credential.
+    await expect(service.stepUp(user, ownerSession, '000000')).rejects.toMatchObject({
+      status: 401,
+      response: { error: 'invalid_code' },
+    });
+
+    // And the attacker's refusals never fed the account total, so the ceiling
+    // is still four exhausted-credentials away.
+    expect(await events.failedFactorAttempts(user, windowStart())).toBe(STEPUP_MAX_DENIALS + 1);
+  });
+
+  it('the ACCOUNT ceiling still bounds an attacker who can spread across sessions', async () => {
+    // The per-session cap must not become an unlimited budget for whoever can
+    // mint sessions. Seeded across distinct ids, which is what such an attacker
+    // has.
+    for (let i = 0; i < STEPUP_MAX_ACCOUNT_DENIALS; i += 1) {
+      await ledger(user, 'stepup.denied', RECENT, randomUUID());
+    }
+    // A session with a clean slate of its own is still refused, on the account
+    // number rather than its own.
+    await expect(service.stepUp(user, ownerSession, '000000')).rejects.toMatchObject({
+      status: 429,
+      response: { error: 'too_many_attempts' },
+    });
+    expect(rateLimited).toEqual([{ userId: user, denials: STEPUP_MAX_ACCOUNT_DENIALS }]);
+  });
+
+  it('COUNTS totp/verify failures — the route that checks the same secret', async () => {
+    // The uncapped oracle. Forty wrong codes here produced forty 401s and left
+    // the step-up counter at zero, after which the code they found elevated on
+    // the first try. Both kinds are one budget now.
+    for (let i = 0; i < STEPUP_MAX_DENIALS; i += 1) {
+      await expect(service.verifyTotp(user, session, '000000')).rejects.toMatchObject({
+        status: 401,
+      });
+    }
+    await expect(service.verifyTotp(user, session, '000000')).rejects.toMatchObject({
+      status: 429,
+      response: { error: 'too_many_attempts' },
+    });
+    // And the budget is SHARED, so guessing there does not buy fresh attempts here.
+    await expect(service.stepUp(user, session, '000000')).rejects.toMatchObject({ status: 429 });
   });
 });

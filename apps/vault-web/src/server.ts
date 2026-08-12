@@ -107,7 +107,20 @@ const PASS_THROUGH_ROUTES: ReadonlyArray<{
  * edge forwards; the callee decides.
  */
 function credentialFrom(req: IncomingMessage): string | null {
-  return bearerFrom(req.headers['authorization']) ?? sessionTokenFrom(req.headers['cookie']);
+  // THE PRESENCE OF THE HEADER DECIDES, not its parseability (M16 review).
+  //
+  // `bearerFrom` is deliberately strict (`/^Bearer (\S+)$/i`), so `Basic …`, a
+  // bare `Bearer`, or `Bearer  two-spaces` all yield null — and the `??` then
+  // fell through to the cookie. A request that WAS carrying an Authorization
+  // header therefore travelled on a browser session instead, which is exactly
+  // the ambiguity the paragraph above says this edge must never have. Both are
+  // the caller's own credential so nothing is escalated, but "never looks at
+  // the cookie" was true only of a well-formed header, and a rule that holds
+  // only for correct input is not the rule that was written down.
+  if (req.headers['authorization'] !== undefined) {
+    return bearerFrom(req.headers['authorization']);
+  }
+  return sessionTokenFrom(req.headers['cookie']);
 }
 
 /**

@@ -3805,27 +3805,79 @@ deferred and both obstacles named.
 
 #### PR5 — the security review
 
-**The worst finding is older than M16, and M16 is what made it matter.**
-`POST /v1/auth/totp/enroll` has been `SessionGuard`-only since M2.
-`revokeUnverifiedTotp` spares a VERIFIED method while `findActiveTotp` takes the
-NEWEST, so a caller holding nothing but a stolen session could enrol a secret OF
-THEIR OWN, confirm it with a code they computed themselves, and step up. Three
-ordinary requests, no guessing, and step-up stops being a second factor for
-anyone holding a session — vault reset, document generation, export, beneficiary
-changes, deletion. Measured end to end against real Postgres, including the half
-that makes it a lockout as well as a takeover: the owner's own authenticator
-answers 401 afterwards, which is docs/03 §5.1's liveness proof gone.
+Seven file-scoped discovery lenses over the M16 range (never a diff range — the
+M13 lesson, and this range is 130 files), each in its own git worktree detached
+at the commit under review, then **every candidate confirmed by measurement
+before anything was changed**: mutation, or execution against real Postgres, a
+real jsdom page, or the modules run directly under `node
+--experimental-strip-types`. 21 candidates, no agents lost. A verdict is not
+evidence, so no finding was acted on because an agent said so.
 
-The repository had already SEEN the mechanism and filed it as a test-seeding
-nuisance (CLAUDE.md 2026-08-06, on why the settlement e2e caches TOTP
-enrolment). M16 is what made it acute — it built an attempt cap whose whole
-premise is that step-up bounds a stolen credential. Enrolment is now step-up
-gated WHEN A VERIFIED FACTOR EXISTS; the first enrolment cannot be gated, and
-that residual is stated rather than implied.
+**TENTH milestone running where every confirmed finding sits in machinery the
+milestone introduced — with one exception, and it is the most serious thing in
+the review.**
 
-Shipped on its own commit ahead of the rest of the review, because it is
-pre-existing, independent of everything else in the range, and touches
-identity's auth surface rather than the extension's.
+**THE WORST ONE IS OLDER THAN M16.** `POST /v1/auth/totp/enroll` has been
+`SessionGuard`-only since M2. `revokeUnverifiedTotp` spares a VERIFIED method
+while `findActiveTotp` takes the NEWEST, so a caller holding nothing but a
+stolen session could enrol a secret OF THEIR OWN, confirm it with a code they
+computed themselves, and step up. Three ordinary requests, no guessing, and
+step-up stops being a second factor for anyone holding a session — vault reset,
+document generation, export, beneficiary changes, deletion. Measured end to end,
+including the half that makes it a lockout as well as a takeover: the owner's
+own authenticator answers 401 afterwards, which is docs/03 §5.1's liveness proof
+gone. The repository had already SEEN the mechanism and filed it as a
+test-seeding nuisance (CLAUDE.md 2026-08-06). M16 is what made it acute — it
+built an attempt cap whose whole premise is that step-up bounds a stolen
+credential. Enrolment is now step-up gated WHEN A VERIFIED FACTOR EXISTS; the
+first enrolment cannot be gated and that residual is stated rather than implied.
+
+**AND THE CAP WAS BYPASSABLE, AND WAS A LOCKOUT.** Two independent defects in
+the machinery M16 introduced, both measured against real Postgres.
+`POST /v1/auth/totp/verify` checks the same secret with no cap and writes a kind
+the counter did not count — forty guesses, forty 401s, counter zero, then the
+found code elevated on the first try. And the cap was keyed on the USER with
+every session writing into it, so five wrong codes from one stolen credential
+refused the owner's own sessions, renewably, forever. `stepup.ts` had named that
+exact harm and claimed a rolling window escaped it. Both closed: one gate over a
+SET of routes, and two scopes so a stolen credential exhausts itself under an
+account ceiling that stays the real bound.
+
+**ONE IDN PAGE RETURNED THE WHOLE VAULT.** `isConfusable` flagged any punycode
+on either side without comparing the two — not a comparison at all — and
+`matchesFor` keeps confusable verdicts, so every saved item's title and domain
+came back on any internationalised page. Precisely the disclosure `matchesFor`'s
+docstring says the design prevents, and it fired the lookalike refusal (the one
+phishing bound §4 TB9 commits to) on every item at once. Deleting the clause
+gave up nothing the boundary needed — filling requires equality — and the
+page-level notice replaces the per-item claim.
+
+**Also found and fixed:** a doubled trailing dot collapsed two registrants onto
+a bare suffix, because `normaliseHost` stripped one dot and ran twice on
+different strings; a failed unlock left the AUK and SRP private key resident
+with no idle clock armed; a revoked pairing forgot the session and kept the
+Secret Key, so the protective path was weaker than the voluntary one; a refused
+injection rendered as "no password field was found"; the edge's credential
+precedence fell through to the cookie on a malformed `Authorization`; the
+route-audience fence was keyed on the decorator's NAME while the guards read the
+metadata KEY; and two shipped docstrings still said "five vault routes" four PRs
+after it became seven.
+
+**"Nothing is ever auto-submitted" was never the extension's to promise.** A
+fill must dispatch `input` and `change`, and the reasoning that withholds `blur`
+applies to them verbatim — measured, a page's `change` listener holding the real
+secret. There is no fix, because the events ARE the fill. What changed is order
+(the username is written first, so an early submit no longer sends the secret
+with an empty username — which is what it used to do) and the claim, in §4 TB9
+and on screen. The fill's origin decision is also re-read AT THE GESTURE now:
+the key holder's re-decision was documented as defending against a navigation
+between the two calls and compared the same stale string twice, so what actually
+stood in the way was a Chromium behaviour nobody measured.
+
+**Not done, and owed.** Nothing in this review ran in a real browser. Whether
+Chromium revokes `activeTab` on a cross-origin navigation remains unmeasured
+here — the fill-time re-read makes the boundary hold either way, which is why it
+was fixed rather than measured, but the answer is still owed.
 
 ### M17 — Subscription manager (planned)
 

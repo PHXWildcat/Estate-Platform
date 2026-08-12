@@ -4296,3 +4296,201 @@ deviating from them, stop and propose the change with rationale — do not silen
   holder (M14); and a legitimate re-enrolment silently retires the previous
   authenticator, which is now owner-only but still one behaviour for two
   intentions.
+- 2026-08-12 — THE M16 STEP-UP CAP WAS BYPASSABLE AND WAS ALSO A LOCKOUT, two
+  independent defects in machinery M16 introduced, both measured. (1) AN UNCAPPED
+  ORACLE ONE ROUTE OVER: `POST /v1/auth/totp/verify` resolves the same
+  `mfa_methods` row and calls the same `verifyTotpCode`, had no cap at all, and
+  wrote `totp.verify_failed` — a kind `deniedSinceLastGrant` did not count. Forty
+  guesses, forty 401s, never a 429, counter still zero; the code the guessing
+  found then elevated at `stepup` on the first try, spending none of the five.
+  `stepup.ts`'s "one chokepoint covers both" was wrong by exactly one route. The
+  chokepoint is the SET of routes that read the factor, so failures and successes
+  are both sets now, one gate serves both callers, and
+  `test/second-factor-kinds.spec.ts` scans the service for every kind it writes
+  so a third checker arrives declared or turns it red. (2) THE ROLLING WINDOW DID
+  NOT ESCAPE THE OWNER-DoS ITS OWN DOCSTRING REJECTED A STICKY LOCK FOR: the
+  count was keyed on the USER and every live session wrote into it, so five wrong
+  codes from ONE credential — the 30-day extension token on disk being the
+  cheapest — refused every OTHER session, measured as the owner's untouched
+  session getting 429 where it should have got 401. The only thing that clears
+  the window is a success, which the 429 prevents, so five denials a quarter-hour
+  hold it there indefinitely. Fixed with TWO SCOPES rather than a different
+  number: a per-session cap a stolen credential exhausts on itself (its refusals
+  are `stepup.rate_limited`, which is not counted, so the account total rests
+  where it was), under an account ceiling that stays keyed on the user for M14's
+  reason and remains the real bound. Residual: an attacker who can MINT sessions
+  still walks the account total to its ceiling — a strictly higher bar, and the
+  one that cap exists for.
+- 2026-08-12 — ONE INTERNATIONALISED PAGE RETURNED THE WHOLE VAULT, and the fix
+  was to DELETE a rule rather than improve it. `isConfusable` began "any punycode
+  on either side, against a domain that is not identical, is refused as
+  confusable" — which is not a comparison at all, because it never looks at the
+  other domain. Since `matchesFor` keeps `confusable` and drops only `no-match`,
+  every saved item's title and registrable domain came back from the key holder
+  on any IDN page: precisely the disclosure that function's own docstring says
+  the design exists to prevent ("would disclose a list of every site the user has
+  an account with in order to answer a question about ONE origin"). It also fired
+  the lookalike refusal — the one phishing bound §4 TB9 commits to — on every
+  item at once, on ordinary pages, which is how an alarm stops being read.
+  Deleting it gave up NOTHING the boundary needed: filling requires
+  `savedDomain === pageDomain`, so a punycode host that is not the saved domain
+  was already unfillable and the clause only decided the LABEL on the refusal.
+  The general case (a real punycode homograph) needs decoding plus UTS #39 and
+  stays a named follow-up, which §6j already declares the accepted failure
+  direction. What replaces it is a fact about the PAGE said once, not a claim
+  about each credential. THE GENERAL SHAPE: a rule that takes one argument
+  cannot be a verdict about a pair, however cautious it looks.
+- 2026-08-12 — A FUNCTION CALLED TWICE MUST AGREE WITH ITSELF. `normaliseHost`
+  stripped ONE trailing dot, and `registrableDomain` normalises and then calls
+  `publicSuffix`, which normalises AGAIN — so the two ran on DIFFERENT strings.
+  `publicSuffix` saw `bank.com` and its empty-label guard never fired, while
+  `registrableDomain` counted labels on `['bank','com','']` and returned the last
+  two: `bank.com..` and `evil.com..` both became `com.` and `matchOrigin`
+  answered `match`. A bare public suffix, which that file's own docstring
+  promises never to return, shared by two different registrants. `URL.hostname`
+  preserves the doubled dot, so the input is reachable (both sides must carry it,
+  which is what keeps it medium rather than high). One `+` in a regex.
+- 2026-08-12 — "NOTHING IS EVER AUTO-SUBMITTED" WAS NEVER THE EXTENSION'S TO
+  PROMISE. `fill-into-page.ts` withholds `blur` because "a page is free to submit
+  on blur, so dispatching one would be auto-submission by proxy" — and that
+  reasoning is true verbatim of `input` and `change`, which a fill MUST dispatch
+  or no field notices the value. Measured under jsdom against the real module: a
+  page's `change` listener held the real secret. There is no fix, because the
+  events ARE the fill, so the CLAIM was narrowed in §4 TB9 and on screen ("Estate
+  didn't submit anything" rather than "Nothing was submitted"). What WAS fixable
+  is ORDER: the password was written FIRST, so a page committing on its `change`
+  posted the real secret with the username field still empty — measured as
+  `username at submit: ""`. Username first now, so whichever field an eager page
+  acts on, the pair is complete. The lesson is the one about absolutes: a control
+  that must produce an observable effect cannot also promise the effect is
+  unobservable.
+- 2026-08-12 — THE FILL'S ORIGIN DECISION RAN ON A STALE URL, and the docstring
+  claiming otherwise named the exact scenario it could not see. `fillFor` says it
+  re-decides "because the page can navigate between the two calls" — but
+  `vault-screens.ts` reads the tab ONCE in `refresh()` and the Fill button closes
+  over that string, so `matchesFor` and `fillFor` were handed the SAME value and
+  the second decision was f(x) === f(x) over the page URL. What actually stood
+  between a navigated tab and a misfill was Chromium revoking `activeTab` on a
+  cross-origin navigation — real, plausibly sufficient, and UNMEASURED in this
+  repository with no test asserting it. The tab is re-read at the gesture now, so
+  the claim is true independently of the platform; a tab that changed is a
+  REFUSAL rather than a fallback to the captured value, because the grant is
+  revoked exactly when the thing you would fall back on has become wrong.
+  Recorded rather than closed: whether that revocation happens is still owed by
+  whoever next drives this in a browser.
+- 2026-08-12 — Three smaller M16 findings that share one shape — THE PROTECTIVE
+  PATH WAS THE WEAKER ONE. (1) Key material survived a failed unlock: `prepare()`
+  runs before the second SRP leg, so a refused or malformed `srp/verify` returned
+  with the AUK and the SRP private key resident, and because the idle clock is
+  armed only on SUCCESS nothing was scheduled to collect them — only an offscreen
+  teardown ever would have. (2) A REVOKED pairing forgot the session and kept the
+  Secret Key on disk: `forgetSecretKey` had two callers, the explicit opt-out and
+  the VOLUNTARY disconnect, so the path an owner takes when they believe a device
+  is compromised did less than the one they take when they do not. (3) A refused
+  injection rendered as "No password field was found on this page" — `doFill`
+  never read `outcome.ok`, so the platform REFUSING and the page having no login
+  form said the identical sentence, on the one signal that would tell anyone the
+  grant had lapsed. All three closed.
+- 2026-08-12 — THE ROUTE-AUDIENCE FENCE WAS NAME-KEYED, which is the shape the
+  credential graph was fixed for twice (2026-07-28, 2026-08-07) arriving in a
+  third place. It scanned source for the literal `@AllowSessionAudiences`, while
+  `CallerGuard.audiencesFor` and identity's `SessionGuard` both resolve
+  `SESSION_AUDIENCE_METADATA` through `Reflector.getAllAndOverride` — so a route
+  is widened by CARRYING THE KEY, however it got it: an aliased import, or a raw
+  `SetMetadata`, is honoured at runtime and matched by nothing. Only `vault` and
+  `identity` have a second-layer spec reading real handler metadata; for the
+  other seven services that regex is the whole enforcement. Closed by also
+  asserting the metadata key has exactly ONE route into it, mutation-tested by
+  aliasing the decorator for real. The rule generalises past this repo: anchor a
+  fence on what the RUNTIME reads, never on the identifier a caller chose.
+- 2026-08-12 — MY OWN MUTATION GUARD LIED TO ME, in a new way, and the fix is one
+  word. The harness asserted `len(mutated) != len(original)` — so a mutation that
+  SWAPS TWO LINES (exactly the fill-order revert) reported "MUTATION IS A NO-OP"
+  and I nearly concluded the test was toothless. Length is not identity. It
+  compares CONTENT now. This is the third distinct way this repo has caught a
+  mutation harness misreporting (2026-08-10: `git checkout --` on uncommitted
+  work; a `node -e` losing `$1` to shell expansion; a grep for `✕` in a
+  non-verbose jest run) and they all produce the same symptom — a conclusion
+  about a test drawn from a measurement that never happened.
+- 2026-08-12 — A GREEN JEST RUN IS NOT A TYPECHECK. `totp-enrollment-gate.int.spec.ts`
+  passed under ts-jest with `mfaLevel: 'password'` — a value not in `MfaLevel`
+  (`'none' | 'mfa' | 'stepup'`) — and only `pnpm -r run typecheck` caught it. Worth
+  the line because the repo's habit is to trust a green suite: for a spec that
+  constructs a domain type by hand, the suite and the compiler are different
+  gates and the compiler is the one that knows the vocabulary.
+- 2026-08-12 — A COVERAGE FLOOR CALIBRATED AGAINST THE ONE CONFIGURATION NOTHING
+  RUNS. `apps/services/identity/jest.config.js` says its threshold is "set near
+  the LOCAL number (the full-flow integration suites only run with
+  PG_TEST_URL)" — and `ci.yml` sets `PG_TEST_URL`, so CI measured the HIGH
+  number and the number the floor exists for was evaluated by no gate at all.
+  It had rotted to 62.24/66.60/28.43/60.24 against a 65/66/30/63 floor, under on
+  statements, lines AND functions, failing for anyone who ran the suite without
+  a database. THE FENCE-THAT-NEVER-RUNS SHAPE FROM THE OTHER DIRECTION: not a
+  scan that stopped matching (2026-08-07) but a threshold nothing evaluates.
+  Closed by giving `auth.controller.ts` its FIRST unit spec — 23 route handlers
+  at 0% functions without Postgres, because only the int suites reached them,
+  which is M9 PR2's remedy for the identical thing in notifications where the
+  floor "was set from a number CI never produced". Local 67.91/67.55/39.25/66.23,
+  CI 89.96/79.31/83.64/89.57, floor ratcheted UP to 67/67/39/66. The spec is not
+  coverage-shaped: it pins the controller's whole contribution to authorization
+  — every authenticated handler takes its subject from the context SessionGuard
+  attached, never from the body, which the guard itself does not check — and
+  each case drives a body that TRIES to name somebody else. Mutation-tested:
+  making `verifyTotp` prefer a body-supplied userId turns one case red,
+  defeating `requireAuth` turns six red.
+- 2026-08-12 — AND THEN THE FLOOR WAS GIVEN SOMETHING THAT RUNS IT, which is the
+  half that stops it rotting again: a `ci.yml` step running identity with NO
+  database. Two things about it are the lesson rather than the feature.
+  (1) THE OBVIOUS SPELLING WOULD HAVE BEEN VACUOUS. `pnpm --filter
+  @estate/identity test -- --coverage` DOES NOT FORWARD THOSE FLAGS — measured:
+  no coverage collected, no output file written, exit 0. Since thresholds only
+  arm when coverage is collected, the step would have been a gate that could
+  never fail, in a commit whose whole subject is a gate that never ran. Caught by
+  refusing to ship it until it had been seen RED: raising the statements floor to
+  99 makes the real command exit 1. It runs the package's own jest from
+  `working-directory` instead. (2) IT MUST PROVE IT RAN THE CONFIGURATION IT
+  NAMES, or it is the same class of thing — a step that quietly acquired a
+  database would go green while measuring what the step above already covers. So
+  `PG_TEST_URL` is asserted empty, the `describeIfPg` suites are asserted to have
+  SKIPPED (pending > 0), and a passed-count floor catches a run that executed
+  almost nothing; all three were confirmed to exit 1.
+- 2026-08-12 — THE NEW STEP FAILED ITS FIRST CI RUN, AND THAT WAS THE STEP
+  WORKING. `test/ci-guard.spec.ts` asserts that in CI `PG_TEST_URL` must be set,
+  so integration suites cannot skip silently — and the new step deliberately
+  runs without one. Two correct gates wanting opposite things from the same
+  environment, which no amount of local running would have shown, because the
+  guard keys on `CI`. Reconciled with a DECLARED exemption that asserts its own
+  precondition: `IDENTITY_NO_DB_RUN` exempts the guard's first case and arms a
+  second requiring that such a run really has no database — so the flag cannot be
+  pasted into the ordinary Test step as a mute button, since it would then fail
+  the other case. All four configurations proven rather than argued: CI without a
+  database and without the flag still fails, CI with a database AND the flag
+  fails, and the two legitimate combinations pass. Only identity's copy is
+  exempted; the other ten refuse outright. (Eleven near-identical copies of that
+  guard is this repo's own copy-pasted-line drift class, noted in the spec rather
+  than fixed there — unifying them touches ten packages for reasons unrelated to
+  why this one was edited.)
+- 2026-08-12 — ELEVEN COPIES OF THE `ci-guard` SPEC UNIFIED, and the interesting
+  part is what the drift turned out to be. MEASURED before touching anything:
+  the ASSERTION was byte-identical in all ten service copies, so nothing
+  behavioural had broken. What had drifted was TEXT — three docstring wordings,
+  and vault's copy had lost its docstring entirely, so the one file explaining
+  WHY the guard exists was the one that no longer said it. Two had also grown
+  real clauses (identity's database-free run, e2e's stack gate), so eleven files
+  under one name were becoming three different things. This is the point BEFORE
+  a copy-pasted line costs something, which is the only cheap time to fix it.
+  THE TRADE-OFF IS THE ENTRY. Eleven copies have one virtue — an edit breaks one
+  of them — and unifying trades that for the drift. Demonstrated rather than
+  asserted: making `evaluate` return `satisfied: true` silences the gate in ALL
+  ELEVEN at once (audit goes from exit 1 to exit 0 in CI with no database). So
+  the shared thing gets the tests THE COPIES NEVER HAD, which is the only way
+  that trade is worth taking: `evaluate` is a PURE function of an environment,
+  driven over fabricated environments in `packages/config/test/ci-guard.spec.ts`
+  — fourteen cases, most of them a configuration that MUST FAIL — and both
+  weakening mutations are caught by it. The rule generalizes: UNIFYING N COPIES
+  OF A GUARD IS ONLY SAFE IF THE UNIFIED ONE IS TESTED HARDER THAN THE COPIES
+  WERE, because the blast radius is now N. Each package keeps a thin spec (jest
+  projects are per-package, so a spec in `@estate/config` would run nowhere) and
+  the two parameterised cases read as parameters rather than as forks. Verified
+  PER PACKAGE rather than centrally, because a central green would prove the
+  helper and not the wiring.

@@ -20,14 +20,30 @@
  *   · It cannot import the crypto. `packages/vault-crypto`'s declared-importer
  *     fence lists exactly one module in this package, and it is not this one.
  *
- * IT NEVER SUBMITS. §4 TB9 states that as an absolute and it is kept absolutely
- * here: no `form.submit()`, no synthetic Enter, no click on a submit control,
- * and deliberately NO `blur` event either — a page is free to submit on blur,
- * so dispatching one would be auto-submission by proxy. What is dispatched is
- * `input` and `change`, which is what a field needs to notice a value at all —
- * and nothing is FOCUSED either, because moving focus is itself how a blur is
- * fired. The first draft called `focus()` to look like a user and thereby broke
- * the promise in the paragraph above it.
+ * THIS CODE NEVER SUBMITS, AND THAT IS NOT THE SAME AS "NOTHING IS EVER
+ * AUTO-SUBMITTED" — which is what §4 TB9 used to claim and what the popup used
+ * to tell the user. The M16 review measured the difference. There is no
+ * `form.submit()` here, no synthetic Enter, no click on a submit control, and
+ * deliberately no `blur` (a page is free to submit on blur, so dispatching one
+ * would be auto-submission by proxy) and no `focus()` either, because moving
+ * focus is itself how a blur fires — the first draft called it to look like a
+ * user and thereby broke the promise in the paragraph above it.
+ *
+ * BUT `input` AND `change` MUST BE DISPATCHED for a field to notice a value at
+ * all, and the blur paragraph's own reasoning applies to them verbatim: a page
+ * is free to submit on either. Measured under jsdom against the real module — a
+ * `change` listener on the password field saw the real secret. So the honest
+ * statement is that the EXTENSION does not submit and the PAGE may, and both
+ * §4 TB9 and the on-screen copy now say that instead of the absolute.
+ *
+ * WHAT THE FIX BUYS IS ORDER. The username is written BEFORE the password now.
+ * It used to be the other way round, so a page committing on the password's
+ * `change` posted the real secret with the username field still EMPTY —
+ * measured, `username at submit: ""`. A page that submits early still gets the
+ * credential either way; what changed is that it can no longer get the half of
+ * it the user could not have meant to send on its own, and a login driven that
+ * way now carries what the user was looking at. The password is written last
+ * precisely because it is the field most likely to be listened to.
  *
  * A NAIVE ASSIGNMENT IS ENOUGH, and this is the one place the usual advice is
  * wrong. The received wisdom for autofill is that a React-controlled field
@@ -95,7 +111,11 @@ export function fillIntoPage(payload: FillPayload): {
   );
   const usernameField = candidates[candidates.length - 1];
 
-  const filledSecret = put(secretField, payload.secret);
+  // USERNAME FIRST. See the header: the events a fill has to dispatch are ones
+  // a page may submit on, so whichever field is written LAST is the one an
+  // eager page acts on — and it must be the one that completes the pair rather
+  // than the one that leaves it half-sent.
   const filledUsername = usernameField ? put(usernameField, payload.username) : false;
+  const filledSecret = put(secretField, payload.secret);
   return { filledUsername, filledSecret };
 }

@@ -59,7 +59,7 @@ export interface PairedExtension {
  *
  * WHAT A STOLEN PAIRING CODE BUYS, stated because it is the only reason the
  * parameters are what they are. Ten minutes, single use, burned on the ATTEMPT.
- * On success: an `extension`-audience session, which reaches five vault routes
+ * On success: an `extension`-audience session, which reaches seven vault routes
  * and three identity ones and NOTHING ELSE — it cannot reset a vault, replace a
  * keyset, delete an item, touch emergency access, or mint another handoff. And
  * it still decrypts nothing: every item read sits behind `VaultSessionGuard`,

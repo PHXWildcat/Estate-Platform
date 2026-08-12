@@ -10,19 +10,14 @@
  * and asserting `numPassedTests` against a floor, so a silently skipped suite
  * turns the JOB red even though jest was green.
  */
-describe('CI integration-test guard', () => {
-  it('provides PG_TEST_URL in CI so integration suites cannot silently skip', () => {
-    if (process.env['CI']) {
-      expect(process.env['PG_TEST_URL']).toBeTruthy();
-    }
-  });
+import { ciGuard } from '@estate/config/ci-guard';
 
-  it('arms the stack gate wherever the workflow declares the stack is up', () => {
-    // The stack workflow sets CI_REQUIRE_STACK=1 once `compose up` succeeds.
-    // From that point an unset STACK_TEST would make stack.e2e.spec.ts and
-    // aws-conformance.spec.ts skip green; this converts that into red.
-    if (process.env['CI_REQUIRE_STACK']) {
-      expect(process.env['STACK_TEST']).toBeTruthy();
-    }
-  });
+ciGuard({
+  alsoRequires: [
+    {
+      when: 'CI_REQUIRE_STACK',
+      requires: 'STACK_TEST',
+      why: 'stack.e2e.spec.ts and aws-conformance.spec.ts skip green without it',
+    },
+  ],
 });

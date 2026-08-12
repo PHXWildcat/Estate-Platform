@@ -187,6 +187,53 @@ describe('session-audience grants match the declaration', () => {
       expect(routes.filter((r) => r.key.endsWith(':<unparsed>'))).toEqual([]);
     });
 
+    /**
+     * THE SCAN ABOVE IS KEYED ON A NAME THE CALLER CHOOSES, and the M16 review
+     * found that is the same shape the credential graph was fixed for twice
+     * (2026-07-28: "a renamed secret evades a name-keyed fence"; 2026-08-07: "a
+     * fence that stops matching is worse than one that never existed").
+     *
+     * `CallerGuard.audiencesFor` and identity's `SessionGuard` both resolve
+     * `SESSION_AUDIENCE_METADATA` through `Reflector.getAllAndOverride`, so a
+     * route is widened by CARRYING THAT KEY, however it acquired it — an
+     * aliased import (`import { AllowSessionAudiences as Allow }`) or a raw
+     * `@SetMetadata(SESSION_AUDIENCE_METADATA, [...])` is honoured at runtime
+     * and matched by nothing above. Only `vault` and `identity` have a
+     * second-layer spec that reads real handler metadata; for the other seven
+     * services this scan is the whole enforcement.
+     *
+     * So the fence also asserts that the ONLY route to the metadata key is the
+     * declared decorator. That cannot be evaded by renaming, because it is
+     * keyed on the thing the guard actually reads.
+     */
+    it('the metadata key is written by the DECORATOR and by nothing else', () => {
+      const offenders: string[] = [];
+      for (const service of services) {
+        for (const file of sourceFiles(service)) {
+          for (const [index, line] of readFileSync(file, 'utf8').split('\n').entries()) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+              continue;
+            }
+            // A service may IMPORT the key (its own guard wiring does), but it
+            // may not hand it to SetMetadata: that is a decoration this scan
+            // cannot see.
+            if (/SetMetadata\s*\(\s*SESSION_AUDIENCE_METADATA/.test(trimmed)) {
+              offenders.push(`${service}:${file}:${String(index + 1)} raw SetMetadata`);
+            }
+            // An alias renames the decorator out of the scan's sight.
+            const aliased = /\bAllowSessionAudiences\s+as\s+(\w+)/.exec(trimmed);
+            if (aliased) {
+              offenders.push(
+                `${service}:${file}:${String(index + 1)} aliased as ${aliased[1] ?? ''}`,
+              );
+            }
+          }
+        }
+      }
+      expect(offenders).toEqual([]);
+    });
+
     it('every declared route really carries the decorator, for that audience', () => {
       const decorated = new Map(decoratedRoutes().map((r) => [r.key, r.audiences]));
       for (const [audience, keys] of Object.entries(AUDIENCE_ROUTE_ADMITTERS)) {

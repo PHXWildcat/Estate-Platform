@@ -3,7 +3,8 @@ import { messageFor } from './copy.js';
 import { el, render } from './dom.js';
 import { injectFill } from './inject.js';
 import type { ItemSummary } from './messages.js';
-import { isFillable } from './origin-match.js';
+import { hasPunycode, isFillable } from './origin-match.js';
+import { registrableDomain } from './registrable-domain.js';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from './secret-key-store.js';
 import {
   createItem,
@@ -250,9 +251,21 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     pageUrl: string,
     tabId: number | undefined,
   ): HTMLElement {
+    /*
+     * ONE PARSE, ONE CATCH. The internationalised-domain notice below needs the
+     * same `URL` this line already builds, and the first version of it built a
+     * second one inside its own try/catch — two parses of one string, two
+     * failure paths for one failure, and a branch nothing exercised. Folded
+     * together: whatever cannot be parsed is displayed verbatim and is not
+     * claimed to be internationalised either.
+     */
     let host: string;
+    let punycodePage = false;
     try {
-      host = new URL(pageUrl).host;
+      const parsed = new URL(pageUrl);
+      host = parsed.host;
+      const domain = registrableDomain(parsed.hostname);
+      punycodePage = domain !== null && hasPunycode(domain);
     } catch {
       host = pageUrl;
     }
@@ -280,13 +293,30 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       'div',
       {},
       el('h3', {}, `For ${host}`),
+      // THE INTERNATIONALISED-DOMAIN NOTICE IS ABOUT THE PAGE, once. It used to
+      // be a per-ITEM verdict: `isConfusable` returned true whenever either
+      // side carried punycode, without comparing them, so every saved item came
+      // back `confusable` on any IDN page — the whole vault disclosed to answer
+      // a question about one origin, and the lookalike refusal firing on items
+      // it knew nothing about. The comparison is gone (see `origin-match.ts`);
+      // what survives is the one fact that was ever true, said about the page
+      // rather than claimed about each credential.
+      ...(punycodePage
+        ? [
+            el(
+              'p',
+              { class: 'warn' },
+              'This address uses an internationalised domain name. Those can be made to look like familiar sites — check it carefully before filling anything.',
+            ),
+          ]
+        : []),
       matched.length === 0
         ? el('p', { class: 'hint' }, 'Nothing saved for this site.')
         : (list as HTMLElement),
       el(
         'p',
         { class: 'hint' },
-        'Filling gives this page the password. Estate checks the address matches the one you saved — it cannot tell whether the site itself is genuine.',
+        'Filling gives this page the password. Estate checks the address matches the one you saved — it cannot tell whether the site itself is genuine, and the page decides what to do with the value.',
       ),
     );
   }
@@ -305,6 +335,36 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
    * silently did nothing is the worst of the three.
    */
   async function doFill(itemId: string, pageUrl: string, tabId: number): Promise<void> {
+    /*
+     * THE PAGE IS RE-READ AT THE GESTURE, not trusted from the render.
+     *
+     * `vault-worker-core.ts` says the holder re-decides "because the page can
+     * navigate between the two calls" — and the M16 review found it could not
+     * detect that, because both calls were handed the SAME captured string.
+     * `refresh()` reads the tab once, the view holds it, and the Fill button
+     * closes over it; a user reads the list for as long as they like before
+     * clicking. So the second decision was f(x) === f(x) over the page URL and
+     * could never disagree with the first about where the tab now is.
+     *
+     * What actually stood between a navigated tab and a misfill was Chromium
+     * revoking `activeTab` on a cross-origin navigation — real, but nobody
+     * measured it, no test asserts it, and the whole boundary was resting on it
+     * while the code claimed otherwise. Reading the tab HERE makes the claim
+     * true independently of the platform, and narrows the window from "however
+     * long the popup is open" to the round trip.
+     *
+     * A tab we can no longer see is a REFUSAL, not a fallback to the old value:
+     * `activeTab` is revoked exactly when the thing we would be falling back on
+     * has become wrong.
+     */
+    const now = await activeTab();
+    if (now.url === undefined || now.id !== tabId || now.url !== pageUrl) {
+      show({
+        ...(view as Extract<View, { kind: 'unlocked' }>),
+        note: 'This tab changed. Open the extension again to fill.',
+      });
+      return;
+    }
     const filled = await fillFor(bearer, itemId, pageUrl);
     if (!filled.ok) {
       show({ ...(view as Extract<View, { kind: 'unlocked' }>), error: messageFor(filled.code) });
@@ -318,12 +378,22 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       return;
     }
     const outcome = await injectFill(tabId, filled.data);
-    show({
-      ...(view as Extract<View, { kind: 'unlocked' }>),
-      note: outcome.filledSecret
-        ? 'Filled. Nothing was submitted — check it and sign in yourself.'
-        : 'No password field was found on this page.',
-    });
+    // FOUR OUTCOMES, NOT TWO. `ok: false` means the platform REFUSED the
+    // injection — the page navigated, the tab closed, the grant lapsed — and it
+    // used to render as "no password field was found", a fact about the page's
+    // markup rather than about the refusal. That is a control reading as an
+    // absence, which is the shape `inject.spec.ts` says it keeps apart and this
+    // caller did not.
+    //
+    // And "Nothing was submitted" is no longer asserted: the fill dispatches
+    // `input` and `change`, which a page is free to submit on, so the extension
+    // can promise only what IT did. See `fill-into-page.ts`.
+    const note = !outcome.ok
+      ? 'We couldn’t reach that page. Open the extension again on the page you want to fill.'
+      : outcome.filledSecret
+        ? 'Filled. Estate didn’t submit anything — check the address before you sign in.'
+        : 'No password field was found on this page.';
+    show({ ...(view as Extract<View, { kind: 'unlocked' }>), note });
   }
 
   /**

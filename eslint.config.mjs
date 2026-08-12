@@ -85,6 +85,25 @@ export default tseslint.config(
     },
   },
   {
+    // `packages/config/ci-guard.js` is CommonJS tooling like the presets above,
+    // but it also REGISTERS jest cases — the shared CI guard every package's
+    // `ci-guard.spec.ts` calls — so it needs the test globals as well. It is
+    // named explicitly rather than folded into a `packages/config/*.js` glob,
+    // because handing jest globals to every future file in that directory is
+    // how a preset quietly starts being allowed to declare tests.
+    files: ['packages/config/ci-guard.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        module: 'writable',
+        process: 'readonly',
+        describe: 'readonly',
+        it: 'readonly',
+        expect: 'readonly',
+      },
+    },
+  },
+  {
     // CI helper scripts run on the runner, not in a service: they are Node
     // programs whose entire job is to print a verdict to the build log, so the
     // no-console rule (which exists to keep sensitive data out of service

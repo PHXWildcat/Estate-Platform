@@ -39,9 +39,24 @@ const BY_TLD = ((): ReadonlyMap<string, readonly string[]> => {
   return map;
 })();
 
-/** Lower-case, trailing dot removed. Hosts are compared, never displayed. */
+/**
+ * Lower-case, trailing dots removed. Hosts are compared, never displayed.
+ *
+ * IDEMPOTENT, and the `+` is the whole of the M16 review's fix. It stripped ONE
+ * trailing dot (`/\.$/`), so `bank.com..` normalised to `bank.com.` — still
+ * malformed. `registrableDomain` normalises and then calls `publicSuffix`,
+ * which normalises AGAIN, so the two ran on DIFFERENT strings: `publicSuffix`
+ * saw `bank.com` and its empty-label guard never fired, while
+ * `registrableDomain` counted labels on `['bank','com','']` and returned the
+ * last two. Measured: `bank.com..` and `evil.com..` both became `com.` and
+ * `matchOrigin` answered `match` — a bare public suffix, which this file's own
+ * docstring promises never to return, shared by two different registrants.
+ * `URL.hostname` preserves the doubled dot, so the input is reachable.
+ *
+ * A function called twice must agree with itself, and this one did not.
+ */
 export function normaliseHost(host: string): string {
-  return host.trim().toLowerCase().replace(/\.$/, '');
+  return host.trim().toLowerCase().replace(/\.+$/, '');
 }
 
 function labelsMatch(ruleLabels: readonly string[], hostLabels: readonly string[]): boolean {

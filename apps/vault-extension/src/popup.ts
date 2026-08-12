@@ -1,6 +1,7 @@
 import { request, type ApiResult } from './api.js';
 import { messageFor } from './copy.js';
 import { el, render } from './dom.js';
+import { forgetSecretKey } from './secret-key-store.js';
 import { mountVaultScreens } from './vault-screens.js';
 import {
   disconnect,
@@ -82,7 +83,15 @@ export async function mountPopup({ root }: PopupDeps): Promise<void> {
       return;
     }
     if (result.code === 'UNAUTHENTICATED') {
+      // THE ADVERSARIAL UN-PAIRING, and it must forget as much as the voluntary
+      // one (M16 review). `disconnect()` drops the Secret Key with the session,
+      // on the rule that "a device that is no longer paired has no business
+      // holding half the key material for an account it can no longer reach" —
+      // but this path, the one an owner takes when they revoke a device they
+      // believe is compromised, only forgot the session. The protective route
+      // was the weaker of the two, which is the M6 asymmetry pointed backwards.
       await forgetSession();
+      await forgetSecretKey(session.userId);
       show({ kind: 'unpaired', error: messageFor(result.code) });
       return;
     }

@@ -7,8 +7,8 @@
  * naive `includes()` passes and a naive "last two labels" passes — both named
  * in §4 TB9, both exploitable rather than sloppy.
  */
-import { matchOrigin, isFillable, withinOneEdit } from '../src/origin-match';
-import { publicSuffix, registrableDomain } from '../src/registrable-domain';
+import { hasPunycode, matchOrigin, isFillable, withinOneEdit } from '../src/origin-match';
+import { normaliseHost, publicSuffix, registrableDomain } from '../src/registrable-domain';
 
 describe('the registrable domain comes from the list, not from string surgery', () => {
   it.each([
@@ -159,11 +159,43 @@ describe('matchOrigin', () => {
     expect(matchOrigin(savedUrl, page).kind).toBe('confusable');
   });
 
-  it('treats punycode that is not the saved domain as confusable', () => {
-    // A homograph of example.com. Refused whether or not it is within one edit
-    // of the ASCII form, because an IDN that is not the saved domain has no
-    // business being offered the saved domain's credential.
-    expect(matchOrigin(saved, 'https://xn--exmple-cua.com/').kind).toBe('confusable');
+  /**
+   * PUNYCODE IS REFUSED FOR FILLING AND NO LONGER CLAIMED AS CONFUSABLE.
+   *
+   * The old rule flagged ANY punycode on either side, which is not a comparison
+   * — it ignored the other domain — so the M16 review measured it returning the
+   * whole vault to the popup on one visit to any internationalised page, since
+   * `matchesFor` keeps confusable verdicts and drops only `no-match`. The
+   * boundary is unaffected: filling needs the registrable domains to be EQUAL,
+   * which these are not. What changed is the label on the refusal.
+   */
+  it('REFUSES punycode that is not the saved domain — as no-match, not as a claim', () => {
+    const verdict = matchOrigin(saved, 'https://xn--exmple-cua.com/');
+    expect(verdict.kind).toBe('no-match');
+    expect(isFillable(verdict)).toBe(false);
+  });
+
+  it('does NOT surface unrelated items just because the PAGE is internationalised', () => {
+    // The disclosure itself, at the layer that decides it. Five saved domains
+    // with nothing to do with the page; before the fix all five came back.
+    const vault = [
+      'https://bank.com/',
+      'https://betterhelp.com/',
+      'https://match.com/',
+      'https://aa-meetings.org/',
+      'https://example.co.uk/',
+    ];
+    const surfaced = vault
+      .map((savedUrl) => matchOrigin(savedUrl, 'https://xn--80ak6aa92e.com/'))
+      .filter((v) => v.kind !== 'no-match' && v.kind !== 'unusable');
+    expect(surfaced).toEqual([]);
+  });
+
+  it('hasPunycode still answers the question, as a fact about ONE host', () => {
+    // Kept and exported, because the popup says it once about the page. The
+    // defect was using it as a verdict about a pair.
+    expect(hasPunycode('xn--80ak6aa92e.com')).toBe(true);
+    expect(hasPunycode('example.com')).toBe(false);
   });
 
   it('still matches a punycode domain against ITSELF', () => {
@@ -180,6 +212,19 @@ describe('matchOrigin', () => {
     ['https://example.com/', 'https://192.168.1.1/', 'the page is an IP'],
   ])('is unusable when %s / %s (%s)', (savedUrl, page, _why) => {
     expect(matchOrigin(savedUrl, page)).toEqual({ kind: 'unusable' });
+  });
+
+  it('a doubled trailing dot does NOT collapse two registrants onto a bare suffix', () => {
+    // `normaliseHost` stripped one dot and `publicSuffix` normalised again, so
+    // the two ran on different strings and the empty-label guard never fired:
+    // `bank.com..` and `evil.com..` both resolved to `com.` and compared EQUAL.
+    // `URL.hostname` preserves the doubled dot, so this is a reachable input.
+    expect(registrableDomain('bank.com..')).toBe('bank.com');
+    expect(registrableDomain('evil.com..')).toBe('evil.com');
+    expect(registrableDomain('a.co.uk..')).toBe('a.co.uk');
+    expect(matchOrigin('https://bank.com../', 'https://evil.com../').kind).toBe('no-match');
+    // And normalisation agrees with itself, which is what went wrong.
+    expect(normaliseHost(normaliseHost('bank.com..'))).toBe(normaliseHost('bank.com..'));
   });
 
   it('never returns match for anything but a match', () => {

@@ -19,6 +19,12 @@ interface Wired {
   injected: unknown[];
   sent: unknown[];
   fetched: { url: string; body: string }[];
+  /** Move the active tab after the screen has rendered. */
+  navigate: (url: string | null) => void;
+  /** Make the active tab a DIFFERENT tab than the one that was rendered. */
+  moveToAnotherTab: () => void;
+  /** Make `executeScript` fail the way a lapsed activeTab grant does. */
+  refuseInjection: () => void;
 }
 
 /**
@@ -36,13 +42,22 @@ function wire(
   const sent: unknown[] = [];
   const fetched: { url: string; body: string }[] = [];
   const injected: unknown[] = [];
+  // MUTABLE, so a case can move the tab BETWEEN the render and the gesture —
+  // which is the whole of what the fill-time re-read defends against and what
+  // a fixed URL could never express.
+  const tab = { id: 1, url: pageUrl };
+  let injectionThrows = false;
   (globalThis as { chrome?: unknown }).chrome = {
     tabs: {
-      query: () => Promise.resolve(pageUrl === null ? [] : [{ id: 1, url: pageUrl }]),
+      query: () => Promise.resolve(tab.url === null ? [] : [{ id: tab.id, url: tab.url }]),
     },
     scripting: {
       executeScript: (injection: unknown) => {
         injected.push(injection);
+        if (injectionThrows) {
+          // What the platform does when the grant has lapsed or the tab is gone.
+          return Promise.reject(new Error('Cannot access contents of the page'));
+        }
         return Promise.resolve([
           { frameId: 0, result: { filledUsername: true, filledSecret: true } },
         ]);
@@ -66,7 +81,20 @@ function wire(
       text: () => Promise.resolve(JSON.stringify(fetchStatus.body ?? {})),
     } as unknown as Response);
   };
-  return { sent, fetched, injected };
+  return {
+    sent,
+    fetched,
+    injected,
+    navigate: (url: string | null) => {
+      tab.url = url;
+    },
+    moveToAnotherTab: () => {
+      tab.id = 99;
+    },
+    refuseInjection: () => {
+      injectionThrows = true;
+    },
+  };
 }
 
 function host(): HTMLElement {
@@ -427,7 +455,7 @@ describe('what is saved for the page you are on', () => {
     button.click();
   };
 
-  it('fills, and says plainly that nothing was submitted', async () => {
+  it('fills, and says what Estate did rather than what the page will do', async () => {
     const wired = openWith(MATCH);
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
     await pressFill();
@@ -436,8 +464,88 @@ describe('what is saved for the page you are on', () => {
     // The credential reached the page exactly once, as an argument.
     expect(wired.injected).toHaveLength(1);
     expect(JSON.stringify(wired.injected[0])).toContain('s3cret');
-    // And the user is told the thing that matters most about an autofill.
-    expect(text()).toContain('Nothing was submitted');
+    // The copy used to assert "Nothing was submitted", which the extension
+    // cannot know: the fill dispatches `input` and `change` and a page is free
+    // to submit on either (measured). It says what IT did now, and points the
+    // user at the one thing they can still check.
+    expect(text()).toContain('Estate didn’t submit anything');
+    expect(text()).not.toContain('Nothing was submitted');
+  });
+
+  /**
+   * THE FILL-TIME RE-READ (M16 review).
+   *
+   * `vault-worker-core.ts` claimed the holder re-decides "because the page can
+   * navigate between the two calls", and it could not: both calls got the same
+   * captured string, so the second decision was f(x) === f(x) over the page URL.
+   * These two cases are the ones that could not have passed before.
+   */
+  it('REFUSES to fill when the tab has navigated since the screen was drawn', async () => {
+    const wired = openWith(MATCH);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For example.com'), 'the per-page section');
+
+    wired.navigate('https://evil.test/harvest');
+    const button = [...document.querySelectorAll('button')].find((b) =>
+      /^fill$/i.test(b.textContent ?? ''),
+    );
+    button?.click();
+
+    await until(() => text().includes('This tab changed'), 'the refusal');
+    // Nothing was decrypted and nothing was injected.
+    expect(wired.injected).toHaveLength(0);
+    expect(wired.sent.filter((m) => (m as { kind?: string }).kind === 'fill')).toHaveLength(0);
+  });
+
+  it('REFUSES when the active tab is no longer the tab that was rendered', async () => {
+    const wired = openWith(MATCH);
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For example.com'), 'the per-page section');
+
+    wired.moveToAnotherTab();
+    const button = [...document.querySelectorAll('button')].find((b) =>
+      /^fill$/i.test(b.textContent ?? ''),
+    );
+    button?.click();
+
+    await until(() => text().includes('This tab changed'), 'the refusal');
+    expect(wired.injected).toHaveLength(0);
+  });
+
+  it('a REFUSED injection is not reported as a page with no password field', async () => {
+    // `ok: false` means the platform refused — navigated, closed, grant lapsed.
+    // It used to render as a fact about the page's markup, which is a control
+    // reading as an absence; `inject.spec.ts` keeps them apart and this caller
+    // did not.
+    const wired = openWith(MATCH);
+    wired.refuseInjection();
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await pressFill();
+    await until(() => text().includes('couldn’t reach that page'), 'the refusal');
+    expect(text()).not.toContain('No password field was found');
+  });
+
+  it('warns ONCE about an internationalised page, and does not claim anything about the items', async () => {
+    // The replacement for the per-item punycode verdict that returned the whole
+    // vault on any IDN page. One sentence about the page; the items are
+    // unaffected.
+    openWith([], 'https://xn--80ak6aa92e.com/login');
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('internationalised domain name'), 'the page notice');
+    expect(text()).toContain('Nothing saved for this site');
+    expect(text()).not.toContain('only looks like the saved one');
+  });
+
+  it('shows a page URL it cannot parse verbatim, and claims nothing about it', async () => {
+    // One parse serves both the heading and the internationalised-domain
+    // notice, so one failure path covers both. A tab URL that will not parse is
+    // displayed as-is rather than becoming an empty heading, and — the part
+    // that matters — it is NOT reported as internationalised, because nothing
+    // was established about it.
+    openWith([], 'not a url at all');
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For not a url at all'), 'the verbatim heading');
+    expect(text()).not.toContain('internationalised domain name');
   });
 
   it('asks for a FILL, naming the item and the page, never for a secret', async () => {

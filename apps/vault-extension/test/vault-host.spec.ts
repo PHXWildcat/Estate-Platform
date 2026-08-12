@@ -739,4 +739,57 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
     ).toEqual({ ok: false, code: 'VERSION_CONFLICT' });
     (globalThis as { fetch?: unknown }).fetch = previous;
   });
+
+  /**
+   * KEY MATERIAL DOES NOT SURVIVE A FAILED UNLOCK (M16 review).
+   *
+   * `prepare()` runs before the second SRP leg, so by the time that leg can
+   * fail the holder is sitting on the AUK and the SRP private key — both
+   * derived from the vault password AND the device Secret Key. The early
+   * returns for a failed or malformed `srp/verify` used to leave them there,
+   * and because the idle clock is armed only on SUCCESS, nothing was scheduled
+   * to collect them either. Only an offscreen teardown would ever have taken
+   * them, which is not a thing a failed unlock causes.
+   *
+   * `holder.finish` throwing "no handshake in progress" is the observable:
+   * `lock()` is the only thing that clears `#preparation`, so the message is
+   * evidence the drop happened rather than a proxy for it.
+   */
+  it.each([
+    ['a REFUSED second leg', 401, { error: 'srp_failed' }],
+    ['a MALFORMED verify response', 200, { serverProof: 'only-this' }],
+  ])('drops the derived keys after %s', async (_why, status, payload) => {
+    const { secretKey } = await stubService();
+    const real = globalThis.fetch;
+    // The holder is constructed here rather than by `host()`, because the
+    // assertion is about what IT is still carrying.
+    const holder = new VaultKeyHolder();
+    const vault = new VaultHost({ holder });
+    // Keep the real `srp/start` — the handshake has to actually begin, or the
+    // holder never derives anything and the case proves nothing.
+    (globalThis as { fetch?: unknown }).fetch = (url: unknown, init: RequestInit) => {
+      if (String(url).endsWith('/api/vault/srp/verify')) {
+        return Promise.resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          text: () => Promise.resolve(JSON.stringify(payload)),
+        } as unknown as Response);
+      }
+      return real(url as string, init);
+    };
+
+    const opened = await vault.unlock({
+      userId: USER,
+      password: PASSWORD,
+      secretKey,
+      bearer: BEARER,
+    });
+    expect(opened.ok).toBe(false);
+    expect(vault.state).toEqual({ status: 'locked' });
+
+    // The handshake material is GONE, not merely unused.
+    await expect(
+      holder.finish({ serverM2: 'x', wrappedMasterKey: 'y', vaultSessionId: 'z' }),
+    ).rejects.toThrow('no handshake in progress');
+  });
 });

@@ -32,6 +32,7 @@ import {
   ACCESS_TOKEN_TTL_MS,
   SESSION_TTL_MS,
   STEPUP_DENIAL_WINDOW_MS,
+  STEPUP_MAX_ACCOUNT_DENIALS,
   STEPUP_MAX_DENIALS,
   STEPUP_WINDOW_MS,
   isStepUpFresh,
@@ -338,8 +339,18 @@ export class AuthService {
     return { methodId, otpauthUri: totpProvisioningUri(secretBase32, userId) };
   }
 
-  /** Confirm enrollment by proving possession of the secret once. */
+  /**
+   * Confirm enrollment by proving possession of the secret once.
+   *
+   * CAPPED ON THE SAME COUNTER AS STEP-UP, because it checks the same secret.
+   * The M16 review measured this route as an uncapped oracle: forty wrong codes
+   * produced forty 401s, never a 429, and left the step-up counter at zero —
+   * after which the code the guessing found elevated at `stepup` on the first
+   * try, spending none of the five. `assertFactorAttemptsAvailable` is the one
+   * gate both routes now pass through.
+   */
   async verifyTotp(userId: string, sessionId: string, code: string): Promise<void> {
+    await this.assertFactorAttemptsAvailable(userId, sessionId);
     const ok = await this.checkTotp(userId, code, 'auth.totp.verify', { verifiedOnly: false });
     if (!ok.valid) {
       await this.authEvents.insert({ userId, sessionId, kind: 'totp.verify_failed' });
@@ -475,41 +486,60 @@ export class AuthService {
     await this.events.sessionRevoked(userId, sessionId, 'logout');
   }
 
-  async stepUp(userId: string, sessionId: string, code: string): Promise<StepUpResult> {
-    /*
-     * THE ATTEMPT CAP, BEFORE THE CODE IS EVEN LOOKED AT (M16).
-     *
-     * Order matters twice over. Checking first means an exhausted caller never
-     * causes the stored TOTP secret to be read, and it means the refusal cannot
-     * vary in timing with whether the submitted code happened to be right —
-     * which would turn the rate limiter into the oracle it exists to close.
-     *
-     * `stepup.rate_limited` IS NOT `stepup.denied`, and that is load-bearing
-     * rather than tidy. `deniedSinceLastGrant` counts denials; if a refusal
-     * emitted one, every refused attempt would extend the window it was refused
-     * by, and a client retrying in a loop would lock its own user out
-     * permanently. The counter must not be able to feed itself. (This is the
-     * M14 shape from the other side: there, a control's outcome was recorded as
-     * a user failure and poisoned an investigation; here it would poison the
-     * control.)
-     *
-     * The refusal is 429 with its own token — never `invalid_code`, which
-     * already means "that code was wrong" and would send a user to re-read an
-     * authenticator when the remedy is to wait (the M12 lesson about one token
-     * changing meaning with the surface).
-     */
+  /**
+   * THE ATTEMPT CAP, BEFORE THE CODE IS EVEN LOOKED AT (M16), for every route
+   * that checks the TOTP secret.
+   *
+   * Order matters twice over. Checking first means an exhausted caller never
+   * causes the stored TOTP secret to be read, and it means the refusal cannot
+   * vary in timing with whether the submitted code happened to be right —
+   * which would turn the rate limiter into the oracle it exists to close.
+   *
+   * `stepup.rate_limited` IS NOT a failure kind, and that is load-bearing
+   * rather than tidy. `failedFactorAttempts` counts failures; if a refusal
+   * emitted one, every refused attempt would extend the window it was refused
+   * by, and a client retrying in a loop would lock its own user out
+   * permanently. The counter must not be able to feed itself. (This is the
+   * M14 shape from the other side: there, a control's outcome was recorded as
+   * a user failure and poisoned an investigation; here it would poison the
+   * control.)
+   *
+   * TWO SCOPES, SESSION FIRST. The per-session cap is what a stolen credential
+   * exhausts; the account cap is the real bound on guessing. Asking the session
+   * question first means the common refusal — one credential hammering — never
+   * touches the account total, which is exactly what keeps the owner's other
+   * sessions working. `stepup.ts` carries the full reasoning and the measurement
+   * that forced it.
+   *
+   * The refusal is 429 with its own token — never `invalid_code`, which
+   * already means "that code was wrong" and would send a user to re-read an
+   * authenticator when the remedy is to wait (the M12 lesson about one token
+   * changing meaning with the surface).
+   */
+  private async assertFactorAttemptsAvailable(userId: string, sessionId: string): Promise<void> {
     const windowStart = new Date(this.clock().getTime() - STEPUP_DENIAL_WINDOW_MS);
-    const denials = await this.authEvents.deniedSinceLastGrant(userId, windowStart);
-    if (denials >= STEPUP_MAX_DENIALS) {
-      await this.authEvents.insert({
-        userId,
-        sessionId,
-        kind: 'stepup.rate_limited',
-        decision: 'too_many_attempts',
-      });
-      await this.events.stepUpRateLimited(userId, sessionId, denials);
-      throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
+    const mine = await this.authEvents.failedFactorAttempts(userId, windowStart, { sessionId });
+    if (mine < STEPUP_MAX_DENIALS) {
+      const account = await this.authEvents.failedFactorAttempts(userId, windowStart);
+      if (account < STEPUP_MAX_ACCOUNT_DENIALS) return;
+      await this.refuseForRate(userId, sessionId, account);
     }
+    await this.refuseForRate(userId, sessionId, mine);
+  }
+
+  private async refuseForRate(userId: string, sessionId: string, denials: number): Promise<never> {
+    await this.authEvents.insert({
+      userId,
+      sessionId,
+      kind: 'stepup.rate_limited',
+      decision: 'too_many_attempts',
+    });
+    await this.events.stepUpRateLimited(userId, sessionId, denials);
+    throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
+  }
+
+  async stepUp(userId: string, sessionId: string, code: string): Promise<StepUpResult> {
+    await this.assertFactorAttemptsAvailable(userId, sessionId);
 
     const ok = await this.checkTotp(userId, code, 'auth.totp.stepup', { verifiedOnly: true });
     if (!ok.valid) {

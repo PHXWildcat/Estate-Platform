@@ -31,7 +31,7 @@ function makeFakes(): {
     findActiveTotp: jest.Mock;
     markVerified: jest.Mock;
   };
-  authEvents: { insert: jest.Mock; deniedSinceLastGrant: jest.Mock };
+  authEvents: { insert: jest.Mock; failedFactorAttempts: jest.Mock };
   hasher: { hashPassword: jest.Mock; verifyPassword: jest.Mock; dummyVerify: jest.Mock };
   events: {
     userRegistered: jest.Mock;
@@ -69,7 +69,7 @@ function makeFakes(): {
       findActiveTotp: jest.fn().mockResolvedValue(null),
       markVerified: jest.fn(),
     },
-    authEvents: { insert: jest.fn(), deniedSinceLastGrant: jest.fn().mockResolvedValue(0) },
+    authEvents: { insert: jest.fn(), failedFactorAttempts: jest.fn().mockResolvedValue(0) },
     hasher: {
       hashPassword: jest.fn().mockResolvedValue('argon2-hash'),
       verifyPassword: jest.fn().mockResolvedValue(false),
@@ -291,7 +291,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
   describe('the step-up attempt cap', () => {
     it('refuses at the cap with 429 too_many_attempts, before reading the TOTP secret', async () => {
       const fakes = makeFakes();
-      fakes.authEvents.deniedSinceLastGrant.mockResolvedValue(STEPUP_MAX_DENIALS);
+      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS);
       const service = makeService(fakes);
 
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toMatchObject({
@@ -304,12 +304,33 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       expect(fakes.sessions.grantStepUp).not.toHaveBeenCalled();
     });
 
+    it('asks the SESSION question first, so one credential cannot spend the account budget', () => {
+      // The M16 review's finding: a user-keyed cap alone let five wrong codes
+      // from one stolen credential refuse the owner's own sessions. The order
+      // is the fix — a session at its own cap is refused without the account
+      // total ever being read, so it cannot grow.
+      const fakes = makeFakes();
+      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS);
+      const service = makeService(fakes);
+
+      return expect(service.stepUp('u-1', 's-1', '000000'))
+        .rejects.toMatchObject({ status: 429 })
+        .then(() => {
+          expect(fakes.authEvents.failedFactorAttempts).toHaveBeenCalledTimes(1);
+          expect(fakes.authEvents.failedFactorAttempts).toHaveBeenCalledWith(
+            'u-1',
+            expect.any(Date),
+            { sessionId: 's-1' },
+          );
+        });
+    });
+
     it('records the refusal as its OWN kind, never as a denial', async () => {
       // The counter must not feed itself. If a refusal wrote `stepup.denied`,
       // every refused attempt would extend the window that refused it and a
       // retrying client would lock its own user out permanently.
       const fakes = makeFakes();
-      fakes.authEvents.deniedSinceLastGrant.mockResolvedValue(STEPUP_MAX_DENIALS + 3);
+      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS + 3);
       const service = makeService(fakes);
 
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toBeDefined();
@@ -330,7 +351,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       // The permissive path must stay unchanged, or the cap has quietly become
       // a different control. One below the cap is the interesting boundary.
       const fakes = makeFakes();
-      fakes.authEvents.deniedSinceLastGrant.mockResolvedValue(STEPUP_MAX_DENIALS - 1);
+      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS - 1);
       const service = makeService(fakes);
 
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toThrow(UnauthorizedException);
@@ -348,9 +369,10 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       const service = makeService(fakes);
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toBeDefined();
 
-      expect(fakes.authEvents.deniedSinceLastGrant).toHaveBeenCalledWith(
+      expect(fakes.authEvents.failedFactorAttempts).toHaveBeenCalledWith(
         'u-1',
         new Date(NOW.getTime() - STEPUP_DENIAL_WINDOW_MS),
+        { sessionId: 's-1' },
       );
     });
   });
