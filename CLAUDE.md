@@ -4878,3 +4878,40 @@ deviating from them, stop and propose the change with rationale — do not silen
   a property must exercise the boundary that property decides. Eleven other
   mutations were red first time, and the harness itself verifies the bytes
   changed before drawing any conclusion.
+- 2026-08-12 — M17 PR1 DRIVEN LIVE, and the address bound is visible in the
+  TIMINGS rather than inferred: ten wrong passwords at ~110ms each (one Argon2id
+  verification apiece), then the eleventh at 27ms — refused before any work —
+  and the correct password refused straight after with a byte-identical
+  `401 {"error":"invalid_credentials"}`. Same shape against an address with NO
+  ACCOUNT, which is the half the ledger structurally cannot see. The account
+  ceiling refused a correct password at twenty failures since the last success,
+  wrote `login.rate_limited | decision=account_rate`, left the count it bounds
+  unmoved, and — the property that replaces M16's per-session escape — the
+  owner's pre-existing access token answered 200 at `GET /v1/auth/session` and
+  their refresh token answered 200 at `POST /v1/auth/refresh`. Register allowed
+  twenty and answered 429 on the twenty-first with a null-actor ledger row.
+- 2026-08-12 — THE DEPLOY-ORDER HAZARD WAS OBSERVED AT LAST, upgrading the
+  2026-08-10 entry that recorded it as an absence read out of `ingestor.ts`
+  rather than seen. With identity ahead of audit, the consumer logged
+  `audit_event_rejected reason=schema_violation` once per event with a rising
+  `rejectedTotal`, and `audit_events` held none of them — the new
+  `AUDIT_ACTIONS` members are unknown to an older consumer, which is
+  indistinguishable from malformed input to it. After rebuilding the consumer:
+  zero rejections, and both scopes land with the designed attribution
+  (`actor=null {"scope":"address"}` and
+  `actor=set {"scope":"account","attempts":"20"}`). DEPLOY CONSUMERS FIRST;
+  nothing enforces it, and the loss is silent in the one log whose completeness
+  is the point.
+- 2026-08-12 — AND MY FIRST LIVE PROBE OF THE ACCOUNT CEILING WAS WRONG IN THE
+  MOST PLAUSIBLE WAY. It seeded twenty `login.failed` rows at `now() - 1 minute`
+  — BEHIND the `login.succeeded` row its own sign-in had just written — and the
+  predicate, which counts since the last success, correctly returned zero, so
+  the login succeeded. That reads exactly like a bound that does not work. What
+  separated a broken probe from a broken control was querying the ledger
+  ordering before concluding anything, which is the repo's own rule (before
+  believing an observation that contradicts the source, check what produced it)
+  applied to a measurement rather than to an artifact. Also caught in the same
+  session: `docker compose build … | tail` reported success while the build had
+  failed with `DeadlineExceeded`, because `$?` was `tail`'s — the 2026-08-11
+  lesson repeating, and the reason every gate in this session was re-run with
+  its output redirected and its real exit code echoed.

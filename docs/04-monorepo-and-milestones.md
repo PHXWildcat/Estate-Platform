@@ -4127,6 +4127,43 @@ passed with the forgiveness deleted.
 
 Coverage floor ratcheted 68/68/39/66 → 70/68/41/68 on the database-free run.
 
+**Driven live against the running stack**, with identity rebuilt from the branch
+(image and container both verified seconds old, not what compose said). The
+ADDRESS bound is visible in the timings rather than inferred: ten wrong
+passwords at ~110 ms each — one Argon2id verification apiece — then the
+eleventh at 27 ms, refused before any work, and the CORRECT password refused
+straight afterwards with a byte-identical `401 {"error":"invalid_credentials"}`.
+The same shape held against an address with NO ACCOUNT, which is the half the
+ledger cannot see. The ACCOUNT ceiling refused a correct password at twenty
+failures since the last success, wrote `login.rate_limited | decision=account_rate`,
+and left the count it bounds unmoved (no self-feeding) — while the owner's
+pre-existing access token answered 200 at `GET /v1/auth/session` and their
+refresh token answered 200 at `POST /v1/auth/refresh`, which is the
+owner-survives property proven rather than argued. Register allowed twenty and
+answered `429 {"error":"too_many_attempts"}` on the twenty-first, recording a
+refusal with a null actor.
+
+**The deploy-order hazard was OBSERVED, not inferred.** CLAUDE.md's 2026-08-10
+entry recorded that events emitted while the audit consumer runs older code
+never reach `audit_events`, and said plainly that the rejection had been read
+out of `ingestor.ts` rather than seen. It has now been seen: with identity ahead
+of audit, the consumer logged
+`audit_event_rejected reason=schema_violation` per event with a rising
+`rejectedTotal`, and `audit_events` held none of them. After rebuilding the
+consumer, zero rejections and both scopes land with exactly the designed
+attribution — `actor=null {"scope":"address"}` and
+`actor=set {"scope":"account","attempts":"20"}`. Deploy the audit consumer
+before identity.
+
+**One probe of mine was wrong before the code was**, and it is worth recording
+because the wrong reading was the plausible one: the first attempt to drive the
+account ceiling seeded twenty `login.failed` rows at `now() - 1 minute`, which
+is BEHIND the `login.succeeded` row the probe's own sign-in had just written.
+The predicate counts since the last success, so it correctly returned zero and
+the login succeeded — which reads exactly like a bound that does not work.
+Checking the ledger ordering before concluding anything is what separated a
+broken probe from a broken control.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
