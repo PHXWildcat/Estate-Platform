@@ -36,6 +36,7 @@ import {
   STEPUP_MAX_ACCOUNT_DENIALS,
   STEPUP_MAX_DENIALS,
 } from '../src/stepup';
+import { SecondFactorGate } from '../src/second-factor-gate';
 import type { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
 
@@ -130,6 +131,10 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
       () => NOW,
       {} as never,
       {} as unknown as EmailVerificationService,
+      {
+        assertMayAddFactor: (): Promise<void> => Promise.resolve(),
+        holdsVerifiedFactor: (): Promise<boolean> => Promise.resolve(false),
+      } as unknown as SecondFactorGate,
     );
   });
 

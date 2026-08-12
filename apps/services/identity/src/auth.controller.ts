@@ -505,7 +505,9 @@ export class AuthController {
     @Req() request: AuthedRequest,
   ): Promise<PublicKeyCredentialCreationOptionsJSON> {
     const auth = requireAuth(request);
-    return this.webauthn.startRegistration(auth.userId);
+    // The gate is CONDITIONAL on account state, so it lives in the service
+    // and needs the context SessionGuard attached. See `SecondFactorGate`.
+    return this.webauthn.startRegistration(auth.userId, auth);
   }
 
   /** WebAuthn registration — step 2: verify attestation, persist the credential. */
@@ -522,6 +524,7 @@ export class AuthController {
     return this.webauthn.finishRegistration(
       auth.userId,
       response as unknown as RegistrationResponseJSON,
+      auth,
     );
   }
 

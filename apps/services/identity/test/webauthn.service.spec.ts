@@ -18,6 +18,7 @@ import type { IdentityConfig } from '../src/config';
 import type { EventsService } from '../src/events.service';
 import type { SessionsRepo } from '../src/sessions.repo';
 import type { WebAuthnCredentialRow, WebAuthnRepo } from '../src/webauthn.repo';
+import type { SecondFactorGate } from '../src/second-factor-gate';
 import { WebAuthnService } from '../src/webauthn.service';
 
 jest.mock('@simplewebauthn/server');
@@ -36,6 +37,8 @@ const mockVerifyAuth = verifyAuthenticationResponse as jest.MockedFunction<
 >;
 
 const NOW = new Date('2026-07-21T12:00:00Z');
+/** A session with no step-up — the gate is stubbed here, so it only has to typecheck. */
+const NO_STEPUP = { mfaLevel: 'none', stepupExpiresAt: null } as const;
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -49,6 +52,7 @@ function makeFakes(): {
     consumeChallenge: jest.Mock;
   };
   sessions: { grantStepUp: jest.Mock };
+  factors: { assertMayAddFactor: jest.Mock; holdsVerifiedFactor: jest.Mock };
   authEvents: { insert: jest.Mock };
   events: {
     stepUpGranted: jest.Mock;
@@ -66,6 +70,13 @@ function makeFakes(): {
       consumeChallenge: jest.fn().mockResolvedValue(null),
     },
     sessions: { grantStepUp: jest.fn() },
+    // Stubbed permissive: the gate's own behaviour is pinned against real
+    // Postgres in `factor-enrollment-gate.int.spec.ts`. These cases are about
+    // the ceremony, and a gate that refused here would mask them.
+    factors: {
+      assertMayAddFactor: jest.fn().mockResolvedValue(undefined),
+      holdsVerifiedFactor: jest.fn().mockResolvedValue(false),
+    },
     authEvents: { insert: jest.fn() },
     events: {
       stepUpGranted: jest.fn(),
@@ -101,6 +112,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): WebAuthnService {
     fakes.events as unknown as EventsService,
     config,
     () => NOW,
+    fakes.factors as unknown as SecondFactorGate,
   );
 }
 
@@ -132,7 +144,7 @@ describe('WebAuthnService.startRegistration', () => {
     } as Awaited<ReturnType<typeof generateRegistrationOptions>>);
     const service = makeService(fakes);
 
-    const options = await service.startRegistration(USER_ID);
+    const options = await service.startRegistration(USER_ID, NO_STEPUP);
 
     expect(options.challenge).toBe('reg-challenge');
     const genArgs = mockGenReg.mock.calls[0]?.[0];
@@ -163,7 +175,7 @@ describe('WebAuthnService.finishRegistration', () => {
     fakes.repo.consumeChallenge.mockResolvedValue(null);
     const service = makeService(fakes);
 
-    await expect(service.finishRegistration(USER_ID, response)).rejects.toBeInstanceOf(
+    await expect(service.finishRegistration(USER_ID, response, NO_STEPUP)).rejects.toBeInstanceOf(
       BadRequestException,
     );
     expect(fakes.repo.consumeChallenge).toHaveBeenCalledWith(USER_ID, 'registration', NOW);
@@ -190,7 +202,7 @@ describe('WebAuthnService.finishRegistration', () => {
     } as unknown as Awaited<ReturnType<typeof verifyRegistrationResponse>>);
     const service = makeService(fakes);
 
-    const result = await service.finishRegistration(USER_ID, response);
+    const result = await service.finishRegistration(USER_ID, response, NO_STEPUP);
 
     expect(result).toEqual({ verified: true });
     // Challenge is consumed (single-use) before verification runs.
@@ -217,7 +229,7 @@ describe('WebAuthnService.finishRegistration', () => {
     mockVerifyReg.mockResolvedValue({ verified: false });
     const service = makeService(fakes);
 
-    await expect(service.finishRegistration(USER_ID, response)).rejects.toBeInstanceOf(
+    await expect(service.finishRegistration(USER_ID, response, NO_STEPUP)).rejects.toBeInstanceOf(
       BadRequestException,
     );
     expect(fakes.repo.insertCredential).not.toHaveBeenCalled();
@@ -229,7 +241,7 @@ describe('WebAuthnService.finishRegistration', () => {
     mockVerifyReg.mockRejectedValue(new Error('unexpected attestation format: xyz'));
     const service = makeService(fakes);
 
-    await expect(service.finishRegistration(USER_ID, response)).rejects.toEqual(
+    await expect(service.finishRegistration(USER_ID, response, NO_STEPUP)).rejects.toEqual(
       new BadRequestException({ error: 'webauthn_failed' }),
     );
   });

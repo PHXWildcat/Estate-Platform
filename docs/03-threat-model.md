@@ -1414,6 +1414,46 @@ milestone running where every confirmed finding sits in machinery the milestone
 introduced, with one exception that is the most serious thing in the list and is
 older than M16.
 
+- *AND THE FIRST FIX WAS TOO NARROW — the same escalation was still open through
+  WEBAUTHN, found by verifying it.* `POST /v1/auth/webauthn/register/verify` was
+  `SessionGuard`-only and `WebAuthnService` grants step-up on a successful
+  assertion, so a caller holding nothing but a session could bind an
+  authenticator OF THEIR OWN and elevate with it. MEASURED end to end against
+  real Postgres before anything was changed: registration succeeded, and the
+  attacker's session row came back `mfa_level=stepup` with a live
+  `stepup_expires_at`. `excludeCredentials` looks protective and is not — it
+  stops re-registering the SAME authenticator, never a different one.
+  It was QUIETER than the TOTP version, which is the part worth remembering.
+  That one locked the owner out (`findActiveTotp` takes the newest, so their
+  codes started failing — a signal); here the victim's factors keep working, so
+  nothing they can observe changes. And it also cleared the M16 step-up attempt
+  cap, since WebAuthn writes `stepup.granted`.
+  A PER-TYPE PREDICATE LEFT A HOLE IN BOTH DIRECTIONS: `hasVerifiedTotp` is
+  false for an account holding only a passkey, so the TOTP-only fix would still
+  have admitted a session-only caller enrolling TOTP on a passkey-protected
+  account. **Closed** by `SecondFactorGate`, one predicate over both stores —
+  "does this account hold ANY factor it could be made to prove" — called from
+  `enrollTotp` and from BOTH ends of the WebAuthn registration ceremony (the
+  options end so a refusal comes before the hardware ceremony, the verify end
+  because that is the write). The bootstrap residual is unchanged and still
+  stated: a first factor cannot be gated, so an account with none is still
+  reachable by a stolen session.
+- *THE GATE IS INVISIBLE TO EVERY OTHER FENCE, WHICH IS WHY IT HAS ITS OWN.*
+  The condition is account state, so the gate cannot be a `StepUpGuard`
+  decorator — and every fence in this repo that checks step-up gating scans for
+  that decorator. That is precisely how the WebAuthn route sat ungated while its
+  TOTP twin was being fixed one file away.
+  `apps/services/identity/test/factor-routes.spec.ts` closes it, and it
+  discovers by WHAT THE CODE DOES rather than by a remembered list: it scans for
+  calls to the repo methods that WRITE factor state, resolving the receiver from
+  its TYPE annotation rather than its field name, so a new enrolment path is
+  found by the write it has to make whatever it is called. Mutation-tested four
+  ways — a deleted gate, a brand-new undeclared method that binds a credential
+  (discovered and named), a renamed repo field (correctly still green, because
+  the anchor is the type), and a revert to the TOTP-only predicate. It found a
+  genuine error in its own declaration table on its first run, and a name
+  collision on its second (`EmailVerificationRepo` also has a `markVerified`),
+  which is what drove the type anchoring.
 - *THE WORST FINDING IS PRE-EXISTING AND M16 IS WHAT MADE IT MATTER: a stolen
   session could ENROL ITS OWN SECOND FACTOR.* `POST /v1/auth/totp/enroll` had
   been `SessionGuard`-only since M2. `revokeUnverifiedTotp` spares a VERIFIED

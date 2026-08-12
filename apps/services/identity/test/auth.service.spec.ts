@@ -2,6 +2,7 @@ import { UnauthorizedException } from '@nestjs/common';
 import type { DekRepository, FieldCrypto } from '@estate/crypto';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import { AuthService } from '../src/auth.service';
+import type { SecondFactorGate } from '../src/second-factor-gate';
 import type { EmailVerificationService } from '../src/email-verification.service';
 import type { IdentityConfig } from '../src/config';
 import type { EventsService } from '../src/events.service';
@@ -32,6 +33,7 @@ function makeFakes(): {
     markVerified: jest.Mock;
   };
   authEvents: { insert: jest.Mock; failedFactorAttempts: jest.Mock };
+  factors: { assertMayAddFactor: jest.Mock; holdsVerifiedFactor: jest.Mock };
   hasher: { hashPassword: jest.Mock; verifyPassword: jest.Mock; dummyVerify: jest.Mock };
   events: {
     userRegistered: jest.Mock;
@@ -70,6 +72,12 @@ function makeFakes(): {
       markVerified: jest.fn(),
     },
     authEvents: { insert: jest.fn(), failedFactorAttempts: jest.fn().mockResolvedValue(0) },
+    // Stubbed: the gate has its own Postgres-backed spec, and these cases are
+    // about the cap and the step-up path rather than enrolment policy.
+    factors: {
+      assertMayAddFactor: jest.fn().mockResolvedValue(undefined),
+      holdsVerifiedFactor: jest.fn().mockResolvedValue(false),
+    },
     hasher: {
       hashPassword: jest.fn().mockResolvedValue('argon2-hash'),
       verifyPassword: jest.fn().mockResolvedValue(false),
@@ -135,6 +143,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
     () => NOW,
     fakes.notifications,
     fakes.emailVerification as unknown as EmailVerificationService,
+    fakes.factors as unknown as SecondFactorGate,
   );
 }
 

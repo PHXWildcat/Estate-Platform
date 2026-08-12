@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import {
-  ForbiddenException,
   HttpException,
   HttpStatus,
   Inject,
@@ -27,6 +26,7 @@ import { EmailVerificationService } from './email-verification.service';
 import { EventsService } from './events.service';
 import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
+import { SecondFactorGate } from './second-factor-gate';
 import { SessionsRepo } from './sessions.repo';
 import {
   ACCESS_TOKEN_TTL_MS,
@@ -35,7 +35,6 @@ import {
   STEPUP_MAX_ACCOUNT_DENIALS,
   STEPUP_MAX_DENIALS,
   STEPUP_WINDOW_MS,
-  isStepUpFresh,
 } from './stepup';
 import { generateOpaqueToken, hashToken } from './tokens';
 import { generateTotpSecretBase32, totpProvisioningUri, verifyTotpCode } from './totp';
@@ -76,6 +75,7 @@ export class AuthService {
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(NOTIFICATIONS) private readonly notifications: NotificationsPort,
     private readonly emailVerification: EmailVerificationService,
+    private readonly factors: SecondFactorGate,
   ) {}
 
   /**
@@ -317,14 +317,12 @@ export class AuthService {
     sessionId: string,
     caller: Pick<SessionContext, 'mfaLevel' | 'stepupExpiresAt'>,
   ): Promise<{ methodId: string; otpauthUri: string }> {
-    if (await this.mfa.hasVerifiedTotp(userId)) {
-      // The SAME predicate StepUpGuard applies, from the same shared
-      // definition, because a second notion of freshness here would be a second
-      // notion free to drift from the one every other gated route uses.
-      if (!isStepUpFresh(caller.mfaLevel, caller.stepupExpiresAt, this.clock())) {
-        throw new ForbiddenException({ error: 'stepup_required' });
-      }
-    }
+    // ONE PREDICATE ACROSS BOTH FACTOR TYPES. This asked `hasVerifiedTotp` when
+    // the M16 PR5 review first closed it, which left two holes: WebAuthn
+    // registration was ungated entirely, and an account holding only a passkey
+    // answered FALSE here, so a stolen session could still enrol TOTP on it.
+    // `SecondFactorGate` carries the reasoning.
+    await this.factors.assertMayAddFactor(userId, caller, this.clock());
     const now = this.clock();
     const secretBase32 = generateTotpSecretBase32();
     await this.mfa.revokeUnverifiedTotp(userId, now);
