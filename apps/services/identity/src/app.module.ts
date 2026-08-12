@@ -42,6 +42,7 @@ import { HttpErrorFilter } from './http-error.filter';
 import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
 import { SessionGuard } from './session.guard';
+import { SecondFactorGate } from './second-factor-gate';
 import { SessionsRepo } from './sessions.repo';
 import { SettlementLockController } from './settlement-lock.controller';
 import { SettlementLockService } from './settlement-lock.service';
@@ -131,6 +132,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     PasswordHasher,
     UsersRepo,
     SessionsRepo,
+    SecondFactorGate,
     MfaRepo,
     AuthEventsRepo,
     WebAuthnRepo,

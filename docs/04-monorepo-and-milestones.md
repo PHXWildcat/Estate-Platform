@@ -3879,6 +3879,31 @@ Chromium revokes `activeTab` on a cross-origin navigation remains unmeasured
 here — the fill-time re-read makes the boundary hold either way, which is why it
 was fixed rather than measured, but the answer is still owed.
 
+#### Follow-up — the same escalation through the other factor, and the fence
+
+**Verifying #75's fix found it still open through WebAuthn.**
+`POST /v1/auth/webauthn/register/verify` was `SessionGuard`-only and
+`WebAuthnService` grants step-up on a successful assertion, so a session-only
+caller could bind an authenticator of their own and elevate with it — measured
+against real Postgres, the attacker's session row coming back `mfa_level=stepup`.
+Quieter than the TOTP version, because the victim's own factors keep working.
+
+**A per-type predicate left a hole in both directions.** `hasVerifiedTotp` is
+false for an account holding only a passkey, so the TOTP-only fix would still
+have admitted a stolen session enrolling TOTP on a passkey-protected account.
+`SecondFactorGate` asks one question over both stores — "does this account hold
+ANY factor it could be made to prove" — and is called from `enrollTotp` and both
+ends of the WebAuthn ceremony. The bootstrap residual is unchanged.
+
+**And the gate needed a fence, because it is invisible to the others.** The
+condition is account state, so it cannot be a `StepUpGuard` decorator, and every
+fence that checks step-up gating scans for that decorator — which is how the
+WebAuthn route stayed ungated while its twin was fixed one file away.
+`test/factor-routes.spec.ts` discovers by what the code DOES, scanning for calls
+to the repo methods that write factor state with the receiver resolved from its
+TYPE annotation. It found an error in its own table on its first run and a
+method-name collision on its second; both are recorded in the decision log.
+
 ### M17 — Subscription manager (planned)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

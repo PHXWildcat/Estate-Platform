@@ -4494,3 +4494,60 @@ deviating from them, stop and propose the change with rationale — do not silen
   the two parameterised cases read as parameters rather than as forks. Verified
   PER PACKAGE rather than centrally, because a central green would prove the
   helper and not the wiring.
+- 2026-08-12 — THE SAME ESCALATION WAS STILL OPEN THROUGH WEBAUTHN, and
+  verifying the fix is what found it. #75 gated `POST /v1/auth/totp/enroll` on a
+  fresh step-up when a verified factor exists, against
+  `MfaRepo.hasVerifiedTotp`. `POST /v1/auth/webauthn/register/verify` was
+  `SessionGuard`-only and `WebAuthnService` grants step-up on a successful
+  assertion, so a caller holding nothing but a session could bind an
+  authenticator OF THEIR OWN and elevate with it — MEASURED against real
+  Postgres, the attacker's session row coming back `mfa_level=stepup` with a
+  live `stepup_expires_at`. `excludeCredentials` looks protective and is not: it
+  stops re-registering the SAME authenticator, never a different one. QUIETER
+  than the TOTP version, too — that one locked the owner out (`findActiveTotp`
+  takes the newest, so their codes started failing, which is a signal), whereas
+  here the victim's factors keep working and nothing they can observe changes.
+  It also cleared the M16 step-up attempt cap, since WebAuthn writes
+  `stepup.granted`.
+  A PER-TYPE PREDICATE LEFT A HOLE IN BOTH DIRECTIONS: `hasVerifiedTotp` is
+  FALSE for an account holding only a passkey, so the TOTP-only fix would still
+  have admitted a stolen session enrolling TOTP on a passkey-protected account.
+  The question has to be "does this account hold ANY factor it could be made to
+  prove", so `SecondFactorGate` asks it over both stores and either one arms the
+  gate. Called from `enrollTotp` and from BOTH ends of the WebAuthn ceremony —
+  the options end so a refusal comes before the hardware ceremony, the verify
+  end because that is the write. THE GENERAL LESSON: a rule applied to one
+  instance of a category is a rule half-applied, and the way to tell is to ask
+  what ELSE is in the category before calling the fix done.
+- 2026-08-12 — A GATE THAT LIVES IN A SERVICE IS INVISIBLE TO EVERY FENCE THAT
+  SCANS FOR A DECORATOR, so it needed one of its own. The enrolment rule is
+  conditional on ACCOUNT STATE, which a route decorator cannot see — that is why
+  the gate is in `SecondFactorGate` rather than `StepUpGuard`, and it is exactly
+  how the WebAuthn route sat ungated while its TOTP twin was fixed one file
+  away. `apps/services/identity/test/factor-routes.spec.ts` closes it and
+  DISCOVERS BY WHAT THE CODE DOES: it scans for calls to the repo methods that
+  WRITE factor state, so a new enrolment path is found by the write it has to
+  make, whatever it and its route are called. Two things it taught while being
+  written, both kept: it caught a genuine error in its own declaration table on
+  the first run (`startRegistration` is gated but writes no factor — it issues a
+  challenge, so `writes` had to become an explicit field rather than an
+  assumption), and on the second it reported `email-verification.service.ts` as
+  an undeclared factor writer because `EmailVerificationRepo` ALSO has a
+  `markVerified`. A bare method-name scan was not good enough; the receiver is
+  resolved from its TYPE ANNOTATION now, which is both precise and un-evadable
+  by renaming — the 2026-07-28/2026-08-07 rule applied ahead of the bite rather
+  than after it. Mutation-tested four ways: a deleted gate (red), a brand-new
+  undeclared method binding a credential (discovered and named in the failure),
+  a renamed repo field (correctly still GREEN — the positive control that proves
+  the anchor is the type), and a revert to the TOTP-only predicate (red in the
+  behavioural specs).
+- 2026-08-12 — AND THE DATABASE-FREE CI STEP EARNED ITS KEEP WITHIN A DAY. Adding
+  `SecondFactorGate` dropped identity's no-Postgres coverage under its floor on
+  functions (38.53% against 39%), because the gate's methods are exercised by
+  the Postgres-backed specs and nothing else. That is precisely the drift the
+  step was added to catch, caught on the first change after it landed. Closed
+  with `second-factor-gate.spec.ts`, which is owed on its own terms rather than
+  for the number: the int suites prove the SQL PREDICATE, and this one proves
+  the DECISION the three inputs combine into — including that a LAPSED step-up
+  is refused, not merely an absent one, which no int case isolates. Floor
+  re-measured at 68.59/68.19/39.90/66.89 and ratcheted UP.

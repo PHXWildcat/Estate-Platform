@@ -53,6 +53,24 @@ export class WebAuthnRepo {
   }
 
   /** All active (non-revoked) credentials for a user. */
+  /**
+   * Does this account hold ANY passkey?
+   *
+   * The WebAuthn half of `SecondFactorGate.holdsVerifiedFactor`. A boolean
+   * rather than a row list, deliberately: the caller needs the fact, and
+   * returning credentials would put key material on a path that has no business
+   * holding it. There is no `verified_at` here because a WebAuthn credential is
+   * only ever inserted AFTER a verified ceremony — registration is the
+   * verification, unlike TOTP where enrolment and confirmation are two steps.
+   */
+  async hasCredentials(userId: string): Promise<boolean> {
+    const rows = await this.db.query<{ present: boolean }>(
+      `SELECT true AS present FROM webauthn_credentials WHERE user_id = $1 LIMIT 1`,
+      [userId],
+    );
+    return rows.length > 0;
+  }
+
   async findCredentialsByUser(userId: string): Promise<WebAuthnCredentialRow[]> {
     return this.db.query<WebAuthnCredentialRow>(
       `SELECT id, user_id, credential_id, public_key, sign_count, transports,

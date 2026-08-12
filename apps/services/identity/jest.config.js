@@ -25,9 +25,16 @@
 // plainly that ratcheting is the only move available here: lowering it would
 // have hidden the drift that made it fail.
 //
-// STILL TRUE, AND THE REASON THIS CAN DRIFT AGAIN: no CI job runs identity
-// without `PG_TEST_URL`. Until one does, this floor is enforced by developers
-// on machines with no database and by nothing else.
+// AND IT IS NOW ENFORCED: `ci.yml` runs identity with no database, asserting
+// that the integration suites really did skip so the step cannot pass while
+// measuring the run above. That step is what caught this floor slipping when
+// `SecondFactorGate` arrived — its methods are exercised by the Postgres-backed
+// specs, so without a unit spec the database-free number fell under on
+// functions. `second-factor-gate.spec.ts` is that spec, and it is owed on its
+// own terms: the int suites prove the SQL predicate, this one proves the
+// DECISION the three inputs combine into.
+//
+// Re-measured at 68.59/68.19/39.90/66.89 and ratcheted UP.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 67, branches: 67, functions: 39, lines: 66 } },
+  coverageThreshold: { global: { statements: 68, branches: 68, functions: 39, lines: 66 } },
 });

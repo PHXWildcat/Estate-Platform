@@ -10,11 +10,13 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
+import type { SessionContext } from '@estate/auth-guard';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { StepUpResult } from './auth.service';
 import type { IdentityConfig } from './config';
 import { CLOCK, CONFIG, type Clock } from './di-tokens';
 import { EventsService } from './events.service';
+import { SecondFactorGate } from './second-factor-gate';
 import { SessionsRepo } from './sessions.repo';
 import { STEPUP_WINDOW_MS } from './stepup';
 import { WebAuthnRepo, type WebAuthnCredentialRow } from './webauthn.repo';
@@ -85,13 +87,26 @@ export class WebAuthnService {
     private readonly events: EventsService,
     @Inject(CONFIG) private readonly config: IdentityConfig,
     @Inject(CLOCK) private readonly clock: Clock,
+    private readonly factors: SecondFactorGate,
   ) {}
 
   private challengeExpiry(): Date {
     return new Date(this.clock().getTime() + WEBAUTHN_CHALLENGE_TTL_MS);
   }
 
-  async startRegistration(userId: string): Promise<PublicKeyCredentialCreationOptionsJSON> {
+  async startRegistration(
+    userId: string,
+    caller: Pick<SessionContext, 'mfaLevel' | 'stepupExpiresAt'>,
+  ): Promise<PublicKeyCredentialCreationOptionsJSON> {
+    // ADDING A FACTOR TO AN ACCOUNT THAT HAS ONE REQUIRES PROVING ONE.
+    //
+    // Gated at BOTH ends of the ceremony. This end is where a caller learns
+    // they may not, before an authenticator is touched; `finishRegistration` is
+    // where the credential is WRITTEN and is therefore the load-bearing one.
+    // Neither alone: refusing only here would leave the write ungated for
+    // anyone holding a challenge, and refusing only there would walk a
+    // legitimate user through a hardware ceremony before telling them no.
+    await this.factors.assertMayAddFactor(userId, caller, this.clock());
     const existing = await this.repo.findCredentialsByUser(userId);
     const options = await generateRegistrationOptions({
       rpName: this.config.rpName,
@@ -117,7 +132,10 @@ export class WebAuthnService {
   async finishRegistration(
     userId: string,
     response: RegistrationResponseJSON,
+    caller: Pick<SessionContext, 'mfaLevel' | 'stepupExpiresAt'>,
   ): Promise<{ verified: true }> {
+    // THE WRITE, so this is the gate that matters. See `startRegistration`.
+    await this.factors.assertMayAddFactor(userId, caller, this.clock());
     const expectedChallenge = await this.repo.consumeChallenge(
       userId,
       'registration',

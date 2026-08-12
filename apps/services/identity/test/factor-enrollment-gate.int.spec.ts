@@ -1,5 +1,5 @@
 /**
- * ADDING A SECOND FACTOR TO AN ACCOUNT THAT ALREADY HAS ONE (M16 review).
+ * ADDING AN AUTHENTICATION FACTOR TO AN ACCOUNT THAT ALREADY HAS ONE.
  *
  * The defect this pins is PRE-EXISTING and was the worst thing the review
  * found. `POST /v1/auth/totp/enroll` had been `SessionGuard`-only since M2, and
@@ -15,7 +15,18 @@
  * predicate and `findActiveTotp`'s ordering is the thing that made the
  * escalation work; a faked repo cannot get either wrong, which is exactly the
  * M13 rule about which layer a test proves. Only the crypto is stubbed, and
- * store-the-bytes is faithful for a question about WHICH ROW is selected.
+ * store-the-bytes is faithful for a question about WHICH ROW is selected. The
+ * `SecondFactorGate` itself is REAL here — a fake would make every case below
+ * vacuous, since the gate is the thing under test.
+ *
+ * ═══ AND THE FIRST FIX WAS TOO NARROW, WHICH VERIFYING IT FOUND ═══
+ *
+ * It asked `MfaRepo.hasVerifiedTotp`, so it closed TOTP and left two holes.
+ * WebAuthn registration was ungated entirely — measured, a session-only caller
+ * could bind an authenticator of its own and elevate with it — and an account
+ * holding ONLY a passkey answered false, so a stolen session could still enrol
+ * TOTP on it. The predicate is cross-type now, and the cases at the bottom of
+ * this file are the ones that could not have passed before.
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -32,6 +43,8 @@ import { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
 import type { SessionsRepo } from '../src/sessions.repo';
 import { STEPUP_WINDOW_MS } from '../src/stepup';
+import { SecondFactorGate } from '../src/second-factor-gate';
+import { WebAuthnRepo } from '../src/webauthn.repo';
 import type { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
 import { currentTotpCode, generateTotpSecretBase32 } from '../src/totp';
@@ -112,6 +125,9 @@ describeIfPg('enrolling a second factor (auth cluster)', () => {
       () => new Date(),
       {} as never,
       {} as unknown as EmailVerificationService,
+      // THE REAL GATE, over the real repos. A fake here would make every
+      // assertion in this file vacuous — the gate IS what is under test.
+      new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db)),
     );
   });
 
@@ -218,5 +234,104 @@ describeIfPg('enrolling a second factor (auth cluster)', () => {
     await expect(service.stepUp(owner, session, currentTotpCode(first))).rejects.toMatchObject({
       status: 401,
     });
+  });
+
+  /**
+   * ═══ THE CROSS-TYPE CASES ═══
+   *
+   * These are what a per-factor predicate misses, and they are the reason the
+   * gate asks one question over both stores rather than one question per store.
+   */
+  it('a PASSKEY alone arms the gate against adding TOTP', async () => {
+    // `hasVerifiedTotp` is FALSE for this account, so the first fix admitted a
+    // session-only caller here — on an account that demonstrably holds a
+    // provable factor.
+    const passkeyOnly = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id)
+       VALUES ($1, $2, $3, 'x', $4)`,
+      [
+        passkeyOnly,
+        Buffer.from(`ct-${passkeyOnly}`),
+        Buffer.from(`bidx-${passkeyOnly}`),
+        randomUUID(),
+      ],
+    );
+    await admin.query(
+      `INSERT INTO ${schema}.webauthn_credentials
+         (id, user_id, credential_id, public_key, sign_count, is_hardware_key)
+       VALUES ($1, $2, $3, $4, 0, true)`,
+      [randomUUID(), passkeyOnly, Buffer.from('cred-id'), Buffer.from('pubkey')],
+    );
+
+    await expect(service.enrollTotp(passkeyOnly, session, NO_STEPUP)).rejects.toMatchObject({
+      status: 403,
+      response: { error: 'stepup_required' },
+    });
+    // And nothing was minted while it was refused.
+    const { rows } = await admin.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${schema}.mfa_methods WHERE user_id = $1`,
+      [passkeyOnly],
+    );
+    expect(rows[0]?.n).toBe('0');
+  });
+
+  it('the gate reads BOTH stores — either one arms it, neither leaves the bootstrap open', async () => {
+    // The predicate itself, over real SQL, for each of the four shapes an
+    // account can be in. A gate that asked "and" instead of "or" would be
+    // silently inert for everyone holding exactly one factor.
+    const gate = new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db));
+    const shapes = [
+      { name: 'nothing', totp: false, passkey: false, expected: false },
+      { name: 'TOTP only', totp: true, passkey: false, expected: true },
+      { name: 'passkey only', totp: false, passkey: true, expected: true },
+      { name: 'both', totp: true, passkey: true, expected: true },
+    ];
+    for (const shape of shapes) {
+      const id = randomUUID();
+      await admin.query(
+        `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id)
+         VALUES ($1, $2, $3, 'x', $4)`,
+        [id, Buffer.from(`ct-${id}`), Buffer.from(`bidx-${id}`), randomUUID()],
+      );
+      if (shape.totp) {
+        await admin.query(
+          `INSERT INTO ${schema}.mfa_methods (id, user_id, kind, secret_ct, verified_at)
+           VALUES ($1, $2, 'totp', $3, now())`,
+          [randomUUID(), id, Buffer.from('s')],
+        );
+      }
+      if (shape.passkey) {
+        await admin.query(
+          `INSERT INTO ${schema}.webauthn_credentials
+             (id, user_id, credential_id, public_key, sign_count, is_hardware_key)
+           VALUES ($1, $2, $3, $4, 0, false)`,
+          [randomUUID(), id, Buffer.from(`c-${id}`), Buffer.from('k')],
+        );
+      }
+      expect({ shape: shape.name, holds: await gate.holdsVerifiedFactor(id) }).toEqual({
+        shape: shape.name,
+        holds: shape.expected,
+      });
+    }
+  });
+
+  it('an UNVERIFIED TOTP does not arm the gate — it is not something anyone can prove', async () => {
+    // Otherwise a half-finished enrolment would lock a user out of ever
+    // completing one: they would need a step-up they cannot obtain.
+    const pending = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id)
+       VALUES ($1, $2, $3, 'x', $4)`,
+      [pending, Buffer.from(`ct-${pending}`), Buffer.from(`bidx-${pending}`), randomUUID()],
+    );
+    await admin.query(
+      `INSERT INTO ${schema}.mfa_methods (id, user_id, kind, secret_ct, verified_at)
+       VALUES ($1, $2, 'totp', $3, NULL)`,
+      [randomUUID(), pending, Buffer.from('s')],
+    );
+    const gate = new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db));
+    expect(await gate.holdsVerifiedFactor(pending)).toBe(false);
+    await expect(service.enrollTotp(pending, session, NO_STEPUP)).resolves.toBeDefined();
   });
 });
