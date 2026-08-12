@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { errorCopy, stepUpMessageFor } from '../lib/copy';
-import { STEP_UP_PROPAGATION_BUDGET_MS, STEP_UP_RETRY_INTERVAL_MS } from '../lib/step-up';
+import {
+  SESSION_CACHE_TTL_MS,
+  STEP_UP_PROPAGATION_BUDGET_MS,
+  STEP_UP_RETRY_INTERVAL_MS,
+} from '../lib/step-up';
 import {
   graphqlError,
   installGraphqlFetchMock,
@@ -228,6 +232,42 @@ describe('paired devices', () => {
     await waitFor(() => {
       expect(screen.queryByText('Browser extension')).not.toBeInTheDocument();
     });
+  });
+
+  /**
+   * THE PAGE MAY NOT PROMISE MORE THAN THE PLATFORM DELIVERS. Identity 401s at
+   * once, but peers introspect through a POSITIVE cache, so the credential is
+   * still accepted at the vault for up to one TTL — measured at 33 seconds in
+   * M16 PR1's live drive. docs/03 §6j names the fix as copy rather than a
+   * shorter TTL; these two cases are what stop it drifting back.
+   *
+   * The number is asserted against `SESSION_CACHE_TTL_MS`, which
+   * `step-up.test.ts` in turn pins to auth-guard's own constant — so raising
+   * the TTL moves the sentence instead of falsifying it.
+   */
+  it('never claims a revoke is instant, and names the window it really has', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: () => jsonResponse({ data: { sessions: [CURRENT_BROWSER, PAIRED_EXTENSION] } }),
+      RevokeSession: () => jsonResponse({ data: { revokeSession: { ok: true } } }),
+    });
+    render(<SecurityPanel />);
+
+    const seconds = Math.ceil(SESSION_CACHE_TTL_MS / 1000);
+    const intro = await screen.findByText(/Everything that can currently reach your account/);
+    expect(intro.textContent).toContain(`up to ${seconds} seconds to stop accepting it`);
+    // The exact word the old copy used, and the reason this test exists.
+    expect(intro.textContent).not.toMatch(/takes effect immediately/);
+
+    fireEvent.click(
+      within(await rowFor('Browser extension')).getByRole('button', { name: 'Revoke' }),
+    );
+
+    // The confirmation carries the same caveat: someone who acts on a suspected
+    // compromise reads THIS sentence, not the paragraph above it.
+    const note = await screen.findByText(/is revoked\./);
+    expect(note.textContent).toContain(`up to ${seconds} seconds to stop accepting it`);
+    expect(note.textContent).not.toMatch(/can no longer be used/);
   });
 
   /**

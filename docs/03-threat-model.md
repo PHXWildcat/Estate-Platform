@@ -1244,14 +1244,24 @@ CLAUDE.md decision log; the security-relevant shape is:
   another credential. The 30 seconds buy an attacker who already holds the token
   nothing they did not have a moment earlier.
 
-  What is OWED is that the surface not promise more than the platform delivers.
+  What was OWED is that the surface not promise more than the platform delivers.
   A revoke control that reads as instantaneous while a downstream service still
   admits the token is the M9 shape inverted — not a control reading as an
   outage, but an outage-free UI reading as a stronger control than it is.
   Shortening the TTL is the wrong fix (it trades a stated availability property
-  for a cosmetic one); saying so on the screen, or having the surface report
-  revocation as taking effect rather than as complete, is the right one. Left
-  open deliberately, and named here so whoever writes that copy knows why.
+  for a cosmetic one); saying so on the screen is the right one.
+
+  *CLOSED 2026-08-12, as copy.* `SecurityPanel` said "that takes effect
+  immediately" above the list and "can no longer be used" after a revoke; both
+  were false for up to one TTL. One `PROPAGATION_SENTENCE` now serves both
+  sites — "signing in with it is refused straight away; other parts of the
+  platform can take up to N seconds to stop accepting it" — so the confirmation
+  someone reads while acting on a suspected compromise carries the same caveat
+  as the paragraph they may never have read. N is DERIVED from
+  `SESSION_CACHE_TTL_MS`, which `step-up.test.ts` already pins to auth-guard's
+  `DEFAULT_CACHE_TTL_MS` by reading that file, so raising the TTL moves the
+  sentence rather than falsifying it again. The window itself is unchanged and
+  remains the deliberate trade it always was.
 
 **Added by PR2a (the extension and its transport).**
 

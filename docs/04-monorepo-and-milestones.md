@@ -3169,7 +3169,7 @@ routes.
 
 Coverage: vault-web 90/78/86/91, ratcheted up.
 
-### M16 — The vault browser extension (approved 2026-08-10, in progress)
+### M16 — The vault browser extension (approved 2026-08-10, shipped 2026-08-12)
 
 Autofill, which M15 deferred with a reason rather than an omission: it needs a
 browser extension, which is a separate distribution artifact with its own supply
