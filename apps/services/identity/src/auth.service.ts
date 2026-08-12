@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Inject,
@@ -7,7 +8,11 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { DEFAULT_SESSION_AUDIENCE, type SessionAudience } from '@estate/auth-guard';
+import {
+  DEFAULT_SESSION_AUDIENCE,
+  type SessionAudience,
+  type SessionContext,
+} from '@estate/auth-guard';
 import {
   emailBlindIndex,
   normalizeEmail,
@@ -29,6 +34,7 @@ import {
   STEPUP_DENIAL_WINDOW_MS,
   STEPUP_MAX_DENIALS,
   STEPUP_WINDOW_MS,
+  isStepUpFresh,
 } from './stepup';
 import { generateOpaqueToken, hashToken } from './tokens';
 import { generateTotpSecretBase32, totpProvisioningUri, verifyTotpCode } from './totp';
@@ -267,11 +273,57 @@ export class AuthService {
     throw new UnauthorizedException({ error: 'invalid_token' });
   }
 
-  /** TOTP enrollment: encrypted secret at rest, PII-free provisioning URI out. */
+  /**
+   * TOTP enrollment: encrypted secret at rest, PII-free provisioning URI out.
+   *
+   * ═══ ADDING A SECOND FACTOR TO AN ACCOUNT THAT HAS ONE IS STEP-UP GATED ═══
+   *
+   * Found by the M16 review and PRE-EXISTING — this route has been
+   * `SessionGuard`-only since M2, and nothing since revisited it. Measured
+   * against real Postgres: a caller holding nothing but a stolen session could
+   * enrol a secret OF THEIR OWN, confirm it with a code they computed
+   * themselves, and then step up — because `revokeUnverifiedTotp` spares the
+   * owner's VERIFIED method while `findActiveTotp` takes the NEWEST one. Three
+   * ordinary requests, no guessing, and step-up stops being a second factor for
+   * anyone holding a session: vault reset, document generation, data export,
+   * beneficiary changes, deletion. The same run showed the owner's own
+   * authenticator answering 401 afterwards, so it is a takeover AND a lockout,
+   * including of docs/03 §5.1's liveness proof.
+   *
+   * The repository had already seen the mechanism and read it as a test-seeding
+   * nuisance (CLAUDE.md 2026-08-06: "enrolling twice would leave two verified
+   * secrets and make `findActiveTotp`'s choice decide whether a later step-up
+   * works"). It is the escalation primitive.
+   *
+   * SO THE GATE IS CONDITIONAL, and it has to be: the FIRST enrolment cannot
+   * require a step-up, because step-up needs a verified factor and the account
+   * has none — `checkTotp` returns invalid for a user with no method, so an
+   * unconditional gate would make a second factor unreachable forever. The rule
+   * is therefore "you may add your first factor with a session; you may add
+   * another only by proving the one you have", which is also what every other
+   * step-up-gated action in the product asks for.
+   *
+   * RESIDUAL, STATED RATHER THAN IMPLIED (docs/03 §6j): for an account that has
+   * never enrolled a factor, a stolen session still buys the bootstrap. Nothing
+   * here can close that — the account has no proof to demand — and identity
+   * cannot warn the owner either, because M14 deliberately made it not a holder
+   * of the notifications SEND credential ("the service that mints sessions must
+   * not be able to ring 'a death report was filed on your account'"). What
+   * bounds it is that such an account had no second factor to defeat.
+   */
   async enrollTotp(
     userId: string,
     sessionId: string,
+    caller: Pick<SessionContext, 'mfaLevel' | 'stepupExpiresAt'>,
   ): Promise<{ methodId: string; otpauthUri: string }> {
+    if (await this.mfa.hasVerifiedTotp(userId)) {
+      // The SAME predicate StepUpGuard applies, from the same shared
+      // definition, because a second notion of freshness here would be a second
+      // notion free to drift from the one every other gated route uses.
+      if (!isStepUpFresh(caller.mfaLevel, caller.stepupExpiresAt, this.clock())) {
+        throw new ForbiddenException({ error: 'stepup_required' });
+      }
+    }
     const now = this.clock();
     const secretBase32 = generateTotpSecretBase32();
     await this.mfa.revokeUnverifiedTotp(userId, now);

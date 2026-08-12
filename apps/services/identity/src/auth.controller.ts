@@ -305,7 +305,12 @@ export class AuthController {
     @Req() request: AuthedRequest,
   ): Promise<{ methodId: string; otpauthUri: string }> {
     const auth = requireAuth(request);
-    return this.auth.enrollTotp(auth.userId, auth.sessionId);
+    // NO `StepUpGuard` here, and that is not an omission: the requirement is
+    // CONDITIONAL — an account with no verified factor has nothing to step up
+    // with, so a guard would make the first enrolment unreachable. The service
+    // owns the condition and applies the guard's own freshness predicate to the
+    // session context the guard already attached. See `AuthService.enrollTotp`.
+    return this.auth.enrollTotp(auth.userId, auth.sessionId, auth);
   }
 
   @Post('totp/verify')

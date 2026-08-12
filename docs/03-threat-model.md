@@ -1405,6 +1405,32 @@ CLAUDE.md decision log; the security-relevant shape is:
   string compare, and no IDN implementation enters a package with no
   dependencies. It was latent while PR3a had no fill; PR3b is what would have
   made it exploitable.
+**Found by the M16 PR5 security review — and OLDER than M16.**
+
+- *A STOLEN SESSION COULD ENROL ITS OWN SECOND FACTOR.*
+  `POST /v1/auth/totp/enroll` had been `SessionGuard`-only since M2.
+  `revokeUnverifiedTotp` spares a VERIFIED method while `findActiveTotp` takes
+  the NEWEST one, so a caller holding nothing but a session could enrol a secret
+  of their own, confirm it with a code they computed themselves, and step up —
+  three ordinary requests, no guessing. Measured end to end against real
+  Postgres, including the second half: the owner's own authenticator answered
+  401 afterwards, so it was a takeover AND a lockout, of every docs/01 §5 action
+  and of §5.1's liveness proof. The repository had already seen the mechanism
+  and read it as a test-seeding nuisance (CLAUDE.md 2026-08-06, on why the
+  settlement e2e caches enrolment). M16 is what made it acute: it built an
+  attempt cap whose entire premise is that step-up bounds a stolen credential,
+  and widened `stepup` to two more audiences. **Closed** by gating enrolment on
+  a fresh step-up WHEN A VERIFIED FACTOR ALREADY EXISTS. *Residual, and it
+  cannot be closed here:* for an account that never enrolled a factor, a stolen
+  session still buys the bootstrap — there is no proof to demand, and identity
+  cannot warn the owner because M14 deliberately made it not a holder of the
+  notifications SEND credential. Such an account had no second factor to defeat.
+  *Second residual, recorded not fixed:* a legitimate re-enrolment silently
+  retires the previous authenticator, because `findActiveTotp` takes the newest.
+  "Add a device" and "replace a device" are different intentions and the
+  platform offers one behaviour for both; it is behind step-up now, so only the
+  owner can cause it.
+
 - *`activeTab` discloses the active tab's URL to the extension.* That is the
   minimum origin matching can run on, and it is bounded by the permission itself:
   granted only when the user clicks the extension, revoked on navigation, and

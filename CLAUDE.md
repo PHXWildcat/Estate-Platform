@@ -4266,3 +4266,33 @@ deviating from them, stop and propose the change with rationale — do not silen
   (44 of them, 9.9G, cleared with `git worktree remove --force` + a branch
   sweep), and the agents are told not to restore what they change, so the
   scratch branches `worktree-wf_*` accumulate too.
+- 2026-08-12 — M16 PR5 security review (seven file-scoped discovery lenses over
+  the M16 range, each in its own detached worktree at the reviewed commit; 21
+  candidates, no agents lost; EVERY finding confirmed by mutation or execution
+  before it was acted on — against real Postgres, a real jsdom page, or the
+  modules run directly). Tenth milestone running where every confirmed finding
+  sits in machinery the milestone introduced — WITH ONE EXCEPTION, and it is the
+  worst thing in the review.
+  THE EXCEPTION IS OLDER THAN M16 AND M16 IS WHAT MADE IT MATTER: a stolen
+  session could ENROL ITS OWN SECOND FACTOR. `POST /v1/auth/totp/enroll` has been
+  `SessionGuard`-only since M2; `revokeUnverifiedTotp` spares a VERIFIED method
+  while `findActiveTotp` takes the NEWEST — so enrol a secret you control,
+  confirm it with a code you compute yourself, step up. Three ordinary requests,
+  no guessing, and step-up stops being a second factor for anyone holding a
+  session: vault reset, document generation, export, beneficiary changes,
+  deletion. Measured end to end, including the half that makes it a lockout as
+  well as a takeover — the owner's own authenticator answers 401 afterwards,
+  which is docs/03 §5.1's liveness proof gone. THE REPO HAD ALREADY SEEN THE
+  MECHANISM and filed it as a test-seeding nuisance (the 2026-08-06 entry on why
+  the settlement e2e caches TOTP enrolment says, in as many words, that enrolling
+  twice leaves two verified secrets and lets `findActiveTotp`'s choice decide
+  whether a later step-up works). That is the general lesson: A FACT RECORDED AS
+  A TEST INCONVENIENCE IS STILL A FACT ABOUT THE PRODUCTION CODE PATH. Fixed by
+  gating enrolment on a fresh step-up WHEN A VERIFIED FACTOR EXISTS — conditional
+  because the first enrolment cannot be gated (no factor to prove with, and
+  `checkTotp` refuses a user with no method, so an unconditional gate makes a
+  second factor unreachable forever). Residuals stated: the bootstrap case stays
+  open and identity cannot even warn, being deliberately not a notifications SEND
+  holder (M14); and a legitimate re-enrolment silently retires the previous
+  authenticator, which is now owner-only but still one behaviour for two
+  intentions.
