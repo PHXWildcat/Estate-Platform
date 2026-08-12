@@ -251,9 +251,21 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     pageUrl: string,
     tabId: number | undefined,
   ): HTMLElement {
+    /*
+     * ONE PARSE, ONE CATCH. The internationalised-domain notice below needs the
+     * same `URL` this line already builds, and the first version of it built a
+     * second one inside its own try/catch — two parses of one string, two
+     * failure paths for one failure, and a branch nothing exercised. Folded
+     * together: whatever cannot be parsed is displayed verbatim and is not
+     * claimed to be internationalised either.
+     */
     let host: string;
+    let punycodePage = false;
     try {
-      host = new URL(pageUrl).host;
+      const parsed = new URL(pageUrl);
+      host = parsed.host;
+      const domain = registrableDomain(parsed.hostname);
+      punycodePage = domain !== null && hasPunycode(domain);
     } catch {
       host = pageUrl;
     }
@@ -277,28 +289,18 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       }
       list.append(row);
     }
-    /*
-     * THE INTERNATIONALISED-DOMAIN NOTICE IS ABOUT THE PAGE, once.
-     *
-     * It used to be a per-ITEM verdict: `isConfusable` returned true whenever
-     * either side carried punycode, without comparing them, so every saved item
-     * came back `confusable` on any IDN page — the whole vault disclosed to
-     * answer a question about one origin, and the lookalike refusal firing on
-     * items it knew nothing about. The comparison is gone (see
-     * `origin-match.ts`); what survives is the one fact that was ever true, said
-     * about the page rather than claimed about each credential.
-     */
-    let punycodePage = false;
-    try {
-      const domain = registrableDomain(new URL(pageUrl).hostname);
-      punycodePage = domain !== null && hasPunycode(domain);
-    } catch {
-      punycodePage = false;
-    }
     return el(
       'div',
       {},
       el('h3', {}, `For ${host}`),
+      // THE INTERNATIONALISED-DOMAIN NOTICE IS ABOUT THE PAGE, once. It used to
+      // be a per-ITEM verdict: `isConfusable` returned true whenever either
+      // side carried punycode, without comparing them, so every saved item came
+      // back `confusable` on any IDN page — the whole vault disclosed to answer
+      // a question about one origin, and the lookalike refusal firing on items
+      // it knew nothing about. The comparison is gone (see `origin-match.ts`);
+      // what survives is the one fact that was ever true, said about the page
+      // rather than claimed about each credential.
       ...(punycodePage
         ? [
             el(

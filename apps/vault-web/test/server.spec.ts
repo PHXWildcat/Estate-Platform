@@ -295,6 +295,27 @@ describe('the vault edge', () => {
       expect(JSON.stringify(calls[0]?.headers)).not.toContain('browser-session-token');
     });
 
+    it('refuses a body over the size cap before it reaches an upstream', async () => {
+      // `MAX_BODY_BYTES` is the only bound on what this edge will buffer for a
+      // caller it has not yet authorised past, and nothing exercised it. The
+      // request carries a valid bearer, so the refusal is the CAP and not the
+      // credential check.
+      await boot(() => ({ status: 200, body: '{}' }));
+      const res = await fetch(`${base}/api/vault/items`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer extension-access-token',
+          'x-estate-vault-csrf': '1',
+          'content-type': 'application/json',
+        },
+        body: 'x'.repeat(256 * 1024 + 1),
+      });
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual({ error: 'payload_too_large' });
+      // And nothing was forwarded: an oversized body must not reach the vault.
+      expect(calls).toHaveLength(0);
+    });
+
     it.each([
       ['Bearer', 'no token'],
       ['Basic dXNlcjpwdw==', 'wrong scheme'],

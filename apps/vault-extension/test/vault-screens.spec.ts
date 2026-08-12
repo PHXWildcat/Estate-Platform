@@ -536,6 +536,18 @@ describe('what is saved for the page you are on', () => {
     expect(text()).not.toContain('only looks like the saved one');
   });
 
+  it('shows a page URL it cannot parse verbatim, and claims nothing about it', async () => {
+    // One parse serves both the heading and the internationalised-domain
+    // notice, so one failure path covers both. A tab URL that will not parse is
+    // displayed as-is rather than becoming an empty heading, and — the part
+    // that matters — it is NOT reported as internationalised, because nothing
+    // was established about it.
+    openWith([], 'not a url at all');
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('For not a url at all'), 'the verbatim heading');
+    expect(text()).not.toContain('internationalised domain name');
+  });
+
   it('asks for a FILL, naming the item and the page, never for a secret', async () => {
     const wired = openWith(MATCH);
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
