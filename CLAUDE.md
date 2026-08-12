@@ -3984,12 +3984,16 @@ deviating from them, stop and propose the change with rationale — do not silen
   is reproducible on ONE machine, so it was not disqualified for being a CLI;
   it was disqualified because three of the five then depend on whichever
   Info-ZIP and zlib the runner ships, which is precisely the variable a
-  reproducibility claim must not rest on. Writing the archive on `node:zlib`
-  pins deflate to the Node the repo already pins — the node:crypto webhook
-  verifier and node:net clamd precedent, applied to a path whose entire job is
-  to be checkable. The COMPILE was measured as already reproducible (no
-  `incremental`/`composite`, so no `.tsbuildinfo` state; TypeScript emits LF
-  regardless of platform); the ZIP was the only step that was not.
+  reproducibility claim must not rest on. Writing the archive ourselves is the
+  node:crypto webhook verifier and node:net clamd precedent, applied to a path
+  whose entire job is to be checkable. The COMPILE was measured as already
+  reproducible (no `incremental`/`composite`, so no `.tsbuildinfo` state;
+  TypeScript emits LF regardless of platform); the ZIP was the only step that
+  was not.
+  CORRECTED LATER THE SAME DAY: this first shipped deflating at level 9, on the
+  reasoning that `node:zlib` "pins deflate to the Node the repo already pins".
+  It does not — see the STORED entry below, where the first CI run measured that
+  claim false and the fifth factor was removed rather than pinned.
 - 2026-08-11 — "TWO RUNS MATCHED" IS THE WEAKEST POSSIBLE REPRODUCIBILITY TEST,
   and it is what almost shipped. Two runs on one machine seconds apart match for
   reasons that have nothing to do with the writer: the mtimes did not change,
@@ -3998,9 +4002,9 @@ deviating from them, stop and propose the change with rationale — do not silen
   variable and asserts the digest does not move (clock forward eleven years,
   `chmod`, creation order), reads the entry names and the extra-length fields
   out of the archive BYTES rather than inferring them, and carries an
-  anti-vacuity case proving a content change DOES move the digest. The fifth
-  factor cannot be tested from inside one Node and is handled by pinning +
-  labelling instead of by a test that would only measure this machine.
+  anti-vacuity case proving a content change DOES move the digest. (The fifth
+  factor was described here as untestable from inside one Node and handled by
+  pinning; it is now an assertion, because the factor was removed — below.)
   MY OWN ORDER TEST MEASURED THE FILESYSTEM: it built one tree in two creation
   orders and compared digests, which PASSES with the writer's `.sort()` removed,
   because APFS returns directory entries in codepoint order anyway. Rewritten to
@@ -4044,17 +4048,18 @@ deviating from them, stop and propose the change with rationale — do not silen
   fire on `workflow_dispatch`, which by definition has a human watching, and the
   reusable workflow's own header says those must not open issues. Dead machinery
   is the zero-callers shape this repo keeps closing, not a spare tyre.
-- 2026-08-11 — NODE IS DELIBERATELY NOT PINNED TO A PATCH, which is the one place
-  reproducibility loses an argument to something else. Deflate output is not
-  guaranteed stable across Node patch releases (measured as UNVERIFIED, not as
-  safe), so freezing the patch is what a purist reproducibility claim wants —
-  and it would mean building a SECURITY artifact on a runtime that cannot take
-  security patches for as long as the pin stood. So the digest is LABELLED
-  instead: the Node version, the commit and the baked origin all travel in the
-  `.sha256` file beside the archive and in the job summary, a Node bump that
-  moves the digest is a reviewed republish rather than an alarm, and
-  `VERIFYING.md` lists a version mismatch as the FIRST thing to check. A claim
-  that is true and qualified beats one that is absolute and quietly false.
+- 2026-08-11 — NODE IS NOT PINNED TO A PATCH, and after the STORED change it no
+  longer needs to be. The original reasoning here was that deflate stability
+  across Node patches is unverified, so a purist claim wants the patch frozen —
+  and freezing it means building a SECURITY artifact on a runtime that cannot
+  take security patches, so the digest was LABELLED instead and `VERIFYING.md`
+  named a version mismatch as the first thing to check. That trade-off is now
+  moot for the digest and the instruction was WRONG: nothing compressed means
+  no zlib, so Node's version and build do not reach the archive at all. The
+  version still travels in the `.sha256` beside the commit and the origin, as
+  provenance rather than as something a verifier must match. Keeping the entry
+  because the reasoning is right for the next artifact that does have a
+  toolchain-sensitive step; only its premise was removed.
 - 2026-08-11 — `apps/vault-extension/VERIFYING.md` states up front what it CANNOT
   establish, because a verification procedure that oversells itself is worse than
   none. It can show the archive came from this repo's `Extension` workflow at a
@@ -4072,4 +4077,44 @@ deviating from them, stop and propose the change with rationale — do not silen
   runnable — docs/04 recorded that this PR owed the difference, and this is it.
   Every command was run: `shasum -a 256 -c` tolerates the `#` comment lines the
   digest file carries, and the job's whole sequence reproduces locally
-  (two clean builds, 42 entries, 118,875 bytes, identical digests).
+  (two clean builds, 42 entries, identical digests).
+- 2026-08-11 — THE FIRST CI RUN FALSIFIED THE MILESTONE'S CENTRAL CLAIM WITHIN
+  MINUTES OF MY MAKING IT, and the fix was to delete a variable rather than
+  document it. The job went green — and its archive was 118,147 bytes where the
+  same commit on this laptop produced 118,875. Compared entry by entry rather
+  than guessed at: all 42 CRCs and uncompressed sizes IDENTICAL, 40 of 42
+  compressing differently, one of them LARGER on CI. So the COMPILE is
+  reproducible across platforms (a stronger result than I had evidence for
+  before) and DEFLATE is not.
+  The cause is neither the Node version nor the CPU. It is HOW NODE WAS BUILT:
+  Homebrew's is `node_shared_zlib: true` against system zlib 1.2.12, official
+  builds vendor Chromium's 1.3.1-e00f703. Isolated by running the packer under
+  official `node:22` in Docker on ARM64, which reproduced the x86-64 runner's
+  digest EXACTLY — so architecture is irrelevant and the zlib build is
+  everything. Two people on the same OS running the same `node -v` get different
+  digests depending on whether they installed Node from Homebrew or nodejs.org,
+  and `VERIFYING.md` was at that moment telling both of them that a mismatch is
+  "a finding worth reporting".
+  FIXED BY STORING EVERY ENTRY (method 0). The archive is then a pure function
+  of the compiled bytes plus four constants — no zlib, no Node, no platform —
+  and the factor that could never be tested from inside one Node became an
+  assertion over the local AND central headers. Both Node builds now produce
+  `bc8b2467…`, 333,789 bytes, `unzip -t` clean. The cost is ~3x size on a 118 KB
+  artifact, invisible to a store that repackages into CRX3 anyway, and worth
+  nothing against being checkable by a stranger. The general rule: when a
+  reproducibility input cannot be pinned from inside the artifact, REMOVE it
+  rather than label it, because a procedure whose failure mode is "your digest
+  differs, and the remedy is a paragraph about your package manager" teaches
+  people to shrug at the signal it exists to raise.
+- 2026-08-11 — AND MY OWN FIXTURES MADE THAT NEW ASSERTION UNOBSERVABLE, caught
+  by mutation and not by review — the third way this session's harness has found
+  a test weaker than its name. Reintroducing deflate VERBATIM left "STORES every
+  entry" GREEN, because every fixture was an 18-byte line and 18 bytes deflate
+  LARGER than they store, so the writer's `deflated.length < raw.length` branch
+  was never taken: the test could not see the exact regression it was written
+  for. A compressible fixture (`big.js`, one line 400 times) fixes it, and the
+  case now ALSO asserts that fixture really does compress — because an edit that
+  shrinks it would silently disarm the check instead of failing it. The general
+  shape, restated for fixtures rather than for selectors: a test of a
+  conditional needs an input that reaches the condition, and "the mutation
+  stayed green" means either the test is weak or the fixture never got there.

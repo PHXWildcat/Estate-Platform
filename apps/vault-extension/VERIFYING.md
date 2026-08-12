@@ -31,10 +31,12 @@ can read.** Read the source, then prove the artifact came from it.
 ## Prerequisites
 
 - `git`, `unzip`, and a SHA-256 tool (`sha256sum` on Linux, `shasum -a 256` on macOS)
-- [Node.js](https://nodejs.org) — **the same version** recorded in the digest
-  file (see step 1). Deflate output is not guaranteed identical across Node
-  releases, so a different Node is the most likely reason for an honest mismatch.
-- `pnpm`, via `corepack enable pnpm`
+- [Node.js](https://nodejs.org) 22 or newer, and `pnpm` via `corepack enable pnpm`
+
+You do **not** need to match our Node version, our operating system, or our CPU
+architecture. Nothing in the archive is compressed, precisely so that none of
+those can reach the digest — see [Why nothing is
+compressed](#why-nothing-is-compressed).
 - [`gh`](https://cli.github.com) for step 2. You need *a* GitHub account to call
   the API; you do not need any permission on this repository.
 
@@ -58,8 +60,9 @@ cat vault-extension.zip.sha256
 > can always reproduce the digest from source and compare against the
 > attestation, which does not expire.
 
-The digest file records everything that decides the digest — the commit, the
-Node version, and the origin the package was built for:
+The digest file records the two inputs that decide the digest — the commit and
+the baked origin — plus the Node version, which is provenance only and which you
+do not have to match:
 
 ```
 <sha256>  vault-extension.zip
@@ -134,20 +137,46 @@ and extra fields are all pinned to constants, and its header explains each one.
 
 ### If they differ
 
-In order of likelihood:
+There are only two innocent explanations, and both are things you control:
 
-1. **A different Node version.** Compare `node --version` against the digest
-   file. This is the one input we deliberately do not freeze — pinning a patch
-   release would mean building a security artifact on an unpatched runtime — so
-   a Node bump legitimately moves the digest, and republishing under the new
-   version is a reviewed change rather than a silent one.
-2. **A different origin.** `VAULT_ORIGIN` is baked in; it must match exactly,
-   including scheme and port, with no trailing slash.
-3. **A different commit.** Confirm against step 2's output, not the branch tip.
+1. **A different origin.** `VAULT_ORIGIN` is baked into the manifest and
+   `origin.js`; it must match the digest file exactly — scheme, host and port,
+   with no trailing slash.
+2. **A different commit.** Confirm against step 2's output, not against the
+   branch tip, which will have moved.
 
-If all three match and the digests still differ, that is a finding worth
-reporting — it means either the pipeline stopped being reproducible, or the
-published artifact was not built from the source it claims.
+If both match and the digests still differ, **that is a finding worth
+reporting** — it means either the pipeline stopped being reproducible or the
+published artifact was not built from the source it claims. Your Node version,
+OS and CPU are deliberately not on this list.
+
+To narrow it down before reporting, compare per-file rather than whole-archive:
+
+```bash
+unzip -v vault-extension.zip | sort > published.txt
+unzip -v apps/vault-extension/vault-extension.zip | sort > mine.txt
+diff published.txt mine.txt
+```
+
+`unzip -v` prints each entry's CRC and size, so a difference here names the
+files that actually differ.
+
+### Why nothing is compressed
+
+Every entry is **stored**, not deflated, and the archive is roughly three times
+the size it could be. That is the deliberate cost of the guarantee above.
+
+Deflate output depends on the zlib that Node was *built against*, not merely on
+Node's version: a Homebrew Node links the system zlib, while an official build
+vendors Chromium's. Measured — the same commit and the same `node --version`
+produced 118,147 bytes on a CI runner and 118,875 on a laptop, with all 42
+entries byte-identical by CRC and 40 of them compressing differently. CPU
+architecture turned out to be irrelevant; how you installed Node was
+everything.
+
+A procedure whose failure mode is "your digest differs, and the fix is a
+paragraph about your package manager" teaches people to shrug at exactly the
+signal it exists to raise. So the variable was removed rather than documented.
 
 ## 4. Read what you are about to run
 

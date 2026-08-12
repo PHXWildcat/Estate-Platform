@@ -3715,11 +3715,32 @@ extra fields, and deflate. With all five pinned the CLI is reproducible on one
 machine, so it was not disqualified for being a CLI — it was disqualified
 because three of the five then depend on whichever Info-ZIP and zlib the runner
 ships, which is exactly the variable a reproducibility claim must not rest on.
-`scripts/pack-extension.mjs` writes the archive on `node:zlib`, pinning deflate
-to the Node the repo already pins (the node:crypto webhook verifier and node:net
-clamd precedent, on a path whose whole job is to be checkable). The compile was
-measured as already reproducible: no `incremental`/`composite`, so no
-`.tsbuildinfo` state, and TypeScript emits LF regardless of platform.
+`scripts/pack-extension.mjs` writes it instead: the node:crypto webhook verifier
+and node:net clamd precedent, on a path whose whole job is to be checkable.
+
+**FOUR FACTORS ARE PINNED; THE FIFTH IS REMOVED, and the first CI run is why.**
+It went green — and produced 118,147 bytes where the same commit on a laptop
+produced 118,875. Compared entry by entry rather than guessed at: all 42 CRCs
+and uncompressed sizes identical, 40 of 42 compressing differently, one *larger*
+on CI. So the compile is reproducible across platforms — a stronger result than
+there was evidence for before — and deflate is not.
+
+The cause is neither the Node version nor the CPU but **how Node was built**:
+Homebrew's is `node_shared_zlib: true` against system zlib 1.2.12, official
+builds vendor Chromium's 1.3.1-e00f703. Isolated by running the packer under
+official `node:22` in Docker on arm64, which reproduced the x86-64 runner's
+digest exactly. Two people on the same OS with the same `node -v` therefore got
+different digests depending on where they installed Node — while `VERIFYING.md`
+told both of them a mismatch was "a finding worth reporting".
+
+Fixed by **storing every entry** (method 0), so the archive is a pure function
+of the compiled bytes plus four constants: no zlib, no Node, no platform. The
+factor that could never be tested from inside one Node became an assertion over
+both the local and central headers. ~3x size on a 118 KB artifact, invisible to
+a store that repackages into CRX3 regardless. *The rule:* when a reproducibility
+input cannot be pinned from inside the artifact, remove it rather than label it
+— a procedure whose failure mode is "your digest differs, and the remedy is a
+paragraph about your package manager" teaches people to shrug at the signal.
 
 **"Two runs matched" is the weakest possible test of this,** and it is what
 almost shipped — two runs on one machine seconds apart match because the mtimes,
@@ -3755,12 +3776,13 @@ rebuild tests. Attestation is skipped on `pull_request`. The notify-on-failure
 wiring was deliberately not copied — its gate can only fire on
 `workflow_dispatch`, which has a human watching by definition.
 
-**Node is deliberately not pinned to a patch.** Deflate stability across Node
-patch releases is unverified, so a purist claim wants it frozen — and freezing
-it means building a *security* artifact on a runtime that cannot take security
-patches. The digest is labelled instead: Node version, commit and baked origin
-travel in the `.sha256` beside the archive, and a Node bump that moves the
-digest is a reviewed republish.
+**Node is not pinned to a patch, and after the STORED change need not be.** The
+original reasoning — freezing the patch would mean building a *security*
+artifact on a runtime that cannot take security patches, so label the digest
+instead — is sound, and its premise is gone: with nothing compressed, Node's
+version and build do not reach the archive at all. The version still travels in
+the `.sha256` beside the commit and the origin, as provenance rather than as
+something a verifier has to match.
 
 **`VERIFYING.md` leads with what it cannot establish.** It can show the archive
 came from this repo's `Extension` workflow at a named commit — via

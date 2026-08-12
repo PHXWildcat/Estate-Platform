@@ -14,14 +14,16 @@
 # rather than to trust this job. Two builds here plus one build there is the
 # whole claim; neither half is sufficient alone.
 #
-# NODE IS NOT PINNED TO A PATCH, deliberately. `setup-node` with `22` resolves
-# to the newest 22.x, which drifts — and that is the one input a reproducibility
-# claim would most like to freeze, since zlib's deflate output is not guaranteed
-# stable across patch releases (measured as unverified, not as safe). Freezing
-# it would mean shipping a security artifact on an unpatched runtime for as long
-# as the pin stood, which is a worse trade. So the digest is LABELLED with the
-# Node that produced it, in the summary and in the `.sha256` file, and a Node
-# bump that moves the digest is a reviewed republish rather than an alarm.
+# NODE IS NOT PINNED TO A PATCH, AND NO LONGER NEEDS TO BE. `setup-node` with
+# `22` resolves to the newest 22.x, which drifts. That mattered while the
+# archive was deflate-compressed, because zlib's output depends on how Node was
+# BUILT rather than on its version — Homebrew links the system zlib, official
+# builds vendor Chromium's — which this job's first run measured as a 728-byte
+# difference over 40 of 42 entries whose contents were byte-identical. The
+# packer now STORES every entry, so the digest is a function of the compiled
+# bytes and four constants: no zlib, no Node, no platform. The version is still
+# recorded with every digest, as provenance rather than as something a verifier
+# has to match.
 name: Extension
 
 on:

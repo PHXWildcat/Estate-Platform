@@ -10,17 +10,24 @@
  *
  * The five were measured against `zip 3.0` while designing the writer, each
  * producing a differing archive: mtime, entry order, file mode, Info-ZIP extra
- * fields, and the deflate level. Four are testable here. The fifth — the deflate
- * IMPLEMENTATION — cannot be tested from inside one Node version, and is handled
- * by pinning: the procedure records the Node version a digest came from, and a
- * bump is a reviewed republish. Said in the packer's own header rather than left
- * for a reader to notice.
+ * fields, and deflate.
+ *
+ * THE FIFTH IS NOT PINNED, IT IS REMOVED, and that changed after the first CI
+ * run measured it: the same commit produced 118,147 bytes on the runner and
+ * 118,875 on a laptop, all 42 CRCs and uncompressed sizes identical, 40 entries
+ * compressing differently. The cause is how Node was BUILT — Homebrew links
+ * system zlib, official builds vendor Chromium's — not its version and not the
+ * CPU, isolated by reproducing the runner's digest exactly under official
+ * `node:22` on a different architecture. So every entry is STORED, and the
+ * factor that could never be tested from inside one Node becomes the assertion
+ * below.
  *
  * A subprocess, because ts-jest cannot import a plain `.mjs` — the `psl.spec.ts`
  * precedent.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { deflateRawSync } from 'node:zlib';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,19 +45,37 @@ function digestOf(dir: string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/**
+ * ONE FIXTURE MUST BE WORTH COMPRESSING, and the reason is a mutation this
+ * file's own harness caught. Every fixture was originally an 18-byte line —
+ * and 18 bytes deflate LARGER than they store, so the writer's old
+ * `deflated.length < raw.length` branch was never taken. Reintroducing deflate
+ * verbatim left the "STORES every entry" case GREEN: the fixtures made the
+ * mutation unobservable, which is the "named for a property it never touched"
+ * shape this repo keeps finding.
+ *
+ * `big.js` is long and repetitive, so any writer that would compress does.
+ */
+const COMPRESSIBLE = 'big.js';
+const FILES = ['a.js', 'b.js', COMPRESSIBLE, 'lib/c.js'] as const;
+
+function bodyFor(name: string): string {
+  return name === COMPRESSIBLE
+    ? 'the same line over and over\n'.repeat(400)
+    : `contents of ${name}\n`;
+}
+
 /** A small tree, created in a caller-chosen order so order can be varied. */
 function tree(order: readonly string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'src-'));
   mkdirSync(join(dir, 'lib'), { recursive: true });
   for (const name of order) {
-    writeFileSync(join(dir, name), `contents of ${name}\n`);
+    writeFileSync(join(dir, name), bodyFor(name));
     // Pin mtimes so a case that is not ABOUT mtime does not vary by it.
     utimesSync(join(dir, name), new Date(2020, 0, 1), new Date(2020, 0, 1));
   }
   return dir;
 }
-
-const FILES = ['a.js', 'b.js', 'lib/c.js'] as const;
 
 describe('the packaged archive is reproducible', () => {
   const made: string[] = [];
@@ -149,6 +174,43 @@ describe('the packaged archive is reproducible', () => {
       });
     }
     expect(found).toBe(FILES.length);
+  });
+
+  it('STORES every entry, so no zlib can reach the digest', () => {
+    /*
+     * The load-bearing one, and the only reason this archive is checkable by
+     * someone who did not install their Node the way we installed ours.
+     * `node:zlib`'s deflate output depends on the zlib Node was BUILT against,
+     * which differs between a Homebrew node (shared, 1.2.12) and an official
+     * one (vendored Chromium, 1.3.1-e00f703) — measured, on the same version.
+     *
+     * Read out of the local headers rather than inferred from sizes: an entry
+     * that happens not to compress is not the same fact as a writer that never
+     * compresses. Method 0 is STORED, method 8 is deflate.
+     */
+    // The fixture must be worth compressing or this proves nothing — see
+    // `bodyFor`. Asserted rather than assumed, because a future edit that
+    // shrinks it would silently disarm the case instead of failing it.
+    const big = Buffer.from(bodyFor(COMPRESSIBLE));
+    expect(deflateRawSync(big, { level: 9 }).length).toBeLessThan(big.length);
+
+    const dir = build(FILES);
+    const out = join(mkdtempSync(join(tmpdir(), 'zip-')), 'out.zip');
+    execFileSync(process.execPath, [PACKER], {
+      env: { ...process.env, PACK_DIR: dir, PACK_OUT: out },
+      stdio: 'pipe',
+    });
+    const zip = execFileSync('cat', [out], { encoding: 'buffer' });
+
+    const methods: number[] = [];
+    for (let i = 0; i + 30 <= zip.length; i += 1) {
+      if (zip.readUInt32LE(i) === 0x04034b50) methods.push(zip.readUInt16LE(i + 8));
+      // The central directory keeps its own copy, and an extractor may believe
+      // either — so both must say stored.
+      if (zip.readUInt32LE(i) === 0x02014b50) methods.push(zip.readUInt16LE(i + 10));
+    }
+    expect(methods).toHaveLength(FILES.length * 2);
+    expect(methods.every((m) => m === 0)).toBe(true);
   });
 
   it('changes when the CONTENT changes, so the digest means something', () => {
