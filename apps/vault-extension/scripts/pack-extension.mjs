@@ -161,22 +161,14 @@ export async function packDirectory(dir) {
     central.writeUInt32LE(sum, 16);
     central.writeUInt32LE(body.length, 20);
     central.writeUInt32LE(raw.length, 24);
-    const ux = Buffer.alloc(11);
-    ux.writeUInt16LE(0x7875, 0); // 'ux' — Info-ZIP new Unix UID/GID
-    ux.writeUInt16LE(7, 2);
-    ux.writeUInt8(1, 4);
-    ux.writeUInt8(2, 5);
-    ux.writeUInt16LE(process.getuid(), 6);
-    ux.writeUInt8(2, 8);
-    ux.writeUInt16LE(process.getgid(), 9);
     central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt16LE(ux.length, 30); // extra
+    central.writeUInt16LE(0, 30); // extra
     central.writeUInt16LE(0, 32); // comment
     central.writeUInt16LE(0, 34); // disk number
     central.writeUInt16LE(0, 36); // internal attrs
     central.writeUInt32LE(FIXED_EXTERNAL_ATTRS, 38);
     central.writeUInt32LE(offset, 42);
-    centrals.push(central, nameBytes, ux);
+    centrals.push(central, nameBytes);
 
     offset += local.length + nameBytes.length + body.length;
   }
