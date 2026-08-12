@@ -7,7 +7,7 @@ import { gqlRequest, type LiveSessionInfo, type SessionInfo } from '../graphql/c
 import { messageFor, stepUpMessageFor } from '../lib/copy';
 import { formatDateTime } from '../lib/datetime';
 import { audienceCopy } from '../lib/sessions';
-import type { StepUpRetryOutcome } from '../lib/step-up';
+import { SESSION_CACHE_TTL_MS, type StepUpRetryOutcome } from '../lib/step-up';
 import { validateTotpCode } from '../lib/validation';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
@@ -40,6 +40,37 @@ type DevicesState =
  * is bound where it is rendered, not selected afterwards from state.
  */
 type StepUpTarget = 'verify' | 'export' | 'pairing';
+
+/**
+ * REVOKING IS NOT INSTANT DOWNSTREAM, AND THIS PAGE MAY NOT PRETEND IT IS.
+ *
+ * Identity deletes the session row synchronously and answers 401 at once — but
+ * every other service resolves a caller by introspecting the token through
+ * `HttpSessionVerifier`, which caches POSITIVE answers for one TTL (the
+ * 2026-07-23 decision: negatives are never cached, so a transient identity
+ * outage cannot lock out valid tokens). So a revoked credential keeps working
+ * at the vault for up to that window — MEASURED in M16 PR1's live drive rather
+ * than reasoned about: identity 401'd immediately while the vault answered 200,
+ * and 401'd 33 seconds later.
+ *
+ * docs/03 §6j names the fix as COPY rather than a shorter TTL, because
+ * shortening it would put an introspection on every request in the product.
+ * This is that fix. The window it describes is BOUNDED and not alarming — what
+ * survives reaches ciphertext behind a completed SRP unlock, and cannot reset a
+ * vault, delete an item, touch emergency access or mint another credential —
+ * but a control that reads as instantaneous while a peer still admits the token
+ * is the M9 shape inverted: not a control reading as an outage, but an
+ * outage-free UI reading as a STRONGER control than it is.
+ *
+ * DERIVED, NOT TYPED OUT. The number is `SESSION_CACHE_TTL_MS`, which
+ * `step-up.test.ts` already pins to `DEFAULT_CACHE_TTL_MS` in
+ * packages/auth-guard by reading that file — the compose-parity mechanism,
+ * because this app cannot import a Nest package. Raise the TTL and this
+ * sentence follows it instead of quietly becoming false again.
+ */
+const PROPAGATION_SENTENCE =
+  `Signing in with it is refused straight away; other parts of the platform can take up to ` +
+  `${Math.ceil(SESSION_CACHE_TTL_MS / 1000)} seconds to stop accepting it.`;
 
 export function SecurityPanel(): ReactElement {
   const router = useRouter();
@@ -276,6 +307,9 @@ export function SecurityPanel(): ReactElement {
    * one, and minting a pairing code is the gated half. Someone who believes
    * their extension is compromised must not be sent to find an authenticator
    * first.
+   *
+   * WHAT THIS SAYS AFTERWARDS IS A CONTROL, which is why the sentence is shared
+   * rather than written twice — see PROPAGATION_SENTENCE.
    */
   async function revokeDevice(row: LiveSessionInfo): Promise<void> {
     setDeviceError(null);
@@ -287,7 +321,7 @@ export function SecurityPanel(): ReactElement {
       setDeviceError(messageFor(result.code));
     } else {
       setDeviceNote(
-        `That ${audienceCopy(row.audience).label.toLowerCase()} can no longer be used.`,
+        `That ${audienceCopy(row.audience).label.toLowerCase()} is revoked. ${PROPAGATION_SENTENCE}`,
       );
     }
     // Re-read either way. A refusal here is identity's UNIFORM not-found, which
@@ -507,7 +541,7 @@ export function SecurityPanel(): ReactElement {
         </h2>
         <p className="mt-2 max-w-prose text-sm text-ink-muted">
           Everything that can currently reach your account. If you do not recognise one, revoke it —
-          that takes effect immediately and needs nothing else from you.
+          that needs nothing else from you. {PROPAGATION_SENTENCE}
         </p>
 
         {devices.kind === 'loading' ? (

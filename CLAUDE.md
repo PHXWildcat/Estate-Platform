@@ -4725,3 +4725,25 @@ deviating from them, stop and propose the change with rationale — do not silen
   half-applied — arriving three times in the session that recorded it. The
   watcher binds to the HEAD sha now, where staleness cannot satisfy it by
   construction.
+- 2026-08-12 — M16 CLOSED, and the last thing it owed was a SENTENCE. docs/03
+  §6j had recorded, since PR1's live drive measured it, that revoking a paired
+  device is not instant downstream: identity deletes the row and answers 401 at
+  once, but every peer resolves a caller through `HttpSessionVerifier`, whose
+  POSITIVE cache holds for one TTL — so the vault answered 200 immediately after
+  a revoke and 401 thirty-three seconds later. The window is a deliberate trade
+  (negatives are never cached, precisely so an identity outage cannot lock out
+  valid tokens) and shortening it would put an introspection on every request in
+  the product. What was wrong was the SCREEN: "that takes effect immediately"
+  above the list, "can no longer be used" after the click. THE M9 SHAPE
+  INVERTED — not a control reading as an outage, but an outage-free UI reading
+  as a STRONGER control than it is, on the one surface a person uses when they
+  believe a device is compromised. One `PROPAGATION_SENTENCE` now serves both
+  sites, because the confirmation someone reads while acting is not the
+  paragraph they may never have read. The number is DERIVED from
+  `SESSION_CACHE_TTL_MS` rather than typed out — `step-up.test.ts` already pins
+  that to auth-guard's `DEFAULT_CACHE_TTL_MS` by READING the file (the web app
+  cannot import a Nest package), so one existing check now keeps a security
+  claim honest as well as a retry loop, and raising the TTL moves the sentence
+  instead of quietly making it false. Mutation-tested by restoring both original
+  strings; the pin names the old wording explicitly, so the specific regression
+  is what turns it red rather than a generic assertion about the paragraph.
