@@ -4747,3 +4747,50 @@ deviating from them, stop and propose the change with rationale — do not silen
   instead of quietly making it false. Mutation-tested by restoring both original
   strings; the pin names the old wording explicitly, so the specific regression
   is what turns it red rather than a generic assertion about the paragraph.
+- 2026-08-12 — M17 IS ACCOUNT RECOVERY AND ABUSE BOUNDS (approved), displacing
+  the subscription manager, which is re-sequenced rather than dropped. Chosen by
+  a structured selection — five file-scoped evidence lenses, three judges ranking
+  from deliberately conflicting priorities (risk, user value, dependency order),
+  one synthesis — and every load-bearing claim re-verified by hand afterwards,
+  because a verdict is not evidence. WHAT DECIDED IT: identity declares 23 routes
+  and NOT ONE changes a password, resets a forgotten one, or changes an address;
+  every "password reset" string in the docs refers to the VAULT password, so the
+  account half was never even recorded as a deferral. There is no rate limiting
+  anywhere — no throttler dependency in any `package.json`, and
+  `recordLoginFailure` writes `login.failed` rows nothing reads. And
+  `grep -rniE "webauthn|passkey"` across the BFF, web app, vault origin and
+  extension returns ZERO hits, so identity's four relying-party routes have been
+  unreachable since M2 and TOTP is the only usable factor — while docs/03 lists
+  account takeover as risk #1 with "passkey nudges" among its residual
+  treatments. The two halves ship together because a reset route without a bound
+  is an enumeration and mail-bomb oracle, and a bound without a reset route is a
+  lockout primitive.
+- 2026-08-12 — THE RUNNER-UP LOST ON ORDER, NOT ON MERIT, and the disagreement is
+  worth keeping because averaging it would have hidden the real argument. A
+  value-first reading ranked the ASSETS SURFACE first and was right about its own
+  lens — assets exposes 13 owner-facing routes against a BFF client with three
+  methods, there is no `[assetId]` route, and `CreateAssetInput` carries no
+  `inTrust`, so the in-trust badge can only ever read ZERO for an estate created
+  through the product while the readiness page advises users about designations
+  it makes impossible to create. The objection ("no customer opens the app to
+  admire a password reset") is fair. It loses on COST-OF-DELAY ASYMMETRY: assets
+  is flat-cost and unblocks nothing, while a general rate limiter touches every
+  request path, so every surface added first is another surface to bound and
+  another e2e to reconcile. Assets follows immediately. Stated rather than
+  implied: nothing is deployed, so the recovery gap is not a live exposure today
+  — it is a rising build cost and a hard gate on deploying at all, which is
+  exactly why the case is sequencing rather than alarm.
+- 2026-08-12 — RECORDED AS AN ESCALATION RATHER THAN A RECOMMENDATION: the M5
+  cloud half is blocked on MONEY, not engineering (AWS org, ~$420–1,100/mo dev
+  tier, a CI OIDC role), and about a third of docs/03's open residuals are
+  structurally behind it — TB4's decrypt-rate baseline and KMS circuit breaker
+  (the threat model's own "single most important insider control"), §5.3
+  canaries, §5.6 Vault-Locked backups, and the audit chain's S3 Object Lock
+  anchor, an M1 open item now sixteen milestones old. A dependency-first reading
+  ranked it FIRST and it is not something an engineering decision can resolve, so
+  it sits in docs/04 as a named escalation with two facts attached: the delay
+  cost is mechanical (the compose topology must be encoded a second time in
+  Terraform, and ten services is cheaper than thirteen), and the M4 publish CLI
+  refuses placeholder-`legalReview` templates under `NODE_ENV=production`, so a
+  production environment has NO ACTIVE TEMPLATES and generation returns
+  `template_not_found` until that is resolved.

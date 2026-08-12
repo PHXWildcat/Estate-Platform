@@ -3938,7 +3938,114 @@ packaging jobs follow. They must pin, because a moving toolchain moves the
 digest. This one is watching for the platform to change under the extension, and
 pinning would hide exactly what it is there to notice.
 
-### M17 — Subscription manager (planned)
+### M17 — Account recovery and abuse bounds (approved 2026-08-12)
+
+**Identity declares 23 routes and not one of them changes a password, resets a
+forgotten one, or changes an address.** Every "password reset" string in these
+docs refers to the VAULT password (Zone A, M6) — the account half is not even
+recorded as a deferral, which is how it stayed invisible for sixteen milestones.
+And there is no rate limiting anywhere: no throttler dependency in any
+`package.json`, and `recordLoginFailure` inserts a `login.failed` row
+(`auth.service.ts:564`) that nothing reads. `docs/03` §6 lists account takeover
+as risk #1 (H/H) with residual treatment "passkey nudges, trusted-contact review
+mode, adaptive step-up" — all three unbuilt, and `grep -rniE "webauthn|passkey"`
+across `apps/bff/src`, `apps/web/src`, `apps/vault-web/src` and
+`apps/vault-extension/src` returns ZERO hits, so identity's four relying-party
+routes have been shipped and unreachable since M2 and TOTP is the only usable
+factor.
+
+**The two halves are mutually enabling and must not be split.** A reset route
+without a bound is an enumeration and mail-bomb oracle; a bound without a reset
+route is a lockout primitive. The bound itself is not new work in the risky
+sense — it generalizes M16's `deniedSinceLastGrant` over the append-only
+`auth_events` ledger, which is already twice-reviewed, already two-scoped
+(per-session under a per-account ceiling), already rolling rather than sticky,
+and whose index debt `005_auth_events_index.sql` already paid.
+
+**Why this rather than the assets surface,** which is the strongest alternative
+and which a value-first reading ranks first — fairly, since assets exposes 13
+owner-facing routes against a BFF client with exactly three methods, there is no
+`[assetId]` route, and `CreateAssetInput` carries no `inTrust`, so the in-trust
+badge can only ever read zero for an estate created through the product. The
+answer is ORDER, NOT CHOICE, and it turns on cost of delay rather than on
+weighing lenses: assets is flat-cost and blocks nothing, while a general rate
+limiter touches every request path, so every surface added before it is another
+surface to bound. Assets follows immediately. Stated plainly: nothing is
+deployed, so this is not a live exposure today — it is a rising build cost and a
+hard gate on deploying at all.
+
+**PRs.** PR1 the bound · PR2 password change · PR3 password reset · PR4 address
+change · PR5 the passkey surface · PR6 the security review. Each independently
+mergeable, each carrying its own docs delta (the M14 rule). PR3 goes third
+deliberately, so the bound is already under the most dangerous route in the
+milestone. PR5 is severable if the milestone runs long.
+
+**Out of scope, deliberately.** Erasure and account deletion — `destroyDek`
+(`packages/crypto/src/dek.ts:170`) stays caller-less this milestone, because
+building the most irreversible route in the product inside the milestone that
+builds password reset is how one of them gets half-reviewed. Passkey
+PROVISIONING for third-party sites (that is an authenticator, not a relying
+party — already rejected at M16). Edge/per-IP limiting at the WAF, which is
+blocked on the M5 cloud half; what ships is a per-account bound plus a
+best-effort per-process one, and that limitation goes in docs/03 §6k in plain
+words rather than being implied. Adaptive authentication and device
+fingerprinting — `sessions.device_id`, `ip_ct` and `geo` are declared and
+written by nothing; decide whether to write them, do not build a risk engine.
+Operator-assisted recovery (TB7). And the route↔consumer fence, which is the
+right mechanism in the wrong milestone: it would go red on assets, settlement
+and plaid the moment it landed, and only whoever closes those gaps can write its
+deferral entries truthfully — it ships as PR1 of the assets milestone.
+
+**The decisions this milestone has to take.** Settle each BEFORE the PR that
+needs it, not in the review.
+
+1. *Who tells the owner their password just changed?* Identity is deliberately
+   NOT a holder of the notifications SEND credential (M14: the service that
+   mints sessions must not be able to ring "a death report was filed on your
+   account"). A silent password change is unacceptable and so is undoing that
+   split — so this is a fifth credential-graph edge with a closed
+   account-security kind subset, or a route through an existing holder. Update
+   `credential-graph.ts` as data and make the fence red before green.
+2. *Does redeeming a reset code grant step-up?* Almost certainly no. This is
+   exactly the M15 PR4 shape: an unauthenticated redeem route granted step-up
+   while `POST /v1/vault/reset` is gated on step-up ALONE, so a stolen handoff
+   code crypto-shredded a Zone A vault. A reset code that grants step-up is a
+   vault-destruction primitive delivered by email. Whatever is chosen, PR3 must
+   assert what a reset session CANNOT do, the way `session-audience.spec.ts`
+   derives its refused set.
+3. *What does a reset revoke, and what does it explicitly not recover?* Every
+   session including 30-day paired extensions. But the Zone A master key derives
+   from the vault password + Secret Key under 2SKD, not from the account
+   password — so a reset recovers the account and NOT the vault, and the screen
+   must say so. Telling someone they have recovered something they have not is
+   the worst outcome available here.
+4. *Does reset work in `deceased_pending`, and in `settlement`?* M7's status
+   allowlist is `('active','deceased_pending')`, and `deceased_pending`
+   deliberately keeps the owner's login alive as the §5.1 rescue path — so a
+   reset there is arguably required. In `settlement` it must not work, or it
+   re-opens a terminally locked account. Restate the predicate inside the reset's
+   own SQL; do not read the status and then act on it.
+5. *Per-account only, or per-IP too?* Per-IP needs an IP nothing currently
+   records, and `sessions.ip_ct` would gain its first writer — a PII column with
+   an envelope-encryption obligation. If not taken, write the residual: a
+   distributed attacker walks around a per-account bound on `register`.
+6. *How does the bound avoid being a DoS against the owner?* This is the trap
+   M16 PR5 hit and the reason for two scopes. A per-account login cap is
+   reachable by anyone who knows the email address, and five wrong passwords
+   from an attacker must not lock the owner out. Prove the owner's own session
+   survives an attacker exhausting the cap, the way `stepup-cap.int.spec.ts`
+   does.
+7. *Does password change require the current password, step-up, or both?*
+   Recommendation: current password AND step-up where a factor exists; current
+   password alone where none does. An account with no verified second factor
+   cannot be step-up gated — there is nothing to prove — and the current password
+   is the one thing a stolen session does not hold.
+8. *Should a registered passkey change the reset path?* Gating reset on a passkey
+   where one exists removes email as a takeover channel for exactly the users who
+   invested in security. Decide it in PR5 or state that it is deliberately not
+   taken.
+
+### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
 SaaS, gym, storage, insurance, domains — continue debiting after death, and every
@@ -3998,13 +4105,93 @@ recurring monthly exposure, and subscriptions with no cancellation route on
 file. That is arithmetic over structured data, which is exactly what those
 analysers are for.
 
-**No blockers.** Every prerequisite already ships: the financial cluster, the
-Plaid isolate, settlement's staged access, and the analyser surface. It could
-swap ahead of M16 if estate value sooner is worth more than autofill.
+**RE-SEQUENCED 2026-08-12, and the "No blockers" claim below is corrected.** The
+five decisions above are right and survive verbatim — the ciphertext merchant
+name and the DO-NOT-CANCEL classification especially, since the latter is the
+difference between a useful feature and one that cancels a life-insurance
+policy. What was wrong is the readiness claim, which is **true at the service
+layer and false at the surface layer**:
+
+- *"Plaid-assisted detection second"* inherits a link flow with ZERO CALLERS.
+  `apps/services/plaid/src/plaid.controller.ts` exposes six owner-facing routes
+  and `grep -rniE "plaid"` across `apps/bff/src`, `apps/web/src`,
+  `apps/vault-web/src` and `apps/vault-extension/src` returns nothing — there is
+  no `plaid-client.ts` in the BFF at all. A customer cannot connect an
+  institution, so detection has nothing to detect from.
+- *"Executor access rides the staged ladder at the first rung"* — the ladder has
+  no surface either: no settlement client in the BFF, no settlement route in the
+  web app. The rung exists; nothing can stand on it.
+- It adds the product's most re-identifying data class to an account that today
+  cannot change or reset its password and whose login has no bound. It raises
+  the value of a target while leaving its defences where they are.
+
+**So it moves behind M17 (recovery), the assets surface, and settlement**, and
+one prerequisite splits out as its own milestone: **the Plaid link surface** —
+six routes, a full e2e and a well-guarded isolate, with no written deferral
+anywhere (the M3 log defers the SCHEMA, never the UI), gated on obtaining Plaid
+sandbox credentials. Doing that inside this milestone would hide a procurement
+dependency inside a feature. The numbering of the milestones between here and
+there is PROPOSED, not approved; only M17 is settled.
+
+**Two decisions the sketch above does not yet have,** both of which would
+otherwise be discovered in this milestone's own review:
+
+- *Who classifies cancel / review-carefully / DO-NOT-CANCEL?* If reference data
+  does, it needs the M10 PR3 `review: {reviewedBy, reviewedAt, source,
+  effectiveYear}` gate and must refuse in production when unreviewed. If the
+  assistant does, the M10 doctrine applies unchanged: THE ANALYSER COMPUTES, THE
+  MODEL EXPLAINS — a classification deciding whether an executor cancels a life
+  insurance policy must be deterministic code over structured facts, never a
+  sampled token.
+- *Who dereferences the vault item id, and on whose session?* The financial
+  cluster would hold an opaque UUID it cannot verify exists, and resolving it is
+  a Zone A read. The answer is almost certainly that the reference is displayed
+  as a hint and the executor opens the vault themselves through the M15 origin —
+  but it is a cross-zone question and belongs written down, not left to whoever
+  builds the surface.
+
+**What keeps this alive rather than dropped:** recurring charges keep debiting
+after death, and every month before cancellation is money out of the estate.
+That is genuine and unusual user value, and it is why this is a re-sequence.
 
 ### Later milestones (rough order, one per bounded context)
-Referral · search · the M5 cloud half, reduced by what M8 took over.
+
+**PROPOSED after M17, not yet approved** — recorded so the ordering argument
+survives, since the 2026-08-12 selection found that the largest remaining gaps
+are SURFACES over shipped backends rather than new domains:
+
+- *The assets surface.* 13 owner-facing routes against a BFF client with three
+  methods; no `[assetId]` route; `CreateAssetInput` carries no `inTrust`, so the
+  in-trust badge reads zero for any estate created through the product, and the
+  readiness page advises users about designations they cannot create. Carries
+  the route↔consumer fence as its PR1.
+- *The settlement surface.* The largest zero-callers gap by route count (28
+  across three controllers, no client in the BFF), and `ContactLinkControls`
+  already tells owners a linked contact can report a death — a promise with no
+  surface behind it. **It dead-ends without the TB7 operator platform**, which is
+  named as owning milestone in five places across docs/03 and docs/04 and
+  appears in no milestone list: ship a reporter path alone and a death report
+  lands in a queue no human can open. Absorb TB7's minimum or do not start.
+- *The Plaid link surface.* Six routes, a guarded isolate, no written deferral
+  anywhere. Gated on obtaining sandbox credentials — a procurement dependency,
+  which is why it is its own milestone rather than hidden inside M20.
+- *The subscription manager (M20).* Re-sequenced above.
+- *Referral · search · the M5 cloud half*, reduced by what M8 took over.
+
+**The M5 cloud half is blocked on a business decision, not on engineering**
+(AWS org, ~$420–1,100/mo dev tier, a CI OIDC role). About a third of docs/03's
+open residuals are structurally blocked behind it — TB4's decrypt-rate baseline
+and KMS circuit breaker, which the threat model calls its single most important
+insider control; §5.3 canaries; §5.6 Vault-Locked backups; and the audit chain's
+S3 Object Lock anchor, an M1 open item now sixteen milestones old. It should
+jump the queue the moment billing exists. Two things to know before it does: the
+cost of delay is mechanical, since the topology already encoded in
+`docker-compose.stack.yml` and `apps/stack/src/generate-env.ts` must be encoded
+a second time in Terraform and ten services is cheaper than thirteen; and the M4
+publish CLI refuses placeholder-`legalReview` templates under
+`NODE_ENV=production`, so a production environment has NO ACTIVE TEMPLATES and
+generation returns `template_not_found` until that is resolved.
+
 Settlement came late deliberately: highest-risk domains land on mature
-primitives. (Notifications moved up and shipped as M9; the AI assistant is M10,
-both above. The vault extension and the subscription manager are sketched as
-M16 and M17 above, each with the decisions it will have to take.)
+primitives. (Notifications moved up and shipped as M9; the AI assistant is M10.
+The vault extension shipped as M16.)
