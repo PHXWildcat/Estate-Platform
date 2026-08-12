@@ -4633,3 +4633,42 @@ deviating from them, stop and propose the change with rationale — do not silen
   here the uniformity was an artifact of the observer, and the same instinct
   applied to `if-no-files-found: warn` (4 of 13 artifacts, which was only the
   API's 30-per-page default) stopped a second false alarm.
+- 2026-08-12 — THE EXTENSION HAS RUN IN A BROWSER, AND CI RUNS IT EVERY TIME,
+  which retires the residual M16 carried from PR2b through the PR5 review.
+  `.github/workflows/extension.yml` gains a `browser-smoke` job that EXTRACTS
+  THE PACKED ARCHIVE and drives those bytes in Chrome over CDP: the manifest is
+  accepted, the service worker boots, `chrome.offscreen.createDocument` succeeds
+  from it, the offscreen document comes up, `/lib/vault-crypto/index.js`
+  resolves at the absolute path the client really loads, and a REAL SRP-6a
+  unlock against a stand-in speaking the real protocol returns an unlocked vault
+  whose item decrypts to its title — with a wrong Secret Key refused BY THE
+  SERVER. The central claim is then asserted over bytes that crossed a real
+  socket out of a real browser, which is a stronger statement than the same
+  assertion against a recording transport in Node. Every one of those was on
+  PR2b's own "unexercised" list, and the jsdom double that stood in for them is
+  the double PR3b proved MORE GENEROUS THAN THE PLATFORM.
+  CHROME IS DELIBERATELY NOT PINNED in that job, inverting this workflow's rule
+  for the packaging jobs. Those must pin because a moving toolchain moves the
+  digest; this one is watching for the PLATFORM to change under the extension —
+  a headless mode that stops loading extensions, an offscreen `reason` that
+  stops being accepted, a CDP command that moves — and pinning would hide
+  exactly what it exists to notice.
+- 2026-08-12 — TWO DEFECTS IN MY OWN HARNESS, both found by mutating it rather
+  than by reading it. (1) A VACUOUS PASS ON THE MOST IMPORTANT CLAIM: the
+  stand-in's `/__requests` introspection route sat behind the same CSRF check as
+  the protocol routes, so the harness's fetch was refused 403 and the
+  "nothing key-derived reached the wire" assertion searched an ERROR OBJECT for
+  secrets and found none. It passed. The anti-vacuity check beside it —
+  "the run actually exercised the transport", asserting a request count —
+  failed and is the only reason this was caught. An egress assertion over an
+  empty haystack is indistinguishable from a clean one, which is precisely why
+  it needs a companion that counts. (2) A BROKEN EXTENSION MADE THE HARNESS
+  HANG: deleting the packaged `lib/vault-crypto` — the exact defect that shipped
+  once and made the extension inert — left `chrome.runtime.sendMessage` waiting
+  on an offscreen document whose module never initialised, and the promise never
+  settles, so the run burned ten minutes and would have burned the job's whole
+  `timeout-minutes` in CI. A timeout is the least useful failure a gate can
+  produce: it says nothing about WHICH claim broke. Every evaluation is bounded
+  now, and the same mutation fails in 31 seconds naming the crypto load. Both
+  mutations are confirmed red; a third, planting the vault password in a request
+  body, is caught by name ("LEAKED: the vault password").

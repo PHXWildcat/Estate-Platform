@@ -3916,6 +3916,28 @@ to the repo methods that write factor state with the receiver resolved from its
 TYPE annotation. It found an error in its own table on its first run and a
 method-name collision on its second; both are recorded in the decision log.
 
+#### Follow-up — the extension, driven in a real browser by CI
+
+The correction above (that `Extensions.loadUnpacked` works where
+`--load-extension` does not) made this possible, and `extension.yml` gains a
+`browser-smoke` job. It extracts the PACKED ARCHIVE and drives those bytes:
+manifest accepted by Chrome, service worker booted,
+`chrome.offscreen.createDocument` succeeding from it, the offscreen document
+live, `/lib/vault-crypto/index.js` resolving at its absolute path, a real SRP-6a
+unlock against a stand-in speaking the real protocol, an item decrypting to its
+title, a wrong Secret Key refused by the server, and the no-key-material-egress
+claim asserted over bytes that crossed a real socket.
+
+Every one of those was on PR2b's "unexercised" list. What remains unexercised is
+named rather than implied: the fill (it needs a genuine user invocation for
+`activeTab`), IndexedDB under the extension origin, and anything about the real
+vault service.
+
+**Chrome is deliberately not pinned in that job**, which inverts the rule the
+packaging jobs follow. They must pin, because a moving toolchain moves the
+digest. This one is watching for the platform to change under the extension, and
+pinning would hide exactly what it is there to notice.
+
 ### M17 — Subscription manager (planned)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
