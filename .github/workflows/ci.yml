@@ -78,3 +78,61 @@ jobs:
         run: pnpm test -- --coverage
         env:
           PG_TEST_URL: postgres://estate:estate_ci@localhost:5432/estate_test
+
+      # ─────────────────────────────────────────────────────────────────────
+      # THE ONE CONFIGURATION NOTHING RAN, until the M16 PR5 review went
+      # looking for why a coverage floor had drifted under without failing.
+      #
+      # `apps/services/identity/jest.config.js` sets its floor deliberately
+      # near the number measured WITHOUT a database — the full-flow integration
+      # suites are `describeIfPg` and skip without `PG_TEST_URL`, so that is the
+      # number a developer sees, and the floor exists to be meaningful for them.
+      # The step above sets `PG_TEST_URL`, so CI has only ever measured the
+      # HIGH number. The floor was therefore evaluated by no gate at all, and
+      # duly rotted: 62.24/66.60/28.43/60.24 against a 65/66/30/63 floor, under
+      # on statements, lines AND functions, failing for anyone without Postgres.
+      #
+      # A threshold nothing evaluates is the fence-that-never-runs shape from
+      # the other direction. This step is what makes it a gate.
+      #
+      # IT MUST PROVE IT RAN THE CONFIGURATION IT NAMES. A step that quietly
+      # acquired a database would go green while measuring the wrong thing —
+      # the same vacuity the stack workflow guards with exact counts — so the
+      # `describeIfPg` suites are asserted to have SKIPPED. If that number is
+      # ever 0, this step is testing the run the step above already covers.
+      #
+      # Scoped to identity because that is the package whose floor is
+      # calibrated this way; another package adopting the convention adds its
+      # own filter here rather than inheriting one by accident.
+      - name: Test identity with NO database — the run its coverage floor is calibrated for
+        working-directory: apps/services/identity
+        env:
+          PG_TEST_URL: ''
+        run: |
+          set -euo pipefail
+          if [ -n "${PG_TEST_URL:-}" ]; then
+            echo "::error::PG_TEST_URL is set — this step exists to measure the run WITHOUT one"
+            exit 1
+          fi
+          # `--coverage` is what arms the thresholds; without it jest exits 0
+          # having checked nothing. Run through the package's own jest rather
+          # than `pnpm --filter … test --`, which does NOT forward these flags
+          # (measured: no coverage collected, no output file written, exit 0).
+          # Written to the runner temp dir so the repo tree stays clean —
+          # this artifact is read once, two lines below, and never committed.
+          out="${RUNNER_TEMP:-.}/identity-nopg.json"
+          npx jest --coverage --json --outputFile="$out"
+          node -e '
+            const r = require(process.argv[1]);
+            const { numPassedTests: passed, numPendingTests: pending, numFailedTests: failed } = r;
+            console.log(`passed=${passed} pending=${pending} failed=${failed}`);
+            if (failed > 0) { console.error("::error::failures without a database"); process.exit(1); }
+            if (pending === 0) {
+              console.error("::error::no suite skipped, so a database was reachable — this step measured the wrong configuration");
+              process.exit(1);
+            }
+            if (passed < 100) {
+              console.error(`::error::only ${passed} tests ran; this step is not exercising the suite`);
+              process.exit(1);
+            }
+          ' "$out"
