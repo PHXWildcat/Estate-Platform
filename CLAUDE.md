@@ -4118,3 +4118,39 @@ deviating from them, stop and propose the change with rationale — do not silen
   shape, restated for fixtures rather than for selectors: a test of a
   conditional needs an input that reaches the condition, and "the mutation
   stayed green" means either the test is weak or the fixture never got there.
+- 2026-08-11 — A FENCE NAMED FOR AN ABSENCE READ ONLY HALF THE ARCHIVE, found by
+  an adversarial agent and confirmed by both CI checks going GREEN over it. A ZIP
+  records every entry TWICE — a local header and a central-directory record, and
+  an extractor may believe either — and `pack.spec.ts`'s "carries NO extra
+  fields" case scanned only the local ones (`0x04034b50`). The agent added an
+  Info-ZIP `ux` field carrying `process.getuid()`/`getgid()` to the CENTRAL
+  records alone: 11 bytes per entry, 462 bytes of the builder's identity in every
+  archive, and the case named for their absence stayed green. Nor could the
+  `package` job see it — two builds on ONE runner share a uid, so the digests
+  agreed, which is exactly the bound that job's header claims for itself. The
+  fence now asserts extra AND comment lengths in BOTH records (the field next
+  door is just as good a place to put a hostname), and every case WALKS THE
+  ARCHIVE from the end-of-central-directory record instead of scanning for
+  signature bytes — which was wrong a second way once entries became STORED,
+  since raw file content can contain `PK\x03\x04` and be counted as an entry that
+  does not exist. Mutation-tested with the agent's exact payload plus the
+  local-only and comment variants; the packer's own output is unchanged
+  (`bc8b2467…`), so this is purely the observer getting better.
+- 2026-08-11 — I COMMITTED A REVIEW AGENT'S MUTATION AND PUSHED IT, which is a
+  process defect with a general lesson: BACKGROUND AGENTS AND `git add -A` DO NOT
+  MIX. The adversarial review was running against this same working tree with
+  instructions to mutate production files and restore them — the only way to
+  prove a fence catches something — and my `git add -A && git commit` ran while
+  one mutation was in flight, so `c3bc6aa` shipped the uid/gid extra field above.
+  The agent restored the file afterwards, which is why the revert commit's diff
+  reads as a REMOVAL and why nothing looked wrong locally. The pre-commit suite
+  had passed BEFORE the mutation landed. Contained (the previous commit was clean,
+  no scratch directory was committed, and the restored file reproduces the digest
+  measured beforehand), and it would have shipped an archive carrying the
+  builder's uid — the precise non-determinism the packer exists to prevent.
+  THREE RULES ADOPTED: stage explicit paths, never `git add -A`, while anything
+  runs in the background against the tree; verify `git status` immediately before
+  every commit rather than trusting an earlier green suite; and give review agents
+  `isolation: 'worktree'` so they physically cannot reach the tree being edited.
+  The last is the real fix — the other two are discipline, and discipline is what
+  failed here.

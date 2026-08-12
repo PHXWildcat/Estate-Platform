@@ -34,15 +34,83 @@ import { join } from 'node:path';
 
 const PACKER = join(__dirname, '..', 'scripts', 'pack-extension.mjs');
 
-/** Pack a directory in a subprocess and return the archive's digest. */
-function digestOf(dir: string): string {
+const SIG_LOCAL = 0x04034b50;
+const SIG_CENTRAL = 0x02014b50;
+const SIG_EOCD = 0x06054b50;
+
+/** Pack a directory in a subprocess and return the archive bytes. */
+function packBytes(dir: string): Buffer {
   const out = join(mkdtempSync(join(tmpdir(), 'zip-')), 'out.zip');
   execFileSync(process.execPath, [PACKER], {
     env: { ...process.env, PACK_DIR: dir, PACK_OUT: out },
     stdio: 'pipe',
   });
-  const bytes = execFileSync('cat', [out], { encoding: 'buffer' });
-  return createHash('sha256').update(bytes).digest('hex');
+  return execFileSync('cat', [out], { encoding: 'buffer' });
+}
+
+function digestOf(dir: string): string {
+  return createHash('sha256').update(packBytes(dir)).digest('hex');
+}
+
+interface Entry {
+  name: string;
+  centralMethod: number;
+  localMethod: number;
+  centralExtraLength: number;
+  centralCommentLength: number;
+  localExtraLength: number;
+}
+
+/**
+ * WALK THE ARCHIVE THE WAY AN EXTRACTOR DOES, from the end-of-central-directory
+ * record through each central record to its local header.
+ *
+ * Every case here used to scan the whole file for signature bytes, and that is
+ * wrong twice over. It reads the LOCAL headers only, which is how the
+ * extra-fields case missed 462 bytes of uid/gid living in the CENTRAL directory
+ * — a real mutation that both CI checks passed. And now that entries are
+ * STORED, file content is raw in the archive, so a `.js` file containing the
+ * four bytes `PK\x03\x04` would be counted as an entry that does not exist.
+ *
+ * Following the structure removes both. It also verifies the linkage: a central
+ * record whose offset does not land on a local header is itself a defect.
+ */
+function readArchive(zip: Buffer): Entry[] {
+  let eocd = -1;
+  for (let i = zip.length - 22; i >= 0; i -= 1) {
+    if (zip.readUInt32LE(i) === SIG_EOCD) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('no end-of-central-directory record');
+
+  const count = zip.readUInt16LE(eocd + 10);
+  let at = zip.readUInt32LE(eocd + 16);
+  const entries: Entry[] = [];
+  for (let n = 0; n < count; n += 1) {
+    if (zip.readUInt32LE(at) !== SIG_CENTRAL) {
+      throw new Error(`central record ${String(n)} not where the directory says it is`);
+    }
+    const nameLength = zip.readUInt16LE(at + 28);
+    const centralExtraLength = zip.readUInt16LE(at + 30);
+    const centralCommentLength = zip.readUInt16LE(at + 32);
+    const localAt = zip.readUInt32LE(at + 42);
+    const name = zip.subarray(at + 46, at + 46 + nameLength).toString('utf8');
+    if (zip.readUInt32LE(localAt) !== SIG_LOCAL) {
+      throw new Error(`central record for ${name} points at no local header`);
+    }
+    entries.push({
+      name,
+      centralMethod: zip.readUInt16LE(at + 10),
+      localMethod: zip.readUInt16LE(localAt + 8),
+      centralExtraLength,
+      centralCommentLength,
+      localExtraLength: zip.readUInt16LE(localAt + 28),
+    });
+    at += 46 + nameLength + centralExtraLength + centralCommentLength;
+  }
+  return entries;
 }
 
 /**
@@ -114,9 +182,9 @@ describe('the packaged archive is reproducible', () => {
      * directory entries in a stable name-derived order anyway. The test was
      * measuring this filesystem rather than the writer.
      *
-     * Reading the names out of the local headers tests the CONTRACT — entries
-     * come out in codepoint order — which catches any writer that reorders
-     * them: grouping directories first, insertion order from a Map, reversing.
+     * Reading the names out of the archive tests the CONTRACT — entries come
+     * out in codepoint order — which catches any writer that reorders them:
+     * grouping directories first, insertion order from a Map, reversing.
      *
      * WHAT IT STILL CANNOT CATCH, stated rather than implied: deleting the
      * `.sort()` itself. Measured — `readdir` on APFS returns names already in
@@ -127,20 +195,7 @@ describe('the packaged archive is reproducible', () => {
      * environment cannot exercise, recorded here instead of credited with
      * coverage it does not have.
      */
-    const dir = build([...FILES].reverse());
-    const out = join(mkdtempSync(join(tmpdir(), 'zip-')), 'out.zip');
-    execFileSync(process.execPath, [PACKER], {
-      env: { ...process.env, PACK_DIR: dir, PACK_OUT: out },
-      stdio: 'pipe',
-    });
-    const zip = execFileSync('cat', [out], { encoding: 'buffer' });
-
-    const names: string[] = [];
-    for (let i = 0; i + 30 <= zip.length; i += 1) {
-      if (zip.readUInt32LE(i) !== 0x04034b50) continue;
-      const length = zip.readUInt16LE(i + 26);
-      names.push(zip.subarray(i + 30, i + 30 + length).toString('utf8'));
-    }
+    const names = readArchive(packBytes(build([...FILES].reverse()))).map((e) => e.name);
     expect(names).toEqual([...names].sort());
     expect(names).toEqual([...FILES].sort());
   });
@@ -154,26 +209,39 @@ describe('the packaged archive is reproducible', () => {
     expect(digestOf(dir)).toBe(before);
   });
 
-  it('carries NO extra fields, so no uid/gid or timestamp can leak in', () => {
-    // Asserted over the bytes rather than inferred: every local header's extra
-    // length field (offset 28) must be zero. Info-ZIP's default is not.
-    const dir = build(FILES);
-    const out = join(mkdtempSync(join(tmpdir(), 'zip-')), 'out.zip');
-    execFileSync(process.execPath, [PACKER], {
-      env: { ...process.env, PACK_DIR: dir, PACK_OUT: out },
-      stdio: 'pipe',
-    });
-    const zip = execFileSync('cat', [out], { encoding: 'buffer' });
-    let found = 0;
-    for (let i = 0; i + 30 <= zip.length; i += 1) {
-      if (zip.readUInt32LE(i) !== 0x04034b50) continue;
-      found += 1;
-      expect({ header: found, extraLength: zip.readUInt16LE(i + 28) }).toEqual({
-        header: found,
-        extraLength: 0,
-      });
-    }
-    expect(found).toBe(FILES.length);
+  it('carries NO extra fields IN EITHER DIRECTORY, so no uid/gid can leak in', () => {
+    /*
+     * THIS CASE FAILED TO CATCH A REAL MUTATION, WHICH IS WHY IT LOOKS LIKE
+     * THIS NOW.
+     *
+     * It used to check the LOCAL headers only. An adversarial review agent
+     * added an Info-ZIP `ux` field — `process.getuid()` and `getgid()`, 11
+     * bytes per entry — to the CENTRAL records alone, and this case stayed
+     * green while 462 bytes of the builder's identity went into every archive.
+     * So did the whole pipeline: the `package` job builds twice on ONE runner,
+     * where both builds share a uid, so their digests agreed. Nothing saw it.
+     *
+     * A ZIP keeps two records per entry and an extractor may read either, so
+     * "no extra fields" is a claim about BOTH. Comment lengths too: the field
+     * next door is just as good a place to put a build host's name.
+     */
+    const entries = readArchive(packBytes(build(FILES)));
+    expect(entries).toHaveLength(FILES.length);
+    expect(
+      entries.map((e) => ({
+        name: e.name,
+        localExtraLength: e.localExtraLength,
+        centralExtraLength: e.centralExtraLength,
+        centralCommentLength: e.centralCommentLength,
+      })),
+    ).toEqual(
+      [...FILES].sort().map((name) => ({
+        name,
+        localExtraLength: 0,
+        centralExtraLength: 0,
+        centralCommentLength: 0,
+      })),
+    );
   });
 
   it('STORES every entry, so no zlib can reach the digest', () => {
@@ -184,9 +252,10 @@ describe('the packaged archive is reproducible', () => {
      * which differs between a Homebrew node (shared, 1.2.12) and an official
      * one (vendored Chromium, 1.3.1-e00f703) — measured, on the same version.
      *
-     * Read out of the local headers rather than inferred from sizes: an entry
-     * that happens not to compress is not the same fact as a writer that never
-     * compresses. Method 0 is STORED, method 8 is deflate.
+     * Read out of the headers rather than inferred from sizes: an entry that
+     * happens not to compress is not the same fact as a writer that never
+     * compresses. Method 0 is STORED, method 8 is deflate — and BOTH records
+     * must say so, since an extractor may believe either.
      */
     // The fixture must be worth compressing or this proves nothing — see
     // `bodyFor`. Asserted rather than assumed, because a future edit that
@@ -194,23 +263,11 @@ describe('the packaged archive is reproducible', () => {
     const big = Buffer.from(bodyFor(COMPRESSIBLE));
     expect(deflateRawSync(big, { level: 9 }).length).toBeLessThan(big.length);
 
-    const dir = build(FILES);
-    const out = join(mkdtempSync(join(tmpdir(), 'zip-')), 'out.zip');
-    execFileSync(process.execPath, [PACKER], {
-      env: { ...process.env, PACK_DIR: dir, PACK_OUT: out },
-      stdio: 'pipe',
-    });
-    const zip = execFileSync('cat', [out], { encoding: 'buffer' });
-
-    const methods: number[] = [];
-    for (let i = 0; i + 30 <= zip.length; i += 1) {
-      if (zip.readUInt32LE(i) === 0x04034b50) methods.push(zip.readUInt16LE(i + 8));
-      // The central directory keeps its own copy, and an extractor may believe
-      // either — so both must say stored.
-      if (zip.readUInt32LE(i) === 0x02014b50) methods.push(zip.readUInt16LE(i + 10));
-    }
-    expect(methods).toHaveLength(FILES.length * 2);
-    expect(methods.every((m) => m === 0)).toBe(true);
+    const entries = readArchive(packBytes(build(FILES)));
+    expect(entries).toHaveLength(FILES.length);
+    expect(
+      entries.map((e) => ({ name: e.name, local: e.localMethod, central: e.centralMethod })),
+    ).toEqual([...FILES].sort().map((name) => ({ name, local: 0, central: 0 })));
   });
 
   it('changes when the CONTENT changes, so the digest means something', () => {
