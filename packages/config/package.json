@@ -5,6 +5,19 @@
   "description": "Shared TypeScript and Jest configuration for the estate platform workspace.",
   "files": [
     "tsconfig.base.json",
-    "jest.js"
-  ]
+    "jest.js",
+    "ci-guard.js",
+    "ci-guard.d.ts"
+  ],
+  "scripts": {
+    "test": "jest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
 }
