@@ -27,7 +27,20 @@ import { join } from 'node:path';
 
 const PKG_ROOT = join(__dirname, '..');
 const REPO_ROOT = join(PKG_ROOT, '..', '..');
-const PKG_NAME = '@estate/vault-extension';
+
+/**
+ * READ THE PACKAGE'S REAL NAME, never a literal.
+ *
+ * turbo matches a `pkg#task` key against the name in `package.json`. A literal
+ * here would keep validating a turbo entry that no longer applies the moment
+ * the package is renamed: turbo silently falls back to the base `build` task,
+ * whose `env` does not list `VAULT_ORIGIN`, and the artifact goes back to being
+ * built with the wrong origin — with this fence green, because it would still
+ * be reading the orphaned key it was told to read.
+ */
+const PKG_NAME = (
+  JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')) as { name: string }
+).name;
 
 /**
  * Strip `//` and block comments from JSONC, tracking string state so the

@@ -59,6 +59,15 @@ interface Entry {
   centralExtraLength: number;
   centralCommentLength: number;
   localExtraLength: number;
+  centralFlags: number;
+  localFlags: number;
+  versionMadeBy: number;
+  internalAttrs: number;
+  externalAttrs: number;
+  centralTime: number;
+  centralDate: number;
+  localTime: number;
+  localDate: number;
 }
 
 /**
@@ -107,6 +116,15 @@ function readArchive(zip: Buffer): Entry[] {
       centralExtraLength,
       centralCommentLength,
       localExtraLength: zip.readUInt16LE(localAt + 28),
+      centralFlags: zip.readUInt16LE(at + 8),
+      localFlags: zip.readUInt16LE(localAt + 6),
+      versionMadeBy: zip.readUInt16LE(at + 4),
+      internalAttrs: zip.readUInt16LE(at + 36),
+      externalAttrs: zip.readUInt32LE(at + 38),
+      centralTime: zip.readUInt16LE(at + 12),
+      centralDate: zip.readUInt16LE(at + 14),
+      localTime: zip.readUInt16LE(localAt + 10),
+      localDate: zip.readUInt16LE(localAt + 12),
     });
     at += 46 + nameLength + centralExtraLength + centralCommentLength;
   }
@@ -268,6 +286,80 @@ describe('the packaged archive is reproducible', () => {
     expect(
       entries.map((e) => ({ name: e.name, local: e.localMethod, central: e.centralMethod })),
     ).toEqual([...FILES].sort().map((name) => ({ name, local: 0, central: 0 })));
+  });
+
+  it('produces EXACTLY these bytes for a known tree — the catch-all', () => {
+    /*
+     * EVERY OTHER CASE HERE CHECKS A FIELD SOMEBODY THOUGHT OF, and three
+     * independent review lenses found the same hole in that approach: the
+     * perturbation cases vary mtime, mode and content and assert the digest
+     * does not move, and the structural cases assert that certain LENGTHS and
+     * METHODS are zero — but nothing asserted the VALUE of any pinned field.
+     * A writer folding the builder's identity into the external attributes,
+     * the internal attributes, version-made-by, the DOS date/time words or the
+     * archive comment at the end of the file passed all eight, and passed CI's
+     * double build too, because two builds on one runner share an identity.
+     *
+     * A golden digest has no such blind spot: it is the whole artifact. Any
+     * byte that changes anywhere turns this red, including bytes in fields
+     * nobody has thought of yet, which is the only kind that matters.
+     *
+     * It is deliberately BRITTLE. An intentional change to the archive format
+     * must edit this constant, and that edit is the review — the same argument
+     * as every other reviewed constant in this repo. The cases above stay
+     * because when this one fails they say WHY.
+     */
+    expect(digestOf(build(FILES))).toBe(
+      '95e9c6136ebf484cda5587b61badd9900bde861bad29f3e90b3269bcc8cd689f',
+    );
+  });
+
+  it('pins the VALUE of every fixed header field, not just its length', () => {
+    // Diagnosability for the golden digest above: when it moves, this says
+    // which field moved. The values are the packer's own constants.
+    const entries = readArchive(packBytes(build(FILES)));
+    expect(entries).toHaveLength(FILES.length);
+    for (const e of entries) {
+      expect(e).toMatchObject({
+        // 0x0800 = general-purpose bit 11, "the filename is UTF-8". Names are
+        // written as UTF-8, so with this clear an extractor is entitled to read
+        // an accented name as CP437 and mangle it.
+        localFlags: 0x0800,
+        centralFlags: 0x0800,
+        // Host 3 (Unix) in the high byte. It said 0 (MS-DOS/FAT), under which
+        // the external attributes below mean DOS attribute flags rather than a
+        // Unix mode — so the fixed 0644 was a field extractors could ignore.
+        versionMadeBy: (3 << 8) | 20,
+        internalAttrs: 0,
+        externalAttrs: (0o100644 << 16) >>> 0,
+        // 1980-01-01 00:00, the earliest MS-DOS can express: obviously a
+        // constant rather than a plausible build time. Asserted in BOTH
+        // records, because a clock reaching only one of them would still leave
+        // the mtime perturbation case green.
+        localTime: 0,
+        localDate: 0x21,
+        centralTime: 0,
+        centralDate: 0x21,
+      });
+    }
+  });
+
+  it('ends with NO archive comment, the one field that is not per-entry', () => {
+    // The end-of-central-directory record has its own comment, outside every
+    // per-entry check above — room for a hostname that no entry-level
+    // assertion would ever see.
+    const zip = packBytes(build(FILES));
+    let eocd = -1;
+    for (let i = zip.length - 22; i >= 0; i -= 1) {
+      if (zip.readUInt32LE(i) === SIG_EOCD) {
+        eocd = i;
+        break;
+      }
+    }
+    expect(eocd).toBeGreaterThanOrEqual(0);
+    expect(zip.readUInt16LE(eocd + 20)).toBe(0);
+    // And the record really is last: a non-empty comment would sit after it.
+    expect(eocd + 22).toBe(zip.length);
   });
 
   it('changes when the CONTENT changes, so the digest means something', () => {

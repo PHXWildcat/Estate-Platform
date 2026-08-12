@@ -75,7 +75,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32 } from 'node:zlib';
 
 /**
@@ -93,6 +93,26 @@ const FIXED_EXTERNAL_ATTRS = (0o100644 << 16) >>> 0;
 
 /** ZIP compression method 0. Method 8 is deflate, and is never used here. */
 const STORED = 0;
+
+/**
+ * General-purpose bit 11: "the filename is UTF-8".
+ *
+ * Names are written with `Buffer.from(name, 'utf8')`, and with this flag clear
+ * the spec says an extractor should read them as CP437 — so an accented
+ * filename would extract under a mangled name. Every name in `dist` is ASCII
+ * today, where the two encodings agree, which is exactly why this was easy to
+ * miss and cheap to fix.
+ */
+const UTF8_NAMES = 0x0800;
+
+/**
+ * version-made-by: host 3 (Unix) in the high byte, spec 2.0 in the low.
+ *
+ * It said 0 (MS-DOS/FAT), which contradicts putting a Unix mode in the external
+ * attributes below — under FAT those bytes mean DOS attribute flags, so the
+ * fixed 0644 was a field extractors were entitled to read as something else.
+ */
+const VERSION_MADE_BY = (3 << 8) | 20;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -139,7 +159,7 @@ export async function packDirectory(dir) {
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4); // version needed
-    local.writeUInt16LE(0, 6); // no flags — notably no data descriptor
+    local.writeUInt16LE(UTF8_NAMES, 6); // no data descriptor; names are UTF-8
     local.writeUInt16LE(method, 8);
     local.writeUInt16LE(DOS_EPOCH_TIME, 10);
     local.writeUInt16LE(DOS_EPOCH_DATE, 12);
@@ -152,9 +172,9 @@ export async function packDirectory(dir) {
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4); // version made by
+    central.writeUInt16LE(VERSION_MADE_BY, 4);
     central.writeUInt16LE(20, 6); // version needed
-    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(UTF8_NAMES, 8);
     central.writeUInt16LE(method, 10);
     central.writeUInt16LE(DOS_EPOCH_TIME, 12);
     central.writeUInt16LE(DOS_EPOCH_DATE, 14);
@@ -187,7 +207,7 @@ export async function packDirectory(dir) {
   return { zip: Buffer.concat([...locals, centralBytes, end]), entries: names.length };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dir = process.env.PACK_DIR ?? join(root, 'dist');
   const out = process.env.PACK_OUT ?? join(root, 'vault-extension.zip');
   await stat(dir); // fail loudly if there is nothing built to pack

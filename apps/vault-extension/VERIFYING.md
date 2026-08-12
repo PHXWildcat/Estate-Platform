@@ -1,7 +1,7 @@
 # Verifying the Estate Vault extension
 
 This extension holds the keys to a zero-knowledge vault. Nothing in its design
-protects you from a malicious *build* of it: it is a signed artifact,
+protects you from a malicious _build_ of it: it is a signed artifact,
 auto-updated through a browser vendor's store, with no CSP in the path and no
 reviewer between the update and your machine. A compromised update that keeps
 the same permissions can exfiltrate everything you unlock, and **the platform
@@ -17,11 +17,11 @@ repository, no account here, nothing to ask us for.
 
 ## What you can establish, and what you cannot
 
-| You can establish | You cannot establish |
-| --- | --- |
-| The published archive was built by this repository's `Extension` workflow, from a named commit | That the source at that commit is safe — reproducibility is about *provenance*, not *intent* |
-| The archive is exactly what that source produces, byte for byte | That the copy your browser is running is that archive (see [Against a store install](#against-a-store-install)) |
-| Which permissions and which single origin the package was built for | That a future update will still be any of these |
+| You can establish                                                                              | You cannot establish                                                                                            |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| The published archive was built by this repository's `Extension` workflow, from a named commit | That the source at that commit is safe — reproducibility is about _provenance_, not _intent_                    |
+| The archive is exactly what that source produces, byte for byte                                | That the copy your browser is running is that archive (see [Against a store install](#against-a-store-install)) |
+| Which permissions and which single origin the package was built for                            | That a future update will still be any of these                                                                 |
 
 The first two together are the whole claim: **what shipped is what a reviewer
 can read.** Read the source, then prove the artifact came from it.
@@ -32,13 +32,14 @@ can read.** Read the source, then prove the artifact came from it.
 
 - `git`, `unzip`, and a SHA-256 tool (`sha256sum` on Linux, `shasum -a 256` on macOS)
 - [Node.js](https://nodejs.org) 22 or newer, and `pnpm` via `corepack enable pnpm`
+- [`gh`](https://cli.github.com) for step 2. You need _a_ GitHub account to call
+  the API; you do not need any permission on this repository.
 
 You do **not** need to match our Node version, our operating system, or our CPU
-architecture. Nothing in the archive is compressed, precisely so that none of
-those can reach the digest — see [Why nothing is
-compressed](#why-nothing-is-compressed).
-- [`gh`](https://cli.github.com) for step 2. You need *a* GitHub account to call
-  the API; you do not need any permission on this repository.
+architecture — measured, not assumed: a runner on Node v22.23.1 (Linux x86-64,
+official build) and a laptop on v22.23.2 (macOS arm64, Homebrew build) produce
+the same digest. Nothing in the archive is compressed, precisely so that none of
+those can reach it — see [Why nothing is compressed](#why-nothing-is-compressed).
 
 ---
 
@@ -51,6 +52,7 @@ the most recent one without picking from a list:
 REPO=PHXWildcat/Estate-Platform
 RUN=$(gh run list --repo "$REPO" --workflow extension.yml --branch main \
         --status success --limit 1 --json databaseId -q '.[0].databaseId')
+[ -n "$RUN" ] || { echo "no successful Extension run on main yet"; exit 1; }
 gh run download "$RUN" --repo "$REPO" --name vault-extension
 cat vault-extension.zip.sha256
 ```
@@ -89,17 +91,31 @@ This asks GitHub's transparency log who built the artifact — not this project:
 ```bash
 gh attestation verify vault-extension.zip \
   --repo PHXWildcat/Estate-Platform \
-  --signer-workflow PHXWildcat/Estate-Platform/.github/workflows/extension.yml
+  --signer-workflow PHXWildcat/Estate-Platform/.github/workflows/extension.yml \
+  --source-ref refs/heads/main \
+  --source-digest <commit from the digest file>
 ```
 
-`--signer-workflow` is the part that carries weight. Without it you learn only
-that *some* workflow in the repository produced the file; with it you learn it
-was the one whose text you can read at
-[`.github/workflows/extension.yml`](../../.github/workflows/extension.yml).
+**All four flags are load-bearing, and each binds a different thing:**
 
-The output names the commit the build ran from. **It should equal the commit in
-your digest file** — if it does not, stop and report it, because one of the two
-is describing a different build.
+| flag                | what it pins                                                    |
+| ------------------- | --------------------------------------------------------------- |
+| `--repo`            | the repository                                                  |
+| `--signer-workflow` | the workflow's **path** — at any ref                            |
+| `--source-ref`      | the branch, so a build dispatched from a side branch is refused |
+| `--source-digest`   | the exact commit                                                |
+
+`--signer-workflow` alone is not enough, and it is worth saying why, because it
+reads as though it were. It is matched against the certificate's subject as an
+anchored **prefix** — the certificate says
+`…/extension.yml@refs/heads/<branch>`, and the flag's value has no place to put
+a ref. So it establishes "a workflow at this path, on some branch", not "the
+workflow text you just read". `--source-ref` is what supplies the missing half.
+
+Do **not** substitute reading the commit off the output: the default output has
+four rows — build repo, build workflow, signer repo, signer workflow — and no
+commit at all. `--source-digest` makes the tool do that comparison, which is the
+only way it actually happens.
 
 To verify offline, or to keep the evidence:
 
@@ -119,6 +135,8 @@ git checkout <commit from the digest file>
 corepack enable pnpm
 pnpm install --frozen-lockfile
 
+rm -rf apps/vault-extension/dist          # the workflow does this too; a
+                                          # leftover file would be packed
 VAULT_ORIGIN='<origin from the digest file>' \
   pnpm build --filter=@estate/vault-extension --force
 node apps/vault-extension/scripts/pack-extension.mjs
@@ -159,14 +177,18 @@ diff published.txt mine.txt
 ```
 
 `unzip -v` prints each entry's CRC and size, so a difference here names the
-files that actually differ.
+files whose CONTENT differs.
+
+If that comes back identical while the digests still differ, the difference is
+in the archive's own header fields rather than in any file — which is not
+something you did, and is worth reporting as-is.
 
 ### Why nothing is compressed
 
 Every entry is **stored**, not deflated, and the archive is roughly three times
 the size it could be. That is the deliberate cost of the guarantee above.
 
-Deflate output depends on the zlib that Node was *built against*, not merely on
+Deflate output depends on the zlib that Node was _built against_, not merely on
 Node's version: a Homebrew Node links the system zlib, while an official build
 vendors Chromium's. Measured — the same commit and the same `node --version`
 produced 118,147 bytes on a CI runner and 118,875 on a laptop, with all 42
@@ -230,7 +252,7 @@ digest.** Stores repackage: Chrome converts the upload into a CRX3 with its own
 signature and adds `_metadata/verified_contents.json`. The archive is not the
 thing on your disk.
 
-What you can still do is compare the *files*. Find the installed directory
+What you can still do is compare the _files_. Find the installed directory
 (`chrome://version` gives your profile path; extensions live under
 `Extensions/<id>/<version>/`) and diff it against your extracted rebuild:
 

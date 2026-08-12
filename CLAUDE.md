@@ -4099,7 +4099,9 @@ deviating from them, stop and propose the change with rationale — do not silen
   of the compiled bytes plus four constants — no zlib, no Node, no platform —
   and the factor that could never be tested from inside one Node became an
   assertion over the local AND central headers. Both Node builds now produce
-  `bc8b2467…`, 333,789 bytes, `unzip -t` clean. The cost is ~3x size on a 118 KB
+  `bc8b2467…`, 333,789 bytes, `unzip -t` clean (the digest later moved to
+  `807eb87c…` when the review round fixed the UTF-8 name flag and
+  version-made-by; the property is what matters, not the constant). The cost is ~3x size on a 118 KB
   artifact, invisible to a store that repackages into CRX3 anyway, and worth
   nothing against being checkable by a stranger. The general rule: when a
   reproducibility input cannot be pinned from inside the artifact, REMOVE it
@@ -4135,7 +4137,7 @@ deviating from them, stop and propose the change with rationale — do not silen
   since raw file content can contain `PK\x03\x04` and be counted as an entry that
   does not exist. Mutation-tested with the agent's exact payload plus the
   local-only and comment variants; the packer's own output is unchanged
-  (`bc8b2467…`), so this is purely the observer getting better.
+  (`bc8b2467…` at that point), so this is purely the observer getting better.
 - 2026-08-11 — I COMMITTED A REVIEW AGENT'S MUTATION AND PUSHED IT, which is a
   process defect with a general lesson: BACKGROUND AGENTS AND `git add -A` DO NOT
   MIX. The adversarial review was running against this same working tree with
@@ -4154,3 +4156,71 @@ deviating from them, stop and propose the change with rationale — do not silen
   `isolation: 'worktree'` so they physically cannot reach the tree being edited.
   The last is the real fix — the other two are discipline, and discipline is what
   failed here.
+- 2026-08-11 — THE PR4b REVIEW'S BEST FINDING WAS ABOUT WHAT A FENCE DOES NOT
+  LOOK AT, and three independent lenses reached it separately. `pack.spec.ts`
+  varied three inputs (mtime, mode, content) and asserted the digest held, then
+  asserted that certain LENGTHS and METHODS were zero — and never asserted the
+  VALUE of a single pinned field. So the builder's identity could still reach
+  every archive through the external attributes, the internal attributes,
+  version-made-by, the DOS date/time words, or the archive comment at the END of
+  the file, which is not per-entry and which no entry-level assertion could ever
+  see. CI could not help: two builds in one job share a uid and a hostname, so
+  they agree on the wrong answer twice. THE FIX IS A GOLDEN DIGEST — a fixed
+  fixture tree and one exact expected sha256 — because it is the whole artifact
+  rather than a list of fields somebody thought of, so a byte in a field nobody
+  has thought of YET turns it red, which is the only kind that matters. It is
+  deliberately brittle: changing the format must edit the constant, and that
+  edit is the review. The per-field value assertions stay beside it so that when
+  it fails it says which field moved. Mutation-tested with uid in the external
+  attributes, uid in the internal attributes, the clock in the DOS time word,
+  and the hostname in the EOCD comment — all four now red, and the third proves
+  the point, because the mtime-perturbation case could never see a clock (an
+  unchanged file mtime is not an unchanged clock).
+- 2026-08-11 — Three real defects in the packer, all found by the same review and
+  all latent rather than active. (1) Names are written as UTF-8 while general
+  purpose BIT 11 was clear, which per APPNOTE declares them CP437 — every name
+  in `dist` is ASCII, where the two agree, which is exactly why it was easy to
+  miss. (2) `version-made-by` said host 0 (MS-DOS/FAT) while the external
+  attributes carry a Unix mode; under FAT those bytes mean DOS attribute flags,
+  so the carefully fixed 0644 was a field an extractor was entitled to read as
+  something else. (3) The main-module guard compared `import.meta.url` against a
+  RAW `process.argv[1]`, so from any path containing a space — or on Windows,
+  always — the packer exited 0 and wrote nothing at all, silently, while
+  VERIFYING.md promised OS independence. Fixed with `pathToFileURL`, and
+  verified by running the packer from `/tmp/has space/probe`, which now produces
+  the archive instead of nothing. The first two move the digest, which is the
+  right time for it to move: before anything is published.
+- 2026-08-11 — THE SIGNING CAPABILITY MOVED OUT OF THE JOB THAT RUNS THE CODE.
+  `permissions` is static per job, so a single job held `id-token: write` and
+  `attestations: write` on every event — including `pull_request` runs that
+  never use them — in the same job that executes the branch's own build scripts.
+  Splitting is the only way to scope it: `package` builds with `contents: read`
+  and nothing else, `attest` runs no repository code and re-derives the digest
+  before signing rather than trusting what `package` reported. It is also gated
+  on `github.ref == 'refs/heads/main'` and not merely on "not a pull request",
+  because `workflow_dispatch` accepts any ref, so a side-branch build could
+  otherwise mint an attestation that a verifier cannot distinguish from a main
+  one. AND THE VERIFICATION COMMAND WAS WEAKER THAN ITS OWN PROSE:
+  `--signer-workflow` is matched as an anchored PREFIX against a certificate
+  subject that ends `@refs/heads/<branch>`, so it pins repo and path at ANY ref
+  — while VERIFYING.md said it proved "the one whose text you can read". It now
+  passes `--source-ref` and `--source-digest` too, with a table saying what each
+  flag binds. The adjacent sentence was worse: "the output names the commit the
+  build ran from" is simply FALSE — the default output is four rows and no
+  commit — so the doc was instructing a comparison the tool does not offer.
+- 2026-08-11 — Smaller PR4b review fixes, each the same shape as something this
+  log already records. `turbo-env.spec.ts` hardcoded the package NAME while
+  turbo keys its per-package task on it, so a rename would silently fall back to
+  the base `build` task — no `VAULT_ORIGIN`, wrong artifact, fence green because
+  it would still be reading the orphaned key; it derives the name from
+  `package.json` now, and a rename turns it red. The digest-comparison step took
+  its exit status from `cut`, so two unreadable archives yielded two empty
+  strings that compared EQUAL and reported success — `set -euo pipefail` plus a
+  64-character length check on every digest. VERIFYING.md's rebuild omitted the
+  `rm -rf dist` the workflow itself performs, so a second verification in the
+  same clone could produce a mismatch the document tells the reader to escalate;
+  its triage recipe claimed `unzip -v` "names the files that actually differ"
+  when it shows content only, so it now says what an identical listing with
+  differing digests means; and step 1's snippet returned an empty run id with no
+  explanation, which is the state the repository is in until this very workflow
+  first runs on main.

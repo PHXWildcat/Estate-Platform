@@ -6,24 +6,39 @@
 # is the thing being signed. `images.yml` is about container images, and every
 # step after its Build is docker-shaped.
 #
-# WHAT THE TWO BUILDS PROVE, AND WHAT THEY DO NOT. Building twice on ONE runner
-# shows the pipeline is deterministic given one toolchain: no timestamps, no
-# walk order, no umask, no state carried between runs. It does NOT show
-# cross-machine reproducibility — which is exactly what a third party's own
-# rebuild tests, and why `apps/vault-extension/VERIFYING.md` asks them to do it
-# rather than to trust this job. Two builds here plus one build there is the
-# whole claim; neither half is sufficient alone.
+# THE SIGNING CAPABILITY IS IN A SEPARATE JOB FROM THE CODE. `package` builds
+# the branch's own source — arbitrary code, by construction, since a build
+# script is code — and holds `contents: read` and nothing else. `attest` holds
+# `id-token: write` + `attestations: write`, runs no repository code, and only
+# downloads the artifact and re-derives its digest before signing. Job-level
+# permissions are static, so a single job would hold the signing capability on
+# every event including `pull_request` runs that never use it; splitting is the
+# only way to actually scope it. `attest` re-computes the digest rather than
+# trusting the one `package` reported, because otherwise it would be signing
+# whatever landed in the artifact store.
+#
+# WHAT THE CHECKS PROVE, AND WHAT THEY DO NOT. Two builds in one job vary the
+# clock and any state carried between them — and NOT the walk order, the umask,
+# the uid or the hostname, which are properties of the runner and identical in
+# both. That gap is not theoretical: a review injected a uid/gid field into the
+# archive and the double build passed, twice the same wrong answer. So a third
+# pack runs under a DIFFERENT identity in a container. What none of it shows is
+# cross-machine reproducibility, which is what a third party's own rebuild
+# tests, and why `apps/vault-extension/VERIFYING.md` asks them to do it rather
+# than to trust this job.
 #
 # NODE IS NOT PINNED TO A PATCH, AND NO LONGER NEEDS TO BE. `setup-node` with
-# `22` resolves to the newest 22.x, which drifts. That mattered while the
-# archive was deflate-compressed, because zlib's output depends on how Node was
-# BUILT rather than on its version — Homebrew links the system zlib, official
-# builds vendor Chromium's — which this job's first run measured as a 728-byte
-# difference over 40 of 42 entries whose contents were byte-identical. The
-# packer now STORES every entry, so the digest is a function of the compiled
-# bytes and four constants: no zlib, no Node, no platform. The version is still
-# recorded with every digest, as provenance rather than as something a verifier
-# has to match.
+# `22` resolves to the newest 22.x, and it does drift — measured, between two
+# runs of this workflow hours apart (v22.23.2 then v22.23.1). That mattered
+# while the archive was deflate-compressed, because zlib's output depends on how
+# Node was BUILT rather than on its version, so the published digest would have
+# moved between two runs of the SAME commit while both double-build checks went
+# green. The packer now STORES every entry, so the digest is a function of the
+# compiled bytes and a handful of constants: no zlib, no Node, no platform.
+# Measured across that very drift — the runner and a laptop on different Node
+# patches, distributions, operating systems and architectures agree exactly. The
+# version is still recorded with each digest, as provenance rather than as
+# something a verifier has to match.
 name: Extension
 
 on:
@@ -53,10 +68,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # The two the attestation needs, scoped to this job rather than the
-      # workflow, so nothing else added here inherits the ability to mint one.
-      id-token: write
-      attestations: write
+    outputs:
+      sha256: ${{ steps.digest.outputs.sha256 }}
     env:
       # The origin is baked into the manifest AND `origin.js` at build time, so
       # a package is only meaningful for one deployment. No production origin
@@ -102,11 +115,37 @@ jobs:
         env:
           PACK_OUT: ${{ runner.temp }}/second.zip
 
-      - name: The two builds must be byte-identical
+      # THE CHECK THE DOUBLE BUILD CANNOT DO. Both builds above run as the same
+      # user on the same host, so any byte the packer derived from the BUILDER
+      # rather than from the files would be identical in both and agree. A
+      # review proved that exactly: a uid/gid field was added to the archive and
+      # this job stayed green. Packing once more under a different uid, gid and
+      # hostname is what closes it. The digest comes off stdout because the
+      # container cannot write into the runner's workspace as a foreign user.
+      - name: Pack under a DIFFERENT identity
+        id: identity
+        run: |
+          set -euo pipefail
+          third=$(docker run --rm --user 4321:4321 --hostname elsewhere \
+            -v "$PWD:/w" -w /w -e PACK_OUT=/tmp/third.zip node:22 \
+            node apps/vault-extension/scripts/pack-extension.mjs | head -1 | cut -d' ' -f1)
+          if [ ${#third} -ne 64 ]; then
+            echo "::error::the foreign-identity pack produced no digest" && exit 1
+          fi
+          echo "sha256=${third}" >> "$GITHUB_OUTPUT"
+
+      - name: The builds must agree, with each other and across identities
         id: digest
         run: |
+          set -euo pipefail
           first=$(sha256sum "${RUNNER_TEMP}/first.zip" | cut -d' ' -f1)
           second=$(sha256sum "${RUNNER_TEMP}/second.zip" | cut -d' ' -f1)
+          third='${{ steps.identity.outputs.sha256 }}'
+          # Anti-vacuity: without this, two unreadable archives yield two empty
+          # strings, which compare equal and report success.
+          for d in "$first" "$second" "$third"; do
+            if [ ${#d} -ne 64 ]; then echo "::error::missing digest: '${d}'" && exit 1; fi
+          done
           {
             echo "### Extension package"
             echo
@@ -114,13 +153,16 @@ jobs:
             echo '| --- | --- |'
             echo "| build 1 | \`${first}\` |"
             echo "| build 2 | \`${second}\` |"
+            echo "| foreign identity | \`${third}\` |"
             echo "| origin | \`${VAULT_ORIGIN}\` |"
             echo "| node | \`$(node --version)\` |"
             echo "| size | $(stat -c%s "${RUNNER_TEMP}/first.zip") bytes |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$first" != "$second" ]; then
-            echo "::error::two builds of ${GITHUB_SHA} produced different archives — ${first} then ${second}"
-            exit 1
+            echo "::error::two builds of ${GITHUB_SHA} differ — ${first} then ${second}" && exit 1
+          fi
+          if [ "$first" != "$third" ]; then
+            echo "::error::the archive depends on who built it — ${first} as the runner, ${third} as uid 4321" && exit 1
           fi
           echo "sha256=${first}" >> "$GITHUB_OUTPUT"
           cp "${RUNNER_TEMP}/first.zip" "${RUNNER_TEMP}/vault-extension.zip"
@@ -130,6 +172,7 @@ jobs:
       # conditions from a workflow file that has moved on since.
       - name: Record the digest and its inputs beside the archive
         run: |
+          set -euo pipefail
           {
             echo "${{ steps.digest.outputs.sha256 }}  vault-extension.zip"
             echo "# commit  ${GITHUB_SHA}"
@@ -145,13 +188,39 @@ jobs:
             ${{ runner.temp }}/vault-extension.zip.sha256
           if-no-files-found: error
 
-      # SLSA build provenance, retrievable unauthenticated for a public repo, so
-      # a third party runs `gh attestation verify` with no relationship to this
-      # project. NOT on pull_request: a signed statement that some unmerged
-      # branch built this artifact is a statement nobody should act on, and
-      # `pull_request` runs cannot hold `id-token: write` from a fork anyway.
-      - name: Attest build provenance
-        if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v2
+  # SLSA build provenance, retrievable unauthenticated for a public repo, so a
+  # third party runs `gh attestation verify` with no relationship to this
+  # project. A separate job so the signing capability is never held while
+  # repository code is running, and gated on `main` rather than merely on "not a
+  # pull request" — `workflow_dispatch` accepts any ref, and an attestation
+  # minted from a side branch is indistinguishable from a `main` one unless the
+  # verifier passes `--source-ref`, which VERIFYING.md now tells them to do and
+  # which this makes true in the first place.
+  attest:
+    needs: package
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          subject-path: ${{ runner.temp }}/vault-extension.zip
+          name: vault-extension
+          path: ${{ runner.temp }}/art
+
+      # Re-derived, not trusted: this job signs the bytes it can see, and the
+      # only thing tying them to the build is this comparison.
+      - name: The artifact must be the one that was built
+        run: |
+          set -euo pipefail
+          here=$(sha256sum "${RUNNER_TEMP}/art/vault-extension.zip" | cut -d' ' -f1)
+          if [ "$here" != '${{ needs.package.outputs.sha256 }}' ]; then
+            echo "::error::artifact digest ${here} is not the built ${{ needs.package.outputs.sha256 }}" && exit 1
+          fi
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ runner.temp }}/art/vault-extension.zip
