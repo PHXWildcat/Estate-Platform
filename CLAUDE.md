@@ -4794,3 +4794,124 @@ deviating from them, stop and propose the change with rationale — do not silen
   refuses placeholder-`legalReview` templates under `NODE_ENV=production`, so a
   production environment has NO ACTIVE TEMPLATES and generation returns
   `template_not_found` until that is resolved.
+- 2026-08-12 — M17 PR1, THE ABUSE BOUNDS, and the measurement that shaped them.
+  The obvious implementation — add `login.failed`/`login.succeeded` to M16's
+  `SECOND_FACTOR_FAILURES`/`SUCCESSES` — DESTROYS the step-up cap, because
+  `failedAttempts` counts failures SINCE THE LAST SUCCESS and the watermark is a
+  single shared subquery, so a success of any kind in the set clears the window
+  for every kind in it. Measured against real Postgres before a line was
+  written: four `stepup.denied` rows plus one `login.succeeded` row reads as
+  FOUR denials under the shipped sets and ZERO with login folded in — a plain
+  password login, proving no second factor at all, resetting the second-factor
+  cap and handing docs/03 §6j's stated residual (an attacker who holds the
+  password can walk the account total to its ceiling) an unlimited reset. So the
+  kind sets are PARAMETERS to the repo predicate now rather than imports, bounds
+  are declared as data in `rate-bounds.ts`, and `test/rate-bounds.spec.ts`
+  asserts they are PAIRWISE DISJOINT. A shared import is what made one bound's
+  success another bound's amnesty.
+- 2026-08-12 — A 429 ON LOGIN MANUFACTURES THE ORACLE IT WAS ADDED TO CLOSE, and
+  this is the single most important line in M17 PR1. Past the threshold a real
+  address would answer 429 while an address with no account answers 401 forever
+  — nothing was ever counted for it, since `recordLoginFailure(null, …)` writes a
+  NULL user — which is a perfectly reliable, timing-independent account-existence
+  oracle created BY the control, defeating the `dummyVerify` equalization
+  `password.ts` calls mandatory. Login's rate refusal is therefore the SAME 401
+  `invalid_credentials` a wrong password gets, and the bound's visibility is the
+  audit trail rather than the status code. M16's `too_many_attempts` stays
+  correct on `stepup`/`totp/verify`, which already require a resolved
+  authenticated caller. REGISTER answers 429 and that is safe for the mirror
+  reason: its bound is keyed on the submitted address alone and counted whether
+  or not an account exists, so the refusal depends on nothing the caller does not
+  already know. Rejected as too clever: making the address half 429 and the
+  account half 401, which is non-leaking only while the address cap fires first —
+  an invariant nobody would think to preserve through a later edit.
+- 2026-08-12 — ORDERING IS THE CONTROL, in both directions, and neither
+  placement is the obvious one. The ADDRESS bound is checked BEFORE the user
+  lookup, which is safe because its answer is existence-independent and is the
+  only thing standing between an unauthenticated caller and 64 MiB of Argon2id.
+  The ACCOUNT bound is checked AFTER the password verification, which looks
+  wasteful and is the only correct placement: it can only be evaluated once the
+  user is resolved, so checking it earlier would let an over-cap account answer
+  fast while an unknown address still paid a full hash — the account-existence
+  timing channel this route burns a dummy verification to close, re-opened by
+  the control protecting it. Both orderings are pinned by source-level
+  assertions, because both produce a working rate limiter and only one closes
+  the channel; a runtime test cannot tell them apart.
+- 2026-08-12 — THE BLIND INDEX DOES NOT GO IN `auth_events`, so the address-keyed
+  bound is PER PROCESS and says so. The account-keyed half is structurally blind
+  to most of its surface (a NULL user on every unresolved identifier; register's
+  duplicate path writes no row in either direction), and the selector that would
+  fix that is the email blind index. Putting it in that table would permanently
+  and unshreddably record a correlatable identifier for addresses belonging to NO
+  ACCOUNT — people who never registered, typed at a login box by somebody else,
+  with no erasure path — because the table is append-only and carries no
+  `dek_id`. It would also invert M9's "no blind index, lookup by user id only",
+  and its index is a plain `CREATE INDEX` inside the migrator's BEGIN/COMMIT,
+  which `005` already records as taking a SHARE lock on the auth write path.
+  Consequences accepted and written in docs/03 §6k rather than implied: the
+  in-memory half survives no restart, is not shared across replicas, and is
+  capacity-bounded — so a caller can evict their own counter by spraying.
+  Eviction fails OPEN deliberately, because failing closed would let whoever
+  fills the map deny logins to every user in the product.
+- 2026-08-12 — M16'S TWO-SCOPE ESCAPE DOES NOT PORT TO LOGIN, and the
+  replacement is shown rather than asserted. The per-session scope is what
+  stopped the step-up cap being a renewable owner-lockout; login has no
+  credential at the point of failure, so no restructuring invents one and anyone
+  who knows an address can hold that account at its ceiling. What bounds the
+  harm is that the bound touches the LOGIN ROUTE ONLY —
+  `findLiveByAccessHash`/`findLiveByRefreshHash` consult no counter, so an owner
+  already signed in stays signed in and reaches every route in the product. That
+  is not M16's situation, where the refusal blocked the one action that could
+  clear the window and simultaneously blocked vault open, generation, export,
+  beneficiary changes, deletion and §5.1's liveness proof. `login-bound.int.spec.ts`
+  drives an attacker to the ceiling and asserts the owner's access AND refresh
+  tokens still resolve. Twenty per fifteen minutes is chosen so no legitimate
+  user meets it, which makes reaching it a burst signal rather than a support
+  ticket.
+- 2026-08-12 — AND MY OWN FORGIVENESS TEST WAS NAMED FOR A BOUNDARY IT NEVER
+  REACHED, caught by mutation rather than review. "A successful login forgives
+  the address" ran to one short of the cap, succeeded, then made ONE further
+  attempt — which stays under the cap whether or not the success cleared
+  anything, so deleting `loginAddresses.clear` left it green. It runs a second
+  full round of failures now, where the absence of forgiveness puts the count at
+  the cap and refuses before the lookup. The M13 rule restated: a test named for
+  a property must exercise the boundary that property decides. Eleven other
+  mutations were red first time, and the harness itself verifies the bytes
+  changed before drawing any conclusion.
+- 2026-08-12 — M17 PR1 DRIVEN LIVE, and the address bound is visible in the
+  TIMINGS rather than inferred: ten wrong passwords at ~110ms each (one Argon2id
+  verification apiece), then the eleventh at 27ms — refused before any work —
+  and the correct password refused straight after with a byte-identical
+  `401 {"error":"invalid_credentials"}`. Same shape against an address with NO
+  ACCOUNT, which is the half the ledger structurally cannot see. The account
+  ceiling refused a correct password at twenty failures since the last success,
+  wrote `login.rate_limited | decision=account_rate`, left the count it bounds
+  unmoved, and — the property that replaces M16's per-session escape — the
+  owner's pre-existing access token answered 200 at `GET /v1/auth/session` and
+  their refresh token answered 200 at `POST /v1/auth/refresh`. Register allowed
+  twenty and answered 429 on the twenty-first with a null-actor ledger row.
+- 2026-08-12 — THE DEPLOY-ORDER HAZARD WAS OBSERVED AT LAST, upgrading the
+  2026-08-10 entry that recorded it as an absence read out of `ingestor.ts`
+  rather than seen. With identity ahead of audit, the consumer logged
+  `audit_event_rejected reason=schema_violation` once per event with a rising
+  `rejectedTotal`, and `audit_events` held none of them — the new
+  `AUDIT_ACTIONS` members are unknown to an older consumer, which is
+  indistinguishable from malformed input to it. After rebuilding the consumer:
+  zero rejections, and both scopes land with the designed attribution
+  (`actor=null {"scope":"address"}` and
+  `actor=set {"scope":"account","attempts":"20"}`). DEPLOY CONSUMERS FIRST;
+  nothing enforces it, and the loss is silent in the one log whose completeness
+  is the point.
+- 2026-08-12 — AND MY FIRST LIVE PROBE OF THE ACCOUNT CEILING WAS WRONG IN THE
+  MOST PLAUSIBLE WAY. It seeded twenty `login.failed` rows at `now() - 1 minute`
+  — BEHIND the `login.succeeded` row its own sign-in had just written — and the
+  predicate, which counts since the last success, correctly returned zero, so
+  the login succeeded. That reads exactly like a bound that does not work. What
+  separated a broken probe from a broken control was querying the ledger
+  ordering before concluding anything, which is the repo's own rule (before
+  believing an observation that contradicts the source, check what produced it)
+  applied to a measurement rather than to an artifact. Also caught in the same
+  session: `docker compose build … | tail` reported success while the build had
+  failed with `DeadlineExceeded`, because `$?` was `tail`'s — the 2026-08-11
+  lesson repeating, and the reason every gate in this session was re-run with
+  its output redirected and its real exit code echoed.

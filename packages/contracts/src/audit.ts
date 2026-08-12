@@ -183,6 +183,27 @@ export const AUDIT_ACTIONS = [
   // ledger AND from any outage token, per the M9 rule — a control firing must
   // never read as either an ordinary failure or a fault.
   'auth.stepup.rate_limited',
+  // M17, the credential-guessing bounds on the two UNAUTHENTICATED routes that
+  // cost real work. Separate actions rather than one with a `route` enum,
+  // because they are different signals with different responses: login means
+  // somebody is working through an account's passwords, register means somebody
+  // is probing addresses or burning Argon2 on a machine that owes nothing to
+  // anyone yet.
+  //
+  // ATTRIBUTION IS DELIBERATELY UNEVEN, and that is not a leak. `actorId` is the
+  // user when the ACCOUNT-keyed half refused (the account resolved, so the trail
+  // may as well say whose) and null when the ADDRESS-keyed half did (the address
+  // resolved nothing, so there is nobody to name). That distinction already
+  // exists in this trail and has since M1: `auth.login.failed` carries a null
+  // actor for an unknown identifier. What must stay uniform is THE WIRE — login
+  // answers the same 401 either way — and no audit action re-creates through the
+  // trail what the status code withholds, because the attacker on an
+  // unauthenticated route cannot read the trail at all.
+  //
+  // Never the address, never the count of attempts against a named address:
+  // ids and enums only, as everywhere.
+  'auth.login.rate_limited',
+  'auth.register.rate_limited',
   // M16, extension pairing. `paired` names the SESSION the ceremony produced,
   // so an owner reviewing their trail can follow it into the vault events that
   // session later causes. `pairing_failed` carries no actor and no reason —

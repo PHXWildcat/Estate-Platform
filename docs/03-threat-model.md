@@ -33,7 +33,7 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 ## 4. STRIDE highlights per boundary (top findings, not exhaustive)
 
 **TB1/TB2 — Edge & AuthN**
-- *Spoofing:* Credential stuffing and SIM-swap-based recovery abuse. → Passkey-first, SMS never sufficient alone, breach-corpus password checks, per-IP+per-account rate limits, device binding.
+- *Spoofing:* Credential stuffing and SIM-swap-based recovery abuse. → Passkey-first, SMS never sufficient alone, breach-corpus password checks, per-account **and best-effort per-address** rate limits (M17 PR1 — **per-IP is NOT built**: identity has no client IP, neither public edge forwards one, and edge limiting is blocked on the M5 cloud half; see §6k), device binding.
 - *DoS:* Shield Advanced + autoscaling + per-tenant load shedding; settlement endpoints get separate quotas so an attack can't mask fraud attempts in noise.
 - *Info disclosure:* GraphQL introspection off in prod; persisted queries only; error responses genericized.
 
@@ -142,8 +142,13 @@ compromise, Critical) described something that did not exist yet.
   route is the one place step-up-fresh stolen tokens can destroy — never read —
   a vault. Compensating: distinct audit action, step-up freshness, and owner
   notification when the notification port lands.
-- *No rate limiting on failed SRP proofs yet.* Tracked with identity's login
-  rate limiting; handshakes burn on attempt in the meantime.
+- *No rate limiting on failed SRP proofs yet.* PARTIALLY closed twice over and
+  the remainder is named precisely. M16 capped step-up, which bounds both SRP
+  legs transitively because both are step-up gated (§6j); M17 PR1 delivered the
+  login bound this bullet was tracked against (§6k). What is still open is
+  neither of those: a caller holding a GENUINE step-up can burn handshakes, and
+  no bound on the SRP route itself exists. Handshakes burn on attempt in the
+  meantime.
 
 **§5.2 emergency-access controls, now shipped (M6 PR2).**
 - *Waiting period ≥24h, owner-configurable:* enforced by the platform half of a
@@ -314,8 +319,11 @@ interim allowlist has no JIT elevation or peer approval (TB7 milestone), and
 one operator both approves and confirms a case (two actions, one human) —
 bounded by reviewer≠reporter, the liveness re-check, the owner's void, and
 the append-only audit trail; PR2's stage approvals add multi-party depth.
-Rate limiting on intake shares identity's rate-limit follow-up (per-reporter
-noise is bounded by the linked-contact gate and one-open-case index).
+Rate limiting on intake is STILL OPEN, and M17 PR1 did not close it: that change
+bounds identity's own login and register routes (§6k), not settlement's intake,
+which authenticates its callers and would need a per-reporter bound of its own.
+Per-reporter noise remains bounded by the linked-contact gate and the
+one-open-case index.
 
 **Service-credential scoping (added by the M7 security review, 2026-07-28).**
 The internal service credentials introduced for the account lock and the §6a
@@ -844,7 +852,10 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
 - *The attempt cap bounds an online attack on a REAL code only.* An unknown code
   leaves no row to count against, by construction. 160 bits is what makes
   guessing infeasible; the counter is what an alert would watch. General
-  per-caller rate limiting on the redeem route is edge work (§4 TB1).
+  per-caller rate limiting on the redeem route is edge work (§4 TB1) and is
+  UNCHANGED by M17 PR1, whose two bounds key on an account and on a submitted
+  address — a redeem request carries neither, which is the same "nothing to
+  attribute a count to" that makes the row-keyed cap weak here (§6k).
 - *A code lives in the owner's session response and wherever they put it next.*
   It is not stored recoverably server-side, but it is a secret in a browser for
   as long as that page is open, and in whatever channel the owner chooses. That
@@ -876,7 +887,12 @@ once status reaches `settlement`, login is blocked, so it could never heal.
 
 **The ceremony.** Identity mints a 160-bit code at FIRST AUTHENTICATED LOGIN
 (never at registration — an unauthenticated route would be a mail-bomb and
-sender-reputation primitive, and no rate-limiting machinery exists), stores only
+sender-reputation primitive; **M17 PR1 falsified the second half of this
+parenthesis, and the decision stands on the first half alone** — register now
+carries an address-keyed bound (§6k), but it is per-process and best-effort,
+which is not something to hang a mail-bomb defence on, and firing a notification
+kind at an unauthenticated route would still be reachable by anyone holding a
+victim's address), stores only
 its sha256, mails it through notifications' own credential-scoped route, and
 marks the address verified when the user returns it. One uniform `invalid_code`
 for unknown, expired, spent, revoked, attempt-exhausted, someone-else's and
@@ -945,8 +961,11 @@ settlement, profile — cannot fire it.
   address they typed into their own registration.* The re-issue floor is
   per-account, with no per-address, per-IP or global cap, so a single arbitrary
   address can be sent roughly 288 content-free "confirm this address" messages a
-  day. Rate limiting is absent platform-wide; this is the same residual §6c
-  records for registration, now with a bound.
+  day. UNCHANGED by M17 PR1: that change bounds login and register, and this is
+  an AUTHENTICATED route whose only limit remains its own five-minute re-issue
+  floor. "Rate limiting is absent platform-wide" was true when written and is
+  now narrower — the platform has three bounds (step-up, login, register) and
+  this route is behind none of them.
 - *Registration's fixed-shape, fixed-time response is still owed.* M14 closed
   the address-ownership half of §5.3's enumeration residual and did NOT close
   the timing half: `register` still awaits KMS, inserts and Kafka publishes on
@@ -1028,10 +1047,13 @@ cannot mint another handoff, so a leak cannot chain forward.
   browser-side control and cannot defend against a compromised BUILD; the
   supply-chain half is the empty dependency tree and the absence of a bundler,
   not this header.
-- *No rate limiting on handoff minting.* The same standing follow-up as
-  identity's login and the vault's SRP proofs. Interim bound: one unspent
-  handoff per user, enforced by a partial unique index, so pressing the button
-  repeatedly leaves one live credential rather than many.
+- *No rate limiting on handoff minting.* The cross-reference is corrected rather
+  than the residual closed: identity's login bound shipped in M17 PR1 (§6k) and
+  does not reach this route, which is authenticated and step-up gated — so the
+  M16 attempt cap already stands in front of it, and what remains unbounded is a
+  caller who holds a genuine step-up. Interim bound: one unspent handoff per
+  user, enforced by a partial unique index, so pressing the button repeatedly
+  leaves one live credential rather than many.
 
 **The Secret Key on the device, as a residual rather than a control.** PR2
 persists it in IndexedDB by default, with an explicit opt-out. Under XSS on this
@@ -1613,6 +1635,133 @@ older than M16.
   granted only when the user clicks the extension, revoked on navigation, and
   carrying no ability to run code (that is `scripting`, still absent). There is
   no standing view of browsing, and no history.
+
+## 6k. Threat-model delta — M17 PR1, the abuse bounds (2026-08-12)
+
+**Before this change the platform had exactly one rate limit, on the second
+factor, and it was the only one in the product.** `POST /v1/auth/login` accepted
+password guesses at whatever rate a caller could sustain, each costing one
+Argon2id verification; `POST /v1/auth/register` accepted registrations at 64 MiB
+of memory-hard work apiece, paid before it looked to see whether the address
+existed. `recordLoginFailure` wrote a `login.failed` row on every failure and
+**nothing has ever read one**. Four residuals in this document (§6a, §6b, §6g,
+§6i) deferred to "identity's login rate limiting" as a standing follow-up. This
+is that follow-up, for login and register only.
+
+**Two bounds, because one selector cannot see the whole surface.**
+
+| | keyed on | where it lives | what it sees |
+|---|---|---|---|
+| account | `user_id` | `auth_events`, the M16 predicate | guessing against an account that EXISTS |
+| address | email blind index | **in memory, per process** | everything else — unknown addresses, register probes |
+
+The account half is blind to most of what needs bounding, and structurally so:
+`recordLoginFailure(null, …)` writes a NULL user whenever the identifier does not
+resolve, and register's duplicate path returns having written no row in either
+direction. So an attacker spraying one password across many addresses, and every
+register probe, produce nothing a user-keyed predicate can count. The
+address-keyed half is therefore the PRIMARY bound and the account half is the
+durable ceiling behind it.
+
+**The blind index is deliberately NOT added to `auth_events`.** That table is
+append-only (`REVOKE UPDATE, DELETE`) and carries no `dek_id`, so an
+`email_bidx` column there would permanently and unshreddably record a
+correlatable identifier for addresses belonging to NO ACCOUNT — people who never
+registered, typed at a login box by somebody else, with no erasure path. It
+would also invert M9's "no blind index, lookup by user id only" decision for the
+delivery store, and the index it needs is a plain `CREATE INDEX` inside the
+migrator's BEGIN/COMMIT, which `005_auth_events_index.sql` already records as
+taking a SHARE lock that blocks INSERT on the authentication write path.
+
+**LOGIN REFUSES WITH THE SAME 401 A WRONG PASSWORD GETS.** This is the
+load-bearing decision. A 429 on login is an account-existence oracle however the
+counter is keyed, because it is a state a caller reaches only by naming
+something the platform counted: past the threshold a live address would answer
+429 while an address with no account answers 401 forever. That is perfectly
+reliable, timing-independent, and would defeat the `dummyVerify` equalization
+`password.ts` calls mandatory — the control manufacturing the oracle it was
+added to bound. Register does answer 429, and that is safe for the mirror-image
+reason: its bound is keyed on the submitted address alone and counted whether or
+not an account exists, so the refusal depends on nothing the caller does not
+already know.
+
+**Ordering is a control, not arrangement.** The address check runs BEFORE the
+user lookup — safe because its answer is existence-independent, and it is the
+only thing standing between an unauthenticated caller and Argon2id. The account
+check runs AFTER the password verification, which looks wasteful and is the only
+correct placement: checking it earlier would let an over-cap account answer fast
+while an unknown address still paid a full hash, which is the timing oracle this
+route burns a dummy verification to close. Both orderings are pinned by
+`test/rate-bounds.spec.ts`, because both produce a working rate limiter and only
+one closes the channel.
+
+### Residuals, stated rather than implied
+
+- *The account bound has NO per-credential scope, so a sustained attack denies
+  NEW logins for that account.* M16's escape from the renewable-lockout trap was
+  a per-session scope; login has no credential at the point of failure, and no
+  restructuring invents one. Anyone who knows an address can submit wrong
+  passwords for it and hold the account at its ceiling for as long as they keep
+  it up. **What bounds the harm is that the bound touches the login route only:**
+  a session that already exists keeps working, keeps refreshing, and reaches
+  every route in the product, because `findLiveByAccessHash` and
+  `findLiveByRefreshHash` consult no counter. That is not the M16 situation,
+  where the refusal blocked the one action that could clear the window and
+  simultaneously blocked vault open, document generation, export, beneficiary
+  changes, deletion and §5.1's liveness proof. Twenty per fifteen minutes is set
+  so no legitimate user meets it, which makes reaching it a burst signal rather
+  than a support ticket. Proven, not asserted:
+  `test/login-bound.int.spec.ts` drives an attacker to the ceiling and shows the
+  owner's live session and refresh token still resolving.
+- *The address bound is per PROCESS and evadable three ways.* It survives no
+  restart, is not shared between replicas (so the effective limit is N × the cap
+  across N of them), and its map is capacity-bounded, which means a caller can
+  evict their own counter by spraying unrelated addresses until it turns over.
+  Eviction fails OPEN deliberately: failing closed would let whoever fills the map
+  deny logins to every user in the product, which is worse than the spraying it
+  would be trying to stop. The account half is the durable ceiling precisely
+  because this half is evadable.
+- *PER-IP LIMITING IS NOT SHIPPED AND §4 TB1 IS CORRECTED RATHER THAN SATISFIED.*
+  That section has claimed "per-IP+per-account rate limits" as an existing
+  control since the document was written. There is no client IP anywhere in
+  identity — no `X-Forwarded-For` read, no `req.ip`, and `sessions.ip_ct` /
+  `auth_events.ip_ct` are declared and written by nothing — and neither public
+  edge forwards one. Per-IP limiting belongs at the WAF, which is blocked on the
+  M5 cloud half (an AWS org and billing, not an engineering decision). §4 now
+  marks the per-IP half as unbuilt instead of asserting it.
+- *`login.failed` rows remain unattributed on the unknown-address path.* The
+  append-only ledger is evidence about accounts that exist, and is not — and
+  cannot be — the counter for the rest. Pinned as a known property by an int
+  case rather than left to be rediscovered.
+- *Registration's enumeration channel is a TIMING one and a bound does not close
+  it.* The duplicate path returns early having done less work; the fix its own
+  docstring names is a fixed-shape, fixed-time response, which is a separate
+  change. What the bound closes is the cost, not the leak.
+- *The other unauthenticated routes are deliberately unbounded.* `POST
+  /v1/auth/handoff/redeem` and `POST /v1/auth/extension/pairing/redeem` check a
+  guessable secret with no attempt cap by construction — a wrong guess resolves
+  no row, so there is nothing to attribute a count to, which is the shape M14's
+  round-2 review found making a cap decorative. Their bound remains 160 bits of
+  entropy, a short TTL and burn-on-attempt. `POST /v1/auth/refresh` and `POST
+  /v1/auth/logout/refresh` are likewise unbounded; both resolve a 256-bit token
+  or nothing.
+- *The bounds are per-service-instance for the address half and per-account for
+  the ledger half; neither is a global quota.* §4 TB1's "per-tenant load
+  shedding" is unrelated infrastructure work and is not delivered here.
+
+### What M17 PR1 closes that predates it
+
+- *§6a's SRP rate-limiting residual — still only in part, and NOT by this change.*
+  M16 closed the step-up half transitively. Login now has its own bound, which is
+  what §6a's sentence pointed at, but a caller holding a genuine step-up can
+  still burn vault SRP handshakes. That half stays open and is tracked in §6a.
+- *§6i's "no rate limiting on handoff minting" is UNCHANGED.* Minting is
+  step-up gated and therefore already sits behind the M16 cap; the standing
+  follow-up it named was login's, which is now delivered, so its cross-reference
+  is corrected rather than its residual closed.
+- *§6g's redeem-route residual is UNCHANGED and is edge work.* A per-caller
+  bound there needs a caller identity this platform does not have; the 160-bit
+  code is the control.
 
 ## 7. Validation program
 

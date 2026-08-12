@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { HttpException, UnauthorizedException } from '@nestjs/common';
 import type { DekRepository, FieldCrypto } from '@estate/crypto';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import { AuthService } from '../src/auth.service';
@@ -8,12 +8,38 @@ import type { IdentityConfig } from '../src/config';
 import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
+import {
+  LOGIN_ADDRESS_BOUND,
+  LOGIN_BOUND,
+  REGISTER_ADDRESS_BOUND,
+  STEP_UP_BOUND,
+} from '../src/rate-bounds';
 import type { SessionRow, SessionsRepo } from '../src/sessions.repo';
 import { STEPUP_DENIAL_WINDOW_MS, STEPUP_MAX_DENIALS } from '../src/stepup';
 import { generateOpaqueToken, hashToken } from '../src/tokens';
 import type { UsersRepo } from '../src/users.repo';
 
 const NOW = new Date('2026-07-20T12:00:00Z');
+
+/**
+ * The refusal an awaited call threw, TYPED.
+ *
+ * `.catch((e) => e)` yields `any`, and `any` is exactly wrong on these cases:
+ * what they assert is a precise status and body, and an `any` would let a typo
+ * in a property name assert nothing at all while staying green.
+ */
+async function refusalFrom(promise: Promise<unknown>): Promise<HttpException> {
+  let caught: unknown;
+  try {
+    await promise;
+  } catch (err) {
+    caught = err;
+  }
+  if (!(caught instanceof HttpException)) {
+    throw new Error(`expected an HttpException refusal, got: ${String(caught)}`);
+  }
+  return caught;
+}
 
 function makeFakes(): {
   users: { findByEmailBidx: jest.Mock; insert: jest.Mock };
@@ -32,7 +58,7 @@ function makeFakes(): {
     findActiveTotp: jest.Mock;
     markVerified: jest.Mock;
   };
-  authEvents: { insert: jest.Mock; failedFactorAttempts: jest.Mock };
+  authEvents: { insert: jest.Mock; failedAttempts: jest.Mock };
   factors: { assertMayAddFactor: jest.Mock; holdsVerifiedFactor: jest.Mock };
   hasher: { hashPassword: jest.Mock; verifyPassword: jest.Mock; dummyVerify: jest.Mock };
   events: {
@@ -41,6 +67,8 @@ function makeFakes(): {
     loginFailed: jest.Mock;
     stepUpGranted: jest.Mock;
     stepUpRateLimited: jest.Mock;
+    loginRateLimited: jest.Mock;
+    registerRateLimited: jest.Mock;
     sessionRevoked: jest.Mock;
   };
   fieldCrypto: { getOrCreateDek: jest.Mock; encryptField: jest.Mock; decryptField: jest.Mock };
@@ -71,7 +99,7 @@ function makeFakes(): {
       findActiveTotp: jest.fn().mockResolvedValue(null),
       markVerified: jest.fn(),
     },
-    authEvents: { insert: jest.fn(), failedFactorAttempts: jest.fn().mockResolvedValue(0) },
+    authEvents: { insert: jest.fn(), failedAttempts: jest.fn().mockResolvedValue(0) },
     // Stubbed: the gate has its own Postgres-backed spec, and these cases are
     // about the cap and the step-up path rather than enrolment policy.
     factors: {
@@ -89,6 +117,8 @@ function makeFakes(): {
       loginFailed: jest.fn(),
       stepUpGranted: jest.fn(),
       stepUpRateLimited: jest.fn(),
+      loginRateLimited: jest.fn(),
+      registerRateLimited: jest.fn(),
       sessionRevoked: jest.fn(),
     },
     fieldCrypto: {
@@ -297,10 +327,221 @@ describe('AuthService.refresh rotation + reuse detection', () => {
    * before touching the secret, refuses with the right token and status, and
    * does not write the kind it counts.
    */
+  /**
+   * THE LOGIN BOUND (M17). The DECISION layer only — `address-bound.spec.ts`
+   * proves the in-memory primitive and `login-bound.int.spec.ts` proves the
+   * ledger predicate against real Postgres.
+   *
+   * Each case is a way the bound could be present and wrong: refusing with a
+   * distinguishable status turns it into the account-existence oracle it was
+   * added to close, and counting its own refusals turns a cooldown into a
+   * permanent lockout.
+   */
+  describe('the login attempt bound', () => {
+    const knownUser = {
+      id: 'u-1',
+      password_hash: 'argon2-hash',
+      status: 'active',
+      dek_id: 'dek-1',
+    };
+
+    it('refuses on the ACCOUNT ceiling with the SAME 401 a wrong password gets', async () => {
+      // The single most important assertion in the milestone. A 429 here would
+      // be reachable only by naming an address that has an account, which is a
+      // perfectly reliable existence oracle — the control manufacturing the
+      // thing it exists to prevent.
+      const fakes = makeFakes();
+      fakes.users.findByEmailBidx.mockResolvedValue(knownUser);
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      fakes.authEvents.failedAttempts.mockResolvedValue(LOGIN_BOUND.maxPerAccount);
+      const service = makeService(fakes);
+
+      const refused = await refusalFrom(service.login('user@example.com', 'correct-horse'));
+      expect(refused).toBeInstanceOf(UnauthorizedException);
+      expect(refused.getStatus()).toBe(401);
+      expect(refused.getResponse()).toEqual({ error: 'invalid_credentials' });
+      expect(fakes.sessions.create).not.toHaveBeenCalled();
+    });
+
+    it('a refused login is indistinguishable from a wrong password, to the byte', async () => {
+      // Same shape asserted from the other side: whatever an ordinary failure
+      // answers, the rate refusal answers too. Written as a comparison rather
+      // than a literal so it cannot drift if the ordinary token ever changes.
+      const ordinary = makeFakes();
+      ordinary.users.findByEmailBidx.mockResolvedValue(knownUser);
+      const wrongPassword = await refusalFrom(
+        makeService(ordinary).login('user@example.com', 'nope'),
+      );
+
+      const bounded = makeFakes();
+      bounded.users.findByEmailBidx.mockResolvedValue(knownUser);
+      bounded.hasher.verifyPassword.mockResolvedValue(true);
+      bounded.authEvents.failedAttempts.mockResolvedValue(LOGIN_BOUND.maxPerAccount);
+      const refused = await refusalFrom(
+        makeService(bounded).login('user@example.com', 'correct-horse'),
+      );
+
+      expect(refused.getStatus()).toBe(wrongPassword.getStatus());
+      expect(refused.getResponse()).toEqual(wrongPassword.getResponse());
+    });
+
+    it('records the refusal as its OWN kind, never as a login failure', async () => {
+      // The counter must not feed itself: a refusal recorded as `login.failed`
+      // would extend the window that refused it, and a retrying client would
+      // hold its own account down permanently.
+      const fakes = makeFakes();
+      fakes.users.findByEmailBidx.mockResolvedValue(knownUser);
+      fakes.authEvents.failedAttempts.mockResolvedValue(LOGIN_BOUND.maxPerAccount);
+      const service = makeService(fakes);
+
+      await expect(service.login('user@example.com', 'x')).rejects.toBeDefined();
+
+      const kinds = fakes.authEvents.insert.mock.calls.map(
+        (call: [{ kind: string }]) => call[0].kind,
+      );
+      expect(kinds).toEqual([LOGIN_BOUND.refusalKind]);
+      expect(kinds).not.toContain('login.failed');
+      expect(fakes.events.loginFailed).not.toHaveBeenCalled();
+      expect(fakes.events.loginRateLimited).toHaveBeenCalledWith(
+        'u-1',
+        'account',
+        LOGIN_BOUND.maxPerAccount,
+      );
+    });
+
+    it('the ADDRESS half refuses before the user is ever looked up', async () => {
+      // Existence-independent, so the early exit cannot correlate with whether
+      // the account is real — and it is what keeps an unauthenticated caller
+      // away from a 64 MiB Argon2 verification.
+      const fakes = makeFakes();
+      fakes.users.findByEmailBidx.mockResolvedValue(knownUser);
+      const service = makeService(fakes);
+
+      for (let i = 0; i < LOGIN_ADDRESS_BOUND.max; i += 1) {
+        await expect(service.login('user@example.com', 'wrong')).rejects.toBeDefined();
+      }
+      fakes.users.findByEmailBidx.mockClear();
+      fakes.hasher.verifyPassword.mockClear();
+      fakes.hasher.dummyVerify.mockClear();
+
+      const refused = await refusalFrom(service.login('user@example.com', 'wrong'));
+      expect(refused.getResponse()).toEqual({ error: 'invalid_credentials' });
+      expect(fakes.users.findByEmailBidx).not.toHaveBeenCalled();
+      expect(fakes.hasher.verifyPassword).not.toHaveBeenCalled();
+      expect(fakes.hasher.dummyVerify).not.toHaveBeenCalled();
+      expect(fakes.events.loginRateLimited).toHaveBeenLastCalledWith(null, 'address', null);
+    });
+
+    it('bounds an UNKNOWN address too — the half the ledger cannot see', async () => {
+      // `recordLoginFailure(null, …)` writes a NULL user, so the account-keyed
+      // count is structurally blind here. If the address half did not cover it,
+      // spraying one password across many addresses would be unbounded.
+      const fakes = makeFakes();
+      const service = makeService(fakes);
+
+      for (let i = 0; i < LOGIN_ADDRESS_BOUND.max; i += 1) {
+        await expect(service.login('nobody@example.com', 'wrong')).rejects.toBeDefined();
+      }
+      fakes.hasher.dummyVerify.mockClear();
+
+      await expect(service.login('nobody@example.com', 'wrong')).rejects.toBeDefined();
+      expect(fakes.hasher.dummyVerify).not.toHaveBeenCalled();
+    });
+
+    it('a SUCCESSFUL login forgives the address, so a fumble costs nothing later', async () => {
+      // THE COUNT HAS TO CROSS THE CAP FOR THIS TO MEAN ANYTHING. The first
+      // version of this case stopped one short and then made a single further
+      // attempt — which stays under the cap whether or not the success cleared
+      // anything, so it passed with the forgiveness deleted. Caught by mutation,
+      // and it is the M13 lesson exactly: a test named for a property must
+      // exercise the boundary that property decides.
+      const fakes = makeFakes();
+      fakes.users.findByEmailBidx.mockResolvedValue(knownUser);
+      const service = makeService(fakes);
+
+      // One short of the cap…
+      for (let i = 0; i < LOGIN_ADDRESS_BOUND.max - 1; i += 1) {
+        await expect(service.login('user@example.com', 'wrong')).rejects.toBeDefined();
+      }
+      // …then a success, which must reset the count to zero…
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      await expect(service.login('user@example.com', 'right')).resolves.toMatchObject({
+        userId: 'u-1',
+      });
+
+      // …so that another full run of failures is affordable. Without the
+      // forgiveness the count is already at the cap after the first of these,
+      // and the last one is refused before the lookup.
+      fakes.hasher.verifyPassword.mockResolvedValue(false);
+      for (let i = 0; i < LOGIN_ADDRESS_BOUND.max - 1; i += 1) {
+        await expect(service.login('user@example.com', 'wrong')).rejects.toBeDefined();
+      }
+      fakes.users.findByEmailBidx.mockClear();
+      await expect(service.login('user@example.com', 'wrong')).rejects.toBeDefined();
+      expect(fakes.users.findByEmailBidx).toHaveBeenCalled();
+    });
+
+    it('asks for failures within the configured window, with LOGIN’s own kinds', async () => {
+      // A bound reading another bound's kinds is the M17 defect: the watermark
+      // is one shared subquery, so a `login.succeeded` row in the step-up set
+      // would zero the second-factor counter.
+      const fakes = makeFakes();
+      fakes.users.findByEmailBidx.mockResolvedValue(knownUser);
+      const service = makeService(fakes);
+
+      await expect(service.login('user@example.com', 'wrong')).rejects.toBeDefined();
+
+      expect(fakes.authEvents.failedAttempts).toHaveBeenCalledWith(
+        'u-1',
+        new Date(NOW.getTime() - LOGIN_BOUND.windowMs),
+        { failures: LOGIN_BOUND.failures, successes: LOGIN_BOUND.successes },
+      );
+    });
+  });
+
+  describe('the register attempt bound', () => {
+    it('refuses with 429 — safe HERE, because the count says nothing about existence', async () => {
+      // Register's bound is keyed on the submitted address alone and counted
+      // whether or not an account exists, so the refusal depends on nothing the
+      // caller does not already know. Login is the opposite and gets a 401.
+      const fakes = makeFakes();
+      const service = makeService(fakes);
+
+      for (let i = 0; i < REGISTER_ADDRESS_BOUND.max; i += 1) {
+        await service.register('new@example.com', 'a-long-password!');
+      }
+      fakes.hasher.hashPassword.mockClear();
+
+      await expect(service.register('new@example.com', 'a-long-password!')).rejects.toMatchObject({
+        status: 429,
+        response: { error: 'too_many_attempts' },
+      });
+      // …and refused BEFORE the memory-hard hash, which is the point.
+      expect(fakes.hasher.hashPassword).not.toHaveBeenCalled();
+      expect(fakes.events.registerRateLimited).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts attempts, not failures — there is no failure to count', async () => {
+      // Register answers the same 201 for a new address and an existing one,
+      // and that identical answer is the anti-enumeration control. So the bound
+      // is on cost and probing, and a successful registration spends budget.
+      const fakes = makeFakes();
+      const service = makeService(fakes);
+
+      for (let i = 0; i < REGISTER_ADDRESS_BOUND.max; i += 1) {
+        fakes.users.findByEmailBidx.mockResolvedValue(i % 2 === 0 ? null : { id: 'u-1' });
+        await service.register('new@example.com', 'a-long-password!');
+      }
+      await expect(service.register('new@example.com', 'a-long-password!')).rejects.toMatchObject({
+        status: 429,
+      });
+    });
+  });
+
   describe('the step-up attempt cap', () => {
     it('refuses at the cap with 429 too_many_attempts, before reading the TOTP secret', async () => {
       const fakes = makeFakes();
-      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS);
+      fakes.authEvents.failedAttempts.mockResolvedValue(STEPUP_MAX_DENIALS);
       const service = makeService(fakes);
 
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toMatchObject({
@@ -319,18 +560,18 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       // is the fix — a session at its own cap is refused without the account
       // total ever being read, so it cannot grow.
       const fakes = makeFakes();
-      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS);
+      fakes.authEvents.failedAttempts.mockResolvedValue(STEPUP_MAX_DENIALS);
       const service = makeService(fakes);
 
       return expect(service.stepUp('u-1', 's-1', '000000'))
         .rejects.toMatchObject({ status: 429 })
         .then(() => {
-          expect(fakes.authEvents.failedFactorAttempts).toHaveBeenCalledTimes(1);
-          expect(fakes.authEvents.failedFactorAttempts).toHaveBeenCalledWith(
-            'u-1',
-            expect.any(Date),
-            { sessionId: 's-1' },
-          );
+          expect(fakes.authEvents.failedAttempts).toHaveBeenCalledTimes(1);
+          expect(fakes.authEvents.failedAttempts).toHaveBeenCalledWith('u-1', expect.any(Date), {
+            failures: STEP_UP_BOUND.failures,
+            successes: STEP_UP_BOUND.successes,
+            sessionId: 's-1',
+          });
         });
     });
 
@@ -339,7 +580,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       // every refused attempt would extend the window that refused it and a
       // retrying client would lock its own user out permanently.
       const fakes = makeFakes();
-      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS + 3);
+      fakes.authEvents.failedAttempts.mockResolvedValue(STEPUP_MAX_DENIALS + 3);
       const service = makeService(fakes);
 
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toBeDefined();
@@ -360,7 +601,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       // The permissive path must stay unchanged, or the cap has quietly become
       // a different control. One below the cap is the interesting boundary.
       const fakes = makeFakes();
-      fakes.authEvents.failedFactorAttempts.mockResolvedValue(STEPUP_MAX_DENIALS - 1);
+      fakes.authEvents.failedAttempts.mockResolvedValue(STEPUP_MAX_DENIALS - 1);
       const service = makeService(fakes);
 
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toThrow(UnauthorizedException);
@@ -378,10 +619,14 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       const service = makeService(fakes);
       await expect(service.stepUp('u-1', 's-1', '000000')).rejects.toBeDefined();
 
-      expect(fakes.authEvents.failedFactorAttempts).toHaveBeenCalledWith(
+      expect(fakes.authEvents.failedAttempts).toHaveBeenCalledWith(
         'u-1',
         new Date(NOW.getTime() - STEPUP_DENIAL_WINDOW_MS),
-        { sessionId: 's-1' },
+        {
+          failures: STEP_UP_BOUND.failures,
+          successes: STEP_UP_BOUND.successes,
+          sessionId: 's-1',
+        },
       );
     });
   });
@@ -458,8 +703,10 @@ describe('AuthService.register (no account enumeration)', () => {
     // docs/03 §6c's mitigation — "no notification kind fires at registration" —
     // stays literally true. Registration is unauthenticated, so a kind firing
     // there would be a mail-bomb primitive addressable by anyone holding a
-    // victim's address, and this repo has no rate-limiting machinery to bound
-    // it. The ceremony starts at the first authenticated LOGIN instead.
+    // victim's address. (M17 gave register a bound, so the old "no
+    // rate-limiting machinery exists" half of this reasoning is gone; the
+    // decision rests on the first half, since that bound is per-process and
+    // best-effort.) The ceremony starts at the first authenticated LOGIN.
     const fakes = makeFakes();
     fakes.users.insert.mockResolvedValue('inserted');
     await makeService(fakes).register('user@example.com', 'a-long-password!');
