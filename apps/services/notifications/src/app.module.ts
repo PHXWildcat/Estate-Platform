@@ -26,6 +26,7 @@ import {
   PG_POOL_CONFIG,
   RECIPIENTS_CREDENTIAL,
   RECIPIENT_STATUS_CREDENTIAL,
+  RECOVERY_CREDENTIAL,
   SECURITY_CREDENTIAL,
   VERIFICATION_CREDENTIAL,
 } from './di-tokens';
@@ -36,11 +37,13 @@ import {
   InternalController,
   RecipientStatusController,
   RecipientsController,
+  RecoveryController,
   SecurityController,
   VerificationController,
 } from './internal.controller';
 import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
+import { RecoveryCredentialGuard } from './recovery-credential.guard';
 import { SecurityCredentialGuard } from './security-credential.guard';
 import { VerificationCredentialGuard } from './verification-credential.guard';
 import { NotificationsService } from './notifications.service';
@@ -92,6 +95,7 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
     VerificationController,
     RecipientStatusController,
     SecurityController,
+    RecoveryController,
   ],
   providers: [
     { provide: CONFIG, useFactory: (): NotificationsConfig => loadConfig() },
@@ -199,11 +203,23 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: NotificationsConfig): string => config.securityApiToken,
     },
+    {
+      // M17 PR3 #6: mailing a password-reset code. Identity alone, and the most
+      // powerful send surface here — redeeming what it mails needs no session,
+      // so a holder who also reads the mailbox owns the account. Off the
+      // verification credential (that code proves a mailbox and is redeemed by
+      // somebody signed in) and off the security one (whose wire deliberately
+      // carries no variables). Fails closed on '' like the others.
+      provide: RECOVERY_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: NotificationsConfig): string => config.recoveryApiToken,
+    },
     ServiceCredentialGuard,
     RecipientsCredentialGuard,
     VerificationCredentialGuard,
     RecipientStatusCredentialGuard,
     SecurityCredentialGuard,
+    RecoveryCredentialGuard,
     RecipientsRepo,
     SendsRepo,
     NotificationsService,

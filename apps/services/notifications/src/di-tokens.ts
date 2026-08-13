@@ -69,6 +69,20 @@ export const RECIPIENT_STATUS_CREDENTIAL = Symbol('RECIPIENT_STATUS_CREDENTIAL')
  */
 export const SECURITY_CREDENTIAL = Symbol('SECURITY_CREDENTIAL');
 
+/**
+ * The credential for mailing a PASSWORD-RESET code (M17 PR3). Identity alone,
+ * and the most powerful of this callee's four send surfaces.
+ *
+ * Not `VERIFICATION_CREDENTIAL`, despite the identical holder and a
+ * near-identical payload: a verification code proves a mailbox and is redeemed
+ * by somebody already signed in, while a reset code REPLACES the account
+ * password and is redeemed with no session at all. Whoever can cause one to be
+ * mailed and can read that mailbox owns the account. Not `SECURITY_CREDENTIAL`
+ * either — that wire deliberately carries no variables, which is the property
+ * that makes it safe.
+ */
+export const RECOVERY_CREDENTIAL = Symbol('RECOVERY_CREDENTIAL');
+
 /** Injectable clock so send records are testable without real time. */
 export type Clock = () => Date;
 

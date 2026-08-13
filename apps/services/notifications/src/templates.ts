@@ -145,3 +145,31 @@ const SECURITY_BODIES: Record<AccountSecurityKind, string> = {
 export function renderAccountSecurity(kind: AccountSecurityKind): RenderedNotification {
   return { subject: SUBJECT, body: SECURITY_BODIES[kind] };
 }
+
+/**
+ * The password-reset body (M17 PR3) — a SEPARATE function, like
+ * `renderAddressVerification`, because it carries a code and `render`'s
+ * signature must stay unable to accept one.
+ *
+ * It says what the code does AND what it does not do. "Reset your password" on
+ * its own collides with the vault origin's copy, which tells users in plain
+ * words that Estate never receives their vault password and cannot reset it —
+ * so a message that did not say WHICH password would teach exactly the wrong
+ * thing about the one credential the platform genuinely cannot recover.
+ *
+ * It also gives a recipient who did not ask for this something to do, because
+ * on this ceremony an unexpected mail is the signal that somebody is trying to
+ * take the account. No link, per the registry's rule.
+ */
+export function renderPasswordReset(code: string): RenderedNotification {
+  return {
+    subject: SUBJECT,
+    body:
+      `To set a new password for your Estate account, enter this code in the app: ${code}. ` +
+      'It expires shortly and can be used once. ' +
+      'This resets the password you sign in with. It does NOT change your vault password, ' +
+      'and it does not give anyone access to your vault. ' +
+      'If you did not ask for this, you can ignore this message — but somebody may know your ' +
+      'email address, so it is worth signing in and reviewing your devices.',
+  };
+}

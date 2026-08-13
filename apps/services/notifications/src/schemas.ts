@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import {
   ACCOUNT_SECURITY_KINDS,
   ESTATE_NOTIFICATION_KINDS,
+  RECOVERY_KINDS,
+  RESET_CODE_PATTERN,
   NOTIFICATION_CHANNELS,
   VERIFICATION_CODE_PATTERN,
 } from '@estate/notifications-client';
@@ -86,6 +88,26 @@ export const AccountSecuritySchema = z
   })
   .strict();
 export type AccountSecurityInput = z.infer<typeof AccountSecuritySchema>;
+
+/**
+ * The password-reset wire (M17 PR3). One id, one kind from its own closed
+ * one-member list, and one code held to the SHARED pattern — never a local copy
+ * of the alphabet, which is the M14 review's finding about the two ends of the
+ * verification ceremony drifting until the route accepted 64 characters of
+ * readable English and interpolated it into a real message.
+ *
+ * Anchored on its OWN prefix, so this route cannot mail a verification code and
+ * the verification route cannot mail a reset code — the exclusion is in the
+ * pattern as well as in the credential.
+ */
+export const RecoverySchema = z
+  .object({
+    userId: z.string().uuid(),
+    kind: z.enum(RECOVERY_KINDS),
+    code: z.string().regex(RESET_CODE_PATTERN, 'code must be a minted reset code'),
+  })
+  .strict();
+export type RecoveryInput = z.infer<typeof RecoverySchema>;
 
 /** RFC 5321 caps the path at 320 octets; anything longer is not an address. */
 export const RecipientSchema = z

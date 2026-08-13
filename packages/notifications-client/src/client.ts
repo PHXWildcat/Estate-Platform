@@ -60,6 +60,10 @@ export const SYSTEM_NOTIFICATION_KINDS = [
   // most like to be able to send: it is exactly what a phishing pretext looks
   // like, and a user who receives it acts on it.
   'identity.password_changed',
+  // M17 PR3: the mailed password-reset code. A system kind for the first
+  // reason above — its template needs a CODE, so a caller who could name it on
+  // the estate send wire would render "enter this code: undefined".
+  'identity.password_reset',
 ] as const;
 export type SystemNotificationKind = (typeof SYSTEM_NOTIFICATION_KINDS)[number];
 
@@ -76,6 +80,49 @@ export type SystemNotificationKind = (typeof SYSTEM_NOTIFICATION_KINDS)[number];
  */
 export const ACCOUNT_SECURITY_KINDS = ['identity.password_changed'] as const;
 export type AccountSecurityKind = (typeof ACCOUNT_SECURITY_KINDS)[number];
+
+/**
+ * The RECOVERY kind (M17 PR3) — deliberately its own one-member list rather
+ * than a member of `ACCOUNT_SECURITY_KINDS`.
+ *
+ * That list's wire carries no variables at all, which is the property that
+ * makes it safe for a holder who should never choose what a user reads. This
+ * one carries a code. Keeping them apart is what lets each of the four send
+ * routes on the notifications service build its schema from its own closed
+ * list, so no holder of one credential can fire another's vocabulary.
+ */
+export const RECOVERY_KINDS = ['identity.password_reset'] as const;
+export type RecoveryKind = (typeof RECOVERY_KINDS)[number];
+
+/**
+ * The shape a RESET code may take on the wire (M17 PR3), beside
+ * `VERIFICATION_CODE_PATTERN` and for the identical reason: the M14 review
+ * found the two ends of that ceremony disagreeing, so the pattern lives in the
+ * contract both import rather than being written twice. Anchored on its own
+ * prefix, so a verification code cannot be mailed as a reset code or the
+ * reverse.
+ */
+export const RESET_CODE_PATTERN = /^PR1(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){8}$/;
+
+/**
+ * One user id, one opaque platform-minted single-use reset code, and the kind
+ * that code is being mailed AS.
+ *
+ * `kind` is carried even though `RECOVERY_KINDS` has one member today, because
+ * it is what `notification_sends.kind` records, and a route that INFERS the
+ * kind logs what it assumed rather than what the caller asked for. That matches
+ * `sendAccountSecurity`, its sibling from the same milestone, and deliberately
+ * NOT `sendAddressVerification`, where M14 let the route supply the kind — the
+ * asymmetry is noted rather than propagated, since changing a shipped wire to
+ * match a new one is a change to M14. It also means a second
+ * recovery kind arrives as a compile error at each call site instead of
+ * silently inheriting the first one's template.
+ */
+export interface PasswordResetInput {
+  userId: string;
+  code: string;
+  kind: RecoveryKind;
+}
 
 /**
  * Every kind the platform can log a send for. This is the vocabulary of
@@ -232,6 +279,12 @@ export interface NotificationsPort {
    * nothing about what it says.
    */
   sendAccountSecurity(input: AccountSecurityInput): Promise<SendOutcome>;
+  /**
+   * Mail one password-reset code (M17 PR3). Identity alone, on its own
+   * credential — the most powerful of the mail-something grants, because
+   * redeeming what it sends needs no session.
+   */
+  sendPasswordReset(input: PasswordResetInput): Promise<SendOutcome>;
   /** Record that the user proved ownership of the stored address. Identity
    * alone, on the SAME credential as `upsertRecipient` — vouching for an
    * address and setting one are the same capability class (M14 decision 5). */
@@ -292,6 +345,8 @@ export interface NotificationsCredentials {
   status?: string;
   /** NOTIFICATIONS_SECURITY_INTERNAL_TOKEN — mail one account-security notice. */
   security?: string;
+  /** NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN — mail one password-reset code. */
+  recovery?: string;
 }
 
 export interface HttpNotificationsClientOptions {
@@ -428,6 +483,17 @@ export class HttpNotificationsClient implements NotificationsPort {
           userId: input.userId,
           kind: input.kind,
         },
+      ),
+    );
+  }
+
+  async sendPasswordReset(input: PasswordResetInput): Promise<SendOutcome> {
+    return HttpNotificationsClient.outcomeOf(
+      await this.requestJson(
+        this.credentials.recovery,
+        'POST',
+        '/internal/v1/notifications/recovery',
+        { userId: input.userId, kind: input.kind, code: input.code },
       ),
     );
   }

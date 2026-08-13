@@ -5,6 +5,7 @@ import {
   render,
   renderAccountSecurity,
   renderAddressVerification,
+  renderPasswordReset,
   type RenderedNotification,
 } from './templates';
 import { RecipientsRepo } from './recipients.repo';
@@ -12,7 +13,13 @@ import { SendsRepo, type SendOutcomeToken } from './sends.repo';
 import { EventsService } from './events.service';
 import { CLOCK, EMAIL_SENDER, FIELD_CRYPTO, SYSTEM_ACTOR_ID, type Clock } from './di-tokens';
 import type { EmailSender } from './email';
-import type { AccountSecurityInput, SendInput, RecipientInput, VerificationInput } from './schemas';
+import type {
+  AccountSecurityInput,
+  RecoveryInput,
+  SendInput,
+  RecipientInput,
+  VerificationInput,
+} from './schemas';
 import { Db } from './db';
 
 /** AAD field id binding recipient ciphertext to its column (docs/02 convention). */
@@ -99,6 +106,23 @@ export class NotificationsService {
       kind: input.kind,
       requestedChannel: 'email',
       render: () => renderAccountSecurity(input.kind),
+    });
+  }
+
+  /**
+   * Mail a password-reset code (M17 PR3). Its own method for the reason every
+   * other send has one: one route, one credential, one vocabulary. Shares
+   * `deliver`, so it gets the same audited decrypt, the same append-only send
+   * row and the same `notification.sent` event as everything else.
+   */
+  async sendPasswordReset(
+    input: RecoveryInput,
+  ): Promise<{ delivered: boolean; channel: string; recipientVerified: boolean }> {
+    return this.deliver({
+      userId: input.userId,
+      kind: input.kind,
+      requestedChannel: 'email',
+      render: () => renderPasswordReset(input.code),
     });
   }
 

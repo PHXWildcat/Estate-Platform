@@ -60,6 +60,13 @@ const EnvSchema = z
     // acts on; off #3 because that mails a caller-minted code, and a future
     // resend holder must not inherit the power to announce credential changes.
     NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: z.string().optional(),
+    // INBOUND #6 — PASSWORD RESET (M17 PR3). Held by IDENTITY ALONE. Mails one
+    // reset code to the address on file. The most powerful of the four send
+    // surfaces: redeeming what it mails needs no session, so a holder who can
+    // also read the mailbox owns the account. Off #3 (that code proves a
+    // mailbox and is redeemed by somebody already signed in) and off #5 (whose
+    // wire carries no variables at all, which is what makes it safe).
+    NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN: z.string().optional(),
     // Which carrier delivers email. 'stub' records without delivering
     // (dev/test); 'ses' is the real adapter. Production REQUIRES 'ses' — see
     // the superRefine below.
@@ -132,6 +139,10 @@ const EnvSchema = z
           'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
           'an open account-security surface lets anyone tell a user their password changed',
         ],
+        [
+          'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
+          'an open recovery surface lets anyone mail a working password-reset code',
+        ],
       ] as const;
       for (const [key, why] of credentials) {
         const token = env[key];
@@ -143,7 +154,7 @@ const EnvSchema = z
           });
         }
       }
-      // A FULL PAIRWISE LOOP over all five, not a hand-written comparison per
+      // A FULL PAIRWISE LOOP over all six, not a hand-written comparison per
       // pair. Splitting the surfaces buys nothing if one value is pasted into
       // two slots, and a list of explicit pairs is the drift class this repo
       // keeps rediscovering: the M9 review split two credentials and left one
@@ -237,6 +248,8 @@ export interface NotificationsConfig {
   readonly recipientStatusApiToken: string;
   /** INBOUND: what it expects on the ACCOUNT-SECURITY send route, identity alone. */
   readonly securityApiToken: string;
+  /** INBOUND: what it expects on the PASSWORD-RESET send route, identity alone. */
+  readonly recoveryApiToken: string;
   readonly email: EmailConfig;
   readonly kms: KmsConfig;
   /** KEK alias wrapping THIS service's per-user DEKs (never 'core/kek'). */
@@ -277,6 +290,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NotificationsC
     verificationApiToken: e.NOTIFICATIONS_VERIFY_INTERNAL_TOKEN ?? '',
     recipientStatusApiToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
     securityApiToken: e.NOTIFICATIONS_SECURITY_INTERNAL_TOKEN ?? '',
+    recoveryApiToken: e.NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN ?? '',
     // The superRefine above guarantees the required fields per mode, so these
     // non-null assertions are sound.
     email:

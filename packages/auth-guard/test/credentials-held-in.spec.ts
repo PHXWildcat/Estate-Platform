@@ -23,6 +23,7 @@ const NOTIFICATIONS_RECIPIENTS = 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN';
 const NOTIFICATIONS_VERIFY = 'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN';
 const NOTIFICATIONS_STATUS = 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN';
 const NOTIFICATIONS_SECURITY = 'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN';
+const NOTIFICATIONS_RECOVERY = 'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN';
 
 describe('credentialsHeldIn', () => {
   it('reports nothing for a config that holds no credential', () => {
@@ -121,7 +122,7 @@ describe('graph lookup helpers', () => {
     expect(inboundCredentialsFor('audit')).toEqual([]);
   });
 
-  it('gives notifications FIVE inbound credentials, one per capability (M9 review, M14, M17)', () => {
+  it('gives notifications SIX inbound credentials, one per capability (M9 review, M14, M17)', () => {
     // The send surface and the recipient-upsert surface have different
     // legitimate holders, so they must not share a secret: holding "may
     // notify this user" must not also mean "may decide where their alerts go".
@@ -131,6 +132,7 @@ describe('graph lookup helpers', () => {
       NOTIFICATIONS_RECIPIENTS,
       NOTIFICATIONS_VERIFY,
       NOTIFICATIONS_SECURITY,
+      NOTIFICATIONS_RECOVERY,
       NOTIFICATIONS_STATUS,
     ]);
     // M13 added profile: it tells an owner when somebody CLAIMED a link to one
@@ -191,7 +193,7 @@ describe('graph lookup helpers', () => {
       'DOCUMENTS_INTERNAL_TOKEN',
       NOTIFICATIONS,
     ]);
-    // Identity holds FOUR notifications credentials and NOT the send one: it
+    // Identity holds FIVE notifications credentials and NOT the send one: it
     // feeds the store, mails its own verification code, announces a change to
     // the account's own credentials (M17), and reads the verified bit — but can
     // never fire an ESTATE notification. That last clause is the one worth
@@ -202,6 +204,7 @@ describe('graph lookup helpers', () => {
       NOTIFICATIONS_RECIPIENTS,
       NOTIFICATIONS_VERIFY,
       NOTIFICATIONS_SECURITY,
+      NOTIFICATIONS_RECOVERY,
       NOTIFICATIONS_STATUS,
     ]);
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).not.toContain(NOTIFICATIONS);

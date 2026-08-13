@@ -34,6 +34,9 @@ describe('package surface', () => {
       // recipient acts on, and it is the message an attacker would most like
       // to be able to make the platform send.
       'identity.password_changed',
+      // M17 PR3: the mailed reset code. A system kind because its template
+      // needs a code, exactly like address verification.
+      'identity.password_reset',
     ]);
     // Together they are the send LOG's vocabulary — the notifications DDL's
     // kind CHECK is written against this, and the int suite drives every member.
@@ -50,6 +53,24 @@ describe('package surface', () => {
     // asserted DISJOINT from the estate list because that is the exclusion the
     // broadly-held send credential depends on.
     expect(api.ACCOUNT_SECURITY_KINDS).toEqual(['identity.password_changed']);
+    // M17 PR3. Its own one-member list, DISJOINT from the account-security one:
+    // that wire carries no variables at all, which is what makes it safe for a
+    // holder who must never choose what a user reads, and this one carries a
+    // code. Four send routes, four closed lists, no holder able to fire
+    // another's vocabulary.
+    expect(api.RECOVERY_KINDS).toEqual(['identity.password_reset']);
+    for (const kind of api.RECOVERY_KINDS) {
+      expect(api.SYSTEM_NOTIFICATION_KINDS).toContain(kind);
+      expect(api.ACCOUNT_SECURITY_KINDS as readonly string[]).not.toContain(kind);
+      expect(api.ESTATE_NOTIFICATION_KINDS as readonly string[]).not.toContain(kind);
+    }
+    // The two mailed-code patterns are anchored on DIFFERENT prefixes, so
+    // neither route can mail the other's code.
+    expect(api.RESET_CODE_PATTERN.test('PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E')).toBe(true);
+    expect(api.RESET_CODE_PATTERN.test('EV1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E')).toBe(false);
+    expect(api.VERIFICATION_CODE_PATTERN.test('PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E')).toBe(
+      false,
+    );
     for (const kind of api.ACCOUNT_SECURITY_KINDS) {
       expect(api.SYSTEM_NOTIFICATION_KINDS).toContain(kind);
       expect(api.ESTATE_NOTIFICATION_KINDS as readonly string[]).not.toContain(kind);

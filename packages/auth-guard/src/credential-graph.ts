@@ -313,6 +313,36 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
       'Mail one ACCOUNT-SECURITY notice — from a closed set of platform-authored templates about the account itself, not the estate — to the address already on file for a user. A holder cannot choose the recipient, cannot see the address, cannot fire any estate notification, and cannot put words in the message: the wire carries a user id and a kind from a closed enum, and the kinds are excluded from the estate send schema so no other holder can fire them either. Misuse means telling a user their password changed when it did not, which is a phishing-adjacent nuisance — they can sign in and see otherwise — plus sender-reputation damage at volume. It exposes no stored address and no estate data. It does NOT carry the delivery-state bit the SEND edge returns.',
   },
   {
+    envVar: 'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // IDENTITY ALONE (M17 PR3). The sixth notifications edge, and the most
+    // powerful of the four that make the platform mail something.
+    //
+    // NOT THE VERIFY EDGE, despite the identical holder and the near-identical
+    // payload — both mail an opaque platform-minted code to the address on
+    // file. What differs is what the code DOES. A verification code proves a
+    // mailbox and can only be redeemed by somebody already signed in, so a
+    // stolen copy of that credential buys an unsolicited mail and nothing else.
+    // A RESET code replaces the credential the whole platform rests on, and
+    // redeeming it requires no session at all — so whoever can cause one to be
+    // mailed, and can read that mailbox, owns the account. Those are different
+    // capability classes however similar the wire looks, and the M14 reasoning
+    // that split VERIFY from RECIPIENTS applies with more force here: the first
+    // future holder of a "resend my verification code" support tool must not
+    // inherit the account-recovery channel.
+    //
+    // NOT THE SECURITY EDGE either (M17 PR2), which is the other tempting
+    // neighbour. That wire deliberately carries NO variables at all — no code,
+    // no timestamp — precisely so a holder cannot choose any part of what the
+    // user reads. Adding a code field to it would undo that decision one PR
+    // after taking it.
+    holders: ['identity'],
+    guard: { className: 'RecoveryCredentialGuard', token: 'RECOVERY_CREDENTIAL' },
+    opens: ['POST /internal/v1/notifications/recovery'],
+    grants:
+      "Mail one password-reset code, of the platform's own wording, to the address already on file for a user. This is the most dangerous of the mail-something credentials and the grants sentence should say so plainly: a holder who ALSO reads the target mailbox can take the account, because redeeming a reset code needs no session and no second factor. A holder who cannot read the mailbox gains an unsolicited reset mail — a phishing pretext and, at volume, sender-reputation damage. It cannot choose the recipient, cannot see the address, cannot make the code valid, cannot fire an estate notification, and cannot reach the verification or account-security wires: each of the four send routes on this callee is built from its own closed kind list.",
+  },
+  {
     envVar: 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
     callee: 'notifications',
     // M14. Identity reads it to decide whether to mint a code at login. Vault

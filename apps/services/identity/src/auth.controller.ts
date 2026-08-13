@@ -22,6 +22,7 @@ import { AuthService, type IssuedTokens, type StepUpResult } from './auth.servic
 import { EmailVerificationService, type ReissueOutcome } from './email-verification.service';
 import { ExtensionPairingService } from './extension-pairing.service';
 import { HandoffService, type MintedHandoff } from './handoff.service';
+import { PasswordResetService } from './password-reset.service';
 import { AllowSessionAudiences } from './session-audience.decorator';
 import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
 import { StepUpGuard } from './stepup.guard';
@@ -55,6 +56,29 @@ const RefreshSchema = z.object({
  * change that could weaken a password below what registration demands would
  * make the rule advisory.
  */
+/**
+ * The reset-REQUEST wire (M17 PR3). Shape only, and it must stay that way: this
+ * route answers identically for every input, so a validation refusal that
+ * distinguished a well-formed unknown address from a malformed one would be the
+ * one observable difference on an otherwise uniform route. Bounded so an
+ * unbounded body cannot be hashed.
+ */
+const ResetRequestSchema = z.object({
+  email: z.string().min(1).max(320),
+});
+
+/**
+ * The reset-COMPLETE wire. The code is shape-only and generous, on the handoff
+ * and pairing reasoning: the AUTHORITY is the digest lookup, the length is
+ * measured on the CANONICAL form inside the service, and a shape rejection that
+ * differed from a wrong-code rejection would be a free oracle for the format.
+ * `newPassword` carries the registration rule, from the same numbers.
+ */
+const CompleteResetSchema = z.object({
+  code: z.string().min(1).max(128),
+  newPassword: z.string().min(12).max(256),
+});
+
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(1024),
   newPassword: z.string().min(12).max(256),
@@ -154,6 +178,7 @@ export class AuthController {
     private readonly emailVerification: EmailVerificationService,
     private readonly handoff: HandoffService,
     private readonly extensionPairing: ExtensionPairingService,
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   @Post('register')
@@ -341,6 +366,62 @@ export class AuthController {
     const auth = requireAuth(request);
     const { currentPassword, newPassword } = parseBody(ChangePasswordSchema, body);
     await this.auth.changePassword(auth.userId, auth.sessionId, auth, currentPassword, newPassword);
+  }
+
+  /**
+   * "Send me a reset code" (M17 PR3). UNAUTHENTICATED by construction — the
+   * caller has forgotten the credential that would authenticate them.
+   *
+   * ANSWERS 202 FOR EVERY INPUT, always, and does the work off the response
+   * path. An address with an account and one without take the same route
+   * through the service, and the mint-and-send is fired without being awaited,
+   * so an existing account cannot return measurably later than a stranger's
+   * address. That is the register docstring's known timing residual, avoided
+   * here rather than inherited — this route is far more attractive to probe,
+   * because a hit tells an attacker where to point a mailbox compromise.
+   *
+   * The caller is therefore never told whether a mail was sent, refused by the
+   * re-issue floor, or had nowhere to go. That is the point.
+   */
+  @Post('password/reset/request')
+  @HttpCode(202)
+  requestPasswordReset(@Body() body: unknown): { status: string } {
+    const { email } = parseBody(ResetRequestSchema, body);
+    // DELIBERATELY NOT AWAITED — the timing control lives on this line. The
+    // mint-and-send resolves the address against the users table, so awaiting
+    // it would make an existing account answer measurably later than a
+    // stranger's (the account-existence oracle this route is arranged around).
+    // The service method is awaitable so TESTS can drive it deterministically
+    // (M14's `ensureVerificationRequested` shape); the detach is the route's
+    // decision, pinned by a source-level assertion because a runtime test
+    // cannot tell a fast await from no await. The catch is terminal: the
+    // response has already been decided, and an unhandled rejection from a
+    // detached promise must not reach the process — every branch inside
+    // records its own outcome.
+    void this.passwordReset.requestReset(email).catch(() => {});
+    // Identical body and status whether or not the address has an account.
+    return { status: 'ok' };
+  }
+
+  /**
+   * Redeem a reset code and set the new password (M17 PR3). UNAUTHENTICATED:
+   * the code is the authority, and there is no field in this request that could
+   * name an account (the M13 §6g anti-enumeration shape).
+   *
+   * RETURNS NO TOKENS — 204, and the user signs in with what they just chose.
+   * That is what makes "does redemption grant step-up?" unanswerable rather
+   * than merely answered no: there is no session to grant anything to. The M15
+   * PR4 review is why it matters, where an unauthenticated redeem route that
+   * granted step-up let a stolen code reach `POST /v1/vault/reset` and
+   * crypto-shred a Zone A vault.
+   *
+   * Every failure is one `invalid_code`.
+   */
+  @Post('password/reset')
+  @HttpCode(204)
+  async completePasswordReset(@Body() body: unknown): Promise<void> {
+    const { code, newPassword } = parseBody(CompleteResetSchema, body);
+    await this.passwordReset.completeReset(code, newPassword);
   }
 
   @Post('totp/enroll')

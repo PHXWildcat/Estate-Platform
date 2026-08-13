@@ -22,6 +22,7 @@ const PROD_BASE: NodeJS.ProcessEnv = {
   NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: `${STRONG_TOKEN}-verify`,
   NOTIFICATIONS_STATUS_INTERNAL_TOKEN: `${STRONG_TOKEN}-status`,
   NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: `${STRONG_TOKEN}-security`,
+  NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN: `${STRONG_TOKEN}-recovery`,
   EMAIL_MODE: 'ses',
   SES_FROM_ADDRESS: 'no-reply@estate.example',
   KMS_MODE: 'aws',
@@ -73,6 +74,7 @@ const INBOUND_CREDENTIALS = [
   'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
   'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
   'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
+  'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
 ] as const;
 
 describe('loadConfig (production)', () => {
@@ -90,6 +92,7 @@ describe('loadConfig (production)', () => {
     ['NOTIFICATIONS_VERIFY_INTERNAL_TOKEN', 'the verification-send surface'],
     ['NOTIFICATIONS_STATUS_INTERNAL_TOKEN', 'the recipient-status surface'],
     ['NOTIFICATIONS_SECURITY_INTERNAL_TOKEN', 'the account-security send surface'],
+    ['NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN', 'the password-reset send surface'],
     ['SES_FROM_ADDRESS', 'the verified sender'],
   ])('requires %s in production', (key) => {
     const env = { ...PROD_BASE };

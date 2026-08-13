@@ -125,6 +125,11 @@ const EnvSchema = z
     // ability to announce credential changes — the message an attacker would
     // most like to be able to send.
     NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND (M17 PR3): presented to the notifications PASSWORD-RESET route.
+    // A FIFTH outbound secret, and the most powerful: what it mails can be
+    // redeemed with no session, so a holder who also reads the mailbox owns the
+    // account. Kept off the verification credential for exactly that difference.
+    NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -225,6 +230,10 @@ const EnvSchema = z
           'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
           'unwired, a password change is silent — the one notice whose absence an attacker relies on',
         ],
+        [
+          'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
+          'unwired, no reset code is ever mailed and a forgotten password is unrecoverable',
+        ],
       ] as const;
       for (const [key, why] of required) {
         const token = env[key];
@@ -237,7 +246,7 @@ const EnvSchema = z
         }
       }
       // A FULL PAIRWISE LOOP over every credential this service touches — its
-      // own inbound one and its four outbound ones. One value must never
+      // own inbound one and its five outbound ones. One value must never
       // authenticate two directions (the M7 collapse), and splitting the fields
       // cannot stop one value being pasted into several slots. Derived from the
       // list rather than written pair by pair, because the hand-written form
@@ -249,6 +258,7 @@ const EnvSchema = z
         'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
         'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
         'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
+        'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
       ] as const;
       for (let i = 0; i < touched.length; i += 1) {
         for (let j = i + 1; j < touched.length; j += 1) {
@@ -312,6 +322,8 @@ export interface IdentityConfig {
   readonly notificationsStatusToken: string;
   /** OUTBOUND: presented to the notifications ACCOUNT-SECURITY route (M17). */
   readonly notificationsSecurityToken: string;
+  /** OUTBOUND: presented to the notifications PASSWORD-RESET route (M17 PR3). */
+  readonly notificationsRecoveryToken: string;
 }
 
 export class ConfigError extends Error {
@@ -368,5 +380,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     notificationsVerifyToken: e.NOTIFICATIONS_VERIFY_INTERNAL_TOKEN ?? '',
     notificationsStatusToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
     notificationsSecurityToken: e.NOTIFICATIONS_SECURITY_INTERNAL_TOKEN ?? '',
+    notificationsRecoveryToken: e.NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN ?? '',
   };
 }

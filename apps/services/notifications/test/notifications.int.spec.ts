@@ -172,6 +172,14 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
     // M17. Derived from ACCOUNT_SECURITY_KINDS so a second security kind is
     // driven without editing this loop — the verification entry above cannot be
     // derived (its input carries a code), which is why the two look different.
+    expect(
+      await service.sendPasswordReset({
+        userId: subject,
+        kind: 'identity.password_reset',
+        code: 'PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+      }),
+    ).toMatchObject({ delivered: true, channel: 'email' });
+
     for (const kind of ACCOUNT_SECURITY_KINDS) {
       expect(await service.sendAccountSecurity({ userId: subject, kind })).toMatchObject({
         delivered: true,

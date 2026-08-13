@@ -3,11 +3,13 @@ import { ServiceCredentialGuard } from '@estate/auth-guard';
 import { NotificationsService } from './notifications.service';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
 import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
+import { RecoveryCredentialGuard } from './recovery-credential.guard';
 import { SecurityCredentialGuard } from './security-credential.guard';
 import { VerificationCredentialGuard } from './verification-credential.guard';
 import {
   AccountSecuritySchema,
   parseBody,
+  RecoverySchema,
   parseUserId,
   RecipientSchema,
   SendSchema,
@@ -15,8 +17,8 @@ import {
 } from './schemas';
 
 /**
- * Internal-only surface, split into FIVE credential-guarded controllers
- * because its routes are five different capabilities with different legitimate
+ * Internal-only surface, split into SIX credential-guarded controllers
+ * because its routes are six different capabilities with different legitimate
  * holders (credential-graph.ts). There are deliberately NO user-facing routes
  * in this service — a bearer token must never be able to make the platform
  * speak.
@@ -133,6 +135,37 @@ export class SecurityController {
   @HttpCode(200)
   sendSecurity(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
     return this.notifications.sendAccountSecurity(parseBody(AccountSecuritySchema, body));
+  }
+}
+
+/**
+ * PASSWORD RESET (NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN; holder identity ALONE,
+ * M17 PR3): mail one reset code to the address already on file.
+ *
+ * The most powerful send surface on this service, and its own credential for
+ * that reason. A verification code proves a mailbox and is redeemed by somebody
+ * already signed in; a RESET code replaces the account password and is redeemed
+ * with no session at all — so whoever can cause one to be mailed AND can read
+ * that mailbox owns the account. Those are different capability classes however
+ * alike the two wires look, which is why this is not a widening of the
+ * verification route.
+ *
+ * `RecoverySchema` is built from RECOVERY_KINDS and holds the code to
+ * `RESET_CODE_PATTERN`, anchored on its own prefix — so this route cannot mail
+ * a verification code and the verification route cannot mail a reset code.
+ */
+@Controller('internal/v1/notifications')
+@UseGuards(RecoveryCredentialGuard)
+export class RecoveryController {
+  constructor(private readonly notifications: NotificationsService) {}
+
+  // Named `sendReset`, not `send` or `sendCode`: four differently-guarded
+  // classes on one path prefix, and same-named handlers are how a refactor
+  // merges two capabilities by accident.
+  @Post('recovery')
+  @HttpCode(200)
+  sendReset(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
+    return this.notifications.sendPasswordReset(parseBody(RecoverySchema, body));
   }
 }
 

@@ -23,6 +23,10 @@ function clientDouble(overrides: Partial<NotificationsPort>): NotificationsPort 
     // let a vault code path that should never reach this method look healthy
     // (the M16 PR4a lesson about doubles that accept what the platform refuses).
     sendAccountSecurity: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
+    // M17 PR3, same reasoning: present because the port declares it, REFUSING
+    // because vault holds no recovery credential and the real client would
+    // short-circuit without a round trip.
+    sendPasswordReset: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
     markRecipientVerified: () => Promise.resolve({ ok: false }),
     recipientStatus: () => Promise.resolve(null),
     ...overrides,

@@ -8,6 +8,7 @@ import {
   render,
   renderAccountSecurity,
   renderAddressVerification,
+  renderPasswordReset,
   SUBJECT,
 } from '../src/templates';
 
@@ -19,6 +20,7 @@ import {
  * third category could appear with no coverage at all.
  */
 const CODE = 'EV1-K7MN-0000-0000-0000-0000-0000-0000-0000';
+const RESET_CODE = 'PR1-K7MN-0000-0000-0000-0000-0000-0000-0000';
 const ALL_BODIES: ReadonlyArray<{ label: string; body: (deadline: Date | null) => string }> = [
   ...ESTATE_NOTIFICATION_KINDS.map((kind) => ({
     label: kind,
@@ -37,6 +39,13 @@ const ALL_BODIES: ReadonlyArray<{ label: string; body: (deadline: Date | null) =
     label: kind,
     body: (): string => renderAccountSecurity(kind).body,
   })),
+  // M17 PR3. Like the verification body, this one cannot be derived from a
+  // Record — it takes a CODE — so it is listed, and the length assertion
+  // against NOTIFICATION_KINDS is what catches a kind with no body.
+  {
+    label: 'identity.password_reset',
+    body: (): string => renderPasswordReset(RESET_CODE).body,
+  },
 ];
 
 const DEADLINE = new Date('2026-08-09T17:30:00.000Z');
@@ -52,6 +61,20 @@ describe('the template registry (docs/03 §5.4 — content-free pointers)', () =
     for (const { body } of ALL_BODIES) {
       expect(body(null).length).toBeGreaterThan(20);
     }
+  });
+
+  it('the reset body says WHICH password, and does not promise the vault', () => {
+    // The vault origin already tells users in plain words that Estate never
+    // receives their vault password and cannot reset it. A reset mail that said
+    // only "reset your password" would teach exactly the wrong thing about the
+    // one credential the platform genuinely cannot recover.
+    const body = renderPasswordReset(RESET_CODE).body;
+    expect(body).toContain(RESET_CODE);
+    expect(body.toLowerCase()).toContain('vault');
+    expect(body).toMatch(/does NOT change your vault password/i);
+    // …and it gives a recipient who did not ask for this something to do,
+    // because on this ceremony an unexpected mail is the attack signal.
+    expect(body.toLowerCase()).toContain('did not ask');
   });
 
   it('keeps every code-bearing kind OUT of the estate send vocabulary', () => {
