@@ -387,7 +387,18 @@ export class AuthController {
   @HttpCode(202)
   requestPasswordReset(@Body() body: unknown): { status: string } {
     const { email } = parseBody(ResetRequestSchema, body);
-    this.passwordReset.requestReset(email);
+    // DELIBERATELY NOT AWAITED — the timing control lives on this line. The
+    // mint-and-send resolves the address against the users table, so awaiting
+    // it would make an existing account answer measurably later than a
+    // stranger's (the account-existence oracle this route is arranged around).
+    // The service method is awaitable so TESTS can drive it deterministically
+    // (M14's `ensureVerificationRequested` shape); the detach is the route's
+    // decision, pinned by a source-level assertion because a runtime test
+    // cannot tell a fast await from no await. The catch is terminal: the
+    // response has already been decided, and an unhandled rejection from a
+    // detached promise must not reach the process — every branch inside
+    // records its own outcome.
+    void this.passwordReset.requestReset(email).catch(() => {});
     // Identical body and status whether or not the address has an account.
     return { status: 'ok' };
   }

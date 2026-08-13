@@ -5195,3 +5195,23 @@ deviating from them, stop and propose the change with rationale — do not silen
   for a property it never touched") committed inside the fix that cites it, for
   the second time in this repo — and the only reason it was found is that the
   mutation list included the property rather than only the defect.
+- 2026-08-13 — A SERVICE THAT MAKES AWAITING INEXPRESSIBLE FORCES ITS TESTS TO
+  SLEEP, and CI flaked on the sleep within two runs. PR3's `requestReset`
+  returned `void` and detached `mintAndSend` internally — deliberately, so no
+  caller could reintroduce the account-existence timing oracle — and the int
+  spec's only way to drive the path was 25 microtask drains plus a bare 25ms
+  `setTimeout` racing four real Postgres round trips: green on the first CI
+  run, red on the second, which is the M8 PR4 determinism contract violated by
+  a test the production shape forced. THE FIX IS M14's OWN SHAPE, which was
+  sitting one file away: `ensureVerificationRequested` is awaitable and the
+  DETACH lives in the caller. `requestReset` is `async` now, the controller
+  does `void …requestReset(email).catch(() => {})`, every sleep in both spec
+  files is deleted (the int spec awaits the real chain; 5/5 repeated runs
+  green), and the timing property moved with the detach: a source-level pin
+  asserts the handler is SYNCHRONOUS (a sync method structurally cannot await)
+  and that the call site is `void …catch` — the M17 PR1 ordering-pin rule,
+  because a runtime test cannot tell a fast await from no await. Both
+  mutations (controller awaits; catch dropped) turn it red. The general rule:
+  structural inexpressibility at the WRONG layer exports the hazard to every
+  test as a race — put the awaitable surface where tests need it and pin the
+  detach at the one call site where the timing property actually lives.

@@ -154,13 +154,17 @@ describeIfPg('password reset (auth cluster)', () => {
     now = new Date(BASE.getTime());
   }
 
-  /** Drive the request path to completion — it is fire-and-forget by design. */
+  /**
+   * Drive the request path to completion. `requestReset` is awaitable — the
+   * fire-and-forget is the CONTROLLER's decision, not the service's — so this
+   * awaits the real chain instead of racing it. The first version detached
+   * inside the service and waited here with a 25ms sleep, which flaked in CI on
+   * its second run: a bare sleep against four real Postgres round trips is the
+   * exact shape the M8 PR4 determinism contract bans, forced into a test by a
+   * service that made awaiting the work inexpressible.
+   */
   async function request(target?: string): Promise<void> {
-    service.requestReset(target ?? email);
-    // The route returns before the work; drain the microtask chain plus the
-    // awaits inside it rather than racing a fixed timeout.
-    for (let i = 0; i < 25; i += 1) await Promise.resolve();
-    await new Promise((r) => setTimeout(r, 25));
+    await service.requestReset(target ?? email);
   }
 
   async function hashOf(): Promise<string> {

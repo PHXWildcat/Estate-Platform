@@ -11,6 +11,8 @@
  *  · nothing observable differs between an address with an account and one
  *    without — which is the property the whole request path is arranged around.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { HttpException } from '@nestjs/common';
 import { PasswordResetService, RESET_FLOOR_MS } from '../src/password-reset.service';
 import { RESET_ADDRESS_BOUND } from '../src/rate-bounds';
@@ -130,22 +132,15 @@ function makeService(opts: { userExists: boolean }): Fakes {
   };
 }
 
-/** The request path is fire-and-forget; drain it rather than racing a timeout. */
-async function settle(): Promise<void> {
-  for (let i = 0; i < 25; i += 1) await Promise.resolve();
-}
-
 describe('the reset-request bound', () => {
   it('REFUSES past the cap, and does so BEFORE any lookup', async () => {
     const f = makeService({ userExists: true });
     for (let i = 0; i < RESET_ADDRESS_BOUND.max; i += 1) {
-      f.service.requestReset('victim@example.com');
-      await settle();
+      await f.service.requestReset('victim@example.com');
     }
     const lookupsBefore = f.lookups;
 
-    f.service.requestReset('victim@example.com');
-    await settle();
+    await f.service.requestReset('victim@example.com');
 
     // No further work of any kind: the bound short-circuits ahead of the
     // database, so an abuser cannot even make the platform look somebody up.
@@ -154,44 +149,69 @@ describe('the reset-request bound', () => {
     expect(f.throttled).toBe(1);
   });
 
-  it('the refusal is SILENT — the route returns nothing either way', () => {
+  it('the refusal is SILENT — the method resolves to nothing either way', async () => {
     // The bound's whole point is that a dropped request is indistinguishable
-    // from a delivered one. `requestReset` returns void, so there is no channel
-    // for it to differ on; asserted so a future edit that starts returning an
-    // outcome has to come here and think about it.
+    // from a delivered one. `requestReset` resolves to void whether it mailed,
+    // refused, or found nobody — there is no channel for it to differ on — and
+    // the route-level half (the controller does not await it at all) is pinned
+    // by the source assertion below; asserted so a future edit that starts
+    // returning an outcome has to come here and think about it.
     const f = makeService({ userExists: true });
-    expect(f.service.requestReset('a@example.com')).toBeUndefined();
+    await expect(f.service.requestReset('a@example.com')).resolves.toBeUndefined();
   });
 
   it('bounds each address SEPARATELY', async () => {
     const f = makeService({ userExists: true });
     for (let i = 0; i < RESET_ADDRESS_BOUND.max; i += 1) {
-      f.service.requestReset('victim@example.com');
-      await settle();
+      await f.service.requestReset('victim@example.com');
     }
-    f.service.requestReset('someone-else@example.com');
-    await settle();
+    await f.service.requestReset('someone-else@example.com');
     expect(f.mailed).toHaveLength(RESET_ADDRESS_BOUND.max + 1);
   });
 });
 
 describe('the request path tells a caller nothing', () => {
   it('an address WITH an account and one WITHOUT are indistinguishable to the caller', async () => {
-    // Same return value, and — the part that matters — the work happens off the
-    // response path, so an existing account cannot answer measurably later.
-    // Register's own docstring records that timing residual as still open; this
-    // route avoids inheriting it by not awaiting the mint.
+    // Same resolved value either way. The timing half — an existing account
+    // must not ANSWER measurably later — is the ROUTE's property now: the
+    // controller calls this without awaiting it, which the source pin below
+    // holds. Register's own docstring records that timing residual as still
+    // open; this route avoids inheriting it at the controller line.
     const withAccount = makeService({ userExists: true });
     const without = makeService({ userExists: false });
 
-    expect(withAccount.service.requestReset('real@example.com')).toBeUndefined();
-    expect(without.service.requestReset('nobody@example.com')).toBeUndefined();
+    await expect(withAccount.service.requestReset('real@example.com')).resolves.toBeUndefined();
+    await expect(without.service.requestReset('nobody@example.com')).resolves.toBeUndefined();
 
-    await settle();
     // …and only the real one caused a mint, which the caller cannot observe.
     expect(withAccount.minted).toBe(1);
     expect(without.minted).toBe(0);
     expect(without.mailed).toEqual([]);
+  });
+
+  it('THE ROUTE DOES NOT AWAIT THE WORK — pinned at the source, where it lives', () => {
+    // `requestReset` is awaitable so every TEST in this repo can drive the
+    // chain deterministically (the M14 `ensureVerificationRequested` shape —
+    // the first version detached inside the service and forced the int spec
+    // into a bare 25ms sleep that flaked in CI). The cost of awaitability is
+    // that the controller COULD await it, and an awaited mint would make an
+    // existing account answer measurably later than a stranger's address — the
+    // account-existence oracle this route is arranged around. A runtime test
+    // cannot tell a fast await from no await (the M17 PR1 ordering-pin rule),
+    // so the property is asserted against the handler's source.
+    const controller = readFileSync(
+      join(__dirname, '..', 'src', 'auth.controller.ts'),
+      'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+
+    // The handler exists and is SYNCHRONOUS — a sync method structurally
+    // cannot await anything, which is the strongest form of the pin.
+    expect(controller).toMatch(
+      /requestPasswordReset\(@Body\(\) body: unknown\): \{ status: string \}/,
+    );
+    // The call is explicitly detached, with a terminal catch.
+    expect(controller).toMatch(/void this\.passwordReset\.requestReset\(email\)\.catch/);
+    expect(controller).not.toMatch(/await this\.passwordReset\.requestReset/);
   });
 
   it('the floor is a real number, and wider than the authenticated ceremony’s', () => {

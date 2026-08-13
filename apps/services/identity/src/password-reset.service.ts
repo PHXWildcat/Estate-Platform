@@ -112,20 +112,26 @@ export class PasswordResetService {
   /**
    * "Send me a reset code."
    *
-   * RETURNS NOTHING A CALLER CAN LEARN FROM, and the work happens off the
-   * response path. An address with an account and one without take the same
-   * route through this method: resolve, then fire the mint-and-send WITHOUT
-   * awaiting it. That is the login hook's shape (`requestAddressVerification`)
-   * applied where it matters most — if the send were awaited, an existing
-   * account would return measurably later than a stranger's address, and the
-   * route would be the account-existence oracle that register's own docstring
-   * records as still open.
+   * RESOLVES TO NOTHING A CALLER CAN LEARN FROM, and the ROUTE does not await
+   * it — the detach lives in the controller, which is M14's shape
+   * (`ensureVerificationRequested` is awaitable and the login hook wraps it
+   * with `void`), not an accident of refactoring. The first version detached
+   * HERE, returning `void` so awaiting the work was inexpressible — and the
+   * cost surfaced immediately: the only way any test could drive this path was
+   * a bare sleep racing real Postgres round trips, which flaked in CI on the
+   * second run (the M8 PR4 determinism contract, violated by the test the
+   * fire-and-forget forced). An awaitable method keeps every layer
+   * deterministic; the timing property moves to the controller, where a
+   * source-level pin holds it (a runtime test cannot tell a fast await from no
+   * await — the M17 PR1 ordering-pin rule).
    *
-   * Consequences, both deliberate: the caller is never told whether a mail was
-   * sent, refused by the floor, or had nowhere to go; and a delivery failure is
-   * visible in the trail and the send log rather than in the response.
+   * If the ROUTE awaited this, an existing account would answer measurably
+   * later than a stranger's address — the account-existence oracle register's
+   * own docstring records as still open. The caller is never told whether a
+   * mail was sent, refused by the floor, or had nowhere to go; a delivery
+   * failure is visible in the trail and the send log, never in the response.
    */
-  requestReset(email: string): void {
+  async requestReset(email: string): Promise<void> {
     const normalized = normalizeEmail(email);
     const emailBidx = emailBlindIndex(this.config.emailIndexKey, normalized);
     // THE ADDRESS BOUND, and it is the primary one on this route. The
@@ -142,11 +148,7 @@ export class PasswordResetService {
       return;
     }
     this.addresses.record(emailBidx);
-    void this.mintAndSend(emailBidx).catch(() => {
-      // Nothing here may reach the response path — it has already returned, and
-      // an unhandled rejection from a detached promise must not reach the
-      // process. Every branch inside records its own outcome.
-    });
+    await this.mintAndSend(emailBidx);
   }
 
   private async mintAndSend(emailBidx: Buffer): Promise<void> {
