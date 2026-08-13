@@ -5043,3 +5043,25 @@ deviating from them, stop and propose the change with rationale — do not silen
   what it REFUSES — vault's new entry returns `{accepted:false}`, because vault
   holds no account-security credential and a double that quietly succeeded would
   make a path that should never be reachable look healthy.
+- 2026-08-12 — AND THE SECOND RED CI WAS THE SAME MISTAKE ONE LAYER OVER: I ran
+  `pnpm -r run test` and CI runs `pnpm test -- --coverage`. Coverage THRESHOLDS
+  only arm when coverage is collected, so a package whose floor my change had
+  broken passed locally and failed there — twice, in `@estate/notifications-client`
+  (a new client method with no test) and `@estate/service-notifications` (a new
+  controller and guard). THE RULE, now general: before pushing, run CI's OWN
+  command list — `pnpm format`, `pnpm build`, `pnpm lint`, `pnpm typecheck`,
+  `pnpm test -- --coverage` — rather than the subset that happens to be
+  convenient. Three of those five had never been run in this session, and each
+  of the three caught something the others could not.
+- 2026-08-12 — A TEST I ADDED PASSED VACUOUSLY AND I NEARLY KEPT IT. Adding a
+  sixth call to the notifications-client credential-partitioning sweep left its
+  exact five-element expectation GREEN — because that client had no `security`
+  credential, so the new call short-circuited without a round trip and appended
+  nothing. The tell was that an assertion listing exactly what each route
+  presents did not change when a route was added. Fixed by giving the fixture the
+  credential and the expectation its entry, then mutation-tested BOTH halves of
+  the mapping: pointing the security route at the verification path is caught,
+  and presenting the verification credential on the security route is caught. The
+  second mutation's first anchor did not exist (prettier had reflowed the call
+  across lines) and the harness's "assert the bytes changed" check is what stopped
+  that from reading as a passing test.
