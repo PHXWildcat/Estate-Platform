@@ -5065,3 +5065,24 @@ deviating from them, stop and propose the change with rationale — do not silen
   second mutation's first anchor did not exist (prettier had reflowed the call
   across lines) and the harness's "assert the bytes changed" check is what stopped
   that from reading as a passing test.
+- 2026-08-12 — A TEST OF MINE PASSED LOCALLY BY WRITING INTO THE LIVE DATABASE,
+  and CI is the only reason I found out. `password-change.int.spec.ts` reset its
+  fixtures with `DELETE FROM ${schema}.users`, which fires `trg_users_versions` —
+  and that trigger's body references `users_versions` UNQUALIFIED, so it resolves
+  through the CONNECTION's search_path rather than through the schema named in
+  the statement. The admin client had none. On any machine running the stack
+  there IS a `public.users_versions`, so every reset silently wrote its rows
+  there and the suite went green; on CI's database, which has no such table, it
+  failed with `relation "users_versions" does not exist`. MEASURED afterwards:
+  212 junk rows in the real append-only table, from my own test runs. Fixed two
+  ways — TRUNCATE instead of DELETE (fires no row triggers at all, so the reset
+  cannot write anywhere) and `SET search_path` on the admin connection, so a
+  future case that does need a DELETE does not rediscover this. VERIFIED by
+  running the spec against the CORE cluster, which has no `public.users_versions`
+  and is therefore CI's exact situation: the pre-fix version reproduces the CI
+  error there and the fixed one passes.
+  THE GENERAL RULE, and it is not about triggers: AN INTEGRATION TEST THAT
+  SCOPES ITSELF WITH A SCHEMA PREFIX IS ONLY SCOPED FOR THE STATEMENTS IT
+  WRITES. Anything the database resolves on its own behalf — a trigger body, a
+  function, a default expression — uses the connection's search_path, so a
+  scratch schema is not isolation unless the connection is pinned to it.

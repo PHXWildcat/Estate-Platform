@@ -64,10 +64,19 @@ describeIfPg('password change (auth cluster)', () => {
   const otherSession = randomUUID();
 
   async function seedUser(status = 'active'): Promise<void> {
-    await admin.query(`DELETE FROM ${schema}.users_versions`);
-    await admin.query(`DELETE FROM ${schema}.sessions`);
-    await admin.query(`DELETE FROM ${schema}.auth_events`);
-    await admin.query(`DELETE FROM ${schema}.users`);
+    // TRUNCATE, NOT DELETE, and that is a correctness fix rather than a speed
+    // one. `DELETE FROM users` fires `trg_users_versions`, whose function body
+    // references `users_versions` UNQUALIFIED — so it resolves through the
+    // CONNECTION's search_path, not through the schema in the statement. This
+    // admin client has none, so on a database that happens to have a
+    // `public.users_versions` (any machine running the stack) the reset wrote
+    // its rows into the REAL table and passed; on CI's database, which has no
+    // such table, it failed with `relation "users_versions" does not exist`.
+    // Locally green for the wrong reason, and polluting live data while it was.
+    // TRUNCATE fires no row triggers at all, so the reset cannot write anywhere.
+    await admin.query(
+      `TRUNCATE ${schema}.users_versions, ${schema}.sessions, ${schema}.auth_events, ${schema}.users CASCADE`,
+    );
     await admin.query(
       `INSERT INTO ${schema}.users (id, email_ct, email_bidx, password_hash, dek_id, status)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -102,6 +111,12 @@ describeIfPg('password change (auth cluster)', () => {
     admin = new Client({ connectionString: pgUrl });
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${schema}`);
+    // Unqualified names inside trigger bodies resolve against the CONNECTION's
+    // search_path. Pinning it here keeps every such resolution inside the test
+    // schema rather than reaching whatever `public` happens to hold — the same
+    // hazard the TRUNCATE above avoids, closed a second way because a future
+    // case that does need a DELETE should not have to rediscover it.
+    await admin.query(`SET search_path TO ${schema}`);
 
     const migrClient = new Client({ connectionString: pgUrl, options: `-c search_path=${schema}` });
     await migrClient.connect();
