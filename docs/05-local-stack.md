@@ -187,9 +187,14 @@ the right key id. What it does **not** exercise is the IAM half: which
 between "a stolen ciphertext cannot be replayed across domains" (proven here)
 and "a compromised asset service cannot reach the Plaid key" (not proven here).
 
-`docs/03` §5.3 (insider bulk decryption) is precisely what this cannot test:
-KMS rate limiting, anomaly detection, circuit breaking, CloudHSM roots, and
-canary records are all cloud-posture controls with no local equivalent.
+`docs/03` §5.3 (insider bulk decryption) splits: since M18 the DETECTION half
+— per-principal decrypt-rate baselines over the audit stream (docs/03 §6q) —
+runs right here, in the audit container, and the stack e2e proves it fires on
+a deliberate burst and stays silent over the whole dev journey. What this
+stack still cannot test is the RESPONSE half and everything KMS-side: grant
+suspension (circuit breaking), KMS rate limiting of bulk unwraps, CloudHSM
+roots, and canary records remain cloud-posture controls with no local
+equivalent.
 
 ### Active templates are attorney-unreviewed exemplars
 

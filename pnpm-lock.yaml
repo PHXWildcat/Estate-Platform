@@ -498,12 +498,18 @@ importers:
 
   apps/services/audit:
     dependencies:
+      '@estate/audit-emitter':
+        specifier: workspace:*
+        version: link:../../../packages/audit-emitter
       '@estate/contracts':
         specifier: workspace:*
         version: link:../../../packages/contracts
       '@estate/db':
         specifier: workspace:*
         version: link:../../../packages/db
+      '@estate/kafka':
+        specifier: workspace:*
+        version: link:../../../packages/kafka
       '@nestjs/common':
         specifier: 'catalog:'
         version: 11.1.28(reflect-metadata@0.2.2)(rxjs@7.8.2)

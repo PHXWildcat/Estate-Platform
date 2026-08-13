@@ -5605,3 +5605,50 @@ deviating from them, stop and propose the change with rationale — do not silen
   own log (`audit_migrations_applied count=1`) was the second tell — a
   migrator that applied one migration when the tree holds two has not seen
   your file.
+- 2026-08-13 — M18 PR2 SHIPPED: the decrypt-rate detector inside the audit
+  service. The shape is everything the decision log promised — windowed GROUP
+  BY over the 002 index on the detector's OWN pg session, pure evaluator over
+  `decrypt-rate-bounds.ts` (reviewed constants from PR1's measured table), the
+  service's FIRST Kafka producer feeding `crypto.decrypt_rate.exceeded`
+  through AuditEmitter onto its own topic and so into the verified chain,
+  episode dedup failing in the EXTRA-event direction, faults swallowed-and-
+  logged and never fatal (a detector error must not kill ingest, the paging
+  signal) — plus three decisions taken while building. (1) EVERYTHING OUTSIDE
+  THE REVIEWED TABLE IS BOUND 0: an unregistered prefix, an unmodelled
+  (prefix × principal) combination, and encrypt-only `distributions` each
+  breach at the FIRST decrypt, because a read path nobody reviewed is itself
+  the anomaly — and `undecidedPrefixes()` plus its spec force every registered
+  prefix to carry a VISIBLE decision (bound row or encrypt-only reason), so
+  the zero default can never be reached by forgetting. (2) THE DETECTOR IS
+  STARTED FROM main.ts, not a lifecycle hook: suites construct classes
+  directly and never run main, so the timer structurally cannot run under
+  jest — the settlement-driver rule achieved by PLACEMENT, because audit's
+  config deliberately has no NODE_ENV to key on. (3) THE E2E GATE PAIRS A
+  POSITIVE CONTROL WITH THE FALSE-POSITIVE ASSERTION: the brief's bare
+  "zero anomaly events after the journey" is vacuously green over a DEAD
+  detector (the M8 dead-consumer shape), so the test bursts 101 step-ups past
+  the smallest bound (identity's TOTP path has no replay ledger, so repeated
+  codes are cheap; successes are uncounted by the M16 cap), polls for exactly
+  that anomaly — which also makes the negative half deterministic, since the
+  tick that catches the burst evaluated a window covering the whole journey —
+  then asserts EVERY anomaly in the store names the deliberate bound.
+  Asserting "all rows are the burst's bound" rather than "count == 1" is what
+  keeps repeated local runs green while CI sees exactly one. Counts
+  25/4→26/4 (both workflow twins) and 16/13→16/14. Six mutations red
+  (threshold off-by-one, self-feeding SQL, unknown-prefix absorbed, sentinel
+  folded, dedup dropped, audit-grows-a-prefix fence); the self-feeding
+  mutation went red one case EARLY — the widened counted set surfaces the
+  chain's own anomaly event as a missing_field breach in the episode case,
+  which shares cumulative counts — recorded as cascade attribution, not
+  papered over with a widened regex.
+- 2026-08-13 — M18 PR2's docs delta is the KMS-framing correction, stated
+  once here for the grep trail: docs/03 §4 TB4 and §5.3 no longer claim KMS
+  sees read volume (the 5-minute DEK cache means N reads under a hot key are
+  N audit events and ZERO KMS operations — bulk UNWRAPS across many users
+  remain KMS-visible and rate-limited, which is the half KMS keeps); §6q
+  records the detector, its alert-sink decision (chain + log line, NO owner
+  notification — audit's zero-credential posture is fenced), the per-process
+  episode residual, the provisional unexercised bounds, and the
+  rebuild-trips-by-design note; docs/05's "cannot test anomaly detection"
+  split into detection-local / response-cloud; docs/04's escalation list
+  shrank by the detection half (the M8 take-over precedent).
