@@ -5455,3 +5455,60 @@ deviating from them, stop and propose the change with rationale — do not silen
   account's ceremony answer; is automatic revocation on a heuristic the right
   response) that belong to the milestone that makes them reachable. Writing
   them down is the part that is not optional.
+- 2026-08-13 — CLONE DETECTION NOTIFIES THE OWNER AND DELIBERATELY DOES NOT
+  REVOKE, which is the M17 PR6 review's item ANSWERED rather than adopted. The
+  obvious fix — revoke the credential whose signature counter regressed — is
+  wrong for a reason the code already encodes: `storedCounter > 0` means SYNCED
+  passkeys (iCloud Keychain, Google Password Manager) report 0 and never reach
+  the branch, so it fires only on counter-maintaining authenticators, where a
+  regression is a clone OR a firmware/state bug. Destroying a factor on a
+  heuristic is the M6 rule pointed the wrong way, and on an account holding no
+  TOTP it lands the owner in exactly the bootstrap-lockout state M17 spent a
+  milestone making survivable. So: reject the assertion (unchanged), tell the
+  owner, and let them revoke from the surface M17 PR5 shipped.
+  `identity.passkey_clone_detected` rides the ACCOUNT-SECURITY wire because it
+  carries nothing — no credential id, no device name, no counter — and the
+  wire has no field for text. THE ORDERING IS THE M13 RULE APPLIED: the notify
+  runs BEFORE the audit emit, because `webauthnCloneDetected` reaches Kafka and
+  propagates broker failures by design, so emitting first would let an audit
+  outage swallow the one control that makes the signal actionable by the person
+  it is about; the delivery outcome then rides that event as
+  `notified: delivered|failed`, so a warning that did not land is visible
+  rather than absent. Pinned by three cases — the credential SURVIVES (with the
+  repo double gaining a real `revokeCredential` mock, since an undefined one
+  makes `not.toHaveBeenCalled` pass vacuously), the notify-then-audit order,
+  and the failed-send outcome. The derived fences absorbed the new kind with no
+  edit at all (the templates registry and the int-spec kind sweep both loop over
+  `ACCOUNT_SECURITY_KINDS`), which is M14 PR0's "derive the cases, do not list
+  them" paying off; only the client package's LITERAL surface assertion needed
+  updating, and that it failed is the fence working.
+  WHAT STAYS OPEN, recorded in §6p rather than implied: a cloned credential
+  remains usable until the owner acts. That is the deliberate cost of not
+  acting on a heuristic, and what would change it is a SECOND signal, not a
+  lower threshold on this one.
+- 2026-08-13 — AND THE CLONE BRANCH WAS DEAD THE WHOLE TIME, which only the
+  live drive found — after the notification had already been written into it.
+  `@simplewebauthn/server`'s `verifyAuthenticationResponse` runs its OWN
+  counter check (`(counter > 0 || credential.counter > 0) && counter <=
+  credential.counter` throws) because we handed it `storedCounter`, so it threw
+  BEFORE our clone branch could run and every regression landed in the generic
+  verify catch. Measured rather than reasoned about: a forced regression on the
+  running stack produced two `webauthn.assertion_failed` rows and ZERO
+  `webauthn.clone_detected`. So `webauthn.clone_detected`, its audit action and
+  the M2 comment describing the control have been dead code since M2 — and the
+  M17 PR6 review's clone item ("rejects but never revokes") was moot, because
+  the branch it described never ran. Shipping the notification as first written
+  would have added a zero-callers path INSIDE dead code, which is the defect
+  class this repo keeps closing, one level deeper than usual.
+  THE FIX IS TO OWN THE POLICY: the library is handed `counter: 0` — its
+  documented "this RP does not track counters" value — and the check runs below
+  it, on a VERIFIED assertion. The ordering is the security half and is not
+  incidental: checking the counter before verification would act on unsigned
+  attacker-supplied bytes, letting anyone holding a session make the platform
+  mail an owner a clone warning at will. The trigger set is unchanged for every
+  reachable state (stored 5 / presented 3 and stored 5 / presented 0 both still
+  refuse), so no refusal is given up and the signal is gained. Pinned by
+  asserting the ARGUMENT the library receives, which is the only place the
+  property lives. THE GENERAL LESSON: when a dependency and our own code check
+  the same invariant, one of them is dead — and which one is not visible in
+  either file. Only running it says.

@@ -47,12 +47,14 @@ function makeFakes(): {
     insertCredential: jest.Mock;
     findCredentialsByUser: jest.Mock;
     findCredentialById: jest.Mock;
+    revokeCredential: jest.Mock;
     updateSignCount: jest.Mock;
     insertChallenge: jest.Mock;
     consumeChallenge: jest.Mock;
   };
   sessions: { grantStepUp: jest.Mock };
   factors: { assertMayAddFactor: jest.Mock; holdsVerifiedFactor: jest.Mock };
+  notifications: { sendAccountSecurity: jest.Mock };
   authEvents: { insert: jest.Mock };
   events: {
     stepUpGranted: jest.Mock;
@@ -65,6 +67,11 @@ function makeFakes(): {
       insertCredential: jest.fn(),
       findCredentialsByUser: jest.fn().mockResolvedValue([]),
       findCredentialById: jest.fn().mockResolvedValue(null),
+      // Present so the clone case's `not.toHaveBeenCalled` is a real assertion
+      // rather than one about an absent method — an undefined mock would let
+      // that expectation pass vacuously, which is the shape this repo keeps
+      // finding in its own tests.
+      revokeCredential: jest.fn(),
       updateSignCount: jest.fn(),
       insertChallenge: jest.fn(),
       consumeChallenge: jest.fn().mockResolvedValue(null),
@@ -76,6 +83,14 @@ function makeFakes(): {
     factors: {
       assertMayAddFactor: jest.fn().mockResolvedValue(undefined),
       holdsVerifiedFactor: jest.fn().mockResolvedValue(false),
+    },
+    notifications: {
+      // The clone branch's ONLY outbound call. Defaults to a delivered send;
+      // the case that cares about a failed one overrides it, because a double
+      // that always succeeds cannot see the `notified: failed` path.
+      sendAccountSecurity: jest
+        .fn()
+        .mockResolvedValue({ accepted: true, delivered: true, channel: 'email' }),
     },
     authEvents: { insert: jest.fn() },
     events: {
@@ -116,6 +131,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): WebAuthnService {
     config,
     () => NOW,
     fakes.factors as unknown as SecondFactorGate,
+    fakes.notifications as never,
   );
 }
 
@@ -315,6 +331,88 @@ describe('WebAuthnService.finishAuthentication', () => {
     expect(fakes.authEvents.insert).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'webauthn.clone_detected', decision: 'counter_regression' }),
     );
+    // …AND THE CREDENTIAL SURVIVES. The M17 PR6 review proposed auto-revoking
+    // here; this asserts the answer taken instead. The counter check is a
+    // heuristic, and destroying an owner's only factor on a heuristic is the
+    // M6 rule pointed the wrong way — so the owner is TOLD and revokes it
+    // themselves from the M17 PR5 surface.
+    expect(fakes.repo.revokeCredential).not.toHaveBeenCalled();
+    expect(fakes.notifications.sendAccountSecurity).toHaveBeenCalledWith({
+      userId: USER_ID,
+      kind: 'identity.passkey_clone_detected',
+    });
+    expect(fakes.events.webauthnCloneDetected).toHaveBeenCalledWith(USER_ID, SESSION_ID, true);
+  });
+
+  it('OWNS THE COUNTER POLICY — the library is told 0 so its check cannot preempt ours', () => {
+    // The regression this pins is the one the live drive found: passing
+    // `storedCounter` lets @simplewebauthn/server throw on the regression
+    // first, which routes a clone into the generic verify catch and makes the
+    // clone branch — its ledger kind, its audit action and the owner's warning
+    // — unreachable. Asserted against the ARGUMENT the library actually
+    // receives, which is the only place the property lives.
+    const fakes = makeFakes();
+    fakes.repo.consumeChallenge.mockResolvedValue('auth-challenge');
+    fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
+    mockVerifyAuth.mockResolvedValue({
+      verified: true,
+      authenticationInfo: { newCounter: 6, userVerified: true },
+    } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
+
+    return makeService(fakes)
+      .finishAuthentication(USER_ID, SESSION_ID, response)
+      .then(() => {
+        const passed = mockVerifyAuth.mock.calls[0]?.[0] as {
+          credential: { counter: number };
+        };
+        expect(passed.credential.counter).toBe(0);
+      });
+  });
+
+  it('NOTIFIES BEFORE it records, so a broker hiccup cannot cancel the warning', async () => {
+    // The M13 ordering rule. `webauthnCloneDetected` reaches Kafka and
+    // propagates broker failures by design, so emitting first would let an
+    // audit outage swallow the one control that makes this signal actionable
+    // by the person it is about.
+    const fakes = makeFakes();
+    const order: string[] = [];
+    fakes.repo.consumeChallenge.mockResolvedValue('auth-challenge');
+    fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
+    fakes.notifications.sendAccountSecurity.mockImplementation(() => {
+      order.push('notify');
+      return Promise.resolve({ accepted: true, delivered: true, channel: 'email' });
+    });
+    fakes.events.webauthnCloneDetected.mockImplementation(() => {
+      order.push('audit');
+      return Promise.resolve();
+    });
+    mockVerifyAuth.mockResolvedValue({
+      verified: true,
+      authenticationInfo: { newCounter: 5, userVerified: true },
+    } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
+
+    await expect(
+      makeService(fakes).finishAuthentication(USER_ID, SESSION_ID, response),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(order).toEqual(['notify', 'audit']);
+  });
+
+  it('a FAILED warning is recorded as failed — visible, not merely absent', async () => {
+    const fakes = makeFakes();
+    fakes.repo.consumeChallenge.mockResolvedValue('auth-challenge');
+    fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
+    fakes.notifications.sendAccountSecurity.mockResolvedValue({ accepted: false });
+    mockVerifyAuth.mockResolvedValue({
+      verified: true,
+      authenticationInfo: { newCounter: 5, userVerified: true },
+    } as unknown as Awaited<ReturnType<typeof verifyAuthenticationResponse>>);
+
+    // The refusal still happens: the notification is the SIGNAL, the rejection
+    // is the CONTROL, and a send failure must never roll back a refusal (M6/M9).
+    await expect(
+      makeService(fakes).finishAuthentication(USER_ID, SESSION_ID, response),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(fakes.events.webauthnCloneDetected).toHaveBeenCalledWith(USER_ID, SESSION_ID, false);
   });
 
   it('rejects when no challenge was outstanding', async () => {

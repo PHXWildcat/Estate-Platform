@@ -76,6 +76,13 @@ function makeService(opts?: {
     { rpId: 'localhost', rpOrigin: 'http://localhost:3000', rpName: 'Estate' } as IdentityConfig,
     () => NOW,
     {} as unknown as SecondFactorGate,
+    // The clone branch's notifier. REFUSING by default, not succeeding: these
+    // cases never reach it, and a double that quietly succeeded would make an
+    // unreachable path look healthy (the M17 PR2 faithful-refusal rule).
+    {
+      sendAccountSecurity: (): Promise<{ accepted: boolean }> =>
+        Promise.resolve({ accepted: false }),
+    } as never,
   );
   return {
     service,

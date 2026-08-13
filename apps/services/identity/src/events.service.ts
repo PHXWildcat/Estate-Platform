@@ -676,7 +676,14 @@ export class EventsService {
   }
 
   /** A non-incrementing signature counter — the credential may be cloned. */
-  async webauthnCloneDetected(userId: string, sessionId: string): Promise<void> {
+  /**
+   * `notified` rides this event (M17 follow-up) on the M13 link-claim
+   * precedent: the owner's warning is the whole response to a clone signal, so
+   * whether it was delivered is a fact an operator needs on the case's own
+   * trail — and `failed` is what tells them to re-drive it. A separate table
+   * nobody would join against would not.
+   */
+  async webauthnCloneDetected(userId: string, sessionId: string, notified: boolean): Promise<void> {
     await this.audit.emit({
       action: 'auth.webauthn.clone_detected',
       actorId: userId,
@@ -685,6 +692,7 @@ export class EventsService {
       resourceType: 'webauthn_credential',
       resourceId: userId,
       sessionId,
+      detail: { notified: notified ? 'delivered' : 'failed' },
     });
   }
 

@@ -72,6 +72,11 @@ export const SYSTEM_NOTIFICATION_KINDS = [
   // M17 PR4: "your sign-in address was changed", sent to the address being
   // LEFT — the only recipient who can dispute a takeover. Carries nothing.
   'identity.email_changed',
+  // M17 follow-up: a passkey failed the signature-counter check, which is the
+  // FIDO cloning signal. A system kind for the account-security reason: it says
+  // something happened to the account's own credentials, and vault, settlement
+  // and profile have no business being able to say it.
+  'identity.passkey_clone_detected',
 ] as const;
 export type SystemNotificationKind = (typeof SYSTEM_NOTIFICATION_KINDS)[number];
 
@@ -97,6 +102,21 @@ export const ACCOUNT_SECURITY_KINDS = [
   // address explicitly would be a route that names destinations, and only the
   // challenge wire is allowed to do that.
   'identity.email_changed',
+  // M17 follow-up (the PR6 review's clone-detection item, answered by NOTIFYING
+  // rather than auto-revoking). It rides this wire because it carries nothing —
+  // no credential id, no device name, no counter — and because the remedy is
+  // the one this wire always points at: sign in and look.
+  //
+  // WHY NOT AUTO-REVOKE, which is the obvious response and the wrong one: the
+  // counter check is a HEURISTIC. Synced passkeys report counter 0 and never
+  // trigger it at all (the `storedCounter > 0` guard), so it fires only on
+  // counter-maintaining authenticators, where a regression is a clone OR a
+  // firmware/state bug. Destroying a factor on a heuristic would strip an
+  // owner's only passkey without asking — the M6 rule inverted, and on an
+  // account with no TOTP it lands them in the bootstrap-lockout state M17 spent
+  // a milestone making survivable. Reject the assertion, tell the owner, let
+  // them revoke from the surface M17 PR5 shipped.
+  'identity.passkey_clone_detected',
 ] as const;
 export type AccountSecurityKind = (typeof ACCOUNT_SECURITY_KINDS)[number];
 

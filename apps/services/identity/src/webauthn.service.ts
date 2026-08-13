@@ -11,6 +11,7 @@ import {
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
 import type { SessionContext } from '@estate/auth-guard';
+import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { StepUpResult } from './auth.service';
 import type { IdentityConfig } from './config';
@@ -88,6 +89,11 @@ export class WebAuthnService {
     @Inject(CONFIG) private readonly config: IdentityConfig,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly factors: SecondFactorGate,
+    // M17 follow-up: the clone signal's whole response is telling the owner, so
+    // this service gained the account-security port identity already holds the
+    // credential for (M17 PR2). It sends ONE closed kind and can reach nothing
+    // else — the wire carries a user id and a kind and has no field for text.
+    @Inject(NOTIFICATIONS) private readonly notifications: NotificationsPort,
   ) {}
 
   private challengeExpiry(): Date {
@@ -258,7 +264,29 @@ export class WebAuthnService {
           id: cred.credential_id.toString('base64url'),
           // Fresh ArrayBuffer-backed copy to match the library's Uint8Array_.
           publicKey: toBytes(cred.public_key),
-          counter: storedCounter,
+          // ZERO, DELIBERATELY — this service owns the counter policy, not the
+          // library (M17 follow-up, found by driving the ceremony live).
+          //
+          // Passing `storedCounter` makes @simplewebauthn/server run its OWN
+          // regression check (verifyAuthenticationResponse: `(counter > 0 ||
+          // credential.counter > 0) && counter <= credential.counter` throws)
+          // — which preempts the clone branch below and made it UNREACHABLE
+          // from M2 until this line changed. Measured, not reasoned about: a
+          // forced regression produced two `webauthn.assertion_failed` rows and
+          // zero `webauthn.clone_detected`, so the ledger kind, the audit
+          // action and the owner notification were all dead code behind a
+          // refusal that came from somewhere else.
+          //
+          // Zero is the documented "this RP does not track counters" value, so
+          // the library's clause cannot fire, and the check moves below where
+          // it runs on a VERIFIED assertion. That ordering is the security
+          // half: checking the counter ourselves BEFORE verification would act
+          // on unsigned attacker-supplied bytes, letting anyone holding a
+          // session make the platform mail the owner a clone warning at will.
+          // The trigger set is unchanged for every reachable state — stored 5 /
+          // presented 3, and stored 5 / presented 0, both still refuse — so
+          // this gives up no refusal and gains the signal.
+          counter: 0,
           ...(cred.transports && cred.transports.length > 0
             ? { transports: cred.transports as AuthenticatorTransportFuture[] }
             : {}),
@@ -278,15 +306,39 @@ export class WebAuthnService {
     }
     const newCounter = verification.authenticationInfo.newCounter;
     // Clone detection: a non-incrementing counter (when the authenticator
-    // reports one at all) means two copies of the credential exist. Reject.
+    // reports one at all) means two copies of the credential exist.
+    //
+    // REJECT AND TELL THE OWNER — and deliberately DO NOT REVOKE, which is the
+    // obvious response and the wrong one (the M17 PR6 review's item, answered
+    // rather than adopted). The counter check is a HEURISTIC: synced passkeys
+    // report 0 and never reach here at all (the `storedCounter > 0` guard), so
+    // it fires only on counter-maintaining authenticators, where a regression
+    // is a clone OR a firmware/state bug. Destroying a factor on a hint would
+    // strip an owner's only passkey without asking — the M6 rule pointed the
+    // wrong way — and on an account with no TOTP it lands them in exactly the
+    // bootstrap-lockout state M17 spent a milestone making survivable. The
+    // owner revokes it themselves, from the surface M17 PR5 shipped.
     if (storedCounter > 0 && newCounter <= storedCounter) {
+      // NOTIFY FIRST, then record — the M13 rule. The audit emit propagates
+      // broker failures by design, so emitting first would let a Kafka hiccup
+      // cancel the one control that makes this signal actionable by the person
+      // it is about. The delivery outcome then rides the audit event, so a
+      // failed warning is visible rather than merely absent.
+      const notice = await this.notifications.sendAccountSecurity({
+        userId,
+        kind: 'identity.passkey_clone_detected',
+      });
       await this.authEvents.insert({
         userId,
         sessionId,
         kind: 'webauthn.clone_detected',
         decision: 'counter_regression',
       });
-      await this.events.webauthnCloneDetected(userId, sessionId);
+      await this.events.webauthnCloneDetected(
+        userId,
+        sessionId,
+        notice.accepted && notice.delivered,
+      );
       throw authenticationFailed();
     }
     const now = this.clock();
