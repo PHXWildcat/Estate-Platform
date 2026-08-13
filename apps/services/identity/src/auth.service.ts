@@ -33,6 +33,7 @@ import {
   LOGIN_ADDRESS_BOUND,
   LOGIN_BOUND,
   REGISTER_ADDRESS_BOUND,
+  PASSWORD_CHANGE_BOUND,
   REGISTER_REFUSAL_KIND,
   STEP_UP_BOUND,
   type LedgerRateBound,
@@ -562,6 +563,15 @@ export class AuthService {
     // `stepup_required`, which the surface already knows how to prompt for.
     await this.factors.assertMayAddFactor(userId, caller, this.clock());
 
+    // THE GUESSING BOUND, added by the M17 PR6 review, which measured this
+    // route taking twenty-five wrong guesses from one session without a single
+    // refusal and then handing the account over on the twenty-sixth. It sits
+    // AFTER the factor gate — an account holding a factor never reaches the
+    // password check at all, so the cap is the backstop for the factorless
+    // case the gate deliberately lets through — and BEFORE the verification,
+    // because a bound evaluated after the guess is scored is not a bound.
+    await this.assertPasswordChangeAttemptsAvailable(userId, sessionId);
+
     if (!(await this.hasher.verifyPassword(user.password_hash, currentPassword))) {
       await this.authEvents.insert({ userId, sessionId, kind: 'password.change_failed' });
       throw invalidCredentials();
@@ -708,6 +718,48 @@ export class AuthService {
     if (overCap) {
       await this.refuseStepUpForRate(userId, sessionId, overCap.count);
     }
+  }
+
+  /**
+   * The current-password guessing cap (M17 PR6). Same two scopes as the step-up
+   * cap and for its reason: the per-SESSION budget is what a stolen credential
+   * exhausts on itself, so the refusal cannot become a lockout of the owner,
+   * who reaches this route from their own sessions with their own budgets.
+   */
+  private async assertPasswordChangeAttemptsAvailable(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const overCap = await this.boundExceeded(PASSWORD_CHANGE_BOUND, userId, sessionId);
+    if (overCap) {
+      await this.refusePasswordChangeForRate(userId, sessionId, overCap.count);
+    }
+  }
+
+  /**
+   * 429 with its own token, on the step-up refusal's reasoning: this route
+   * already required a resolved, authenticated caller, so a distinct status
+   * tells them something about themselves and no one else. Never
+   * `invalid_credentials`, which already means "that password was wrong" and
+   * would send someone to re-check a password when the remedy is to wait.
+   *
+   * Its own ledger kind, NOT `password.change_failed` — a refusal counted by
+   * the bound that produced it feeds its own counter, and a retrying client
+   * would lock its user out for as long as it kept trying (the M16 lesson).
+   */
+  private async refusePasswordChangeForRate(
+    userId: string,
+    sessionId: string,
+    attempts: number,
+  ): Promise<never> {
+    await this.authEvents.insert({
+      userId,
+      sessionId,
+      kind: PASSWORD_CHANGE_BOUND.refusalKind,
+      decision: 'too_many_attempts',
+    });
+    await this.events.passwordChangeRateLimited(userId, sessionId, attempts);
+    throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
   }
 
   private async boundExceeded(

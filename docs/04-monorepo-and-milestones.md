@@ -4395,6 +4395,37 @@ the code never satisfied.
 (migration 011, the 005 shape), and §6m's reset question RE-DECLINED with the
 reasoning recorded rather than re-argued.
 
+#### PR6 as built — the security review (2026-08-13)
+
+Seven file-scoped discovery lenses over the merged M17 machinery, then two
+adversarial verifiers per deduped candidate on different angles (production
+reachability; is-it-already-a-decision), both defaulting to refuted. **12 raw,
+12 unique, 2 confirmed, 10 refuted.** Every confirmed finding re-proved BY
+EXECUTION against the running stack before anything changed; every fix
+mutation-tested by reverting it (7 mutations, all red). Full record in docs/03
+§6p.
+
+Both confirmed findings falsify a claim M17 made about itself — the eleventh
+milestone running:
+
+1. **The change-password route verified a password with no bound.** §6k's own
+   framing ("routes that take a password from an UNAUTHENTICATED caller") is
+   why: the route reads as authenticated, though the entire reason it asks for
+   the current password is the stolen-session threat. Measured live —
+   twenty-five wrong guesses, no refusal, account taken over on the
+   twenty-sixth, while the same volume at login produced four
+   `login.rate_limited`. Fixed with M16's two scopes, the per-SESSION half
+   being the escape that could not port to login but ports here.
+2. **PR5's own ledger correction was incomplete.** Two of four failing
+   assertion branches stayed silent, including the foreign-credential probe —
+   the class no browser produces by accident. Ten live probes, zero rows.
+
+Two novel-but-unreachable candidates are RECORDED rather than fixed (a
+crypto-shredded DEK 500 at email-change completion; clone detection not
+revoking), both latent behind machinery that does not exist yet — the M14
+precedent of writing down what arms later rather than fixing speculatively or
+hiding it.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

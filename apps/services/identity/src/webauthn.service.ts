@@ -226,11 +226,24 @@ export class WebAuthnService {
       this.clock(),
     );
     if (!expectedChallenge) {
+      // RECORDED, like every other failing branch (M17 PR6). A verify with no
+      // live challenge is ordinarily a stale tab — and is also what replaying a
+      // captured assertion body looks like, which is precisely the shape an
+      // investigator would want to see.
+      await this.recordAssertionFailure(userId, sessionId);
       throw authenticationFailed();
     }
     const credentialId = Buffer.from(response.id, 'base64url');
     const cred = await this.repo.findCredentialById(credentialId);
     if (!cred || cred.user_id !== userId) {
+      // THE MOST SUSPICIOUS PROBE CLASS OF ALL, and until the M17 PR6 review it
+      // was the one that left no trace: a credential id that names nothing, or
+      // names somebody ELSE's authenticator, submitted against this account.
+      // Nobody's browser produces that by accident. It short-circuits before
+      // the crypto verify, so the catch below never saw it — which is how two
+      // of the four failing branches came to be silent while PR5's own
+      // docstring said the kind existed to make assertion failures visible.
+      await this.recordAssertionFailure(userId, sessionId);
       throw authenticationFailed();
     }
     const storedCounter = Number(cred.sign_count);

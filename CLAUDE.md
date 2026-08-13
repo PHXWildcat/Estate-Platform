@@ -5375,3 +5375,83 @@ deviating from them, stop and propose the change with rationale — do not silen
   NOTHING, so the log was corrected by making it true, with the kind in no
   rate-bound set (a passkey is not brute-forceable, and counting it would let
   a flaky authenticator lock out its own owner).
+- 2026-08-13 — M17 PR6 security review (seven file-scoped discovery lenses over
+  the merged milestone — never a diff range, the M13 rule — then TWO
+  adversarial verifiers per deduped candidate on different angles, production
+  reachability and is-it-already-a-decision, both defaulting to refuted; 12
+  raw, 12 unique, 2 confirmed, 10 refuted). EVERY confirmed finding was
+  re-proved BY EXECUTION against the running stack before a line changed, and
+  every fix mutation-tested by reverting it. ELEVENTH milestone running where
+  every confirmed finding sits in machinery the milestone introduced, and both
+  falsify a claim it made about itself.
+  THE WORST ONE IS A ROUTE THE MILESTONE'S OWN FRAMING HID: `POST
+  /v1/auth/password` verifies the current password and had NO BOUND OF ANY
+  KIND. Measured rather than argued — twenty-five wrong guesses from one
+  session, twenty-five plain 401s, no refusal ever, and the twenty-sixth (the
+  right one) took the account over; the same volume at `POST /v1/auth/login`
+  produced ten `login.failed` and four `login.rate_limited`. One
+  credential-guessing action, two routes, one bounded. The gap is exactly §6k's
+  sentence: PR1 bounded "the routes that take a password from an
+  UNAUTHENTICATED caller", and this route READS as authenticated — while the
+  entire reason it asks for the current password is the stolen-session threat,
+  so its caller is the party the bound is for. It bit hardest on FACTORLESS
+  accounts, which `SecondFactorGate` deliberately lets through (the bootstrap),
+  so nothing else stood in the way. THE GENERAL RULE: a bound's scope statement
+  is a claim about which routes check a secret, and "authenticated" is not the
+  same question as "does not check a secret".
+- 2026-08-13 — THE PER-SESSION SCOPE THAT COULD NOT PORT TO LOGIN PORTS HERE,
+  which is why the fix is M16's two-scope shape rather than login's
+  account-only one. `LOGIN_BOUND` has `maxPerScope: null` because
+  `recordLoginFailure` runs before any session exists — no credential at the
+  point of failure, so no per-credential budget, and the recorded cost is that
+  an attacker can deny NEW logins. The change route HAS a credential at the
+  point of failure, so a stolen session exhausts its OWN budget and stops while
+  the owner's other sessions keep theirs: the cap cannot become the
+  owner-lockout that an account-only bound would be on a route the owner needs.
+  The refusal is 429 with its own token (safe here and not on login: the route
+  already required a resolved authenticated caller, so it tells them about
+  themselves) and its own ledger kind, because a refusal counted by the bound
+  that produced it feeds its own counter — the M16 lesson, applied rather than
+  rediscovered. A reset deliberately does NOT clear the window: it revokes
+  every session, so the attacker's credential is already dead, and admitting a
+  kind reachable WITHOUT proving the current password would let the reset path
+  launder the guessing window.
+- 2026-08-13 — PR5's OWN LEDGER CORRECTION WAS INCOMPLETE, which is the same
+  defect one layer down. PR5 added `webauthn.assertion_failed` to correct a
+  2026-08-10 decision-log entry claiming failed assertions "emit their own
+  kind" while the code emitted nothing — and recorded on only two of the four
+  failing branches. The two that short-circuit EARLIEST stayed silent: no live
+  challenge, and a credential id that names nothing or names somebody ELSE's
+  authenticator. Measured: ten probes against a live account produced ZERO
+  `webauthn.*` rows, and the foreign-credential probe — the class no browser
+  produces by accident — was precisely the invisible one. The lesson is about
+  the SHAPE of a correction: adding an event where the failure is most
+  convenient to catch is not the same as adding it everywhere the failure
+  happens, and a docstring that says "every assertion failure" is checkable
+  only by counting the throw sites.
+- 2026-08-13 — TWO REFUTATIONS WORTH AS MUCH AS THE FINDINGS, both because the
+  behaviour was ALREADY WRITTEN DOWN. A lens flagged the account-cap refusal
+  running a full Argon2 before refusing (and skipping the in-memory address
+  record) as an unbounded-cost hole; §6k already records the address bound as
+  per-process, best-effort and evadable, and the one-hash cost on a refusing
+  path is stated inline — the residual is real and documented, which is the
+  difference between a finding and a rediscovery. Another flagged historical
+  `users_versions` rows retaining the Argon2id verifier; refuted on ORDERING —
+  the migrator applies 001→011 before the app serves, so a fresh deploy
+  installs the redacting trigger before any `users` UPDATE, which migration
+  008's own comment states. Both are why the verify phase runs two angles: the
+  is-it-a-decision verifier is what stops a review from re-litigating settled
+  trade-offs as though they were defects.
+- 2026-08-13 — AND TWO NOVEL-BUT-UNREACHABLE CANDIDATES ARE RECORDED RATHER
+  THAN FIXED (docs/03 §6p): a crypto-shredded DEK at email-change completion
+  would surface as a 500 instead of the uniform `invalid_code` (no code path
+  destroys a DEK — `destroyDek` still has zero callers), and clone detection
+  rejects a counter-regressed assertion without revoking the credential, so a
+  later higher-counter assertion from either copy still succeeds. Both arm the
+  day an erasure route or an automatic-revocation policy lands. The M14
+  precedent cuts both ways and the choice is stated: M14 FIXED its latent
+  crypto-shred defect because the fix was one predicate in machinery already
+  being touched, while these two need decisions (what should a shredded
+  account's ceremony answer; is automatic revocation on a heuristic the right
+  response) that belong to the milestone that makes them reachable. Writing
+  them down is the part that is not optional.

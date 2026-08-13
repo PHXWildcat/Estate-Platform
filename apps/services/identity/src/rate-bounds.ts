@@ -158,8 +158,52 @@ export const LOGIN_BOUND: LedgerRateBound = {
   refusalKind: 'login.rate_limited',
 };
 
+/**
+ * FIVE WRONG CURRENT-PASSWORD GUESSES PER SESSION, TWENTY PER ACCOUNT — added
+ * by the M17 PR6 review, which found `POST /v1/auth/password` verifying a
+ * password with no bound of any kind.
+ *
+ * MEASURED BEFORE IT WAS WRITTEN, on the running stack: twenty-five wrong
+ * guesses from one stolen session all answered 401, no refusal ever fired, and
+ * the twenty-sixth — with the right password — took the account over. The same
+ * volume against `POST /v1/auth/login` produced ten `login.failed` and four
+ * `login.rate_limited`. One credential-guessing action, two routes, and only
+ * one of them bounded.
+ *
+ * WHY THE GAP EXISTED: M17 PR1 bounded the routes that take a password from an
+ * UNAUTHENTICATED caller, and PR2's change route reads as authenticated —
+ * except that the whole reason it asks for the current password is the
+ * stolen-session threat, so its caller is exactly the party the bound is for.
+ *
+ * `maxPerScope` IS SET HERE, unlike `LOGIN_BOUND`, and the difference is the
+ * one M16 identified: there IS a credential at the point of failure. A stolen
+ * session exhausts its own budget and stops, while the owner's other sessions
+ * keep theirs — so the cap cannot become the owner-lockout that a purely
+ * account-keyed bound would be on a route the owner needs. The account ceiling
+ * stays as the real bound against somebody holding several stolen sessions.
+ *
+ * A RESET DELIBERATELY DOES NOT CLEAR THE WINDOW (`successes` is
+ * `password.changed` alone). It does not need to: completing a reset revokes
+ * every session, so the attacker's stolen credential is dead and its budget is
+ * moot — and adding a kind here that a caller can reach WITHOUT proving the
+ * current password would let the reset path launder the guessing window.
+ */
+export const PASSWORD_CHANGE_BOUND: LedgerRateBound = {
+  name: 'password-change',
+  failures: ['password.change_failed'],
+  successes: ['password.changed'],
+  windowMs: 15 * 60 * 1000,
+  maxPerScope: 5,
+  maxPerAccount: 20,
+  refusalKind: 'password.change_rate_limited',
+};
+
 /** Every declared bound, for the fence to iterate. */
-export const LEDGER_RATE_BOUNDS: readonly LedgerRateBound[] = [STEP_UP_BOUND, LOGIN_BOUND];
+export const LEDGER_RATE_BOUNDS: readonly LedgerRateBound[] = [
+  STEP_UP_BOUND,
+  LOGIN_BOUND,
+  PASSWORD_CHANGE_BOUND,
+];
 
 /**
  * THE ADDRESS-KEYED BOUND — the primary one, and deliberately NOT on the

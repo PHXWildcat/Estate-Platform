@@ -1664,7 +1664,10 @@ of memory-hard work apiece, paid before it looked to see whether the address
 existed. `recordLoginFailure` wrote a `login.failed` row on every failure and
 **nothing has ever read one**. Four residuals in this document (§6a, §6b, §6g,
 §6i) deferred to "identity's login rate limiting" as a standing follow-up. This
-is that follow-up, for login and register only.
+is that follow-up, for login and register only. **A third bound was added by
+the M17 PR6 review** — `POST /v1/auth/password` verifies the current password
+and this delta's own framing ("the routes that take a password from an
+unauthenticated caller") is exactly why it was missed; see §6p.
 
 **Two bounds, because one selector cannot see the whole surface.**
 
@@ -1763,6 +1766,13 @@ one closes the channel.
   entropy, a short TTL and burn-on-attempt. `POST /v1/auth/refresh` and `POST
   /v1/auth/logout/refresh` are likewise unbounded; both resolve a 256-bit token
   or nothing.
+- *The authenticated routes that check a secret were NOT considered here, and
+  one of them needed a bound.* This delta's list above enumerates only
+  UNAUTHENTICATED routes, which is how `POST /v1/auth/password` — whose whole
+  purpose is to defend against a stolen session — went unbounded until the PR6
+  review measured it (§6p). The list is now: login, register and password
+  change are bounded; handoff/pairing redeem and the two refresh routes are
+  deliberately not.
 - *The bounds are per-service-instance for the address half and per-account for
   the ledger half; neither is a global quota.* §4 TB1's "per-tenant load
   shedding" is unrelated infrastructure work and is not delivered here.
@@ -2206,7 +2216,95 @@ and counting it would let a flaky authenticator lock out its own owner.
 - **Browser-side ceremony failures are invisible to the platform.** A user
   whose sheet keeps failing generates no ledger events until an assertion
   actually reaches identity; only the device knows. Accepted: the alternative
-  is client-side telemetry, which this product does not do.
+  is client-side telemetry, which this product does not do. **Corrected scope
+  (PR6):** this residual only ever covered failures that never reach identity.
+  Two SERVER-side branches were also silent — no live challenge, and a
+  credential id naming nothing or naming somebody else's authenticator — which
+  was a defect rather than this residual, and is fixed in §6p.
+
+## 6p. Threat-model delta — M17 PR6, the security review (2026-08-13)
+
+**How it ran.** Seven file-scoped discovery lenses over the merged M17
+machinery — never a diff range (the M13 lesson) — then TWO adversarial
+verifiers per deduped candidate on different angles: reachability in a real
+production config, and is-it-already-a-documented-decision, both defaulting to
+REFUTED. Twelve raw candidates, twelve after dedup, **two confirmed**, ten
+refuted. Every confirmed finding was then re-proved BY EXECUTION against the
+running stack before a line was changed, and every fix mutation-tested by
+reverting it. ELEVENTH milestone running in which every confirmed finding sits
+in machinery the milestone introduced, and both falsify a claim it made about
+itself.
+
+**(1) `POST /v1/auth/password` VERIFIED A PASSWORD WITH NO BOUND OF ANY KIND.**
+Measured on the running stack rather than argued: twenty-five wrong
+current-password guesses from one session, twenty-five plain 401s, no refusal
+ever, and the twenty-sixth — the right one — took the account over. The same
+volume against `POST /v1/auth/login` produced ten `login.failed` and four
+`login.rate_limited`. One credential-guessing action, two routes, one bounded.
+
+The gap is exactly the shape of §6k's own framing: PR1 bounded "the routes that
+take a password from an UNAUTHENTICATED caller", and the change route reads as
+authenticated — except that the entire reason it asks for the current password
+is the stolen-session threat, so its caller is the party the bound is for. It
+mattered most for FACTORLESS accounts, which `SecondFactorGate` deliberately
+lets through (the bootstrap: nothing exists to prove), so nothing else stood in
+the way.
+
+`PASSWORD_CHANGE_BOUND` closes it with M16's two scopes, and the per-SESSION
+half is the load-bearing one: unlike login there IS a credential at the point
+of failure, so a stolen session exhausts its own budget and stops while the
+owner's other sessions keep theirs — the escape that could not port to login
+ports here. The refusal is a 429 with its own token (safe: the route already
+required a resolved, authenticated caller, so it tells them about themselves)
+and its own ledger kind, because a refusal counted by the bound that produced
+it feeds its own counter. A reset deliberately does not clear the window: it
+revokes every session, so the attacker's credential is already dead.
+
+**(2) TWO OF THE FOUR FAILING ASSERTION BRANCHES LEFT NO LEDGER TRACE.** M17
+PR5 added `webauthn.assertion_failed` precisely to correct a decision-log entry
+claiming failed assertions "emit their own kind" when the code emitted nothing
+— and the correction was incomplete. Only the crypto-verify catch and the
+`userVerified` recheck recorded; the two branches that short-circuit EARLIEST
+stayed silent. Measured: ten probes against a live account (five with no
+challenge, five submitting a foreign credential id after minting a real
+challenge) produced ZERO `webauthn.*` rows. A credential id naming nothing or
+naming somebody else's authenticator is the most suspicious probe class there
+is — no browser produces one by accident — and it was the one that was
+invisible. All four branches record now; the wire answer stays uniform, so the
+trail gains detail the caller does not.
+
+### What the review REFUTED, and why the refutations are worth keeping
+
+Ten candidates were refuted, and two of the refutations are load-bearing:
+
+- *"The account-cap refusal skips the in-memory address record, defeating the
+  Argon2-cost bound"* — refuted as ALREADY RECORDED. The address bound is
+  documented in §6k as per-process, best-effort and evadable; the account bound
+  is a durable new-login ceiling, not an Argon2-cost bound, and its one-hash
+  cost on a refusing path is stated inline. The residual is real and already
+  written down, which is the difference between a finding and a rediscovery.
+- *"Historical `users_versions` rows retain the live Argon2id verifier"* —
+  refuted on ordering: the migrator applies 001→011 before the app serves, so a
+  fresh deploy installs the redacting trigger before any `users` row is ever
+  updated, and migration 008's own comment states the pre-migration window and
+  why it ships in PR2's commit.
+
+### Residuals
+
+- **Two novel-but-unreachable candidates are recorded rather than fixed**, both
+  latent behind machinery that does not exist yet. A crypto-shredded DEK at
+  email-change completion would surface as a 500 rather than the uniform
+  `invalid_code` (no code path destroys a DEK today — `destroyDek` still has
+  zero callers), and clone detection rejects a counter-regressed assertion
+  without revoking the credential, so a later higher-counter assertion from
+  either copy still succeeds. Both arm the day an erasure route or an
+  automatic-revocation policy lands; recorded here so the next milestone
+  inherits them stated rather than hidden.
+- **The password-change bound is per-account durable plus per-session durable**,
+  both ledger-derived, so unlike the address bound it survives a restart and is
+  shared across replicas. It is NOT a global quota and does not bound an
+  attacker who can mint sessions — but minting one requires the password, which
+  is what they are trying to guess.
 
 ## 7. Validation program
 

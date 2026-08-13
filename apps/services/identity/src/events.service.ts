@@ -146,6 +146,24 @@ export class EventsService {
     });
   }
 
+  /** The current-password guessing cap firing (M17 PR6). */
+  async passwordChangeRateLimited(
+    userId: string,
+    sessionId: string,
+    attempts: number,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.password.change_rate_limited',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: { attempts: String(attempts) },
+    });
+  }
+
   /**
    * The LOGIN bound firing (M17). Audit only, on `stepUpRateLimited`'s terms —
    * nothing consumes "somebody is guessing" on the bus.

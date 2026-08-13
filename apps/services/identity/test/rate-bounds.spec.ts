@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import {
   LEDGER_RATE_BOUNDS,
   LOGIN_BOUND,
+  PASSWORD_CHANGE_BOUND,
   REGISTER_REFUSAL_KIND,
   STEP_UP_BOUND,
 } from '../src/rate-bounds';
@@ -59,10 +60,18 @@ function kindsWritten(): string[] {
 const MEANS_A_WRONG_SUBMISSION: Record<string, readonly string[]> = {
   stepup: ['stepup.denied', 'totp.verify_failed'],
   login: ['login.failed'],
+  // M17 PR6: `POST /v1/auth/password` reads the current password, so it is a
+  // route that checks a secret and belongs here — the review found it missing.
+  'password-change': ['password.change_failed'],
 };
 
 /** A refusal BY a bound. Counting one would let a counter feed itself. */
-const REFUSALS = [STEP_UP_BOUND.refusalKind, LOGIN_BOUND.refusalKind, REGISTER_REFUSAL_KIND];
+const REFUSALS = [
+  STEP_UP_BOUND.refusalKind,
+  LOGIN_BOUND.refusalKind,
+  PASSWORD_CHANGE_BOUND.refusalKind,
+  REGISTER_REFUSAL_KIND,
+];
 
 /**
  * How each refusal kind reaches the ledger. These are NOT literals in the
@@ -78,6 +87,7 @@ const REFUSALS = [STEP_UP_BOUND.refusalKind, LOGIN_BOUND.refusalKind, REGISTER_R
 const REFUSAL_EMITTERS: ReadonlyArray<readonly [string, string]> = [
   [STEP_UP_BOUND.refusalKind, 'kind: STEP_UP_BOUND.refusalKind'],
   [LOGIN_BOUND.refusalKind, 'kind: LOGIN_BOUND.refusalKind'],
+  [PASSWORD_CHANGE_BOUND.refusalKind, 'kind: PASSWORD_CHANGE_BOUND.refusalKind'],
   [REGISTER_REFUSAL_KIND, 'kind: REGISTER_REFUSAL_KIND'],
 ];
 
