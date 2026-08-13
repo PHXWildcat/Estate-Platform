@@ -17,6 +17,12 @@ function clientDouble(overrides: Partial<NotificationsPort>): NotificationsPort 
     send: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
     upsertRecipient: () => Promise.resolve({ ok: false }),
     sendAddressVerification: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
+    // M17. Present because the port declares it, and REFUSING because vault
+    // holds no account-security credential — the client would short-circuit
+    // without a round trip anyway. A double that quietly SUCCEEDED here would
+    // let a vault code path that should never reach this method look healthy
+    // (the M16 PR4a lesson about doubles that accept what the platform refuses).
+    sendAccountSecurity: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
     markRecipientVerified: () => Promise.resolve({ ok: false }),
     recipientStatus: () => Promise.resolve(null),
     ...overrides,

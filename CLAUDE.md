@@ -5027,3 +5027,19 @@ deviating from them, stop and propose the change with rationale — do not silen
   MTIME, not the exit code. The rule this repo keeps restating, three more times
   in one afternoon: when an observation contradicts the source, suspect the
   observation first.
+- 2026-08-12 — I SHIPPED A RED CI BECAUSE I RAN `build` AND `test` AND NOT
+  `typecheck`, which is the 2026-08-12 entry "A GREEN JEST RUN IS NOT A
+  TYPECHECK" committed by me four entries after writing it down. They are
+  DIFFERENT TURBO TASKS over different file sets: `build` compiles `src`, and
+  `typecheck` is `tsc --noEmit` over the package including its TESTS. M17 PR2
+  added a method to `NotificationsPort`, and the only thing that broke was a
+  hand-written port double in `apps/services/vault/test/notifier-adapters.spec.ts`
+  — invisible to `pnpm build`, invisible to `pnpm -r run test` (ts-jest compiles
+  per-file and the double satisfied every call the suite makes), and caught only
+  by `@estate/service-vault#typecheck` on CI. THE RULE: widening a shared port
+  or contract type means running `pnpm -r run typecheck`, because the implementors
+  that break are usually TEST doubles and no other gate in this repo looks at
+  them. Corollary already recorded and re-earned: a double must be faithful about
+  what it REFUSES — vault's new entry returns `{accepted:false}`, because vault
+  holds no account-security credential and a double that quietly succeeded would
+  make a path that should never be reachable look healthy.
