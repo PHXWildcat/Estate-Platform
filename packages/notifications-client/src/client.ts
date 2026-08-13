@@ -104,10 +104,24 @@ export type RecoveryKind = (typeof RECOVERY_KINDS)[number];
  */
 export const RESET_CODE_PATTERN = /^PR1(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){8}$/;
 
-/** One user id and one opaque, platform-minted, single-use reset code. */
+/**
+ * One user id, one opaque platform-minted single-use reset code, and the kind
+ * that code is being mailed AS.
+ *
+ * `kind` is carried even though `RECOVERY_KINDS` has one member today, because
+ * it is what `notification_sends.kind` records, and a route that INFERS the
+ * kind logs what it assumed rather than what the caller asked for. That matches
+ * `sendAccountSecurity`, its sibling from the same milestone, and deliberately
+ * NOT `sendAddressVerification`, where M14 let the route supply the kind — the
+ * asymmetry is noted rather than propagated, since changing a shipped wire to
+ * match a new one is a change to M14. It also means a second
+ * recovery kind arrives as a compile error at each call site instead of
+ * silently inheriting the first one's template.
+ */
 export interface PasswordResetInput {
   userId: string;
   code: string;
+  kind: RecoveryKind;
 }
 
 /**
@@ -479,7 +493,7 @@ export class HttpNotificationsClient implements NotificationsPort {
         this.credentials.recovery,
         'POST',
         '/internal/v1/notifications/recovery',
-        { userId: input.userId, code: input.code },
+        { userId: input.userId, kind: input.kind, code: input.code },
       ),
     );
   }

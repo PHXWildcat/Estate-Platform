@@ -1997,6 +1997,34 @@ be read as such.
   to the address already on file, so for a user who mistyped their address at
   registration it changes nothing. That is PR4's.
 
+**Proven live, and one defect the whole suite passed over.** Driven end to end
+against the running stack: a request answers 202 for an address with an account
+and for one without, a real SES message carries the `PR1-…` code, the code
+RETYPED THE WAY A HUMAN RETYPES IT (lowercase, grouping dashes dropped) is
+accepted, the old password stops working, the session held before the reset
+answers 401, a replay is refused, and `notification_sends` records the send
+while `password_resets` holds a 32-byte digest that does not contain the code.
+Every refusal — wrong code, mis-shaped code, replay — is one `invalid_code` on
+the wire AND `{}` detail with a null actor in the audit trail, so the trail
+does not re-create the oracle the uniform answer removes. The owner is told
+their password changed by PR2's account-security notice, which fires on the
+reset path too.
+
+The first drive found that the ceremony COULD NOT COMPLETE. `sendPasswordReset`
+emitted `{userId, code}` at a route whose `RecoverySchema` is `.strict()` and
+requires `kind`, so every send answered 400 — and because identity retires a
+code whose send fails, the code was minted, mailed nowhere and revoked. The
+whole PR was inert in production while 27 tests passed over it, because the wire
+body is declared TWICE and each side's suite validated its own declaration: the
+client spec asserted method, URL and credential but never the body, and its own
+fixture used a code the pattern rejects; the service specs built valid payloads
+by hand. Nothing put one side's OUTPUT into the other side's PARSER. Closed by
+`apps/services/notifications/test/wire-parity.spec.ts`, which drives the real
+client over a recording transport and parses each emitted body with the schema
+its route really uses — derived from the client prototype in one direction and
+from the controller source in the other, so an added method or a renamed path
+turns it red.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

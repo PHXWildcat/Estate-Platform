@@ -5156,3 +5156,42 @@ deviating from them, stop and propose the change with rationale — do not silen
   instead separates the cases on the axis the bound actually keys on and leaves
   both clocks alone. The general rule: when a fixture and the database each carry
   a clock, a fake date far from wall time is not a neutral choice.
+- 2026-08-13 — M17 PR3 SHIPPED A RECOVERY CEREMONY THAT COULD NOT COMPLETE, and
+  CI was green over it. `sendPasswordReset` emitted `{userId, code}` at a route
+  whose `RecoverySchema` is `.strict()` and requires `kind`; every send answered
+  400, and because identity RETIRES a code whose send fails, each request minted
+  a code, mailed nothing and revoked it. Measured rather than reasoned about:
+  `password_resets` held one row with `revoked=t, spent=f`, the SES mailbox held
+  no `PR1-…` message, and `auth_events` had `password.reset_requested` with no
+  send behind it. THE WHOLE PR WAS INERT IN PRODUCTION — the M16 PR2b shape (an
+  extension that could never unlock a vault) in the milestone that cites it.
+  TWENTY-SEVEN TESTS PASSED OVER IT because the wire body is DECLARED TWICE and
+  each side's suite validated its own declaration: the client spec asserted
+  method, URL and credential and never the body — its own fixture used the code
+  `'PR1-ABCD'`, which `RESET_CODE_PATTERN` rejects — while the service specs
+  built valid payloads by hand, so they only ever exercised bodies somebody had
+  already made valid. Nothing anywhere put one side's OUTPUT into the other
+  side's PARSER. Same drift class as `GQL_ERROR_CODES` (2026-08-10) and the
+  `notification_sends` kind CHECK falling behind the wire enum (M14 PR0), and
+  the remedy is M14 PR0's: DERIVE THE CASES, DO NOT LIST THEM.
+  `apps/services/notifications/test/wire-parity.spec.ts` drives the REAL client
+  over a recording transport and parses each emitted body with the schema its
+  route really uses — it lives on the service side because the client package
+  cannot import the service (wrong direction, and it would create a package
+  edge), and it is derived in BOTH directions: the covered set comes from the
+  client's own prototype (so a seventh method turns it red) and each declared
+  path is checked against the controller source (so a renamed route cannot leave
+  the fence parsing bodies nothing routes to). Fixed by having the client SEND
+  the kind rather than by dropping it from the schema: it is what
+  `notification_sends.kind` records, and a route that infers the kind logs what
+  it assumed rather than what the caller asked for.
+- 2026-08-13 — AND MY OWN NEW FENCE HAD A CONTROL NAMED FOR A PROPERTY IT NEVER
+  TOUCHED, caught by mutation within minutes of writing the entry above. The
+  "the schemas are STRICT" case parsed `{definitely: 'junk'}` and asserted the
+  parse failed — which the REQUIRED-FIELD checks already guarantee, so it passed
+  identically under `.passthrough()` and the mutation survived. Strictness is
+  only observable on a body that is otherwise VALID, so the control now takes
+  the real emitted body and adds one unknown key. The M13 lesson ("a test named
+  for a property it never touched") committed inside the fix that cites it, for
+  the second time in this repo — and the only reason it was found is that the
+  mutation list included the property rather than only the defect.

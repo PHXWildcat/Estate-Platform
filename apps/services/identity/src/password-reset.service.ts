@@ -202,7 +202,11 @@ export class PasswordResetService {
       throw err;
     }
 
-    const outcome = await this.notifications.sendPasswordReset({ userId: user.id, code });
+    const outcome = await this.notifications.sendPasswordReset({
+      userId: user.id,
+      kind: 'identity.password_reset',
+      code,
+    });
     const delivered = outcome.accepted;
     if (!delivered) {
       // Retire the code the user never received, or the one-live-code guard

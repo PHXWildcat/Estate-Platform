@@ -1,6 +1,15 @@
 import { HttpNotificationsClient, SERVICE_CREDENTIAL_HEADER, type FetchLike } from '../src/client';
 
 const USER = 'b6c9a1de-0000-4000-8000-000000000001';
+/**
+ * A REAL minted-shape reset code. The earlier fixture here was `'PR1-ABCD'`,
+ * which `RESET_CODE_PATTERN` rejects — this file asserts method, URL and
+ * credential rather than the body, so an unroutable payload passed unnoticed
+ * and helped hide the client/schema disagreement M17 PR3 shipped. The body
+ * itself is now checked against the real schema in
+ * `apps/services/notifications/test/wire-parity.spec.ts`.
+ */
+const RESET_CODE = 'PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
 
 interface RecordedCall {
   url: string;
@@ -217,7 +226,13 @@ describe('HttpNotificationsClient transport failures', () => {
     expect(
       await client.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
     ).toEqual({ accepted: false });
-    expect(await client.sendPasswordReset({ userId: USER, code: 'PR1-ABCD' })).toEqual({
+    expect(
+      await client.sendPasswordReset({
+        userId: USER,
+        kind: 'identity.password_reset',
+        code: RESET_CODE,
+      }),
+    ).toEqual({
       accepted: false,
     });
     expect(await client.recipientStatus(USER)).toBeNull();
@@ -305,7 +320,11 @@ describe('HttpNotificationsClient credential partitioning', () => {
     await client.markRecipientVerified({ userId: USER });
     await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' });
     await client.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' });
-    await client.sendPasswordReset({ userId: USER, code: 'PR1-ABCD' });
+    await client.sendPasswordReset({
+      userId: USER,
+      kind: 'identity.password_reset',
+      code: RESET_CODE,
+    });
     await client.recipientStatus(USER);
 
     expect(
@@ -357,7 +376,13 @@ describe('HttpNotificationsClient credential partitioning', () => {
     expect(
       await sendOnly.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
     ).toEqual({ accepted: false });
-    expect(await sendOnly.sendPasswordReset({ userId: USER, code: 'PR1-ABCD' })).toEqual({
+    expect(
+      await sendOnly.sendPasswordReset({
+        userId: USER,
+        kind: 'identity.password_reset',
+        code: RESET_CODE,
+      }),
+    ).toEqual({
       accepted: false,
     });
     expect(await sendOnly.recipientStatus(USER)).toBeNull();
