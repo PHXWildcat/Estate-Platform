@@ -39,7 +39,7 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 
 **TB4 — Data stores**
 - *Tampering:* Audit chain hash-anchored to WORM storage; DB roles cannot UPDATE/DELETE event tables; nightly chain verification with paging on gap.
-- *Info disclosure:* Bulk-decryption detection — per-principal decrypt-rate baselines with hard circuit breakers (a service that normally decrypts 50 fields/min gets its KMS grant suspended at 50×, paging security). This is the single most important insider control: the KMS grant, not the database, is the chokepoint.
+- *Info disclosure:* Bulk-decryption detection — per-principal decrypt-rate baselines with hard circuit breakers. DETECTION SHIPPED IN M18 (§6q) and its signal is the `crypto.field.decrypted` audit stream, NOT KMS telemetry: every Zone B decrypt emits fail-closed before plaintext is released, while the 5-minute DEK cache means N reads under a hot key are N audit events and ZERO KMS operations — KMS-side monitoring structurally cannot see read volume, in the cloud exactly as locally. Bounds are fixed reviewed constants set from measured ceilings (never a learned baseline an attacker could train, and never the old "normal × 50" formula). ENFORCEMENT — suspending the KMS grant, paging a security operator — remains cloud-blocked (real IAM, TB7): the grant is still the RESPONSE chokepoint, but it was never the detection signal.
 - *Elevation:* IRSA-scoped pod identities; no shared DB users; RLS as a second net under application authz.
 
 **TB5 — Third parties**
@@ -75,7 +75,7 @@ section originally described, and the narrowing is the result of measuring the p
 
 ### 5.3 Insider bulk decryption
 **Attack:** Platform engineer or compromised service identity attempts mass read of SSNs/documents.
-**Controls:** Per-user DEKs mean bulk access requires bulk KMS operations — rate-limited, anomaly-detected, circuit-broken (§4/TB4); CloudHSM roots mean even AWS-level compromise can't silently exfiltrate key material; canary records (fake users with tripwire fields) page on any access.
+**Controls:** Every released plaintext is one fail-closed `crypto.field.decrypted` event, and the M18 detector (§4 TB4, §6q) alarms on per-principal windowed counts over reviewed bounds — the DEK cache means bulk READS are not bulk KMS operations, so the audit stream, not KMS, is what sees them. Per-user DEKs still mean bulk access across many users requires bulk KMS unwraps (rate-limited and circuit-broken at the grant — the enforcement half, cloud-blocked); CloudHSM roots mean even AWS-level compromise can't silently exfiltrate key material; canary records (fake users with tripwire fields) page on any access.
 
 ### 5.4 Grief-window social engineering
 **Attack:** After a real death, attackers phish executors/beneficiaries ("probate portal fee required"), possibly with AI voice cloning of the family attorney.
@@ -2343,6 +2343,65 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
   shared across replicas. It is NOT a global quota and does not bound an
   attacker who can mint sessions — but minting one requires the password, which
   is what they are trying to guess.
+
+## 6q. Threat-model delta — M18 PR2, the decrypt-rate baseline detector (2026-08-13)
+
+**What shipped.** The detection half of §4 TB4's per-principal decrypt-rate
+baseline, running in the audit service against the local stack. The detector
+derives per-(prefix-class × principal) windowed counts from the append-only
+`audit_events` ledger — no counter state an attacker can reset — and emits
+`crypto.decrypt_rate.exceeded` through the service's first Kafka producer,
+via the sanctioned AuditEmitter path, onto the same topic it consumes: the
+anomaly lands in the verified hash chain like any other event. Attribution is
+the M18 PR1 registry (the field name's first dotted token); the principal
+grain separates the nil-UUID sentinel from every real actor class. Bounds are
+fixed reviewed constants set from measured ceilings with a generous
+multiplier, and everything OUTSIDE the reviewed table is bound 0 — an
+unregistered prefix (`unknown_prefix`), an unmodelled (prefix × principal)
+combination (`unmodeled_principal`), and settlement's encrypt-only
+`distributions` (`encrypt_only`) each breach at the first decrypt, because a
+read path nobody reviewed is itself the anomaly.
+
+**The alert sink is the chain plus a structured log line, and deliberately
+nothing else.** No owner notification: the reader of this signal is a
+security operator who does not exist until TB7, and making audit a
+notifications SEND holder would falsify its fenced zero-credential posture.
+The event is the durable record; the log line is the operational tail.
+
+**Advisory by construction.** The detector runs on its own Postgres session
+(never the ingestor's serialized chain connection), started only from
+main.ts so test suites structurally cannot run it, unref'd, with every fault
+terminating in its own catch and one log line — a detector error must never
+take the path the consumer's death takes, because killing ingest (the paging
+signal) over an advisory neighbour inverts the M9 rule twice. Losing the
+detector degrades alerting, never safety.
+
+**Episode semantics and the honest residuals.**
+- A sustained breach emits ONCE per episode and re-arms when its window
+  clears. The episode memory is per-process, so a RESTART may re-emit one
+  duplicate for a still-breaching principal, and a failed emit is retried
+  next tick — in both cases the fail direction is an EXTRA event, never a
+  lost one.
+- Bounds for classes the M18 PR1 measurement did not exercise (family,
+  asset_event, plaid_item, account, assistant_tool_call, users) are
+  PROVISIONAL — sized from neighbouring measured economics and marked as such
+  in the table; live traffic is what re-calibrates them, by reviewed commit.
+- A full asset-projection rebuild of a large estate TRIPS the sentinel's
+  asset_event bound BY DESIGN: a mass decrypt is the detected class, and the
+  operator running one expects the alarm. One event per episode keeps that
+  honest rather than noisy.
+- Detection latency is bounded by tick cadence (60s) plus the broker hop;
+  the window (300s) exceeds both, so nothing legitimate hides between ticks.
+- The stack e2e's gate pairs a POSITIVE control with the false-positive
+  assertion: a deliberate burst past the smallest bound must produce exactly
+  its own anomaly, and every anomaly in the store must name that deliberate
+  bound. A bare zero-events assertion would be vacuously green over a dead
+  detector — the M8 dead-consumer shape.
+
+**What remains cloud-blocked, stated precisely:** the ENFORCEMENT half —
+suspending the KMS grant and paging — needs real IAM and a TB7 operator;
+KMS-side rate limiting still bounds bulk UNWRAPS (many-user sweeps), which
+the DEK cache never hid; §5.3's canaries and CloudHSM roots are unchanged.
 
 ## 7. Validation program
 

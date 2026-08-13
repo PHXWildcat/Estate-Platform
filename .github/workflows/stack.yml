@@ -215,8 +215,15 @@ jobs:
             // 201 instead of 503, because `assertOwnerReachable` is
             // production-scoped. A derived number would have encoded that as a
             // pass.
-            const expectedPassed = production ? 16 : 25;
-            const expectedPending = production ? 13 : 4;
+            //
+            // M18 PR2: +1 dev pass (the decrypt-rate baseline gate — a
+            // deliberate burst proves the deployed detector fires, then every
+            // anomaly event in the store must name the deliberate bound, so
+            // journey traffic proving the false-positive half is the same
+            // test that proves detector liveness). It is describeDev, so the
+            // production leg gains it as +1 pending.
+            const expectedPassed = production ? 16 : 26;
+            const expectedPending = production ? 14 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
             if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {

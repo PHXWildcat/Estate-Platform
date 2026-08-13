@@ -21,9 +21,11 @@
  *      against source rather than asserted);
  *   2. every registered prefix is OBSERVED in its own service's source —
  *      dead registry data is a lie the detector would trust;
- *   3. vault and audit have no field-crypto files at all (Zone A has no
- *      server decrypt path; audit consumes the stream — PR2's detector
- *      deliberately revisits the audit half of this rule);
+ *   3. vault has no field-crypto files at all (Zone A has no server decrypt
+ *      path), and audit — whose M18 detector legitimately names the registry
+ *      helpers and the decrypt action — contributes ZERO candidates: it
+ *      consumes the stream and must never emit a field into it (the PR2
+ *      revision the PR1 version of this rule promised);
  *   4. anti-vacuity floors per service, because a scan that stops matching
  *      goes green (the 2026-08-07 lesson).
  *
@@ -63,12 +65,19 @@ const SERVICES_DIR = join(REPO_ROOT, 'apps', 'services');
 const CRYPTO_TOKEN = /FieldCrypto|FieldCipher|ContentCipher|encryptField|decryptField/;
 
 /**
- * Services that must have NO field-crypto files. Vault is structural (Zone A:
- * the server never holds a decryptable field). Audit is true in PR1 and
- * revisited by PR2, whose detector legitimately names `crypto.field.decrypted`
- * — that change edits this table deliberately.
+ * Services that must have NO field-crypto files at all. Vault is structural:
+ * Zone A's server never holds a decryptable field.
  */
-const NO_FIELD_CRYPTO_SERVICES = ['audit', 'vault'] as const;
+const NO_FIELD_CRYPTO_SERVICES = ['vault'] as const;
+
+/**
+ * Services whose files may NAME the crypto vocabulary without emitting into
+ * it: audit's M18 detector imports the registry helpers and queries the
+ * decrypt action, so its files match the crypto-token scan — but a prefix
+ * CANDIDATE appearing there would be the consumer growing an emitter's
+ * vocabulary, which is exactly the confusion the registry exists to prevent.
+ */
+const STREAM_CONSUMER_SERVICES = ['audit'] as const;
 
 /**
  * Exact literals that look like field prefixes but are catalog members from
@@ -365,6 +374,18 @@ describe('per-service source scan', () => {
     '%s has no field-crypto files at all',
     (service) => {
       expect(scanOf(service).cryptoFiles).toEqual([]);
+    },
+  );
+
+  it.each(STREAM_CONSUMER_SERVICES.map((s) => [s] as [string]))(
+    '%s consumes the stream and contributes zero prefix candidates',
+    (service) => {
+      const scan = scanOf(service);
+      // Anti-vacuity: the detector really is in scope of the scan — an audit
+      // tree with no crypto-token files would make the candidates assertion
+      // vacuously true (and would mean the detector was deleted).
+      expect(scan.cryptoFiles.length).toBeGreaterThanOrEqual(1);
+      expect(scan.candidates).toEqual([]);
     },
   );
 

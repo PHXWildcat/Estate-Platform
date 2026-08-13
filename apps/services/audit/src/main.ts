@@ -1,8 +1,11 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { Client } from 'pg';
-import { AppModule, PG_CLIENT } from './app.module';
+import type { KafkaAuditProducer } from '@estate/kafka';
+import { AppModule, AUDIT_PRODUCER, DETECTOR_PG_CLIENT, PG_CLIENT } from './app.module';
 import { AuditConsumer } from './consumer';
+import { DecryptRateDetector } from './decrypt-rate-detector';
+import { DETECTOR_TICK_MS } from './decrypt-rate-bounds';
 import { handleFatal } from './fatal';
 import { log } from './logger';
 
@@ -30,19 +33,28 @@ async function bootstrap(): Promise<void> {
   });
   const consumer = app.get(AuditConsumer);
   const pgClient = app.get<Client>(PG_CLIENT);
+  const detectorClient = app.get<Client>(DETECTOR_PG_CLIENT);
+  const producer = app.get<KafkaAuditProducer>(AUDIT_PRODUCER);
+  const detector = app.get(DecryptRateDetector);
+  let detectorTimer: NodeJS.Timeout | null = null;
+
+  const releaseAll = async (): Promise<void> => {
+    if (detectorTimer) {
+      clearInterval(detectorTimer);
+      detectorTimer = null;
+    }
+    await producer.disconnect();
+    await detectorClient.end();
+    await pgClient.end();
+    await app.close();
+  };
 
   const shutdown = async (signal: string): Promise<void> => {
     log({ level: 'info', msg: 'audit_service_stopping', signal });
     await consumer.stop();
-    await pgClient.end();
-    await app.close();
+    await releaseAll();
   };
-  opened = {
-    close: async (): Promise<void> => {
-      await pgClient.end();
-      await app.close();
-    },
-  };
+  opened = { close: releaseAll };
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       shutdown(signal)
@@ -57,6 +69,20 @@ async function bootstrap(): Promise<void> {
   await consumer.start((err) => {
     void handleFatal(err, opened);
   });
+
+  // The M18 decrypt-rate detector: STARTED HERE, deliberately not via a Nest
+  // lifecycle hook — jest suites construct the classes directly and never run
+  // main.ts, so the timer structurally cannot run under test (the
+  // settlement-driver rule, achieved by placement instead of an env check,
+  // because this service's config deliberately has no NODE_ENV). unref'd:
+  // an advisory sweep must never keep the process alive, and its faults are
+  // swallowed inside tick() — a detector error must never take the path the
+  // consumer's death takes (advisory loss degrades alerting, not safety).
+  detectorTimer = setInterval(() => {
+    void detector.tick();
+  }, DETECTOR_TICK_MS);
+  detectorTimer.unref();
+
   log({ level: 'info', msg: 'audit_service_started', groupId: 'audit-service' });
 }
 

@@ -5,6 +5,7 @@ import { Client } from 'pg';
 import { parseEnvFile } from '@estate/stack';
 import { currentTotpCode } from '@estate/service-identity/dist/totp';
 import { ChainVerifier } from '@estate/service-audit/dist/verifier';
+import { boundFor } from '@estate/service-audit/dist/decrypt-rate-bounds';
 import { VAULT_SESSION_HEADER } from '@estate/service-vault/dist/vault-session.guard';
 import {
   createVaultEnrollment,
@@ -1597,6 +1598,95 @@ describeIfStack('the running stack', () => {
       ]) {
         const refused = await api(PROFILE_URL, 'GET', path, { token: vaultToken });
         expect(`${path}:${refused.status}`).toBe(`${path}:401`);
+      }
+    });
+  });
+
+  describeDev('the decrypt-rate baseline (M18)', () => {
+    it('fires on a deliberate burst and NEVER on the journey', async () => {
+      // TWO claims in one test, and the pairing is the design. A bare
+      // "zero anomaly events after the journey" assertion is vacuously green
+      // over a DEAD detector (the M8 dead-consumer shape — the gate this
+      // repo's own doctrine forbids), so the test first proves the deployed
+      // detector fires: a deliberate burst one past the smallest bound, then
+      // a poll for the anomaly it must emit. That poll is also what makes the
+      // false-positive half DETERMINISTIC — the tick that catches the burst
+      // evaluates a window covering the whole journey (window >> journey +
+      // tick cadence), so once the burst's event lands, the journey's own
+      // traffic has been judged too. Then the gate: every exceeded event in
+      // the store names the deliberate bound, i.e. legitimate traffic never
+      // tripped anything. Asserted over ALL rows rather than a count of one
+      // so repeated local runs (each adding its own burst) stay green while
+      // CI — a fresh stack — sees exactly one.
+      //
+      // The burst rides mfa_methods_user, the smallest bound: identity's
+      // TOTP validation has no replay ledger, so repeated step-ups with the
+      // current code are cheap, fast, and side-effect-free beyond the ledger
+      // rows they legitimately write (step-up SUCCESSES are uncounted by the
+      // M16 cap, and no settlement case exists for a fresh probe user).
+      const bound = boundFor('mfa_methods', 'user').maxPerWindow;
+      const probe = await registerAndLogin();
+      const enroll = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/totp/enroll', { token: probe.token }),
+        201,
+        'burst totp enroll',
+      ) as { otpauthUri: string };
+      const secret = new URL(enroll.otpauthUri).searchParams.get('secret');
+      if (!secret) {
+        throw new Error('totp enroll returned no secret');
+      }
+      expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/totp/verify', {
+          token: probe.token,
+          body: { code: currentTotpCode(secret) },
+        }),
+        200,
+        'burst totp verify',
+      );
+      for (let i = 0; i < bound + 1; i++) {
+        expectStatus(
+          await api(IDENTITY, 'POST', '/v1/auth/stepup', {
+            token: probe.token,
+            body: { code: currentTotpCode(secret) },
+          }),
+          200,
+          `burst stepup ${i}`,
+        );
+      }
+
+      const db = new Client({ connectionString: AUDIT_DB });
+      await db.connect();
+      try {
+        const hit = await pollUntil(
+          'decrypt-rate anomaly for the burst principal',
+          async () => {
+            const { rows } = await db.query<{ detail: Record<string, unknown> }>(
+              `SELECT detail FROM audit_events
+                WHERE action = 'crypto.decrypt_rate.exceeded' AND resource_id = $1
+                LIMIT 1`,
+              [probe.userId],
+            );
+            return rows.length > 0 ? (rows[0] ?? null) : null;
+          },
+          150_000,
+          2_000,
+        );
+        expect(hit.detail['boundName']).toBe('mfa_methods_user');
+        expect(hit.detail['principal']).toBe('user');
+
+        // The false-positive gate: nothing the journey did — contacts,
+        // profile, documents, assets, sends, rebuild-free reads — ever
+        // produced an anomaly. Every event in the store is a deliberate
+        // burst's.
+        const { rows: all } = await db.query<{ detail: Record<string, unknown> }>(
+          `SELECT detail FROM audit_events WHERE action = 'crypto.decrypt_rate.exceeded'`,
+        );
+        expect(all.length).toBeGreaterThanOrEqual(1);
+        for (const row of all) {
+          expect(row.detail['boundName']).toBe('mfa_methods_user');
+        }
+      } finally {
+        await db.end();
       }
     });
   });

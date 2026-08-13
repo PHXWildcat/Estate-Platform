@@ -11,8 +11,10 @@
     "dev": "node dist/main.js"
   },
   "dependencies": {
+    "@estate/audit-emitter": "workspace:*",
     "@estate/contracts": "workspace:*",
     "@estate/db": "workspace:*",
+    "@estate/kafka": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "kafkajs": "catalog:",

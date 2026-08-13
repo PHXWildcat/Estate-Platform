@@ -4426,7 +4426,7 @@ revoking), both latent behind machinery that does not exist yet — the M14
 precedent of writing down what arms later rather than fixing speculatively or
 hiding it.
 
-### M18 — The TB4 decrypt-rate baseline (approved 2026-08-13; PR1 shipped)
+### M18 — The TB4 decrypt-rate baseline (approved 2026-08-13; PR1–PR2 shipped)
 
 The detection half of docs/03 §4 TB4's "per-principal decrypt-rate baselines
 with hard circuit breakers" — the control the threat model calls the single
@@ -4510,11 +4510,31 @@ mechanism, home, alert sink, out-of-scope) are recorded in the decision log
    dataset ingested through the real consumer into the verified chain; the
    e2e's chain assertions stayed green over it.
 
-**PR2 (next)** — the detector inside apps/services/audit on the
-settlement-driver pattern, bounds as reviewed constants set from the table
-above, emit through the service's first Kafka producer, dedup per episode, the
-zero-anomaly stack-e2e false-positive gate, and the docs/03 §4 TB4 + §6q +
-docs/05 revisions. **PR3** — the adversarial review.
+**PR2 — the detector (shipped).** `DecryptRateDetector` inside
+apps/services/audit: a windowed GROUP BY over the 002 index on the detector's
+OWN Postgres session (never the ingestor's serialized chain connection),
+evaluated by a pure function against `decrypt-rate-bounds.ts` — reviewed
+constants set from PR1's measured table, with everything outside the table
+bound 0 (`unknown_prefix` / `unmodeled_principal` / `encrypt_only`: a read
+path nobody reviewed is itself the anomaly). Emits
+`crypto.decrypt_rate.exceeded` through the service's FIRST Kafka producer via
+the sanctioned AuditEmitter path onto its own topic, so the anomaly rides the
+verified chain; episode dedup (emit on entry, silent while sustained, re-arm
+on clear; restart or failed-emit duplicates fail in the EXTRA-event
+direction). Started only from main.ts — suites construct classes directly, so
+the timer structurally cannot run under jest; faults terminate in their own
+catch + one log line, never the fatal path (advisory loss degrades alerting,
+not ingest). The stack e2e gate pairs a positive control with the
+false-positive assertion — a deliberate 101-step-up burst must produce
+exactly its own `mfa_methods_user` anomaly and every anomaly in the store
+must name that deliberate bound (a bare zero-assertion is vacuously green
+over a dead detector, the M8 dead-consumer shape); counts moved 25/4→26/4
+(dev, both workflow twins) and 16/13→16/14 (production). Docs revised as
+owed: docs/03 §4 TB4 + §5.3 (the KMS-centric framing corrected — KMS cannot
+see read volume through the DEK cache), new §6q, docs/05's
+"cannot test anomaly detection" split into detection-local/response-cloud,
+and the escalation list above shrunk by the detection half (the M8
+take-over precedent). **PR3** — the adversarial review.
 
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
@@ -4647,13 +4667,15 @@ are SURFACES over shipped backends rather than new domains:
   anywhere. Gated on obtaining sandbox credentials — a procurement dependency,
   which is why it is its own milestone rather than hidden inside M20.
 - *The subscription manager (M20).* Re-sequenced above.
-- *Referral · search · the M5 cloud half*, reduced by what M8 took over.
+- *Referral · search · the M5 cloud half*, reduced by what M8 took over and
+  by M18's local decrypt-rate detection.
 
 **The M5 cloud half is blocked on a business decision, not on engineering**
-(AWS org, ~$420–1,100/mo dev tier, a CI OIDC role). About a third of docs/03's
-open residuals are structurally blocked behind it — TB4's decrypt-rate baseline
-and KMS circuit breaker, which the threat model calls its single most important
-insider control; §5.3 canaries; §5.6 Vault-Locked backups; and the audit chain's
+(AWS org, ~$420–1,100/mo dev tier, a CI OIDC role). A meaningful share of
+docs/03's open residuals are structurally blocked behind it — the KMS circuit
+breaker, the ENFORCEMENT half of TB4's insider control (M18 shipped the
+detection half locally: the baseline itself is no longer on this list);
+§5.3 canaries; §5.6 Vault-Locked backups; and the audit chain's
 S3 Object Lock anchor, an M1 open item now sixteen milestones old. It should
 jump the queue the moment billing exists. Two things to know before it does: the
 cost of delay is mechanical, since the topology already encoded in

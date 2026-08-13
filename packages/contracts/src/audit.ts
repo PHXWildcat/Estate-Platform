@@ -22,6 +22,12 @@ export const AUDIT_ACTIONS = [
   'auth.webauthn.revoked',
   'crypto.field.decrypted',
   'crypto.dek.destroyed',
+  // M18: the decrypt-rate baseline (docs/03 §4 TB4). Emitted by the audit
+  // service's detector when a principal's windowed decrypt count exceeds its
+  // reviewed bound. NEVER in the detector's own counted set (the M16
+  // self-feeding-counter rule) — the counted set is exactly
+  // 'crypto.field.decrypted'.
+  'crypto.decrypt_rate.exceeded',
   // Profile & Contacts service (core cluster).
   'profile.updated',
   'family_member.created',
