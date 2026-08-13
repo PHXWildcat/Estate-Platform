@@ -658,6 +658,26 @@ describe('evidence reads (M7 settlement authority)', () => {
     expect(audit.detail).toEqual({ version: 1, caseId: CASE_ID });
   });
 
+  it('audits the evidence DECRYPT as an operator, never as a user (M18 PR1)', async () => {
+    // The decrypt-rate baseline (docs/03 §4 TB4) keys on actor class, and
+    // this is the one operator-driven decrypt in the product — before M18 it
+    // rode ContentCipher's 'user' default and misclassified. The owner read
+    // beside it proves the fix did not reclassify ordinary reads.
+    const h = await build({ settlement: allowingSettlement(OWNER) });
+    const documentId = await generate(h);
+    await h.service.getContent(OWNER, documentId, 1);
+    await h.service.getEvidenceContent(OPERATOR, 'op-token', documentId, 1);
+    const decrypts = h.producer.messages
+      .filter((m) => m.topic === 'estate.audit.events.v1')
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .filter((e) => e.action === 'crypto.field.decrypted');
+    const ownerRead = decrypts.find((e) => e.actorId === OWNER);
+    const operatorRead = decrypts.find((e) => e.actorId === OPERATOR);
+    expect(ownerRead?.actorType).toBe('user');
+    expect(operatorRead?.actorType).toBe('operator');
+    expect(operatorRead?.detail.purpose).toBe('evidence_content_read');
+  });
+
   it('404s when settlement refuses (fail closed, no oracle)', async () => {
     const h = await build(); // refusingSettlement default
     const documentId = await generate(h);

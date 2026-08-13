@@ -680,6 +680,12 @@ export class DocumentsService {
         dekId: doc.dek_id,
         ciphertext,
         actorId: actor,
+        // By construction the caller is a settlement operator — checkEvidenceRead
+        // only answers for allowlisted operators — so the decrypt audits as one.
+        // Without this the wrapper's 'user' default misclassifies the one
+        // operator-driven decrypt in the product (docs/03 §4 TB4 keys its
+        // per-principal baseline on actor class).
+        actorType: 'operator',
         purpose: 'evidence_content_read',
       });
     } catch (err) {

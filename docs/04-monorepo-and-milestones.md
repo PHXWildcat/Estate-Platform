@@ -4426,6 +4426,96 @@ revoking), both latent behind machinery that does not exist yet — the M14
 precedent of writing down what arms later rather than fixing speculatively or
 hiding it.
 
+### M18 — The TB4 decrypt-rate baseline (approved 2026-08-13; PR1 shipped)
+
+The detection half of docs/03 §4 TB4's "per-principal decrypt-rate baselines
+with hard circuit breakers" — the control the threat model calls the single
+most important insider defence — shipped against the local stack, on the M8
+take-over precedent: take the deliverable, shrink the M5 cloud half, revise
+the sentences. Discovery falsified this document's own claim that the baseline
+is structurally blocked behind the AWS spend. It is not: `crypto.field.decrypted`
+is emitted FAIL-CLOSED by every Zone B service (plaintext is withheld if the
+audit sink rejects — packages/crypto dek.ts), so the audit stream is a complete
+record of released plaintext, and only the ENFORCEMENT half (suspending a KMS
+grant) needs real IAM. Sharper than that: the 5-minute DEK cache means N
+decrypts under a hot key are N audit events and ZERO KMS operations, so
+KMS-side detection structurally cannot see read volume — the audit stream is
+not a local stand-in for the "real" signal, it IS the signal, in the cloud too.
+
+Three PRs: PR1 attribution + the debts it makes acute; PR2 the detector; PR3
+the security review. The six settled design decisions (grain, signal,
+mechanism, home, alert sink, out-of-scope) are recorded in the decision log
+(2026-08-13).
+
+**PR1 — attribution (shipped).**
+
+1. `DECRYPT_FIELD_PREFIXES` in @estate/contracts: the first dotted token of
+   every decrypt field name, mapped to its owning service — the AUDIT_ACTIONS
+   shape, closing what was previously an unfenced naming convention. The audit
+   envelope carries no producing-service field, so this prefix is the only
+   attribution signal the detector will have. Fourteen prefixes across eight
+   services; vault (no server decrypt path) and audit map nothing;
+   `distributions` is registered although settlement is encrypt-only today, so
+   a decrypt ever appearing under it attributes to settlement rather than to
+   the unknown class. The fence (`packages/contracts/test/decrypt-field-prefixes.spec.ts`)
+   scans every service's field-crypto files with a string-aware tokenizer and
+   holds two directions — a registered token observed in the WRONG service's
+   source is red (disjointness against source, not assertion), and a
+   registered prefix NOT observed in its own service's source is red (dead
+   registry data) — plus per-service anti-vacuity floors and the
+   vault/audit-have-none rule. Six mutations confirmed red on the assertions
+   that name them. Deliberately NOT policed at this layer: a literal whose
+   token is registered nowhere (the first run found ~170 legitimate dotted
+   literals from other vocabularies in the same files — identity's ledger
+   kinds alone are 122 — and an exclusion list that size is the permanently
+   red gate people learn to ignore). The unknown-prefix net is the detector's
+   own reportable class plus PR2's zero-anomaly stack-e2e gate.
+2. The one pre-existing attribution debt: documents' `getEvidenceContent` —
+   the only operator-driven decrypt in the product — audited as `'user'`
+   through ContentCipher's default, while its own docstring says the caller is
+   by construction a settlement operator. It passes `actorType: 'operator'`
+   now, pinned by a spec that also proves the owner path still audits as
+   `'user'`; mutation-tested by reverting.
+3. Settlement's phantom claim corrected: `admin.service.ts` said distribution
+   amounts are "decrypted only on explicit read" — no such read route exists
+   (the claim-without-mechanism rule; prose corrected, route deliberately NOT
+   added).
+4. Migration `002_decrypt_rate_index.sql` (audit cluster): partial index
+   `(occurred_at, actor_id) WHERE action = 'crypto.field.decrypted'` on the
+   partitioned parent, so the detector's windowed sweep stops being a
+   sequential scan and every future partition inherits it. occurred_at leads
+   because the sweep is a pure time-range over all principals — the brief's
+   suggested (actor_id, occurred_at) order cannot serve that shape. The
+   CONCURRENTLY-inexpressible hazard is recorded in the file (identity 005
+   precedent); an int test pins the M13 pair (recorded-as-applied AND
+   index-exists, on parent AND partition).
+5. **Measured ceilings** (2026-08-13, against the running stack: a full stack
+   e2e dev journey plus a deliberate burst driver — 20-contact estate, list ×3
+   + every detail read; 10 profile reads; 10 document content reads; 5 assets
+   with valuations, list ×5 + each read). Peak per PRINCIPAL per MINUTE, by
+   prefix class; these are PR2's threshold inputs:
+
+   | prefix class | actor class | measured peak/min | shape |
+   |---|---|---|---|
+   | `contact` | user | 160 | 3 lists (20×name) + 20 details (×5 fields) — M13's ~100/detail-page economics, confirmed |
+   | `profile` | user | 50 | 10 reads × 5 non-null fields |
+   | `asset` | user | 30 | 5 lists × 5 valuations + 5 single reads |
+   | `doc` | user | 10 | audited content reads, 1 per read |
+   | `notification_recipient` | service (nil-UUID sentinel) | 16 | e2e journey sends |
+   | `mfa_methods` | user | 2 | TOTP verify + step-up |
+   | `assistant_message` | user | 2 | conversation reads |
+   | `users`, `asset_event`, `plaid_item`, `account`, `assistant_tool_call`, `distributions` | — | 0 | not exercised by the journey / encrypt-only |
+
+   Ordinary (non-burst) journey users peaked at 4/min. The whole 516-decrypt
+   dataset ingested through the real consumer into the verified chain; the
+   e2e's chain assertions stayed green over it.
+
+**PR2 (next)** — the detector inside apps/services/audit on the
+settlement-driver pattern, bounds as reviewed constants set from the table
+above, emit through the service's first Kafka producer, dedup per episode, the
+zero-anomaly stack-e2e false-positive gate, and the docs/03 §4 TB4 + §6q +
+docs/05 revisions. **PR3** — the adversarial review.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

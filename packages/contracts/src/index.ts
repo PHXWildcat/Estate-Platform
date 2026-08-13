@@ -74,6 +74,13 @@ export {
   type UsState,
 } from './document-events';
 export {
+  DECRYPT_FIELD_PREFIXES,
+  decryptFieldPrefix,
+  decryptFieldServiceFor,
+  type DecryptEmittingService,
+  type DecryptFieldPrefix,
+} from './decrypt-field-prefixes';
+export {
   ActorTypeSchema,
   defineEvent,
   EventEnvelopeSchema,
