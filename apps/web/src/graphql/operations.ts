@@ -98,6 +98,48 @@ export const START_EXTENSION_PAIRING_MUTATION = `mutation StartExtensionPairing 
   }
 }`;
 
+export const PASSKEYS_QUERY = `query Passkeys {
+  passkeys {
+    id
+    nickname
+    isHardwareKey
+    createdAt
+    lastUsedAt
+  }
+}`;
+
+export const WEBAUTHN_REGISTER_OPTIONS_MUTATION = `mutation WebauthnRegisterOptions {
+  webauthnRegisterOptions
+}`;
+
+export const WEBAUTHN_REGISTER_MUTATION = `mutation WebauthnRegister($response: JSON!) {
+  webauthnRegister(response: $response) {
+    ok
+  }
+}`;
+
+export const WEBAUTHN_STEP_UP_OPTIONS_MUTATION = `mutation WebauthnStepUpOptions {
+  webauthnStepUpOptions
+}`;
+
+export const WEBAUTHN_STEP_UP_MUTATION = `mutation WebauthnStepUp($response: JSON!) {
+  webauthnStepUp(response: $response) {
+    stepupExpiresAt
+  }
+}`;
+
+export const REVOKE_PASSKEY_MUTATION = `mutation RevokePasskey($id: ID!) {
+  revokePasskey(id: $id) {
+    ok
+  }
+}`;
+
+export const RENAME_PASSKEY_MUTATION = `mutation RenamePasskey($id: ID!, $nickname: String!) {
+  renamePasskey(id: $id, nickname: $nickname) {
+    ok
+  }
+}`;
+
 export const LOGOUT_MUTATION = `mutation Logout {
   logout {
     ok
@@ -611,6 +653,13 @@ export const operations = {
   Sessions: SESSIONS_QUERY,
   RevokeSession: REVOKE_SESSION_MUTATION,
   StartExtensionPairing: START_EXTENSION_PAIRING_MUTATION,
+  Passkeys: PASSKEYS_QUERY,
+  WebauthnRegisterOptions: WEBAUTHN_REGISTER_OPTIONS_MUTATION,
+  WebauthnRegister: WEBAUTHN_REGISTER_MUTATION,
+  WebauthnStepUpOptions: WEBAUTHN_STEP_UP_OPTIONS_MUTATION,
+  WebauthnStepUp: WEBAUTHN_STEP_UP_MUTATION,
+  RevokePasskey: REVOKE_PASSKEY_MUTATION,
+  RenamePasskey: RENAME_PASSKEY_MUTATION,
   Assets: ASSETS_QUERY,
   NetWorth: NET_WORTH_QUERY,
   CreateAsset: CREATE_ASSET_MUTATION,

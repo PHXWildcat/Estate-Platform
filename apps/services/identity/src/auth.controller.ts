@@ -4,11 +4,13 @@ import {
   Controller,
   Delete,
   Get,
+  Patch,
   HttpCode,
   Param,
   Post,
   Req,
   UseGuards,
+  NotFoundException,
 } from '@nestjs/common';
 import type { MfaLevel } from '@estate/contracts';
 import type {
@@ -102,6 +104,12 @@ const EmailChangeCompleteSchema = z.object({
 
 const CodeSchema = z.object({
   code: z.string().regex(/^\d{6}$/),
+});
+
+/** A passkey's display label (M17 PR5): plain text, trimmed, bounded — the
+ * `documents.title` metadata class. */
+const RenamePasskeySchema = z.object({
+  nickname: z.string().trim().min(1).max(64),
 });
 
 /**
@@ -774,6 +782,68 @@ export class AuthController {
       auth.sessionId,
       response as unknown as AuthenticationResponseJSON,
     );
+  }
+
+  /**
+   * List the account's passkeys (M17 PR5) — the management projection the M16
+   * session vertical is the precedent for: a factor that appears on no screen
+   * is one the owner cannot audit. Ids, labels and timestamps only; never
+   * `credential_id`, `public_key` or `sign_count`.
+   */
+  @Get('webauthn/credentials')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async listPasskeys(@Req() request: AuthedRequest): Promise<{
+    credentials: Array<{
+      id: string;
+      nickname: string | null;
+      isHardwareKey: boolean;
+      createdAt: string;
+      lastUsedAt: string | null;
+    }>;
+  }> {
+    const auth = requireAuth(request);
+    return { credentials: await this.webauthn.listCredentials(auth.userId) };
+  }
+
+  /**
+   * Revoke one passkey (M17 PR5). STEP-UP GATED — see
+   * `WebAuthnService.revokeCredential` for why this differs from the ungated
+   * M16 session revoke: removing a factor weakens the gate that protects
+   * everything else, and an ungated revoke plus a stolen bearer is the
+   * factor-strip downgrade into the 2026-08-12 escalation. Uniform 404 for
+   * "no such credential" and "not yours" alike (the owner predicate rides the
+   * UPDATE).
+   */
+  @Delete('webauthn/credentials/:id')
+  @HttpCode(204)
+  @UseGuards(SessionGuard, StepUpGuard)
+  async revokePasskey(@Req() request: AuthedRequest, @Param('id') id: string): Promise<void> {
+    const auth = requireAuth(request);
+    if (!(await this.webauthn.revokeCredential(auth.userId, id))) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+  }
+
+  /**
+   * Name one passkey (M17 PR5) — a display label so a list of N passkeys is
+   * usable ("MacBook Touch ID", not three unnamed rows). Session-only: naming
+   * is neither arming nor protective, and the label is the `documents.title`
+   * class of low-sensitivity metadata.
+   */
+  @Patch('webauthn/credentials/:id')
+  @HttpCode(204)
+  @UseGuards(SessionGuard)
+  async renamePasskey(
+    @Req() request: AuthedRequest,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const auth = requireAuth(request);
+    const { nickname } = parseBody(RenamePasskeySchema, body);
+    if (!(await this.webauthn.renameCredential(auth.userId, id, nickname))) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
   }
 
   /**

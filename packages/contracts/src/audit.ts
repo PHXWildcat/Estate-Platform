@@ -16,6 +16,10 @@ export const AUDIT_ACTIONS = [
   'auth.user.status_changed',
   'auth.webauthn.registered',
   'auth.webauthn.clone_detected',
+  // M17 PR5: a passkey was removed from the account. The one factor-weakening
+  // verb in the product, step-up gated at its route; the event is what an
+  // owner's after-the-fact review keys on.
+  'auth.webauthn.revoked',
   'crypto.field.decrypted',
   'crypto.dek.destroyed',
   // Profile & Contacts service (core cluster).

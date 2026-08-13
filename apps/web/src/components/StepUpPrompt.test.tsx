@@ -311,3 +311,236 @@ describe('cancel does not leave the form wedged', () => {
     expect(onElevated).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * THE PASSKEY PATH (M17 PR5). The double is faithful about absences (the M16
+ * chrome-double rule): jsdom really has no PublicKeyCredential, so the default
+ * expectation everywhere else in this file — no passkey button — is the
+ * platform's own truth, not a mock's generosity. These cases install exactly
+ * the capability they claim.
+ */
+describe('StepUpPrompt passkey path', () => {
+  function installPasskeyCapability(get: jest.Mock): void {
+    (window as unknown as Record<string, unknown>)['PublicKeyCredential'] =
+      function stub(): void {};
+    (navigator as unknown as Record<string, unknown>)['credentials'] = { get };
+  }
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>)['PublicKeyCredential'];
+    delete (navigator as unknown as Record<string, unknown>)['credentials'];
+  });
+
+  const ASSERTION = {
+    id: 'cred',
+    rawId: new Uint8Array([1]).buffer,
+    type: 'public-key',
+    authenticatorAttachment: null,
+    getClientExtensionResults: () => ({}),
+    response: {
+      clientDataJSON: new Uint8Array([2]).buffer,
+      authenticatorData: new Uint8Array([3]).buffer,
+      signature: new Uint8Array([4]).buffer,
+      userHandle: null,
+    },
+  };
+  const OPTIONS = { challenge: 'AQID', rpId: 'localhost' };
+
+  it('offers the button only when the account HAS passkeys and the browser can', async () => {
+    installPasskeyCapability(jest.fn());
+    mount(jest.fn(), {
+      Passkeys: () =>
+        jsonResponse({
+          data: {
+            passkeys: [
+              {
+                id: 'pk-1',
+                nickname: null,
+                isHardwareKey: false,
+                createdAt: '2026-08-01T00:00:00Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+    });
+    expect(await screen.findByText('Use a passkey')).toBeInTheDocument();
+  });
+
+  it('renders NO button when the list read fails — TOTP must not be hostage to a nicety', async () => {
+    installPasskeyCapability(jest.fn());
+    mount(jest.fn(), { Passkeys: () => graphqlError('UNKNOWN') });
+    // The TOTP field is there; the passkey button never appears.
+    expect(screen.getByLabelText('Confirm it’s you')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Use a passkey')).not.toBeInTheDocument();
+    });
+  });
+
+  it('walks the ceremony and retries the refused action, exactly like a TOTP elevation', async () => {
+    const get = jest.fn().mockResolvedValue(ASSERTION);
+    installPasskeyCapability(get);
+    const onElevated = jest.fn().mockResolvedValue('applied' as const);
+    mount(onElevated, {
+      Passkeys: () =>
+        jsonResponse({
+          data: {
+            passkeys: [
+              {
+                id: 'pk-1',
+                nickname: null,
+                isHardwareKey: false,
+                createdAt: '2026-08-01T00:00:00Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+      WebauthnStepUpOptions: () => jsonResponse({ data: { webauthnStepUpOptions: OPTIONS } }),
+      WebauthnStepUp: () =>
+        jsonResponse({ data: { webauthnStepUp: { stepupExpiresAt: '2026-08-13T12:05:00Z' } } }),
+    });
+
+    fireEvent.click(await screen.findByText('Use a passkey'));
+    await waitFor(() => {
+      expect(onElevated).toHaveBeenCalledTimes(1);
+    });
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('a closed sheet says so in local words and re-enables the form', async () => {
+    installPasskeyCapability(jest.fn().mockRejectedValue(new DOMException('x', 'NotAllowedError')));
+    const onElevated = jest.fn();
+    mount(onElevated, {
+      Passkeys: () =>
+        jsonResponse({
+          data: {
+            passkeys: [
+              {
+                id: 'pk-1',
+                nickname: null,
+                isHardwareKey: false,
+                createdAt: '2026-08-01T00:00:00Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+      WebauthnStepUpOptions: () => jsonResponse({ data: { webauthnStepUpOptions: OPTIONS } }),
+    });
+
+    fireEvent.click(await screen.findByText('Use a passkey'));
+    expect(await screen.findByText(/prompt was closed or timed out/)).toBeInTheDocument();
+    // The action never ran, and the form is usable again.
+    expect(onElevated).not.toHaveBeenCalled();
+    expect(screen.getByText('Confirm')).not.toBeDisabled();
+  });
+
+  it('a refused OPTIONS mint renders through the platform copy table', async () => {
+    installPasskeyCapability(jest.fn());
+    mount(jest.fn(), {
+      Passkeys: () =>
+        jsonResponse({
+          data: {
+            passkeys: [
+              {
+                id: 'pk-1',
+                nickname: null,
+                isHardwareKey: false,
+                createdAt: '2026-08-01T00:00:00Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+      WebauthnStepUpOptions: () => graphqlError('WEBAUTHN_FAILED'),
+    });
+    fireEvent.click(await screen.findByText('Use a passkey'));
+    // The BFF's refusal, in the BFF's words — a platform fact, unlike a closed
+    // sheet, which is a device fact.
+    expect(await screen.findByText(/passkey wasn’t accepted/)).toBeInTheDocument();
+  });
+
+  it('a REFUSED assertion verify renders the platform copy and re-enables the form', async () => {
+    installPasskeyCapability(jest.fn().mockResolvedValue(ASSERTION));
+    mount(jest.fn(), {
+      Passkeys: () =>
+        jsonResponse({
+          data: {
+            passkeys: [
+              {
+                id: 'pk-1',
+                nickname: null,
+                isHardwareKey: false,
+                createdAt: '2026-08-01T00:00:00Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+      WebauthnStepUpOptions: () => jsonResponse({ data: { webauthnStepUpOptions: OPTIONS } }),
+      WebauthnStepUp: () => graphqlError('WEBAUTHN_FAILED'),
+    });
+    fireEvent.click(await screen.findByText('Use a passkey'));
+    expect(await screen.findByText(/passkey wasn’t accepted/)).toBeInTheDocument();
+    expect(screen.getByText('Confirm')).not.toBeDisabled();
+  });
+
+  it('CANCEL during the platform sheet abandons the attempt — the ceremony await is ownable', async () => {
+    // The sheet never settles; Cancel must not wait for it (the M6 rule the
+    // component already applies to identity calls, extended to the new await).
+    let settleSheet: (value: unknown) => void = () => {};
+    installPasskeyCapability(
+      jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            settleSheet = resolve;
+          }),
+      ),
+    );
+    const onElevated = jest.fn();
+    const verifySubmitted = jest.fn();
+    const { cancel } = mount(onElevated, {
+      Passkeys: () =>
+        jsonResponse({
+          data: {
+            passkeys: [
+              {
+                id: 'pk-1',
+                nickname: null,
+                isHardwareKey: false,
+                createdAt: '2026-08-01T00:00:00Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+      WebauthnStepUpOptions: () => jsonResponse({ data: { webauthnStepUpOptions: OPTIONS } }),
+      WebauthnStepUp: () => {
+        verifySubmitted();
+        return jsonResponse({
+          data: { webauthnStepUp: { stepupExpiresAt: '2026-08-13T12:05:00Z' } },
+        });
+      },
+    });
+
+    fireEvent.click(await screen.findByText('Use a passkey'));
+    await waitFor(() => {
+      expect(screen.getByText('Checking…')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(cancel).toHaveBeenCalled();
+    // The form came back WITHOUT the sheet settling.
+    expect(screen.getByText('Confirm')).not.toBeDisabled();
+
+    // The sheet finally resolves — and the abandoned continuation must apply
+    // NOTHING (the M13-round-3 property, on the new await). The sharp half:
+    // the assertion is never SUBMITTED. Submitting it would spend a ceremony
+    // the user cancelled — and a successful verify elevates the session
+    // server-side, a consent violation even with the retry suppressed.
+    settleSheet(ASSERTION);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(verifySubmitted).not.toHaveBeenCalled();
+    expect(onElevated).not.toHaveBeenCalled();
+  });
+});

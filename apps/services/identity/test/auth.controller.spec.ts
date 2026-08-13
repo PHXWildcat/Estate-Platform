@@ -88,6 +88,9 @@ function makeFakes(): Fakes {
         sessionId: 's',
         userId: 'u',
       }),
+      listCredentials: fn([]),
+      revokeCredential: fn(true),
+      renameCredential: fn(true),
     },
     emailVerification: {
       status: fn({ verified: false }),
@@ -184,6 +187,24 @@ describe('AuthController takes the subject from the verified session', () => {
       run: (c) => c.mintExtensionPairing(authed()),
       called: (f) => f.extensionPairing['mint'] as jest.Mock,
     },
+    {
+      name: 'listPasskeys',
+      run: (c) => c.listPasskeys(authed()),
+      called: (f) => f.webauthn['listCredentials'] as jest.Mock,
+    },
+    {
+      name: 'revokePasskey',
+      run: (c) => c.revokePasskey(authed(), 'c1d2e3f4-0000-4000-8000-000000000001'),
+      called: (f) => f.webauthn['revokeCredential'] as jest.Mock,
+    },
+    {
+      name: 'renamePasskey',
+      run: (c) =>
+        c.renamePasskey(authed(), 'c1d2e3f4-0000-4000-8000-000000000001', {
+          nickname: 'YubiKey',
+        }),
+      called: (f) => f.webauthn['renameCredential'] as jest.Mock,
+    },
   ];
 
   it.each(CASES)(
@@ -209,6 +230,23 @@ describe('AuthController takes the subject from the verified session', () => {
     const target = '11111111-2222-4333-8444-555555555555';
     await makeController(fakes).revokeSession(authed(), target);
     expect(fakes.auth['revokeOwnSession']).toHaveBeenCalledWith(CALLER.userId, target);
+  });
+
+  it('revokePasskey and renamePasskey answer the uniform 404 when the service refuses', async () => {
+    // Unknown and not-yours are one answer — the owner predicate rides the
+    // UPDATE, and this is where the boolean becomes the status.
+    const fakes = makeFakes();
+    (fakes.webauthn['revokeCredential'] as jest.Mock).mockResolvedValue(false);
+    (fakes.webauthn['renameCredential'] as jest.Mock).mockResolvedValue(false);
+    const controller = makeController(fakes);
+    await expect(
+      controller.revokePasskey(authed(), 'c1d2e3f4-0000-4000-8000-000000000001'),
+    ).rejects.toMatchObject({ response: { error: 'not_found' } });
+    await expect(
+      controller.renamePasskey(authed(), 'c1d2e3f4-0000-4000-8000-000000000001', {
+        nickname: 'x',
+      }),
+    ).rejects.toMatchObject({ response: { error: 'not_found' } });
   });
 
   it('revokeSession refuses a path id that is not a uuid', async () => {

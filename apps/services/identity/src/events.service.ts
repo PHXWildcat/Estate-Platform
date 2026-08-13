@@ -643,6 +643,20 @@ export class EventsService {
     });
   }
 
+  /** A passkey was revoked (M17 PR5) — the factor-weakening verb, audited. */
+  async webauthnRevoked(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.webauthn.revoked',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
   /** A non-incrementing signature counter — the credential may be cloned. */
   async webauthnCloneDetected(userId: string, sessionId: string): Promise<void> {
     await this.audit.emit({

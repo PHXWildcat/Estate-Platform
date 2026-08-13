@@ -513,6 +513,12 @@ export const typeDefs = /* GraphQL */ `
     nothing to list.
     """
     sessions: [UserSession!]!
+    """
+    The caller's passkeys (M17 PR5). Its own query, deliberately not a field on
+    session: that resolver backs every authenticated request (the M14 PR3
+    rule), and a factor inventory is a settings-page question.
+    """
+    passkeys: [Passkey!]!
     "The caller's assets. The BFF forwards the caller's own bearer token."
     assets: [Asset!]!
     netWorth: NetWorth!
@@ -593,6 +599,19 @@ export const typeDefs = /* GraphQL */ `
     current: Boolean!
   }
 
+  type Passkey {
+    id: ID!
+    nickname: String
+    isHardwareKey: Boolean!
+    createdAt: String!
+    lastUsedAt: String
+  }
+
+  "What a successful step-up reports: when the elevation lapses."
+  type StepUpOutcome {
+    stepupExpiresAt: String!
+  }
+
   """
   A single-use code the user types into the browser extension. Returned in the
   body and never placed in a URL, so it cannot land in history, a Referer, or an
@@ -639,6 +658,43 @@ export const typeDefs = /* GraphQL */ `
     revokeSession(sessionId: ID!): Ok!
     "Step-up-gated demo action (stands in for data export)."
     exportDemo: Ok!
+    """
+    Passkey registration, step 1 (M17 PR5): mint a challenge and return the
+    browser's creation options.
+
+    THE CEREMONY PAYLOADS CROSS AS JSON, and this is a recorded second use of
+    the scalar, not an erosion of the M12 rule beside createDocument. That rule
+    exists because the BFF REFUSES things there — a duplicate variable, a
+    both-or-neither pair — so an untyped shape would bypass refusals this edge
+    owns. Here the edge owns NONE: attestation semantics belong to identity's
+    WebAuthn library, identity re-validates shape and substance before any
+    effect, and a second validator here would be the PR3 wire-drift class (two
+    declarations of one wire, free to disagree, the disagreement invisible
+    until production). Opaque pass-through whose sole validator is downstream
+    is the mirror image of the readiness surface's validated OUTPUT.
+    """
+    webauthnRegisterOptions: JSON!
+    "Passkey registration, step 2: forward the attestation; identity verifies and binds."
+    webauthnRegister(response: JSON!): Ok!
+    "Passkey step-up, step 1: mint an assertion challenge."
+    webauthnStepUpOptions: JSON!
+    """
+    Passkey step-up, step 2: verify the assertion. On success the session is
+    elevated exactly as a TOTP step-up elevates it — same window, same
+    freshness predicate downstream.
+    """
+    webauthnStepUp(response: JSON!): StepUpOutcome!
+    """
+    Revoke one passkey. STEP-UP GATED at identity — the one factor-WEAKENING
+    verb in the product, deliberately unlike the ungated session revoke: a
+    removed session only reduces authority, while a removed factor disarms the
+    gate that protects everything else (an ungated revoke plus a stolen bearer
+    is the factor-strip downgrade into the 2026-08-12 escalation). NOT_FOUND
+    for unknown and not-yours alike.
+    """
+    revokePasskey(id: ID!): Ok!
+    "Label one passkey (display metadata; session-only)."
+    renamePasskey(id: ID!, nickname: String!): Ok!
     """
     Mail another address-verification code to the address already on file.
 
@@ -1183,6 +1239,8 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           const rows = await identity.sessions(requireAccessToken(ctx));
           return rows.map((row) => ({ ...row, audience: AUDIENCE_GQL[row.audience] }));
         },
+        passkeys: async (_parent: unknown, _args: unknown, ctx: RequestContext) =>
+          identity.passkeys(requireAccessToken(ctx)),
         assets: async (_parent: unknown, _args: unknown, ctx: RequestContext): Promise<Asset[]> =>
           assets.list(requireAccessToken(ctx)),
         netWorth: async (
@@ -1700,6 +1758,46 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<{ code: string; expiresAt: string }> =>
           identity.startExtensionPairing(requireAccessToken(ctx)),
+        webauthnRegisterOptions: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<unknown> => identity.webauthnRegisterOptions(requireAccessToken(ctx)),
+        webauthnRegister: async (
+          _parent: unknown,
+          args: { response: Record<string, unknown> },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await identity.webauthnRegister(requireAccessToken(ctx), args.response);
+          return OK;
+        },
+        webauthnStepUpOptions: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<unknown> => identity.webauthnStepUpOptions(requireAccessToken(ctx)),
+        webauthnStepUp: async (
+          _parent: unknown,
+          args: { response: Record<string, unknown> },
+          ctx: RequestContext,
+        ): Promise<{ stepupExpiresAt: string }> =>
+          identity.webauthnStepUp(requireAccessToken(ctx), args.response),
+        revokePasskey: async (
+          _parent: unknown,
+          args: { id: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await identity.revokePasskey(requireAccessToken(ctx), args.id);
+          return OK;
+        },
+        renamePasskey: async (
+          _parent: unknown,
+          args: { id: string; nickname: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await identity.renamePasskey(requireAccessToken(ctx), args.id, args.nickname);
+          return OK;
+        },
         revokeSession: async (
           _parent: unknown,
           args: { sessionId: string },

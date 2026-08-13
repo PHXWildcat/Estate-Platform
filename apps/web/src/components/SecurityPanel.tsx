@@ -9,6 +9,12 @@ import { formatDateTime } from '../lib/datetime';
 import { audienceCopy } from '../lib/sessions';
 import { SESSION_CACHE_TTL_MS, type StepUpRetryOutcome } from '../lib/step-up';
 import { validateTotpCode } from '../lib/validation';
+import {
+  ceremonyFailureMessage,
+  decodeCreationOptions,
+  encodeRegistrationResponse,
+  webauthnSupported,
+} from '../lib/webauthn';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
@@ -39,7 +45,18 @@ type DevicesState =
  * a designation the owner never chose) has no shape to reoccur in: the action
  * is bound where it is rendered, not selected afterwards from state.
  */
-type StepUpTarget = 'verify' | 'export' | 'pairing';
+type StepUpTarget = 'verify' | 'export' | 'pairing' | 'passkey-revoke';
+
+interface PasskeyInfo {
+  id: string;
+  nickname: string | null;
+  isHardwareKey: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+type PasskeysState =
+  { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; passkeys: PasskeyInfo[] };
 
 /**
  * REVOKING IS NOT INSTANT DOWNSTREAM, AND THIS PAGE MAY NOT PRETEND IT IS.
@@ -102,6 +119,15 @@ export function SecurityPanel(): ReactElement {
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
 
+  // Passkeys (M17 PR5)
+  const [passkeys, setPasskeys] = useState<PasskeysState>({ kind: 'loading' });
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
+  const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<PasskeyInfo | null>(null);
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
   // Export (demo)
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -139,10 +165,25 @@ export function SecurityPanel(): ReactElement {
     }
   }, []);
 
+  /** Same shape rule as `loadDevices`: a missing field is NO DATA, and an
+   * empty passkey list must never be synthesized from a version skew. */
+  const loadPasskeys = useCallback(async (): Promise<void> => {
+    const result = await gqlRequest('Passkeys', {});
+    if (result.ok && Array.isArray((result.data as { passkeys?: unknown }).passkeys)) {
+      setPasskeys({
+        kind: 'ready',
+        passkeys: result.data.passkeys,
+      });
+    } else {
+      setPasskeys({ kind: 'error' });
+    }
+  }, []);
+
   useEffect(() => {
     void loadSession();
     void loadDevices();
-  }, [loadSession, loadDevices]);
+    void loadPasskeys();
+  }, [loadSession, loadDevices, loadPasskeys]);
 
   async function beginEnrollment(): Promise<void> {
     setEnrollBusy(true);
@@ -242,6 +283,106 @@ export function SecurityPanel(): ReactElement {
       }
       return outcome;
     };
+  }
+
+  /**
+   * Register a passkey. NOT routed through StepUpPrompt-retry: the enrolment
+   * gate (`SecondFactorGate`) may refuse with STEPUP_REQUIRED, and when it
+   * does the existing "Verify your identity" section is the remedy — a passkey
+   * ceremony interleaved with a TOTP prompt-and-retry would stack two
+   * platform sheets. The refusal says exactly that.
+   */
+  async function addPasskey(): Promise<void> {
+    setPasskeyBusy(true);
+    setPasskeyError(null);
+    setPasskeyNote(null);
+    const optionsResult = await gqlRequest('WebauthnRegisterOptions', {});
+    const options = optionsResult.ok
+      ? (optionsResult.data as { webauthnRegisterOptions?: unknown }).webauthnRegisterOptions
+      : undefined;
+    if (!optionsResult.ok || options === undefined || options === null) {
+      setPasskeyBusy(false);
+      if (!optionsResult.ok && optionsResult.code === 'STEPUP_REQUIRED') {
+        setPasskeyError(
+          'Adding a factor to an account that has one needs a fresh identity check — verify below, then try again.',
+        );
+      } else {
+        setPasskeyError(messageFor(optionsResult.ok ? 'UNKNOWN' : optionsResult.code));
+      }
+      return;
+    }
+    let credential: PublicKeyCredential | null = null;
+    try {
+      credential = (await navigator.credentials.create({
+        publicKey: decodeCreationOptions(options as Parameters<typeof decodeCreationOptions>[0]),
+      })) as PublicKeyCredential | null;
+    } catch (err) {
+      setPasskeyBusy(false);
+      setPasskeyError(ceremonyFailureMessage(err));
+      return;
+    }
+    if (!credential) {
+      setPasskeyBusy(false);
+      setPasskeyError(ceremonyFailureMessage(null));
+      return;
+    }
+    const verify = await gqlRequest('WebauthnRegister', {
+      response: encodeRegistrationResponse(credential),
+    });
+    setPasskeyBusy(false);
+    if (!verify.ok) {
+      setPasskeyError(messageFor(verify.code));
+      return;
+    }
+    setPasskeyNote('Passkey added. Name it so you can tell your devices apart.');
+    await loadPasskeys();
+    await loadSession();
+  }
+
+  /** The step-up-gated removal — the one factor-WEAKENING verb (see the BFF
+   * schema's revokePasskey doc for why this is gated while session revoke is
+   * not). Runs through the shared prompt-and-retry. */
+  async function runRevokePasskey(target: PasskeyInfo): Promise<StepUpRetryOutcome> {
+    setPasskeyBusy(true);
+    setPasskeyError(null);
+    setPasskeyNote(null);
+    const result = await gqlRequest('RevokePasskey', { id: target.id });
+    setPasskeyBusy(false);
+    if (result.ok) {
+      setStepUp(null);
+      setRevokeTarget(null);
+      setPasskeyNote('Passkey removed. It can no longer verify anything for this account.');
+      await loadPasskeys();
+      return 'applied';
+    }
+    if (result.code === 'STEPUP_REQUIRED') {
+      setStepUpSuccess(null);
+      setStepUp('passkey-revoke');
+      return 'stale';
+    }
+    setStepUp(null);
+    setRevokeTarget(null);
+    setPasskeyError(messageFor(result.code));
+    return 'applied';
+  }
+
+  async function renamePasskey(id: string): Promise<void> {
+    const nickname = renameValue.trim();
+    if (nickname.length === 0 || nickname.length > 64) {
+      setPasskeyError('A name needs 1\u201364 characters.');
+      return;
+    }
+    setPasskeyBusy(true);
+    setPasskeyError(null);
+    const result = await gqlRequest('RenamePasskey', { id, nickname });
+    setPasskeyBusy(false);
+    if (result.ok) {
+      setRenameTarget(null);
+      setRenameValue('');
+      await loadPasskeys();
+    } else {
+      setPasskeyError(messageFor(result.code));
+    }
   }
 
   async function runExport(): Promise<StepUpRetryOutcome> {
@@ -533,6 +674,140 @@ export function SecurityPanel(): ReactElement {
         <div className="mt-3 space-y-2">
           <FormStatus tone="success" message={stepUpSuccess} />
         </div>
+      </section>
+
+      <section aria-labelledby="passkeys-heading" className="card p-6">
+        <h2 id="passkeys-heading" className="text-lg font-semibold">
+          Passkeys
+        </h2>
+        <p className="mt-2 max-w-prose text-sm text-ink-muted">
+          A passkey verifies sensitive actions with this device&rsquo;s own screen lock instead of a
+          typed code. Keep an authenticator app enrolled too: the vault and its browser extension
+          currently accept only authenticator codes, so an account whose only factor is a passkey
+          cannot complete vault ceremonies.
+        </p>
+
+        {!webauthnSupported() ? (
+          <p className="mt-4 text-sm text-ink-muted">
+            This browser does not support passkeys, so nothing can be added from here.
+          </p>
+        ) : null}
+
+        {passkeys.kind === 'loading' ? (
+          <p className="mt-4 text-sm text-ink-muted" role="status">
+            Loading your passkeys…
+          </p>
+        ) : passkeys.kind === 'error' ? (
+          <p className="mt-4 text-sm text-ink-muted" role="alert">
+            Your passkeys could not be loaded just now. Nothing can be shown — an empty list here
+            would be a claim this page cannot make.
+          </p>
+        ) : passkeys.passkeys.length === 0 ? (
+          <p className="mt-4 text-sm text-ink-muted">No passkeys on this account yet.</p>
+        ) : (
+          <ul className="mt-4 divide-y divide-line">
+            {passkeys.passkeys.map((row) => (
+              <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                <div>
+                  <p className="text-sm font-medium">
+                    {row.nickname ?? 'Unnamed passkey'}
+                    {row.isHardwareKey ? (
+                      <span className="ml-2 text-xs text-ink-muted">hardware key</span>
+                    ) : null}
+                  </p>
+                  <p className="text-xs text-ink-muted">
+                    Added {new Date(row.createdAt).toLocaleDateString()}
+                    {row.lastUsedAt
+                      ? ` · last used ${new Date(row.lastUsedAt).toLocaleDateString()}`
+                      : ' · never used'}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  {renameTarget === row.id ? (
+                    <>
+                      <input
+                        aria-label="Passkey name"
+                        className="field-input max-w-[12rem]"
+                        value={renameValue}
+                        onChange={(event) => {
+                          setRenameValue(event.target.value);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={passkeyBusy}
+                        onClick={() => {
+                          void renamePasskey(row.id);
+                        }}
+                      >
+                        Save name
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={passkeyBusy}
+                      onClick={() => {
+                        setRenameTarget(row.id);
+                        setRenameValue(row.nickname ?? '');
+                      }}
+                    >
+                      Name
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={passkeyBusy || stepUp !== null}
+                    onClick={() => {
+                      setRevokeTarget(row);
+                      void runRevokePasskey(row);
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {webauthnSupported() ? (
+          <button
+            type="button"
+            className="btn btn-primary mt-4"
+            disabled={passkeyBusy || stepUp !== null}
+            onClick={() => {
+              void addPasskey();
+            }}
+          >
+            Add a passkey
+          </button>
+        ) : null}
+
+        <div role="status" aria-live="polite">
+          {passkeyNote !== null ? (
+            <p className="mt-3 text-sm text-ink-muted">{passkeyNote}</p>
+          ) : null}
+        </div>
+        <div role="alert">
+          {passkeyError !== null ? <p className="field-error mt-3">{passkeyError}</p> : null}
+        </div>
+
+        {stepUp === 'passkey-revoke' && revokeTarget !== null ? (
+          <StepUpPrompt
+            hint={`Removing a passkey weakens this account\u2019s protection, so it needs a fresh identity check. Confirm to remove \u201c${revokeTarget.nickname ?? 'Unnamed passkey'}\u201d.`}
+            submitLabel="Confirm and remove"
+            idPrefix="passkey-revoke"
+            onElevated={withSessionRefresh(() => runRevokePasskey(revokeTarget))}
+            onCancel={() => {
+              setStepUp(null);
+              setRevokeTarget(null);
+            }}
+          />
+        ) : null}
       </section>
 
       <section aria-labelledby="devices-heading" className="card p-6">

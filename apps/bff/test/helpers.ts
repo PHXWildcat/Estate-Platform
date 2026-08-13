@@ -224,6 +224,56 @@ export class FakeIdentityClient implements IdentityClient {
       : Promise.resolve(this.extensionPairing);
   }
 
+  /** M17 PR5 — the passkey vertical, faked with the same faithfulness rule as
+   * every double here: defaults answer the happy shape, and a spec that needs
+   * a refusal overrides per-case. */
+  passkeysRows: Array<{
+    id: string;
+    nickname: string | null;
+    isHardwareKey: boolean;
+    createdAt: string;
+    lastUsedAt: string | null;
+  }> = [];
+
+  webauthnRegisterOptions(_accessToken: string): Promise<unknown> {
+    return Promise.resolve({ challenge: 'AQID', rp: { id: 'localhost' } });
+  }
+
+  webauthnRegister(_accessToken: string, _response: Record<string, unknown>): Promise<void> {
+    return Promise.resolve();
+  }
+
+  webauthnStepUpOptions(_accessToken: string): Promise<unknown> {
+    return Promise.resolve({ challenge: 'AQID' });
+  }
+
+  webauthnStepUp(
+    _accessToken: string,
+    _response: Record<string, unknown>,
+  ): Promise<{ stepupExpiresAt: string }> {
+    return Promise.resolve({ stepupExpiresAt: '2026-08-13T12:05:00.000Z' });
+  }
+
+  passkeys(_accessToken: string): Promise<
+    Array<{
+      id: string;
+      nickname: string | null;
+      isHardwareKey: boolean;
+      createdAt: string;
+      lastUsedAt: string | null;
+    }>
+  > {
+    return Promise.resolve(this.passkeysRows);
+  }
+
+  revokePasskey(_accessToken: string, _id: string): Promise<void> {
+    return Promise.resolve();
+  }
+
+  renamePasskey(_accessToken: string, _id: string, _nickname: string): Promise<void> {
+    return Promise.resolve();
+  }
+
   logoutByRefresh(refreshToken: string): Promise<void> {
     this.logoutByRefreshCalls.push(refreshToken);
     return this.logoutByRefreshError

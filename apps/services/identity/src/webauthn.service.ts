@@ -165,7 +165,7 @@ export class WebAuthnService {
     // Heuristic: a cross-platform (roaming) authenticator is a hardware key;
     // platform authenticators (Touch ID, Windows Hello) are not.
     const isHardwareKey = response.authenticatorAttachment === 'cross-platform';
-    await this.repo.insertCredential({
+    const outcome = await this.repo.insertCredential({
       userId,
       credentialId: Buffer.from(info.credential.id, 'base64url'),
       publicKey: Buffer.from(info.credential.publicKey),
@@ -175,6 +175,13 @@ export class WebAuthnService {
       nickname: null,
       isHardwareKey,
     });
+    if (outcome === 'duplicate') {
+      // This authenticator already backs a credential — on ANOTHER account
+      // (excludeCredentials stops same-account re-registration in the
+      // browser). One generic refusal: "that authenticator belongs to a
+      // different account" is a fact about somebody else's account.
+      throw registrationFailed();
+    }
     // Append-only local ledger AND the Kafka audit stream (the latter feeds
     // insider-anomaly detection, docs/03 §5.3).
     await this.authEvents.insert({ userId, kind: 'webauthn.registered' });
@@ -247,11 +254,13 @@ export class WebAuthnService {
         requireUserVerification: true,
       });
     } catch {
+      await this.recordAssertionFailure(userId, sessionId);
       throw authenticationFailed();
     }
     // …and we gate the step-up elevation on userVerified explicitly (defence in
     // depth): a passkey step-up must be a strong re-auth, never a bare tap.
     if (!verification.verified || !verification.authenticationInfo.userVerified) {
+      await this.recordAssertionFailure(userId, sessionId);
       throw authenticationFailed();
     }
     const newCounter = verification.authenticationInfo.newCounter;
@@ -274,5 +283,75 @@ export class WebAuthnService {
     await this.authEvents.insert({ userId, sessionId, kind: 'stepup.granted' });
     await this.events.stepUpGranted(userId, sessionId, stepupExpiresAt, 'webauthn');
     return { mfaLevel: 'stepup', stepupExpiresAt: stepupExpiresAt.toISOString() };
+  }
+
+  /**
+   * A failed assertion, on the ledger (M17 PR5). The 2026-08-10 decision said
+   * failed WebAuthn assertions "emit their own kind"; the code emitted NOTHING
+   * — an investigator reading the ledger for a §5.1 case saw no trace of
+   * assertion failures at all. The kind exists for visibility and is
+   * deliberately NOT in any rate-bound set: a passkey assertion is not
+   * brute-forceable (the authenticator holds the key), so counting it toward
+   * the step-up cap would let a flaky authenticator lock its own owner out.
+   * `rate-bounds.ts` records the exclusion beside the sets.
+   */
+  private async recordAssertionFailure(userId: string, sessionId: string): Promise<void> {
+    await this.authEvents.insert({ userId, sessionId, kind: 'webauthn.assertion_failed' });
+  }
+
+  /** The management projection (M17 PR5) — see `WebAuthnRepo.listForUser`. */
+  async listCredentials(userId: string): Promise<
+    Array<{
+      id: string;
+      nickname: string | null;
+      isHardwareKey: boolean;
+      createdAt: string;
+      lastUsedAt: string | null;
+    }>
+  > {
+    const rows = await this.repo.listForUser(userId);
+    return rows.map((row) => ({
+      id: row.id,
+      nickname: row.nickname,
+      isHardwareKey: row.is_hardware_key,
+      createdAt: row.created_at.toISOString(),
+      lastUsedAt: row.last_used_at ? row.last_used_at.toISOString() : null,
+    }));
+  }
+
+  /**
+   * Revoke one passkey (M17 PR5). STEP-UP GATED AT THE ROUTE, and the reason
+   * is the downgrade attack rather than ceremony for its own sake: an ungated
+   * revoke plus a stolen bearer strips the account's factors, which DISARMS
+   * `SecondFactorGate` (no factor ⇒ nothing to prove ⇒ enrolment ungated), and
+   * the thief then enrols their own factor and owns step-up — the 2026-08-12
+   * escalation reached through the back door. The M6 "protective action never
+   * harder" rule does not apply because removing a factor is not protective:
+   * it weakens the gate that protects everything else. Contrast the M16
+   * session revoke, which stays ungated because revoking a session only ever
+   * REDUCES authority.
+   *
+   * Returns whether anything was revoked; the route answers a uniform 404
+   * otherwise (no such credential and not-yours are one answer).
+   */
+  async revokeCredential(userId: string, id: string): Promise<boolean> {
+    if (!UUID_RE.test(id)) {
+      return false;
+    }
+    const revoked = await this.repo.revokeCredential(userId, id, this.clock());
+    if (revoked) {
+      await this.authEvents.insert({ userId, kind: 'webauthn.revoked' });
+      await this.events.webauthnRevoked(userId);
+    }
+    return revoked;
+  }
+
+  /** Name one passkey — a display label, ungated beyond the session (the
+   * `documents.title` class). Uniform 404 semantics like the revoke. */
+  async renameCredential(userId: string, id: string, nickname: string): Promise<boolean> {
+    if (!UUID_RE.test(id)) {
+      return false;
+    }
+    return this.repo.renameCredential(userId, id, nickname);
   }
 }

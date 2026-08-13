@@ -99,7 +99,8 @@ export const STEPUP_DENIAL_WINDOW_MS = 15 * 60 * 1000;
  * first try. A bound on guessing has to cover every route that checks the
  * secret, so this is a SET and a third checker must join it. `kind` is a plain
  * string at the repo boundary, so there is no type to pin these against — the
- * pin is `test/second-factor-kinds.spec.ts`, which scans `auth.service.ts` for
+ * pin is `test/rate-bounds.spec.ts` (né second-factor-kinds.spec.ts; the M17
+ * PR1 rename this citation missed), which scans `auth.service.ts` for
  * every kind it writes and fails if one that means "a wrong code" is missing
  * here. A set that silently stops matching is the failure this whole review
  * keeps finding.

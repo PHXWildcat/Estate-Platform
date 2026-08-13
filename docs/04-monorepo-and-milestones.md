@@ -3953,11 +3953,15 @@ And there is no rate limiting anywhere: no throttler dependency in any
 `package.json`, and `recordLoginFailure` inserts a `login.failed` row
 (`auth.service.ts:564`) that nothing reads. `docs/03` §6 lists account takeover
 as risk #1 (H/H) with residual treatment "passkey nudges, trusted-contact review
-mode, adaptive step-up" — all three unbuilt, and `grep -rniE "webauthn|passkey"`
-across `apps/bff/src`, `apps/web/src`, `apps/vault-web/src` and
-`apps/vault-extension/src` returns ZERO hits, so identity's four relying-party
-routes have been shipped and unreachable since M2 and TOTP is the only usable
-factor.
+mode, adaptive step-up" — passkey nudges PARTIALLY DISCHARGED by PR5 (the
+surface exists; nudging is copy and can follow), the other two still unbuilt.
+The zero-hits grep this paragraph originally rested on — no
+`webauthn|passkey` match anywhere in `apps/bff/src`, `apps/web/src`,
+`apps/vault-web/src` or `apps/vault-extension/src`, identity's four
+relying-party routes unreachable since M2, TOTP the only usable factor — was
+made false for the first two trees by PR5 and REMAINS TRUE for the vault
+origin and the extension, which is docs/03 §6o's recorded residual: a
+passkey-only account cannot complete any Zone A step-up-gated ceremony.
 
 **The two halves are mutually enabling and must not be split.** A reset route
 without a bound is an enumeration and mail-bomb oracle; a bound without a reset
@@ -4333,6 +4337,63 @@ recipient state), and identity's no-DB floor RATCHETED UP 69/67/41/68 →
 70/67/43/69 — reversing PR3's exception. §6h's permanent-lockout residual is
 CLOSED (§6n), with the stale-re-feed race and the no-surface gap recorded as
 residuals.
+
+#### PR5 as built — the passkey surface (2026-08-13)
+
+**The design decision everything followed from: web-only, with the boundary
+said out loud.** Extending the ceremony to the vault origin is an identity
+change (one `rpOrigin` becomes a list), an audience widening on both assertion
+legs, two vault-edge proxy entries and a fence table update — not a client
+patch — so the scope line is drawn at the web app and docs/03 §6o records what
+that costs: a passkey-only account cannot complete any Zone A step-up-gated
+ceremony, and the passkeys section SAYS SO on screen (the M16 honesty pattern).
+
+**The sweep found two defects in the shipped machinery before the surface
+landed on it** (the PR4 pattern): `hasCredentials` ignored `revoked_at` —
+latent until the first revoke route armed it, whereupon revoking the last
+passkey on a TOTP-less account would have locked factor enrolment and every
+arming gate permanently — and the same-authenticator-second-account unique
+violation was an unhandled 500 on a security route. Both fixed with the
+predicate landing IN THE SAME CHANGE as the column's first writer.
+
+**The management vertical shipped as a precondition** (the M16 rule): list,
+rename and revoke routes, with revoke STEP-UP GATED — deliberately unlike the
+ungated M16 session revoke, because removing a factor weakens the gate that
+protects everything else (ungated + stolen bearer = factor-strip downgrade
+into the 2026-08-12 escalation). `factor-routes.spec.ts` gained the
+`ROUTE_STEPUP` gate class AND the assertion that makes it checked rather than
+labelled, mutation-tested by stripping the guard.
+
+**The ceremony codec is hand-rolled** (~140 lines, `apps/web/src/lib/webauthn.ts`)
+on the node:crypto/clamd/SRP precedent: @simplewebauthn/browser would put a
+third-party tree on the second-factor path to save mechanical base64url
+conversion over a FIXED field list — and the fixed list is the honest shape,
+because a generic walker would convert fields nobody thought about.
+Browser-side failures (a closed sheet, a timeout) have their own local
+vocabulary and never launder into platform copy.
+
+**The step-up prompt's passkey path is SELF-CONTAINED**: the prompt discovers
+the caller's passkeys itself, so all four prompt-and-retry callers gained the
+option with zero changes, and a discovery failure means silence — TOTP is
+never hostage to a nicety. The ceremony await sits under the same ownership
+counter as everything else; Cancel during the platform sheet abandons the
+attempt and a sheet that never settles cannot wedge the form (proven by a case
+that resolves the sheet after Cancel and asserts nothing applied).
+
+**Wire and error plumbing:** the ceremony payloads cross GraphQL as JSON with
+the M12 typed-input rule OWNED in the schema comment (the edge validates
+nothing about attestation by design — a second validator would be the PR3
+wire-drift class); `WEBAUTHN_FAILED` is mapped BY TOKEN before status, because
+identity answers 400 and 401 with one token and the 401 half collapsing into
+UNAUTHENTICATED would forget a valid session over a refused ceremony (the M16
+PR2b shape); the APQ manifest was regenerated (66 operations); failed
+assertions finally write a ledger kind (`webauthn.assertion_failed`,
+deliberately in no rate-bound set), correcting a 2026-08-10 decision-log claim
+the code never satisfied.
+
+**Also paid down:** the first index `webauthn_credentials` has ever had
+(migration 011, the 005 shape), and §6m's reset question RE-DECLINED with the
+reasoning recorded rather than re-argued.
 
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
