@@ -72,6 +72,11 @@ const WRITERS: ReadonlyArray<{
     method: 'insertCredential',
     why: 'binds a new authenticator to the account',
   },
+  {
+    repo: 'WebAuthnRepo',
+    method: 'revokeCredential',
+    why: 'removes a factor (M17 PR5) — the factor-WEAKENING write, whose ungated form is the factor-strip downgrade into the 2026-08-12 escalation',
+  },
 ];
 
 /**
@@ -86,6 +91,11 @@ const WRITERS: ReadonlyArray<{
 const GATED_BY = {
   SERVICE_GATE: 'service-gate',
   PROVES_POSSESSION: 'proves-possession',
+  /** An unconditional `StepUpGuard` on the route itself — usable only where
+   * the gate can never be vacuous. Removing a factor qualifies BY CONSTRUCTION:
+   * the account holds at least the factor being removed, so "prove a factor"
+   * is always answerable. Asserted against the controller source below. */
+  ROUTE_STEPUP: 'route-stepup',
 } as const;
 
 const DECLARED: ReadonlyArray<{
@@ -132,6 +142,13 @@ const DECLARED: ReadonlyArray<{
     gate: GATED_BY.SERVICE_GATE,
     writes: true,
     why: 'binds the authenticator — the write the escalation needed',
+  },
+  {
+    file: 'webauthn.service.ts',
+    method: 'revokeCredential',
+    gate: GATED_BY.ROUTE_STEPUP,
+    writes: true,
+    why: 'removes a factor (M17 PR5): ungated, a stolen bearer strips factors, disarms SecondFactorGate, and enrols its own',
   },
 ];
 
@@ -270,6 +287,40 @@ describe('every path that writes a factor is declared and gated', () => {
         entry: `${entry.file}#${entry.method}`,
         gated: sites.includes(entry.method),
       }).toEqual({ entry: `${entry.file}#${entry.method}`, gated: true });
+    }
+  });
+
+  it('every ROUTE-STEPUP entry sits behind StepUpGuard at its controller route', () => {
+    // The label is only worth what this checks: a ROUTE_STEPUP declaration
+    // whose route lost its guard is the factor-strip downgrade waiting. The
+    // scan splits the controller on decorator boundaries so each handler owns
+    // exactly its own decorators (the M15 attribution lesson — a permissive
+    // bridge regex backtracks across handlers and attributes the wrong one).
+    const controller = readFileSync(join(SRC, 'auth.controller.ts'), 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      '',
+    );
+    for (const entry of DECLARED.filter((d) => d.gate === GATED_BY.ROUTE_STEPUP)) {
+      // The handler that calls this service method…
+      const call = controller.indexOf(`.${entry.method}(`);
+      expect({ entry: entry.method, called: call >= 0 }).toEqual({
+        entry: entry.method,
+        called: true,
+      });
+      // …owns the decorator block between the previous handler's end and its
+      // own signature; StepUpGuard must be in THAT block.
+      const decoStart = controller.lastIndexOf('@', controller.lastIndexOf('async', call));
+      const block = controller.slice(
+        controller.lastIndexOf('  @', decoStart - 400),
+        controller.lastIndexOf('async', call),
+      );
+      expect({
+        entry: entry.method,
+        guarded: /UseGuards\(SessionGuard, StepUpGuard\)/.test(block),
+      }).toEqual({
+        entry: entry.method,
+        guarded: true,
+      });
     }
   });
 

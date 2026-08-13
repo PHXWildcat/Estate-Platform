@@ -5328,3 +5328,50 @@ deviating from them, stop and propose the change with rationale — do not silen
   — CI's exact situation — fails before the pin and passes after; zero new
   rows in the live table after a core run) and mutation-tested by reverting
   the pin and watching the auth-cluster run go red.
+- 2026-08-13 — M17 PR5, THE PASSKEY SURFACE, and the scope line drawn where the
+  facts put it: WEB-ONLY, with the cost said on screen. The fact sweep
+  established that extending the ceremony to the vault origin is an identity
+  change (`rpOrigin` is ONE string; the assertion routes are account-audience;
+  the vault edge allowlists exact routes) — so §6o records the residual
+  plainly: a passkey-only account cannot complete any Zone A step-up-gated
+  ceremony, and the passkeys section tells users to keep an authenticator app
+  enrolled. TWO DEFECTS FOUND IN SHIPPED MACHINERY BEFORE BUILDING ON IT (the
+  PR4 pattern, second PR running): `hasCredentials` — the WebAuthn half of
+  `SecondFactorGate.holdsVerifiedFactor` — ignored `revoked_at`, latent only
+  because nothing wrote that column, and PR5's revoke route is the writer that
+  would have armed it (revoking the last passkey on a TOTP-less account =
+  permanent enrolment lockout); and the same-authenticator-on-a-second-account
+  unique violation was an unhandled 500. The rule both fixes restate: THE
+  PREDICATE LANDS WITH THE WRITER, never after it.
+- 2026-08-13 — REVOKING A FACTOR IS NOT REVOKING A SESSION, and the asymmetry
+  is now written as data. M16 made session revocation ungated ("taking one away
+  can only reduce authority"); passkey revocation is STEP-UP GATED because
+  removing a factor weakens the gate that protects everything else — ungated,
+  a stolen bearer strips the factors, `SecondFactorGate` disarms (no factor ⇒
+  nothing to prove ⇒ enrolment ungated), and the thief enrols their own: the
+  2026-08-12 escalation through the back door. `factor-routes.spec.ts` gained
+  a `ROUTE_STEPUP` gate class AND the assertion that verifies it against the
+  controller's real decorators — a label nobody checks is the
+  fence-that-claims-without-checking shape — mutation-tested by stripping the
+  guard (red) before anything shipped on it.
+- 2026-08-13 — THE CEREMONY CODEC IS HAND-ROLLED AND THE PROMPT'S PASSKEY PATH
+  IS SELF-CONTAINED, each for a recorded reason. The codec (~140 lines) is the
+  node:crypto/clamd/SRP precedent: @simplewebauthn/browser would put a
+  dependency tree on the second-factor path to save mechanical base64url
+  conversion over a FIXED field list, and the fixed list is itself the honest
+  shape. Browser-side ceremony failures (a closed sheet, a timeout) get their
+  own local vocabulary and never launder into platform copy — a cancellation
+  reading as a platform refusal is the M9 rule's client-side mirror. The
+  StepUpPrompt discovers the caller's passkeys ITSELF, on mount, failing to
+  silence — so all four prompt-and-retry callers gained the option with zero
+  changes and TOTP is never hostage to a nicety; the ceremony await sits under
+  the same ownership counter as every other await, proven by a case that
+  settles the platform sheet AFTER Cancel and asserts nothing applied.
+  WEBAUTHN_FAILED is mapped BY TOKEN before status because identity answers
+  400 and 401 with one token, and the 401 half collapsing into UNAUTHENTICATED
+  would forget a valid session over a refused ceremony (the M16 PR2b lesson,
+  one wire over). Failed assertions finally write a ledger kind — the
+  2026-08-10 entry claimed they "emit their own kind" and the code emitted
+  NOTHING, so the log was corrected by making it true, with the kind in no
+  rate-bound set (a passkey is not brute-forceable, and counting it would let
+  a flaky authenticator lock out its own owner).

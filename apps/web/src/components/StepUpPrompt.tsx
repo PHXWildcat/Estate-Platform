@@ -4,6 +4,12 @@ import { useEffect, useRef, useState, type FormEvent, type ReactElement } from '
 import { gqlRequest } from '../graphql/client';
 import { stepUpMessageFor } from '../lib/copy';
 import {
+  ceremonyFailureMessage,
+  decodeRequestOptions,
+  encodeAuthenticationResponse,
+  webauthnSupported,
+} from '../lib/webauthn';
+import {
   STEP_UP_PROPAGATION_BUDGET_MS,
   STEP_UP_RETRY_INTERVAL_MS,
   type StepUpRetryOutcome,
@@ -71,6 +77,20 @@ import { validateTotpCode } from '../lib/validation';
  * the thing being shared. So the rule for anyone adding a fifth prompt: use this
  * unless you are inside a form, and if you are, the wording still has to come
  * from `stepUpMessageFor`.
+ *
+ * THE PASSKEY PATH (M17 PR5) IS SELF-CONTAINED: the prompt asks the BFF for the
+ * caller's passkey list itself, on mount, once — so every caller of this
+ * component gained the option without threading a prop, and a caller that
+ * predates passkeys cannot render a broken button. The list read failing, the
+ * browser lacking the API, or the account holding none all collapse to the same
+ * answer: no button, TOTP as before. The ceremony await sits under the SAME
+ * ownership counter as everything else — Cancel while the platform sheet is up
+ * abandons the attempt, and a sheet that never settles cannot wedge the form
+ * because `abandon` restores it without waiting (the rule above, applied to a
+ * new awaited thing). Browser-side ceremony failures (the sheet closed, a
+ * timeout) render through `ceremonyFailureMessage`, never through the BFF error
+ * table: a cancellation is a fact about this device, and laundering it into a
+ * platform refusal would tell a user something is wrong with their account.
  */
 export interface StepUpPromptProps {
   /** Why the check is needed, in this surface's own words. */
@@ -98,6 +118,7 @@ export function StepUpPrompt({
   const [codeError, setCodeError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [hasPasskey, setHasPasskey] = useState(false);
   /**
    * WHICH SUBMISSION CURRENTLY OWNS THIS FORM.
    *
@@ -126,6 +147,25 @@ export function StepUpPrompt({
     },
     [],
   );
+
+  // Discover the passkey option. Once, on mount, and failure means silence:
+  // this read exists to decide whether a BUTTON renders, and a prompt that
+  // blocked or errored on it would make TOTP hostage to a nicety.
+  useEffect(() => {
+    if (!webauthnSupported()) {
+      return;
+    }
+    let alive = true;
+    void gqlRequest('Passkeys', {}).then((result) => {
+      if (alive && result.ok) {
+        const list = (result.data as { passkeys?: unknown[] }).passkeys;
+        setHasPasskey(Array.isArray(list) && list.length > 0);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function abandon(): void {
     activeAttempt.current += 1;
@@ -173,10 +213,17 @@ export function StepUpPrompt({
       return;
     }
     setCode('');
+    await retryElevated(owns);
+  }
 
-    // Fresh for five minutes — but the PEER may not know yet. Retry to the
-    // documented deadline rather than once, and say so while waiting: a silent
-    // prompt after an accepted code reads as "nothing happened".
+  /**
+   * The post-elevation retry loop, shared by both factors (M17 PR5 extracted
+   * it at its second user): fresh for five minutes — but the PEER may not know
+   * yet, so retry to the documented deadline rather than once, and say so
+   * while waiting: a silent prompt after an accepted factor reads as "nothing
+   * happened".
+   */
+  async function retryElevated(owns: () => boolean): Promise<void> {
     const deadline = Date.now() + STEP_UP_PROPAGATION_BUDGET_MS;
     let outcome = await onElevated();
     while (outcome === 'stale' && Date.now() < deadline && owns()) {
@@ -199,6 +246,63 @@ export function StepUpPrompt({
       // lost, and pressing again is the remedy.
       setCodeError('That took longer than expected. Your check went through — try that again.');
     }
+  }
+
+  async function submitPasskey(): Promise<void> {
+    // The same ownership claim the TOTP path takes — the ceremony await is one
+    // more thing Cancel must be able to walk away from.
+    activeAttempt.current += 1;
+    const mine = activeAttempt.current;
+    const owns = (): boolean => activeAttempt.current === mine;
+
+    setCodeError(null);
+    setBusy(true);
+    const optionsResult = await gqlRequest('WebauthnStepUpOptions', {});
+    if (!owns()) {
+      return;
+    }
+    const options = optionsResult.ok
+      ? (optionsResult.data as { webauthnStepUpOptions?: unknown }).webauthnStepUpOptions
+      : undefined;
+    if (!optionsResult.ok || options === undefined || options === null) {
+      // A missing field is NO DATA, never data (the M11 rule).
+      setBusy(false);
+      setCodeError(stepUpMessageFor(optionsResult.ok ? 'UNKNOWN' : optionsResult.code));
+      return;
+    }
+    let credential: PublicKeyCredential | null = null;
+    try {
+      credential = (await navigator.credentials.get({
+        publicKey: decodeRequestOptions(options as Parameters<typeof decodeRequestOptions>[0]),
+      })) as PublicKeyCredential | null;
+    } catch (err) {
+      if (!owns()) {
+        return;
+      }
+      setBusy(false);
+      setCodeError(ceremonyFailureMessage(err));
+      return;
+    }
+    if (!owns()) {
+      return;
+    }
+    if (!credential) {
+      setBusy(false);
+      setCodeError(ceremonyFailureMessage(null));
+      return;
+    }
+    const verify = await gqlRequest('WebauthnStepUp', {
+      response: encodeAuthenticationResponse(credential),
+    });
+    if (!owns()) {
+      return;
+    }
+    if (!verify.ok) {
+      setBusy(false);
+      setCodeError(stepUpMessageFor(verify.code));
+      return;
+    }
+    await retryElevated(owns);
   }
 
   return (
@@ -233,6 +337,18 @@ export function StepUpPrompt({
         <button type="submit" className="btn btn-primary" disabled={busy}>
           {waiting ? 'Applying…' : busy ? 'Checking…' : submitLabel}
         </button>
+        {hasPasskey ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy}
+            onClick={() => {
+              void submitPasskey();
+            }}
+          >
+            Use a passkey
+          </button>
+        ) : null}
         <button type="button" className="btn btn-secondary" onClick={abandon}>
           Cancel
         </button>

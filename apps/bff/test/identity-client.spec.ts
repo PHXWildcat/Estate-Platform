@@ -287,3 +287,124 @@ describe('FetchIdentityClient — sessions, revoke and pairing', () => {
     await expect(client.sessions(TOKEN)).rejects.not.toThrow(/relation does not exist/);
   });
 });
+
+describe('the passkey vertical (M17 PR5)', () => {
+  const CREATION_OPTIONS = { challenge: 'Y2hhbGxlbmdl', rp: { id: 'localhost' } };
+  const ATTESTATION = {
+    id: 'cred-1',
+    rawId: 'cred-1',
+    type: 'public-key',
+    clientExtensionResults: {},
+    response: { clientDataJSON: 'a', attestationObject: 'b' },
+  };
+
+  it('forwards the ceremony payloads OPAQUELY — path, bearer and body, nothing added', async () => {
+    // The design claim under test: this edge validates NOTHING about
+    // attestation (identity's library owns semantics), so what goes out must
+    // be exactly what was handed in.
+    const { client, calls } = clientWith((recorded) =>
+      recorded.url.endsWith('/register/options')
+        ? response(200, CREATION_OPTIONS)
+        : response(200, { verified: true }),
+    );
+    const options = await client.webauthnRegisterOptions(TOKEN);
+    expect(options).toEqual(CREATION_OPTIONS);
+    await client.webauthnRegister(TOKEN, ATTESTATION);
+
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/v1/auth/webauthn/register/options`,
+      `${BASE}/v1/auth/webauthn/register/verify`,
+    ]);
+    for (const call of calls) {
+      expect((call.init.headers as Record<string, string>)['authorization']).toBe(
+        `Bearer ${TOKEN}`,
+      );
+    }
+    expect(JSON.parse(calls[1]?.init.body as string)).toEqual(ATTESTATION);
+  });
+
+  it('step-up verify parses the elevation and refuses a malformed one as WEBAUTHN_FAILED', async () => {
+    const good = clientWith(() =>
+      response(200, { mfaLevel: 'stepup', stepupExpiresAt: '2026-08-13T12:05:00Z' }),
+    );
+    await expect(good.client.webauthnStepUp(TOKEN, ATTESTATION)).resolves.toEqual({
+      stepupExpiresAt: '2026-08-13T12:05:00Z',
+    });
+    // A missing field is NO DATA, never data: an elevation the client cannot
+    // read must not be reported as one it can.
+    const skewed = clientWith(() => response(200, {}));
+    await expect(skewed.client.webauthnStepUp(TOKEN, ATTESTATION)).rejects.toMatchObject({
+      extensions: { code: 'WEBAUTHN_FAILED' },
+    });
+  });
+
+  it('maps webauthn_failed BY TOKEN on both statuses — a refused assertion must not read as a dead session', async () => {
+    // Identity answers 400 (registration) AND 401 (assertion) with one token.
+    // The 401 half collapsing into UNAUTHENTICATED is the M16 PR2b shape: the
+    // client would forget a valid session over a refused ceremony.
+    const reg = clientWith(() => response(400, { error: 'webauthn_failed' }));
+    await expect(reg.client.webauthnRegister(TOKEN, ATTESTATION)).rejects.toMatchObject({
+      extensions: { code: 'WEBAUTHN_FAILED' },
+    });
+    const assertion = clientWith(() => response(401, { error: 'webauthn_failed' }));
+    await expect(assertion.client.webauthnStepUp(TOKEN, ATTESTATION)).rejects.toMatchObject({
+      extensions: { code: 'WEBAUTHN_FAILED' },
+    });
+    // …while a genuinely dead session still surfaces as UNAUTHENTICATED.
+    const dead = clientWith(() => response(401, { error: 'unauthorized' }));
+    await expect(dead.client.passkeys(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
+  });
+
+  it('every method surfaces a peer refusal through the one mapper — none swallows', async () => {
+    // The error BRANCH of each new method, driven once each: a 403 refusal
+    // must arrive as STEPUP_REQUIRED from any of them, because the enrolment
+    // gate can fire on options and the revoke route is step-up gated.
+    const refused = clientWith(() => response(403, { error: 'stepup_required' }));
+    await expect(refused.client.webauthnRegisterOptions(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+    await expect(refused.client.webauthnStepUpOptions(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+    await expect(refused.client.revokePasskey(TOKEN, 'pk-1')).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+    await expect(refused.client.renamePasskey(TOKEN, 'pk-1', 'x')).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+    await expect(refused.client.webauthnStepUp(TOKEN, {})).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+  });
+
+  it('lists passkeys through the shape guard, and refuses a skewed list as no data', async () => {
+    const rows = [
+      {
+        id: 'pk-1',
+        nickname: 'MacBook',
+        isHardwareKey: false,
+        createdAt: '2026-08-13T00:00:00Z',
+        lastUsedAt: null,
+      },
+    ];
+    const good = clientWith(() => response(200, { credentials: rows }));
+    await expect(good.client.passkeys(TOKEN)).resolves.toEqual(rows);
+  });
+
+  it('revoke and rename hit their routes with the id encoded, mapping the uniform 404', async () => {
+    const notFound = clientWith(() => response(404, { error: 'not_found' }));
+    await expect(notFound.client.revokePasskey(TOKEN, 'pk-9')).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+    const { client, calls } = clientWith(() => response(204, {}));
+    await client.revokePasskey(TOKEN, 'pk 1');
+    await client.renamePasskey(TOKEN, 'pk 1', 'YubiKey');
+    expect(calls.map((c) => [String(c.init.method), c.url])).toEqual([
+      ['DELETE', `${BASE}/v1/auth/webauthn/credentials/pk%201`],
+      ['PATCH', `${BASE}/v1/auth/webauthn/credentials/pk%201`],
+    ]);
+    expect(JSON.parse(calls[1]?.init.body as string)).toEqual({ nickname: 'YubiKey' });
+  });
+});

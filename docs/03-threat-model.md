@@ -58,7 +58,7 @@ section originally described, and the narrowing is the result of measuring the p
 - *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address. **THE EXTENSION NEVER SUBMITS, AND THAT IS NOT THE SAME AS "NOTHING IS EVER AUTO-SUBMITTED"** — which is what this sentence used to say, and the M16 review measured the difference. A fill must dispatch `input` and `change` or no field notices the value, and the reasoning that withholds `blur` ("a page is free to submit on blur, so dispatching one would be auto-submission by proxy") is true of those verbatim: a jsdom probe against the real module showed a page's `change` listener holding the real secret. There is no fix, because the events ARE the fill; what M16 PR5 changed is ORDER — the username is written before the password, so a page that commits early can no longer get the secret with the username field still empty, which is what it used to get. The on-screen copy no longer asserts "Nothing was submitted" either; it says what Estate did and points the user at the address. Also narrowed: the fill's origin decision is now re-read AT THE GESTURE. It used to run on a page URL captured when the popup rendered, so the key holder's re-decision — documented as defending against "the page navigating between the two calls" — compared the same stale string twice and could not see a navigation at all; what actually stood in the way was Chromium revoking `activeTab`, which nobody measured and no test asserted.
 - *A hostile page reading the vault by breadth of access:* → `activeTab` + `scripting` only, with no declared content scripts, so the extension has no view of any page until the user clicks it — and any later broadening is a required-permission increase the browser surfaces as re-consent.
 - *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy the VAULT — narrowed in M16 PR4a, which admitted `createItem` and `updateItem`: `reset`, both keyset routes and all eleven emergency routes stay refused, so the keyset survives and the vault still opens, but an unlocked extension can overwrite every ITEM with bytes that are not ciphertext and each one becomes permanently unreadable. `vault_items_versions` holds the prior image and NO PRODUCTION CODE READS IT, so recovery today means an operator with psql. The mitigation and the residual below describe the same moment — an unlocked vault — and this clause used to overclaim against it), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
-- *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and are a separate milestone; the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
+- *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and shipped for the web app in M17 PR5 (§6o; the vault origin and extension remain TOTP-only); the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
 
 **TB7 — Operators**
 - No standing prod access; JIT elevation with peer approval and session recording; all operator reads of user data are themselves audit events surfaced to the user ("Anthropic-style" transparency: users can see that support accessed X on date Y); separation of duties between deploy, data, and key administration.
@@ -1940,8 +1940,11 @@ speculative:
 - the whole sequence is on the audit trail: requested, completed, and every
   refusal.
 
-Revisiting this is what PR5 (the passkey surface) or a recovery-codes ceremony
-would be for; until then it is the platform's weakest link on risk #1 and should
+PR5 (the passkey surface) revisited this and RE-DECLINED it, for the reason
+recorded in §6o: requiring a passkey at reset turns lost-passkey-plus-forgotten-
+password into a permanent lockout with no recovery codes and no TB7. A
+recovery-codes ceremony remains the change that could strengthen this without
+that trade; until then it is the platform's weakest link on risk #1 and should
 be read as such.
 
 ### The rest of the shape
@@ -2139,6 +2142,71 @@ retired UNCONDITIONALLY before every mint (the M14-review wedge).
   changed) and cannot reset (the reset mails the NEW address). Their remedy is
   support, which until TB7 means the operator runbook. Recorded plainly: the
   notice is a DETECTION control, not a response one.
+
+## 6o. Threat-model delta — M17 PR5, the passkey surface (2026-08-13)
+
+**What shipped.** Identity's four WebAuthn relying-party routes — shipped in M2
+and unreachable for fifteen milestones — gained their first consumers: BFF
+resolvers and a web surface for registering, naming, listing and revoking
+passkeys, and a passkey path in the shared step-up prompt that every
+prompt-and-retry caller inherited without a change. Risk #1's "passkey nudges"
+residual treatment moves from unbuilt to partially discharged: the surface
+exists and nudges nothing yet; a nudge is copy, not machinery, and can follow.
+
+**Two defects fixed in the shipped machinery before the surface landed on it**
+(the PR4 pattern): `hasCredentials` — the WebAuthn half of
+`SecondFactorGate.holdsVerifiedFactor` — did not filter `revoked_at`, latent
+only because nothing wrote that column; the first revoke route would have armed
+it, leaving an account whose last passkey was revoked permanently demanding a
+factor it could not produce. And the global `credential_id` uniqueness surfaced
+as an unhandled 500 when a second account registered the same authenticator;
+it is a typed outcome folded into the one generic ceremony refusal now, because
+"this authenticator belongs to another account" is a fact about somebody
+else's account.
+
+**Revoking a passkey is STEP-UP GATED, and deliberately unlike the ungated M16
+session revoke.** Revoking a session only reduces authority. Revoking a FACTOR
+weakens the gate that protects everything else: ungated, a stolen bearer strips
+the account's factors, `SecondFactorGate` disarms (no factor ⇒ nothing to
+prove ⇒ enrolment ungated), and the thief enrols their own — the 2026-08-12
+escalation through the back door. The gate is never vacuous by construction
+(the account holds at least the factor being removed), and the fence that
+verifies it anchors on the controller's real decorators.
+
+**Failed assertions are on the ledger now** (`webauthn.assertion_failed`). The
+2026-08-10 decision said they "emit their own kind"; the code emitted nothing —
+an investigator reading the ledger for a §5.1 case saw no trace. The kind is
+deliberately in NO rate-bound set: a passkey assertion is not brute-forceable,
+and counting it would let a flaky authenticator lock out its own owner.
+
+### Residuals
+
+- **THE VAULT ORIGIN AND THE EXTENSION ARE TOTP-ONLY FOR STEP-UP**, and a
+  passkey-only account therefore cannot complete any Zone A step-up-gated
+  ceremony (vault setup, reset, item delete, escrow configure/rearm/revoke,
+  recovery-key publish). Three facts stack: vault-web and the extension prove
+  factors only through `POST /v1/auth/stepup` (a 6-digit TOTP body); the
+  WebAuthn assertion routes are account-audience only; and identity verifies
+  assertions against ONE `rpOrigin`, which is the web app's — so extending the
+  ceremony to `vault.<domain>` is an identity change (an expectedOrigin list),
+  an audience widening, two vault-edge proxy entries and a fence table update,
+  not a client patch. The web surface says this ON SCREEN ("keep an
+  authenticator app enrolled — the vault currently accepts only authenticator
+  codes"), the M16 honesty pattern rather than a docs-only footnote.
+- **The reset path is re-declined, explicitly** (§6m question 8, owed by this
+  PR): a reset still requires the mailed code and nothing else, even for an
+  account holding a passkey. Requiring a passkey assertion at reset would turn
+  lost-passkey-plus-forgotten-password into a permanent lockout with no
+  recovery codes and no TB7 — the same nobody-locked-out-forever reasoning the
+  user chose at PR3, unchanged by the surface existing.
+- **No passwordless login.** The authenticate routes are session-scoped by
+  design (M2's deferral, still deliberate): a passkey here is a step-up factor,
+  never a login replacement, and discovery-credential login is its own
+  milestone with its own enumeration surface.
+- **Browser-side ceremony failures are invisible to the platform.** A user
+  whose sheet keeps failing generates no ledger events until an assertion
+  actually reaches identity; only the device knows. Accepted: the alternative
+  is client-side telemetry, which this product does not do.
 
 ## 7. Validation program
 

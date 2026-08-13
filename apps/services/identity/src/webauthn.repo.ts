@@ -34,6 +34,34 @@ export class WebAuthnRepo {
     aaguid: string | null;
     nickname: string | null;
     isHardwareKey: boolean;
+  }): Promise<'inserted' | 'duplicate'> {
+    try {
+      await this.#insert(input);
+      return 'inserted';
+    } catch (err) {
+      // `credential_id` is globally UNIQUE — the same authenticator registered
+      // from a SECOND account lands here (excludeCredentials only covers the
+      // caller's own). A typed outcome rather than an unhandled 500: the
+      // service folds it into the one generic ceremony refusal, because
+      // "this authenticator belongs to another account" is a fact about
+      // somebody else's account (M17 PR5; found by the fact sweep before the
+      // route had its first real caller).
+      if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+        return 'duplicate';
+      }
+      throw err;
+    }
+  }
+
+  async #insert(input: {
+    userId: string;
+    credentialId: Buffer;
+    publicKey: Buffer;
+    signCount: number;
+    transports: string[] | null;
+    aaguid: string | null;
+    nickname: string | null;
+    isHardwareKey: boolean;
   }): Promise<void> {
     await this.db.query(
       `INSERT INTO webauthn_credentials
@@ -64,8 +92,19 @@ export class WebAuthnRepo {
    * verification, unlike TOTP where enrolment and confirmation are two steps.
    */
   async hasCredentials(userId: string): Promise<boolean> {
+    // `revoked_at IS NULL`, exactly like every other read here — added by M17
+    // PR5 in the same change as the FIRST writer of `revoked_at`. Without it,
+    // revoking the last passkey on a TOTP-less account would leave
+    // `holdsVerifiedFactor` true forever: `SecondFactorGate` would demand a
+    // fresh factor the user can no longer produce, permanently locking factor
+    // enrolment AND every arming gate. Latent before PR5 only because nothing
+    // ever wrote the column; the fence rule applies — the predicate lands with
+    // the writer, never after it.
     const rows = await this.db.query<{ present: boolean }>(
-      `SELECT true AS present FROM webauthn_credentials WHERE user_id = $1 LIMIT 1`,
+      `SELECT true AS present
+         FROM webauthn_credentials
+        WHERE user_id = $1 AND revoked_at IS NULL
+        LIMIT 1`,
       [userId],
     );
     return rows.length > 0;
@@ -102,6 +141,71 @@ export class WebAuthnRepo {
         WHERE credential_id = $1`,
       [credentialId, signCount, lastUsedAt],
     );
+  }
+
+  /**
+   * The management projection (M17 PR5): what the security page shows. Row id,
+   * label and timestamps ONLY — never `credential_id`, `public_key` or
+   * `sign_count`, which no client needs and which would put key-adjacent
+   * material on a listing path (the M16 session-list rule: return nothing the
+   * data cannot keep a promise about).
+   */
+  async listForUser(userId: string): Promise<
+    Array<{
+      id: string;
+      nickname: string | null;
+      is_hardware_key: boolean;
+      created_at: Date;
+      last_used_at: Date | null;
+    }>
+  > {
+    return this.db.query(
+      `SELECT id, nickname, is_hardware_key, created_at, last_used_at
+         FROM webauthn_credentials
+        WHERE user_id = $1 AND revoked_at IS NULL
+        ORDER BY created_at ASC`,
+      [userId],
+    );
+  }
+
+  /**
+   * Revoke one credential — the FIRST writer `revoked_at` has ever had.
+   *
+   * The owner predicate rides the UPDATE (the M16 `revokeOwned` shape): the id
+   * arrives in a URL, so a statement without it would let any authenticated
+   * caller kill any passkey in the product. The boolean return is what lets
+   * the route answer a UNIFORM 404 for "no such credential" and "not yours"
+   * alike.
+   */
+  async revokeCredential(userId: string, id: string, now: Date): Promise<boolean> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE webauthn_credentials
+          SET revoked_at = $3
+        WHERE id = $1
+          AND user_id = $2
+          AND revoked_at IS NULL
+      RETURNING id`,
+      [id, userId, now],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Name one credential — the first writer `nickname` has ever had. A plain
+   * display label (the `documents.title` class: low-sensitivity metadata),
+   * owner-predicated like the revoke.
+   */
+  async renameCredential(userId: string, id: string, nickname: string): Promise<boolean> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE webauthn_credentials
+          SET nickname = $3
+        WHERE id = $1
+          AND user_id = $2
+          AND revoked_at IS NULL
+      RETURNING id`,
+      [id, userId, nickname],
+    );
+    return rows.length > 0;
   }
 
   async insertChallenge(input: {

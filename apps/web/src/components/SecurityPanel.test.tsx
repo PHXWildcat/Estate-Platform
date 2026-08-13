@@ -517,3 +517,237 @@ describe('extension pairing', () => {
     expect(screen.queryByText(errorCopy.VAULT_UNAVAILABLE)).not.toBeInTheDocument();
   });
 });
+
+/**
+ * THE PASSKEYS SECTION (M17 PR5).
+ *
+ * jsdom has no `navigator.credentials` and no `PublicKeyCredential` — and the
+ * double installed here is FAITHFUL ABOUT WHAT IT ADDS (the M16 chrome-double
+ * lesson): each case installs exactly the capability it claims the browser
+ * has, and the no-support case installs nothing and asserts the surface says
+ * so rather than rendering a broken button.
+ */
+describe('SecurityPanel passkeys', () => {
+  const PASSKEY = {
+    id: 'pk-00000000-0000-4000-8000-000000000001',
+    nickname: 'MacBook Touch ID',
+    isHardwareKey: false,
+    createdAt: '2026-08-01T09:00:00.000Z',
+    lastUsedAt: '2026-08-12T09:00:00.000Z',
+  };
+
+  function installPublicKeyCredential(): void {
+    (window as unknown as Record<string, unknown>)['PublicKeyCredential'] = function stub(): void {
+      /* presence is the capability signal */
+    };
+  }
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>)['PublicKeyCredential'];
+    delete (navigator as unknown as Record<string, unknown>)['credentials'];
+  });
+
+  it('renders the list, and the no-support sentence when the browser lacks the API', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: { passkeys: [PASSKEY] } }),
+    });
+    render(<SecurityPanel />);
+
+    expect(await screen.findByText('MacBook Touch ID')).toBeInTheDocument();
+    expect(screen.getByText(/does not support passkeys/)).toBeInTheDocument();
+    expect(screen.queryByText('Add a passkey')).not.toBeInTheDocument();
+  });
+
+  it('an unreadable list is an honest error, never an empty list', async () => {
+    // A BFF predating the query answers {"data":{}} — the M11 shape. An empty
+    // list here would read "no passkeys", a claim the page cannot make.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: {} }),
+    });
+    render(<SecurityPanel />);
+
+    expect(await screen.findByText(/could not be loaded just now/)).toBeInTheDocument();
+    expect(screen.queryByText('No passkeys on this account yet.')).not.toBeInTheDocument();
+  });
+
+  it('ADD walks the ceremony: options → create → verify → reload', async () => {
+    installPublicKeyCredential();
+    const created = {
+      id: 'new-cred',
+      rawId: new Uint8Array([1]).buffer,
+      type: 'public-key',
+      authenticatorAttachment: 'platform',
+      getClientExtensionResults: () => ({}),
+      response: {
+        clientDataJSON: new Uint8Array([2]).buffer,
+        attestationObject: new Uint8Array([3]).buffer,
+        getTransports: () => ['internal'],
+      },
+    };
+    const create = jest.fn().mockResolvedValue(created);
+    (navigator as unknown as Record<string, unknown>)['credentials'] = { create };
+
+    let registered = false;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: { passkeys: registered ? [PASSKEY] : [] } }),
+      WebauthnRegisterOptions: () =>
+        jsonResponse({
+          data: {
+            webauthnRegisterOptions: {
+              challenge: 'AQID',
+              rp: { id: 'localhost', name: 'Estate' },
+              user: { id: 'CQk', name: 'user-uuid' },
+            },
+          },
+        }),
+      WebauthnRegister: (variables) => {
+        registered = true;
+        // The encoded attestation crossed as JSON — the codec's output, not a
+        // hand-built object.
+        const response = (variables as { response: { rawId: string } }).response;
+        expect(response.rawId).toBe('AQ');
+        return jsonResponse({ data: { webauthnRegister: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByText('Add a passkey'));
+    expect(await screen.findByText(/Passkey added/)).toBeInTheDocument();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('MacBook Touch ID')).toBeInTheDocument();
+  });
+
+  it('a CLOSED platform sheet renders the local sentence, never platform copy', async () => {
+    installPublicKeyCredential();
+    (navigator as unknown as Record<string, unknown>)['credentials'] = {
+      create: jest.fn().mockRejectedValue(new DOMException('x', 'NotAllowedError')),
+    };
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+      WebauthnRegisterOptions: () =>
+        jsonResponse({
+          data: {
+            webauthnRegisterOptions: {
+              challenge: 'AQID',
+              rp: { id: 'localhost', name: 'Estate' },
+              user: { id: 'CQk', name: 'user-uuid' },
+            },
+          },
+        }),
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByText('Add a passkey'));
+    expect(await screen.findByText(/prompt was closed or timed out/)).toBeInTheDocument();
+    // Nothing was changed — and nothing claims otherwise.
+    expect(screen.queryByText(/Passkey added/)).not.toBeInTheDocument();
+  });
+
+  it('the enrolment gate refusal points at the verify section, in its own words', async () => {
+    installPublicKeyCredential();
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+      WebauthnRegisterOptions: () => graphqlError('STEPUP_REQUIRED'),
+    });
+    render(<SecurityPanel />);
+
+    fireEvent.click(await screen.findByText('Add a passkey'));
+    expect(
+      await screen.findByText(/needs a fresh identity check — verify below/),
+    ).toBeInTheDocument();
+  });
+
+  it('REMOVE prompts for step-up and retries THE SAME removal after elevation', async () => {
+    installPublicKeyCredential();
+    let elevated = false;
+    let revoked = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: { passkeys: revoked > 0 ? [] : [PASSKEY] } }),
+      RevokePasskey: (variables) => {
+        expect((variables as { id: string }).id).toBe(PASSKEY.id);
+        if (!elevated) {
+          return graphqlError('STEPUP_REQUIRED');
+        }
+        revoked += 1;
+        return jsonResponse({ data: { revokePasskey: { ok: true } } });
+      },
+      StepUp: () => {
+        elevated = true;
+        return jsonResponse({ data: { stepUp: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    const row = await rowFor('MacBook Touch ID');
+    fireEvent.click(within(row).getByText('Remove'));
+
+    // The refusal opened the shared prompt, with THIS removal named.
+    const prompt = await screen.findByText(/Confirm to remove “MacBook Touch ID”/);
+    expect(prompt).toBeInTheDocument();
+    const code = screen.getByLabelText('Confirm it’s you');
+    fireEvent.change(code, { target: { value: '123456' } });
+    fireEvent.submit(code.closest('form') as HTMLFormElement);
+
+    expect(await screen.findByText(/Passkey removed/)).toBeInTheDocument();
+    expect(revoked).toBe(1);
+  });
+
+  it('RENAME refuses an empty label locally, before any round trip', async () => {
+    installPublicKeyCredential();
+    let called = false;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () => jsonResponse({ data: { passkeys: [PASSKEY] } }),
+      RenamePasskey: () => {
+        called = true;
+        return jsonResponse({ data: { renamePasskey: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+    const row = await rowFor('MacBook Touch ID');
+    fireEvent.click(within(row).getByText('Name'));
+    fireEvent.change(screen.getByLabelText('Passkey name'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByText('Save name'));
+    expect(await screen.findByText(/needs 1–64 characters/)).toBeInTheDocument();
+    expect(called).toBe(false);
+  });
+
+  it('RENAME saves through the label field', async () => {
+    installPublicKeyCredential();
+    let renamed: string | null = null;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      Passkeys: () =>
+        jsonResponse({
+          data: { passkeys: [{ ...PASSKEY, nickname: renamed ?? PASSKEY.nickname }] },
+        }),
+      RenamePasskey: (variables) => {
+        renamed = (variables as { nickname: string }).nickname;
+        return jsonResponse({ data: { renamePasskey: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    const row = await rowFor('MacBook Touch ID');
+    fireEvent.click(within(row).getByText('Name'));
+    fireEvent.change(screen.getByLabelText('Passkey name'), { target: { value: 'Work laptop' } });
+    fireEvent.click(screen.getByText('Save name'));
+
+    expect(await screen.findByText('Work laptop')).toBeInTheDocument();
+    expect(renamed).toBe('Work laptop');
+  });
+});

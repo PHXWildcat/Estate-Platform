@@ -77,6 +77,9 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // wondering whether a stranger now holds it.
   PAIRING_UNAVAILABLE:
     'We couldn’t create a pairing code just now. No code was created — try again in a moment.',
+  WEBAUTHN_FAILED:
+    'That passkey wasn\u2019t accepted. Try again — and if it keeps failing, the passkey may be ' +
+    'registered to a different account, or it may have been removed from this one.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

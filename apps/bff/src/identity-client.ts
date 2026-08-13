@@ -106,6 +106,35 @@ export interface IdentityClient {
   revokeSession(accessToken: string, sessionId: string): Promise<void>;
   /** Mint a browser-extension pairing code. Step-up gated at identity. */
   startExtensionPairing(accessToken: string): Promise<{ code: string; expiresAt: string }>;
+  /**
+   * M17 PR5 — the passkey ceremonies. The options/verify payloads are OPAQUE
+   * to this edge by design: attestation semantics belong to identity's
+   * library, identity re-validates shape and substance before any effect, and
+   * a second validator here would be the PR3 wire-drift class (two shapes free
+   * to disagree, with the disagreement invisible until production). The edge
+   * forwards, maps error tokens, and adds nothing.
+   */
+  webauthnRegisterOptions(accessToken: string): Promise<unknown>;
+  webauthnRegister(accessToken: string, response: Record<string, unknown>): Promise<void>;
+  webauthnStepUpOptions(accessToken: string): Promise<unknown>;
+  webauthnStepUp(
+    accessToken: string,
+    response: Record<string, unknown>,
+  ): Promise<{ stepupExpiresAt: string }>;
+  /** The passkey list — labels and timestamps, never key material. */
+  passkeys(accessToken: string): Promise<Passkey[]>;
+  /** Revoke one passkey. Step-up gated at identity; 404 ⇒ unknown OR not theirs. */
+  revokePasskey(accessToken: string, id: string): Promise<void>;
+  /** Label one passkey. 404 ⇒ unknown OR not theirs. */
+  renamePasskey(accessToken: string, id: string, nickname: string): Promise<void>;
+}
+
+export interface Passkey {
+  readonly id: string;
+  readonly nickname: string | null;
+  readonly isHardwareKey: boolean;
+  readonly createdAt: string;
+  readonly lastUsedAt: string | null;
 }
 
 export interface LiveSession {
@@ -257,7 +286,18 @@ export type BffErrorCode =
    * none; and the remedy differs too, because there is no vault state to
    * reassure anyone about here, only a code that did not arrive.
    */
-  | 'PAIRING_UNAVAILABLE';
+  | 'PAIRING_UNAVAILABLE'
+  /**
+   * M17 PR5. A passkey ceremony was refused — identity answers one generic
+   * `webauthn_failed` for every reason (bad attestation, consumed challenge,
+   * clone detection, an authenticator already bound to another account),
+   * deliberately, and this edge preserves the uniformity rather than
+   * dissecting it. ITS OWN CODE because the remedy ("try the passkey ceremony
+   * again") shares nothing with INVALID_CREDENTIALS' password-shaped copy or
+   * INVALID_REQUEST's generic one — the M12 rule, applied before the collision
+   * rather than after it.
+   */
+  | 'WEBAUTHN_FAILED';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -285,6 +325,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
   VAULT_UNAVAILABLE: 'We could not open the vault right now',
   PAIRING_UNAVAILABLE: 'We could not create a pairing code right now',
+  WEBAUTHN_FAILED: 'The passkey ceremony was not accepted',
 };
 
 /**
@@ -367,15 +408,35 @@ const LiveSessionsSchema = z.object({
   ),
 });
 
+/** M17 PR5. */
+const PasskeysSchema = z.object({
+  credentials: z.array(
+    z.object({
+      id: z.string().min(1),
+      nickname: z.string().nullable(),
+      isHardwareKey: z.boolean(),
+      createdAt: z.string().min(1),
+      lastUsedAt: z.string().nullable(),
+    }),
+  ),
+});
+const StepUpResultSchema = z.object({
+  mfaLevel: z.string(),
+  stepupExpiresAt: z.string().min(1),
+});
+
 const ErrorBodySchema = z.object({ error: z.string() });
 
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
 interface RequestOptions {
-  method: 'GET' | 'POST' | 'DELETE';
+  method: 'GET' | 'POST' | 'DELETE' | 'PATCH';
   path: string;
   accessToken?: string;
-  body?: Record<string, string>;
+  /** Widened from Record<string, string> for M17 PR5: a WebAuthn attestation
+   * is nested JSON. The transport has always JSON.stringify'd whatever it was
+   * handed; only the TYPE was flat. */
+  body?: Record<string, unknown>;
 }
 
 export class FetchIdentityClient implements IdentityClient {
@@ -578,6 +639,98 @@ export class FetchIdentityClient implements IdentityClient {
     return parsed.data;
   }
 
+  async webauthnRegisterOptions(accessToken: string): Promise<unknown> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/webauthn/register/options',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return res.json();
+  }
+
+  async webauthnRegister(accessToken: string, response: Record<string, unknown>): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/webauthn/register/verify',
+      accessToken,
+      body: response,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  async webauthnStepUpOptions(accessToken: string): Promise<unknown> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/webauthn/authenticate/options',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return res.json();
+  }
+
+  async webauthnStepUp(
+    accessToken: string,
+    response: Record<string, unknown>,
+  ): Promise<{ stepupExpiresAt: string }> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/webauthn/authenticate/verify',
+      accessToken,
+      body: response,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    const parsed = StepUpResultSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      // A missing field is NO DATA, never data (the M15 VaultLaunch rule).
+      throw bffError('WEBAUTHN_FAILED');
+    }
+    return { stepupExpiresAt: parsed.data.stepupExpiresAt };
+  }
+
+  async passkeys(accessToken: string): Promise<Passkey[]> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/v1/auth/webauthn/credentials',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, PasskeysSchema)).credentials;
+  }
+
+  async revokePasskey(accessToken: string, id: string): Promise<void> {
+    const res = await this.request({
+      method: 'DELETE',
+      path: `/v1/auth/webauthn/credentials/${encodeURIComponent(id)}`,
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
+  async renamePasskey(accessToken: string, id: string, nickname: string): Promise<void> {
+    const res = await this.request({
+      method: 'PATCH',
+      path: `/v1/auth/webauthn/credentials/${encodeURIComponent(id)}`,
+      accessToken,
+      body: { nickname },
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+  }
+
   async logout(accessToken: string): Promise<boolean> {
     const res = await this.request({ method: 'POST', path: '/v1/auth/logout', accessToken });
     if (res.status === 401) {
@@ -653,6 +806,14 @@ export class FetchIdentityClient implements IdentityClient {
       }
     } catch {
       // Non-JSON body: fall through to status-based mapping.
+    }
+    // M17 PR5: identity's one generic ceremony refusal travels as 400
+    // (registration) AND 401 (assertion). Token-first, or the 401 half would
+    // collapse into UNAUTHENTICATED and the popup would forget a valid
+    // session over a refused ceremony — the M16 PR2b lesson (an outage must
+    // not wear the face of a revocation), one wire over.
+    if (token === 'webauthn_failed') {
+      return bffError('WEBAUTHN_FAILED');
     }
     if (res.status === 401) {
       return token === 'invalid_credentials' || token === 'invalid_code'

@@ -76,6 +76,7 @@ export const GQL_ERROR_CODES = [
    * sentence with nothing to do with the screen this refusal appears on.
    */
   'PAIRING_UNAVAILABLE',
+  'WEBAUTHN_FAILED',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -112,6 +113,15 @@ export interface LiveSessionInfo {
   expiresAt: string;
   /** The session this browser is using — revoking it is a sign-out. */
   current: boolean;
+}
+
+/** M17 PR5. */
+export interface PasskeyInfo {
+  id: string;
+  nickname: string | null;
+  isHardwareKey: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
 }
 
 export interface AssetInfo {
@@ -402,6 +412,28 @@ interface OperationSignatures {
   StartExtensionPairing: {
     variables: EmptyVariables;
     data: { startExtensionPairing: { code: string; expiresAt: string } };
+  };
+  Passkeys: { variables: EmptyVariables; data: { passkeys: PasskeyInfo[] } };
+  WebauthnRegisterOptions: {
+    variables: EmptyVariables;
+    data: { webauthnRegisterOptions: unknown };
+  };
+  WebauthnRegister: {
+    variables: { response: Record<string, unknown> };
+    data: { webauthnRegister: { ok: boolean } };
+  };
+  WebauthnStepUpOptions: {
+    variables: EmptyVariables;
+    data: { webauthnStepUpOptions: unknown };
+  };
+  WebauthnStepUp: {
+    variables: { response: Record<string, unknown> };
+    data: { webauthnStepUp: { stepupExpiresAt: string } };
+  };
+  RevokePasskey: { variables: { id: string }; data: { revokePasskey: { ok: boolean } } };
+  RenamePasskey: {
+    variables: { id: string; nickname: string };
+    data: { renamePasskey: { ok: boolean } };
   };
   TotpEnroll: { variables: EmptyVariables; data: { totpEnroll: { otpauthUri: string } } };
   TotpVerify: { variables: { code: string }; data: { totpVerify: { ok: boolean } } };
