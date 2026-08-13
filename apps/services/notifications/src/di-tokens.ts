@@ -52,6 +52,23 @@ export const VERIFICATION_CREDENTIAL = Symbol('VERIFICATION_CREDENTIAL');
  */
 export const RECIPIENT_STATUS_CREDENTIAL = Symbol('RECIPIENT_STATUS_CREDENTIAL');
 
+/**
+ * The credential for ACCOUNT-SECURITY notices (M17). Identity alone.
+ *
+ * The fifth edge on this callee, and the reasoning is the same shape as
+ * VERIFY's with a different pair of neighbours. Not `SERVICE_CREDENTIAL`: that
+ * is the estate surface held by vault, settlement and profile, and none of them
+ * has any business telling a user their password changed — it is the single
+ * most useful message an attacker could make the platform send, because it is
+ * exactly a phishing pretext and a recipient acts on it. Not
+ * `VERIFICATION_CREDENTIAL` either, despite the identical holder today: that
+ * one mails a code the caller minted, and a future holder of a resend
+ * capability (a support tool, a BFF-side resend) must not inherit the power to
+ * announce credential changes. Splitting before the second holder exists is
+ * what M14 did for VERIFY, and the alternative is re-litigating it later.
+ */
+export const SECURITY_CREDENTIAL = Symbol('SECURITY_CREDENTIAL');
+
 /** Injectable clock so send records are testable without real time. */
 export type Clock = () => Date;
 

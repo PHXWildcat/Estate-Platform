@@ -25,7 +25,16 @@ describe('package surface', () => {
     // nowhere to put one. Listed here rather than derived, precisely so that
     // moving a kind across this boundary is a visible diff in a test that says
     // what the boundary is for.
-    expect(api.SYSTEM_NOTIFICATION_KINDS).toEqual(['identity.address_verification']);
+    expect(api.SYSTEM_NOTIFICATION_KINDS).toEqual([
+      'identity.address_verification',
+      // M17: the account's own credentials changed. A system kind for the
+      // MIRROR of the reason above — it carries no variable at all, but it must
+      // not be reachable through `send`, whose credential vault, settlement and
+      // profile hold. "Your password was changed" is a phishing pretext a
+      // recipient acts on, and it is the message an attacker would most like
+      // to be able to make the platform send.
+      'identity.password_changed',
+    ]);
     // Together they are the send LOG's vocabulary — the notifications DDL's
     // kind CHECK is written against this, and the int suite drives every member.
     expect(api.NOTIFICATION_KINDS).toEqual([
@@ -33,6 +42,18 @@ describe('package surface', () => {
       ...api.SYSTEM_NOTIFICATION_KINDS,
     ]);
     expect(api.NOTIFICATION_CHANNELS).toEqual(['email', 'push', 'sms', 'voice']);
+    // M17. The account-security kinds are a SUBSET of the system kinds, and
+    // that relationship is the control: each of the three send routes builds
+    // its schema from a different one of these lists, so a holder of one
+    // credential cannot fire another's vocabulary. Asserted as a subset rather
+    // than as a literal so the property survives a third security kind, and
+    // asserted DISJOINT from the estate list because that is the exclusion the
+    // broadly-held send credential depends on.
+    expect(api.ACCOUNT_SECURITY_KINDS).toEqual(['identity.password_changed']);
+    for (const kind of api.ACCOUNT_SECURITY_KINDS) {
+      expect(api.SYSTEM_NOTIFICATION_KINDS).toContain(kind);
+      expect(api.ESTATE_NOTIFICATION_KINDS as readonly string[]).not.toContain(kind);
+    }
     // M14 review: the code shape lives on the WIRE contract, so both ends
     // import one declaration instead of keeping two patterns free to drift —
     // which is how the notifications route came to accept 64 characters of

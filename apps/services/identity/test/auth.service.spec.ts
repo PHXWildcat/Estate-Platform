@@ -1,4 +1,4 @@
-import { HttpException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, HttpException, UnauthorizedException } from '@nestjs/common';
 import type { DekRepository, FieldCrypto } from '@estate/crypto';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import { AuthService } from '../src/auth.service';
@@ -18,6 +18,7 @@ import type { SessionRow, SessionsRepo } from '../src/sessions.repo';
 import { STEPUP_DENIAL_WINDOW_MS, STEPUP_MAX_DENIALS } from '../src/stepup';
 import { generateOpaqueToken, hashToken } from '../src/tokens';
 import type { UsersRepo } from '../src/users.repo';
+import type { Db } from '../src/db';
 
 const NOW = new Date('2026-07-20T12:00:00Z');
 
@@ -42,7 +43,12 @@ async function refusalFrom(promise: Promise<unknown>): Promise<HttpException> {
 }
 
 function makeFakes(): {
-  users: { findByEmailBidx: jest.Mock; insert: jest.Mock };
+  users: {
+    findByEmailBidx: jest.Mock;
+    insert: jest.Mock;
+    findById: jest.Mock;
+    updatePasswordHash: jest.Mock;
+  };
   sessions: {
     create: jest.Mock;
     findLiveByAccessHash: jest.Mock;
@@ -51,6 +57,7 @@ function makeFakes(): {
     rotateTokens: jest.Mock;
     revoke: jest.Mock;
     grantStepUp: jest.Mock;
+    revokeAllForUserExcept: jest.Mock;
   };
   mfa: {
     insertTotp: jest.Mock;
@@ -69,6 +76,7 @@ function makeFakes(): {
     stepUpRateLimited: jest.Mock;
     loginRateLimited: jest.Mock;
     registerRateLimited: jest.Mock;
+    passwordChanged: jest.Mock;
     sessionRevoked: jest.Mock;
   };
   fieldCrypto: { getOrCreateDek: jest.Mock; encryptField: jest.Mock; decryptField: jest.Mock };
@@ -77,13 +85,20 @@ function makeFakes(): {
     upsertRecipient: jest.Mock;
     send: jest.Mock;
     sendAddressVerification: jest.Mock;
+    sendAccountSecurity: jest.Mock;
     markRecipientVerified: jest.Mock;
     recipientStatus: jest.Mock;
   };
   emailVerification: { ensureVerificationRequested: jest.Mock };
+  db: { withTransaction: jest.Mock; query: jest.Mock };
 } {
   return {
-    users: { findByEmailBidx: jest.fn().mockResolvedValue(null), insert: jest.fn() },
+    users: {
+      findByEmailBidx: jest.fn().mockResolvedValue(null),
+      insert: jest.fn(),
+      findById: jest.fn().mockResolvedValue(null),
+      updatePasswordHash: jest.fn().mockResolvedValue(true),
+    },
     sessions: {
       create: jest.fn(),
       findLiveByAccessHash: jest.fn().mockResolvedValue(null),
@@ -92,6 +107,7 @@ function makeFakes(): {
       rotateTokens: jest.fn(),
       revoke: jest.fn(),
       grantStepUp: jest.fn(),
+      revokeAllForUserExcept: jest.fn().mockResolvedValue([]),
     },
     mfa: {
       insertTotp: jest.fn(),
@@ -119,6 +135,7 @@ function makeFakes(): {
       stepUpRateLimited: jest.fn(),
       loginRateLimited: jest.fn(),
       registerRateLimited: jest.fn(),
+      passwordChanged: jest.fn(),
       sessionRevoked: jest.fn(),
     },
     fieldCrypto: {
@@ -131,6 +148,7 @@ function makeFakes(): {
       upsertRecipient: jest.fn().mockResolvedValue({ ok: true }),
       send: jest.fn().mockResolvedValue({ accepted: false }),
       sendAddressVerification: jest.fn().mockResolvedValue({ accepted: false }),
+      sendAccountSecurity: jest.fn().mockResolvedValue({ accepted: true }),
       markRecipientVerified: jest.fn().mockResolvedValue({ ok: true }),
       recipientStatus: jest.fn().mockResolvedValue({ verified: true }),
     },
@@ -138,6 +156,18 @@ function makeFakes(): {
     // what keeps these tests deterministic — an unhandled rejection from a
     // detached promise would surface in an unrelated test.
     emailVerification: { ensureVerificationRequested: jest.fn().mockResolvedValue(undefined) },
+    // The transaction is REAL enough to be wrong about: the fake runs the
+    // callback, so a service that forgets to await inside it, or throws after a
+    // partial write, still behaves observably here. What it cannot prove is
+    // that the two statements COMMIT together — that is SQL, and
+    // `password-change.int.spec.ts` drives it against real Postgres.
+    db: {
+      withTransaction: jest.fn(
+        async (_actorId: string, fn: (tx: unknown) => Promise<unknown>): Promise<unknown> =>
+          fn({ query: jest.fn().mockResolvedValue([]) }),
+      ),
+      query: jest.fn().mockResolvedValue([]),
+    },
   };
 }
 
@@ -157,6 +187,7 @@ const config: IdentityConfig = {
   notificationsInternalToken: '',
   notificationsVerifyToken: '',
   notificationsStatusToken: '',
+  notificationsSecurityToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
@@ -174,6 +205,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
     fakes.notifications,
     fakes.emailVerification as unknown as EmailVerificationService,
     fakes.factors as unknown as SecondFactorGate,
+    fakes.db as unknown as Db,
   );
 }
 
@@ -535,6 +567,129 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       await expect(service.register('new@example.com', 'a-long-password!')).rejects.toMatchObject({
         status: 429,
       });
+    });
+  });
+
+  /**
+   * THE PASSWORD CHANGE (M17 PR2) — the DECISION layer.
+   * `password-change.int.spec.ts` drives the SQL: the redaction, the
+   * transaction and the status predicate.
+   */
+  describe('changePassword', () => {
+    const knownUser = {
+      id: 'u-1',
+      password_hash: 'argon2-hash',
+      status: 'active',
+      dek_id: 'dek-1',
+    };
+    const caller = { mfaLevel: 'none' as const, stepupExpiresAt: null };
+
+    function withUser(fakes: ReturnType<typeof makeFakes>): void {
+      fakes.users.findById = jest.fn().mockResolvedValue(knownUser);
+      fakes.users.updatePasswordHash = jest.fn().mockResolvedValue(true);
+      fakes.sessions.revokeAllForUserExcept = jest.fn().mockResolvedValue(['s-2', 's-3']);
+    }
+
+    it('ASKS THE STEP-UP QUESTION BEFORE checking the password', () => {
+      // Order matters twice. An account that needs a fresh factor is told so
+      // without the route first becoming a free password oracle; and the
+      // refusal cannot vary in timing with whether the current password
+      // happened to be right.
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.factors.assertMayAddFactor.mockRejectedValue(
+        new ForbiddenException({ error: 'stepup_required' }),
+      );
+      const service = makeService(fakes);
+
+      return expect(service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password'))
+        .rejects.toMatchObject({ response: { error: 'stepup_required' } })
+        .then(() => {
+          expect(fakes.hasher.verifyPassword).not.toHaveBeenCalled();
+          expect(fakes.users.updatePasswordHash).not.toHaveBeenCalled();
+        });
+    });
+
+    it('REQUIRES THE CURRENT PASSWORD — a stolen session alone is not enough', async () => {
+      // The half a hijacked bearer token does not carry. Without it, anyone
+      // holding a session could lock the owner out of their own account.
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.hasher.verifyPassword.mockResolvedValue(false);
+      const service = makeService(fakes);
+
+      await expect(
+        service.changePassword('u-1', 's-1', caller, 'wrong', 'new-long-password'),
+      ).rejects.toMatchObject({ response: { error: 'invalid_credentials' } });
+      expect(fakes.users.updatePasswordHash).not.toHaveBeenCalled();
+      expect(fakes.notifications.sendAccountSecurity).not.toHaveBeenCalled();
+    });
+
+    it('hashes the NEW password and never stores it in the clear', async () => {
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      const service = makeService(fakes);
+
+      await service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password');
+
+      expect(fakes.hasher.hashPassword).toHaveBeenCalledWith('new-long-password');
+      const written = fakes.users.updatePasswordHash.mock.calls[0] as unknown[];
+      expect(written[2]).toBe('argon2-hash'); // the hasher's output, not the input
+      expect(written).not.toContain('new-long-password');
+    });
+
+    it('revokes the OTHER sessions and keeps the caller’s', async () => {
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      const service = makeService(fakes);
+
+      await service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password');
+
+      expect(fakes.sessions.revokeAllForUserExcept).toHaveBeenCalledWith(
+        expect.anything(),
+        'u-1',
+        's-1',
+        'password_changed',
+        NOW,
+      );
+    });
+
+    it('NOTIFIES the owner, and puts the outcome on the audit event', async () => {
+      // The notice is the only thing that surfaces a change the owner did not
+      // make, so a delivery failure has to be visible enough to re-drive rather
+      // than swallowed (the M13 `ownerNotified` shape).
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      fakes.notifications.sendAccountSecurity.mockResolvedValue({ accepted: false });
+      const service = makeService(fakes);
+
+      await service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password');
+
+      expect(fakes.notifications.sendAccountSecurity).toHaveBeenCalledWith({
+        userId: 'u-1',
+        kind: 'identity.password_changed',
+      });
+      expect(fakes.events.passwordChanged).toHaveBeenCalledWith('u-1', 's-1', 2, false);
+    });
+
+    it('a failed NOTIFICATION does not undo the change', async () => {
+      // The change is committed before the notice is attempted. A password that
+      // silently reverted because a mail failed would be far worse than a late
+      // notice — the user would believe their credentials had moved when they
+      // had not.
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      fakes.notifications.sendAccountSecurity.mockResolvedValue({ accepted: false });
+      const service = makeService(fakes);
+
+      await expect(
+        service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password'),
+      ).resolves.toBeUndefined();
+      expect(fakes.users.updatePasswordHash).toHaveBeenCalled();
     });
   });
 

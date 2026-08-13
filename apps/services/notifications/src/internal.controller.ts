@@ -3,12 +3,20 @@ import { ServiceCredentialGuard } from '@estate/auth-guard';
 import { NotificationsService } from './notifications.service';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
 import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
+import { SecurityCredentialGuard } from './security-credential.guard';
 import { VerificationCredentialGuard } from './verification-credential.guard';
-import { parseBody, parseUserId, RecipientSchema, SendSchema, VerificationSchema } from './schemas';
+import {
+  AccountSecuritySchema,
+  parseBody,
+  parseUserId,
+  RecipientSchema,
+  SendSchema,
+  VerificationSchema,
+} from './schemas';
 
 /**
- * Internal-only surface, split into FOUR credential-guarded controllers
- * because its routes are four different capabilities with different legitimate
+ * Internal-only surface, split into FIVE credential-guarded controllers
+ * because its routes are five different capabilities with different legitimate
  * holders (credential-graph.ts). There are deliberately NO user-facing routes
  * in this service — a bearer token must never be able to make the platform
  * speak.
@@ -90,6 +98,41 @@ export class VerificationController {
   @HttpCode(200)
   sendCode(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
     return this.notifications.sendAddressVerification(parseBody(VerificationSchema, body));
+  }
+}
+
+/**
+ * ACCOUNT SECURITY (NOTIFICATIONS_SECURITY_INTERNAL_TOKEN; holder identity
+ * ALONE, M17): tell a user something changed about their account's own
+ * credentials.
+ *
+ * The fifth credential on this callee, and the one whose absence would have
+ * been most tempting to paper over. A silent password change is unacceptable;
+ * so is handing identity the estate send credential, which would let the
+ * service that mints sessions ring "a death report was filed on your account".
+ * Neither is it folded into the VERIFY credential beside it: that mails a code
+ * the caller minted, and the first future holder of a resend capability must
+ * not inherit the ability to announce credential changes — which is the exact
+ * message an attacker would most like to be able to send, because it is a
+ * phishing pretext a recipient acts on.
+ *
+ * `AccountSecuritySchema` is built from ACCOUNT_SECURITY_KINDS, a SUBSET of the
+ * system kinds, so this route cannot fire an estate kind and cannot fire the
+ * verification kind either. Three send routes, three vocabularies, all three
+ * exclusions structural.
+ */
+@Controller('internal/v1/notifications')
+@UseGuards(SecurityCredentialGuard)
+export class SecurityController {
+  constructor(private readonly notifications: NotificationsService) {}
+
+  // Named `sendSecurity`, not `send`, on `VerificationController.sendCode`'s
+  // reasoning: same-named handlers on differently-guarded classes are how a
+  // future refactor merges two capabilities by accident.
+  @Post('security')
+  @HttpCode(200)
+  sendSecurity(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
+    return this.notifications.sendAccountSecurity(parseBody(AccountSecuritySchema, body));
   }
 }
 

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { MfaLevel } from '@estate/contracts';
 import type { SessionAudience } from '@estate/auth-guard';
-import { Db } from './db';
+import { Db, type Queryable } from './db';
 
 export interface SessionRow {
   id: string;
@@ -226,6 +226,45 @@ export class SessionsRepo {
         WHERE user_id = $1 AND revoked_at IS NULL
         RETURNING id`,
       [userId, at, reason],
+    );
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Revoke every live session of a user EXCEPT one (M17 PR2 — a password
+   * change). Returns the revoked ids for the audit trail.
+   *
+   * DISTINCT FROM `revokeAllForUser`, deliberately, and not a widening of it.
+   * That verb is reserved for the settlement lock, where the account is now
+   * estate-administered and no credential the decedent minted may survive. This
+   * one keeps the caller's own session, and the reason it may is that this
+   * session has just proved the CURRENT password — and, where the account holds
+   * a verified factor, a fresh step-up as well. It is the one credential in the
+   * set demonstrably held by someone who knows the secret being replaced.
+   *
+   * Signing the changer out too would be defensible and is rejected on the M6
+   * rule: the protective action must never be the harder one. A password change
+   * that ends your session teaches people to avoid changing their password,
+   * which costs more security than the marginal case it covers.
+   *
+   * TAKES A `Queryable` so it commits with the hash write. A revocation that
+   * lands without the new password signs somebody out for nothing; a hash that
+   * lands without the revocation leaves every stolen credential live, which is
+   * the whole thing the change was for.
+   */
+  async revokeAllForUserExcept(
+    tx: Queryable,
+    userId: string,
+    exceptSessionId: string,
+    reason: string,
+    at: Date,
+  ): Promise<string[]> {
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE sessions
+          SET revoked_at = $3, revoke_reason = $4
+        WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL
+        RETURNING id`,
+      [userId, exceptSessionId, at, reason],
     );
     return rows.map((r) => r.id);
   }

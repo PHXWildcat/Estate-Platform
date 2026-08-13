@@ -147,6 +147,7 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
         assertMayAddFactor: (): Promise<void> => Promise.resolve(),
         holdsVerifiedFactor: (): Promise<boolean> => Promise.resolve(false),
       } as unknown as SecondFactorGate,
+      db,
     );
   });
 

@@ -156,6 +156,7 @@ describeIfPg('login attempt bound (auth cluster)', () => {
       } as never,
       {} as unknown as EmailVerificationService,
       {} as unknown as SecondFactorGate,
+      db,
     );
   });
 

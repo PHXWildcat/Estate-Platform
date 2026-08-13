@@ -1,9 +1,15 @@
 import {
+  ACCOUNT_SECURITY_KINDS,
   ESTATE_NOTIFICATION_KINDS,
   NOTIFICATION_KINDS,
   SYSTEM_NOTIFICATION_KINDS,
 } from '@estate/notifications-client';
-import { render, renderAddressVerification, SUBJECT } from '../src/templates';
+import {
+  render,
+  renderAccountSecurity,
+  renderAddressVerification,
+  SUBJECT,
+} from '../src/templates';
 
 /**
  * The two body sources, so every property below is asserted over BOTH and a
@@ -22,6 +28,15 @@ const ALL_BODIES: ReadonlyArray<{ label: string; body: (deadline: Date | null) =
     label: 'identity.address_verification',
     body: (): string => renderAddressVerification(CODE).body,
   },
+  // M17. DERIVED from ACCOUNT_SECURITY_KINDS rather than listed, so a second
+  // security kind joins every assertion below automatically — unlike the
+  // verification entry above, which cannot be derived because its body needs a
+  // code. The length check against NOTIFICATION_KINDS is what catches a kind
+  // that reaches the wire with no body written for it.
+  ...ACCOUNT_SECURITY_KINDS.map((kind) => ({
+    label: kind,
+    body: (): string => renderAccountSecurity(kind).body,
+  })),
 ];
 
 const DEADLINE = new Date('2026-08-09T17:30:00.000Z');

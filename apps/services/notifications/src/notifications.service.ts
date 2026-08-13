@@ -1,13 +1,18 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { NotificationKind } from '@estate/notifications-client';
 import type { FieldCrypto } from '@estate/crypto';
-import { render, renderAddressVerification, type RenderedNotification } from './templates';
+import {
+  render,
+  renderAccountSecurity,
+  renderAddressVerification,
+  type RenderedNotification,
+} from './templates';
 import { RecipientsRepo } from './recipients.repo';
 import { SendsRepo, type SendOutcomeToken } from './sends.repo';
 import { EventsService } from './events.service';
 import { CLOCK, EMAIL_SENDER, FIELD_CRYPTO, SYSTEM_ACTOR_ID, type Clock } from './di-tokens';
 import type { EmailSender } from './email';
-import type { SendInput, RecipientInput, VerificationInput } from './schemas';
+import type { AccountSecurityInput, SendInput, RecipientInput, VerificationInput } from './schemas';
 import { Db } from './db';
 
 /** AAD field id binding recipient ciphertext to its column (docs/02 convention). */
@@ -71,6 +76,29 @@ export class NotificationsService {
       kind: 'identity.address_verification',
       requestedChannel: 'email',
       render: () => renderAddressVerification(input.code),
+    });
+  }
+
+  /**
+   * Tell a user their account's credentials changed (M17).
+   *
+   * Its own method for the reason `sendAddressVerification` is: one route, one
+   * credential, one vocabulary. It shares `deliver`, so an account-security
+   * notice gets the same audited decrypt, the same append-only send row and the
+   * same `notification.sent` event as everything else — the property that keeps
+   * a new send surface from quietly skipping the logging.
+   *
+   * `requestedChannel` is 'email' and not a caller's choice: this is not a
+   * message whose urgency a caller gets to escalate.
+   */
+  async sendAccountSecurity(
+    input: AccountSecurityInput,
+  ): Promise<{ delivered: boolean; channel: string; recipientVerified: boolean }> {
+    return this.deliver({
+      userId: input.userId,
+      kind: input.kind,
+      requestedChannel: 'email',
+      render: () => renderAccountSecurity(input.kind),
     });
   }
 
