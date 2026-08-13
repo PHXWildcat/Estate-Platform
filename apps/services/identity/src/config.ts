@@ -130,6 +130,9 @@ const EnvSchema = z
     // redeemed with no session, so a holder who also reads the mailbox owns the
     // account. Kept off the verification credential for exactly that difference.
     NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN: z.string().optional(),
+    // M17 PR4: presented to the EMAIL-CHANGE route — the one send whose
+    // payload names a destination, so identity is its only legitimate holder.
+    NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -234,6 +237,10 @@ const EnvSchema = z
           'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
           'unwired, no reset code is ever mailed and a forgotten password is unrecoverable',
         ],
+        [
+          'NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN',
+          'unwired, no change challenge is ever mailed and a mistyped address is permanent (§6h)',
+        ],
       ] as const;
       for (const [key, why] of required) {
         const token = env[key];
@@ -246,7 +253,7 @@ const EnvSchema = z
         }
       }
       // A FULL PAIRWISE LOOP over every credential this service touches — its
-      // own inbound one and its five outbound ones. One value must never
+      // own inbound one and its six outbound ones. One value must never
       // authenticate two directions (the M7 collapse), and splitting the fields
       // cannot stop one value being pasted into several slots. Derived from the
       // list rather than written pair by pair, because the hand-written form
@@ -259,6 +266,7 @@ const EnvSchema = z
         'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
         'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
         'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
+        'NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN',
       ] as const;
       for (let i = 0; i < touched.length; i += 1) {
         for (let j = i + 1; j < touched.length; j += 1) {
@@ -320,6 +328,8 @@ export interface IdentityConfig {
   readonly notificationsVerifyToken: string;
   /** OUTBOUND: presented to the notifications RECIPIENT-STATUS route (M14). */
   readonly notificationsStatusToken: string;
+  /** OUTBOUND: presented to the notifications EMAIL-CHANGE route (M17 PR4). */
+  readonly notificationsEmailChangeToken: string;
   /** OUTBOUND: presented to the notifications ACCOUNT-SECURITY route (M17). */
   readonly notificationsSecurityToken: string;
   /** OUTBOUND: presented to the notifications PASSWORD-RESET route (M17 PR3). */
@@ -381,5 +391,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     notificationsStatusToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
     notificationsSecurityToken: e.NOTIFICATIONS_SECURITY_INTERNAL_TOKEN ?? '',
     notificationsRecoveryToken: e.NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN ?? '',
+    notificationsEmailChangeToken: e.NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN ?? '',
   };
 }

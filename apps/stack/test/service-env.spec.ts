@@ -40,7 +40,7 @@ describe('topology addressing', () => {
 });
 
 describe('serviceProcessEnv', () => {
-  it('gives identity exactly its variables — one peer (notifications), five edges since M17', () => {
+  it('gives identity exactly its variables — one peer (notifications), six edges since M17', () => {
     const env = serviceProcessEnv(svc('identity'), generated(), HOST);
     expect(Object.keys(env).sort()).toEqual([
       'AWS_ACCESS_KEY_ID',
@@ -56,6 +56,7 @@ describe('serviceProcessEnv', () => {
       'KMS_MODE',
       'NODE_ENV',
       'NODE_EXTRA_CA_CERTS',
+      'NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN',
       'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
       'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
       'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',

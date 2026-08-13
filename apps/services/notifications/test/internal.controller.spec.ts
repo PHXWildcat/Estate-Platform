@@ -4,6 +4,7 @@ import {
   InternalController,
   RecipientStatusController,
   RecipientsController,
+  EmailChangeController,
   RecoveryController,
   SecurityController,
   VerificationController,
@@ -28,6 +29,7 @@ describe('InternalController', () => {
     status: RecipientStatusController;
     security: SecurityController;
     recovery: RecoveryController;
+    emailChange: EmailChangeController;
     calls: {
       send: unknown[];
       upsert: unknown[];
@@ -36,6 +38,8 @@ describe('InternalController', () => {
       status: unknown[];
       security: unknown[];
       recovery: unknown[];
+      emailChange: unknown[];
+      replace: unknown[];
     };
   } => {
     const calls = {
@@ -46,6 +50,8 @@ describe('InternalController', () => {
       status: [] as unknown[],
       security: [] as unknown[],
       recovery: [] as unknown[],
+      emailChange: [] as unknown[],
+      replace: [] as unknown[],
     };
     const service = {
       send: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
@@ -78,6 +84,14 @@ describe('InternalController', () => {
         calls.recovery.push(input);
         return Promise.resolve({ delivered: true, channel: 'email' });
       },
+      sendEmailChange: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
+        calls.emailChange.push(input);
+        return Promise.resolve({ delivered: true, channel: 'email' });
+      },
+      replaceRecipient: (input: unknown): Promise<{ ok: true }> => {
+        calls.replace.push(input);
+        return Promise.resolve({ ok: true });
+      },
     } as unknown as NotificationsService;
     return {
       controller: new InternalController(service),
@@ -86,6 +100,7 @@ describe('InternalController', () => {
       status: new RecipientStatusController(service),
       security: new SecurityController(service),
       recovery: new RecoveryController(service),
+      emailChange: new EmailChangeController(service),
       calls,
     };
   };
@@ -119,7 +134,7 @@ describe('InternalController', () => {
     expect(calls.upsert).toEqual([body]);
   });
 
-  it('the four surfaces are separate classes, so they can carry separate guards', () => {
+  it('the seven surfaces are separate classes, so they can carry separate guards', () => {
     // The split is only real if a guard can bind to one without the others:
     // sending estate kinds is vault + settlement + profile, repointing and
     // vouching for an address is identity alone, mailing a code is identity
@@ -127,9 +142,17 @@ describe('InternalController', () => {
     // edge again. A guard binds exactly one token, so one class per capability
     // is what makes the partition real rather than described.
     const { controller, recipients, verification, status } = build();
-    const { security, recovery } = build();
-    const surfaces = [controller, recipients, verification, status, security, recovery];
-    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(6);
+    const { security, recovery, emailChange } = build();
+    const surfaces = [
+      controller,
+      recipients,
+      verification,
+      status,
+      security,
+      recovery,
+      emailChange,
+    ];
+    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(7);
     expect('upsertRecipient' in controller).toBe(false);
     expect('send' in recipients).toBe(false);
     // The code-bearing route lives nowhere near the broadly-held send surface.
@@ -185,6 +208,61 @@ describe('InternalController', () => {
       }),
     ).toThrow(BadRequestException);
     expect(calls.recovery).toEqual([]);
+  });
+
+  it('email-change: parses the destination-naming wire and delegates', async () => {
+    const { emailChange, calls } = build();
+    const body = {
+      userId: randomUUID(),
+      kind: 'identity.email_change',
+      code: 'EC1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+      email: 'candidate@example.com',
+    };
+    await expect(emailChange.sendChallenge(body)).resolves.toEqual({
+      delivered: true,
+      channel: 'email',
+    });
+    expect(calls.emailChange).toEqual([body]);
+  });
+
+  it('email-change: refuses a reset code, a non-address destination, and a foreign kind', () => {
+    // The pattern is anchored on its own prefix (a PR1- code cannot be mailed
+    // here), the destination must parse as an address (this is the ONE route
+    // that names one, so what it accepts IS the exposure), and the kind list
+    // is closed.
+    const { emailChange, calls } = build();
+    const id = randomUUID();
+    const ok = {
+      userId: id,
+      kind: 'identity.email_change',
+      code: 'EC1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+      email: 'candidate@example.com',
+    };
+    expect(() =>
+      emailChange.sendChallenge({
+        ...ok,
+        code: 'PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+      }),
+    ).toThrow(BadRequestException);
+    expect(() => emailChange.sendChallenge({ ...ok, email: 'not-an-address' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => emailChange.sendChallenge({ ...ok, kind: 'identity.password_reset' })).toThrow(
+      BadRequestException,
+    );
+    expect(calls.emailChange).toEqual([]);
+  });
+
+  it('replace: parses the path id and the body address, and delegates', async () => {
+    const { recipients, calls } = build();
+    const id = randomUUID();
+    await expect(recipients.replaceRecipient(id, { email: 'proved@example.com' })).resolves.toEqual(
+      { ok: true },
+    );
+    expect(calls.replace).toEqual([{ userId: id, email: 'proved@example.com' }]);
+    expect(() => recipients.replaceRecipient('not-a-uuid', { email: 'a@b.c' })).toThrow(
+      BadRequestException,
+    );
   });
 
   it('security: parses the closed-kind wire and delegates', async () => {

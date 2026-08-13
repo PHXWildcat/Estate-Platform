@@ -42,6 +42,8 @@ import { HttpErrorFilter } from './http-error.filter';
 import { MfaRepo } from './mfa.repo';
 import { PasswordResetRepo } from './password-reset.repo';
 import { PasswordResetService } from './password-reset.service';
+import { EmailChangeService } from './email-change.service';
+import { EmailChangeRepo } from './email-change.repo';
 import { PasswordHasher } from './password';
 import { SessionGuard } from './session.guard';
 import { SecondFactorGate } from './second-factor-gate';
@@ -137,7 +139,9 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     SecondFactorGate,
     MfaRepo,
     PasswordResetRepo,
+    EmailChangeRepo,
     PasswordResetService,
+    EmailChangeService,
     AuthEventsRepo,
     WebAuthnRepo,
     AuthService,
@@ -189,6 +193,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
             status: config.notificationsStatusToken,
             security: config.notificationsSecurityToken,
             recovery: config.notificationsRecoveryToken,
+            emailChange: config.notificationsEmailChangeToken,
           },
         }),
     },

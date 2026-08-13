@@ -939,9 +939,14 @@ settlement, profile — cannot fire it.
   platform). The arming gates' justification — "refusing costs them an action
   they can unblock themselves" — is true for the intended contrast (actor ==
   recipient) and FALSE as an unconditional claim; it is recorded here rather than
-  softened. It fails in the safe direction, and the address-change route that
-  closes it already carries a written obligation to clear the verified bit and
-  invalidate any outstanding code.
+  softened. It fails in the safe direction. **CLOSED by M17 PR4 (§6n)**: the
+  change ceremony proves the NEW address before anything on file moves, so a
+  mistyped registration address is now recoverable by changing to a correct
+  one — and the written obligation this paragraph carried (clear the verified
+  bit, invalidate outstanding codes) was discharged one step stronger than it
+  asked: no unproven address ever reaches the delivery store, so the bit is
+  stamped by replacement rather than cleared, and outstanding codes die in the
+  same transaction as the switch.
 - *A SEND-credential holder can read any user's verified bit* by firing one
   notification at them, because the send response carries `recipientVerified` —
   deliberately, so settlement can record the fact without holding the STATUS
@@ -1995,7 +2000,7 @@ be read as such.
   30-minute TTL, and burn-on-attempt.
 - *The address-change lockout §6h records is NOT closed by this.* A reset mails
   to the address already on file, so for a user who mistyped their address at
-  registration it changes nothing. That is PR4's.
+  registration it changes nothing. CLOSED by PR4 — see §6n.
 
 **Proven live, and one defect the whole suite passed over.** Driven end to end
 against the running stack: a request answers 202 for an address with an account
@@ -2024,6 +2029,116 @@ client over a recording transport and parses each emitted body with the schema
 its route really uses — derived from the client prototype in one direction and
 from the controller source in the other, so an added method or a renamed path
 turns it red.
+
+## 6n. Threat-model delta — M17 PR4, the address change (2026-08-13)
+
+**What shipped.** The first way to change a sign-in address in the product's
+history: `POST /v1/auth/email/change/request` (stage + mail a challenge),
+`POST /v1/auth/email/change` (redeem + switch), `DELETE /v1/auth/email/change`
+(withdraw, ungated — the M6 asymmetry). Ten identity routes existed for
+credentials and none touched the address; §6h recorded the consequence as a
+permanent lockout for anyone who mistyped at registration.
+
+**VERIFY-THEN-SWITCH, and the ordering is the whole design.** Login resolves
+users by `email_bidx`, so a change that stored an unproven address would lock
+its owner out of LOGIN ITSELF — a typo'd new address must never reach `users`
+until a code mailed to it comes back. Consequences, each structural rather than
+procedural:
+
+- The old address — login, notifications, everything — keeps working until the
+  proof lands. An abandoned or mistyped change costs nothing.
+- The M14 forward commitment ("clear `verified_at` in the same statement") is
+  discharged one step STRONGER than it asked: no unproven address ever reaches
+  the delivery store, so the bit is never cleared — the store's new
+  `replace` statement swaps the address and stamps the proof together, and
+  there is no moment when the store vouches for an address nobody proved.
+- The staged address is encrypted at request time as `users.email` under the
+  account's live DEK, so the switch moves CIPHERTEXT — no decrypt inside the
+  transaction, and a key rotated or shredded mid-ceremony refuses the switch
+  via a `dek_id` predicate restated inside the UPDATE itself.
+
+**The gate is PR2's, verbatim, with §6m's own sentence as the reason:** control
+of the mailbox is control of the account, so choosing the mailbox IS choosing
+the account's owner of last resort. Current password (a stolen session lacks
+it) + conditional step-up (a stolen password lacks it), factor asked FIRST so
+the route is not a free password oracle.
+
+**The seventh notifications edge** (`NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN`,
+holder identity alone) exists because the challenge is INEXPRESSIBLE on every
+prior wire: every other send resolves its destination from the encrypted
+recipient store by user id, and this ceremony is by definition a challenge to a
+mailbox the store does not hold. The edge's grant owns the deviation plainly —
+it is the ONE send whose payload names a destination. What bounds it: the body
+is doctrine-clean (the code and fixed words, no links, the uniform subject),
+the notifications service uses the address for one delivery and STORES NOTHING
+(no recipient row is created, read or touched — pinned by an int case), and
+the code it mails completes nothing without the account's current password and
+a fresh second factor. Widening VERIFY instead was rejected because its
+recorded grant — "can only mail a code to whatever address is already on
+file" — is precisely the property a future resend-tool holder must keep
+inheriting.
+
+**What completion sweeps, in ONE transaction with the switch:** outstanding
+password-reset and address-verification codes (both were mailed to the mailbox
+being left; a `PR1-` code that outlived the address it was mailed to would hand
+whoever reads the OLD mailbox the account the owner just moved away from —
+§6m's obligation, discharged), and every session but the caller's (the PR2
+posture: the attacker's sessions and the owner's other devices cannot be told
+apart).
+
+**The old-address notice is an ORDERING property, not a wire property.** After
+the switch commits, identity sends `identity.email_changed` (account-security
+wire, carries nothing) BEFORE replacing the recipient — so the store still
+resolves the address being LEFT, and the notice reaches the only mailbox whose
+reader can dispute a takeover. The copy does not offer "sign in" as the remedy,
+because after the change that reader structurally cannot: login uses the new
+address. Detection is the notice; response is support. Get the ordering
+backwards and the takeover notice goes to the attacker's mailbox — an int case
+asserts the sequence.
+
+**Anti-enumeration, register's own posture.** "Is this address registered" is a
+fact about somebody else's account, so a taken address is a mail that never
+arrives behind a uniform 202 — and because the work differs (KMS, inserts, a
+carrier hand-off), the availability lookup and everything after it run DETACHED
+from the response, pinned at the source (a runtime test cannot tell a fast
+await from no await). Redemption's refusals are one `invalid_code` for every
+dead reason — including the candidate address having been registered by someone
+else during the 30-minute window, where "taken" would leak the other account
+(that refusal burns no attempt: the code was right, the world changed).
+
+**Bounds.** Per-account floor of five minutes between mints (M14's number —
+the caller is authenticated and has proved password + factor), keyed on the
+LAST MINT so a failing carrier cannot evaluate the floor away; a per-process,
+per-DESTINATION bound (10/15min, the reset bound's numbers) because every
+request may name a different target and the floor cannot see per-mailbox
+volume; a per-user attempt cap of five on redemption, attributable BY DESIGN
+(the selector is the authenticated caller, so a wrong guess of any shape burns
+one attempt on their own live change — the M14 round-2 mechanic designed in
+rather than retrofitted); one live change per user via a partial unique index,
+retired UNCONDITIONALLY before every mint (the M14-review wedge).
+
+### Residuals
+
+- *A stale login re-feed can transiently repoint the store to the just-left
+  address.* Login (old address) resolves before the switch commits; its
+  fire-and-forget recipient upsert lands after the switch's replacement; the
+  store then holds the old address until the next login. Self-healing (the next
+  login can only carry the NEW address — the old bidx no longer resolves) and
+  not attacker-steerable without the owner's own credentials mid-race. The
+  upsert's preserved bit stays sound through this: every address that can
+  reach the store is either one the user just signed in with or one the
+  ceremony just proved.
+- *An honest user typing a TAKEN address waits for a mail that never comes.*
+  The cost of register's uniform answer, paid here too; the floor is not burned
+  for it, so retrying with a corrected address is free.
+- *The routes ship with no surface* — no BFF resolver, no screen. The same
+  zero-callers gap as PR2's and PR3's, recorded rather than implied; the
+  M14 PR3 settings page is where the ceremony belongs when the surface lands.
+- *`identity.email_changed`'s reader has no self-service response.* The notice
+  reaches the old mailbox, but a hijacked owner cannot sign in (the address
+  changed) and cannot reset (the reset mails the NEW address). Their remedy is
+  support, which until TB7 means the operator runbook. Recorded plainly: the
+  notice is a DETECTION control, not a response one.
 
 ## 7. Validation program
 

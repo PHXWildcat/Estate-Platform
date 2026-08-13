@@ -5215,3 +5215,98 @@ deviating from them, stop and propose the change with rationale — do not silen
   structural inexpressibility at the WRONG layer exports the hazard to every
   test as a race — put the awaitable surface where tests need it and pin the
   detach at the one call site where the timing property actually lives.
+- 2026-08-13 — AN UNKNOWN FLAG IS NOT A REFUSED FLAG, and I rotated every stack
+  secret out from under the running volumes proving it. Probing whether the env
+  generator mints the M17 credential edges, I ran `generate-env-cli.js --out
+  <scratchpad> --force`; `--out` is not a flag the CLI has, unknown arguments
+  are silently ignored, and it wrote the REAL `.env.stack` — twice — with
+  `--force` bypassing the exact guard whose docstring says why it exists ("new
+  keys orphan every ciphertext in the volumes"). The tell was the same one the
+  2026-08-12 entry records for the same CLI family: the output said `wrote
+  .env.stack` while I was reading the exit code. RECOVERED WITHOUT A RESET
+  because every running container still held the old coherent env: a script
+  inverted the compose file's environment mappings (PREFIXED → service var),
+  read each container's env via local `docker inspect` (never printed), and
+  restored 34 secrets in place; the doctor passed, and — the case the overwrite
+  would have broken silently — containers RECREATED from the restored file come
+  up healthy and run the full reset ceremony. Two rules. A CLI that accepts
+  arguments it does not implement must be probed with a HARMLESS invocation
+  first (`--help`, or a copy of the target file moved aside), never with the
+  destructive flag attached. And the answer to "does the generator handle X"
+  was in the SOURCE the whole time (`generate-env.ts` derives credentials from
+  the credential graph, so new edges are minted automatically) — running a
+  writer to answer a read question is the wrong instrument even when it works.
+- 2026-08-13 — M17 PR4, THE ADDRESS CHANGE, and the decision everything else
+  fell out of: VERIFY-THEN-SWITCH, forced rather than chosen. Login resolves
+  users by `email_bidx`, so a change that stored an unproven address would lock
+  its owner out of LOGIN ITSELF the moment their sessions lapsed — which
+  disqualifies change-then-verify before any security argument is needed. The
+  new address is proved by an `EC1-` code mailed to it before anything on file
+  moves; the old address, login and every notification keep working until the
+  proof lands, so an abandoned or mistyped change costs nothing. This is also
+  how the M14 forward commitment ("clear `verified_at` in the same statement")
+  was discharged ONE STEP STRONGER than it asked: no unproven address ever
+  reaches the delivery store, so the bit is never cleared — `RecipientsRepo.
+  replace` swaps the address and stamps the proof in one statement, and the
+  comment that carried the commitment was rewritten to say it is discharged
+  (the M16 rule: a fence a document claims and nobody wrote is worse than none;
+  a commitment a document says is open when it is closed is the same shape).
+  The staged address is encrypted at REQUEST time as `users.email` under the
+  live DEK, so the switch moves CIPHERTEXT — no decrypt inside the transaction,
+  and a key rotated mid-ceremony refuses via a `dek_id` predicate restated
+  inside the UPDATE itself (the M7 CAS shape, applied to key identity).
+- 2026-08-13 — THE SEVENTH NOTIFICATIONS EDGE NAMES A DESTINATION, and owning
+  that plainly beat disguising it. The challenge mail is inexpressible on every
+  prior wire — every other send resolves its recipient from the encrypted
+  store by user id, and the ceremony is by definition a challenge to a mailbox
+  the store does not hold. Widening VERIFY was rejected because its recorded
+  grant ("can only mail a code to whatever address is already on file") is
+  precisely what a future resend-tool holder must keep inheriting; RECIPIENTS
+  was rejected because a repoint credential gaining a carrier send is two
+  capability classes back under one secret, the M9 finding restated. So
+  `NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN` (identity alone) opens the one
+  route whose payload names where mail goes, its grants sentence says so in the
+  first line, and what bounds it is structural: the body is doctrine-clean, the
+  service delivers once and STORES NOTHING (no recipient row created, read or
+  touched — an int case plants a verified recipient and proves a challenge
+  aimed elsewhere leaves it byte-identical), and the code completes nothing
+  without the current password and a fresh factor. SIX DERIVED FENCES went red
+  and then green in sequence as the edge landed — the graph fence, wire-parity,
+  the send-log kind sweep, the template registry, the client partitioning
+  sweep, and the stack parity pair — which is the M14-PR0 remedy (derive the
+  cases) now catching a new capability at every layer it crosses without one
+  hand-remembered list anywhere.
+- 2026-08-13 — THE OLD-ADDRESS NOTICE IS AN ORDERING PROPERTY, NOT A WIRE
+  PROPERTY. No route anywhere can mail an address that is not the stored one,
+  and the person who most needs "your sign-in address was changed" is the
+  reader of the mailbox being LEFT. The answer is sequencing: the notice goes
+  out AFTER the switch commits but BEFORE the recipient replacement, so the
+  store still resolves the old address — get it backwards and the takeover
+  notice goes to the attacker. Pinned by an int case asserting the effect
+  sequence verbatim. The copy was written for the one case that matters (a
+  reader who did not make the change) and does NOT offer sign-in as the remedy,
+  because that reader structurally cannot sign in — login uses the new address
+  and the reset mails the new address. Recorded in §6n as a plain limitation:
+  the notice is a DETECTION control; response is support until TB7.
+- 2026-08-13 — THE ATTEMPT CAP IS ATTRIBUTABLE BY DESIGN, because the SELECTOR
+  IS THE CALLER. PR3's reset deliberately has no attempt column (the redeemer
+  is anonymous; a wrong guess resolves no row — the M14 round-2 lesson), and
+  the change ceremony is its mirror: the redeemer is AUTHENTICATED, completion
+  resolves the caller's own live change and compares digests, so a wrong guess
+  of ANY shape burns one attempt on their own pending change. The same
+  authentication is what lets refusals stay uniform without an enumeration
+  argument — what the uniformity protects here is a PROGRESS METER (the M13
+  §6g rule), plus one genuinely cross-account fact: the raced-register refusal
+  at the switch answers the same `invalid_code` because "taken" would leak the
+  other account, and it burns NO attempt — the code was right, the world
+  changed.
+- 2026-08-13 — THE NO-DB FLOOR WENT BACK UP, 69/67/41/68 → 70/67/43/69,
+  reversing PR3's exception one PR after taking it. PR3 lowered because its
+  new code was mostly SQL; PR4's ceremony carries a real decision layer (the
+  gate order, the detach split, five open refusals, the effect ordering, the
+  cancel asymmetry) and all of it is proven with the repo faked — plus the
+  audit emitters' PII-firewall property (every detail value matches a closed
+  token grammar or a stringified count), driven through the REAL AuditEmitter
+  so its schema validation runs and only the transport is doubled. The two
+  SQL-only repo files remain int-only, which is what the floors' split
+  measurement exists to accommodate.

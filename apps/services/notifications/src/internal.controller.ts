@@ -4,12 +4,15 @@ import { NotificationsService } from './notifications.service';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
 import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
 import { RecoveryCredentialGuard } from './recovery-credential.guard';
+import { EmailChangeCredentialGuard } from './email-change-credential.guard';
 import { SecurityCredentialGuard } from './security-credential.guard';
 import { VerificationCredentialGuard } from './verification-credential.guard';
 import {
   AccountSecuritySchema,
   parseBody,
+  EmailChangeSchema,
   RecoverySchema,
+  ReplaceSchema,
   parseUserId,
   RecipientSchema,
   SendSchema,
@@ -74,6 +77,21 @@ export class RecipientsController {
   @HttpCode(200)
   markVerified(@Param('userId') userId: string): Promise<{ ok: boolean }> {
     return this.notifications.markRecipientVerified(parseUserId(userId));
+  }
+
+  // M17 PR4: repoint AND vouch in one statement — the address arrives already
+  // proved by the change ceremony. On this guard because repointing and
+  // vouching are both RECIPIENTS capabilities; a separate route (rather than a
+  // flag on upsert) so the ordinary fire-and-forget re-feed structurally
+  // cannot express "and mark it proved".
+  @Put('recipients/:userId/replace')
+  @HttpCode(200)
+  replaceRecipient(
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+  ): Promise<{ ok: boolean }> {
+    const { email } = parseBody(ReplaceSchema, body);
+    return this.notifications.replaceRecipient({ userId: parseUserId(userId), email });
   }
 }
 
@@ -166,6 +184,33 @@ export class RecoveryController {
   @HttpCode(200)
   sendReset(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
     return this.notifications.sendPasswordReset(parseBody(RecoverySchema, body));
+  }
+}
+
+/**
+ * EMAIL-CHANGE CHALLENGE (NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN; holder
+ * identity ALONE, M17 PR4): mail one challenge code to a PROSPECTIVE address.
+ *
+ * The one send route on this service whose payload NAMES A DESTINATION — every
+ * other send resolves its recipient from the encrypted store, and this
+ * ceremony is by definition a challenge to a mailbox the store does not hold.
+ * Its own credential so nothing that merely sends inherits the power to aim
+ * platform mail at arbitrary addresses, and its own closed kind list so no
+ * other holder can fire it. The service uses the address for this one delivery
+ * and STORES NOTHING: no recipient row is created, read or touched.
+ */
+@Controller('internal/v1/notifications')
+@UseGuards(EmailChangeCredentialGuard)
+export class EmailChangeController {
+  constructor(private readonly notifications: NotificationsService) {}
+
+  // Named `sendChallenge`: five differently-guarded classes on one path
+  // prefix, and same-named handlers are how a refactor merges two capabilities
+  // by accident.
+  @Post('email-change')
+  @HttpCode(200)
+  sendChallenge(@Body() body: unknown): Promise<{ delivered: boolean; channel: string }> {
+    return this.notifications.sendEmailChange(parseBody(EmailChangeSchema, body));
   }
 }
 

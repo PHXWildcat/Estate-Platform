@@ -67,6 +67,7 @@ const EnvSchema = z
     // mailbox and is redeemed by somebody already signed in) and off #5 (whose
     // wire carries no variables at all, which is what makes it safe).
     NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN: z.string().optional(),
+    NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN: z.string().optional(),
     // Which carrier delivers email. 'stub' records without delivering
     // (dev/test); 'ses' is the real adapter. Production REQUIRES 'ses' — see
     // the superRefine below.
@@ -143,6 +144,10 @@ const EnvSchema = z
           'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN',
           'an open recovery surface lets anyone mail a working password-reset code',
         ],
+        [
+          'NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN',
+          'an open email-change surface lets anyone aim platform mail at any address',
+        ],
       ] as const;
       for (const [key, why] of credentials) {
         const token = env[key];
@@ -154,7 +159,7 @@ const EnvSchema = z
           });
         }
       }
-      // A FULL PAIRWISE LOOP over all six, not a hand-written comparison per
+      // A FULL PAIRWISE LOOP over all seven, not a hand-written comparison per
       // pair. Splitting the surfaces buys nothing if one value is pasted into
       // two slots, and a list of explicit pairs is the drift class this repo
       // keeps rediscovering: the M9 review split two credentials and left one
@@ -250,6 +255,7 @@ export interface NotificationsConfig {
   readonly securityApiToken: string;
   /** INBOUND: what it expects on the PASSWORD-RESET send route, identity alone. */
   readonly recoveryApiToken: string;
+  readonly emailChangeApiToken: string;
   readonly email: EmailConfig;
   readonly kms: KmsConfig;
   /** KEK alias wrapping THIS service's per-user DEKs (never 'core/kek'). */
@@ -291,6 +297,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NotificationsC
     recipientStatusApiToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
     securityApiToken: e.NOTIFICATIONS_SECURITY_INTERNAL_TOKEN ?? '',
     recoveryApiToken: e.NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN ?? '',
+    emailChangeApiToken: e.NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN ?? '',
     // The superRefine above guarantees the required fields per mode, so these
     // non-null assertions are sound.
     email:

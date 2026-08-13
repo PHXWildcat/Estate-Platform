@@ -140,6 +140,17 @@ const SECURITY_BODIES: Record<AccountSecurityKind, string> = {
     'If that was you, there is nothing to do. ' +
     'If it was not, open your Estate app and sign in to review your active devices and sessions — ' +
     'and if you cannot sign in, contact support.',
+  // Sent to the address being LEFT, and the copy is written for the one case
+  // that matters: a reader who did not make this change. It must NOT offer
+  // "sign in" as the remedy — after the change, sign-in uses the new address,
+  // so the person reading this mailbox structurally cannot. Detection is this
+  // notice; response is support. Naming neither address keeps the body free of
+  // variables, per the wire's own rule.
+  'identity.email_changed':
+    'The sign-in address for your Estate account was just changed, and this mailbox is no longer ' +
+    'the one on file. If that was you, there is nothing to do. ' +
+    'If it was not, contact Estate support immediately from this address — ' +
+    'you will not be able to sign in with it any more.',
 };
 
 export function renderAccountSecurity(kind: AccountSecurityKind): RenderedNotification {
@@ -171,5 +182,28 @@ export function renderPasswordReset(code: string): RenderedNotification {
       'and it does not give anyone access to your vault. ' +
       'If you did not ask for this, you can ignore this message — but somebody may know your ' +
       'email address, so it is worth signing in and reviewing your devices.',
+  };
+}
+
+/**
+ * The email-change challenge (M17 PR4), mailed to the PROSPECTIVE address.
+ *
+ * The reader of this mailbox has not asked us for anything and may not be the
+ * account holder at all — somebody can type a stranger's address into the
+ * change form — so the body must be safe to land unsolicited: it names no
+ * account, no old address, and no action beyond entering the code, and it says
+ * plainly that ignoring it is the right response if you did not expect it.
+ * Completing the ceremony still requires the account's current password and a
+ * fresh second factor, so the code alone confers nothing on whoever reads it.
+ * No link, per the registry's rule.
+ */
+export function renderEmailChange(code: string): RenderedNotification {
+  return {
+    subject: SUBJECT,
+    body:
+      `To confirm this address for an Estate account, enter this code in the app: ${code}. ` +
+      'It expires shortly and can be used once. ' +
+      'If you did not expect this message, ignore it — nothing happens without the code, ' +
+      'and entering it is only possible from a session that already proved the account password.',
   };
 }

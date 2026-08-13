@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import {
   ACCOUNT_SECURITY_KINDS,
   ESTATE_NOTIFICATION_KINDS,
+  EMAIL_CHANGE_CODE_PATTERN,
+  EMAIL_CHANGE_KINDS,
   RECOVERY_KINDS,
   RESET_CODE_PATTERN,
   NOTIFICATION_CHANNELS,
@@ -100,6 +102,23 @@ export type AccountSecurityInput = z.infer<typeof AccountSecuritySchema>;
  * the verification route cannot mail a reset code — the exclusion is in the
  * pattern as well as in the credential.
  */
+/**
+ * The email-change challenge wire (M17 PR4): a user id, the closed kind, the
+ * code held to its own anchored pattern, and — unique on this service — the
+ * DESTINATION. `email` is validated as an address and used for one delivery;
+ * the service stores nothing from this route and never touches the recipient
+ * store (a test pins that), so the field cannot repoint where any alert goes.
+ */
+export const EmailChangeSchema = z
+  .object({
+    userId: z.string().uuid(),
+    kind: z.enum(EMAIL_CHANGE_KINDS),
+    code: z.string().regex(EMAIL_CHANGE_CODE_PATTERN, 'code must be a minted change code'),
+    email: z.string().email().max(320),
+  })
+  .strict();
+export type EmailChangeSendInput = z.infer<typeof EmailChangeSchema>;
+
 export const RecoverySchema = z
   .object({
     userId: z.string().uuid(),
@@ -117,6 +136,14 @@ export const RecipientSchema = z
   })
   .strict();
 export type RecipientInput = z.infer<typeof RecipientSchema>;
+
+/** The replace body (M17 PR4): the userId travels in the path, so only the
+ * proven address crosses in the body. Same RFC 5321 cap as its sibling. */
+export const ReplaceSchema = z
+  .object({
+    email: z.string().email().max(320),
+  })
+  .strict();
 
 /**
  * Validate a user id taken from the PATH. Path parameters reach a handler as

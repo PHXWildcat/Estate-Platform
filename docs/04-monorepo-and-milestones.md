@@ -4280,6 +4280,60 @@ cases on the axis the bound keys on and leaves both clocks in one frame.
 which is a zero-callers gap of exactly the kind this repo keeps closing —
 recorded in §6m rather than left to be discovered.
 
+#### PR4 as built — the address change (2026-08-13)
+
+**VERIFY-THEN-SWITCH**, forced rather than chosen: login resolves users by
+`email_bidx`, so a change-then-verify design that stored a typo'd address would
+lock its owner out of LOGIN ITSELF the moment their sessions lapsed. The new
+address is proved by an `EC1-` code mailed to it before anything on file moves,
+which also discharges the M14 forward commitment one step stronger than it
+asked — no unproven address ever reaches the delivery store, so `verified_at`
+is stamped by replacement (`RecipientsRepo.replace`, one statement) rather than
+cleared. The staged address is encrypted at request time as `users.email` under
+the live DEK; the switch moves ciphertext with a `dek_id` predicate restated
+inside the UPDATE, and `ux_users_email` is the raced-register backstop.
+
+**The seventh notifications edge** (`NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN`,
+identity alone) carries the challenge because the destination is inexpressible
+on every prior wire — VERIFY's recorded grant is "can only mail to whatever is
+already on file", and an address field on it would hand a future resend-tool
+holder the power the M14 split forbids. It is the ONE send whose payload names
+a destination; the notifications service delivers once and stores nothing. The
+graph fence went RED first (five assertions naming the missing config), then
+green; wire-parity, the kind sweep, the template registry, the client
+partitioning sweep and the stack parity fences each demanded their declaration
+in turn — six derived fences, six red-then-green, no hand-remembered list
+anywhere.
+
+**Completion is one transaction:** CAS-spend the change, switch the address,
+revoke outstanding `PR1-`/`EV1-` codes (the §6m obligation — both were mailed
+to the mailbox being left; the two repos' `revokeLive` gained an optional
+`Queryable` for exactly this), revoke every session but the caller's. Then, in
+pinned order: `identity.email_changed` to the OLD address (the store still
+resolves it — ordering is what makes the takeover notice reach the one reader
+who can dispute it, and the copy does not offer sign-in because that reader
+structurally cannot), then the recipient replacement. Outcomes ride the audit
+event (`oldNotified`, `recipientReplaced`, `revokedSessions`).
+
+**Uniformity:** a taken address is a mail that never arrives behind a uniform
+202 (register's posture), with the availability lookup DETACHED from the
+response and the detach pinned at the source; redemption's refusals are one
+`invalid_code` including the raced-register case at the switch, which burns no
+attempt (the code was right; the world changed). The attempt cap is
+attributable BY DESIGN — the selector is the authenticated caller, so the M14
+round-2 mechanic is designed in rather than retrofitted.
+
+**Proof:** 15 int cases against real Postgres (the CAS driven through two open
+clients; the sweep, the session revocation, the versions-trigger attribution
+and the notify-before-replace ordering all asserted), 19 decision cases with
+the repo faked plus two source pins (gate order; the detach), 2 audit-emitter
+cases pinning the PII firewall, 4 notifications int cases (replace stamps a
+FRESH proof against a planted ancient one; the store-less send touches no
+recipient state), and identity's no-DB floor RATCHETED UP 69/67/41/68 →
+70/67/43/69 — reversing PR3's exception. §6h's permanent-lockout residual is
+CLOSED (§6n), with the stale-re-feed race and the no-surface gap recorded as
+residuals.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

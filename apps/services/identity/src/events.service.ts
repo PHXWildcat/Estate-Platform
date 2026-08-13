@@ -299,6 +299,112 @@ export class EventsService {
     });
   }
 
+  /** A change challenge was requested (M17 PR4). The delivery fact is what an
+   * operator needs when an owner says "I never got the code". */
+  async emailChangeRequested(userId: string, delivered: boolean): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.change_requested',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { delivered: delivered ? 'delivered' : 'failed' },
+    });
+  }
+
+  /**
+   * THE SWITCH HAPPENED (M17 PR4). The three outcome facts ride the event on
+   * the vault delivered_at precedent: `oldNotified` is the takeover-visibility
+   * control (the notice to the mailbox being LEFT), `recipientReplaced` the
+   * store repoint — either false is an operator's re-drive cue, never a
+   * rollback.
+   */
+  async emailChangeCompleted(
+    userId: string,
+    outcome: { revokedSessions: number; oldNotified: boolean; recipientReplaced: boolean },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.change_completed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: {
+        revokedSessions: String(outcome.revokedSessions),
+        oldNotified: outcome.oldNotified ? 'delivered' : 'failed',
+        recipientReplaced: outcome.recipientReplaced ? 'replaced' : 'failed',
+      },
+    });
+  }
+
+  /** The owner withdrew the pending change — the ungated protective action. */
+  async emailChangeCancelled(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.change_cancelled',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
+  /** The request gate refused a wrong password. Attributed — the caller is
+   * authenticated, so this is a fact about their own session's behaviour. */
+  async emailChangeDenied(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.change_denied',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
+  /**
+   * A redemption was refused (M17 PR4). Attributed but REASONLESS: the caller
+   * is authenticated (unlike the reset), so the actor is a fact worth keeping —
+   * but which refusal fired is not, because a trail that separated them would
+   * be a progress meter for whoever is guessing at a pending change (the M14
+   * PR1 rule, one surface over).
+   */
+  async emailChangeFailed(userId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.change_failed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
+  /** The per-destination bound refused a challenge mint — a control firing,
+   * with its own action so it never reads as an outage (the M9 rule). */
+  async emailChangeThrottled(): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.change_throttled',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: null,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
   async registerRateLimited(): Promise<void> {
     await this.audit.emit({
       action: 'auth.register.rate_limited',

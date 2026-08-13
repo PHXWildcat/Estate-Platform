@@ -71,6 +71,7 @@ describe('config validation', () => {
     NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: 'v'.repeat(48),
     NOTIFICATIONS_STATUS_INTERNAL_TOKEN: 's'.repeat(48),
     NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: 'p'.repeat(48),
+    NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN: 'echange-token-0123456789abcdef-echange',
     NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN: 'r'.repeat(48),
   };
 

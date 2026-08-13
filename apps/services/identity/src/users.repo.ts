@@ -6,6 +6,9 @@ export interface UserRow {
   password_hash: string | null;
   status: string;
   dek_id: string;
+  /** The login selector — returned so the change ceremony can refuse a no-op
+   * "change to my current address" without a second read (M17 PR4). */
+  email_bidx: Buffer;
 }
 
 @Injectable()
@@ -51,7 +54,7 @@ export class UsersRepo {
 
   async findById(userId: string): Promise<UserRow | null> {
     const rows = await this.db.query<UserRow>(
-      `SELECT id, password_hash, status, dek_id
+      `SELECT id, password_hash, status, dek_id, email_bidx
          FROM users
         WHERE id = $1 AND deleted_at IS NULL`,
       [userId],
@@ -89,6 +92,40 @@ export class UsersRepo {
           AND status IN ('active', 'deceased_pending')
         RETURNING id`,
       [userId, passwordHash],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * THE SWITCH (M17 PR4): move a proven candidate address onto the live row.
+   *
+   * The ciphertext arrives from `email_changes` byte-for-byte — it was
+   * encrypted as `users.email` under the user's live DEK at staging, so no
+   * decrypt happens on this side of the transaction. The status allowlist is
+   * `updatePasswordHash`'s, for its reasons. `dek_id` is restated HERE, in the
+   * same statement as the write: if the account's key changed between mint and
+   * redemption, this ciphertext no longer belongs on the row (the M4 rule that
+   * a shredded record is Gone, never silently re-keyed), and a check anywhere
+   * earlier would be check-then-act.
+   *
+   * A unique violation on `ux_users_email` (the candidate address was
+   * registered by someone else during the ceremony window) is the CALLER's to
+   * map — this repo lets it throw so the transaction rolls back whole.
+   */
+  async updateEmail(
+    tx: Queryable,
+    userId: string,
+    input: { emailCt: Buffer; emailBidx: Buffer; dekId: string },
+  ): Promise<boolean> {
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE users
+          SET email_ct = $2, email_bidx = $3, updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NULL
+          AND status IN ('active', 'deceased_pending')
+          AND dek_id = $4
+        RETURNING id`,
+      [userId, input.emailCt, input.emailBidx, input.dekId],
     );
     return rows.length > 0;
   }

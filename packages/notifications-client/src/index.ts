@@ -1,5 +1,7 @@
 export {
   ACCOUNT_SECURITY_KINDS,
+  EMAIL_CHANGE_CODE_PATTERN,
+  EMAIL_CHANGE_KINDS,
   ESTATE_NOTIFICATION_KINDS,
   HttpNotificationsClient,
   NOTIFICATIONS,
@@ -13,6 +15,8 @@ export {
   type AccountSecurityInput,
   type AccountSecurityKind,
   type AddressVerificationInput,
+  type EmailChangeInput,
+  type EmailChangeKind,
   type EstateNotificationKind,
   type FetchLike,
   type HttpNotificationsClientOptions,
@@ -24,6 +28,7 @@ export {
   type PasswordResetInput,
   type RecoveryKind,
   type RecipientStatus,
+  type ReplaceRecipientInput,
   type SendOutcome,
   type SystemNotificationKind,
 } from './client';

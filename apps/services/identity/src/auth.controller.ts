@@ -23,6 +23,7 @@ import { EmailVerificationService, type ReissueOutcome } from './email-verificat
 import { ExtensionPairingService } from './extension-pairing.service';
 import { HandoffService, type MintedHandoff } from './handoff.service';
 import { PasswordResetService } from './password-reset.service';
+import { EmailChangeService } from './email-change.service';
 import { AllowSessionAudiences } from './session-audience.decorator';
 import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
 import { StepUpGuard } from './stepup.guard';
@@ -82,6 +83,21 @@ const CompleteResetSchema = z.object({
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(1024),
   newPassword: z.string().min(12).max(256),
+});
+
+/** The change-request wire (M17 PR4): the current password (a stolen session
+ * does not carry it) and the candidate address. */
+const EmailChangeRequestSchema = z.object({
+  currentPassword: z.string().min(1).max(1024),
+  newEmail: z.string().min(3).max(320),
+});
+
+/** The change-COMPLETE wire: shape-only and generous, on the reset route's
+ * reasoning — the authority is the digest compare against the caller's own
+ * live change, and a shape rejection that differed from a wrong-code one
+ * would be a free oracle for the format. */
+const EmailChangeCompleteSchema = z.object({
+  code: z.string().min(1).max(128),
 });
 
 const CodeSchema = z.object({
@@ -179,6 +195,7 @@ export class AuthController {
     private readonly handoff: HandoffService,
     private readonly extensionPairing: ExtensionPairingService,
     private readonly passwordReset: PasswordResetService,
+    private readonly emailChange: EmailChangeService,
   ) {}
 
   @Post('register')
@@ -366,6 +383,72 @@ export class AuthController {
     const auth = requireAuth(request);
     const { currentPassword, newPassword } = parseBody(ChangePasswordSchema, body);
     await this.auth.changePassword(auth.userId, auth.sessionId, auth, currentPassword, newPassword);
+  }
+
+  /**
+   * Stage an address change and mail the challenge (M17 PR4).
+   *
+   * ACCOUNT AUDIENCE ONLY (undecorated = deny by default) and no `StepUpGuard`
+   * for `changePassword`'s reasons, which apply with more force here: §6m says
+   * control of the mailbox is control of the account, and this route chooses
+   * the mailbox. The service asks step-up first, then the current password.
+   *
+   * TWO HALVES, split by what timing may reveal. The synchronous half answers
+   * everything the caller is entitled to (gate, password, floor, destination
+   * bound). The AVAILABILITY of the new address is not among those — "is this
+   * address registered" is a fact about somebody else's account — so the
+   * lookup, the stage and the send run DETACHED, and a taken address is a mail
+   * that never arrives (register's own posture, and its uniform-answer rule).
+   */
+  @Post('email/change/request')
+  @HttpCode(202)
+  @UseGuards(SessionGuard)
+  async requestEmailChange(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<{ status: string }> {
+    const auth = requireAuth(request);
+    const { currentPassword, newEmail } = parseBody(EmailChangeRequestSchema, body);
+    const { staged } = await this.emailChange.requestChange(
+      auth.userId,
+      auth,
+      currentPassword,
+      newEmail,
+    );
+    // DELIBERATELY NOT AWAITED — the timing control lives on this line (the
+    // PR3 detach, pinned at the source by the same rule: a runtime test cannot
+    // tell a fast await from no await). The catch is terminal; every branch
+    // inside records its own outcome.
+    void staged().catch(() => {});
+    return { status: 'ok' };
+  }
+
+  /**
+   * Redeem the challenge and SWITCH the address (M17 PR4). Authenticated —
+   * unlike the reset, the caller has a session; the code proves the MAILBOX,
+   * the session says whose change it completes, and the pair is what makes the
+   * attempt cap attributable. Every failure is one `invalid_code`.
+   */
+  @Post('email/change')
+  @HttpCode(204)
+  @UseGuards(SessionGuard)
+  async completeEmailChange(@Req() request: AuthedRequest, @Body() body: unknown): Promise<void> {
+    const auth = requireAuth(request);
+    const { code } = parseBody(EmailChangeCompleteSchema, body);
+    await this.emailChange.completeChange(auth.userId, auth.sessionId, code);
+  }
+
+  /**
+   * Withdraw the pending change (M17 PR4). One ungated click on the caller's
+   * own account — the M6 asymmetry: minting is the gated half, and an owner
+   * who regrets a pending change must not be sent to find an authenticator.
+   */
+  @Delete('email/change')
+  @HttpCode(204)
+  @UseGuards(SessionGuard)
+  async cancelEmailChange(@Req() request: AuthedRequest): Promise<void> {
+    const auth = requireAuth(request);
+    await this.emailChange.cancelChange(auth.userId);
   }
 
   /**
