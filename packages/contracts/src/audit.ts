@@ -187,6 +187,10 @@ export const AUDIT_ACTIONS = [
   // ledger AND from any outage token, per the M9 rule — a control firing must
   // never read as either an ordinary failure or a fault.
   'auth.stepup.rate_limited',
+  // M17 PR6: the current-password guessing cap firing. One event per window at
+  // most, and the burst signal docs/03 §4 TB1 asks for — a stolen session
+  // grinding at a password is exactly what an operator wants surfaced.
+  'auth.password.change_rate_limited',
   // M17, the credential-guessing bounds on the two UNAUTHENTICATED routes that
   // cost real work. Separate actions rather than one with a `route` enum,
   // because they are different signals with different responses: login means

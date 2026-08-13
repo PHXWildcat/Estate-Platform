@@ -6,6 +6,7 @@
  * what the projection maps, which ids are refused before any query, and which
  * outcomes emit the factor-weakening audit event.
  */
+import { HttpException } from '@nestjs/common';
 import { WebAuthnService } from '../src/webauthn.service';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import type { IdentityConfig } from '../src/config';
@@ -18,7 +19,11 @@ const USER = 'b6c9a1de-0000-4000-8000-000000000042';
 const CRED = 'c1d2e3f4-0000-4000-8000-000000000001';
 const NOW = new Date('2026-08-13T12:00:00.000Z');
 
-function makeService(opts?: { revokeAnswers?: boolean }): {
+function makeService(opts?: {
+  revokeAnswers?: boolean;
+  challenge?: string | null;
+  credential?: unknown;
+}): {
   service: WebAuthnService;
   revokes: Array<{ userId: string; id: string }>;
   renames: Array<{ id: string; nickname: string }>;
@@ -33,6 +38,9 @@ function makeService(opts?: { revokeAnswers?: boolean }): {
   };
   const service = new WebAuthnService(
     {
+      consumeChallenge: (): Promise<string | null> =>
+        Promise.resolve(opts?.challenge === undefined ? 'a-live-challenge' : opts.challenge),
+      findCredentialById: (): Promise<unknown> => Promise.resolve(opts?.credential ?? null),
       listForUser: (): Promise<unknown[]> =>
         Promise.resolve([
           {
@@ -131,5 +139,73 @@ describe('rename — the label verb', () => {
     await expect(f.service.renameCredential(USER, CRED, 'YubiKey')).resolves.toBe(true);
     expect(f.renames).toEqual([{ id: CRED, nickname: 'YubiKey' }]);
     expect(f.audited).toBe(0);
+  });
+});
+
+/**
+ * EVERY FAILING ASSERTION BRANCH IS ON THE LEDGER (the M17 PR6 review).
+ *
+ * PR5 added `webauthn.assertion_failed` to correct a 2026-08-10 decision-log
+ * entry that claimed failed assertions "emit their own kind" while the code
+ * emitted nothing. The review found the correction INCOMPLETE: only the
+ * crypto-verify catch and the userVerified recheck recorded, so the two
+ * branches that short-circuit EARLIEST — no live challenge, and a credential id
+ * that names nothing or names somebody else's authenticator — stayed silent.
+ *
+ * MEASURED on the running stack before this was written: ten probes against a
+ * live account (five with no challenge, five submitting a foreign credential id
+ * after minting a real challenge) produced ZERO `webauthn.*` rows. The foreign
+ * credential id is the most suspicious probe class there is — no browser
+ * produces one by accident — and it was the one that left no trace.
+ */
+describe('every failing assertion branch reaches the ledger', () => {
+  const SESSION = 'd4e5f6a7-0000-4000-8000-000000000009';
+  const RESPONSE = { id: 'Zm9yZWlnbi1jcmVk', rawId: 'Zm9yZWlnbi1jcmVk', type: 'public-key' };
+
+  it('NO LIVE CHALLENGE records — a replayed assertion body looks exactly like this', async () => {
+    const f = makeService({ challenge: null });
+    await expect(
+      f.service.finishAuthentication(USER, SESSION, RESPONSE as never),
+    ).rejects.toMatchObject({ response: { error: 'webauthn_failed' } });
+    expect(f.ledger).toEqual(['webauthn.assertion_failed']);
+  });
+
+  it('A FOREIGN OR UNKNOWN CREDENTIAL records — the probe class that was silent', async () => {
+    // findCredentialById answers null (unknown id) …
+    const unknown = makeService({ credential: null });
+    await expect(
+      unknown.service.finishAuthentication(USER, SESSION, RESPONSE as never),
+    ).rejects.toMatchObject({ response: { error: 'webauthn_failed' } });
+    expect(unknown.ledger).toEqual(['webauthn.assertion_failed']);
+
+    // … and a credential that exists but belongs to SOMEBODY ELSE.
+    const foreign = makeService({
+      credential: {
+        credential_id: Buffer.from('x'),
+        public_key: Buffer.from('k'),
+        sign_count: '0',
+        transports: null,
+        user_id: 'a-different-user',
+      },
+    });
+    await expect(
+      foreign.service.finishAuthentication(USER, SESSION, RESPONSE as never),
+    ).rejects.toMatchObject({ response: { error: 'webauthn_failed' } });
+    expect(foreign.ledger).toEqual(['webauthn.assertion_failed']);
+  });
+
+  it('the refusal stays UNIFORM — the ledger gains detail the wire does not', async () => {
+    // Recording must not become an oracle: all three branches answer the same
+    // generic token, and only the trail tells them apart (by existing at all).
+    const a = makeService({ challenge: null });
+    const b = makeService({ credential: null });
+    const first = await a.service
+      .finishAuthentication(USER, SESSION, RESPONSE as never)
+      .catch((e: unknown) => e);
+    const second = await b.service
+      .finishAuthentication(USER, SESSION, RESPONSE as never)
+      .catch((e: unknown) => e);
+    expect((first as HttpException).getResponse()).toEqual((second as HttpException).getResponse());
+    expect((first as HttpException).getStatus()).toBe((second as HttpException).getStatus());
   });
 });
