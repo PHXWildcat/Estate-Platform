@@ -4,6 +4,7 @@ import {
   InternalController,
   RecipientStatusController,
   RecipientsController,
+  RecoveryController,
   SecurityController,
   VerificationController,
 } from '../src/internal.controller';
@@ -26,6 +27,7 @@ describe('InternalController', () => {
     verification: VerificationController;
     status: RecipientStatusController;
     security: SecurityController;
+    recovery: RecoveryController;
     calls: {
       send: unknown[];
       upsert: unknown[];
@@ -33,6 +35,7 @@ describe('InternalController', () => {
       markVerified: unknown[];
       status: unknown[];
       security: unknown[];
+      recovery: unknown[];
     };
   } => {
     const calls = {
@@ -42,6 +45,7 @@ describe('InternalController', () => {
       markVerified: [] as unknown[],
       status: [] as unknown[],
       security: [] as unknown[],
+      recovery: [] as unknown[],
     };
     const service = {
       send: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
@@ -70,6 +74,10 @@ describe('InternalController', () => {
         calls.security.push(input);
         return Promise.resolve({ delivered: true, channel: 'email' });
       },
+      sendPasswordReset: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
+        calls.recovery.push(input);
+        return Promise.resolve({ delivered: true, channel: 'email' });
+      },
     } as unknown as NotificationsService;
     return {
       controller: new InternalController(service),
@@ -77,6 +85,7 @@ describe('InternalController', () => {
       verification: new VerificationController(service),
       status: new RecipientStatusController(service),
       security: new SecurityController(service),
+      recovery: new RecoveryController(service),
       calls,
     };
   };
@@ -118,9 +127,9 @@ describe('InternalController', () => {
     // edge again. A guard binds exactly one token, so one class per capability
     // is what makes the partition real rather than described.
     const { controller, recipients, verification, status } = build();
-    const { security } = build();
-    const surfaces = [controller, recipients, verification, status, security];
-    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(5);
+    const { security, recovery } = build();
+    const surfaces = [controller, recipients, verification, status, security, recovery];
+    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(6);
     expect('upsertRecipient' in controller).toBe(false);
     expect('send' in recipients).toBe(false);
     // The code-bearing route lives nowhere near the broadly-held send surface.
@@ -132,11 +141,50 @@ describe('InternalController', () => {
     expect('sendSecurity' in controller).toBe(false);
     expect('sendSecurity' in verification).toBe(false);
     expect('sendCode' in security).toBe(false);
+    // M17 PR3: four send surfaces, four handler names, so no refactor can merge
+    // the account-recovery channel into any of its neighbours by accident.
+    expect('sendReset' in controller).toBe(false);
+    expect('sendReset' in verification).toBe(false);
+    expect('sendReset' in security).toBe(false);
+    expect('sendCode' in recovery).toBe(false);
     // The read surface writes nothing.
     expect(Object.getOwnPropertyNames(RecipientStatusController.prototype)).toEqual([
       'constructor',
       'status',
     ]);
+  });
+
+  it('recovery: parses the code wire and delegates', async () => {
+    const { recovery, calls } = build();
+    const body = {
+      userId: randomUUID(),
+      kind: 'identity.password_reset',
+      code: 'PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+    };
+    await expect(recovery.sendReset(body)).resolves.toEqual({ delivered: true, channel: 'email' });
+    expect(calls.recovery).toEqual([body]);
+  });
+
+  it('recovery: refuses a VERIFICATION code, an estate kind, and free text', () => {
+    // The pattern is anchored on its own prefix, so this route cannot mail a
+    // verification code and the verification route cannot mail a reset code —
+    // the exclusion is in the wire as well as in the credential.
+    const { recovery, calls } = build();
+    const id = randomUUID();
+    expect(() =>
+      recovery.sendReset({ userId: id, kind: 'identity.password_reset', code: MINTED_CODE }),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      recovery.sendReset({ userId: id, kind: 'settlement.case_opened', code: 'PR1-K7MN' }),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      recovery.sendReset({
+        userId: id,
+        kind: 'identity.password_reset',
+        code: 'YOUR-ESTATE-ACCOUNT-IS-LOCKED-CALL-NOW',
+      }),
+    ).toThrow(BadRequestException);
+    expect(calls.recovery).toEqual([]);
   });
 
   it('security: parses the closed-kind wire and delegates', async () => {

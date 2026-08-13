@@ -246,6 +246,29 @@ export const REGISTER_ADDRESS_BOUND: AddressBoundOptions = {
 };
 
 /**
+ * THE RESET-REQUEST BOUND (M17 PR3). Ten per address per fifteen minutes.
+ *
+ * The tightest of the three, and the only one whose refusal is SILENT. The
+ * route it guards answers the same 202 for every input by design, so a 429
+ * would be the one observable that varies — and although the count is
+ * existence-independent (making a 429 safe by register's argument), a route
+ * that tells the caller nothing is better served by continuing to tell them
+ * nothing. A dropped request is indistinguishable from a delivered one, which
+ * is what the whole route is arranged around.
+ *
+ * It is the PRIMARY defence on that route, because the per-account floor behind
+ * it can only be evaluated after an address resolves to a user — so the floor
+ * sees nothing at all for an address with no account, which is most of what an
+ * abuser sends. Ten is below register's twenty because the cost here is a real
+ * email to somebody who did not ask for it, not just CPU.
+ */
+export const RESET_ADDRESS_BOUND: AddressBoundOptions = {
+  max: 10,
+  windowMs: 15 * 60 * 1000,
+  capacity: 50_000,
+};
+
+/**
  * The ledger kind register's refusal writes. It has no `LedgerRateBound`
  * because it counts nothing on the ledger — the row exists so that a control
  * firing leaves a trace, and the kind is declared here rather than inline so

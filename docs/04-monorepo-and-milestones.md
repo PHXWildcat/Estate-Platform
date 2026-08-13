@@ -4238,6 +4238,48 @@ and that run cannot see. It was not lowered: `test/db.spec.ts` covers
 masking the original error — which are control flow rather than SQL semantics and
 were owed regardless. Floor ratcheted 70/68/41/68 → 70/68/42/69.
 
+#### PR3 as built — password reset (2026-08-13)
+
+**It mints nothing**, which is decision 2 answered structurally rather than
+obeyed: redemption sets the password and returns no tokens, so there is no
+session to withhold a step-up from. `test/mint-paths.spec.ts` is the fence that
+property needed — docs/04's "assert what a reset session CANNOT do" presumed one
+exists — declaring the three mint paths as data and proving the reset absent,
+plus a separate assertion that nothing bypasses the repo with a raw INSERT.
+
+**No second factor, by decision.** A reset requires the mailed code alone, even
+for an account holding a verified TOTP or passkey; the residual is written in
+docs/03 §6m in those words, because it is a real weakening of M16's investment
+and buys the property that nobody is permanently locked out.
+
+**A sixth notifications edge** rather than a widening of VERIFY: a verification
+code proves a mailbox and is redeemed by somebody already signed in, while a
+reset code is redeemed with no session at all. Graph entry first, fence red (5
+failures) before green.
+
+**Ten mutations red**, and three of the four that first survived were MY
+MUTATIONS being unfaithful rather than tests being weak — worth recording,
+because the harness's "assert the bytes changed" check does not catch a
+replacement that changes bytes without changing behaviour. The other survivor
+was real: a concurrency case named for the CAS was passing with the CAS deleted,
+because it duplicated the UPDATE inline and so proved that Postgres honours a
+predicate rather than that the repo's statement carries one. It drives
+`markRedeemed` through two open transactions now. Two properties are recorded as
+OVER-DETERMINED rather than contorted into mutability: an unknown address cannot
+be mailed however the guard is mutated, and expiry is refused at two layers.
+
+**One test-isolation defect found and fixed twice.** The per-address bound lives
+on the service instance for the process's lifetime — as in production — so the
+eleventh `request()` in the file was silently refused: the bound working and the
+suite losing isolation at once. The first fix, a per-case time window, broke the
+re-issue floor, because `created_at` is stamped by the DATABASE while the floor
+compares against the SERVICE's clock. Isolating by ADDRESS instead separates the
+cases on the axis the bound keys on and leaves both clocks in one frame.
+
+**Still owed:** a surface. PR3 ships routes no BFF resolver and no screen call,
+which is a zero-callers gap of exactly the kind this repo keeps closing —
+recorded in §6m rather than left to be discovered.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

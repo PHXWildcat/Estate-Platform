@@ -223,6 +223,82 @@ export class EventsService {
     });
   }
 
+  /**
+   * A reset code was mailed (M17 PR3). Carries the subject and whether the
+   * carrier accepted it — a request nobody received is the state an operator
+   * has to be able to see, since the caller is told nothing either way.
+   */
+  async passwordResetRequested(userId: string, delivered: boolean): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.password.reset_requested',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { delivered: delivered ? 'delivered' : 'failed' },
+    });
+  }
+
+  /**
+   * A reset COMPLETED. The most consequential event identity emits about an
+   * account it did not authenticate: the password changed on the strength of a
+   * mailed code alone.
+   */
+  async passwordReset(userId: string, revokedSessions: number, notified: boolean): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.password.reset_completed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: {
+        revokedSessions: String(revokedSessions),
+        notified: notified ? 'delivered' : 'failed',
+      },
+    });
+  }
+
+  /**
+   * A redemption was refused. NO actor, NO subject, NO reason — the redeem
+   * route is unauthenticated and every failure is one answer on the wire, so a
+   * trail that separated them would re-create the oracle through the audit
+   * stream (`handoffFailed`'s shape, and its reasoning verbatim).
+   */
+  /**
+   * The reset-request bound refusing. NO actor and NO subject: the address was
+   * never resolved, so there is nobody to name — and naming one would make the
+   * trail say something about a person who may not have an account.
+   */
+  async passwordResetThrottled(): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.password.reset_throttled',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: null,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
+  async passwordResetFailed(): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.password.reset_failed',
+      actorId: null,
+      actorType: 'system',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: null,
+      sessionId: null,
+      detail: {},
+    });
+  }
+
   async registerRateLimited(): Promise<void> {
     await this.audit.emit({
       action: 'auth.register.rate_limited',

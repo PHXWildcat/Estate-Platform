@@ -221,6 +221,22 @@ export const AUDIT_ACTIONS = [
   // audit event per mistyped password would drown the stream — the same
   // reasoning that keeps individual step-up denials out of the audit trail.
   'auth.password.changed',
+  // M17 PR3, the reset ceremony. THREE actions because they are three different
+  // facts an investigator needs apart: a code was mailed, a reset completed, and
+  // a redemption was refused.
+  //
+  // `requested` and `completed` carry the subject; `failed` carries NO actor and
+  // NO reason, because the redeem route is unauthenticated and resolves a code
+  // or nothing — naming which of unknown/expired/spent/revoked/raced applied
+  // would tell whoever is guessing that their guess named something real, and
+  // would additionally leak account state to a caller with no session (the M14
+  // PR1 rule, which binds harder here).
+  'auth.password.reset_requested',
+  'auth.password.reset_completed',
+  'auth.password.reset_failed',
+  // The per-address bound on the REQUEST route refusing. No actor and no
+  // subject: the address was never resolved to a user.
+  'auth.password.reset_throttled',
   // M16, extension pairing. `paired` names the SESSION the ceremony produced,
   // so an owner reviewing their trail can follow it into the vault events that
   // session later causes. `pairing_failed` carries no actor and no reason —

@@ -39,6 +39,7 @@ import { AuthController } from '../src/auth.controller';
 import type { EmailVerificationService } from '../src/email-verification.service';
 import type { ExtensionPairingService } from '../src/extension-pairing.service';
 import type { HandoffService } from '../src/handoff.service';
+import type { PasswordResetService } from '../src/password-reset.service';
 import type { AuthedRequest, SessionContext } from '../src/session.guard';
 import type { WebAuthnService } from '../src/webauthn.service';
 
@@ -113,6 +114,7 @@ function makeController(fakes: Fakes): AuthController {
     fakes.emailVerification as unknown as EmailVerificationService,
     fakes.handoff as unknown as HandoffService,
     fakes.extensionPairing as unknown as ExtensionPairingService,
+    {} as unknown as PasswordResetService,
   );
 }
 

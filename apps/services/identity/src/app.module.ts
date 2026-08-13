@@ -40,6 +40,8 @@ import {
 import { EventsService } from './events.service';
 import { HttpErrorFilter } from './http-error.filter';
 import { MfaRepo } from './mfa.repo';
+import { PasswordResetRepo } from './password-reset.repo';
+import { PasswordResetService } from './password-reset.service';
 import { PasswordHasher } from './password';
 import { SessionGuard } from './session.guard';
 import { SecondFactorGate } from './second-factor-gate';
@@ -134,6 +136,8 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     SessionsRepo,
     SecondFactorGate,
     MfaRepo,
+    PasswordResetRepo,
+    PasswordResetService,
     AuthEventsRepo,
     WebAuthnRepo,
     AuthService,
@@ -164,7 +168,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
       // client never throws, so a notifications outage cannot block
       // registration or login.
       //
-      // FOUR credentials, one per EDGE, and identity holds no fifth: it does
+      // FIVE credentials, one per EDGE, and identity holds no sixth: it does
       // NOT hold `NOTIFICATIONS_INTERNAL_TOKEN`, so nothing here can fire an
       // estate notification — a password-change notice is about the ACCOUNT and
       // travels on its own credential, precisely so that gaining the ability to
@@ -184,6 +188,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
             verification: config.notificationsVerifyToken,
             status: config.notificationsStatusToken,
             security: config.notificationsSecurityToken,
+            recovery: config.notificationsRecoveryToken,
           },
         }),
     },

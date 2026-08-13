@@ -1202,8 +1202,9 @@ CLAUDE.md decision log; the security-relevant shape is:
 - *No user-reachable session revocation.* Before M16, `revokeAllForUser` had one
   caller behind a service credential, and identity exposed no session listing, no
   revoke-by-id and no password-change or password-reset route — so the only way
-  to revoke a session was to present it. (M17 PR2 closes the password-CHANGE
-  half of that sentence; reset is PR3. It also gives the sentence a second
+  to revoke a session was to present it. (M17 PR2 closed the password-CHANGE
+  half of that sentence and PR3 closed the RESET half, so identity now exposes
+  all three. It also gives the sentence a second
   meaning: a password change now revokes every OTHER session in the same
   transaction, so the ordinary remedy for "something has my credentials" is one
   action rather than a per-row sweep.) Tolerable while every session was one
@@ -1881,6 +1882,120 @@ wire carries one, a holder chooses part of what the user reads.
   credential that did it.
 - *Still no reset.* A user who has FORGOTTEN their password cannot use this
   route, by construction — it requires the current one. That is PR3.
+
+## 6m. Threat-model delta — M17 PR3, the password reset (2026-08-13)
+
+**A user who has forgotten their password had no way back.** PR2 gave the
+platform a password CHANGE, which requires the current password by
+construction; this is the other half, and it is the most dangerous route the
+milestone adds — an unauthenticated ceremony that replaces the credential
+everything else rests on.
+
+**It mints nothing.** Redemption sets the password and returns no tokens, no
+session, no step-up; the user signs in afterwards with what they chose. That is
+the answer to "does redeeming a reset code grant step-up?" made *structural*
+rather than kept as a rule: there is nothing to grant it to. The M15 PR4 review
+is why it matters — an unauthenticated redeem route that granted step-up let a
+stolen 60-second handoff code reach `POST /v1/vault/reset`, which is gated on
+step-up alone, and crypto-shred a Zone A vault. A reset code granting step-up
+would be that primitive delivered by email to a code that lives thirty minutes.
+`test/mint-paths.spec.ts` asserts the set of session-minting paths and proves the
+reset absent from it.
+
+**A fourth `recovery` audience would not have helped.**
+`AllowSessionAudiences` unconditionally prepends `account` and identity binds no
+service-wide list, so a completion route admitting `recovery` would *also* be
+reachable by every ordinary account session — a
+set-a-new-password-without-the-current-one route behind any stolen bearer.
+
+### THE DECISION THAT MOST WEAKENS THIS: no second factor
+
+**A reset requires the mailed code and nothing else, even for an account holding
+a verified TOTP or passkey.** Taken deliberately, and the consequence is stated
+plainly rather than softened:
+
+> For an account with a verified second factor, control of the mailbox is
+> control of the account. A verified second factor does **not** protect against
+> mailbox compromise.
+
+That is a real weakening of M16's investment in step-up, and it buys one thing:
+nobody is ever permanently locked out. The alternative — requiring the factor —
+would leave a user who forgot their password *and* lost their authenticator with
+no self-service path and no operator remedy, because TB7 does not exist and
+there are no recovery codes. What bounds the damage, and none of it is
+speculative:
+
+- **the vault is untouched.** Zone A's master key derives from the vault
+  password and Secret Key under 2SKD, never from the account password. A reset
+  re-keys, re-wraps and opens nothing there, and the mailed body says so in
+  words, because the vault origin already tells users Estate cannot reset that
+  password for them.
+- **every session is revoked**, so the real owner is signed out and notices.
+- **the owner is mailed** on completion, on the M17 PR2 account-security edge.
+- the whole sequence is on the audit trail: requested, completed, and every
+  refusal.
+
+Revisiting this is what PR5 (the passkey surface) or a recovery-codes ceremony
+would be for; until then it is the platform's weakest link on risk #1 and should
+be read as such.
+
+### The rest of the shape
+
+- **The request route is enumeration-safe by CONSTRUCTION, not by policy.** It
+  answers `202` for every input and does the work off the response path — the
+  mint-and-send is fired without being awaited — so an address with an account
+  cannot answer measurably later than a stranger's. Register's own docstring
+  records that timing residual as still open; this route avoids inheriting it,
+  which matters more here because a hit tells an attacker where to point a
+  mailbox compromise.
+- **Two bounds, and the per-address one is primary.** The per-account re-issue
+  floor (30 min) can only be evaluated once an address resolves to a user, so it
+  sees nothing at all for an address with no account — most of what an abuser
+  sends. The per-address bound (10 per 15 min, in memory, per process) refuses
+  before any lookup. Its refusal is SILENT, because the route tells a caller
+  nothing either way.
+- **The status allowlist rides the UPDATE.** `deceased_pending` is permitted
+  (§5.1's rescue path is the living owner signing back in); `settlement` is
+  refused, so whoever controls a decedent's mailbox cannot recover a terminally
+  locked account.
+- **Its own ledger kinds, never `stepup.granted`** — that literal is the
+  owner-liveness interlock, so emitting it would silently void an open §5.1
+  death case and hand that capability to whoever reads the mailbox.
+- **A sixth notifications edge** (`NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN`,
+  identity alone). Not the VERIFY edge despite the identical holder and a
+  near-identical payload: a verification code proves a mailbox and is redeemed
+  by somebody already signed in, while a reset code is redeemed with no session
+  at all. Four send routes now build from four closed kind lists, so no holder
+  of one can fire another's.
+- **Atomicity is the control.** Spending the code, writing the hash and revoking
+  the sessions are one transaction: a spend without the write burns the user's
+  only recovery code, and a write without the spend leaves the code replayable
+  by whoever read that mailbox.
+
+### Residuals
+
+- *The reset does not clear PR1's login bound.* A user locked out of NEW logins
+  by a sustained wrong-password attack can reset successfully and still be
+  refused at login until that window lapses (15 minutes). Emitting a
+  `login.succeeded` to clear it would be a lie in the ledger, and the window is
+  short enough that waiting is the honest remedy.
+- *There is no reset SURFACE.* PR3 ships the routes; no BFF resolver and no
+  screen call them, so this is a zero-callers gap of exactly the kind this repo
+  keeps closing — recorded here rather than discovered later. The same is true
+  of PR2's change route.
+- *An unauthenticated route now causes mail.* §6h refused to fire a notification
+  kind at registration for that reason, and PR1 narrowed only half of that
+  refusal. The deviation is argued rather than inherited: the bound above is
+  per-process and best-effort, so what actually keeps this route from being a
+  mail-bomb primitive is the per-account floor of one code per thirty minutes,
+  which applies to the address being mailed rather than to the caller.
+- *No attempt cap on redemption*, deliberately: the redeemer is unauthenticated
+  and a wrong guess resolves no row, so a counter keyed on a resolved row would
+  be the decorative cap the M14 round-2 review found. The bound is 160 bits, a
+  30-minute TTL, and burn-on-attempt.
+- *The address-change lockout §6h records is NOT closed by this.* A reset mails
+  to the address already on file, so for a user who mistyped their address at
+  registration it changes nothing. That is PR4's.
 
 ## 7. Validation program
 

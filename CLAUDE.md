@@ -5086,3 +5086,73 @@ deviating from them, stop and propose the change with rationale — do not silen
   WRITES. Anything the database resolves on its own behalf — a trigger body, a
   function, a default expression — uses the connection's search_path, so a
   scratch schema is not isolation unless the connection is pinned to it.
+- 2026-08-13 — M17 PR3, PASSWORD RESET, and the decision that most weakens it,
+  taken deliberately and against my recommendation: a reset requires the mailed
+  code and NOTHING ELSE, even for an account holding a verified TOTP or passkey.
+  The consequence is written in docs/03 §6m in plain words — for such an account
+  control of the mailbox is control of the account, so a verified second factor
+  does not protect against mailbox compromise — and what it buys is that nobody
+  is ever permanently locked out, since TB7 does not exist and there are no
+  recovery codes. What bounds the damage: the VAULT is untouched (2SKD derives
+  Zone A's master key from the vault password and Secret Key, never the account
+  password, and the mailed body says so because the vault origin already tells
+  users Estate cannot reset that password for them), every session is revoked so
+  the owner notices, the owner is mailed on completion, and every step is
+  audited.
+- 2026-08-13 — THE RESET MINTS NOTHING, which answers "does redemption grant
+  step-up?" structurally rather than as a rule somebody has to keep. The M15 PR4
+  escalation is the precedent: an unauthenticated redeem route that granted
+  step-up let a stolen 60-second handoff code reach `POST /v1/vault/reset` and
+  crypto-shred a Zone A vault, and a reset code granting step-up would be that
+  primitive delivered by email to a code living thirty minutes. A fourth
+  `recovery` audience would NOT have helped — `AllowSessionAudiences`
+  unconditionally prepends `account` and identity binds no service-wide list, so
+  a completion route admitting it would also be reachable by every ordinary
+  account session. docs/04 decision 2 told PR3 to "assert what a reset session
+  CANNOT do", which presumes one exists; `test/mint-paths.spec.ts` asserts the
+  SET of mint paths instead and proves the reset absent from it — a stronger
+  claim, because a capability never created cannot be mis-scoped.
+- 2026-08-13 — THE REQUEST ROUTE IS ENUMERATION-SAFE BY CONSTRUCTION: it answers
+  202 for every input and fires the mint-and-send WITHOUT awaiting it, so an
+  address with an account cannot answer measurably later than a stranger's.
+  Register's own docstring records that timing residual as still open; this route
+  avoids inheriting it, which matters more here because a hit tells an attacker
+  where to point a mailbox compromise. The consequence accepted with it: the
+  caller is never told whether a mail was sent, refused by the floor, or had
+  nowhere to go. Two bounds behind it, and the PER-ADDRESS one is primary —
+  the per-account floor can only be evaluated after an address resolves, so it
+  sees nothing at all for an address with no account, which is most of what an
+  abuser sends.
+- 2026-08-13 — A SIXTH NOTIFICATIONS EDGE, not a widening of VERIFY, despite the
+  identical holder and a near-identical payload. The capability differs even
+  though the wire looks the same: a verification code proves a MAILBOX and is
+  redeemed by somebody already signed in, while a reset code REPLACES the account
+  password and is redeemed with no session at all — so whoever can cause one to
+  be mailed and can read that mailbox owns the account. Four send routes on that
+  callee now build from four closed kind lists, so no holder of one can fire
+  another's, and the two mailed-code patterns are anchored on different prefixes
+  so neither route can mail the other's code.
+- 2026-08-13 — THREE OF THE FOUR MUTATIONS THAT SURVIVED WERE MY MUTATIONS BEING
+  UNFAITHFUL, which the harness's "assert the bytes changed" check does not
+  catch: a replacement can change bytes and not behaviour. One made the guard
+  fall through to a throw the fire-and-forget catch absorbs; one resolved a
+  second lookup that also returned null. The fourth was real and is the useful
+  one: a case named "TWO CONCURRENT REDEMPTIONS … exactly ONE success" passed
+  with `markRedeemed`'s preconditions DELETED, because it duplicated the UPDATE
+  inline — so it proved that Postgres honours a predicate, which was never in
+  doubt, rather than that the repo's statement carries one. It drives the repo
+  through two open transactions now. TWO properties are recorded as
+  OVER-DETERMINED rather than contorted into mutability: an unknown address
+  cannot be mailed however that guard is mutated, and expiry is refused at both
+  the service read and the CAS.
+- 2026-08-13 — A STATEFUL BOUND BREAKS TEST ISOLATION IN A WAY THAT LOOKS LIKE
+  THE BOUND WORKING. The per-address reset bound lives on the service instance
+  for the process's lifetime — exactly as in production — so the eleventh
+  `request()` in one spec file was silently refused and a later case failed with
+  "no code was mailed". The first fix, giving each case its own time window,
+  broke the re-issue floor for a reason worth keeping: `created_at` is stamped by
+  the DATABASE while the floor compares against the SERVICE's injected clock, so
+  moving one forward moves them out of the same frame. Isolating by ADDRESS
+  instead separates the cases on the axis the bound actually keys on and leaves
+  both clocks alone. The general rule: when a fixture and the database each carry
+  a clock, a fake date far from wall time is not a neutral choice.

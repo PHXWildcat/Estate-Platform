@@ -197,7 +197,14 @@ describe('HttpNotificationsClient transport failures', () => {
       });
     const client = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      credentials: { send: 's', recipients: 's', verification: 's', status: 's', security: 's' },
+      credentials: {
+        send: 's',
+        recipients: 's',
+        verification: 's',
+        status: 's',
+        security: 's',
+        recovery: 's',
+      },
       fetchImpl,
     });
 
@@ -210,6 +217,9 @@ describe('HttpNotificationsClient transport failures', () => {
     expect(
       await client.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
     ).toEqual({ accepted: false });
+    expect(await client.sendPasswordReset({ userId: USER, code: 'PR1-ABCD' })).toEqual({
+      accepted: false,
+    });
     expect(await client.recipientStatus(USER)).toBeNull();
   });
 });
@@ -271,6 +281,7 @@ describe('HttpNotificationsClient credential partitioning', () => {
     verification: 'verify-cred',
     status: 'status-cred',
     security: 'security-cred',
+    recovery: 'recovery-cred',
   };
 
   it('routes each capability to its own path with its own secret', async () => {
@@ -294,6 +305,7 @@ describe('HttpNotificationsClient credential partitioning', () => {
     await client.markRecipientVerified({ userId: USER });
     await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' });
     await client.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' });
+    await client.sendPasswordReset({ userId: USER, code: 'PR1-ABCD' });
     await client.recipientStatus(USER);
 
     expect(
@@ -313,6 +325,10 @@ describe('HttpNotificationsClient credential partitioning', () => {
       // neither an estate send (vault, settlement and profile hold that) nor a
       // verification code (a future resend holder must not inherit this).
       ['POST', '/security', 'security-cred'],
+      // M17 PR3. Its OWN path and its OWN secret, and this is the row that
+      // matters most: what this route mails can be redeemed with no session, so
+      // it must not share a credential with the verification code beside it.
+      ['POST', '/recovery', 'recovery-cred'],
       ['GET', `/recipients/${USER}/status`, 'status-cred'],
     ]);
   });
@@ -341,6 +357,9 @@ describe('HttpNotificationsClient credential partitioning', () => {
     expect(
       await sendOnly.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
     ).toEqual({ accepted: false });
+    expect(await sendOnly.sendPasswordReset({ userId: USER, code: 'PR1-ABCD' })).toEqual({
+      accepted: false,
+    });
     expect(await sendOnly.recipientStatus(USER)).toBeNull();
     expect(calls).toHaveLength(0);
   });
