@@ -5512,3 +5512,96 @@ deviating from them, stop and propose the change with rationale — do not silen
   property lives. THE GENERAL LESSON: when a dependency and our own code check
   the same invariant, one of them is dead — and which one is not visible in
   either file. Only running it says.
+- 2026-08-13 — M18 IS THE TB4 DECRYPT-RATE BASELINE (approved) — the detection
+  half of the M5 split, on the M8 take-over precedent: take the deliverable,
+  shrink the cloud half, revise the sentences. Chosen because discovery
+  FALSIFIED docs/04's claim that the baseline is structurally blocked behind
+  the AWS spend: the signal is complete locally — every Zone B service emits
+  `crypto.field.decrypted` FAIL-CLOSED (plaintext is withheld if the audit
+  sink rejects, packages/crypto dek.ts), so the stream is a complete record of
+  released plaintext — and only the ENFORCEMENT half (suspending a KMS grant)
+  needs real IAM. Three PRs: PR1 attribution + the debts it makes acute, PR2
+  the detector, PR3 the security review. Five-lens discovery (audit pipeline,
+  doc commitments, the crypto signal, candidate homes, measured rates from the
+  live stack) ran before scoping; four load-bearing claims re-verified by hand.
+- 2026-08-13 — M18 settled design, six decisions. (1) GRAIN is per
+  (service × actor class × actorId), with the SERVICE derived from the decrypt
+  field name's first dotted token — the audit envelope carries no producing-
+  service field, the prefixes are disjoint per service today but UNFENCED, so
+  PR1 closes them into a registry in @estate/contracts (the AUDIT_ACTIONS
+  shape) and an UNREGISTERED prefix becomes its own reportable class, never
+  silently absorbed. (2) THE SIGNAL IS THE AUDIT STREAM, NEVER KMS LOGS: the
+  5-minute DEK cache means N decrypts under a hot key are N audit events and
+  ZERO KMS operations, so KMS-side detection structurally cannot see read
+  volume — the doc's KMS-centric framing gets revised, not just deferred.
+  (3) THE MECHANISM IS THE M16/M17 RATE-BOUNDS SHAPE: counts derived from the
+  append-only ledger by windowed query, no counter state an attacker can
+  reset, thresholds as reviewed CONSTANTS per (prefix class × actor class) —
+  deliberately NOT a learned baseline, because an attacker can train a learned
+  one and cannot train a reviewed commit; the anomaly action
+  (`crypto.decrypt_rate.exceeded`) is never in its own counted set. (4) THE
+  DETECTOR LIVES IN THE AUDIT SERVICE on the settlement-driver pattern
+  (powerless, unref'd interval, errors swallowed-and-logged so ingest — the
+  paging signal — cannot be killed by its advisory neighbor), on its OWN pg
+  connection, gaining the service's first Kafka producer so the anomaly event
+  flows through the sanctioned AuditEmitter path into the verified chain;
+  zero-credential fence unchanged, no HTTP, and consumer-first deploy ordering
+  self-satisfied because emitter and consumer are one image. (5) THE ALERT
+  SINK IS THE CHAIN + A LOG, NO OWNER NOTIFICATION: the reader is a security
+  operator who does not exist until TB7, and making audit a notifications SEND
+  holder would falsify its fenced zero-credential posture. (6) THRESHOLDS COME
+  FROM MEASUREMENT FIRST: the live dataset holds ZERO contact/profile/document
+  decrypts while the repo's own record says one contact-detail page is ~100
+  events, so PR1 drives the real surfaces and records ceilings BEFORE any
+  number is pinned. Zone A out of scope by construction (no server decrypt
+  path; vault burst detection is `vault.open.failed`, a different signal);
+  settlement and vault are legitimately silent, and their silence is not an
+  outage. PR1 also fixes two debts found in discovery: documents'
+  getEvidenceContent audits an OPERATOR evidence read as actorType 'user' (the
+  wrapper default — pass 'operator', which exists in the enum), and
+  settlement's "decrypted only on explicit read" comment describes a read
+  route that does not exist (the claim-without-mechanism rule: correct the
+  prose, do not add the route).
+- 2026-08-13 — M18 PR1 SHIPPED: `DECRYPT_FIELD_PREFIXES` (fourteen prefixes,
+  eight services; `distributions` registered despite settlement being
+  encrypt-only, so a decrypt ever appearing under it attributes rather than
+  falling to unknown), the documents operator-attribution fix (pinned with an
+  owner-read control proving ordinary reads still audit as 'user'), audit
+  migration 002 (partial (occurred_at, actor_id) WHERE decrypt — occurred_at
+  LEADS because the sweep is a time-range over all principals; the suggested
+  actor-first order cannot serve it), and the MEASURED CEILINGS (peak per
+  principal per minute: contact 160, profile 50, asset 30, doc 10,
+  notification_recipient 16 under the nil-UUID service sentinel, mfa_methods 2,
+  assistant_message 2, everything else 0; ordinary journey users peak at 4).
+  THE FENCE'S CLOSURE RULE WAS DELETED ON ITS FIRST RUN, and that is the
+  entry's load-bearing lesson: "no unregistered dotted literal in crypto files"
+  looked like the assertTokenizerCoversTools shape and found ~170 legitimate
+  literals from OTHER vocabularies sharing those files (identity's ledger kinds
+  alone are 122) — an exclusion list that size is the permanently-red gate
+  people learn to ignore, the M5 lesson from the other direction. What
+  remains is the pair the registry actually owes the detector — a registered
+  token in the WRONG service's source is red, a registered prefix ABSENT from
+  its own service's source is red — with per-service floors, and the
+  unknown-prefix net moves to where it can be loud without lying: the
+  detector's own reportable class plus PR2's zero-anomaly e2e gate. Division
+  of labor: the fence keeps the REGISTRY true, the detector keeps the UNKNOWN
+  loud. Six fence mutations red on the assertions that name them.
+- 2026-08-13 — THE STACK REBUILD LIED THREE WAYS BEFORE IT RAN, all variations
+  of recorded lessons, recorded because the costume changed. `pnpm stack:up`
+  died on this pnpm's `--` forwarding (already in memory — the doctor read
+  literal `--` as an env-file path). The parallel image build OOM-killed
+  (`ResourceExhausted`) TWICE — `COMPOSE_BAKE=false` did NOT disable bake
+  delegation (the log's "load local bake definitions" is the tell) — and my
+  `&& echo OK || echo FAILED` wrapper reported the background task "completed"
+  over a dead build both times: the piped-exit lesson wearing a new costume
+  (never wrap a gate's exit in an echo). The stack then ran on MIXED-VINTAGE
+  images — migrate-audit and documents from 2026-08-11, audit from that
+  morning — which would have made the measurement substrate silently predate
+  M17 PR2-6 AND the fix under test; caught by `docker image inspect
+  --format '{{.Created}}'` per container, the stale-artifact rule's cheapest
+  instrument. The reliable rebuild shape on this box: ONE `docker compose
+  build <service>` per invocation, sequentially, failures propagated, then
+  verify image Created timestamps before believing anything. migrate-audit's
+  own log (`audit_migrations_applied count=1`) was the second tell — a
+  migrator that applied one migration when the tree holds two has not seen
+  your file.

@@ -96,6 +96,37 @@ describeIfPg('audit chain (integration)', () => {
     expect(Number(grants[0]?.['n'])).toBe(0);
   });
 
+  it('002 is recorded as applied AND its partial index exists on parent and partition (M18)', async () => {
+    // The PAIR matters (the M13 append-to-an-applied-file lesson): "the file
+    // appears in schema_migrations" and "the index actually exists" are
+    // exactly the two facts an edited-in-place migration separates.
+    const applied = await rows(
+      session,
+      `SELECT name FROM schema_migrations WHERE name = '002_decrypt_rate_index.sql'`,
+    );
+    expect(applied).toHaveLength(1);
+    // The parent's partitioned index must have propagated to the DEFAULT
+    // partition — the detector's windowed sweep scans through the parent, and
+    // an index that exists only there indexes nothing. Match on the partial
+    // predicate: child index names are Postgres-generated, so the name is not
+    // a stable key; the WHERE clause is.
+    const defs = await rows(
+      session,
+      `SELECT tablename, indexdef FROM pg_indexes
+       WHERE schemaname = $1
+         AND tablename IN ('audit_events', 'audit_events_default')
+         AND indexdef LIKE '%crypto.field.decrypted%'
+       ORDER BY tablename`,
+      [schema],
+    );
+    expect(defs.map((d) => d['tablename'])).toEqual(['audit_events', 'audit_events_default']);
+    for (const d of defs) {
+      const def = String(d['indexdef']);
+      expect(def).toContain('(occurred_at, actor_id)');
+      expect(def).toContain('crypto.field.decrypted');
+    }
+  });
+
   it('detects tampering with a stored row', async () => {
     // The service role cannot UPDATE (revoked); the table owner used in this
     // test can — which is exactly the insider scenario the hash chain exists

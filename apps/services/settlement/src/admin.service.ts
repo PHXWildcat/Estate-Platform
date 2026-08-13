@@ -53,7 +53,10 @@ export interface DistributionDto {
   approvedBy: string | null;
   approvedAt: string | null;
   /** Whether an encrypted amount is recorded. The amount itself is never
-   * returned by a list endpoint — it is decrypted only on explicit read. */
+   * returned anywhere: settlement has NO amount read route — recording is
+   * write-only (sealed at write under settlement's own KEK), and a future
+   * read surface must add its own audited decrypt route rather than assume
+   * one exists. */
   hasAmount: boolean;
   createdAt: string;
 }
