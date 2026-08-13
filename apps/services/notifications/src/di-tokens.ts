@@ -83,6 +83,22 @@ export const SECURITY_CREDENTIAL = Symbol('SECURITY_CREDENTIAL');
  */
 export const RECOVERY_CREDENTIAL = Symbol('RECOVERY_CREDENTIAL');
 
+/**
+ * The credential for the EMAIL-CHANGE CHALLENGE (M17 PR4). Identity alone,
+ * and the one send surface on this callee whose payload NAMES A DESTINATION.
+ *
+ * Every other send resolves its recipient from the encrypted store by user id;
+ * this ceremony is by definition a challenge to a mailbox the store does not
+ * hold, so the destination can only come from the caller. Not
+ * `VERIFICATION_CREDENTIAL`, whose recorded grant is "can only mail to
+ * whatever is already on file" — folding an address field into it would hand
+ * any future resend-tool holder the power to aim platform mail at arbitrary
+ * addresses. Not `RECIPIENTS_CREDENTIAL` either: that one repoints and never
+ * sends, and a repoint credential that gained a carrier send would be two
+ * capability classes back under one secret, which is the M9 finding restated.
+ */
+export const EMAIL_CHANGE_CREDENTIAL = Symbol('EMAIL_CHANGE_CREDENTIAL');
+
 /** Injectable clock so send records are testable without real time. */
 export type Clock = () => Date;
 

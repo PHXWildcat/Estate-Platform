@@ -103,6 +103,7 @@ const config: IdentityConfig = {
   notificationsVerifyToken: '',
   notificationsStatusToken: '',
   notificationsSecurityToken: '',
+  notificationsEmailChangeToken: 'echange-secret',
   notificationsRecoveryToken: '',
 };
 

@@ -26,6 +26,7 @@ import {
   PG_POOL_CONFIG,
   RECIPIENTS_CREDENTIAL,
   RECIPIENT_STATUS_CREDENTIAL,
+  EMAIL_CHANGE_CREDENTIAL,
   RECOVERY_CREDENTIAL,
   SECURITY_CREDENTIAL,
   VERIFICATION_CREDENTIAL,
@@ -37,6 +38,7 @@ import {
   InternalController,
   RecipientStatusController,
   RecipientsController,
+  EmailChangeController,
   RecoveryController,
   SecurityController,
   VerificationController,
@@ -44,6 +46,7 @@ import {
 import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
 import { RecoveryCredentialGuard } from './recovery-credential.guard';
+import { EmailChangeCredentialGuard } from './email-change-credential.guard';
 import { SecurityCredentialGuard } from './security-credential.guard';
 import { VerificationCredentialGuard } from './verification-credential.guard';
 import { NotificationsService } from './notifications.service';
@@ -96,6 +99,7 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
     RecipientStatusController,
     SecurityController,
     RecoveryController,
+    EmailChangeController,
   ],
   providers: [
     { provide: CONFIG, useFactory: (): NotificationsConfig => loadConfig() },
@@ -214,12 +218,25 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: NotificationsConfig): string => config.recoveryApiToken,
     },
+    {
+      // M17 PR4 #7: the email-change challenge — the ONE send whose payload
+      // names a destination, so its holder set must be exactly the service
+      // that runs the ceremony (identity gates it on the current password and
+      // a fresh factor before any mail fires). Off VERIFY, whose recorded
+      // grant is "can only mail to whatever is already on file", and off
+      // RECIPIENTS, which repoints and never sends. Fails closed on '' like
+      // the others.
+      provide: EMAIL_CHANGE_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: NotificationsConfig): string => config.emailChangeApiToken,
+    },
     ServiceCredentialGuard,
     RecipientsCredentialGuard,
     VerificationCredentialGuard,
     RecipientStatusCredentialGuard,
     SecurityCredentialGuard,
     RecoveryCredentialGuard,
+    EmailChangeCredentialGuard,
     RecipientsRepo,
     SendsRepo,
     NotificationsService,

@@ -64,6 +64,14 @@ export const SYSTEM_NOTIFICATION_KINDS = [
   // reason above — its template needs a CODE, so a caller who could name it on
   // the estate send wire would render "enter this code: undefined".
   'identity.password_reset',
+  // M17 PR4: the email-change challenge code, mailed to a PROSPECTIVE address.
+  // A system kind for both reasons at once: its template needs a code, and its
+  // wire is the only one that names a destination — the last thing an estate
+  // send holder may ever choose.
+  'identity.email_change',
+  // M17 PR4: "your sign-in address was changed", sent to the address being
+  // LEFT — the only recipient who can dispute a takeover. Carries nothing.
+  'identity.email_changed',
 ] as const;
 export type SystemNotificationKind = (typeof SYSTEM_NOTIFICATION_KINDS)[number];
 
@@ -78,7 +86,18 @@ export type SystemNotificationKind = (typeof SYSTEM_NOTIFICATION_KINDS)[number];
  * the M14 reasoning that split VERIFY from RECIPIENTS, applied before the
  * second holder exists rather than after.
  */
-export const ACCOUNT_SECURITY_KINDS = ['identity.password_changed'] as const;
+export const ACCOUNT_SECURITY_KINDS = [
+  'identity.password_changed',
+  // M17 PR4: the change-of-address notice. It rides THIS wire and not the new
+  // email-change one because it carries nothing — no code, no address, no
+  // timestamp — and because WHO IT REACHES is an ordering property, not a wire
+  // property: identity sends it BEFORE the recipient store is repointed, so the
+  // store still resolves the address being LEFT, which is the only mailbox
+  // whose reader can dispute a takeover. A route that could name the old
+  // address explicitly would be a route that names destinations, and only the
+  // challenge wire is allowed to do that.
+  'identity.email_changed',
+] as const;
 export type AccountSecurityKind = (typeof ACCOUNT_SECURITY_KINDS)[number];
 
 /**
@@ -103,6 +122,24 @@ export type RecoveryKind = (typeof RECOVERY_KINDS)[number];
  * reverse.
  */
 export const RESET_CODE_PATTERN = /^PR1(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){8}$/;
+
+/**
+ * The EMAIL-CHANGE kind (M17 PR4) — its own one-member list on the same
+ * reasoning as `RECOVERY_KINDS`: each send route on the notifications service
+ * builds its schema from its own closed list, so no holder of one credential
+ * can fire another's vocabulary. This one's wire is the only one that NAMES A
+ * DESTINATION, which is exactly why it must not share a list with anything.
+ */
+export const EMAIL_CHANGE_KINDS = ['identity.email_change'] as const;
+export type EmailChangeKind = (typeof EMAIL_CHANGE_KINDS)[number];
+
+/**
+ * The shape an email-change code may take on the wire (M17 PR4), beside its
+ * two siblings and for their reason: one declaration both ends import, so the
+ * mint and the route cannot drift. Anchored on its own prefix, so this route
+ * cannot mail a verification or reset code and neither of those can mail this.
+ */
+export const EMAIL_CHANGE_CODE_PATTERN = /^EC1(-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{4}){8}$/;
 
 /**
  * One user id, one opaque platform-minted single-use reset code, and the kind
@@ -192,6 +229,45 @@ export interface AccountSecurityInput {
 }
 
 /**
+ * The email-change challenge send (M17 PR4): mail one platform-minted code to
+ * a PROSPECTIVE address — one the platform does not yet hold for this user.
+ *
+ * `email` IS THE DESTINATION AND NOTHING ELSE. It is the one field on any
+ * notifications wire that names where a message goes: every other send
+ * resolves its destination from the encrypted recipient store by user id (the
+ * M9 design), and this ceremony is by definition a challenge to a mailbox the
+ * store does not hold, so the destination cannot come from anywhere but the
+ * caller. What keeps that from widening the content doctrine: the address is
+ * the SMTP envelope, never the body — the body carries the code and the
+ * platform's fixed words, exactly like its two siblings — and the
+ * notifications service uses it for this one delivery and STORES NOTHING (no
+ * recipient row is created, read or touched; the store keeps pointing at the
+ * proven old address until identity replaces it after the proof).
+ */
+export interface EmailChangeInput {
+  userId: string;
+  kind: EmailChangeKind;
+  code: string;
+  email: string;
+}
+
+/**
+ * Replace a user's delivery address with one the ceremony JUST PROVED (M17
+ * PR4). Rides the RECIPIENTS credential: repointing an address and vouching
+ * for one are the same capability class (M14 decision 5), and this is both at
+ * once — which is the point. The M14 forward commitment said an address-change
+ * route "must clear `verified_at` in the same statement, or the platform will
+ * vouch for an address nobody proved"; replacement discharges it one step
+ * stronger, because the new address arrives already proved and the old proof
+ * leaves in the same UPDATE. There is no moment when the store vouches for an
+ * address nobody proved, and no moment when a proven address reads unverified.
+ */
+export interface ReplaceRecipientInput {
+  userId: string;
+  email: string;
+}
+
+/**
  * The exact shape a verification code may take ON THE WIRE.
  *
  * IT LIVES HERE, in the wire contract both services import, because the M14
@@ -263,8 +339,10 @@ export type SendOutcome =
 export interface NotificationsPort {
   send(input: NotificationSendInput): Promise<SendOutcome>;
   /** Registers/refreshes the user's delivery address. Identity calls this at
-   * registration and login — the two moments the user themselves supplies the
-   * plaintext email — so no service ever needs a ciphertext read path. */
+   * registration and login — two of the three moments the user themselves
+   * supplies the plaintext email (the third, the M17 PR4 change ceremony, goes
+   * through `replaceRecipient` because it also carries a proof) — so no
+   * service ever needs a ciphertext read path. */
   upsertRecipient(input: { userId: string; email: string }): Promise<{ ok: boolean }>;
   /** Mail one address-verification code. Identity alone; its own credential. */
   sendAddressVerification(input: AddressVerificationInput): Promise<SendOutcome>;
@@ -285,6 +363,19 @@ export interface NotificationsPort {
    * redeeming what it sends needs no session.
    */
   sendPasswordReset(input: PasswordResetInput): Promise<SendOutcome>;
+  /**
+   * Mail one email-change challenge code to a PROSPECTIVE address (M17 PR4).
+   * Identity alone, on its own credential: this is the ONE send whose payload
+   * names a destination, so its holder set must be exactly the service that
+   * runs the ceremony and nothing that merely sends.
+   */
+  sendEmailChange(input: EmailChangeInput): Promise<SendOutcome>;
+  /**
+   * Replace the delivery address with one the ceremony just proved (M17 PR4).
+   * Identity alone, on the RECIPIENTS credential — see `ReplaceRecipientInput`
+   * for why replacement, not clear-then-upsert.
+   */
+  replaceRecipient(input: ReplaceRecipientInput): Promise<{ ok: boolean }>;
   /** Record that the user proved ownership of the stored address. Identity
    * alone, on the SAME credential as `upsertRecipient` — vouching for an
    * address and setting one are the same capability class (M14 decision 5). */
@@ -322,8 +413,9 @@ const StatusResponseSchema = z.object({ verified: z.boolean() });
 /**
  * The credentials a caller holds, ONE PER EDGE.
  *
- * Four now, and each field is a separate capability the credential graph
- * grants separately — no service holds all four, and every field is optional
+ * Seven now, and each field is a separate capability the credential graph
+ * grants separately — no service holds more than a few, and every field is
+ * optional
  * because an absent credential is the normal state for a service that does not
  * hold that edge. A method whose credential is missing short-circuits to its
  * failure outcome WITHOUT a round trip, so an over-broad client is a
@@ -347,6 +439,9 @@ export interface NotificationsCredentials {
   security?: string;
   /** NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN — mail one password-reset code. */
   recovery?: string;
+  /** NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN — mail one change challenge to
+   * a prospective address. The one send credential that names a destination. */
+  emailChange?: string;
 }
 
 export interface HttpNotificationsClientOptions {
@@ -496,6 +591,27 @@ export class HttpNotificationsClient implements NotificationsPort {
         { userId: input.userId, kind: input.kind, code: input.code },
       ),
     );
+  }
+
+  async sendEmailChange(input: EmailChangeInput): Promise<SendOutcome> {
+    return HttpNotificationsClient.outcomeOf(
+      await this.requestJson(
+        this.credentials.emailChange,
+        'POST',
+        '/internal/v1/notifications/email-change',
+        { userId: input.userId, kind: input.kind, code: input.code, email: input.email },
+      ),
+    );
+  }
+
+  async replaceRecipient(input: ReplaceRecipientInput): Promise<{ ok: boolean }> {
+    const body = await this.requestJson(
+      this.credentials.recipients,
+      'PUT',
+      `/internal/v1/notifications/recipients/${encodeURIComponent(input.userId)}/replace`,
+      { email: input.email },
+    );
+    return { ok: UpsertResponseSchema.safeParse(body).success };
   }
 
   async recipientStatus(userId: string): Promise<RecipientStatus | null> {

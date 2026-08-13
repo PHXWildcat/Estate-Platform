@@ -5,6 +5,7 @@ import {
   render,
   renderAccountSecurity,
   renderAddressVerification,
+  renderEmailChange,
   renderPasswordReset,
   type RenderedNotification,
 } from './templates';
@@ -15,6 +16,7 @@ import { CLOCK, EMAIL_SENDER, FIELD_CRYPTO, SYSTEM_ACTOR_ID, type Clock } from '
 import type { EmailSender } from './email';
 import type {
   AccountSecurityInput,
+  EmailChangeSendInput,
   RecoveryInput,
   SendInput,
   RecipientInput,
@@ -127,6 +129,60 @@ export class NotificationsService {
   }
 
   /**
+   * The email-change challenge (M17 PR4): the ONE send that does not go
+   * through `deliver`, because its destination is the payload, not the store.
+   *
+   * IT TOUCHES NO RECIPIENT STATE — no row is read, created or updated (a
+   * fence pins that), so this route cannot repoint where any alert goes; the
+   * store keeps resolving the proven old address until identity replaces it
+   * after the proof. The outcome is `sent_unverified` BY CONSTRUCTION: the
+   * whole point of the mail is that nobody has proved this address yet.
+   * `recipientVerified` is false for the same reason — and that is a statement
+   * about the DESTINATION of this mail, deliberately not a read of the stored
+   * recipient, which describes a different address.
+   */
+  async sendEmailChange(
+    input: EmailChangeSendInput,
+  ): Promise<{ delivered: boolean; channel: string; recipientVerified: boolean }> {
+    let outcome: SendOutcomeToken;
+    let providerMessageId: string | null = null;
+    try {
+      const rendered = renderEmailChange(input.code);
+      const sent = await this.email.send({
+        to: input.email,
+        subject: rendered.subject,
+        body: rendered.body,
+      });
+      outcome = 'sent_unverified';
+      providerMessageId = sent.providerMessageId;
+    } catch {
+      // Carrier failure: recorded, never echoed (the error could carry the
+      // address).
+      outcome = 'carrier_failure';
+    }
+    const sendId = await this.sends.record({
+      userId: input.userId,
+      kind: input.kind,
+      requestedChannel: 'email',
+      channel: 'email',
+      outcome,
+      providerMessageId,
+    });
+    await this.events.notificationSent(input.userId, sendId, {
+      kind: input.kind,
+      requestedChannel: 'email',
+      channel: 'email',
+      outcome,
+      transport: this.email.transport,
+    });
+    return {
+      delivered: outcome === 'sent_unverified',
+      channel: 'email',
+      recipientVerified: false,
+    };
+  }
+
+  /**
    * The one delivery path: resolve recipient → render the closed template →
    * hand to the carrier → record the truth. Every branch RECORDS.
    *
@@ -219,6 +275,31 @@ export class NotificationsService {
       this.recipients.upsert(tx, { userId: input.userId, emailCt: ciphertext, dekId }),
     );
     await this.events.recipientUpdated(input.userId);
+    return { ok: true };
+  }
+
+  /**
+   * Replace the delivery address with one the ceremony just proved (M17 PR4).
+   * See `RecipientsRepo.replace` for why replacement rather than
+   * clear-then-upsert — the forward commitment is discharged in one statement.
+   */
+  async replaceRecipient(input: RecipientInput): Promise<{ ok: true }> {
+    const { ciphertext, dekId } = await this.crypto.encryptField(
+      input.userId,
+      EMAIL_FIELD,
+      input.email,
+    );
+    const provenAt = this.clock();
+    await this.db.withTransaction(SYSTEM_ACTOR_ID, (tx) =>
+      this.recipients.replace(tx, {
+        userId: input.userId,
+        emailCt: ciphertext,
+        dekId,
+        provenAt,
+      }),
+    );
+    await this.events.recipientUpdated(input.userId);
+    await this.events.recipientVerified(input.userId);
     return { ok: true };
   }
 

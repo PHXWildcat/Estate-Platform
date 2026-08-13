@@ -10,6 +10,7 @@ const USER = 'b6c9a1de-0000-4000-8000-000000000001';
  * `apps/services/notifications/test/wire-parity.spec.ts`.
  */
 const RESET_CODE = 'PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
+const CHANGE_CODE = 'EC1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
 
 interface RecordedCall {
   url: string;
@@ -297,6 +298,7 @@ describe('HttpNotificationsClient credential partitioning', () => {
     status: 'status-cred',
     security: 'security-cred',
     recovery: 'recovery-cred',
+    emailChange: 'echange-cred',
   };
 
   it('routes each capability to its own path with its own secret', async () => {
@@ -325,6 +327,13 @@ describe('HttpNotificationsClient credential partitioning', () => {
       kind: 'identity.password_reset',
       code: RESET_CODE,
     });
+    await client.sendEmailChange({
+      userId: USER,
+      kind: 'identity.email_change',
+      code: CHANGE_CODE,
+      email: 'new@example.com',
+    });
+    await client.replaceRecipient({ userId: USER, email: 'new@example.com' });
     await client.recipientStatus(USER);
 
     expect(
@@ -348,6 +357,14 @@ describe('HttpNotificationsClient credential partitioning', () => {
       // matters most: what this route mails can be redeemed with no session, so
       // it must not share a credential with the verification code beside it.
       ['POST', '/recovery', 'recovery-cred'],
+      // M17 PR4. Its OWN path and its OWN secret: the one send whose payload
+      // names a destination must not share a credential with anything that
+      // merely sends — a future holder of any sibling must not inherit the
+      // power to aim platform mail at arbitrary addresses.
+      ['POST', '/email-change', 'echange-cred'],
+      // Repoint-and-vouch rides RECIPIENTS, exactly as `verified` does: both
+      // decide what the store believes about reaching a user.
+      ['PUT', `/recipients/${USER}/replace`, 'rcpt-cred'],
       ['GET', `/recipients/${USER}/status`, 'status-cred'],
     ]);
   });
@@ -376,6 +393,20 @@ describe('HttpNotificationsClient credential partitioning', () => {
     expect(
       await sendOnly.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
     ).toEqual({ accepted: false });
+    // M17 PR4. Nor mail a challenge to an arbitrary address, nor repoint the
+    // store: the destination-naming send and the repoint-and-vouch are the two
+    // capabilities a send-only holder must be furthest from.
+    expect(
+      await sendOnly.sendEmailChange({
+        userId: USER,
+        kind: 'identity.email_change',
+        code: CHANGE_CODE,
+        email: 'anywhere@example.com',
+      }),
+    ).toEqual({ accepted: false });
+    expect(
+      await sendOnly.replaceRecipient({ userId: USER, email: 'anywhere@example.com' }),
+    ).toEqual({ ok: false });
     expect(
       await sendOnly.sendPasswordReset({
         userId: USER,
@@ -387,6 +418,21 @@ describe('HttpNotificationsClient credential partitioning', () => {
     });
     expect(await sendOnly.recipientStatus(USER)).toBeNull();
     expect(calls).toHaveLength(0);
+  });
+
+  it('the DEFAULT transport is real fetch, and a dead peer degrades to the failure outcome', async () => {
+    // No fetchImpl injected — this is the one test that executes the default
+    // arrow, against a port nothing listens on. The property is the client's
+    // whole error contract in one line: ANY transport failure is an outcome,
+    // never a throw, because a notification failure must not roll back the
+    // state change it describes.
+    const real = new HttpNotificationsClient({
+      notificationsUrl: 'http://127.0.0.1:1',
+      credentials: { send: 'send-cred' },
+    });
+    await expect(real.send({ userId: USER, kind: 'vault.reset' })).resolves.toEqual({
+      accepted: false,
+    });
   });
 
   it('answers null — not false — when the status query is unanswerable', async () => {

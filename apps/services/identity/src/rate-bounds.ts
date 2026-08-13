@@ -269,6 +269,19 @@ export const RESET_ADDRESS_BOUND: AddressBoundOptions = {
 };
 
 /**
+ * Per-DESTINATION bound on the email-change challenge (M17 PR4): the mint is
+ * gated on the caller's password and a fresh factor, but every request may
+ * name a DIFFERENT target address, so the per-account floor cannot bound how
+ * much mail lands at any one mailbox. Same numbers as the reset bound and for
+ * its reason — the cost is a real email to somebody who may not have asked.
+ */
+export const CHANGE_ADDRESS_BOUND: AddressBoundOptions = {
+  max: 10,
+  windowMs: 15 * 60 * 1000,
+  capacity: 50_000,
+};
+
+/**
  * The ledger kind register's refusal writes. It has no `LedgerRateBound`
  * because it counts nothing on the ledger — the row exists so that a control
  * firing leaves a trace, and the kind is declared here rather than inline so

@@ -87,6 +87,8 @@ function makeFakes(): {
     sendAddressVerification: jest.Mock;
     sendAccountSecurity: jest.Mock;
     sendPasswordReset: jest.Mock;
+    sendEmailChange: jest.Mock;
+    replaceRecipient: jest.Mock;
     markRecipientVerified: jest.Mock;
     recipientStatus: jest.Mock;
   };
@@ -151,6 +153,8 @@ function makeFakes(): {
       sendAddressVerification: jest.fn().mockResolvedValue({ accepted: false }),
       sendAccountSecurity: jest.fn().mockResolvedValue({ accepted: true }),
       sendPasswordReset: jest.fn().mockResolvedValue({ accepted: true }),
+      sendEmailChange: jest.fn().mockResolvedValue({ accepted: true }),
+      replaceRecipient: jest.fn().mockResolvedValue({ ok: true }),
       markRecipientVerified: jest.fn().mockResolvedValue({ ok: true }),
       recipientStatus: jest.fn().mockResolvedValue({ verified: true }),
     },
@@ -190,6 +194,7 @@ const config: IdentityConfig = {
   notificationsVerifyToken: '',
   notificationsStatusToken: '',
   notificationsSecurityToken: '',
+  notificationsEmailChangeToken: 'echange-secret',
   notificationsRecoveryToken: '',
 };
 

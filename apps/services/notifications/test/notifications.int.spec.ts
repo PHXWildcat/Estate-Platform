@@ -34,6 +34,16 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
     admin = new Client({ connectionString: pgUrl });
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${schema}`);
+    // THE M17 PR2 LESSON, applied here after CI caught me re-committing it:
+    // an integration test that scopes itself with a schema prefix is only
+    // scoped for the statements IT writes. A trigger body resolves unqualified
+    // names against the CONNECTION's search_path — so an admin UPDATE on
+    // notification_recipients fired the versions trigger, which silently wrote
+    // into the live public.notification_recipients_versions on any machine
+    // running the stack (10 junk rows measured) and failed honestly on CI,
+    // whose database has no such table. Pinning the connection is what makes
+    // the scratch schema actually isolating.
+    await admin.query(`SET search_path TO ${schema}`);
 
     const migrClient = new Client({
       connectionString: pgUrl,
@@ -187,6 +197,19 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       });
     }
 
+    // M17 PR4: the challenge to a PROSPECTIVE address — the one send whose
+    // destination is the payload, driven so its kind lands in the log through
+    // the real store-less path (and so migration 007's CHECK is exercised by
+    // the row it exists for).
+    expect(
+      await service.sendEmailChange({
+        userId: subject,
+        kind: 'identity.email_change',
+        code: 'EC1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+        email: 'candidate@example.com',
+      }),
+    ).toMatchObject({ delivered: true, channel: 'email', recipientVerified: false });
+
     const rows = await admin.query<{ kind: string }>(
       `SELECT kind FROM ${schema}.notification_sends WHERE user_id = $1 ORDER BY created_at`,
       [subject],
@@ -235,6 +258,82 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
       // email_bidx first), which is what makes preserving the bit sound.
       await service.upsertRecipient({ userId: SUBJECT, email: 'proof@example.com' });
       expect(await service.recipientStatus(SUBJECT)).toEqual({ verified: true });
+    });
+
+    it('REPLACE repoints and vouches in ONE statement — the M17 PR4 discharge', async () => {
+      // The forward commitment said an address-change route "must clear
+      // verified_at in the same statement"; replacement is that statement,
+      // one step stronger — the new address arrives already proved, so there
+      // is no moment when the store vouches for an address nobody proved and
+      // no moment when a proven address reads unverified.
+      const mover = randomUUID();
+      await service.upsertRecipient({ userId: mover, email: 'old@example.com' });
+      await service.markRecipientVerified(mover);
+      // Plant an ARTIFICIALLY OLD proof, so freshness is deterministic rather
+      // than a race against millisecond clock resolution: a replace that
+      // regressed into upsert-like preservation would surface exactly this
+      // ancient timestamp, and correct code cannot.
+      const ancient = new Date('2020-01-01T00:00:00Z');
+      await admin.query(
+        `UPDATE ${schema}.notification_recipients SET verified_at = $2 WHERE user_id = $1`,
+        [mover, ancient],
+      );
+
+      await service.replaceRecipient({ userId: mover, email: 'new@example.com' });
+      const after = await admin.query<{ verified_at: Date; email_ct: Buffer }>(
+        `SELECT verified_at, email_ct FROM ${schema}.notification_recipients WHERE user_id = $1`,
+        [mover],
+      );
+      // Still verified — and the proof is FRESH, not the old address's
+      // timestamp surviving onto an address it never described.
+      expect(await service.recipientStatus(mover)).toEqual({ verified: true });
+      expect(after.rows[0]?.verified_at.getTime()).toBeGreaterThan(ancient.getTime());
+      // …and the ciphertext moved (a re-encrypt of the new address).
+      const sent = await service.send({ userId: mover, kind: 'vault.reset', channel: 'email' });
+      expect(sent).toMatchObject({ delivered: true, recipientVerified: true });
+    });
+
+    it('REPLACE works for a user the store has never seen — alerts must not flow to nothing', async () => {
+      const orphan = randomUUID();
+      await service.replaceRecipient({ userId: orphan, email: 'first@example.com' });
+      expect(await service.recipientStatus(orphan)).toEqual({ verified: true });
+    });
+
+    it('the CHALLENGE SEND touches no recipient state — the store-less path stays store-less', async () => {
+      // The one send whose destination is the payload must not be able to
+      // repoint where alerts go: the recipient row (and its proof) survive a
+      // challenge aimed at a completely different address.
+      const holder = randomUUID();
+      await service.upsertRecipient({ userId: holder, email: 'stays@example.com' });
+      await service.markRecipientVerified(holder);
+      const before = await admin.query<{ email_ct: Buffer; verified_at: Date }>(
+        `SELECT email_ct, verified_at FROM ${schema}.notification_recipients WHERE user_id = $1`,
+        [holder],
+      );
+
+      await service.sendEmailChange({
+        userId: holder,
+        kind: 'identity.email_change',
+        code: 'EC1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E',
+        email: 'somewhere-else@example.com',
+      });
+
+      const after = await admin.query<{ email_ct: Buffer; verified_at: Date }>(
+        `SELECT email_ct, verified_at FROM ${schema}.notification_recipients WHERE user_id = $1`,
+        [holder],
+      );
+      expect(after.rows[0]?.email_ct.equals(before.rows[0]?.email_ct as Buffer)).toBe(true);
+      expect(after.rows[0]?.verified_at.getTime()).toBe(
+        before.rows[0]?.verified_at.getTime() as number,
+      );
+      // The send itself is on the log as what it is: a delivery to an address
+      // nobody has proved.
+      const log = await admin.query<{ outcome: string }>(
+        `SELECT outcome FROM ${schema}.notification_sends
+          WHERE user_id = $1 AND kind = 'identity.email_change'`,
+        [holder],
+      );
+      expect(log.rows[0]?.outcome).toBe('sent_unverified');
     });
 
     it("records plain `sent` once proved — the send log's own evidence (M14)", async () => {

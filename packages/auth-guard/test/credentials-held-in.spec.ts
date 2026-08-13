@@ -24,6 +24,7 @@ const NOTIFICATIONS_VERIFY = 'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN';
 const NOTIFICATIONS_STATUS = 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN';
 const NOTIFICATIONS_SECURITY = 'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN';
 const NOTIFICATIONS_RECOVERY = 'NOTIFICATIONS_RECOVERY_INTERNAL_TOKEN';
+const NOTIFICATIONS_EMAIL_CHANGE = 'NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN';
 
 describe('credentialsHeldIn', () => {
   it('reports nothing for a config that holds no credential', () => {
@@ -122,7 +123,7 @@ describe('graph lookup helpers', () => {
     expect(inboundCredentialsFor('audit')).toEqual([]);
   });
 
-  it('gives notifications SIX inbound credentials, one per capability (M9 review, M14, M17)', () => {
+  it('gives notifications SEVEN inbound credentials, one per capability (M9 review, M14, M17)', () => {
     // The send surface and the recipient-upsert surface have different
     // legitimate holders, so they must not share a secret: holding "may
     // notify this user" must not also mean "may decide where their alerts go".
@@ -133,6 +134,9 @@ describe('graph lookup helpers', () => {
       NOTIFICATIONS_VERIFY,
       NOTIFICATIONS_SECURITY,
       NOTIFICATIONS_RECOVERY,
+      // M17 PR4: the one send whose payload names a destination. Identity
+      // alone, and the edge order here mirrors the graph's.
+      NOTIFICATIONS_EMAIL_CHANGE,
       NOTIFICATIONS_STATUS,
     ]);
     // M13 added profile: it tells an owner when somebody CLAIMED a link to one
@@ -193,18 +197,19 @@ describe('graph lookup helpers', () => {
       'DOCUMENTS_INTERNAL_TOKEN',
       NOTIFICATIONS,
     ]);
-    // Identity holds FIVE notifications credentials and NOT the send one: it
+    // Identity holds SIX notifications credentials and NOT the send one: it
     // feeds the store, mails its own verification code, announces a change to
-    // the account's own credentials (M17), and reads the verified bit — but can
-    // never fire an ESTATE notification. That last clause is the one worth
-    // asserting by name below: gaining the ability to say "your password
-    // changed" must not come with the ability to say "a death report was filed
-    // on your account".
+    // the account's own credentials (M17), mails the reset and email-change
+    // codes, and reads the verified bit — but can never fire an ESTATE
+    // notification. That last clause is the one worth asserting by name below:
+    // gaining the ability to say "your password changed" must not come with
+    // the ability to say "a death report was filed on your account".
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([
       NOTIFICATIONS_RECIPIENTS,
       NOTIFICATIONS_VERIFY,
       NOTIFICATIONS_SECURITY,
       NOTIFICATIONS_RECOVERY,
+      NOTIFICATIONS_EMAIL_CHANGE,
       NOTIFICATIONS_STATUS,
     ]);
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).not.toContain(NOTIFICATIONS);

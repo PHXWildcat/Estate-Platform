@@ -34,8 +34,10 @@ import { HttpNotificationsClient, type FetchLike } from '@estate/notifications-c
 import type { z } from 'zod';
 import {
   AccountSecuritySchema,
+  EmailChangeSchema,
   RecipientSchema,
   RecoverySchema,
+  ReplaceSchema,
   SendSchema,
   VerificationSchema,
 } from '../src/schemas';
@@ -44,6 +46,7 @@ const USER = 'b6c9a1de-0000-4000-8000-000000000001';
 /** A real minted-shape reset code — `RESET_CODE_PATTERN` is anchored and strict. */
 const RESET_CODE = 'PR1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
 const VERIFY_CODE = 'EV1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
+const CHANGE_CODE = 'EC1-K7MN-2M6Y-1RAZ-3HYH-VB3H-18R7-YX5R-FB3E';
 
 interface Recorded {
   url: string;
@@ -65,6 +68,9 @@ interface Recorded {
 const WIRE: ReadonlyArray<{
   method: string;
   path: string;
+  /** The decorator segment when the path carries a parameter (the request URL
+   * holds a real id; the controller declares `:userId`). Defaults to `path`. */
+  route?: string;
   schema: z.ZodTypeAny;
   call: (c: HttpNotificationsClient) => Promise<unknown>;
 }> = [
@@ -103,6 +109,25 @@ const WIRE: ReadonlyArray<{
     call: (c) =>
       c.sendPasswordReset({ userId: USER, kind: 'identity.password_reset', code: RESET_CODE }),
   },
+  {
+    method: 'sendEmailChange',
+    path: '/email-change',
+    schema: EmailChangeSchema,
+    call: (c) =>
+      c.sendEmailChange({
+        userId: USER,
+        kind: 'identity.email_change',
+        code: CHANGE_CODE,
+        email: 'new-address@example.com',
+      }),
+  },
+  {
+    method: 'replaceRecipient',
+    path: `/recipients/${USER}/replace`,
+    route: '/recipients/:userId/replace',
+    schema: ReplaceSchema,
+    call: (c) => c.replaceRecipient({ userId: USER, email: 'new-address@example.com' }),
+  },
 ];
 
 function recordingClient(): { client: HttpNotificationsClient; calls: Recorded[] } {
@@ -131,6 +156,7 @@ function recordingClient(): { client: HttpNotificationsClient; calls: Recorded[]
         status: 't',
         security: 'y',
         recovery: 'c',
+        emailChange: 'e',
       },
       fetchImpl,
     }),
@@ -220,8 +246,8 @@ describe('every body the client emits parses with the schema its route uses', ()
       join(__dirname, '..', 'src', 'internal.controller.ts'),
       'utf8',
     ).replace(/\/\*[\s\S]*?\*\//g, '');
-    for (const { method, path } of WIRE) {
-      const segment = path.replace(/^\//, '');
+    for (const { method, path, route } of WIRE) {
+      const segment = (route ?? path).replace(/^\//, '');
       expect({
         method,
         served: new RegExp(`@(?:Post|Put)\\('${segment}'\\)`).test(controller),

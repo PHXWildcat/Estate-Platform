@@ -37,6 +37,13 @@ describe('package surface', () => {
       // M17 PR3: the mailed reset code. A system kind because its template
       // needs a code, exactly like address verification.
       'identity.password_reset',
+      // M17 PR4: the challenge to a PROSPECTIVE address — a system kind for
+      // both reasons at once (a code in the template, and a destination on the
+      // wire that no estate holder may ever choose).
+      'identity.email_change',
+      // M17 PR4: the change notice to the address being LEFT. Carries nothing;
+      // reaches the old mailbox by ordering, not by naming it.
+      'identity.email_changed',
     ]);
     // Together they are the send LOG's vocabulary — the notifications DDL's
     // kind CHECK is written against this, and the int suite drives every member.
@@ -52,13 +59,22 @@ describe('package surface', () => {
     // than as a literal so the property survives a third security kind, and
     // asserted DISJOINT from the estate list because that is the exclusion the
     // broadly-held send credential depends on.
-    expect(api.ACCOUNT_SECURITY_KINDS).toEqual(['identity.password_changed']);
+    expect(api.ACCOUNT_SECURITY_KINDS).toEqual([
+      'identity.password_changed',
+      'identity.email_changed',
+    ]);
     // M17 PR3. Its own one-member list, DISJOINT from the account-security one:
     // that wire carries no variables at all, which is what makes it safe for a
     // holder who must never choose what a user reads, and this one carries a
-    // code. Four send routes, four closed lists, no holder able to fire
+    // code. Five send routes, five closed lists, no holder able to fire
     // another's vocabulary.
     expect(api.RECOVERY_KINDS).toEqual(['identity.password_reset']);
+    // M17 PR4. The fifth send vocabulary, one member, disjoint from all four
+    // siblings — and the one whose wire names a destination.
+    expect(api.EMAIL_CHANGE_KINDS).toEqual(['identity.email_change']);
+    for (const kind of api.EMAIL_CHANGE_KINDS) {
+      expect(api.NOTIFICATION_KINDS).toContain(kind);
+    }
     for (const kind of api.RECOVERY_KINDS) {
       expect(api.SYSTEM_NOTIFICATION_KINDS).toContain(kind);
       expect(api.ACCOUNT_SECURITY_KINDS as readonly string[]).not.toContain(kind);

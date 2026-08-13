@@ -78,17 +78,27 @@ export class RecipientsRepo {
    * using the account, and no address would ever stay verified. It is safe to
    * preserve the bit because login resolves the user by `email_bidx` BEFORE it
    * calls here, so the address a login carries is by construction the address
-   * already on file: the re-feed cannot present a different one. That is also
-   * what lets the bit sit beside the ciphertext with no digest to compare
-   * against, which is what keeps M9's "NO blind index — lookup is by user id
-   * only" decision intact.
+   * on file AT THAT MOMENT: the re-feed cannot present one the user did not
+   * just sign in with. That is also what lets the bit sit beside the
+   * ciphertext with no digest to compare against, which is what keeps M9's
+   * "NO blind index — lookup is by user id only" decision intact.
    *
-   * THE FORWARD COMMITMENT, because this assumption has an expiry date: THE
-   * DAY AN ADDRESS-CHANGE ROUTE EXISTS, IT INHERITS THE OBLIGATION TO CLEAR
-   * THIS BIT. No such route exists today — identity has sixteen and none of
-   * them changes an email — so this is a commitment rather than a migration.
-   * Whoever adds one must clear `verified_at` in the same statement, or the
-   * platform will vouch for an address nobody proved.
+   * THE FORWARD COMMITMENT THIS COMMENT CARRIED IS DISCHARGED (M17 PR4), one
+   * step stronger than it asked. It said an address-change route "must clear
+   * `verified_at` in the same statement, or the platform will vouch for an
+   * address nobody proved". The route that now exists never puts an unproved
+   * address here at all: the ceremony mails a challenge to the PROSPECTIVE
+   * address and only after redemption does identity call `replace` below —
+   * which swaps the address and stamps the proof in ONE statement. So every
+   * address that can reach this store is either the one the user signed in
+   * with (this upsert) or one the ceremony just proved (`replace`), and the
+   * preserve-the-bit reasoning above SURVIVES the change route: if a login
+   * re-feed ever races a change and lands last, the address it re-writes is
+   * one that was on file and whose proof state the bit already describes.
+   * The residual — a stale re-feed landing after a change repoints the store
+   * to the just-left address until the next login — is recorded in docs/03
+   * §6n, and it self-heals because the next login can only carry the NEW
+   * address (the old bidx no longer resolves).
    *
    * A revived soft-deleted row keeps `deleted_at = NULL` and whatever
    * `verified_at` it had, which is correct: soft-deleting a recipient does not
@@ -122,6 +132,36 @@ export class RecipientsRepo {
                ELSE NULL
              END`,
       [input.userId, input.emailCt, input.dekId],
+    );
+  }
+
+  /**
+   * REPLACE the address with one the ceremony just proved (M17 PR4) — the
+   * discharge of the forward commitment above, in the one statement it asked
+   * for. The old proof leaves with the old address and the new proof arrives
+   * with the new one, so there is no moment when the store vouches for an
+   * address nobody proved and no moment when a proven address reads
+   * unverified. Only identity can reach this (the RECIPIENTS credential), and
+   * identity only calls it after the challenge code was redeemed under the
+   * account's current password and a fresh second factor.
+   *
+   * An INSERT arm exists for the row-less case (a user who somehow has no
+   * recipient row completing a change), because refusing the repoint there
+   * would leave alerts flowing to nothing at all.
+   */
+  async replace(
+    tx: Queryable,
+    input: { userId: string; emailCt: Buffer; dekId: string; provenAt: Date },
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO notification_recipients (user_id, email_ct, dek_id, verified_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id) DO UPDATE
+         SET email_ct = EXCLUDED.email_ct,
+             dek_id = EXCLUDED.dek_id,
+             deleted_at = NULL,
+             verified_at = EXCLUDED.verified_at`,
+      [input.userId, input.emailCt, input.dekId, input.provenAt],
     );
   }
 

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Db } from './db';
+import { Db, type Queryable } from './db';
 
 export interface EmailVerificationRow {
   id: string;
@@ -215,8 +215,12 @@ export class EmailVerificationRepo {
    * whether anything was retired, so the caller can audit a real retirement
    * and stay quiet otherwise.
    */
-  async revokeLive(userId: string, now: Date): Promise<boolean> {
-    const rows = await this.db.query<{ id: string }>(
+  /* `tx` (M17 PR4): the address switch retires outstanding codes in the SAME
+   * commit as the flip — a code mailed to the just-left mailbox must not
+   * outlive the address it was mailed to, and a post-commit retirement would
+   * leave a window where it does. */
+  async revokeLive(userId: string, now: Date, tx?: Queryable): Promise<boolean> {
+    const rows = await (tx ?? this.db).query<{ id: string }>(
       `UPDATE email_verifications
           SET revoked_at = $2
         WHERE user_id = $1

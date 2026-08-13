@@ -27,6 +27,11 @@ function clientDouble(overrides: Partial<NotificationsPort>): NotificationsPort 
     // because vault holds no recovery credential and the real client would
     // short-circuit without a round trip.
     sendPasswordReset: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
+    // M17 PR4. Vault holds neither the email-change nor any recipients
+    // credential; a double that quietly succeeded would make an unreachable
+    // path look healthy (the PR2 lesson about faithful refusal).
+    sendEmailChange: (): Promise<SendOutcome> => Promise.resolve({ accepted: false }),
+    replaceRecipient: (): Promise<{ ok: boolean }> => Promise.resolve({ ok: false }),
     markRecipientVerified: () => Promise.resolve({ ok: false }),
     recipientStatus: () => Promise.resolve(null),
     ...overrides,

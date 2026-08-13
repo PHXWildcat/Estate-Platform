@@ -234,6 +234,18 @@ export const AUDIT_ACTIONS = [
   'auth.password.reset_requested',
   'auth.password.reset_completed',
   'auth.password.reset_failed',
+  // M17 PR4 — the address-change ceremony. `denied` is a refused gate at
+  // request (wrong password; the step-up refusal is the guard's own event),
+  // `failed` a refused redemption with NO reason recorded (the M14 PR1 rule:
+  // a trail that named which refusal fired would be a progress meter for
+  // whoever is guessing at a pending change), `throttled` the destination
+  // bound firing — a control, not an outage.
+  'auth.email.change_requested',
+  'auth.email.change_completed',
+  'auth.email.change_cancelled',
+  'auth.email.change_denied',
+  'auth.email.change_failed',
+  'auth.email.change_throttled',
   // The per-address bound on the REQUEST route refusing. No actor and no
   // subject: the address was never resolved to a user.
   'auth.password.reset_throttled',

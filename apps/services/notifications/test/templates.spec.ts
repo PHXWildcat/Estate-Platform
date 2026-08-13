@@ -10,6 +10,7 @@ import {
   renderAddressVerification,
   renderPasswordReset,
   SUBJECT,
+  renderEmailChange,
 } from '../src/templates';
 
 /**
@@ -21,6 +22,7 @@ import {
  */
 const CODE = 'EV1-K7MN-0000-0000-0000-0000-0000-0000-0000';
 const RESET_CODE = 'PR1-K7MN-0000-0000-0000-0000-0000-0000-0000';
+const CHANGE_CODE = 'EC1-K7MN-0000-0000-0000-0000-0000-0000-0000';
 const ALL_BODIES: ReadonlyArray<{ label: string; body: (deadline: Date | null) => string }> = [
   ...ESTATE_NOTIFICATION_KINDS.map((kind) => ({
     label: kind,
@@ -29,6 +31,13 @@ const ALL_BODIES: ReadonlyArray<{ label: string; body: (deadline: Date | null) =
   {
     label: 'identity.address_verification',
     body: (): string => renderAddressVerification(CODE).body,
+  },
+  // M17 PR4: the challenge to a PROSPECTIVE address — a separate render
+  // function like its two code-bearing siblings, because `render`'s signature
+  // must stay unable to accept a code.
+  {
+    label: 'identity.email_change',
+    body: (): string => renderEmailChange(CHANGE_CODE).body,
   },
   // M17. DERIVED from ACCOUNT_SECURITY_KINDS rather than listed, so a second
   // security kind joins every assertion below automatically — unlike the

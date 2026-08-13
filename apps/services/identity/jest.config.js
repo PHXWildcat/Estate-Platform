@@ -64,5 +64,10 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // layer — the mis-shaped code, and every dead-row branch refusing identically
   // without spending or hashing — because those are choices over repo answers
   // rather than SQL, and they were owed regardless of the number.
-  coverageThreshold: { global: { statements: 69, branches: 67, functions: 41, lines: 68 } },
+  // M17 PR4 RATCHETS BACK UP, 69/67/41/68 → 70/67/43/69: the ceremony's
+  // decision layer, its audit emitters and its refusal branches are all
+  // proven without a database, so the number the PR3 exception traded away
+  // comes back with interest. The remaining no-DB gap is exactly the two
+  // SQL-only repo files, which the int suites execute for real.
+  coverageThreshold: { global: { statements: 70, branches: 67, functions: 43, lines: 69 } },
 });

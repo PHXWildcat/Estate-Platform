@@ -255,6 +255,12 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
       // verified; a holder able ONLY to mark verified would be strictly weaker,
       // and no such holder exists.
       'PUT /internal/v1/notifications/recipients/:userId/verified',
+      // M17 PR4: repoint AND vouch in one statement, for an address the change
+      // ceremony just proved. Both halves are capabilities this edge already
+      // grants; a separate route (not a flag on the upsert) so the
+      // fire-and-forget login re-feed structurally cannot express "and mark it
+      // proved".
+      'PUT /internal/v1/notifications/recipients/:userId/replace',
     ],
     grants:
       "Set the address a user's notifications are delivered to, and declare that the user proved they own it. A holder can silently redirect every future owner alert — including the §5.1 death-case contact sweep and the §5.2 emergency-access waiting-period alerts — to a mailbox they control, defeating the waiting period by removing the owner's only signal, and can vouch for that mailbox so M14's arming gates (escrow configure, link-code mint) stop refusing. It reads nothing: the stored address is never returned by any route, and the change is recorded (prior ciphertext retained in the versions table) though NOT attributed to a caller, so the audit trail proves that an address changed, never who changed it.",
@@ -341,6 +347,32 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     opens: ['POST /internal/v1/notifications/recovery'],
     grants:
       "Mail one password-reset code, of the platform's own wording, to the address already on file for a user. This is the most dangerous of the mail-something credentials and the grants sentence should say so plainly: a holder who ALSO reads the target mailbox can take the account, because redeeming a reset code needs no session and no second factor. A holder who cannot read the mailbox gains an unsolicited reset mail — a phishing pretext and, at volume, sender-reputation damage. It cannot choose the recipient, cannot see the address, cannot make the code valid, cannot fire an estate notification, and cannot reach the verification or account-security wires: each of the four send routes on this callee is built from its own closed kind list.",
+  },
+  {
+    envVar: 'NOTIFICATIONS_EMAIL_CHANGE_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // M17 PR4. The email-change challenge: mail one platform-minted code to a
+    // PROSPECTIVE address — one the platform does not yet hold for this user.
+    //
+    // ITS OWN EDGE because its wire does something no other send may do: NAME A
+    // DESTINATION. Every other send resolves its recipient from the encrypted
+    // store by user id (the M9 design), and the ceremony this serves is by
+    // definition a challenge to a mailbox the store does not hold, so the
+    // destination cannot come from anywhere but the caller. Folding that field
+    // into VERIFY would falsify its recorded grant ("can only mail a code to
+    // whatever address is already on file") and hand any future resend-tool
+    // holder the power to aim platform mail at arbitrary addresses — the exact
+    // inheritance the M14 split exists to forbid. Folding it into RECIPIENTS
+    // would give the repoint credential a carrier send it never had.
+    //
+    // Identity alone: the ceremony is identity's (it gates on the current
+    // password and a fresh factor before any mail fires), and nothing that
+    // merely sends has any business choosing where platform mail goes.
+    holders: ['identity'],
+    guard: { className: 'EmailChangeCredentialGuard', token: 'EMAIL_CHANGE_CREDENTIAL' },
+    opens: ['POST /internal/v1/notifications/email-change'],
+    grants:
+      "Mail one email-change challenge code, of the platform's own wording, to an address NAMED IN THE PAYLOAD. This is the one send credential whose holder chooses the destination, and the grants sentence owns that plainly: a holder can aim exactly this fixed-body, code-carrying template at any mailbox — a phishing pretext and, at volume, sender-reputation damage — but the code it mails only completes a ceremony that already required the account's current password and a fresh second factor, so the mail alone takes over nothing. The notifications service uses the address for this one delivery and stores nothing: no recipient row is created, read or touched, so the credential cannot repoint where any alert goes. It cannot see the stored address, cannot make a code valid, cannot fire an estate notification, and cannot reach the verification, security or recovery wires: each of the five send routes on this callee is built from its own closed kind list.",
   },
   {
     envVar: 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',

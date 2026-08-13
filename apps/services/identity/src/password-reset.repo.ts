@@ -85,8 +85,12 @@ export class PasswordResetRepo {
    * forever after the first ignored email. Here that bug would mean an account
    * whose owner ignored one reset mail could never be recovered at all.
    */
-  async revokeLive(userId: string, now: Date): Promise<boolean> {
-    const rows = await this.db.query<{ id: string }>(
+  /* `tx` (M17 PR4): the address switch retires outstanding codes in the SAME
+   * commit as the flip — a code mailed to the just-left mailbox must not
+   * outlive the address it was mailed to, and a post-commit retirement would
+   * leave a window where it does. */
+  async revokeLive(userId: string, now: Date, tx?: Queryable): Promise<boolean> {
+    const rows = await (tx ?? this.db).query<{ id: string }>(
       `UPDATE password_resets
           SET revoked_at = $2
         WHERE user_id = $1
