@@ -4995,3 +4995,35 @@ deviating from them, stop and propose the change with rationale — do not silen
   CONTENTION, not a regression — those suites run PBKDF2 at 650k iterations and
   the repo-wide parallel run starves them past the jest timeout. Before treating
   a full-repo red as a real failure, re-run the failing package in isolation.
+- 2026-08-12 — M17 PR2 DRIVEN LIVE, audit rebuilt and restarted BEFORE the
+  producers: zero `schema_violation` rejections against eight in PR1's drive,
+  which is the deploy-order lesson applied rather than rediscovered. A wrong
+  current password answered 401 and changed nothing (two sessions still live,
+  zero version rows); the change answered 204, evicted the other device while
+  the caller's own session stayed 200, and killed the old password. The version
+  image came back `password_hash present: false, email_ct present: true, dek_id
+  present: true, actor: set` — the redaction, the deliberate keeps and the new
+  attribution in one row. Ledger: `password.change_failed` then
+  `password.changed`, and no `stepup.granted`. A real SES message reached the
+  owner; the send log recorded `identity.password_changed |
+  outcome=sent_unverified`, which is M14's machinery correctly noting an address
+  this probe account never proved; the audit event carried
+  `{"notified":"delivered","revokedSessions":"1"}`.
+- 2026-08-12 — THE MIGRATE JOBS ARE SEPARATELY BUILT IMAGES, and rebuilding a
+  service does NOT rebuild its migrator. `docker compose … run --rm
+  migrate-identity` exited 0 while 007 remained the highest applied migration,
+  because the migrator image predated 008 and had nothing new to apply. Exit 0
+  from a migrator means "nothing to do" as readily as "it worked". Build
+  `migrate-<svc>` alongside `<svc>`, and verify against `schema_migrations`
+  rather than against the exit code — the stale-artifact rule, in a place the
+  2026-08-06 entry did not name.
+- 2026-08-12 — AND TWO MORE OF MY OWN PROBES LIED, both in the same session,
+  both the same class. An unquoted conditional header inside a shell function —
+  `${4:+-H "authorization: Bearer $4"}` — WORD-SPLITS on the space and hands
+  curl four broken arguments, which presented as a flat `400` from a route that
+  in fact answered 204; use an array. And `node apps/stack/dist/generate-env.js`
+  exited 0 having written nothing, because the entrypoint is
+  `generate-env-cli.js` and I had invoked the module: the tell was the file's
+  MTIME, not the exit code. The rule this repo keeps restating, three more times
+  in one afternoon: when an observation contradicts the source, suspect the
+  observation first.
