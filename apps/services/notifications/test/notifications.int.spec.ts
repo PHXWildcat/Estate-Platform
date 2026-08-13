@@ -34,6 +34,16 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
     admin = new Client({ connectionString: pgUrl });
     await admin.connect();
     await admin.query(`CREATE SCHEMA ${schema}`);
+    // THE M17 PR2 LESSON, applied here after CI caught me re-committing it:
+    // an integration test that scopes itself with a schema prefix is only
+    // scoped for the statements IT writes. A trigger body resolves unqualified
+    // names against the CONNECTION's search_path — so an admin UPDATE on
+    // notification_recipients fired the versions trigger, which silently wrote
+    // into the live public.notification_recipients_versions on any machine
+    // running the stack (10 junk rows measured) and failed honestly on CI,
+    // whose database has no such table. Pinning the connection is what makes
+    // the scratch schema actually isolating.
+    await admin.query(`SET search_path TO ${schema}`);
 
     const migrClient = new Client({
       connectionString: pgUrl,

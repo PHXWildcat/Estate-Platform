@@ -5310,3 +5310,21 @@ deviating from them, stop and propose the change with rationale — do not silen
   so its schema validation runs and only the transport is doubled. The two
   SQL-only repo files remain int-only, which is what the floors' split
   measurement exists to accommodate.
+- 2026-08-13 — I RE-COMMITTED THE PR2 SEARCH-PATH DEFECT IN THE MILESTONE THAT
+  CITES IT, and CI is again the only reason I know. PR4's freshness case
+  planted an ancient `verified_at` with an admin UPDATE on
+  `notification_recipients` — a table whose versions trigger resolves
+  `notification_recipients_versions` UNQUALIFIED, against the CONNECTION's
+  search_path. The notifications int spec's admin client, unlike identity's
+  (which PR2 fixed), had never been pinned: every local run silently wrote its
+  version rows into the live `public.notification_recipients_versions` (10
+  junk rows measured and cleaned) and went green, while CI's database has no
+  such table and failed honestly. The email-change int spec I wrote the same
+  day pinned its connection FROM BIRTH because it copied identity's harness —
+  which is the sharp edge of the lesson: THE RULE LIVED IN A FILE HEADER, NOT
+  IN THE HARNESS, so a spec descending from the fixed lineage inherited the
+  fix and a spec in the unfixed lineage inherited the hole. Fixed by pinning
+  the connection; verified the PR2 way (the spec run against the AUTH cluster
+  — CI's exact situation — fails before the pin and passes after; zero new
+  rows in the live table after a core run) and mutation-tested by reverting
+  the pin and watching the auth-cluster run go red.
