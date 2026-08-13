@@ -63,11 +63,13 @@ describe('config validation', () => {
     IDENTITY_INTERNAL_TOKEN: 'i'.repeat(48),
     NOTIFICATIONS_URL: 'https://notifications.internal',
     NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: 'n'.repeat(48),
-    // M14: identity presents three DIFFERENT notifications credentials, one
-    // per edge — feed/vouch, mail a code, read the verified bit — and holds
-    // none of the estate SEND credential.
+    // Identity presents FOUR DIFFERENT notifications credentials, one per edge
+    // — feed/vouch (M9/M14), mail a code (M14), announce an account-credential
+    // change (M17), read the verified bit (M14) — and holds none of the estate
+    // SEND credential.
     NOTIFICATIONS_VERIFY_INTERNAL_TOKEN: 'v'.repeat(48),
     NOTIFICATIONS_STATUS_INTERNAL_TOKEN: 's'.repeat(48),
+    NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: 'p'.repeat(48),
   };
 
   /** Every credential this service touches, inbound and outbound. */
@@ -76,6 +78,7 @@ describe('config validation', () => {
     'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
     'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
     'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+    'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
   ] as const;
 
   it('production REQUIRES the notifications feed (M9) and refuses credential aliasing', () => {
@@ -106,9 +109,9 @@ describe('config validation', () => {
     ),
   )('production refuses one value pasted into both %s and %s', (a, b) => {
     // EVERY PAIR. The single hand-written comparison above was correct while
-    // identity touched two credentials; M14 made it four, and the shape this
-    // repo keeps rediscovering is a check that stayed true only for the
-    // arity it was written at.
+    // identity touched two credentials; M14 made it four and M17 five, and the
+    // shape this repo keeps rediscovering is a check that stayed true only for
+    // the arity it was written at.
     expect(() =>
       loadConfig(
         validEnv({

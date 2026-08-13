@@ -36,9 +36,16 @@
 //
 // Re-measured at 68.59/68.19/39.90/66.89 and ratcheted UP.
 module.exports = require('@estate/config/jest')(__dirname, {
-  // Ratcheted UP for M17's bounds (was 68/68/39/66). Measured on the
-  // DATABASE-FREE run, which is the configuration `ci.yml` evaluates this
-  // against — the 2026-08-12 lesson that a floor calibrated for a run nothing
-  // performs is a floor nothing evaluates.
-  coverageThreshold: { global: { statements: 70, branches: 68, functions: 41, lines: 68 } },
+  // Ratcheted UP again for M17 PR2 (was 70/68/41/68 after PR1, 68/68/39/66
+  // before it). Measured on the DATABASE-FREE run, which is the configuration
+  // `ci.yml` evaluates this against — the 2026-08-12 lesson that a floor
+  // calibrated for a run nothing performs is a floor nothing evaluates.
+  //
+  // PR2's new code is mostly SQL, which the PG-gated int suite proves and this
+  // run cannot see, so the floor initially DROPPED. It was not lowered: the
+  // answer was `test/db.spec.ts`, which covers `withTransaction`'s failure
+  // paths (rollback, release, a failing rollback not masking the original
+  // error) — control flow rather than SQL semantics, and owed on its own terms
+  // regardless of the number.
+  coverageThreshold: { global: { statements: 70, branches: 68, functions: 42, lines: 69 } },
 });

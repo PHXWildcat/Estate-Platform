@@ -50,8 +50,32 @@ export type EstateNotificationKind = (typeof ESTATE_NOTIFICATION_KINDS)[number];
  * input; `SendSchema` in the notifications service is built from
  * ESTATE_NOTIFICATION_KINDS so the exclusion is structural, not a comment.
  */
-export const SYSTEM_NOTIFICATION_KINDS = ['identity.address_verification'] as const;
+export const SYSTEM_NOTIFICATION_KINDS = [
+  'identity.address_verification',
+  // M17: the account's own credentials changed. A SYSTEM kind for the reason
+  // above turned the other way round — this one carries no variable at all, but
+  // it must not be reachable through `send`, because that credential is held by
+  // vault, settlement and profile and none of them has any business telling a
+  // user their password was changed. It is the one message an attacker would
+  // most like to be able to send: it is exactly what a phishing pretext looks
+  // like, and a user who receives it acts on it.
+  'identity.password_changed',
+] as const;
 export type SystemNotificationKind = (typeof SYSTEM_NOTIFICATION_KINDS)[number];
+
+/**
+ * The ACCOUNT-SECURITY kinds — the subset of system kinds that
+ * `NOTIFICATIONS_SECURITY_INTERNAL_TOKEN` opens (M17).
+ *
+ * A subset rather than "all system kinds", and the distinction is the whole
+ * reason this is a separate edge: `identity.address_verification` needs a code
+ * and travels on the VERIFY credential, while these say something happened to
+ * the account and carry nothing. A holder of one must not inherit the other —
+ * the M14 reasoning that split VERIFY from RECIPIENTS, applied before the
+ * second holder exists rather than after.
+ */
+export const ACCOUNT_SECURITY_KINDS = ['identity.password_changed'] as const;
+export type AccountSecurityKind = (typeof ACCOUNT_SECURITY_KINDS)[number];
 
 /**
  * Every kind the platform can log a send for. This is the vocabulary of
@@ -103,6 +127,21 @@ export interface NotificationSendInput {
 export interface AddressVerificationInput {
   userId: string;
   code: string;
+}
+
+/**
+ * An account-security notice (M17). A user id and a CLOSED kind — no text, no
+ * code, no timestamp, no deadline.
+ *
+ * The absence of a date field is deliberate and slightly awkward: "your
+ * password was changed" would read better with a time in it, and the moment
+ * this wire carries one it carries a variable a caller chooses. The message
+ * says to sign in and check, which is what a recipient should do anyway and
+ * cannot be faked into a plausible-looking lie.
+ */
+export interface AccountSecurityInput {
+  userId: string;
+  kind: AccountSecurityKind;
 }
 
 /**
@@ -182,6 +221,17 @@ export interface NotificationsPort {
   upsertRecipient(input: { userId: string; email: string }): Promise<{ ok: boolean }>;
   /** Mail one address-verification code. Identity alone; its own credential. */
   sendAddressVerification(input: AddressVerificationInput): Promise<SendOutcome>;
+  /**
+   * Tell a user something changed about their ACCOUNT's credentials (M17).
+   * Identity alone, on its own credential — not the estate send one, which
+   * vault, settlement and profile hold.
+   *
+   * The input carries a user id and a CLOSED kind and nothing else: there is no
+   * field for text, no field for a code, and no field for a timestamp, so a
+   * holder chooses which of a closed set of platform-authored notices fires and
+   * nothing about what it says.
+   */
+  sendAccountSecurity(input: AccountSecurityInput): Promise<SendOutcome>;
   /** Record that the user proved ownership of the stored address. Identity
    * alone, on the SAME credential as `upsertRecipient` — vouching for an
    * address and setting one are the same capability class (M14 decision 5). */
@@ -240,6 +290,8 @@ export interface NotificationsCredentials {
   verification?: string;
   /** NOTIFICATIONS_STATUS_INTERNAL_TOKEN — read the verified bit. */
   status?: string;
+  /** NOTIFICATIONS_SECURITY_INTERNAL_TOKEN — mail one account-security notice. */
+  security?: string;
 }
 
 export interface HttpNotificationsClientOptions {
@@ -362,6 +414,20 @@ export class HttpNotificationsClient implements NotificationsPort {
         'POST',
         '/internal/v1/notifications/verification',
         { userId: input.userId, code: input.code },
+      ),
+    );
+  }
+
+  async sendAccountSecurity(input: AccountSecurityInput): Promise<SendOutcome> {
+    return HttpNotificationsClient.outcomeOf(
+      await this.requestJson(
+        this.credentials.security,
+        'POST',
+        '/internal/v1/notifications/security',
+        {
+          userId: input.userId,
+          kind: input.kind,
+        },
       ),
     );
   }

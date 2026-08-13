@@ -102,6 +102,7 @@ const config: IdentityConfig = {
   notificationsInternalToken: '',
   notificationsVerifyToken: '',
   notificationsStatusToken: '',
+  notificationsSecurityToken: '',
 };
 
 function makeService(fakes: ReturnType<typeof makeFakes>): WebAuthnService {

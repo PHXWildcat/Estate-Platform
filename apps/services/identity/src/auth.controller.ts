@@ -44,6 +44,22 @@ const RefreshSchema = z.object({
   refreshToken: z.string().min(1).max(1024),
 });
 
+/**
+ * The password-change wire (M17 PR2).
+ *
+ * `currentPassword` is bounded only for shape and NOT held to the new-password
+ * minimum: it has to admit whatever the account already has, including a
+ * password minted before any rule existed, or a user whose password predates a
+ * tightening could never change it — which is precisely the user who should.
+ * `newPassword` gets the registration rule, from the same numbers, because a
+ * change that could weaken a password below what registration demands would
+ * make the rule advisory.
+ */
+const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(1024),
+  newPassword: z.string().min(12).max(256),
+});
+
 const CodeSchema = z.object({
   code: z.string().regex(/^\d{6}$/),
 });
@@ -296,6 +312,35 @@ export class AuthController {
     const { code } = parseBody(VerificationCodeSchema, body);
     await this.emailVerification.verify(auth.userId, auth.sessionId, code);
     return { verified: true };
+  }
+
+  /**
+   * Change the account password (M17 PR2).
+   *
+   * ACCOUNT AUDIENCE ONLY — undecorated, which is the deny-by-default answer.
+   * A vault session and a browser-extension session must not be able to replace
+   * the credential that mints them: both are derived, narrow-purpose
+   * credentials, and letting either rewrite the account password would let a
+   * leaked one chain itself into permanent control. `test/session-audience.spec.ts`
+   * names that fact rather than leaving it to the sweep.
+   *
+   * NO `StepUpGuard`, and that is not an omission — the requirement is
+   * CONDITIONAL on whether the account holds a verified factor, which a route
+   * decorator cannot see. The service owns the condition and applies the
+   * guard's own freshness predicate through `SecondFactorGate`, exactly as
+   * `totp/enroll` does. `test/factor-routes.spec.ts` is what keeps a
+   * service-level gate from being invisible to the fences that scan decorators.
+   *
+   * The CURRENT password is in the body because a stolen session does not carry
+   * it; see `AuthService.changePassword` for why both halves are asked for.
+   */
+  @Post('password')
+  @HttpCode(204)
+  @UseGuards(SessionGuard)
+  async changePassword(@Req() request: AuthedRequest, @Body() body: unknown): Promise<void> {
+    const auth = requireAuth(request);
+    const { currentPassword, newPassword } = parseBody(ChangePasswordSchema, body);
+    await this.auth.changePassword(auth.userId, auth.sessionId, auth, currentPassword, newPassword);
   }
 
   @Post('totp/enroll')

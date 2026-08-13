@@ -116,6 +116,15 @@ const EnvSchema = z
     // the settings page; vault and profile join as holders in PR2, where the
     // two ARMING gates start asking.
     NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
+    // OUTBOUND (M17): what this service PRESENTS to the notifications
+    // ACCOUNT-SECURITY route, to tell a user their account's credentials
+    // changed. A FOURTH outbound secret rather than a reuse: not the send
+    // credential (identity must not be able to fire an estate alarm), and not
+    // the verification one, because that mails a caller-minted code and the
+    // first future holder of a resend capability must not thereby gain the
+    // ability to announce credential changes — the message an attacker would
+    // most like to be able to send.
+    NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !env.KAFKA_BROKERS) {
@@ -212,6 +221,10 @@ const EnvSchema = z
           'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
           'unwired, identity cannot tell a verified address from an unverified one and stops asking',
         ],
+        [
+          'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
+          'unwired, a password change is silent — the one notice whose absence an attacker relies on',
+        ],
       ] as const;
       for (const [key, why] of required) {
         const token = env[key];
@@ -224,7 +237,7 @@ const EnvSchema = z
         }
       }
       // A FULL PAIRWISE LOOP over every credential this service touches — its
-      // own inbound one and its three outbound ones. One value must never
+      // own inbound one and its four outbound ones. One value must never
       // authenticate two directions (the M7 collapse), and splitting the fields
       // cannot stop one value being pasted into several slots. Derived from the
       // list rather than written pair by pair, because the hand-written form
@@ -235,6 +248,7 @@ const EnvSchema = z
         'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN',
         'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN',
         'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
+        'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
       ] as const;
       for (let i = 0; i < touched.length; i += 1) {
         for (let j = i + 1; j < touched.length; j += 1) {
@@ -296,6 +310,8 @@ export interface IdentityConfig {
   readonly notificationsVerifyToken: string;
   /** OUTBOUND: presented to the notifications RECIPIENT-STATUS route (M14). */
   readonly notificationsStatusToken: string;
+  /** OUTBOUND: presented to the notifications ACCOUNT-SECURITY route (M17). */
+  readonly notificationsSecurityToken: string;
 }
 
 export class ConfigError extends Error {
@@ -351,5 +367,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     notificationsInternalToken: e.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ?? '',
     notificationsVerifyToken: e.NOTIFICATIONS_VERIFY_INTERNAL_TOKEN ?? '',
     notificationsStatusToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
+    notificationsSecurityToken: e.NOTIFICATIONS_SECURITY_INTERNAL_TOKEN ?? '',
   };
 }

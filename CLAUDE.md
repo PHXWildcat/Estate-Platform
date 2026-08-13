@@ -4915,3 +4915,174 @@ deviating from them, stop and propose the change with rationale — do not silen
   failed with `DeadlineExceeded`, because `$?` was `tail`'s — the 2026-08-11
   lesson repeating, and the reason every gate in this session was re-run with
   its output redirected and its real exit code echoed.
+- 2026-08-12 — M17 PR2: THE ACCOUNT PASSWORD CAN BE CHANGED, and the version
+  image stops keeping the old one. Identity had no such route in sixteen
+  milestones and no deferral written anywhere, because every "password reset"
+  string in the docs refers to the VAULT password. The gate is BOTH halves and
+  each covers what the other cannot: the current password is the one thing a
+  stolen SESSION does not carry, so requiring it stops a hijacked bearer locking
+  the owner out; step-up is the one thing a stolen PASSWORD does not carry, so
+  requiring it stops somebody who learned it from making it permanent. The
+  step-up half is CONDITIONAL on `SecondFactorGate`'s existing predicate,
+  because an account with no verified factor has nothing to prove and an
+  unconditional gate would make its password unchangeable forever — the worst
+  answer for exactly the users least protected. Asked BEFORE the password check,
+  so the route is not a free password oracle and the refusal's timing does not
+  vary with whether the guess was right.
+- 2026-08-12 — THE M6 VAULT REDACTION ARGUMENT DOES NOT TRANSFER, AND ITS
+  JUSTIFICATION DOES. `vault_keysets` drops `wrapped_master_key` because a
+  superseded wrapping is a LIVE capability against the CURRENT secret; an old
+  Argon2id hash is only a verifier for a RETIRED password, login reads the live
+  row alone, and nothing in the repo reads `users_versions` at all. So the vault's
+  reason is refuted here. What DOES transfer is that comment's argument for
+  keeping full row images everywhere else — "the ciphertext in it is readable
+  with the same key as the live row", i.e. crypto-shredding reaches the capture —
+  because `password_hash` is the ONE column in `users` for which that is false:
+  a plain TEXT verifier, not a `*_ct` + `dek_id` pair, so it sits outside the
+  envelope and erasure never reaches it. A row image that survives a shred must
+  not contain a credential verifier. `email_ct` and `dek_id` are KEPT, which is
+  the same rule applied rather than copied. Migration 008 ships in the same
+  commit as the first write because `CREATE OR REPLACE FUNCTION` only affects
+  FUTURE captures — a redaction one release late leaves verifiers nothing can
+  retract.
+- 2026-08-12 — IDENTITY GETS A TRANSACTION LAST OF THE NINE SERVICES, and the
+  attribution half is why it could not be deferred. `withTransaction` makes the
+  hash write and the session revocation commit together (a hash without the
+  revocation leaves every credential minted under the old password live), but
+  the load-bearing part is `set_config('app.actor_id')`: identity was the ONE
+  service that never set it, so every row `trg_users_versions` has ever written
+  came back with a NULL actor. That is what makes redaction defensible rather
+  than merely safer — the trade is "drop the verifier, keep who and when", and
+  without attribution there is no who and the capture would be pure liability.
+- 2026-08-12 — THE FIFTH NOTIFICATIONS EDGE, with the cheap option RULED OUT
+  rather than skipped. docs/04 decision 1 offered "a fifth edge, or a route
+  through an existing holder"; the second is impossible as a NARROW grant,
+  because `SendSchema` is built per-ROUTE from `ESTATE_NOTIFICATION_KINDS` and
+  no per-holder subsetting mechanism exists anywhere — identity would receive all
+  ten estate kinds including `settlement.case_opened` and every `emergency.*`.
+  Nor is there a peer path: notifications has no Kafka consumer and identity
+  holds no credential to profile, settlement or vault. The REAL alternative was
+  widening the VERIFY edge, whose holder is already identity alone, and it is
+  declined on that edge's own recorded reasoning: it was split from RECIPIENTS
+  so the first future holder of a resend capability would not inherit a power it
+  should not have, and a support tool or BFF-side resend is exactly that holder —
+  it must not arrive carrying the ability to tell a user their password changed,
+  which is the message an attacker would most like to send because it is a
+  phishing pretext a recipient acts on. `identity.password_changed` is a SYSTEM
+  kind and, within that, a member of a narrower `ACCOUNT_SECURITY_KINDS`: three
+  send routes, three disjoint vocabularies, each schema built from its own list.
+  The body carries NO variables at all — not even a timestamp, though "changed
+  at 14:02" reads better — because the moment the wire carries one, a holder
+  chooses part of what the user reads.
+- 2026-08-12 — VERIFIED RATHER THAN ASSUMED, which the M17 plan explicitly owed:
+  adding a system kind does NOT change the three "ten estate notifications"
+  claims in the credential graph, the notifications controller and its config.
+  `ESTATE_NOTIFICATION_KINDS` is still ten; the count was measured off the built
+  package rather than reasoned about, and no edit was needed. The SEND edge's
+  "identity is deliberately NOT here" comment WAS edited, because identity now
+  mails on two of its own edges and the sentence had to say so.
+- 2026-08-12 — A COVERAGE FLOOR DROPPED AND WAS NOT LOWERED. PR2's new code is
+  mostly SQL, which the PG-gated int suite proves and identity's DATABASE-FREE CI
+  run cannot see, so that gate went under its floor. The answer was
+  `test/db.spec.ts` — `withTransaction`'s failure paths (rollback runs, the
+  connection is released on every path, a FAILING rollback does not mask the
+  error that caused it) — which is control flow rather than SQL semantics, is
+  owed on its own terms, and is exactly what the int suite cannot isolate because
+  every case there commits. Floor ratcheted 70/68/41/68 → 70/68/42/69. The
+  database-free step added on 2026-08-12 is what made the drop visible at all.
+- 2026-08-12 — MEASURED WHILE STOPPING: `pnpm -r run test` on this box fails two
+  `apps/vault-extension` specs at ~988s each that pass in 65s run alone. It is
+  CONTENTION, not a regression — those suites run PBKDF2 at 650k iterations and
+  the repo-wide parallel run starves them past the jest timeout. Before treating
+  a full-repo red as a real failure, re-run the failing package in isolation.
+- 2026-08-12 — M17 PR2 DRIVEN LIVE, audit rebuilt and restarted BEFORE the
+  producers: zero `schema_violation` rejections against eight in PR1's drive,
+  which is the deploy-order lesson applied rather than rediscovered. A wrong
+  current password answered 401 and changed nothing (two sessions still live,
+  zero version rows); the change answered 204, evicted the other device while
+  the caller's own session stayed 200, and killed the old password. The version
+  image came back `password_hash present: false, email_ct present: true, dek_id
+  present: true, actor: set` — the redaction, the deliberate keeps and the new
+  attribution in one row. Ledger: `password.change_failed` then
+  `password.changed`, and no `stepup.granted`. A real SES message reached the
+  owner; the send log recorded `identity.password_changed |
+  outcome=sent_unverified`, which is M14's machinery correctly noting an address
+  this probe account never proved; the audit event carried
+  `{"notified":"delivered","revokedSessions":"1"}`.
+- 2026-08-12 — THE MIGRATE JOBS ARE SEPARATELY BUILT IMAGES, and rebuilding a
+  service does NOT rebuild its migrator. `docker compose … run --rm
+  migrate-identity` exited 0 while 007 remained the highest applied migration,
+  because the migrator image predated 008 and had nothing new to apply. Exit 0
+  from a migrator means "nothing to do" as readily as "it worked". Build
+  `migrate-<svc>` alongside `<svc>`, and verify against `schema_migrations`
+  rather than against the exit code — the stale-artifact rule, in a place the
+  2026-08-06 entry did not name.
+- 2026-08-12 — AND TWO MORE OF MY OWN PROBES LIED, both in the same session,
+  both the same class. An unquoted conditional header inside a shell function —
+  `${4:+-H "authorization: Bearer $4"}` — WORD-SPLITS on the space and hands
+  curl four broken arguments, which presented as a flat `400` from a route that
+  in fact answered 204; use an array. And `node apps/stack/dist/generate-env.js`
+  exited 0 having written nothing, because the entrypoint is
+  `generate-env-cli.js` and I had invoked the module: the tell was the file's
+  MTIME, not the exit code. The rule this repo keeps restating, three more times
+  in one afternoon: when an observation contradicts the source, suspect the
+  observation first.
+- 2026-08-12 — I SHIPPED A RED CI BECAUSE I RAN `build` AND `test` AND NOT
+  `typecheck`, which is the 2026-08-12 entry "A GREEN JEST RUN IS NOT A
+  TYPECHECK" committed by me four entries after writing it down. They are
+  DIFFERENT TURBO TASKS over different file sets: `build` compiles `src`, and
+  `typecheck` is `tsc --noEmit` over the package including its TESTS. M17 PR2
+  added a method to `NotificationsPort`, and the only thing that broke was a
+  hand-written port double in `apps/services/vault/test/notifier-adapters.spec.ts`
+  — invisible to `pnpm build`, invisible to `pnpm -r run test` (ts-jest compiles
+  per-file and the double satisfied every call the suite makes), and caught only
+  by `@estate/service-vault#typecheck` on CI. THE RULE: widening a shared port
+  or contract type means running `pnpm -r run typecheck`, because the implementors
+  that break are usually TEST doubles and no other gate in this repo looks at
+  them. Corollary already recorded and re-earned: a double must be faithful about
+  what it REFUSES — vault's new entry returns `{accepted:false}`, because vault
+  holds no account-security credential and a double that quietly succeeded would
+  make a path that should never be reachable look healthy.
+- 2026-08-12 — AND THE SECOND RED CI WAS THE SAME MISTAKE ONE LAYER OVER: I ran
+  `pnpm -r run test` and CI runs `pnpm test -- --coverage`. Coverage THRESHOLDS
+  only arm when coverage is collected, so a package whose floor my change had
+  broken passed locally and failed there — twice, in `@estate/notifications-client`
+  (a new client method with no test) and `@estate/service-notifications` (a new
+  controller and guard). THE RULE, now general: before pushing, run CI's OWN
+  command list — `pnpm format`, `pnpm build`, `pnpm lint`, `pnpm typecheck`,
+  `pnpm test -- --coverage` — rather than the subset that happens to be
+  convenient. Three of those five had never been run in this session, and each
+  of the three caught something the others could not.
+- 2026-08-12 — A TEST I ADDED PASSED VACUOUSLY AND I NEARLY KEPT IT. Adding a
+  sixth call to the notifications-client credential-partitioning sweep left its
+  exact five-element expectation GREEN — because that client had no `security`
+  credential, so the new call short-circuited without a round trip and appended
+  nothing. The tell was that an assertion listing exactly what each route
+  presents did not change when a route was added. Fixed by giving the fixture the
+  credential and the expectation its entry, then mutation-tested BOTH halves of
+  the mapping: pointing the security route at the verification path is caught,
+  and presenting the verification credential on the security route is caught. The
+  second mutation's first anchor did not exist (prettier had reflowed the call
+  across lines) and the harness's "assert the bytes changed" check is what stopped
+  that from reading as a passing test.
+- 2026-08-12 — A TEST OF MINE PASSED LOCALLY BY WRITING INTO THE LIVE DATABASE,
+  and CI is the only reason I found out. `password-change.int.spec.ts` reset its
+  fixtures with `DELETE FROM ${schema}.users`, which fires `trg_users_versions` —
+  and that trigger's body references `users_versions` UNQUALIFIED, so it resolves
+  through the CONNECTION's search_path rather than through the schema named in
+  the statement. The admin client had none. On any machine running the stack
+  there IS a `public.users_versions`, so every reset silently wrote its rows
+  there and the suite went green; on CI's database, which has no such table, it
+  failed with `relation "users_versions" does not exist`. MEASURED afterwards:
+  212 junk rows in the real append-only table, from my own test runs. Fixed two
+  ways — TRUNCATE instead of DELETE (fires no row triggers at all, so the reset
+  cannot write anywhere) and `SET search_path` on the admin connection, so a
+  future case that does need a DELETE does not rediscover this. VERIFIED by
+  running the spec against the CORE cluster, which has no `public.users_versions`
+  and is therefore CI's exact situation: the pre-fix version reproduces the CI
+  error there and the fixed one passes.
+  THE GENERAL RULE, and it is not about triggers: AN INTEGRATION TEST THAT
+  SCOPES ITSELF WITH A SCHEMA PREFIX IS ONLY SCOPED FOR THE STATEMENTS IT
+  WRITES. Anything the database resolves on its own behalf — a trigger body, a
+  function, a default expression — uses the connection's search_path, so a
+  scratch schema is not isolation unless the connection is pinned to it.

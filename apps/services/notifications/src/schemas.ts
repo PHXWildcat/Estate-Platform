@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import {
+  ACCOUNT_SECURITY_KINDS,
   ESTATE_NOTIFICATION_KINDS,
   NOTIFICATION_CHANNELS,
   VERIFICATION_CODE_PATTERN,
@@ -60,6 +61,31 @@ export const VerificationSchema = z
   })
   .strict();
 export type VerificationInput = z.infer<typeof VerificationSchema>;
+
+/**
+ * The account-security wire (M17). One id and one kind from a CLOSED enum,
+ * `.strict()`, and nothing else — no code, no text, no deadline, not even a
+ * timestamp.
+ *
+ * BUILT FROM `ACCOUNT_SECURITY_KINDS`, which is a SUBSET of the system kinds,
+ * for the same reason `SendSchema` is built from the estate ones. It admits
+ * neither the estate kinds (that surface is held by vault, settlement and
+ * profile) nor `identity.address_verification` (whose template needs a code
+ * this wire cannot carry), so each of the three send routes can fire exactly
+ * its own vocabulary and the exclusions are structural rather than a comment.
+ *
+ * NO DATE FIELD, deliberately, though "your password was changed at 14:02"
+ * would read better. The moment this carries a variable, a holder chooses part
+ * of what the user reads; the body says to sign in and check instead, which is
+ * what a recipient should do anyway and cannot be dressed into a plausible lie.
+ */
+export const AccountSecuritySchema = z
+  .object({
+    userId: z.string().uuid(),
+    kind: z.enum(ACCOUNT_SECURITY_KINDS),
+  })
+  .strict();
+export type AccountSecurityInput = z.infer<typeof AccountSecuritySchema>;
 
 /** RFC 5321 caps the path at 320 octets; anything longer is not an address. */
 export const RecipientSchema = z

@@ -197,7 +197,7 @@ describe('HttpNotificationsClient transport failures', () => {
       });
     const client = new HttpNotificationsClient({
       notificationsUrl: 'http://n',
-      credentials: { send: 's', recipients: 's', verification: 's', status: 's' },
+      credentials: { send: 's', recipients: 's', verification: 's', status: 's', security: 's' },
       fetchImpl,
     });
 
@@ -207,6 +207,9 @@ describe('HttpNotificationsClient transport failures', () => {
     expect(await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' })).toEqual({
       accepted: false,
     });
+    expect(
+      await client.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
+    ).toEqual({ accepted: false });
     expect(await client.recipientStatus(USER)).toBeNull();
   });
 });
@@ -267,6 +270,7 @@ describe('HttpNotificationsClient credential partitioning', () => {
     recipients: 'rcpt-cred',
     verification: 'verify-cred',
     status: 'status-cred',
+    security: 'security-cred',
   };
 
   it('routes each capability to its own path with its own secret', async () => {
@@ -289,6 +293,7 @@ describe('HttpNotificationsClient credential partitioning', () => {
     await client.upsertRecipient({ userId: USER, email: 'a@b.c' });
     await client.markRecipientVerified({ userId: USER });
     await client.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' });
+    await client.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' });
     await client.recipientStatus(USER);
 
     expect(
@@ -304,6 +309,10 @@ describe('HttpNotificationsClient credential partitioning', () => {
       // declaring it proved are the same capability class (M14 decision 5).
       ['PUT', `/recipients/${USER}/verified`, 'rcpt-cred'],
       ['POST', '/verification', 'verify-cred'],
+      // M17. Its OWN path and its OWN secret: announcing a credential change is
+      // neither an estate send (vault, settlement and profile hold that) nor a
+      // verification code (a future resend holder must not inherit this).
+      ['POST', '/security', 'security-cred'],
       ['GET', `/recipients/${USER}/status`, 'status-cred'],
     ]);
   });
@@ -326,6 +335,12 @@ describe('HttpNotificationsClient credential partitioning', () => {
     expect(await sendOnly.sendAddressVerification({ userId: USER, code: 'EV1-ABCD' })).toEqual({
       accepted: false,
     });
+    // M17. A send-only holder must not be able to announce a credential change:
+    // no round trip at all, so an over-broad client is a configuration that
+    // CANNOT REACH the route rather than one the route rejects.
+    expect(
+      await sendOnly.sendAccountSecurity({ userId: USER, kind: 'identity.password_changed' }),
+    ).toEqual({ accepted: false });
     expect(await sendOnly.recipientStatus(USER)).toBeNull();
     expect(calls).toHaveLength(0);
   });

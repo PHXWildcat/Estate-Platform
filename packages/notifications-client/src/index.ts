@@ -1,4 +1,5 @@
 export {
+  ACCOUNT_SECURITY_KINDS,
   ESTATE_NOTIFICATION_KINDS,
   HttpNotificationsClient,
   NOTIFICATIONS,
@@ -7,6 +8,8 @@ export {
   SERVICE_CREDENTIAL_HEADER,
   SYSTEM_NOTIFICATION_KINDS,
   VERIFICATION_CODE_PATTERN,
+  type AccountSecurityInput,
+  type AccountSecurityKind,
   type AddressVerificationInput,
   type EstateNotificationKind,
   type FetchLike,

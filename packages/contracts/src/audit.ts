@@ -204,6 +204,23 @@ export const AUDIT_ACTIONS = [
   // ids and enums only, as everywhere.
   'auth.login.rate_limited',
   'auth.register.rate_limited',
+  // M17 PR2. The account password changed — the first mutation `password_hash`
+  // has ever had, and the event an investigator reaches for when an owner says
+  // they were locked out of their own account.
+  //
+  // `detail` carries how many OTHER sessions the change revoked and whether the
+  // owner's notice was accepted by the carrier: a count and a boolean, ids and
+  // enums only. The notification outcome rides this event rather than being
+  // swallowed because it is the single control that tells an owner their
+  // credentials moved without them, and a failure has to be visible enough to
+  // re-drive (the M13 `ownerNotified` shape).
+  //
+  // Deliberately NOT paired with an `auth.password.change_failed` action: a
+  // wrong current password on an authenticated route is ordinary noise, it is
+  // already bounded by the M17 PR1 machinery's sibling ledger row, and one
+  // audit event per mistyped password would drown the stream — the same
+  // reasoning that keeps individual step-up denials out of the audit trail.
+  'auth.password.changed',
   // M16, extension pairing. `paired` names the SESSION the ceremony produced,
   // so an owner reviewing their trail can follow it into the vault events that
   // session later causes. `pairing_failed` carries no actor and no reason —

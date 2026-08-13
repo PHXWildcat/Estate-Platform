@@ -22,6 +22,7 @@ const NOTIFICATIONS = 'NOTIFICATIONS_INTERNAL_TOKEN';
 const NOTIFICATIONS_RECIPIENTS = 'NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN';
 const NOTIFICATIONS_VERIFY = 'NOTIFICATIONS_VERIFY_INTERNAL_TOKEN';
 const NOTIFICATIONS_STATUS = 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN';
+const NOTIFICATIONS_SECURITY = 'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN';
 
 describe('credentialsHeldIn', () => {
   it('reports nothing for a config that holds no credential', () => {
@@ -120,7 +121,7 @@ describe('graph lookup helpers', () => {
     expect(inboundCredentialsFor('audit')).toEqual([]);
   });
 
-  it('gives notifications FOUR inbound credentials, one per capability (M9 review, M14)', () => {
+  it('gives notifications FIVE inbound credentials, one per capability (M9 review, M14, M17)', () => {
     // The send surface and the recipient-upsert surface have different
     // legitimate holders, so they must not share a secret: holding "may
     // notify this user" must not also mean "may decide where their alerts go".
@@ -129,6 +130,7 @@ describe('graph lookup helpers', () => {
       NOTIFICATIONS,
       NOTIFICATIONS_RECIPIENTS,
       NOTIFICATIONS_VERIFY,
+      NOTIFICATIONS_SECURITY,
       NOTIFICATIONS_STATUS,
     ]);
     // M13 added profile: it tells an owner when somebody CLAIMED a link to one
@@ -165,9 +167,16 @@ describe('graph lookup helpers', () => {
     expect(inbound.find((e) => e.envVar === NOTIFICATIONS_STATUS)?.holders).not.toContain(
       'settlement',
     );
-    // ...and they are enforced by four different guards, or the split is
-    // cosmetic: a guard binds exactly one token, so the token IS the partition.
-    expect(new Set(inbound.map((e) => e.guard.token)).size).toBe(4);
+    // ...and each is enforced by its OWN guard, or the split is cosmetic: a
+    // guard binds exactly one token, so the token IS the partition.
+    //
+    // DERIVED from the inbound list rather than asserted as a literal, because
+    // the security property is "one guard per credential" and not the number —
+    // a hardcoded count goes stale on the next edge and says nothing extra
+    // while it is right. The floor keeps it from passing vacuously if the
+    // lookup ever returns nothing.
+    expect(inbound.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(inbound.map((e) => e.guard.token)).size).toBe(inbound.length);
   });
 
   it('resolves outbound credentials by holder', () => {
@@ -182,12 +191,17 @@ describe('graph lookup helpers', () => {
       'DOCUMENTS_INTERNAL_TOKEN',
       NOTIFICATIONS,
     ]);
-    // Identity holds three notifications credentials and NOT the send one:
-    // it feeds the store, mails its own verification code, and reads the
-    // verified bit — but can never fire an estate notification.
+    // Identity holds FOUR notifications credentials and NOT the send one: it
+    // feeds the store, mails its own verification code, announces a change to
+    // the account's own credentials (M17), and reads the verified bit — but can
+    // never fire an ESTATE notification. That last clause is the one worth
+    // asserting by name below: gaining the ability to say "your password
+    // changed" must not come with the ability to say "a death report was filed
+    // on your account".
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).toEqual([
       NOTIFICATIONS_RECIPIENTS,
       NOTIFICATIONS_VERIFY,
+      NOTIFICATIONS_SECURITY,
       NOTIFICATIONS_STATUS,
     ]);
     expect(outboundCredentialsFor('identity').map((e) => e.envVar)).not.toContain(NOTIFICATIONS);

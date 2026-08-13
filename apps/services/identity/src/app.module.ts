@@ -159,17 +159,21 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     },
     ServiceCredentialGuard,
     {
-      // The recipient-store feed (M9) plus M14's verification ceremony.
-      // Best-effort by contract: the client never throws, so a notifications
-      // outage cannot block registration or login.
+      // The recipient-store feed (M9), M14's verification ceremony, and M17's
+      // account-security notice. Best-effort by contract for the first two: the
+      // client never throws, so a notifications outage cannot block
+      // registration or login.
       //
-      // THREE credentials, one per EDGE, and identity holds no fourth: it does
+      // FOUR credentials, one per EDGE, and identity holds no fifth: it does
       // NOT hold `NOTIFICATIONS_INTERNAL_TOKEN`, so nothing here can fire an
-      // estate notification. A method whose credential is absent
-      // short-circuits without a round trip, so this object grants exactly the
-      // three capabilities the graph names and no more. All three are distinct
-      // from identity's own inbound value; config.ts refuses any equality in
-      // production with a full pairwise loop.
+      // estate notification — a password-change notice is about the ACCOUNT and
+      // travels on its own credential, precisely so that gaining the ability to
+      // say "your password changed" does not come with the ability to say "a
+      // death report was filed on your account". A method whose credential is
+      // absent short-circuits without a round trip, so this object grants
+      // exactly the four capabilities the graph names and no more. All four are
+      // distinct from identity's own inbound value; config.ts refuses any
+      // equality in production with a full pairwise loop.
       provide: NOTIFICATIONS,
       inject: [CONFIG],
       useFactory: (config: IdentityConfig): NotificationsPort =>
@@ -179,6 +183,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
             recipients: config.notificationsInternalToken,
             verification: config.notificationsVerifyToken,
             status: config.notificationsStatusToken,
+            security: config.notificationsSecurityToken,
           },
         }),
     },

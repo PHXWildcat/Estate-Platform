@@ -21,6 +21,7 @@ import {
 import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
 import { AddressAttemptBound } from './address-bound';
 import { AuthEventsRepo } from './auth-events.repo';
+import { Db } from './db';
 import type { IdentityConfig } from './config';
 import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
 import { EmailVerificationService } from './email-verification.service';
@@ -78,6 +79,9 @@ export class AuthService {
     @Inject(NOTIFICATIONS) private readonly notifications: NotificationsPort,
     private readonly emailVerification: EmailVerificationService,
     private readonly factors: SecondFactorGate,
+    // M17 PR2: the password change needs a TRANSACTION, not a pooled query —
+    // the hash write and the session revocation must commit together.
+    private readonly db: Db,
   ) {}
 
   /**
@@ -493,6 +497,96 @@ export class AuthService {
     }
     await this.revokeSession(session.user_id, session.id);
     return true;
+  }
+
+  /**
+   * CHANGE THE ACCOUNT PASSWORD (M17 PR2) — the first write `password_hash` has
+   * ever had.
+   *
+   * ═══ WHAT IT ASKS FOR, AND WHY THAT PAIR ═══
+   *
+   * The CURRENT PASSWORD always, and a fresh STEP-UP where the account holds a
+   * verified factor. Neither alone is enough for a different reason:
+   *
+   *  · the current password is the one thing a stolen SESSION does not carry,
+   *    so requiring it is what stops a hijacked bearer token from locking the
+   *    owner out of their own account;
+   *  · step-up is the one thing a stolen PASSWORD does not carry (a breach
+   *    corpus, a phished form), so requiring it is what stops somebody who
+   *    learned the password from making it permanent.
+   *
+   * The step-up half is CONDITIONAL for the reason `SecondFactorGate` exists:
+   * an account with no verified factor has nothing to prove, and an
+   * unconditional gate would make its password unchangeable forever — the worst
+   * possible answer for exactly the users least protected. `holdsVerifiedFactor`
+   * is the same predicate the enrolment gate uses, so the two cannot drift.
+   *
+   * ═══ WHAT IT DOES, AND IN WHAT ORDER ═══
+   *
+   * One transaction: write the hash, then revoke every OTHER session. The
+   * caller's own survives — see `revokeAllForUserExcept` — and the pair commits
+   * together, because a hash without the revocation leaves every credential
+   * minted under the old password live, which is the whole point of the change.
+   *
+   * THE LEDGER KIND IS ITS OWN, and deliberately NOT `stepup.granted`. That
+   * literal is hardcoded in the owner-liveness interlock (`users.repo.ts`), so
+   * emitting it here would silently void an open death case as a side effect of
+   * a password change — a docs/03 §5.1 policy decision taken by accident, and a
+   * capability handed to whoever completed the change.
+   *
+   * THE NOTIFICATION IS NOT BEST-EFFORT-AND-SILENT. It is the only thing that
+   * tells an owner their credentials moved without them, so its outcome rides
+   * the audit event (`notified: delivered|failed`) — the M13 shape, where a
+   * failure has to be visible enough to re-drive rather than swallowed. It is
+   * sent AFTER the commit: a notification promising a change that then rolled
+   * back is worse than a late one, and it must never be able to fail the
+   * change itself.
+   */
+  async changePassword(
+    userId: string,
+    sessionId: string,
+    caller: Pick<SessionContext, 'mfaLevel' | 'stepupExpiresAt'>,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const user = await this.users.findById(userId);
+    if (!user || user.password_hash === null) {
+      // A live session for a user that no longer resolves, or one that has no
+      // password to replace (passkey-only, once PR5 makes that reachable).
+      throw invalidCredentials();
+    }
+
+    // The step-up question BEFORE the password check, so an account that needs
+    // a fresh factor is told so without the route becoming a password oracle
+    // that costs nothing to query. `assertMayAddFactor` throws 403
+    // `stepup_required`, which the surface already knows how to prompt for.
+    await this.factors.assertMayAddFactor(userId, caller, this.clock());
+
+    if (!(await this.hasher.verifyPassword(user.password_hash, currentPassword))) {
+      await this.authEvents.insert({ userId, sessionId, kind: 'password.change_failed' });
+      throw invalidCredentials();
+    }
+
+    const newHash = await this.hasher.hashPassword(newPassword);
+    const now = this.clock();
+    const revoked = await this.db.withTransaction(userId, async (tx) => {
+      const written = await this.users.updatePasswordHash(tx, userId, newHash);
+      if (!written) {
+        // The status allowlist in that UPDATE refused: 'settlement' and every
+        // other non-live status. Reopening a terminally locked account is what
+        // that status exists to prevent, and the caller gets the same generic
+        // answer every other refusal on this service gives.
+        throw invalidCredentials();
+      }
+      return this.sessions.revokeAllForUserExcept(tx, userId, sessionId, 'password_changed', now);
+    });
+
+    await this.authEvents.insert({ userId, sessionId, kind: 'password.changed' });
+    const notified = await this.notifications.sendAccountSecurity({
+      userId,
+      kind: 'identity.password_changed',
+    });
+    await this.events.passwordChanged(userId, sessionId, revoked.length, notified.accepted);
   }
 
   /**

@@ -205,14 +205,22 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // is the failure this notification exists to prevent).
     //
     // Identity is deliberately NOT here, and M14 made that a statement about
-    // capability rather than about traffic. Identity now DOES make the platform
-    // mail somebody — exactly one kind, its own address-verification code, on
-    // its own edge below. What it must not gain is the power to fire an ESTATE
-    // notification: a holder of this credential chooses which of ten
-    // owner-facing alarms rings and when, and the service that mints sessions
-    // has no business ringing "a death report was filed on your account".
-    // SYSTEM_NOTIFICATION_KINDS is excluded from this route's schema for the
-    // mirror-image reason.
+    // capability rather than about traffic. Identity now makes the platform mail
+    // somebody on TWO of its own edges below — its address-verification code
+    // (M14) and its account-security notice (M17) — and holds neither this
+    // credential nor any way to reach an estate kind. What it must not gain is
+    // the power to fire an ESTATE notification: a holder of this credential
+    // chooses which of ten owner-facing alarms rings and when, and the service
+    // that mints sessions has no business ringing "a death report was filed on
+    // your account".
+    //
+    // The count is unchanged by M17 and that was VERIFIED rather than assumed:
+    // `identity.password_changed` is a SYSTEM kind, so ESTATE_NOTIFICATION_KINDS
+    // is still ten and this sentence stays true. SYSTEM_NOTIFICATION_KINDS is
+    // excluded from this route's schema for the mirror-image reason, and M17
+    // narrows further — `AccountSecuritySchema` is built from a SUBSET of the
+    // system kinds, so the three send routes have three disjoint vocabularies
+    // and no holder of one can fire another's.
     holders: ['profile', 'settlement', 'vault'],
     guard: SHARED_GUARD,
     opens: ['POST /internal/v1/notifications/send'],
@@ -271,6 +279,38 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     opens: ['POST /internal/v1/notifications/verification'],
     grants:
       "Mail one address-verification code, of the platform's own choosing of words, to the address already on file for a user. It is the one route whose payload carries a variable that is not a date (docs/03 §6h records the deviation), but the variable is opaque, platform-authored and single-use: a holder cannot choose the recipient, cannot see the address, cannot fire any estate notification, and cannot make the code valid. Misuse means mailing a user a code they did not ask for, which they can simply ignore — and, at volume, sender-reputation damage.",
+  },
+  {
+    envVar: 'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
+    callee: 'notifications',
+    // IDENTITY ALONE (M17). The fifth notifications edge, and it exists because
+    // a silent password change is unacceptable and undoing the M14 split is
+    // worse.
+    //
+    // THE CHEAP OPTION IS NOT AVAILABLE, and that is worth stating because it
+    // looks like it is. Adding identity to the SEND edge above would be one
+    // line — and `SendSchema` is built per-ROUTE from ESTATE_NOTIFICATION_KINDS,
+    // so there is no mechanism anywhere to grant one holder a SUBSET of the
+    // estate kinds. Identity would get all ten, including
+    // `settlement.case_opened` and every `emergency.*`, which is precisely what
+    // the SEND edge's own comment forbids. Nor is there a peer path:
+    // notifications has no Kafka consumer, and identity holds no credential to
+    // profile, settlement or vault.
+    //
+    // WIDENING THE VERIFY EDGE WAS THE REAL ALTERNATIVE, and is declined on that
+    // edge's own recorded reasoning. It was split from RECIPIENTS despite an
+    // identical holder so that "the first future holder of a resend capability"
+    // would not inherit a power it should not have. A support tool or a
+    // BFF-side resend is exactly that plausible future holder — and it must not
+    // come with the ability to mail somebody "your password was changed", which
+    // is a message an attacker would love to send and a user would act on.
+    // Splitting now costs one secret and keeps that grant possible later
+    // without re-litigating it.
+    holders: ['identity'],
+    guard: { className: 'SecurityCredentialGuard', token: 'SECURITY_CREDENTIAL' },
+    opens: ['POST /internal/v1/notifications/security'],
+    grants:
+      'Mail one ACCOUNT-SECURITY notice — from a closed set of platform-authored templates about the account itself, not the estate — to the address already on file for a user. A holder cannot choose the recipient, cannot see the address, cannot fire any estate notification, and cannot put words in the message: the wire carries a user id and a kind from a closed enum, and the kinds are excluded from the estate send schema so no other holder can fire them either. Misuse means telling a user their password changed when it did not, which is a phishing-adjacent nuisance — they can sign in and see otherwise — plus sender-reputation damage at volume. It exposes no stored address and no estate data. It does NOT carry the delivery-state bit the SEND edge returns.',
   },
   {
     envVar: 'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',

@@ -190,6 +190,39 @@ export class EventsService {
    * naming one would answer through the trail the question the route refuses to
    * answer on the wire.
    */
+  /**
+   * The account password changed (M17 PR2). Audit only — nothing consumes a
+   * password change on the bus, and a topic for it would be the dormant-schema
+   * shape.
+   *
+   * `revokedSessions` and `notified` are both here rather than in separate
+   * events because they are facts ABOUT this change: how much credential
+   * material it invalidated, and whether the owner could be told. The second is
+   * the M13 `ownerNotified` shape — the notice is the only thing that surfaces
+   * a change the owner did not make, so a delivery failure must be visible
+   * enough to re-drive rather than swallowed by a catch.
+   */
+  async passwordChanged(
+    userId: string,
+    sessionId: string,
+    revokedSessions: number,
+    notified: boolean,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.password.changed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: {
+        revokedSessions: String(revokedSessions),
+        notified: notified ? 'delivered' : 'failed',
+      },
+    });
+  }
+
   async registerRateLimited(): Promise<void> {
     await this.audit.emit({
       action: 'auth.register.rate_limited',

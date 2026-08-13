@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { FieldCrypto, LocalKmsProvider } from '@estate/crypto';
-import { ESTATE_NOTIFICATION_KINDS, NOTIFICATION_KINDS } from '@estate/notifications-client';
+import {
+  ACCOUNT_SECURITY_KINDS,
+  ESTATE_NOTIFICATION_KINDS,
+  NOTIFICATION_KINDS,
+} from '@estate/notifications-client';
 import { Migrator } from '@estate/db';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { Client } from 'pg';
@@ -164,6 +168,16 @@ describeIfPg('notifications service against Postgres (core-cluster co-tenant)', 
     expect(
       await service.sendAddressVerification({ userId: subject, code: 'EV1-TEST' }),
     ).toMatchObject({ delivered: true, channel: 'email' });
+
+    // M17. Derived from ACCOUNT_SECURITY_KINDS so a second security kind is
+    // driven without editing this loop — the verification entry above cannot be
+    // derived (its input carries a code), which is why the two look different.
+    for (const kind of ACCOUNT_SECURITY_KINDS) {
+      expect(await service.sendAccountSecurity({ userId: subject, kind })).toMatchObject({
+        delivered: true,
+        channel: 'email',
+      });
+    }
 
     const rows = await admin.query<{ kind: string }>(
       `SELECT kind FROM ${schema}.notification_sends WHERE user_id = $1 ORDER BY created_at`,

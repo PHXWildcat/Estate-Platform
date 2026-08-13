@@ -128,6 +128,7 @@ describeIfPg('enrolling a second factor (auth cluster)', () => {
       // THE REAL GATE, over the real repos. A fake here would make every
       // assertion in this file vacuous — the gate IS what is under test.
       new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db)),
+      db,
     );
   });
 

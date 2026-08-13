@@ -53,6 +53,13 @@ const EnvSchema = z
     // never asks — and what this edge withholds from a send holder is the
     // SILENT read, not the bit itself (the send response carries it too).
     NOTIFICATIONS_STATUS_INTERNAL_TOKEN: z.string().optional(),
+    // INBOUND #5 — ACCOUNT SECURITY (M17). Held by IDENTITY ALONE. Mails one
+    // notice about the account's own credentials, from a closed set with no
+    // variables at all. Off #1 because vault, settlement and profile hold that
+    // one and "your password was changed" is a phishing pretext a recipient
+    // acts on; off #3 because that mails a caller-minted code, and a future
+    // resend holder must not inherit the power to announce credential changes.
+    NOTIFICATIONS_SECURITY_INTERNAL_TOKEN: z.string().optional(),
     // Which carrier delivers email. 'stub' records without delivering
     // (dev/test); 'ses' is the real adapter. Production REQUIRES 'ses' — see
     // the superRefine below.
@@ -121,6 +128,10 @@ const EnvSchema = z
           'NOTIFICATIONS_STATUS_INTERNAL_TOKEN',
           'an open status surface is an oracle for whether a named user has verified',
         ],
+        [
+          'NOTIFICATIONS_SECURITY_INTERNAL_TOKEN',
+          'an open account-security surface lets anyone tell a user their password changed',
+        ],
       ] as const;
       for (const [key, why] of credentials) {
         const token = env[key];
@@ -132,7 +143,7 @@ const EnvSchema = z
           });
         }
       }
-      // A FULL PAIRWISE LOOP over all four, not a hand-written comparison per
+      // A FULL PAIRWISE LOOP over all five, not a hand-written comparison per
       // pair. Splitting the surfaces buys nothing if one value is pasted into
       // two slots, and a list of explicit pairs is the drift class this repo
       // keeps rediscovering: the M9 review split two credentials and left one
@@ -224,6 +235,8 @@ export interface NotificationsConfig {
   readonly verificationApiToken: string;
   /** INBOUND: what it expects on the RECIPIENT-STATUS read route. */
   readonly recipientStatusApiToken: string;
+  /** INBOUND: what it expects on the ACCOUNT-SECURITY send route, identity alone. */
+  readonly securityApiToken: string;
   readonly email: EmailConfig;
   readonly kms: KmsConfig;
   /** KEK alias wrapping THIS service's per-user DEKs (never 'core/kek'). */
@@ -263,6 +276,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NotificationsC
     recipientsApiToken: e.NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN ?? '',
     verificationApiToken: e.NOTIFICATIONS_VERIFY_INTERNAL_TOKEN ?? '',
     recipientStatusApiToken: e.NOTIFICATIONS_STATUS_INTERNAL_TOKEN ?? '',
+    securityApiToken: e.NOTIFICATIONS_SECURITY_INTERNAL_TOKEN ?? '',
     // The superRefine above guarantees the required fields per mode, so these
     // non-null assertions are sound.
     email:

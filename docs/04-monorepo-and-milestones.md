@@ -4164,6 +4164,80 @@ the login succeeded — which reads exactly like a bound that does not work.
 Checking the ledger ordering before concluding anything is what separated a
 broken probe from a broken control.
 
+#### PR2 as built — password change (2026-08-12)
+
+**Three things ship together or the change is wrong.** The route
+(`POST /v1/auth/password`, account-audience only, current password AND a
+conditional step-up); identity's first `withTransaction` and first
+`set_config('app.actor_id')`; and migration 008, which stops `users_versions`
+keeping password hashes. The last is an ORDERING requirement rather than a
+tidy-up: `CREATE OR REPLACE FUNCTION` only affects future captures, so a
+redaction that shipped one release after the first write would leave verifiers
+in an append-only table nothing can retract.
+
+**The redaction argument is NOT the vault's, and that matters.** M6 drops
+`wrapped_master_key` because a superseded wrapping is a live capability against
+the current secret; an old Argon2id hash is not that. What transfers is the
+vault comment's *justification* for keeping full images everywhere else — "the
+ciphertext in it is readable with the same key as the live row", i.e. the
+crypto-shred reaches the capture — and `password_hash` is the one column in
+`users` for which that is false. `email_ct` and `dek_id` are kept, deliberately:
+they are under the envelope and carry the audit value the trigger exists for.
+
+**The fifth notifications edge, with the cheap option ruled out rather than
+skipped.** docs/04 decision 1 offered "a route through an existing holder"; that
+is impossible as a narrow grant, because `SendSchema` is built per-ROUTE from
+`ESTATE_NOTIFICATION_KINDS` and there is no per-holder subsetting mechanism —
+identity would get all ten estate kinds. The real alternative was widening the
+VERIFY edge (holder already identity alone), declined on that edge's own
+recorded reasoning about the first future holder of a resend capability. Graph
+entry written FIRST and the fence watched red (5 failures naming the missing
+guard, token, controller, binding and route) before green.
+
+**Verified rather than assumed:** `ESTATE_NOTIFICATION_KINDS` is still ten, so
+the three "ten estate notifications" claims in the graph, the controller and the
+config stay true — a SYSTEM kind does not change that count.
+
+**Ten mutations confirmed red**, including dropping the redaction, OVER-redacting
+the DEK-wrapped columns, dropping the status allowlist from the UPDATE, revoking
+the caller's own session, removing the actor, emitting `stepup.granted` (which
+would silently void an open §5.1 death case), checking the password before the
+step-up gate, and admitting a vault or extension session to the route.
+
+**Driven live against the running stack**, with audit rebuilt and restarted
+BEFORE the producers (the PR1 lesson, applied rather than rediscovered): zero
+`schema_violation` rejections, against eight in PR1's drive. A wrong current
+password answered `401 invalid_credentials` and changed nothing — two sessions
+still live, zero version rows. The change answered 204, evicted the other device
+(401 at `/v1/auth/session`) while the caller's own session stayed 200, killed the
+old password and admitted the new one. The version image came back
+`password_hash present: false`, `email_ct present: true`, `dek_id present: true`,
+`actor: set` — the redaction, the deliberate keeps, and the attribution, in one
+row. The ledger shows `password.change_failed` then `password.changed` and no
+`stepup.granted`. The owner got a real SES message ("The password for your Estate
+account was just changed…") under the platform's one uniform subject, the send
+log recorded `identity.password_changed | outcome=sent_unverified` — M14's
+machinery correctly noting an address this probe account never proved — and the
+audit event carried `{"notified": "delivered", "revokedSessions": "1"}`.
+
+**Three of my own probes were wrong before the code was**, all caught by
+checking what produced the observation rather than believing it. `MIGRATE=0`
+while 007 was still the highest applied migration, because the migrate jobs are
+SEPARATELY BUILT images and rebuilding the services does not rebuild them. A
+`400` from the password route that was a shell bug — an unquoted conditional
+`-H "authorization: Bearer $t"` splits on the space and hands curl four broken
+arguments — where the route in fact answered 204. And `node
+apps/stack/dist/generate-env.js` exiting 0 having written nothing, because the
+entrypoint is `generate-env-cli.js`; the tell was the file's mtime, not the exit
+code.
+
+**A coverage floor moved for an honest reason.** Identity's database-free number
+DROPPED, because PR2's new code is mostly SQL that the PG-gated int suite proves
+and that run cannot see. It was not lowered: `test/db.spec.ts` covers
+`withTransaction`'s failure paths — rollback, release, a failing rollback not
+masking the original error — which are control flow rather than SQL semantics and
+were owed regardless. Floor ratcheted 70/68/41/68 → 70/68/42/69.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

@@ -1,4 +1,4 @@
-import type { EstateNotificationKind } from '@estate/notifications-client';
+import type { AccountSecurityKind, EstateNotificationKind } from '@estate/notifications-client';
 
 /**
  * The template registry: the ONLY source of carrier-visible words in the
@@ -111,4 +111,37 @@ export function renderAddressVerification(code: string): RenderedNotification {
       // because redeeming it requires being signed in to the account.
       'If you did not create an Estate account, you can ignore this message — the code cannot be used without signing in to that account.',
   };
+}
+
+/**
+ * The ACCOUNT-SECURITY bodies (M17).
+ *
+ * A SEPARATE Record from `BODIES`, not an addition to it, for the reason
+ * `renderAddressVerification` is a separate function: `render`'s signature is
+ * typed over `EstateNotificationKind`, and the estate send route's schema is
+ * built from that same list, so keeping these out of it is what stops a
+ * credential held by vault, settlement and profile from firing them. Total over
+ * `AccountSecurityKind`, so a second security kind is a COMPILE error here
+ * rather than a message nobody wrote.
+ *
+ * NO VARIABLES AT ALL, which is stricter than the estate bodies (they take a
+ * deadline date). "Your password was changed at 14:02" would be friendlier and
+ * would put a caller-chosen value in front of a reader; telling them to sign in
+ * and check is both safer and the action they should take either way.
+ *
+ * The wording assumes the recipient may be the ATTACKER'S VICTIM rather than
+ * the actor — that is the entire point of sending it — so it leads with what
+ * to do if this was not them, and it does not link (the registry's no-links
+ * rule, machine-checked over every body).
+ */
+const SECURITY_BODIES: Record<AccountSecurityKind, string> = {
+  'identity.password_changed':
+    'The password for your Estate account was just changed. ' +
+    'If that was you, there is nothing to do. ' +
+    'If it was not, open your Estate app and sign in to review your active devices and sessions — ' +
+    'and if you cannot sign in, contact support.',
+};
+
+export function renderAccountSecurity(kind: AccountSecurityKind): RenderedNotification {
+  return { subject: SUBJECT, body: SECURITY_BODIES[kind] };
 }

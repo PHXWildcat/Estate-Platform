@@ -26,6 +26,7 @@ import {
   PG_POOL_CONFIG,
   RECIPIENTS_CREDENTIAL,
   RECIPIENT_STATUS_CREDENTIAL,
+  SECURITY_CREDENTIAL,
   VERIFICATION_CREDENTIAL,
 } from './di-tokens';
 import { SesEmailSender, StubEmailSender, type EmailSender } from './email';
@@ -35,10 +36,12 @@ import {
   InternalController,
   RecipientStatusController,
   RecipientsController,
+  SecurityController,
   VerificationController,
 } from './internal.controller';
 import { RecipientStatusCredentialGuard } from './recipient-status-credential.guard';
 import { RecipientsCredentialGuard } from './recipients-credential.guard';
+import { SecurityCredentialGuard } from './security-credential.guard';
 import { VerificationCredentialGuard } from './verification-credential.guard';
 import { NotificationsService } from './notifications.service';
 import { RecipientsRepo } from './recipients.repo';
@@ -88,6 +91,7 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
     RecipientsController,
     VerificationController,
     RecipientStatusController,
+    SecurityController,
   ],
   providers: [
     { provide: CONFIG, useFactory: (): NotificationsConfig => loadConfig() },
@@ -183,10 +187,23 @@ function kmsProviderFor(config: NotificationsConfig): KmsKeyProvider {
       inject: [CONFIG],
       useFactory: (config: NotificationsConfig): string => config.recipientStatusApiToken,
     },
+    {
+      // M17 #5: announcing a change to the account's own credentials. Identity
+      // alone. Off the send credential because vault, settlement and profile
+      // hold that one and none of them should be able to tell a user their
+      // password changed — it is a phishing pretext a recipient acts on. Off
+      // the verification credential because that mails a caller-minted code,
+      // and the first future holder of a resend capability must not inherit
+      // this. Fails closed on '' like the others.
+      provide: SECURITY_CREDENTIAL,
+      inject: [CONFIG],
+      useFactory: (config: NotificationsConfig): string => config.securityApiToken,
+    },
     ServiceCredentialGuard,
     RecipientsCredentialGuard,
     VerificationCredentialGuard,
     RecipientStatusCredentialGuard,
+    SecurityCredentialGuard,
     RecipientsRepo,
     SendsRepo,
     NotificationsService,

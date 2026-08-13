@@ -4,6 +4,7 @@ import {
   InternalController,
   RecipientStatusController,
   RecipientsController,
+  SecurityController,
   VerificationController,
 } from '../src/internal.controller';
 import type { NotificationsService } from '../src/notifications.service';
@@ -24,12 +25,14 @@ describe('InternalController', () => {
     recipients: RecipientsController;
     verification: VerificationController;
     status: RecipientStatusController;
+    security: SecurityController;
     calls: {
       send: unknown[];
       upsert: unknown[];
       verification: unknown[];
       markVerified: unknown[];
       status: unknown[];
+      security: unknown[];
     };
   } => {
     const calls = {
@@ -38,6 +41,7 @@ describe('InternalController', () => {
       verification: [] as unknown[],
       markVerified: [] as unknown[],
       status: [] as unknown[],
+      security: [] as unknown[],
     };
     const service = {
       send: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
@@ -62,12 +66,17 @@ describe('InternalController', () => {
         calls.status.push(userId);
         return Promise.resolve({ verified: true });
       },
+      sendAccountSecurity: (input: unknown): Promise<{ delivered: boolean; channel: string }> => {
+        calls.security.push(input);
+        return Promise.resolve({ delivered: true, channel: 'email' });
+      },
     } as unknown as NotificationsService;
     return {
       controller: new InternalController(service),
       recipients: new RecipientsController(service),
       verification: new VerificationController(service),
       status: new RecipientStatusController(service),
+      security: new SecurityController(service),
       calls,
     };
   };
@@ -109,18 +118,58 @@ describe('InternalController', () => {
     // edge again. A guard binds exactly one token, so one class per capability
     // is what makes the partition real rather than described.
     const { controller, recipients, verification, status } = build();
-    const surfaces = [controller, recipients, verification, status];
-    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(4);
+    const { security } = build();
+    const surfaces = [controller, recipients, verification, status, security];
+    expect(new Set(surfaces.map((s) => s.constructor.name)).size).toBe(5);
     expect('upsertRecipient' in controller).toBe(false);
     expect('send' in recipients).toBe(false);
     // The code-bearing route lives nowhere near the broadly-held send surface.
     expect('send' in verification).toBe(false);
     expect('sendAddressVerification' in controller).toBe(false);
+    // M17: the account-security surface is its own class with its own handler
+    // name, so a future refactor cannot merge it into either neighbour by
+    // accident — the reason `sendCode` is not called `send` either.
+    expect('sendSecurity' in controller).toBe(false);
+    expect('sendSecurity' in verification).toBe(false);
+    expect('sendCode' in security).toBe(false);
     // The read surface writes nothing.
     expect(Object.getOwnPropertyNames(RecipientStatusController.prototype)).toEqual([
       'constructor',
       'status',
     ]);
+  });
+
+  it('security: parses the closed-kind wire and delegates', async () => {
+    const { security, calls } = build();
+    const body = { userId: randomUUID(), kind: 'identity.password_changed' };
+    await expect(security.sendSecurity(body)).resolves.toEqual({
+      delivered: true,
+      channel: 'email',
+    });
+    expect(calls.security).toEqual([body]);
+  });
+
+  it('security: refuses an ESTATE kind, and refuses smuggled text', () => {
+    // The exclusion is what makes the split real: this credential must not be
+    // able to fire an estate alarm, and the estate credential must not be able
+    // to fire this. Both directions are structural (three schemas, three
+    // lists), and this is the half a wire test can observe.
+    const { security, calls } = build();
+    expect(() =>
+      security.sendSecurity({ userId: randomUUID(), kind: 'settlement.case_opened' }),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      security.sendSecurity({
+        userId: randomUUID(),
+        kind: 'identity.password_changed',
+        subject: 'attacker words',
+      }),
+    ).toThrow(BadRequestException);
+    // …and the code-bearing kind is not reachable here either.
+    expect(() =>
+      security.sendSecurity({ userId: randomUUID(), kind: 'identity.address_verification' }),
+    ).toThrow(BadRequestException);
+    expect(calls.security).toEqual([]);
   });
 
   it('verification: parses the typed code wire and delegates', async () => {

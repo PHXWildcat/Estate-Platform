@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Db, isUniqueViolation } from './db';
+import { Db, isUniqueViolation, type Queryable } from './db';
 
 export interface UserRow {
   id: string;
@@ -57,6 +57,40 @@ export class UsersRepo {
       [userId],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * Replace the password hash (M17 PR2) — the FIRST write this column has ever
+   * had. It was set once at INSERT and read twice at login, and nothing else.
+   *
+   * TAKES A `Queryable`, so the caller can pass an open transaction. That is
+   * not a convenience: the hash write and the session revocation have to commit
+   * together or a crash between them leaves either every old credential live
+   * under a new password, or a user signed out of an account whose password did
+   * not change.
+   *
+   * THE STATUS ALLOWLIST RIDES THE UPDATE rather than being checked above it —
+   * the M13 `contact_in_use` lesson. It is the same set the session lookups
+   * use: `deceased_pending` is permitted because docs/03 §5.1's rescue path is
+   * the living owner signing in and voiding the case, and being unable to
+   * change a password would make that harder for exactly the person the case
+   * targets; `settlement` and every other status are refused, because reopening
+   * a terminally locked account is what that status exists to prevent.
+   *
+   * Returns whether a row matched, so the caller can answer without a second
+   * read that could race.
+   */
+  async updatePasswordHash(tx: Queryable, userId: string, passwordHash: string): Promise<boolean> {
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE users
+          SET password_hash = $2, updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NULL
+          AND status IN ('active', 'deceased_pending')
+        RETURNING id`,
+      [userId, passwordHash],
+    );
+    return rows.length > 0;
   }
 
   /**

@@ -104,6 +104,19 @@ describe('identity route audiences match the declaration', () => {
     expect(admittedAudiences('redeemExtensionPairing')).toBeUndefined();
   });
 
+  it('CHANGING THE PASSWORD is account-only — a derived credential cannot rewrite its root', () => {
+    // Named rather than left to the sweep, for the same reason minting is. A
+    // vault session and an extension session are narrow, derived credentials
+    // whose whole safety argument is that they reach a fixed small set of
+    // routes; letting either replace the account password would let a leaked
+    // one chain itself into permanent, unrecoverable control of the account —
+    // strictly worse than anything else on their reachable surface, because it
+    // survives revoking the credential that did it.
+    expect(routeNames()).toContain('changePassword');
+    expect(IDENTITY_AUDIENCE_ROUTES.has('changePassword')).toBe(false);
+    expect(admittedAudiences('changePassword')).toBeUndefined();
+  });
+
   it('the extension reaches introspection, step-up and logout — and only those', () => {
     // Named rather than derived, because "which of identity's routes does the
     // browser extension reach" is a sentence docs/03 §6j makes a claim about,
