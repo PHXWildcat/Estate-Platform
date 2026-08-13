@@ -4915,3 +4915,83 @@ deviating from them, stop and propose the change with rationale — do not silen
   failed with `DeadlineExceeded`, because `$?` was `tail`'s — the 2026-08-11
   lesson repeating, and the reason every gate in this session was re-run with
   its output redirected and its real exit code echoed.
+- 2026-08-12 — M17 PR2: THE ACCOUNT PASSWORD CAN BE CHANGED, and the version
+  image stops keeping the old one. Identity had no such route in sixteen
+  milestones and no deferral written anywhere, because every "password reset"
+  string in the docs refers to the VAULT password. The gate is BOTH halves and
+  each covers what the other cannot: the current password is the one thing a
+  stolen SESSION does not carry, so requiring it stops a hijacked bearer locking
+  the owner out; step-up is the one thing a stolen PASSWORD does not carry, so
+  requiring it stops somebody who learned it from making it permanent. The
+  step-up half is CONDITIONAL on `SecondFactorGate`'s existing predicate,
+  because an account with no verified factor has nothing to prove and an
+  unconditional gate would make its password unchangeable forever — the worst
+  answer for exactly the users least protected. Asked BEFORE the password check,
+  so the route is not a free password oracle and the refusal's timing does not
+  vary with whether the guess was right.
+- 2026-08-12 — THE M6 VAULT REDACTION ARGUMENT DOES NOT TRANSFER, AND ITS
+  JUSTIFICATION DOES. `vault_keysets` drops `wrapped_master_key` because a
+  superseded wrapping is a LIVE capability against the CURRENT secret; an old
+  Argon2id hash is only a verifier for a RETIRED password, login reads the live
+  row alone, and nothing in the repo reads `users_versions` at all. So the vault's
+  reason is refuted here. What DOES transfer is that comment's argument for
+  keeping full row images everywhere else — "the ciphertext in it is readable
+  with the same key as the live row", i.e. crypto-shredding reaches the capture —
+  because `password_hash` is the ONE column in `users` for which that is false:
+  a plain TEXT verifier, not a `*_ct` + `dek_id` pair, so it sits outside the
+  envelope and erasure never reaches it. A row image that survives a shred must
+  not contain a credential verifier. `email_ct` and `dek_id` are KEPT, which is
+  the same rule applied rather than copied. Migration 008 ships in the same
+  commit as the first write because `CREATE OR REPLACE FUNCTION` only affects
+  FUTURE captures — a redaction one release late leaves verifiers nothing can
+  retract.
+- 2026-08-12 — IDENTITY GETS A TRANSACTION LAST OF THE NINE SERVICES, and the
+  attribution half is why it could not be deferred. `withTransaction` makes the
+  hash write and the session revocation commit together (a hash without the
+  revocation leaves every credential minted under the old password live), but
+  the load-bearing part is `set_config('app.actor_id')`: identity was the ONE
+  service that never set it, so every row `trg_users_versions` has ever written
+  came back with a NULL actor. That is what makes redaction defensible rather
+  than merely safer — the trade is "drop the verifier, keep who and when", and
+  without attribution there is no who and the capture would be pure liability.
+- 2026-08-12 — THE FIFTH NOTIFICATIONS EDGE, with the cheap option RULED OUT
+  rather than skipped. docs/04 decision 1 offered "a fifth edge, or a route
+  through an existing holder"; the second is impossible as a NARROW grant,
+  because `SendSchema` is built per-ROUTE from `ESTATE_NOTIFICATION_KINDS` and
+  no per-holder subsetting mechanism exists anywhere — identity would receive all
+  ten estate kinds including `settlement.case_opened` and every `emergency.*`.
+  Nor is there a peer path: notifications has no Kafka consumer and identity
+  holds no credential to profile, settlement or vault. The REAL alternative was
+  widening the VERIFY edge, whose holder is already identity alone, and it is
+  declined on that edge's own recorded reasoning: it was split from RECIPIENTS
+  so the first future holder of a resend capability would not inherit a power it
+  should not have, and a support tool or BFF-side resend is exactly that holder —
+  it must not arrive carrying the ability to tell a user their password changed,
+  which is the message an attacker would most like to send because it is a
+  phishing pretext a recipient acts on. `identity.password_changed` is a SYSTEM
+  kind and, within that, a member of a narrower `ACCOUNT_SECURITY_KINDS`: three
+  send routes, three disjoint vocabularies, each schema built from its own list.
+  The body carries NO variables at all — not even a timestamp, though "changed
+  at 14:02" reads better — because the moment the wire carries one, a holder
+  chooses part of what the user reads.
+- 2026-08-12 — VERIFIED RATHER THAN ASSUMED, which the M17 plan explicitly owed:
+  adding a system kind does NOT change the three "ten estate notifications"
+  claims in the credential graph, the notifications controller and its config.
+  `ESTATE_NOTIFICATION_KINDS` is still ten; the count was measured off the built
+  package rather than reasoned about, and no edit was needed. The SEND edge's
+  "identity is deliberately NOT here" comment WAS edited, because identity now
+  mails on two of its own edges and the sentence had to say so.
+- 2026-08-12 — A COVERAGE FLOOR DROPPED AND WAS NOT LOWERED. PR2's new code is
+  mostly SQL, which the PG-gated int suite proves and identity's DATABASE-FREE CI
+  run cannot see, so that gate went under its floor. The answer was
+  `test/db.spec.ts` — `withTransaction`'s failure paths (rollback runs, the
+  connection is released on every path, a FAILING rollback does not mask the
+  error that caused it) — which is control flow rather than SQL semantics, is
+  owed on its own terms, and is exactly what the int suite cannot isolate because
+  every case there commits. Floor ratcheted 70/68/41/68 → 70/68/42/69. The
+  database-free step added on 2026-08-12 is what made the drop visible at all.
+- 2026-08-12 — MEASURED WHILE STOPPING: `pnpm -r run test` on this box fails two
+  `apps/vault-extension` specs at ~988s each that pass in 65s run alone. It is
+  CONTENTION, not a regression — those suites run PBKDF2 at 650k iterations and
+  the repo-wide parallel run starves them past the jest timeout. Before treating
+  a full-repo red as a real failure, re-run the failing package in isolation.

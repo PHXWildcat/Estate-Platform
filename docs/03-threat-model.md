@@ -1202,7 +1202,11 @@ CLAUDE.md decision log; the security-relevant shape is:
 - *No user-reachable session revocation.* Before M16, `revokeAllForUser` had one
   caller behind a service credential, and identity exposed no session listing, no
   revoke-by-id and no password-change or password-reset route — so the only way
-  to revoke a session was to present it. Tolerable while every session was one
+  to revoke a session was to present it. (M17 PR2 closes the password-CHANGE
+  half of that sentence; reset is PR3. It also gives the sentence a second
+  meaning: a password change now revokes every OTHER session in the same
+  transaction, so the ordinary remedy for "something has my credentials" is one
+  action rather than a per-row sweep.) Tolerable while every session was one
   cookie-bound browser; not tolerable beside a long-lived credential on a device.
   PR1 ships the first paired-devices list with per-row revoke, ON A SURFACE and
   in the same PR as the routes: an owner can see every live credential on their
@@ -1517,9 +1521,17 @@ older than M16.
   two more audiences. **Closed** by gating enrolment on a fresh step-up WHEN A
   VERIFIED FACTOR ALREADY EXISTS. *Residual, and it cannot be closed here:* for
   an account that never enrolled a factor, a stolen session still buys the
-  bootstrap — there is no proof to demand, and identity cannot warn the owner
-  because M14 deliberately made it not a holder of the notifications SEND
-  credential. Such an account had no second factor to defeat. *Second residual,
+  bootstrap — there is no proof to demand. Such an account had no second factor
+  to defeat. **The second half of this residual is CLOSED by M17 PR2**: it used
+  to read "and identity cannot warn the owner because M14 deliberately made it
+  not a holder of the notifications SEND credential", which was true when
+  written and is now false in the direction that matters. Identity holds an
+  ACCOUNT-SECURITY send edge of its own (`NOTIFICATIONS_SECURITY_INTERNAL_TOKEN`,
+  §6l) and still holds no estate-send credential, so it can tell an owner their
+  credentials changed without gaining the power to ring "a death report was
+  filed on your account". What remains unwarned is the enrolment bootstrap
+  itself — that kind does not exist yet, and adding one is a decision about
+  which account events are worth a mail rather than a capability question. *Second residual,
   recorded not fixed:* a legitimate re-enrolment silently retires the previous
   authenticator, because `findActiveTotp` takes the newest. "Add a device" and
   "replace a device" are different intentions and the platform offers one
@@ -1762,6 +1774,113 @@ one closes the channel.
 - *§6g's redeem-route residual is UNCHANGED and is edge work.* A per-caller
   bound there needs a caller identity this platform does not have; the 160-bit
   code is the control.
+
+## 6l. Threat-model delta — M17 PR2, the password change (2026-08-12)
+
+**Identity has never had a route that changes a password.** Sixteen milestones of
+authentication with no way to rotate the credential all of it rests on, and no
+deferral written anywhere — every "password reset" string in these documents
+refers to the VAULT password (Zone A, M6), which is a different credential under
+a different key hierarchy.
+
+**The gate is BOTH halves, and each covers what the other cannot.**
+
+| presented | what it proves | what a thief lacking it cannot do |
+|---|---|---|
+| current password | knowledge of the secret being replaced | a stolen SESSION cannot lock the owner out |
+| fresh step-up (where a factor exists) | possession of the account's factor | a stolen PASSWORD cannot be made permanent |
+
+The step-up half is **conditional**, on `SecondFactorGate`'s existing predicate:
+an account with no verified factor has nothing to prove, and an unconditional
+gate would make its password unchangeable forever — the worst available answer
+for exactly the users least protected. The step-up question is asked BEFORE the
+password check, so the route is not a free password oracle and the refusal's
+timing does not vary with whether the guess was right.
+
+**THE OLD HASH IS NO LONGER KEPT** (identity migration 008). `users_versions`
+captures a row image on every `users` UPDATE, and this is the first UPDATE
+`password_hash` has ever had, so before this change every password change would
+have written its predecessor's Argon2id verifier into a table this schema
+REVOKEs UPDATE and DELETE on. The M6 vault precedent does **not** transfer as
+stated — an old hash verifies a RETIRED password, not the current secret, and
+nothing in the repo reads `users_versions` — but that comment's *justification*
+does: it keeps full row images everywhere else because "the ciphertext in it is
+readable with the same key as the live row", i.e. crypto-shredding reaches the
+capture. `password_hash` is the ONE column in `users` for which that is false. A
+row image that survives a crypto-shred must not contain a credential verifier.
+`email_ct` and `dek_id` are deliberately kept: they *are* under the envelope, and
+they carry the audit value the trigger exists for.
+
+**Ordering is the control, again.** `CREATE OR REPLACE FUNCTION` only affects
+future captures, so a redaction shipped one release after the first write leaves
+verifiers nothing can retract. The migration and the route are the same commit.
+
+**Identity gained a transaction and an actor.** It was the only service of the
+nine with no `withTransaction` and no `set_config('app.actor_id')` — measured,
+every row that trigger has written came back with a NULL actor. Both halves
+matter here: the hash write and the session revocation commit together (a hash
+without the revocation leaves every credential minted under the old password
+live), and the capture now records who. Redaction is only defensible because
+what survives is who and when.
+
+**A password change revokes every OTHER session, and keeps the caller's.** That
+session has just proved the current password and, where one exists, a fresh
+factor — it is the one credential in the set demonstrably held by someone who
+knows the secret being replaced. Signing the changer out too is defensible and
+is rejected on the M6 rule: a password change that ends your session teaches
+people not to change their password.
+
+**A FIFTH NOTIFICATIONS EDGE** (`NOTIFICATIONS_SECURITY_INTERNAL_TOKEN`, holder
+identity alone). A silent password change is unacceptable and undoing M14's
+split is worse. Three options existed, not two:
+
+- *add identity to the estate SEND edge* — **impossible as a narrow grant**:
+  `SendSchema` is built per-ROUTE from `ESTATE_NOTIFICATION_KINDS`, so there is
+  no mechanism anywhere to give one holder a subset. Identity would get all ten,
+  including `settlement.case_opened` and every `emergency.*`.
+- *widen the existing VERIFY edge*, whose holder is already identity alone —
+  **declined on that edge's own recorded reasoning**. It was split from
+  RECIPIENTS so that "the first future holder of a resend capability" would not
+  inherit a power it should not have; a support tool or a BFF-side resend is
+  exactly that holder, and it must not arrive carrying the ability to tell a user
+  their password changed.
+- *a fifth edge* — **taken**.
+
+The kind is a SYSTEM kind and, within that, a member of a narrower
+`ACCOUNT_SECURITY_KINDS`. Three send routes now have three disjoint
+vocabularies, each schema built from its own list, so no holder of one credential
+can fire another's. The body carries **no variables at all** — not even a
+timestamp, though "changed at 14:02" would read better — because the moment this
+wire carries one, a holder chooses part of what the user reads.
+
+### Residuals, stated rather than implied
+
+- *The notice is best-effort and its failure is recorded, not retried.* The
+  change commits first; a notification that cannot be delivered leaves
+  `notified: failed` on the audit event (the M13 `ownerNotified` shape) for an
+  operator to re-drive. Sending first would risk telling someone their password
+  changed when it had not.
+- *An attacker who has BOTH the password and a fresh step-up can change it.* That
+  is not a gap this route can close — it is the definition of holding the
+  account — and what bounds it is the notice, the audit event, and the fact that
+  every other session dies in the same transaction, so the owner's own client
+  discovers it at once.
+- *A password change does not touch the VAULT.* The Zone A master key derives
+  from the vault password and Secret Key under 2SKD, never from the account
+  password. Nothing here re-keys, re-wraps or invalidates anything in Zone A,
+  and no surface says otherwise (PR3 owes the same statement, more loudly,
+  because a RESET is where a user is most likely to assume it).
+- *`auth_events` gains `password.changed` and `password.change_failed`, and
+  deliberately NOT `stepup.granted`.* That literal is hardcoded in the
+  owner-liveness interlock, so emitting it would silently void an open §5.1 death
+  case as a side effect — a policy decision taken by accident and a capability
+  handed to whoever completed the change.
+- *The route is account-audience only.* A vault or extension session cannot
+  replace the credential that mints it; a leaked derived credential must not be
+  able to chain itself into permanent control, which survives revoking the
+  credential that did it.
+- *Still no reset.* A user who has FORGOTTEN their password cannot use this
+  route, by construction — it requires the current one. That is PR3.
 
 ## 7. Validation program
 

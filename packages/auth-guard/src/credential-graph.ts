@@ -205,14 +205,22 @@ export const SERVICE_CREDENTIAL_GRAPH: readonly ServiceCredentialEdge[] = [
     // is the failure this notification exists to prevent).
     //
     // Identity is deliberately NOT here, and M14 made that a statement about
-    // capability rather than about traffic. Identity now DOES make the platform
-    // mail somebody — exactly one kind, its own address-verification code, on
-    // its own edge below. What it must not gain is the power to fire an ESTATE
-    // notification: a holder of this credential chooses which of ten
-    // owner-facing alarms rings and when, and the service that mints sessions
-    // has no business ringing "a death report was filed on your account".
-    // SYSTEM_NOTIFICATION_KINDS is excluded from this route's schema for the
-    // mirror-image reason.
+    // capability rather than about traffic. Identity now makes the platform mail
+    // somebody on TWO of its own edges below — its address-verification code
+    // (M14) and its account-security notice (M17) — and holds neither this
+    // credential nor any way to reach an estate kind. What it must not gain is
+    // the power to fire an ESTATE notification: a holder of this credential
+    // chooses which of ten owner-facing alarms rings and when, and the service
+    // that mints sessions has no business ringing "a death report was filed on
+    // your account".
+    //
+    // The count is unchanged by M17 and that was VERIFIED rather than assumed:
+    // `identity.password_changed` is a SYSTEM kind, so ESTATE_NOTIFICATION_KINDS
+    // is still ten and this sentence stays true. SYSTEM_NOTIFICATION_KINDS is
+    // excluded from this route's schema for the mirror-image reason, and M17
+    // narrows further — `AccountSecuritySchema` is built from a SUBSET of the
+    // system kinds, so the three send routes have three disjoint vocabularies
+    // and no holder of one can fire another's.
     holders: ['profile', 'settlement', 'vault'],
     guard: SHARED_GUARD,
     opens: ['POST /internal/v1/notifications/send'],
