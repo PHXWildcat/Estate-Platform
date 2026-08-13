@@ -37,6 +37,18 @@ describe('the bounds table (reviewed data)', () => {
     expect(undecidedPrefixes()).toEqual([]);
   });
 
+  it('models BOTH of the projection rebuild s sentinel decrypt sites', () => {
+    // rebuild.service.ts decrypts twice as the sentinel: ledger payloads
+    // (asset_event.payload.<id>) and the live-view diff (asset.<id>.<col>).
+    // The M18 review found only the first modelled, so every rebuild of a
+    // valued estate fired unmodeled_principal — the loudest class in the
+    // table, raised by a reviewed path, which is how an alarm stops being
+    // read.
+    expect(boundFor('asset_event', 'sentinel').name).toBe('asset_event_sentinel');
+    expect(boundFor('asset', 'sentinel').name).toBe('asset_sentinel');
+    expect(boundFor('asset', 'sentinel').maxPerWindow).toBeGreaterThan(0);
+  });
+
   it('every bound row names a registered prefix and a real principal class', () => {
     const prefixes = new Set(Object.keys(DECRYPT_FIELD_PREFIXES));
     const classes = new Set(['user', 'service', 'operator', 'system', 'sentinel']);
@@ -159,6 +171,13 @@ function burstRow(n: number): FakeDb['rows'][number] {
   return { prefix: 'doc', actor_type: 'user', actor_id: USER_A, n };
 }
 
+/** The breaching principal an emitted anomaly is about — parsed through the
+ * real schema, so a malformed emit fails here rather than reading as a
+ * missing id. */
+function subjectOf(value: string): string {
+  return String(AuditEventSchema.parse(JSON.parse(value)).resourceId);
+}
+
 describe('DecryptRateDetector (episodes, faults, emit shape)', () => {
   const docMax = boundFor('doc', 'user').maxPerWindow;
 
@@ -263,6 +282,114 @@ describe('DecryptRateDetector (episodes, faults, emit shape)', () => {
     expect(db.queries).toBe(1);
     release({ rows: [] });
     await first;
+  });
+
+  it('an emit failure during a tick where ANOTHER episode clears never suppresses a later re-arm', async () => {
+    // THE M18 REVIEW'S WORST FINDING, pinned. The prune that ends episodes
+    // used to run after the emit loop inside one try, so a thrown emit
+    // skipped it: principal A's cleared episode stayed marked announced, and
+    // A's NEXT genuine breach was swallowed as a duplicate — a LOST anomaly
+    // in a detector whose docs promised the fail direction is always an extra
+    // event. Reproduced against the real class before the fix ([A, B] where
+    // [A, B, A] was owed).
+    const db = new FakeDb();
+    const emitted: string[] = [];
+    let brokerDown = false;
+    const producer: AuditProducer = {
+      send(message): Promise<void> {
+        if (brokerDown) {
+          return Promise.reject(new Error('broker down'));
+        }
+        emitted.push(subjectOf(message.value));
+        return Promise.resolve();
+      },
+    };
+    const detector = new DecryptRateDetector(db, new AuditEmitter(producer));
+
+    db.rows = [burstRow(docMax + 1)]; // A breaches, announced
+    await detector.tick();
+    // A clears; B breaches; the broker is down so B's emit throws.
+    db.rows = [{ prefix: 'doc', actor_type: 'user', actor_id: USER_B, n: docMax + 1 }];
+    brokerDown = true;
+    await detector.tick();
+    // Broker back. A re-breaches — a genuinely NEW episode.
+    brokerDown = false;
+    db.rows = [
+      burstRow(docMax + 1),
+      { prefix: 'doc', actor_type: 'user', actor_id: USER_B, n: docMax + 1 },
+    ];
+    await detector.tick();
+
+    expect(emitted.filter((id) => id === USER_A)).toHaveLength(2);
+    // B's failed emit was retried on the next tick, not dropped.
+    expect(emitted).toContain(USER_B);
+  });
+
+  it('one unemittable breach does not cancel its neighbours in the same tick', async () => {
+    // Second harm of the same defect: the emit loop shared one try, so the
+    // first throw abandoned every later breach in that tick.
+    const db = new FakeDb();
+    const emitted: string[] = [];
+    const producer: AuditProducer = {
+      send(message): Promise<void> {
+        const id = subjectOf(message.value);
+        if (id === USER_A) {
+          return Promise.reject(new Error('unemittable'));
+        }
+        emitted.push(id);
+        return Promise.resolve();
+      },
+    };
+    const detector = new DecryptRateDetector(db, new AuditEmitter(producer));
+    db.rows = [
+      burstRow(docMax + 1),
+      { prefix: 'doc', actor_type: 'user', actor_id: USER_B, n: docMax + 1 },
+    ];
+    await detector.tick();
+    expect(emitted).toEqual([USER_B]);
+    expect(detector.faults).toBe(1);
+  });
+
+  it('a query failure leaves episode memory untouched (nothing to reconcile against)', async () => {
+    const { db, detector, producer } = build();
+    const mem = producer as InMemoryAuditProducer;
+    db.rows = [burstRow(docMax + 1)];
+    await detector.tick();
+    expect(mem.messages).toHaveLength(1);
+    db.fail = true; // the sweep cannot see the world at all
+    await detector.tick();
+    db.fail = false;
+    await detector.tick(); // still breaching — must NOT re-announce
+    expect(mem.messages).toHaveLength(1);
+    expect(detector.faults).toBe(1);
+  });
+
+  it('merges the sentinel s two actor types onto one principal before evaluating', async () => {
+    // The SQL groups by actor_type (a column) while the bound is keyed on the
+    // principal CLASS, which folds ('service', nil) and ('system', nil)
+    // together. Unmerged, each row sat under the bound while their sum
+    // exceeded it — two disagreeing notions of "a principal" in one detector.
+    const { db, detector, producer } = build();
+    const mem = producer as InMemoryAuditProducer;
+    const half = Math.ceil(boundFor('notification_recipient', 'sentinel').maxPerWindow / 2) + 1;
+    db.rows = [
+      {
+        prefix: 'notification_recipient',
+        actor_type: 'service',
+        actor_id: SENTINEL_ACTOR_ID,
+        n: half,
+      },
+      {
+        prefix: 'notification_recipient',
+        actor_type: 'system',
+        actor_id: SENTINEL_ACTOR_ID,
+        n: half,
+      },
+    ];
+    await detector.tick();
+    expect(mem.messages).toHaveLength(1);
+    const event = AuditEventSchema.parse(JSON.parse(mem.messages[0]?.value ?? ''));
+    expect(event.detail).toMatchObject({ principal: 'sentinel', count: half * 2 });
   });
 
   it('a decrypt row with no field surfaces as an unknown-prefix breach, not an unemittable token', async () => {

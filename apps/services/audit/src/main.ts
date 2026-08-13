@@ -6,6 +6,7 @@ import { AppModule, AUDIT_PRODUCER, DETECTOR_PG_CLIENT, PG_CLIENT } from './app.
 import { AuditConsumer } from './consumer';
 import { DecryptRateDetector } from './decrypt-rate-detector';
 import { DETECTOR_TICK_MS } from './decrypt-rate-bounds';
+import type { DetectorConnection } from './detector-connection';
 import { handleFatal } from './fatal';
 import { log } from './logger';
 
@@ -33,7 +34,7 @@ async function bootstrap(): Promise<void> {
   });
   const consumer = app.get(AuditConsumer);
   const pgClient = app.get<Client>(PG_CLIENT);
-  const detectorClient = app.get<Client>(DETECTOR_PG_CLIENT);
+  const detectorConnection = app.get<DetectorConnection>(DETECTOR_PG_CLIENT);
   const producer = app.get<KafkaAuditProducer>(AUDIT_PRODUCER);
   const detector = app.get(DecryptRateDetector);
   let detectorTimer: NodeJS.Timeout | null = null;
@@ -44,7 +45,7 @@ async function bootstrap(): Promise<void> {
       detectorTimer = null;
     }
     await producer.disconnect();
-    await detectorClient.end();
+    await detectorConnection.end();
     await pgClient.end();
     await app.close();
   };
@@ -55,6 +56,20 @@ async function bootstrap(): Promise<void> {
     await releaseAll();
   };
   opened = { close: releaseAll };
+
+  // The INGEST connection dying IS fatal — but it must die through the
+  // service's own fatal path, not as an uncaught 'error' event. node-postgres
+  // emits 'error' on connection-level death (failover, a terminated backend),
+  // and with no listener Node's default crashes the process before
+  // `audit_service_fatal` is written and before any handle is released: a
+  // container that vanishes with no line explaining why, in the one service
+  // whose silence is the paging signal (M18 review). The DETECTOR's
+  // connection deliberately does NOT come here — it is advisory, and
+  // DetectorConnection absorbs and reconnects instead.
+  pgClient.on('error', (err: Error) => {
+    void handleFatal(err, opened);
+  });
+
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       shutdown(signal)

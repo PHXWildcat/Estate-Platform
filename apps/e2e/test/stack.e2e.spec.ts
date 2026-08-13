@@ -39,6 +39,16 @@ import { malwarePng, textPng } from './stack-fixtures';
  */
 const describeIfStack = process.env['STACK_TEST'] ? describe : describe.skip;
 
+/**
+ * Module load, i.e. before ANY test in this file runs — the scope the M18
+ * decrypt-rate gate judges. It must cover the whole journey (so a
+ * journey-caused anomaly is caught) and exclude earlier runs against a
+ * long-lived local stack (whose anomaly rows are permanent: audit_events
+ * REVOKEs UPDATE/DELETE, and a rebuild trips a designed alarm by decision).
+ * Scoping to the gate's own test would hide exactly what it exists to find.
+ */
+const SUITE_START = new Date();
+
 /** 'production' runs the rehearsal assertions; anything else the full journey. */
 const PROFILE = process.env['STACK_PROFILE'] === 'production' ? 'production' : 'development';
 const describeDev = PROFILE === 'development' ? describe : describe.skip;
@@ -1609,21 +1619,26 @@ describeIfStack('the running stack', () => {
       // over a DEAD detector (the M8 dead-consumer shape — the gate this
       // repo's own doctrine forbids), so the test first proves the deployed
       // detector fires: a deliberate burst one past the smallest bound, then
-      // a poll for the anomaly it must emit. That poll is also what makes the
-      // false-positive half DETERMINISTIC — the tick that catches the burst
-      // evaluates a window covering the whole journey (window >> journey +
-      // tick cadence), so once the burst's event lands, the journey's own
-      // traffic has been judged too. Then the gate: every exceeded event in
-      // the store names the deliberate bound, i.e. legitimate traffic never
-      // tripped anything. Asserted over ALL rows rather than a count of one
-      // so repeated local runs (each adding its own burst) stay green while
-      // CI — a fresh stack — sees exactly one.
+      // a poll for the anomaly it must emit. That poll also gives the
+      // false-positive half its ordering: a tick has demonstrably run against
+      // a window that includes this burst, and the journey's traffic sits in
+      // the same 300s window whenever the journey finished within it — which
+      // is the ordinary case (the whole dev suite runs in ~100s) but is NOT
+      // guaranteed on a degraded runner, so this gate is a strong check on
+      // journey traffic rather than a proof about it (M18 review; docs/03
+      // §6q records the bound). Then the assertion: every anomaly since this
+      // suite started is this burst's own, by bound AND by principal.
       //
-      // The burst rides mfa_methods_user, the smallest bound: identity's
-      // TOTP validation has no replay ledger, so repeated step-ups with the
-      // current code are cheap, fast, and side-effect-free beyond the ledger
-      // rows they legitimately write (step-up SUCCESSES are uncounted by the
-      // M16 cap, and no settlement case exists for a fresh probe user).
+      // The burst rides mfa_methods_user because it is the cheapest bound to
+      // reach honestly, NOT because it is the smallest (users_user and
+      // doc_operator are 60 against its 100 — the M18 review corrected an
+      // earlier comment claiming otherwise): identity's TOTP validation has
+      // no replay ledger, so repeated step-ups with the current code are
+      // cheap, fast, and side-effect-free beyond the ledger rows they
+      // legitimately write (step-up SUCCESSES are uncounted by the M16 cap,
+      // and no settlement case exists for a fresh probe user). The two
+      // smaller bounds are unreachable without either an email-change
+      // ceremony per decrypt or a settlement operator.
       const bound = boundFor('mfa_methods', 'user').maxPerWindow;
       const probe = await registerAndLogin();
       const enroll = expectStatus(
@@ -1676,14 +1691,29 @@ describeIfStack('the running stack', () => {
 
         // The false-positive gate: nothing the journey did — contacts,
         // profile, documents, assets, sends, rebuild-free reads — ever
-        // produced an anomaly. Every event in the store is a deliberate
-        // burst's.
-        const { rows: all } = await db.query<{ detail: Record<string, unknown> }>(
-          `SELECT detail FROM audit_events WHERE action = 'crypto.decrypt_rate.exceeded'`,
+        // produced an anomaly. Every anomaly SINCE THIS SUITE STARTED must be
+        // this test's own burst, identified by its PRINCIPAL and not merely by
+        // its bound name: every journey user drives the same
+        // (mfa_methods x user) class through stepUp(), so a boundName-only
+        // assertion would wave through a regression that made ordinary
+        // step-ups breach — the exact false positive this gate exists to
+        // catch (M18 review). Time-scoped for the mirror reason: the store is
+        // append-only and a designed alarm (a projection rebuild) would
+        // otherwise red every later run against the same stack forever.
+        const { rows: all } = await db.query<{
+          detail: Record<string, unknown>;
+          resource_id: string | null;
+        }>(
+          `SELECT detail, resource_id FROM audit_events
+            WHERE action = 'crypto.decrypt_rate.exceeded' AND occurred_at >= $1`,
+          [SUITE_START],
         );
         expect(all.length).toBeGreaterThanOrEqual(1);
         for (const row of all) {
-          expect(row.detail['boundName']).toBe('mfa_methods_user');
+          expect({ bound: row.detail['boundName'], principal: row.resource_id }).toEqual({
+            bound: 'mfa_methods_user',
+            principal: probe.userId,
+          });
         }
       } finally {
         await db.end();
