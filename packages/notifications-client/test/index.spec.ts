@@ -44,6 +44,8 @@ describe('package surface', () => {
       // M17 PR4: the change notice to the address being LEFT. Carries nothing;
       // reaches the old mailbox by ordering, not by naming it.
       'identity.email_changed',
+      // M17 follow-up: the passkey-clone warning.
+      'identity.passkey_clone_detected',
     ]);
     // Together they are the send LOG's vocabulary — the notifications DDL's
     // kind CHECK is written against this, and the int suite drives every member.
@@ -62,6 +64,10 @@ describe('package surface', () => {
     expect(api.ACCOUNT_SECURITY_KINDS).toEqual([
       'identity.password_changed',
       'identity.email_changed',
+      // M17 follow-up: the passkey-clone warning. On THIS wire because it
+      // carries nothing, and the answer to the PR6 review's clone item is to
+      // tell the owner rather than revoke their factor on a heuristic.
+      'identity.passkey_clone_detected',
     ]);
     // M17 PR3. Its own one-member list, DISJOINT from the account-security one:
     // that wire carries no variables at all, which is what makes it safe for a

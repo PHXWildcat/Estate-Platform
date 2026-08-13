@@ -2291,15 +2291,53 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
 
 ### Residuals
 
-- **Two novel-but-unreachable candidates are recorded rather than fixed**, both
-  latent behind machinery that does not exist yet. A crypto-shredded DEK at
-  email-change completion would surface as a 500 rather than the uniform
-  `invalid_code` (no code path destroys a DEK today — `destroyDek` still has
-  zero callers), and clone detection rejects a counter-regressed assertion
-  without revoking the credential, so a later higher-counter assertion from
-  either copy still succeeds. Both arm the day an erasure route or an
-  automatic-revocation policy lands; recorded here so the next milestone
-  inherits them stated rather than hidden.
+- **One novel-but-unreachable candidate is recorded rather than fixed.** A
+  crypto-shredded DEK at email-change completion would surface as a 500 rather
+  than the uniform `invalid_code` — no code path destroys a DEK today
+  (`destroyDek` still has zero callers). It is NOT fixed here on purpose:
+  mapping the decrypt failure to `invalid_code` would tell a user "that code
+  didn't work" about an account that has been ERASED, and once erasure exists
+  the right behaviour is almost certainly that a shredded account cannot reach
+  a ceremony route at all (erasure revokes sessions and moves `users.status`
+  off the live allowlist, at which point the 500 disappears as a consequence).
+  A wrong answer pinned by a test is harder to displace than an absent one, so
+  this is filed as a PRECONDITION on the erasure milestone rather than a
+  floating residual.
+- **Clone detection was the review's other recorded item and is now ANSWERED,
+  differently from how it was proposed.** The suggested fix was to revoke the
+  credential; the fix taken is to NOTIFY THE OWNER and keep rejecting. The
+  counter check is a heuristic: synced passkeys report counter 0 and never
+  reach the branch at all (the `storedCounter > 0` guard), so it fires only on
+  counter-maintaining authenticators, where a regression is a clone OR a
+  firmware/state bug. Auto-revocation would destroy a factor on a hint —
+  the M6 rule pointed the wrong way — and on an account with no TOTP it lands
+  the owner in exactly the bootstrap-lockout state M17 spent a milestone making
+  survivable. `identity.passkey_clone_detected` rides the account-security wire
+  (it carries nothing), is sent BEFORE the audit emit so a broker outage cannot
+  cancel the warning (the M13 rule), and its delivery outcome rides
+  `auth.webauthn.clone_detected` as `notified: delivered|failed` so a warning
+  that did not land is visible rather than merely absent. The owner revokes it
+  themselves from the surface M17 PR5 shipped.
+
+  **The branch was UNREACHABLE until this change, and only the live drive said
+  so.** `@simplewebauthn/server` runs its own counter check inside
+  `verifyAuthenticationResponse` and THROWS on a regression, which preempted
+  our clone branch and routed every clone into the generic verify catch — so
+  the ledger kind, the audit action and (had it shipped as first written) the
+  owner's warning were all dead code behind a refusal coming from somewhere
+  else. Measured: a forced regression produced two `webauthn.assertion_failed`
+  rows and zero `webauthn.clone_detected`. The fix hands the library
+  `counter: 0` — its documented "this RP does not track counters" value — so
+  this service owns the counter policy and the check runs below, on a VERIFIED
+  assertion. That ordering is the security half: checking before verification
+  would act on unsigned attacker-supplied bytes and let anyone holding a
+  session make the platform mail an owner a clone warning at will. The trigger
+  set is unchanged for every reachable state, so no refusal is given up.
+
+  What remains open, stated: a cloned credential stays usable until the owner
+  acts, so a later higher-counter assertion from either copy still succeeds.
+  That is the deliberate cost of not acting on a heuristic, and the thing that
+  would change it is a second signal — not a lower threshold on this one.
 - **The password-change bound is per-account durable plus per-session durable**,
   both ledger-derived, so unlike the address bound it survives a restart and is
   shared across replicas. It is NOT a global quota and does not bound an

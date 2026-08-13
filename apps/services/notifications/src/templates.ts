@@ -151,6 +151,17 @@ const SECURITY_BODIES: Record<AccountSecurityKind, string> = {
     'the one on file. If that was you, there is nothing to do. ' +
     'If it was not, contact Estate support immediately from this address — ' +
     'you will not be able to sign in with it any more.',
+  // M17 follow-up. The copy has to carry a real instruction without naming the
+  // credential (this wire has no variables) and without overclaiming: the
+  // counter check is a strong hint, not proof, so it says what was observed and
+  // what to do rather than announcing a compromise. Unlike the address-change
+  // notice, "sign in" IS the remedy here — the reader can still sign in, and the
+  // passkeys surface is where they remove it.
+  'identity.passkey_clone_detected':
+    'A passkey on your Estate account failed a security check that can mean the passkey has been ' +
+    'copied. The sign-in attempt was refused and nothing was changed. ' +
+    'Sign in and review your passkeys — remove any you do not recognise, and remove the one you ' +
+    'were just using if this was not you. Your other sign-in methods still work.',
 };
 
 export function renderAccountSecurity(kind: AccountSecurityKind): RenderedNotification {

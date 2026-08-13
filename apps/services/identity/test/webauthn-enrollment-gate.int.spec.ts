@@ -148,6 +148,10 @@ describeIfPg('registering a passkey (auth cluster)', () => {
       () => NOW,
       // THE REAL GATE over the real repos — a fake would make this file vacuous.
       new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db)),
+      {
+        sendAccountSecurity: (): Promise<{ accepted: boolean }> =>
+          Promise.resolve({ accepted: false }),
+      } as never,
     );
   });
 
