@@ -18,7 +18,7 @@ import {
   type HistoryEntryDto,
   type NetWorthDto,
 } from './assets.service';
-import { CallerGuard, requireCaller, type CallerRequest } from '@estate/auth-guard';
+import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
 import {
   AsOfQuerySchema,
   ChangeOwnershipSchema,
@@ -165,7 +165,20 @@ export class AssetsController {
     );
   }
 
+  /**
+   * RETIREMENT IS THE SERVICE'S DELETION-CLASS ACTION, so it is step-up gated
+   * (docs/01 §5, "deletion requests"). It is also the only IRREVERSIBLE verb
+   * here — every other command appends a correction, while a retired asset has
+   * no un-retire route in the ledger or the API, drops out of every total, and
+   * refuses all further commands.
+   *
+   * Found by the M19 PR4 review and proven live: on ONE non-elevated session,
+   * naming a beneficiary on an asset answered 403 stepup_required while
+   * retiring that same asset answered 200 and really retired it. The weaker
+   * gate sat on the stronger action, which is the M6 asymmetry backwards.
+   */
   @Post('assets/:assetId/retire')
+  @UseGuards(StepUpGuard)
   @HttpCode(200)
   retire(
     @Req() req: CallerRequest,

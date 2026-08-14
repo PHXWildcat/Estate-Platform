@@ -21,11 +21,19 @@ import { defaultFetch, pathSegment, readJson, type FetchLike } from './http';
 /**
  * One asset, narrowed to what a planning conversation actually reasons about.
  *
- * zod strips unknown keys, so this schema IS the narrowing: `costBasis`,
- * `location` and `notes` are on the wire and deliberately do not survive it.
- * Those are free-text fields a user wrote for themselves; a coverage or
- * beneficiary-gap answer needs none of them, and the smallest faithful shape is
+ * zod strips unknown keys, and this schema is where `costBasis`, `location` and
+ * `notes` are refused: free-text fields a user wrote for themselves, which no
+ * coverage or beneficiary-gap answer needs, and the smallest faithful shape is
  * the one that cannot surprise us later.
+ *
+ * CORRECTED IN M19 PR4: this comment used to say those three "are on the wire
+ * and deliberately do not survive it", and since M19 PR1 that is false — the
+ * list route this client calls serves `AssetSummaryDto`, which does not carry
+ * them at all (they cost one audited decrypt PER ROW, so the hottest read no
+ * longer pays for them). The schema is therefore DEFENCE IN DEPTH now rather
+ * than the narrowing, and it stays exactly as it is: assets widening its list
+ * shape again must not silently put a user's free text into a prompt, and this
+ * file's rule is that admitting a field is a reviewed edit.
  *
  * `fundingStatus` WAS in that list and is now kept (M10 PR3). This file's own
  * rule is that widening it is a reviewed edit rather than a quiet one, so:

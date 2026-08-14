@@ -77,6 +77,155 @@ describe('AssetDetailPanel', () => {
     expect(screen.getByText('deed drawer')).toBeInTheDocument();
   });
 
+  it('RETIRING RUNS THE STEP-UP CEREMONY, and the form hides while it is up', async () => {
+    // M19 PR4: retirement is the service's one irreversible verb and was its
+    // least guarded — proven live, designate answered 403 stepup_required on
+    // the same session that retired an asset with a 200.
+    let attempts = 0;
+    installGraphqlFetchMock({
+      Asset: detailHandler(),
+      RetireAsset: () => {
+        attempts += 1;
+        return attempts === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { retireAsset: ACK } });
+      },
+    });
+    render(<AssetDetailPanel assetId={ASSET_ID} />);
+    await screen.findByText('Lake house');
+    fireEvent.click(screen.getByRole('button', { name: 'Retire…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm retire' }));
+
+    // The refusal opens the prompt, and the retire form goes away with it:
+    // two visible Cancels is the M15 identical-label ambiguity.
+    expect(await screen.findByLabelText(/Confirm it’s you|Confirm it's you/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm retire' })).not.toBeInTheDocument();
+    expect(screen.getByText(/cannot be undone/)).toBeInTheDocument();
+  });
+
+  it('a cancelled retire ceremony retires nothing', async () => {
+    let attempts = 0;
+    installGraphqlFetchMock({
+      Asset: detailHandler(),
+      RetireAsset: () => {
+        attempts += 1;
+        return graphqlError('STEPUP_REQUIRED');
+      },
+    });
+    render(<AssetDetailPanel assetId={ASSET_ID} />);
+    await screen.findByText('Lake house');
+    fireEvent.click(screen.getByRole('button', { name: 'Retire…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm retire' }));
+    await screen.findByLabelText(/Confirm it’s you|Confirm it's you/);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/Confirm it’s you|Confirm it's you/)).not.toBeInTheDocument();
+    });
+    expect(attempts).toBe(1);
+  });
+
+  it('an OPEN edit form closes when the asset is retired underneath it', async () => {
+    // The M19 PR4 review's finding: `!retired` gated the "Edit details" BUTTON
+    // and not the FORM it opens, and both the form and the retire control are
+    // on screen at once — so retiring while editing left an edit form for an
+    // asset the service now answers 404 for. Reachable only by changing status
+    // WHILE the form is open, which the retired-from-first-render case cannot
+    // construct.
+    let reads = 0;
+    installGraphqlFetchMock({
+      Asset: () => {
+        reads += 1;
+        return reads === 1
+          ? jsonResponse({ data: { asset: DETAIL } })
+          : jsonResponse({
+              data: { asset: { ...DETAIL, status: 'retired', retiredAt: '2026-08-13T00:00:00Z' } },
+            });
+      },
+      RetireAsset: () => jsonResponse({ data: { retireAsset: ACK } }),
+    });
+    render(<AssetDetailPanel assetId={ASSET_ID} />);
+    await screen.findByText('Lake house');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retire…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm retire' }));
+
+    expect(await screen.findByText(/This asset was retired/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
+  });
+
+  it('a DESIGNATION drops an open history view, which would otherwise be one event short', async () => {
+    // M19 PR4: `onVersionBumped` advanced the version and left the loaded
+    // ledger alone, so after designating a beneficiary the history on screen
+    // was missing the event that bump refers to — while the version beside it
+    // said the asset had moved on. `reloadAfter` drops history to idle for
+    // this panel's own commands for exactly this reason; the designation path
+    // bypassed it.
+    installGraphqlFetchMock({
+      Asset: detailHandler(),
+      AssetHistory: () =>
+        jsonResponse({
+          data: {
+            assetHistory: [
+              {
+                version: '1',
+                eventId: 'e1',
+                eventType: 'AssetCreated',
+                occurredAt: '2026-07-01T00:00:00.000Z',
+                payload: { v: 1, type: 'AssetCreated', title: 'Lake house' },
+              },
+            ],
+          },
+        }),
+      AssetBeneficiaries: () =>
+        jsonResponse({
+          data: { assetBeneficiaries: { assetId: ASSET_ID, beneficiaries: [], totals: [] } },
+        }),
+      // The contact shape is the BFF's `ContactSummary`, copied from the
+      // beneficiary panel's own fixture rather than invented — an invented
+      // one renders "no contacts" and the designation never runs, which is a
+      // test that measures the fixture.
+      Contacts: () =>
+        jsonResponse({
+          data: {
+            contacts: [
+              {
+                id: 'c1c1e6a4-0000-4000-8000-00000000000c',
+                name: 'Alice Attorney',
+                relationship: 'friend',
+                professionalKind: 'attorney',
+                hasEmail: true,
+                hasPhone: false,
+                hasAddress: false,
+                hasNotes: false,
+                linked: false,
+              },
+            ],
+          },
+        }),
+      DesignateBeneficiary: () =>
+        jsonResponse({ data: { designateBeneficiary: { ...ACK, version: '5' } } }),
+    });
+    render(<AssetDetailPanel assetId={ASSET_ID} />);
+    await screen.findByText('Lake house');
+    fireEvent.click(screen.getByRole('button', { name: /history/i }));
+    expect(await screen.findByText('Added to the estate')).toBeInTheDocument();
+
+    // The REAL child flow, not a test hook: a designation is what calls
+    // onVersionBumped, and production code must not grow a handle for a test.
+    fireEvent.click(screen.getByRole('button', { name: 'Designate a beneficiary' }));
+    fireEvent.change(await screen.findByLabelText('Who'), {
+      target: { value: 'c1c1e6a4-0000-4000-8000-00000000000c' },
+    });
+    fireEvent.change(screen.getByLabelText('Share %'), { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Designate' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Added to the estate')).not.toBeInTheDocument();
+    });
+  });
+
   it('loads history ONLY on demand — the decrypt budget is the design', async () => {
     let requests: RecordedRequest[] = [];
     const mock = installGraphqlFetchMock({

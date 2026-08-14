@@ -4600,7 +4600,7 @@ than-the-window loss, the in-process-compromise boundary on
 "a complete record of released plaintext", and the production-profile
 coverage gap.
 
-### M19 — The assets surface (approved 2026-08-13; PR1 in progress)
+### M19 — The assets surface (approved 2026-08-13; complete 2026-08-13)
 
 The runner-up of the 2026-08-12 selection, now chosen. The assets service is
 the OLDEST domain service in the repo (M3), and M19 closes its zero-callers
@@ -4729,7 +4729,12 @@ while the edit silently vanished). NULL-vs-ABSENT is kept apart end to end
 by wire-level assertions at all three layers and mutation-tested six ways.
 The AssetsPanel's pre-existing M11 shape-guard gap was fixed and pinned;
 history is loaded strictly ON DEMAND and dropped back to idle after any
-command. APQ manifest regenerated; both BFF hand-copies updated (the
+command. (CORRECTED BY THE PR4 REVIEW: "after any command" was true only of
+the commands this panel issues ITSELF. PR3's designation ceremony bumps the
+version through a CHILD component, and that path did not clear history — so
+a designation left a stale history list on screen beside a fresh version.
+`onVersionBumped` clears it now, which is what makes the sentence true.)
+APQ manifest regenerated; both BFF hand-copies updated (the
 `assets.spec.ts` copy gained the hazard note it lacked); the fence's six
 "pending M19 PR2" exemptions flipped to verified consumers in the same
 change as the client.
@@ -4909,8 +4914,141 @@ audit trail (`asset.beneficiary.designated` ×2, `.removed`, `asset.created`,
 `asset.updated`), and the ceremony's decrypt budget was measured in the real
 chain — five `contact.name` decrypts, attributed per event in docs/03 §6r.
 
-**Remaining:** PR4 — the adversarial security review over the merged
-milestone range.
+#### PR4 as built — the security review (2026-08-13)
+
+Seven file-scoped discovery lenses over the merged M19 range — **never a diff
+range**, the M13 rule — each in its OWN worktree pinned with
+`git checkout --detach <sha>` (the 2026-08-12 rule; an isolated worktree is
+created at MAIN, so an unpinned agent reads code the milestone never touched).
+Then TWO adversarial verifiers per deduped candidate on different angles,
+production reachability and is-it-already-a-documented-decision, both
+defaulting to refuted. **31 agents, 0 errors** — 20 raw, 20 unique, 12
+confirmed, 8 dropped under the fan-out cap and LOGGED BY NAME, then
+hand-verified (all LOW, and all real: each was fixed).
+
+**THIRTEENTH milestone running where every confirmed finding sits in machinery
+the milestone introduced — with one exception, and the exception is where the
+review earned its keep.** Both HIGH findings were re-proved BY EXECUTION
+against the running stack before a line of code changed.
+
+**(1) RETIREMENT — THE ONE IRREVERSIBLE VERB — WAS NOT STEP-UP GATED.** Every
+other command on this service APPENDS a correction: an edit is a new event, a
+valuation is a new event, even a removed designation leaves its history. Retire
+is the one that ends an asset's life, and docs/01 §5 names deletion requests in
+its step-up list — assets' own sibling route for beneficiary changes has
+complied since M3. Nothing revisited it, and M19 PR2 then put a Retire button
+in front of it, which is what turned a dormant gap into a live one: a stolen
+bearer could retire an estate's assets one by one with no second factor. The
+gate is `StepUpGuard` on the controller. What ships WITH it is the part that
+generalises — `apps/services/assets/test/route-gates.spec.ts` declares every
+route's gate class as DATA with a `because` reason per row, DISCOVERS the real
+routes from Nest's runtime metadata (`__guards__`, `path`, `method`) rather
+than from decorator text, and asserts bidirectionally with anti-vacuity floors.
+Anchoring on what the RUNTIME reads is the 2026-08-12 lesson: a fence keyed on
+an identifier a caller chose can be renamed into invisibility.
+
+**(2) A CROSS-USER EVENT-EXISTENCE ORACLE.** M3's idempotency index
+`ux_asset_events_event_id` was GLOBALLY unique, and `findByEventId` looked up
+an event id with no owner predicate — so submitting somebody else's `eventId`
+answered 409 while an unused one answered 201. Client-generated ids are the
+whole point of the design (a retry must be a no-op), so an attacker who
+observes one id — a log, a shared screen, a proxy — learns whether it exists,
+and a 409 on a random id is a probe that says "this platform holds an event by
+that name". Measured live before the fix: 201 for the owner, 409 for a
+stranger's replay, 201 for an unused id. **Fixed by SCOPING rather than by
+catching**: migration `002_event_id_per_user.sql` replaces the index with
+`(user_id, event_id)`, and `findOwnByEventId` carries the owner predicate — a
+foreign id is now indistinguishable from an unused one at both layers. The
+migration needs NO pre-flight (it WIDENS what is permitted, so no existing row
+can violate it, which is the opposite of `002_dek_unique_active`'s situation
+and is why that rule does not apply here). The pre-`002` constraint name is
+deliberately NOT also accepted by the conflict mapper: a database that has not
+run the migration must fail loudly rather than quietly serve the old oracle.
+
+**THE VERSION READ WAS TWO SNAPSHOTS, AND THE ORDER DECIDED WHICH WAY IT
+FAILED.** `getAsset`/`listAssets`/`listEstateAssets` read the projection row
+and the latest ledger seq in SEPARATE pool queries — separate snapshots — and
+read the ROW first. A command committing between them returned the OLD state
+paired with the NEW version, so the caller's next `If-Match` passed against
+state it had never seen: a lost update, silent. Reversed, the same race returns
+the new state with the old version, and the write is refused with a spurious
+409 the UI already knows how to handle (re-read). **The order IS the control**,
+and it is now pinned by a test that commits an update from inside
+`ledger.latestSeq`. `latestSeqByAssets` became `latestSeqByUser` so a list can
+read versions before it knows which rows it has.
+
+**Three more in the service.** A share-sum CHECK violation (the ledger's one
+CONSTRAINT TRIGGER) reached the caller as a 500 — the app-level check catches
+the ordinary case, so only a race reaches the trigger, which is exactly when a
+500 is least deserved; it maps to 422 `share_sum_exceeded` now, pinned by a
+unit case that makes the repo double raise the real Postgres error shape and
+says precisely that it proves the MAPPING and not the trigger. The executor
+inventory emitted its `estate.viewed` audit event AFTER decrypting the estate,
+so a failure mid-loop released plaintext with no record of the read — it is
+emitted BEFORE the loop now, carrying the row count. And the assistant's
+assets-client docstring still claimed `costBasis`/`location`/`notes` "are on
+the wire and deliberately do not survive" its schema, false since PR1 narrowed
+the list DTO; the schema stays as DEFENCE IN DEPTH and the sentence says so.
+
+**THE ROUTE↔CONSUMER FENCE PR1 SHIPPED HAD FOUR HOLES, WHICH IS THE REPO'S OWN
+EXPECTATION OF NEW TRUST MACHINERY.** Its verb list omitted `Search`, `Head`,
+`Options` and `All`, so a route declared with any of them was INVISIBLE to a
+fence whose whole job is to see every route; a decorator the parser could not
+read was silently skipped rather than reported (now collected into
+`unparseable` and asserted empty); a consumer template's `:p` matched a
+LITERAL route segment, so a client addressing the wrong path could satisfy the
+wrong route; and the vault edge's rewrites were a HAND-COPIED table, the drift
+class this repo keeps closing — they are DERIVED from
+`apps/vault-web/src/server.ts` now, with the derivation asserting the `/api/`
+prefix is absent and that no pair reaches `/v1/auth/handoff`. The four
+`/v1/analysis/*` routes needed a DECLARED exception (`consumedByName`) rather
+than a looser matcher: the BFF genuinely addresses all four through a closed
+`AnalysisName` union, and loosening the rule globally to admit that one shape
+would have re-opened the hole the tightening closed.
+
+**THE UI HALF, all found by reading and then proven in a browser.** The retire
+ceremony had NO step-up path — with the new gate it would have failed with a
+generic refusal, so `submitRetire` reports `applied | stale` and routes
+`STEPUP_REQUIRED` through the ONE `StepUpPrompt`, which REPLACES the retire
+form while it is up (the M15 identical-label rule: two forms with a "Confirm"
+button are two a person cannot tell apart). The edit form stayed open on an
+asset that had just been retired — offering what the server would refuse, the
+M12 rule. A designation left a STALE history list on screen beside a fresh
+version, because history was cleared only by the panel's own commands and PR3's
+ceremony bumps the version through a CHILD; `onVersionBumped` clears it, and
+the pin drives the real child flow rather than a test-only handle (production
+must not grow one). `ReadinessPanel` dereferenced two GraphQL payloads with no
+shape guard — the M11 rule, and its third instance in three milestones. And
+`ownershipPct` rendered raw, so binary floating point printed
+`33.33000000000001` at someone about their house.
+
+**ONE FINDING WAS OLDER THAN M19 AND IS FIXED ANYWAY**, because M19 is what
+made it reachable. Identity's step-up cap (M17 PR6) answers 429
+`too_many_attempts`, and the BFF's shared `mapError` had no 429 branch — so a
+control firing exactly as designed fell through to
+`Error('identity responded with status 429')` and reached the browser as
+"something went wrong on our side". That is the M9 rule inverted, and the same
+shape the 404 branch beside it already names. M19 PR3 and PR4 put step-up
+ceremonies on the assets surface, so the cap is now reachable from two more
+places. PROVEN BY EXECUTION: five wrong codes at `POST /v1/auth/stepup` answer
+401 `invalid_code`, the sixth answers 429. `TOO_MANY_ATTEMPTS` is its own code
+because it is the ONLY refusal in the union whose remedy is to WAIT — every
+other one is fixed by doing something differently now — so folding it into
+`INVALID_CREDENTIALS` would render "codes change every 30 seconds, enter the
+current one" at someone whose current code will also be refused. The web
+copy says to wait and says nothing is wrong with the code, pinned by a test
+asserting exactly that; the derived `error-codes.test.ts` fence caught the
+drift by itself, which is the fence working.
+
+**Every fix was mutation-tested** by reverting it from a saved copy and
+confirming RED on the assertion that names the property — including the four
+fence fixes, re-run with the REVIEW'S OWN payloads. Two mutations SURVIVED and
+both were the harness lying rather than the tests being weak: one anchored on a
+`return dtos;` that occurs several times (`indexOf` finds the first), and one
+found no test provoking the share-sum trigger at all, which is what produced
+the unit pin above.
+
+**Remaining:** none. M19 is complete.
 
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 

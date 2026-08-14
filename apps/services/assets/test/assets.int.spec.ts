@@ -554,9 +554,18 @@ describeIfPg('asset ledger service end to end', () => {
   });
 
   it('retires the asset: default list excludes it, the record survives, commands 404', async () => {
+    // RETIREMENT NEEDS A FRESH FACTOR (M19 PR4). The refusal is asserted here
+    // rather than in a case of its own because the seed is the natural place to
+    // show it: this suite drove retire on an ordinary session until the review
+    // measured that the service's one irreversible verb was its least guarded.
     await request(server)
       .post(`/v1/assets/${assetId}/retire`)
       .set(asOwner())
+      .send({ reason: 'sold' })
+      .expect(403);
+    await request(server)
+      .post(`/v1/assets/${assetId}/retire`)
+      .set(withStepUp())
       .send({ reason: 'sold' })
       .expect(200);
     // The record stays readable with its status (M19 PR2) — a disposal is a
@@ -703,11 +712,16 @@ describeIfPg('asset ledger service end to end', () => {
     }
   });
 
-  it('a foreign event id answers byte-identically to an unknown one (uniform 404)', async () => {
+  it('a foreign event id answers byte-identically to an unknown one on a REFUSED command', async () => {
     // Pre-fix, the pool pre-check ran BEFORE authz and answered 409 for an
     // event id in ANYONE's ledger vs 404 for an unknown one — an
     // event-existence oracle ahead of the M19 PR1 uniform-404 control. The
     // actor-scoped lookup makes a foreign id proceed exactly as unknown.
+    //
+    // SCOPE, NARROWED BY THE PR4 REVIEW: this probes a command that dies at the
+    // uniform 404 BEFORE appending, so it exercises the scoped READ and never
+    // reaches the unique index. It passed over the create-path oracle for
+    // exactly that reason; the case below is the one that touches the index.
     const strangerCreate = await request(server)
       .post('/v1/assets')
       .set(bearer('mfa', STRANGER))
@@ -726,6 +740,48 @@ describeIfPg('asset ledger service end to end', () => {
     expect(foreign.status).toBe(404);
     expect(unknown.status).toBe(404);
     expect(foreign.body).toEqual(unknown.body);
+  });
+
+  it('a foreign event id answers byte-identically to an unknown one on an APPENDING command', async () => {
+    // THE CASE THAT TOUCHES THE INDEX, against real Postgres — because the
+    // defect lived in the DDL and no test that fakes the repo can see a unique
+    // constraint (M13: a fix whose defect lived in SQL must be pinned by a test
+    // that runs SQL).
+    //
+    // Pre-`002` the index was unique over `event_id` alone, so a create
+    // carrying a STRANGER's event id took a 23505 and surfaced as 409
+    // `version_conflict`, while an unused id answered 201. Measured on the
+    // running stack in exactly that shape before this migration was written.
+    const strangerCreate = await request(server)
+      .post('/v1/assets')
+      .set(bearer('mfa', STRANGER))
+      .send({ category: 'cash', title: 'Stranger account' })
+      .expect(201);
+    const strangerEvent = (strangerCreate.body as CommandResult).eventId;
+
+    const createWith = (eid: string) =>
+      request(server)
+        .post('/v1/assets')
+        .set(bearer('mfa', OWNER))
+        .send({ category: 'cash', title: 'Probe', eventId: eid });
+
+    const foreign = await createWith(strangerEvent);
+    const unknown = await createWith(randomUUID());
+    expect(foreign.status).toBe(201);
+    expect(unknown.status).toBe(foreign.status);
+    // Same shape, and neither is a replay: the answer carries nothing about
+    // whether the id names a command in another owner's ledger.
+    expect(Object.keys(foreign.body as object).sort()).toEqual(
+      Object.keys(unknown.body as object).sort(),
+    );
+    expect((foreign.body as CommandResult).replayed).toBe(false);
+    expect((unknown.body as CommandResult).replayed).toBe(false);
+
+    // Two owners now hold the same event id — and the owner's OWN retry still
+    // replays, which is the property scoping the index must not cost.
+    const retry = await createWith(strangerEvent).expect(201);
+    expect((retry.body as CommandResult).replayed).toBe(true);
+    expect((retry.body as CommandResult).assetId).toBe((foreign.body as CommandResult).assetId);
   });
 
   it('replay of a command that committed before retirement answers its ack; fresh commands still 404', async () => {
@@ -752,7 +808,7 @@ describeIfPg('asset ledger service end to end', () => {
       .expect(200);
     await request(server)
       .post(`/v1/assets/${aid}/retire`)
-      .set(bearer('mfa', owner2))
+      .set(bearer('stepup', owner2))
       .send({ reason: 'sold' })
       .expect(200);
     const replay = await request(server)

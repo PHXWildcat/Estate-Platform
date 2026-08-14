@@ -13,7 +13,7 @@ import { deserializePayload, serializePayload, type AssetEventPayload } from './
 import { AssetsViewRepo, type AssetViewRow } from './assets-view.repo';
 import { AssetsAuthz, assetResource } from './authz.service';
 import { BeneficiariesRepo } from './beneficiaries.repo';
-import { Db, isUniqueViolation, type Queryable } from './db';
+import { Db, isCheckViolation, isUniqueViolation, type Queryable } from './db';
 import { EventsService } from './events.service';
 import { FieldCipher } from './field-cipher';
 import { LedgerRepo, type LedgerRow } from './ledger.repo';
@@ -429,6 +429,21 @@ export class AssetsService {
     // exactly one exception, deliberate and pinned: a REPLAY of a command
     // that committed before retirement answers its original ack, because a
     // retry must never report a committed command as impossible.
+    // THE VERSION IS READ FIRST, AND THE ORDER IS THE CONTROL (M19 PR4).
+    //
+    // These are two pool queries on two snapshots, so a command can commit
+    // between them. Read the ROW first and the DTO can carry a version NEWER
+    // than the state it describes — and the client's next `If-Match` then
+    // PASSES, so a write computed from stale state overwrites a concurrent
+    // change. That is a lost update produced BY the optimistic-concurrency
+    // token, which exists to prevent exactly it.
+    //
+    // Reading the version first inverts the race into the safe direction: the
+    // version can only be OLDER than or equal to the state, so the worst case
+    // is a stale token that answers 409 and sends the client back to re-read
+    // — the remedy the surface already implements. A spurious conflict costs
+    // a round trip; a silent one costs the other change.
+    const version = (await this.ledger.latestSeq(this.db, assetId)) ?? '0';
     const row = await this.views.getAny(this.db, assetId);
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
@@ -436,7 +451,6 @@ export class AssetsService {
     // A deny is the same 404 as a missing row: "not yours" must not confirm
     // that the guessed id exists (assertCanOrNotFound's contract).
     this.authz.assertCanOrNotFound(actor, 'read', assetResource(assetId, row.user_id));
-    const version = (await this.ledger.latestSeq(this.db, assetId)) ?? '0';
     return this.toDto(row, actor, 'asset_read', version);
   }
 
@@ -454,13 +468,15 @@ export class AssetsService {
       );
       return replayed.map((r) => plainStateToSummary(r.state, r.version));
     }
+    // VERSIONS BEFORE ROWS, for the reason `getAsset` states: a version read
+    // second can describe a newer state than the row beside it, and the
+    // client's next `If-Match` then passes over a concurrent change.
+    // `latestSeqByUser` needs no id list, which is what makes reading them
+    // first possible here at all.
+    const versions = await this.ledger.latestSeqByUser(this.db, actor);
     const rows = includeRetired
       ? await this.views.listByUser(this.db, actor)
       : await this.views.listLiveByUser(this.db, actor);
-    const versions = await this.ledger.latestSeqByAssets(
-      this.db,
-      rows.map((r) => r.asset_id),
-    );
     const dtos: AssetSummaryDto[] = [];
     for (const row of rows) {
       if (!this.authz.can(actor, 'read', assetResource(row.asset_id, row.user_id))) {
@@ -529,11 +545,24 @@ export class AssetsService {
     if (!authority.allowed) {
       throw new ForbiddenException({ error: 'forbidden' });
     }
+    // Versions first, same as the owner's own list: an executor's inventory
+    // carries the same `If-Match` tokens and inherits the same race.
+    const versions = await this.ledger.latestSeqByUser(this.db, ownerUserId);
     const rows = await this.views.listLiveByUser(this.db, ownerUserId);
-    const versions = await this.ledger.latestSeqByAssets(
-      this.db,
-      rows.map((r) => r.asset_id),
-    );
+    // THE AUTHORITY IS RECORDED BEFORE THE PLAINTEXT IS RELEASED (M19 PR4).
+    //
+    // `asset.estate.viewed` is the ONLY event naming which settlement case let
+    // an executor read a decedent's estate. Emitted after the loop, a decrypt
+    // failure part-way through left executor-attributed
+    // `crypto.field.decrypted` events on the owner's trail with NO record of
+    // what authorized them — in precisely the §5.1 case these trails are kept
+    // for. The count is now the AUTHORIZED scope (rows) rather than the
+    // delivered one, which is the more honest number for an event that
+    // describes a grant rather than a payload.
+    await this.events.estateViewed(actor, ownerUserId, {
+      caseId: authority.caseId,
+      count: rows.length,
+    });
     const dtos: AssetDto[] = [];
     for (const row of rows) {
       // Decryption is attributed to the executor and audited (crypto.field
@@ -542,10 +571,6 @@ export class AssetsService {
         await this.toDto(row, actor, 'estate_inventory', versions.get(row.asset_id) ?? '0'),
       );
     }
-    await this.events.estateViewed(actor, ownerUserId, {
-      caseId: authority.caseId,
-      count: dtos.length,
-    });
     return dtos;
   }
 
@@ -759,6 +784,19 @@ export class AssetsService {
       if (isUniqueViolation(err) && isEventIdConflict(err)) {
         return this.replayAck(spec.actor, spec.assetId, eventId, spec.expectExisting);
       }
+      // THE SHARE-SUM TRIGGER IS DEFENCE IN DEPTH AND MUST SAY SO (M19 PR4).
+      // `designateBeneficiary` enforces ≤100% per designation in application
+      // code and the DDL declares a CONSTRAINT TRIGGER for the same invariant
+      // — but `isCheckViolation` had ZERO callers here, so if the trigger ever
+      // fired where the app check did not, the answer was a raw Postgres error
+      // out of Nest as a 500: a control firing, indistinguishable from a
+      // service fault, with a 422 branch waiting in the BFF that could never
+      // be reached. The M7 review closed exactly this in settlement
+      // (`revokeStage`'s DDL CHECK surfacing as an unhandled 500) and left the
+      // twin helper unused one service over.
+      if (isCheckViolation(err)) {
+        throw new UnprocessableEntityException({ error: 'share_sum_exceeded' });
+      }
       throw err;
     }
   }
@@ -780,14 +818,17 @@ export class AssetsService {
    * (the command proceeds and dies at the uniform 404/authz) rather than a
    * distinguishable conflict — the pre-authz lookup must not become an
    * event-existence oracle over other users' ledgers (M19 PR3 review).
+   *
+   * Scoping the READ was never enough on its own, and the M19 PR4 review is
+   * what measured it: the APPEND still collided, because the uniqueness was
+   * global. Migration `002` scopes the index, so the two halves now agree.
    */
   private async findOwnEvent(
     q: Queryable,
     actor: string,
     eventId: string,
   ): Promise<LedgerRow | null> {
-    const original = await this.ledger.findByEventId(q, eventId);
-    return original !== null && original.user_id === actor ? original : null;
+    return this.ledger.findOwnByEventId(q, actor, eventId);
   }
 
   /** The original command's acknowledgement, for an idempotent retry. */
@@ -809,12 +850,16 @@ export class AssetsService {
 
   /**
    * Resolve a unique-violation retry to the original ack. With the in-lock
-   * restatement above, this catch path's remit is CREATE races only — two
-   * concurrent creates share no row to serialize on, so the loser lands
-   * here — plus the cross-user id collision, which answers a generic
-   * conflict: the append-path answer for a foreign id has to be SOME error,
-   * and this one depends on nothing but the collision itself (the residual
-   * oracle this leaves is recorded in docs/03 §6r).
+   * restatement above, this catch path's remit is CREATE races only: two
+   * concurrent creates share no row to serialize on, so the loser lands here.
+   *
+   * A FOREIGN event id no longer reaches this path at all. Migration `002`
+   * scopes the index to (user_id, event_id), so a violation of it proves the
+   * CALLER'S OWN row exists and the lookup below finds it — where the global
+   * index made a stranger's id answer 409 while an unused one answered 201,
+   * which the M19 PR4 review proved live. The remaining `version_conflict`
+   * throw is the defensive answer for a violation whose row this transaction
+   * cannot then see, and depends on nothing but the caller's own ledger.
    */
   private async replayAck(
     actor: string,
@@ -1070,12 +1115,16 @@ function endOfDayUtc(isoDate: string): Date {
   return new Date(`${isoDate}T23:59:59.999Z`);
 }
 
-/** Whether a 23505 came from the event-id idempotency index specifically. */
+/** Whether a 23505 came from the event-id idempotency index specifically.
+ * Named for migration `002`'s per-owner index; the pre-`002` global name is
+ * deliberately NOT also accepted, so a service running against an unmigrated
+ * cluster surfaces the violation as an error rather than quietly resolving a
+ * cross-user collision as a replay. */
 function isEventIdConflict(err: unknown): boolean {
   return (
     typeof err === 'object' &&
     err !== null &&
     'constraint' in err &&
-    (err as { constraint?: unknown }).constraint === 'ux_asset_events_event_id'
+    (err as { constraint?: unknown }).constraint === 'ux_asset_events_user_event_id'
   );
 }

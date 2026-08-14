@@ -141,9 +141,14 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     measuredPerMinute: 3,
     maxPerWindow: 1500,
     note:
-      'asset history decrypts one payload per ledger event, loaded strictly ON DEMAND (never ' +
-      'prefetched, dropped to idle after a command); first real measurement M19 PR2 — a 3-event ' +
-      'asset = 3 decrypts in one press; scales with ledger length',
+      'TWO producers, and the second is the one the bound is really sized against. getHistory ' +
+      'decrypts one payload per ledger event of ONE asset, strictly ON DEMAND (never prefetched, ' +
+      'dropped to idle after any command — including a designation, M19 PR4) — a 3-event asset = ' +
+      '3 decrypts in one press. replayForUser decrypts EVERY event of EVERY asset the owner ' +
+      'holds, in one request, from GET /v1/assets?asOf= and GET /v1/net-worth?asOf= — so an ' +
+      'estate past ~1500 lifetime ledger events trips this bound on a legitimate as-of read. ' +
+      'The M19 PR2 note described only the first and was corrected by the PR4 review; the ' +
+      'measured 3/min is a per-asset history press, NOT a ceiling on the as-of path',
   },
   {
     prefix: 'asset_event',

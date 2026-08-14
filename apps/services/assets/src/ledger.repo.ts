@@ -55,13 +55,38 @@ export class LedgerRepo {
     return { seq: row.seq, occurredAt: row.occurred_at };
   }
 
-  /** Idempotency lookup: the original append for a retried client eventId. */
-  async findByEventId(q: Queryable, eventId: string): Promise<LedgerRow | null> {
+  /**
+   * Idempotency lookup: the CALLER'S OWN original append for a retried client
+   * eventId. Scoped by `user_id`, which since migration `002` is half of the
+   * uniqueness — an unscoped lookup could return an arbitrary one of the users
+   * now permitted to share an event id, so a caller's own retry could be
+   * answered from a stranger's row (and, finding a mismatch, re-append).
+   *
+   * The owner predicate rides the statement rather than sitting in a check
+   * above it: the M13 `contact_in_use` lesson, where a check-then-act read left
+   * a window between deciding and acting.
+   */
+  async findOwnByEventId(q: Queryable, userId: string, eventId: string): Promise<LedgerRow | null> {
     const rows = await q.query<LedgerRow>(
-      `SELECT ${COLUMNS} FROM asset_events WHERE event_id = $1`,
-      [eventId],
+      `SELECT ${COLUMNS} FROM asset_events WHERE user_id = $1 AND event_id = $2`,
+      [userId, eventId],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * Latest seq per asset for one OWNER, in one round trip and WITHOUT being
+   * given the ids — which is what lets a list read its versions BEFORE its
+   * rows. Pairing rows read first with versions read second lets a version
+   * describe a newer state than the row beside it, and an `If-Match` carrying
+   * one passes; see `AssetsService.getAsset` for why the order is the control.
+   */
+  async latestSeqByUser(q: Queryable, userId: string): Promise<Map<string, string>> {
+    const rows = await q.query<{ asset_id: string; seq: string }>(
+      `SELECT asset_id, MAX(seq) AS seq FROM asset_events WHERE user_id = $1 GROUP BY asset_id`,
+      [userId],
+    );
+    return new Map(rows.map((r) => [r.asset_id, r.seq]));
   }
 
   /** The asset's latest seq — the optimistic-concurrency version token. */
@@ -71,20 +96,6 @@ export class LedgerRepo {
       [assetId],
     );
     return rows[0]?.seq ?? null;
-  }
-
-  /** Latest seq per asset in one round-trip (list responses). */
-  async latestSeqByAssets(q: Queryable, assetIds: readonly string[]): Promise<Map<string, string>> {
-    if (assetIds.length === 0) {
-      return new Map();
-    }
-    const rows = await q.query<{ asset_id: string; seq: string }>(
-      `SELECT asset_id, MAX(seq) AS seq FROM asset_events
-        WHERE asset_id = ANY($1::uuid[])
-        GROUP BY asset_id`,
-      [assetIds],
-    );
-    return new Map(rows.map((r) => [r.asset_id, r.seq]));
   }
 
   /** Full history of one asset, oldest first. */

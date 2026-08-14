@@ -204,10 +204,82 @@ describe('AssetsService commands', () => {
     expect(retry.assetId).toBe(first.assetId);
     expect(retry.version).toBe(first.version);
     expect(ledger.rows).toHaveLength(1);
-    // Another user must not be able to probe someone else's eventId.
+  });
+
+  /**
+   * A FOREIGN EVENT ID IS INDISTINGUISHABLE FROM AN UNUSED ONE (M19 PR4).
+   *
+   * This case existed before the PR4 review and asserted the OPPOSITE, under a
+   * comment saying "another user must not be able to probe someone else's
+   * eventId" — it pinned a `ConflictException`, which is the probe answering.
+   * The property was in the comment and the oracle was in the assertion, which
+   * is the failure this repo keeps rediscovering: a test named for a property
+   * it never touched. Proven live before it was fixed: 409 for a stranger's
+   * id, 201 for an unused one. Migration `002` scopes the uniqueness.
+   */
+  it('answers a foreign eventId exactly as it answers an unused one', async () => {
+    const { service } = build();
+    const eventId = randomUUID();
+    await service.createAsset(OWNER, { category: 'cash', title: 'Once', eventId });
+
+    const foreign = await service.createAsset(STRANGER, {
+      category: 'cash',
+      title: 'Probe',
+      eventId,
+    });
+    const unused = await service.createAsset(STRANGER, {
+      category: 'cash',
+      title: 'Probe',
+      eventId: randomUUID(),
+    });
+
+    // Same shape, both fresh appends: nothing in the answer says whether the
+    // id names a command in somebody else's ledger.
+    expect(foreign.replayed).toBe(false);
+    expect(unused.replayed).toBe(false);
+    // And the stranger's own retry is still idempotent — scoping the index
+    // must not cost the property it exists for.
+    const retry = await service.createAsset(STRANGER, {
+      category: 'cash',
+      title: 'Probe',
+      eventId,
+    });
+    expect(retry.replayed).toBe(true);
+    expect(retry.assetId).toBe(foreign.assetId);
+  });
+
+  /**
+   * THE SHARE-SUM TRIGGER'S ANSWER IS THE SAME AS THE APP CHECK'S (M19 PR4).
+   *
+   * `isCheckViolation` sat exported and CALLERLESS in this service while its
+   * twin in settlement had a caller (added by the M7 review for exactly this
+   * reason), so a CONSTRAINT TRIGGER firing where the application check did not
+   * left Postgres's error escaping Nest as a 500 — a control firing that reads
+   * as a service fault, with the BFF's 422 `share_sum_exceeded` branch waiting
+   * for a token it could never receive.
+   *
+   * WHAT THIS PROVES, precisely: the MAPPING. Provoking the real trigger means
+   * making the database disagree with the application check, which no service
+   * call can arrange — the trigger is defence in depth, and its own firing is
+   * the DDL's business. So the repo is made to raise the error Postgres would.
+   */
+  it('maps a share-sum CHECK violation to 422, not to a 500', async () => {
+    const { service, bens } = build();
+    const { assetId } = await service.createAsset(OWNER, { category: 'llc', title: 'Family LLC' });
+    bens.upsertDesignation = (): Promise<never> =>
+      Promise.reject(
+        Object.assign(new Error('share sum exceeded'), {
+          code: '23514',
+          constraint: 'trg_asset_beneficiaries_share_sum',
+        }),
+      );
     await expect(
-      service.createAsset(STRANGER, { category: 'cash', title: 'Steal', eventId }),
-    ).rejects.toThrow(ConflictException);
+      service.designateBeneficiary(OWNER, assetId, {
+        contactId: randomUUID(),
+        designation: 'primary',
+        sharePct: 10,
+      }),
+    ).rejects.toThrow(UnprocessableEntityException);
   });
 
   it('enforces the beneficiary share-sum invariant (≤ 100 per designation)', async () => {
@@ -282,6 +354,61 @@ describe('AssetsService executor estate reads (docs/03 §5.1 control 5)', () => 
     const { service } = build({ settlement });
     return { service, gate };
   }
+
+  /**
+   * THE AUTHORITY IS AUDITED BEFORE THE PLAINTEXT IS RELEASED (M19 PR4).
+   *
+   * `asset.estate.viewed` is the only event naming which settlement case let
+   * an executor read a decedent's estate; emitted after the decrypt loop, a
+   * failure part-way through left executor-attributed decrypts on the owner's
+   * trail with no record of what authorized them. The order is invisible to a
+   * wall-clock assertion, so it is OBSERVED: both the emit and every decrypt
+   * append to one list, and the grant has to be first.
+   */
+  it('records the settlement case BEFORE any of the estate is decrypted', async () => {
+    const order: string[] = [];
+    const gate = {
+      checkStageAccess: (): Promise<StageAccessAuthority> =>
+        Promise.resolve({ allowed: true, caseId: CASE_ID } as StageAccessAuthority),
+    };
+    const { service } = build({ settlement: gate as unknown as SettlementStageAuthority });
+    // An asset carrying real ciphertext, or the decrypt loop has nothing to do
+    // and the test measures its own fixture.
+    await service.createAsset(OWNER, {
+      category: 'real_estate',
+      title: 'Lake house',
+      estValue: '850000.00',
+      valuationAsOf: '2026-07-01',
+      valuationSource: 'appraisal',
+      location: 'safe behind the painting',
+      notes: 'deed in safe',
+    });
+
+    (service as unknown as { events: unknown }).events = new Proxy(
+      {},
+      {
+        get: (_t, prop) => (): Promise<void> => {
+          if (prop === 'estateViewed') {
+            order.push('estate.viewed');
+          }
+          return Promise.resolve();
+        },
+      },
+    );
+    const cipher = (service as unknown as { cipher: Record<string, unknown> }).cipher;
+    const realDecrypt = cipher['decrypt'] as (...a: unknown[]) => unknown;
+    cipher['decrypt'] = (...args: unknown[]): unknown => {
+      order.push('decrypt');
+      return realDecrypt.apply(cipher, args);
+    };
+
+    const dtos = await service.listEstateAssets(EXECUTOR, 'bearer', OWNER);
+    cipher['decrypt'] = realDecrypt;
+
+    expect(dtos).toHaveLength(1);
+    expect(order.filter((o) => o === 'decrypt').length).toBeGreaterThan(0);
+    expect(order[0]).toBe('estate.viewed');
+  });
 
   it('refuses with a uniform 403 when settlement grants nothing', async () => {
     const { service, gate } = buildWithGate();
@@ -398,6 +525,51 @@ describe('AssetsService queries', () => {
       { category: 'jewelry', count: 1, value: '0.00' },
       { category: 'real_estate', count: 2, value: '1050000.00' },
     ]);
+  });
+
+  /**
+   * THE VERSION IS READ BEFORE THE STATE, so a read can never hand out a
+   * token NEWER than the row it accompanies (M19 PR4).
+   *
+   * The two reads are separate pool queries on separate snapshots, so a
+   * command committing between them is ordinary, not exotic. With the state
+   * read first the DTO carried the LATER version — and the client's next
+   * `If-Match` then passed, letting a write computed from stale state
+   * overwrite the concurrent change. That is a lost update caused by the
+   * token that exists to prevent one.
+   *
+   * A wall-clock test cannot see the order, so the race is CONSTRUCTED: the
+   * ledger fake appends a command the moment its version is asked for, which
+   * is the interleaving in its worst position. Version-first yields the older
+   * token (fail closed); state-first yields the newer one (fail open).
+   */
+  it('never pairs a state with a version newer than it', async () => {
+    const { service, ledger } = build();
+    const { assetId } = await service.createAsset(OWNER, { category: 'cash', title: 'Savings' });
+    const settled = await service.getAsset(OWNER, assetId);
+
+    // A concurrent command lands EXACTLY between the two reads.
+    const realLatestSeq = ledger.latestSeq.bind(ledger);
+    let raced = false;
+    ledger.latestSeq = async (q, id) => {
+      const seq = await realLatestSeq(q, id);
+      if (!raced) {
+        raced = true;
+        await service.updateDetails(OWNER, assetId, { title: 'Renamed mid-read' });
+      }
+      return seq;
+    };
+
+    const dto = await service.getAsset(OWNER, assetId);
+    ledger.latestSeq = realLatestSeq;
+
+    // The read saw the NEW title (its row read came after the concurrent
+    // command) and must NOT also carry the new version, or an If-Match built
+    // from this response would pass over a change this caller never saw.
+    const latest = await service.getAsset(OWNER, assetId);
+    expect(dto.title).toBe('Renamed mid-read');
+    expect(BigInt(dto.version)).toBeLessThan(BigInt(latest.version));
+    expect(dto.version).toBe(settled.version);
   });
 });
 

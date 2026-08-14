@@ -11,10 +11,12 @@ import {
 import { commandEventId, type CommandId } from '../lib/command-id';
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
+import { formatPct } from '../lib/percent';
 import { AssetBeneficiaries } from './AssetBeneficiaries';
 import { FUNDING_LABELS } from './AssetsPanel';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
+import { StepUpPrompt } from './StepUpPrompt';
 
 /**
  * One asset's full record and its command surface (M19 PR2).
@@ -95,10 +97,10 @@ export function historyDetail(payload: Record<string, unknown>): string {
     parts.push(phrase);
   }
   if (typeof payload['ownershipPct'] === 'number') {
-    parts.push(`${payload['ownershipPct']}% share`);
+    parts.push(`${formatPct(payload['ownershipPct'])}% share`);
   }
   if (typeof payload['sharePct'] === 'number' && typeof payload['designation'] === 'string') {
-    parts.push(`${payload['sharePct']}% ${payload['designation']}`);
+    parts.push(`${formatPct(payload['sharePct'])}% ${payload['designation']}`);
   }
   if (typeof payload['reason'] === 'string') {
     parts.push(`reason: ${payload['reason']}`);
@@ -160,6 +162,11 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
   const [retireReason, setRetireReason] = useState('sold');
   const [retireBusy, setRetireBusy] = useState(false);
   const [retireError, setRetireError] = useState<string | null>(null);
+  /** The refused retirement, carrying its OWN arguments for the retry. */
+  const [pendingRetire, setPendingRetire] = useState<{
+    expectedVersion: string;
+    reason: string;
+  } | null>(null);
   const retireId = useRef<CommandId | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
@@ -341,10 +348,27 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
     await reloadAfter(result.data.changeOwnership.replayed, 'Ownership updated.');
   }
 
-  async function submitRetire(expectedVersion: string): Promise<void> {
+  /**
+   * Retires the asset. Returns the StepUpPrompt contract: 'stale' while the
+   * peer still answers stepup_required (the prompt polls to its deadline —
+   * peers learn of an elevation through a 30s positive session cache, so a
+   * single-shot retry would leave the prompt idle after an accepted code),
+   * 'applied' once the retirement landed or failed for any other reason.
+   *
+   * Retirement is step-up gated as of the M19 PR4 review: it is the service's
+   * one irreversible verb, and it was its least guarded. The ceremony is the
+   * same one the designation surface runs, and the ARGUMENTS travel with the
+   * pending state rather than being read back out of the form — the M13
+   * review's worse defect was a shared retry running a different action than
+   * the one that was refused.
+   */
+  async function submitRetire(args: {
+    expectedVersion: string;
+    reason: string;
+  }): Promise<'applied' | 'stale'> {
     setRetireError(null);
     setNotice(null);
-    const payload = { assetId, expectedVersion, reason: retireReason };
+    const payload = { assetId, expectedVersion: args.expectedVersion, reason: args.reason };
     retireId.current = commandEventId(retireId.current, JSON.stringify(payload));
     setRetireBusy(true);
     const result = await gqlRequest('RetireAsset', {
@@ -353,12 +377,19 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
     });
     setRetireBusy(false);
     if (!result.ok) {
+      if (result.code === 'STEPUP_REQUIRED') {
+        setPendingRetire(args);
+        return 'stale';
+      }
+      setPendingRetire(null);
       setRetireError(messageFor(result.code));
-      return;
+      return 'applied';
     }
     retireId.current = null;
+    setPendingRetire(null);
     setRetireArmed(false);
     await reloadAfter(result.data.retireAsset.replayed, 'Asset retired. Its history remains.');
+    return 'applied';
   }
 
   if (state.kind === 'loading') {
@@ -431,7 +462,7 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
             </h2>
             <p className="mt-1 text-sm text-ink-muted">
               {asset.category}
-              {asset.ownershipPct !== 100 ? ` · ${asset.ownershipPct}% ownership` : ''}
+              {asset.ownershipPct !== 100 ? ` · ${formatPct(asset.ownershipPct)}% ownership` : ''}
               {asset.fundingStatus
                 ? ` · ${FUNDING_LABELS[asset.fundingStatus] ?? asset.fundingStatus}`
                 : ''}
@@ -482,7 +513,12 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
             Edit details
           </button>
         ) : null}
-        {editing ? (
+        {/* `!retired` is on the FORM as well as on the button that opens it.
+            Both are reachable at once — open Edit details, then retire below,
+            and the reload leaves `editing` true against a retired asset — so
+            without this the page offers an edit the service answers 404. Never
+            offer what the server would refuse (the M12 legal-hold rule). */}
+        {editing && !retired ? (
           <form
             className="mt-4 space-y-4 border-t border-line pt-4"
             noValidate
@@ -577,6 +613,13 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
               ? { kind: 'ready', asset: { ...current.asset, version: newVersion } }
               : current,
           );
+          // …and the loaded history is now missing the event that bump refers
+          // to. `reloadAfter` drops it to idle for this panel's own commands
+          // for exactly this reason, and the designation path bypassed it —
+          // so an open ledger view sat one event short of the truth while the
+          // version beside it said otherwise. Idle, not re-fetched: history
+          // costs ONE audited decrypt PER EVENT and stays on-demand.
+          setHistory({ kind: 'idle' });
         }}
       />
 
@@ -650,7 +693,7 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
             Ownership
           </h2>
           <p className="mt-1 text-sm text-ink-muted">
-            Currently {asset.ownershipPct}%. Net worth counts only your share.
+            Currently {formatPct(asset.ownershipPct)}%. Net worth counts only your share.
           </p>
           <form
             className="mt-4 space-y-4"
@@ -741,7 +784,20 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
             Record that it left the estate — sold, gifted, or lost. This can’t be undone, and the
             record and its full history stay visible under “Show retired”.
           </p>
-          {!retireArmed ? (
+          {pendingRetire !== null ? (
+            /* The form HIDES while the ceremony is up: two visible Cancels —
+               the form's and the prompt's — are the M15 identical-label
+               ambiguity for a person and a test alike. */
+            <StepUpPrompt
+              idPrefix="retire-stepup"
+              hint="Retiring an asset records that it left your estate and cannot be undone, so it needs a fresh check. Enter the six-digit code from your authenticator."
+              submitLabel="Confirm and retire"
+              onElevated={() => submitRetire(pendingRetire)}
+              onCancel={() => {
+                setPendingRetire(null);
+              }}
+            />
+          ) : !retireArmed ? (
             <button
               type="button"
               className="btn btn-secondary mt-4"
@@ -779,7 +835,10 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
                   className="btn btn-primary"
                   disabled={retireBusy}
                   onClick={() => {
-                    void submitRetire(asset.version);
+                    void submitRetire({
+                      expectedVersion: asset.version,
+                      reason: retireReason,
+                    });
                   }}
                 >
                   {retireBusy ? 'Retiring…' : 'Confirm retire'}

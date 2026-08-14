@@ -87,6 +87,16 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   WEBAUTHN_FAILED:
     'That passkey wasn\u2019t accepted. Try again — and if it keeps failing, the passkey may be ' +
     'registered to a different account, or it may have been removed from this one.',
+  // M19 PR4 review. The ONLY sentence here whose remedy is to wait, so it is
+  // the only one that must not say "try again" on its own: after the cap the
+  // next code is refused however correct it is, and someone told to try again
+  // concludes their authenticator is broken. It deliberately does not name a
+  // number of minutes — that window is a reviewed constant in a service this
+  // app cannot import, and a hard-coded figure here would drift out of a
+  // sentence people plan around.
+  TOO_MANY_ATTEMPTS:
+    'Too many attempts. For your protection this is paused for a few minutes — wait, then try ' +
+    'again. Nothing is wrong with your code or your account.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };

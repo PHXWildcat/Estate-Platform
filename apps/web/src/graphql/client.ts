@@ -79,6 +79,14 @@ export const GQL_ERROR_CODES = [
    */
   'PAIRING_UNAVAILABLE',
   'WEBAUTHN_FAILED',
+  /**
+   * A rate bound refused it — identity's step-up cap today (M17 PR6). The one
+   * refusal on this list whose remedy is to WAIT rather than to do something
+   * differently, which is why it is not folded into INVALID_CREDENTIALS: on a
+   * step-up prompt that code renders "enter the current code", and after the
+   * cap the current code will not be accepted either (M19 PR4 review).
+   */
+  'TOO_MANY_ATTEMPTS',
 ] as const;
 
 /** Error codes the BFF contract defines. */

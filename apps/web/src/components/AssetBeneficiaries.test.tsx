@@ -114,13 +114,16 @@ describe('AssetBeneficiaries', () => {
     requests = mock.requests;
     renderPanel();
     await screen.findByText(/No beneficiaries designated/);
-    // What this pins, stated precisely (the first wording overclaimed and the
-    // M19 PR3 review said so): loading the view never fetches the WHOLE
-    // CONTACT BOOK. It is not "the read-only view spends no decrypts" — a
-    // designation-bearing asset spends one contact-name decrypt per
-    // DESIGNATED row inside the BFF's own resolver, by design, and this
-    // fixture has no designations. The budget saved here is the difference
-    // between N designations and every contact the owner has.
+    // What this pins, stated precisely — and the wording has now been wrong
+    // TWICE, which is why it is spelled out. It is not "the read-only view
+    // spends no decrypts", and it is not "one decrypt per DESIGNATED row"
+    // either (the M19 PR3 review's correction, itself corrected by PR4's):
+    // an asset WITH designations makes the BFF resolver load the owner's
+    // ENTIRE contact book for the membership check, one audited
+    // `contact.name` decrypt per CONTACT — so that cost scales with the
+    // address book, not with the designation count. What this case pins is
+    // narrower and still worth pinning: rendering a view with NO designations
+    // fetches no contacts at all, and opening the picker is what asks.
     expect(requests.some((r) => r.body.query?.includes('query Contacts'))).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Designate a beneficiary' }));
@@ -330,6 +333,38 @@ describe('AssetBeneficiaries', () => {
     renderPanel({ retired: true });
     await screen.findByText('Alice Attorney');
     expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Designate a beneficiary' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('an OPEN picker closes when the asset is retired underneath it', async () => {
+    // The M19 PR4 review's finding. The opening button was gated on `!retired`
+    // and the open FORM was not — and both are reachable at once, because the
+    // parent's retire control lives below this panel: open the picker, retire,
+    // and the reload leaves a designation form on screen for an asset every
+    // command now answers 404. The state that matters is only reachable by
+    // changing `retired` while the picker is open, which the read-only case
+    // above (retired from the first render) cannot construct.
+    installGraphqlFetchMock({
+      AssetBeneficiaries: beneficiariesHandler(NO_DESIGNATIONS),
+      Contacts: () => jsonResponse({ data: { contacts: CONTACTS } }),
+    });
+    const view = renderPanel();
+    await screen.findByText(/No beneficiaries designated/);
+    fireEvent.click(screen.getByRole('button', { name: 'Designate a beneficiary' }));
+    await screen.findByLabelText('Who');
+
+    view.rerender(
+      <AssetBeneficiaries
+        assetId={ASSET_ID}
+        version="3"
+        retired
+        onVersionBumped={(): void => undefined}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Who')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Designate a beneficiary' }),
     ).not.toBeInTheDocument();

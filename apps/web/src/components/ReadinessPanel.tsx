@@ -172,12 +172,20 @@ export function ReadinessPanel(): ReactElement {
       gqlRequest('Readiness', {}),
       gqlRequest('Consents', {}),
     ]);
+    // A MISSING FIELD IS NO DATA (M11). `gqlRequest` answers ok for any `data`
+    // object, so a BFF predating either query arrives as `{"data":{}}` and
+    // these dereferences hand `undefined` to a renderer that maps over it —
+    // a white screen, which is what this shape did in M11, M12 and M15 before
+    // each was fixed in turn. An absent field reads as an outage, never as an
+    // empty estate.
     if (readiness.ok && consents.ok) {
-      setState({
-        kind: 'ready',
-        readiness: readiness.data.readiness,
-        consents: consents.data.consents,
-      });
+      const cards = readiness.data.readiness;
+      const grants = consents.data.consents;
+      if (cards === undefined || grants === undefined) {
+        setState({ kind: 'error' });
+        return;
+      }
+      setState({ kind: 'ready', readiness: cards, consents: grants });
       return;
     }
     const code = !readiness.ok ? readiness.code : !consents.ok ? consents.code : 'UNKNOWN';
