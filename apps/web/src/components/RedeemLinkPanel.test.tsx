@@ -64,6 +64,13 @@ describe('success and failure both stay quiet about the estate', () => {
     // No owner, no contact name: the server returns neither, and a stolen code
     // must not become a read.
     expect(screen.getByText(/person who invited you has been told/)).toBeInTheDocument();
+    // ...and it does not over-promise what a link can lead to. This used to say
+    // "anything they choose to share with you will appear in your account",
+    // which is the same false expectation the people surface used to create
+    // with buttons for resources nothing enforces: contacts are the only thing
+    // a role can be allowed to read.
+    expect(screen.getByText(/only thing they can allow today/)).toBeInTheDocument();
+    expect(screen.queryByText(/[Aa]nything they choose to share/)).not.toBeInTheDocument();
   });
 
   it('gives ONE message for every kind of bad code, pointing at a fresh one', async () => {

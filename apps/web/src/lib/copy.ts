@@ -67,6 +67,11 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // click or a retry reaches them — so the copy states the outcome and stops.
   ROLE_ALREADY_GRANTED: 'This person already holds that exact role in your estate.',
   PERMISSION_ALREADY_GRANTED: 'That role is already allowed to read that.',
+  // Not the user's mistake either, and not a failure: the platform can share
+  // estate contacts and nothing else yet. Says so plainly rather than blaming
+  // the request, and promises no date.
+  GRANT_NOT_ENFORCED:
+    'Estate can’t share that part of your plan yet — contacts are the only thing a role can be allowed to read today. Nothing was changed.',
   // M14. Says WHY a code stops working, because the platform deliberately
   // refuses to say WHICH reason applied — one uniform answer is the control,
   // so the copy has to carry the possibilities instead of the server.

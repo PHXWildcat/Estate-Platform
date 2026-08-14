@@ -1,6 +1,12 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { coreResource, ProfileAuthz } from './authz.service';
 import { isUniqueViolation } from './db';
+import { isEnforcedGrant } from './enforced-grants';
 import { EventsService } from './events.service';
 import {
   ContactUnavailableError,
@@ -107,6 +113,22 @@ export class RolesService {
     const ra = await this.roles.findById(roleAssignmentId);
     if (!ra || ra.owner_user_id !== callerUserId) {
       throw new NotFoundException({ error: 'not_found' });
+    }
+    /**
+     * REFUSE WHAT NOTHING HONOURS, and refuse it AFTER the ownership check —
+     * the M10 rule that a semantic gate must not sit above an authorization
+     * one, so it can never answer a question about somebody else's estate.
+     *
+     * Until this landed, any pair but `contact`+`read` was stored, listed back
+     * to the owner as an allowance and audited as `permission.granted` while
+     * conferring nothing (see `enforced-grants.ts`). Its own status code and
+     * token, not the generic parse 400: an owner or a client that drifts ahead
+     * of the platform must be able to tell "the platform does not implement
+     * this yet" from "your request was malformed", which is the M9 rule that a
+     * control firing must not read as an outage, pointed at a refusal.
+     */
+    if (!isEnforcedGrant(input.resource, input.action)) {
+      throw new UnprocessableEntityException({ error: 'grant_not_enforced' });
     }
     let id: string;
     try {

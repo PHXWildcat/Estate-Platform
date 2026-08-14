@@ -515,6 +515,19 @@ export class FetchProfileClient implements ProfileClient {
     if (res.status === 409 && token === 'profile_key_retired') {
       return bffError('CONTENT_ERASED');
     }
+    /*
+     * A grant the platform does not implement. Kept apart from the generic
+     * INVALID_REQUEST below — which is where it would otherwise land, 422 being
+     * a parse failure everywhere else on this client — because the remedies are
+     * nothing alike: a malformed body is a bug in the caller, and this is a
+     * capability the platform does not have yet. Reachable only by a client
+     * that has drifted ahead of the service (the people surface offers exactly
+     * what is enforced), which is precisely when a legible answer is worth
+     * having.
+     */
+    if (res.status === 422 && token === 'grant_not_enforced') {
+      return bffError('GRANT_NOT_ENFORCED');
+    }
     if (res.status === 400 || res.status === 422) {
       return bffError('INVALID_REQUEST');
     }

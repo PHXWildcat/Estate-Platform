@@ -262,6 +262,14 @@ export type BffErrorCode =
   /** That exact permission is already live on that role (M13, migration 005). */
   | 'PERMISSION_ALREADY_GRANTED'
   /**
+   * A permission over something the platform does not yet enforce. Only
+   * `contact`/`read` is read by anything; every other pair used to be stored
+   * and listed back as an allowance while conferring nothing, so profile now
+   * refuses it. Deliberately not INVALID_REQUEST: "we have not built this yet"
+   * and "your request was malformed" call for different words.
+   */
+  | 'GRANT_NOT_ENFORCED'
+  /**
    * M14's address-verification code was refused. The `INVALID_LINK_CODE`
    * shape, for the same reason: identity answers ONE `invalid_code` for
    * unknown, expired, spent, revoked, attempt-exhausted and
@@ -358,6 +366,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   NOTIFICATIONS_UNAVAILABLE: 'We cannot notify the account owner right now',
   ROLE_ALREADY_GRANTED: 'That role is already recorded for this person',
   PERMISSION_ALREADY_GRANTED: 'That permission is already allowed for this role',
+  GRANT_NOT_ENFORCED: 'This platform does not yet share that part of an estate',
   INVALID_VERIFICATION_CODE: 'That code was not accepted',
   VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
   VAULT_UNAVAILABLE: 'We could not open the vault right now',

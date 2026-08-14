@@ -54,8 +54,15 @@ export function RedeemLinkPanel(): ReactElement {
           You are linked
         </h2>
         <p className="mt-1 max-w-prose text-sm text-ink-muted">
-          The person who invited you has been told. Anything they choose to share with you will
-          appear in your account; a role on its own grants nothing until they allow it.
+          {/*
+            Narrowed from "anything they choose to share with you": the platform
+            can share estate contacts and nothing else today, and a link panel
+            promising more is the same false expectation the people surface used
+            to create with buttons. Says what a role does NOT do, then exactly
+            what it can be allowed to do.
+          */}
+          The person who invited you has been told. A role on its own grants nothing until they
+          allow it — and the only thing they can allow today is access to their estate contacts.
         </p>
       </section>
     );

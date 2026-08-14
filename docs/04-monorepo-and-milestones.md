@@ -5050,6 +5050,63 @@ the unit pin above.
 
 **Remaining:** none. M19 is complete.
 
+### Interlude — permission grants confer only what something reads (2026-08-14)
+
+Not a milestone: one defect found while scoping the next one, fixed on its own
+branch before that milestone started, because a live defect must not hide inside
+a feature change.
+
+**The finding.** `permission_grants` accepted any lowercase token as a `resource`
+and any of three actions, stored the row, audited `permission.granted` and listed
+it back to the owner under "What this role may read". Exactly one pair is read by
+anything — `effectiveContactReadGrants`, profile's only grant reader, filters
+`pg.resource = 'contact' AND pg.action = 'read'`. MEASURED against real Postgres
+over the six combinations the people surface offered: one conferred access, five
+conferred nothing, and two of those five were buttons ("Allow: Your assets",
+"Allow: Your documents"). The security shape is in docs/03 §6s; what belongs here
+is that **the defect was a drift between two internally-consistent lists, and
+neither side's tests could see it.** The surface's `RESOURCES` had three entries
+and the reader had one, both had been that way since M13, and every suite was
+green. That is the zero-callers shape inverted: not a route with no consumer, but
+a consumer with no enforcement.
+
+**What it ships.**
+- `apps/services/profile/src/enforced-grants.ts` — the enforced pairs as data,
+  with a reason per entry; `addPermission` refuses everything else with `422
+  grant_not_enforced`, AFTER the ownership check so it cannot become an oracle.
+  The check is on the PAIR and lives in the service rather than in the zod
+  schema: `contact` and `read` are each enforced and `contact`+`download` is not,
+  which a per-field enum cannot express.
+- `test/enforced-grants.spec.ts` — the declared table asserted equal to the
+  literals the reader's SQL really filters on, plus "no undeclared file reads
+  grants" derived from the directory. It REFUSES a SQL shape it cannot parse
+  rather than matching nothing, since a second enforced pair needs an `IN` and a
+  fence that stops matching goes green.
+- `apps/web/src/components/RoleControls.enforced.test.ts` — what the surface
+  offers asserted equal to what profile enforces, by reading the other file (the
+  compose-parity mechanism; the web app cannot import a Nest package). Both
+  scans carry anti-vacuity floors, because two regexes that quietly match
+  nothing agree perfectly.
+- The surface offers only `contact`, and SAYS which parts of an estate are not
+  shareable — silence would leave the same wrong belief more quietly. Grants
+  written before the vocabulary closed still render with their label and stay
+  withdrawable.
+- `GRANT_NOT_ENFORCED` through the BFF and into the app's copy, kept apart from
+  the generic `INVALID_REQUEST` a 422 maps to everywhere else on that client.
+
+**Nine mutations, all red, all restored** — including the two that matter most:
+deleting the refusal (red at the service AND over real HTTP against real
+Postgres) and putting `grantable: true` back on assets (red at the web fence).
+The int suite's own fixtures had to change: **two existing cases used
+`document`/`read` and `asset`/`read` as convenient grants**, which is how a
+promise with no enforcement behind it survives a test run.
+
+**Left open, deliberately** (docs/03 §6s): there is no mechanism at all by which
+an owner can share an asset or a document with a role-holder. Building one is a
+cross-cluster authorization change and belongs to a milestone that can take that
+decision; the fence forces a new enforced pair to arrive in the same change as
+the code that reads it.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
