@@ -109,7 +109,7 @@ export function historyDetail(payload: Record<string, unknown>): string {
     } else if (field !== 'costBasis' && typeof payload[field] === 'string') {
       fieldNotes.push(`${field} updated`);
     } else if (field === 'costBasis' && typeof payload[field] === 'string') {
-      fieldNotes.push(`cost basis ${formatMoney(payload[field] as string)}`);
+      fieldNotes.push(`cost basis ${formatMoney(payload[field])}`);
     }
   }
   if (typeof payload['inTrust'] === 'boolean') {

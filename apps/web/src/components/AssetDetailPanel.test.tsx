@@ -23,7 +23,7 @@ const DETAIL = {
   inTrust: true,
   fundingStatus: 'funded',
   status: 'live',
-  retiredAt: null,
+  retiredAt: null as string | null,
   version: '3',
 };
 
@@ -136,14 +136,14 @@ describe('AssetDetailPanel', () => {
       expect(requests.some((r) => r.body.query?.includes('UpdateAsset'))).toBe(true);
     });
     const update = requests.find((r) => r.body.query?.includes('UpdateAsset'));
-    expect(update?.body.variables).toEqual({
+    const { clientEventId, ...variables } = update?.body.variables as Record<string, unknown>;
+    expect(String(clientEventId)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(variables).toEqual({
       assetId: ASSET_ID,
       expectedVersion: '3',
       title: 'Lake house (north)',
       notes: null,
-      clientEventId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown as string,
     });
-    const variables = update?.body.variables as Record<string, unknown>;
     expect(variables).not.toHaveProperty('location');
     expect(variables).not.toHaveProperty('inTrust');
   });
@@ -162,9 +162,7 @@ describe('AssetDetailPanel', () => {
     fireEvent.change(screen.getByLabelText('As of'), { target: { value: '2026-08-13' } });
     fireEvent.click(screen.getByRole('button', { name: 'Record value' }));
 
-    expect(
-      await screen.findByText(/This changed since you opened it/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/This changed since you opened it/)).toBeInTheDocument();
     // Exactly ONE mutation request: the remedy is re-read, never blind retry.
     expect(requests.filter((r) => r.body.query?.includes('RecordValuation'))).toHaveLength(1);
   });
@@ -207,10 +205,142 @@ describe('AssetDetailPanel', () => {
   });
 });
 
+it('updates ownership and shows validation for a bad share', async () => {
+  let requests = [];
+  const mock = installGraphqlFetchMock({
+    Asset: detailHandler(),
+    ChangeOwnership: () => jsonResponse({ data: { changeOwnership: ACK } }),
+  });
+  requests = mock.requests;
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  await screen.findByText('Lake house');
+
+  fireEvent.change(screen.getByLabelText('Your ownership share %'), {
+    target: { value: '150' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Update ownership' }));
+  expect(await screen.findByText(/between 0 and 100/)).toBeInTheDocument();
+  expect(requests.some((r) => r.body.query?.includes('ChangeOwnership'))).toBe(false);
+
+  fireEvent.change(screen.getByLabelText('Your ownership share %'), {
+    target: { value: '50' },
+  });
+  fireEvent.change(screen.getByLabelText('Cost basis (optional)'), {
+    target: { value: '400000.00' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Update ownership' }));
+  expect(await screen.findByText('Ownership updated.')).toBeInTheDocument();
+  const call = requests.find((r) => r.body.query?.includes('ChangeOwnership'));
+  const vars = call?.body.variables as Record<string, unknown>;
+  expect(vars['ownershipPct']).toBe(50);
+  expect(vars['costBasis']).toBe('400000.00');
+  expect(vars['expectedVersion']).toBe('3');
+});
+
+it('validates the valuation form before any request leaves', async () => {
+  let requests = [];
+  const mock = installGraphqlFetchMock({ Asset: detailHandler() });
+  requests = mock.requests;
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  await screen.findByText('Lake house');
+
+  fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'not-money' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Record value' }));
+  expect(await screen.findByText(/plain amount/)).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText('Value'), { target: { value: '900000.00' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Record value' }));
+  expect(await screen.findByText(/date this value is as of/)).toBeInTheDocument();
+  expect(requests.some((r) => r.body.query?.includes('RecordValuation'))).toBe(false);
+});
+
+it('edit cancel restores the read view without a request', async () => {
+  let requests = [];
+  const mock = installGraphqlFetchMock({ Asset: detailHandler() });
+  requests = mock.requests;
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  await screen.findByText('Lake house');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByRole('button', { name: 'Edit details' })).toBeInTheDocument();
+  expect(requests.some((r) => r.body.query?.includes('UpdateAsset'))).toBe(false);
+});
+
+it('renders the signed-out state on UNAUTHENTICATED', async () => {
+  installGraphqlFetchMock({ Asset: () => graphqlError('UNAUTHENTICATED') });
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  expect(await screen.findByText('Sign in required')).toBeInTheDocument();
+});
+
+it('edit exercises the trust/funding controls and surfaces a command failure', async () => {
+  installGraphqlFetchMock({
+    Asset: detailHandler(),
+    UpdateAsset: () => graphqlError('INVALID_REQUEST'),
+  });
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  await screen.findByText('Lake house');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+  fireEvent.click(screen.getByLabelText('Titled in a trust'));
+  fireEvent.change(screen.getByLabelText('Trust funding status'), { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(await screen.findByText(/Something about that request/)).toBeInTheDocument();
+  // A blank name is refused locally before any request.
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: '   ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+  expect(await screen.findByText('The asset needs a name.')).toBeInTheDocument();
+});
+
+it('surfaces ownership and retire command failures in copy', async () => {
+  installGraphqlFetchMock({
+    Asset: detailHandler(),
+    ChangeOwnership: () => graphqlError('VERSION_CONFLICT'),
+    RetireAsset: () => graphqlError('VERSION_CONFLICT'),
+  });
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  await screen.findByText('Lake house');
+
+  fireEvent.change(screen.getByLabelText('Your ownership share %'), {
+    target: { value: '50' },
+  });
+  fireEvent.change(screen.getByLabelText('Cost basis (optional)'), {
+    target: { value: 'abc' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Update ownership' }));
+  expect(await screen.findByText(/Cost basis must be a plain amount/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Cost basis (optional)'), { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Update ownership' }));
+  expect((await screen.findAllByText(/This changed since you opened it/)).length).toBe(1);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Retire…' }));
+  fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'gifted' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm retire' }));
+  await waitFor(() => {
+    expect(screen.getAllByText(/This changed since you opened it/).length).toBe(2);
+  });
+  // Cancel disarms the confirm step.
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByRole('button', { name: 'Retire…' })).toBeInTheDocument();
+});
+
+it('history load failure reads as an error, not an empty ledger', async () => {
+  installGraphqlFetchMock({
+    Asset: detailHandler(),
+    AssetHistory: () => graphqlError('UNKNOWN'),
+  });
+  render(<AssetDetailPanel assetId={ASSET_ID} />);
+  await screen.findByText('Lake house');
+  fireEvent.click(screen.getByRole('button', { name: 'Load history' }));
+  expect(await screen.findByText(/couldn’t load the history/)).toBeInTheDocument();
+});
+
 describe('historyDetail', () => {
   it('renders known keys and money through formatMoney', () => {
     expect(
-      historyDetail({ estValue: '850000.00', valuationAsOf: '2026-07-01', valuationSource: 'appraisal' }),
+      historyDetail({
+        estValue: '850000.00',
+        valuationAsOf: '2026-07-01',
+        valuationSource: 'appraisal',
+      }),
     ).toBe('value $850,000.00 as of 2026-07-01 (appraisal)');
   });
 
@@ -220,5 +350,18 @@ describe('historyDetail', () => {
 
   it('degrades to an empty detail on an unknown payload rather than crashing', () => {
     expect(historyDetail({ mystery: { deep: true } })).toBe('');
+  });
+
+  it('covers the remaining event vocabularies defensively', () => {
+    expect(historyDetail({ title: 'Boat' })).toBe('“Boat”');
+    expect(historyDetail({ ownershipPct: 50 })).toBe('50% share');
+    expect(historyDetail({ sharePct: 60, designation: 'primary' })).toBe('60% primary');
+    expect(historyDetail({ reason: 'sold' })).toBe('reason: sold');
+    expect(historyDetail({ location: 'safe' })).toBe('location updated');
+    expect(historyDetail({ costBasis: '1000.00' })).toBe('cost basis $1,000.00');
+    expect(historyDetail({ inTrust: true })).toBe('marked in trust');
+    expect(historyDetail({ inTrust: false })).toBe('marked not in trust');
+    expect(historyDetail({ fundingStatus: 'funded' })).toBe('Funded to trust');
+    expect(historyDetail({ fundingStatus: null })).toBe('funding status cleared');
   });
 });

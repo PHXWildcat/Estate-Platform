@@ -115,7 +115,7 @@ export type CreateAssetInput = {
   readonly location?: string;
   readonly notes?: string;
   readonly clientEventId?: string;
-}
+};
 
 /** Absent = unchanged; explicit null = clear (the service's own semantics). */
 export type UpdateDetailsInput = {
@@ -125,22 +125,22 @@ export type UpdateDetailsInput = {
   readonly inTrust?: boolean;
   readonly fundingStatus?: string | null;
   readonly clientEventId?: string;
-}
+};
 
 export type RecordValuationInput = Valuation & {
   readonly clientEventId?: string;
-}
+};
 
 export type ChangeOwnershipInput = {
   readonly ownershipPct: number;
   readonly costBasis?: string | null;
   readonly clientEventId?: string;
-}
+};
 
 export type RetireAssetInput = {
   readonly reason?: string;
   readonly clientEventId?: string;
-}
+};
 
 export interface AssetsClient {
   list(accessToken: string, includeRetired?: boolean): Promise<Asset[]>;
@@ -204,11 +204,7 @@ export class FetchAssetsClient implements AssetsClient {
   }
 
   async get(accessToken: string, assetId: string): Promise<AssetDetail> {
-    const res = await this.request(
-      'GET',
-      `/v1/assets/${encodeURIComponent(assetId)}`,
-      accessToken,
-    );
+    const res = await this.request('GET', `/v1/assets/${encodeURIComponent(assetId)}`, accessToken);
     if (!res.ok) {
       throw await this.mapError(res);
     }

@@ -5760,6 +5760,49 @@ deviating from them, stop and propose the change with rationale — do not silen
   Both consumers verified unaffected (the BFF never read the dropped fields;
   the assistant's schema strips them by design). All fixes mutation-tested;
   the harness refuses no-op mutations and reads only the jest summary line.
+- 2026-08-13 — M19 PR2 SHIPPED THE READ+WRITE ASSET SURFACE, and the two
+  decisions worth keeping are both about keeping distinctions apart. (1) TWO
+  ASSET SHAPES ON THE WIRE, list and detail, never one nullable type: the
+  list structurally cannot carry costBasis/location/notes (the service
+  decrypts exactly est_value per list row — PR1's narrowing), and a shared
+  type would make "not carried" indistinguishable from "not set", the M11
+  missing-field rule violated at the TYPE level. The BFF client's detail
+  schema REQUIRES the fields the list lacks, so a version-skewed response is
+  refused rather than half-trusted. (2) NULL-VS-ABSENT SURVIVES ALL THREE
+  HOPS: GraphQL coerced args keep an omitted argument and an explicit null
+  apart, JSON.stringify drops undefined and keeps null, and the service's
+  UpdateDetails reads null as CLEAR — so the web edit form sends ONLY changed
+  fields, a field edited to empty travels as null, and untouched fields are
+  absent. Pinned by wire-level assertions at each layer and proven live: the
+  browser cleared notes_ct at the database while location_ct survived, and
+  the ledger's history entry reads "notes cleared". IDEMPOTENCY IS
+  PAYLOAD-KEYED (`command-id.ts`): one browser-minted eventId per payload,
+  held across retries of the SAME payload, regenerated the moment the payload
+  changes — because attempt one may have committed despite a client-visible
+  failure, and an edited payload reusing the old id would be answered with
+  the ORIGINAL ack while the edit silently vanished. VERSION_CONFLICT's only
+  remedy is RE-READ (a never-auto-retries pin); the copy generalized to
+  surface-neutral wording rather than minting an asset-specific code.
+- 2026-08-13 — M19 PR2's RETIRED-ASSET VISIBILITY, as approved: status +
+  retiredAt on both DTOs, getAsset serves retired records (commands still
+  404 — "the command surface treats a retired asset as gone; the READ
+  surface serves its record"), the list gains ?includeRetired, and the asOf
+  replay honors the flag (an asset retired before the as-of date is honest
+  temporal data when asked for). The web shows retired rows behind a
+  deliberate toggle, excluded from every total. THE LIVE DRIVE FOUND THE
+  DISPLAY CLASS AGAIN (tenth milestone running): with Show retired on, the
+  trust card COUNTED a retired in-trust asset (client-side arithmetic over
+  the loaded list) beside a server-computed value that correctly excluded it
+  — one card disagreeing with itself; the count is live-only now, pinned by
+  a fixture that renders exactly that pair. Also from the drive: the whole
+  journey's decrypt budget measured in the real audit chain (asset_list=2 —
+  ONE per row, the PR1 narrowing live; asset_read=13; asset_history=3, once,
+  on demand; net_worth=1), and decrypt-rate-bounds.ts recalibrated by
+  reviewed commit per §6q — the provisional asset_event/user row has its
+  first real measurement. DELIBERATELY NO STACK-E2E ADDITIONS (counts
+  unchanged in both workflow twins): int + resolver suites + the real-browser
+  drive cover the layers, and the exact-count dance is saved for PR3, whose
+  step-up ceremony is the thing that genuinely wants a cross-service leg.
 - 2026-08-13 — THE ROUTE↔CONSUMER FENCE (M19 PR1,
   `packages/auth-guard/test/route-consumers.spec.ts`): zero-callers made
   data, the credential-graph shape applied to the product surface. Routes are

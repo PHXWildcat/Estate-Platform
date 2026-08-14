@@ -206,6 +206,17 @@ describe('FetchAssetsClient', () => {
     expect(versions).toEqual(['2', '3', '4']);
   });
 
+  it('maps errors on every read path, not only the list', async () => {
+    const boom = () => jest.fn().mockResolvedValue(response(500, { error: 'internals' }));
+    await expect(new FetchAssetsClient(BASE, boom()).netWorth(TOKEN)).rejects.toThrow(/status 500/);
+    await expect(new FetchAssetsClient(BASE, boom()).history(TOKEN, ASSET.assetId)).rejects.toThrow(
+      /status 500/,
+    );
+    await expect(new FetchAssetsClient(BASE, boom()).get(TOKEN, ASSET.assetId)).rejects.toThrow(
+      /status 500/,
+    );
+  });
+
   it('maps the uniform 404 to NOT_FOUND and a stale If-Match to VERSION_CONFLICT', async () => {
     const notFound = jest.fn().mockResolvedValue(response(404, { error: 'not_found' }));
     await expect(

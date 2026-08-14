@@ -4709,20 +4709,57 @@ PR2/PR3", and those PRs flip the exemptions to consumer entries in the same
 change as the clients — the M9 PR2 holders-flip pattern, so the milestone's
 story is told in the fence's diff.
 
-**Remaining PRs:** PR2 — the BFF's expanded client + the web read/write
-surface (full `Asset` type, `AssetHistoryEntry`, a real `CreateAssetInput`
-input object, browser-minted `clientEventId` idempotency, `expectedVersion`
-→ If-Match with a `VERSION_CONFLICT` re-read-never-blind-retry UI, the
-`/assets/[assetId]` page, retired-asset visibility via a `status` field +
-`includeRetired`, APQ manifest regeneration + BOTH hand-copies, and a
-decrypt-budget measurement with recalibration of the provisional
-`asset_event/user` bound per docs/03 §6q). PR3 — the step-up
-beneficiary-designation ceremony (BFF composes contact names via the
-existing profile client on the caller's own bearer; dangling contacts render
-honestly; StepUpPrompt reused with the discriminated-union retry binding;
-copy carries both truths: a designation is not access, and no beneficiary
-can see anything yet — `namedBeneficiaries` is structurally empty until the
-contact-link projection lands). PR4 — the adversarial security review.
+**PR2 (shipped) — the read+write surface.** The service change is
+retired-asset visibility alone (`status`/`retiredAt` on both DTOs, `getAsset`
+serves retired records, `?includeRetired` on the list — commands still
+refuse); everything else is BFF/web. The BFF client grew from three methods
+to nine; the GraphQL surface keeps TWO asset shapes on purpose — the LIST
+type structurally cannot carry `costBasis`/`location`/`notes`, because a
+nullable shared type would make "the list does not carry notes"
+indistinguishable from "this asset has no notes" (the M11 rule applied at
+the type level). `createAsset` switched from five flat args to a real
+`CreateAssetInput`; four command mutations thread `expectedVersion` →
+`If-Match` (a stale one is `VERSION_CONFLICT`, and the UI's only remedy is
+re-read — proven by a never-auto-retries pin) and browser-minted
+`clientEventId` idempotency keys (`command-id.ts`: one id per PAYLOAD, held
+across retries of the same payload, regenerated the moment the payload
+changes — reusing an id across an edit would answer the OLD command's ack
+while the edit silently vanished). NULL-vs-ABSENT is kept apart end to end
+(GraphQL coerced args → JSON.stringify → the service's null-clears), pinned
+by wire-level assertions at all three layers and mutation-tested six ways.
+The AssetsPanel's pre-existing M11 shape-guard gap was fixed and pinned;
+history is loaded strictly ON DEMAND and dropped back to idle after any
+command. APQ manifest regenerated; both BFF hand-copies updated (the
+`assets.spec.ts` copy gained the hazard note it lacked); the fence's six
+"pending M19 PR2" exemptions flipped to verified consumers in the same
+change as the client.
+
+**Deliberately NO stack-e2e additions in PR2** (counts unchanged in both
+workflow twins): the service behavior is int-proven, the BFF layer has its
+own resolver suites, and the UI was proven by DRIVING THE REAL BROWSER
+against freshly rebuilt images — create with full details → detail → edit
+(trust flip + an explicit notes CLEAR that removed `notes_ct` at the
+database while `location_ct` survived untouched) → valuation ($900k, header
+re-read live) → on-demand history (three entries, "notes cleared · marked
+in trust" legible in the ledger) → retire (record readable, every action
+form gone) → the list's Show-retired toggle. The journey's decrypt budget,
+measured in the real audit chain: `asset_list` = 2 (ONE decrypt per row —
+PR1's narrowing live), `asset_read` = 13 (4 per detail load, 3 once notes
+were cleared), `asset_history` = 3 (one per event, once), `net_worth` = 1.
+`decrypt-rate-bounds.ts` recalibrated by this commit per docs/03 §6q: the
+provisional `asset_event/user` row has its first real measurement (3/min)
+and the `asset/user` note now describes the narrowed arithmetic. The drive
+also caught a display incoherence no unit test had: with Show retired on,
+the trust card COUNTED a retired in-trust asset beside a server value that
+correctly excluded it — the count is live-only now, pinned.
+
+**Remaining PRs:** PR3 — the step-up beneficiary-designation ceremony (BFF
+composes contact names via the existing profile client on the caller's own
+bearer; dangling contacts render honestly; StepUpPrompt reused with the
+discriminated-union retry binding; copy carries both truths: a designation
+is not access, and no beneficiary can see anything yet —
+`namedBeneficiaries` is structurally empty until the contact-link
+projection lands). PR4 — the adversarial security review.
 
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 

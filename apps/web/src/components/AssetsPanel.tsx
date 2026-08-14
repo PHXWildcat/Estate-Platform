@@ -238,7 +238,10 @@ export function AssetsPanel(): ReactElement {
   }
 
   const { assets, netWorth } = state;
-  const inTrustCount = assets.filter((asset) => asset.inTrust).length;
+  // Live assets only: with "Show retired" on, a retired in-trust asset would
+  // otherwise be COUNTED beside a server total that (correctly) excludes it —
+  // a card disagreeing with itself (found by the M19 PR2 live drive).
+  const inTrustCount = assets.filter((asset) => asset.inTrust && asset.status !== 'retired').length;
   const unvaluedCount = netWorth.assetCount - netWorth.valuedAssetCount;
 
   return (

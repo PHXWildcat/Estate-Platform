@@ -1605,9 +1605,7 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           return assets.create(requireAccessToken(ctx), {
             category: input.category,
             title: input.title,
-            ...(typeof input.ownershipPct === 'number'
-              ? { ownershipPct: input.ownershipPct }
-              : {}),
+            ...(typeof input.ownershipPct === 'number' ? { ownershipPct: input.ownershipPct } : {}),
             ...(typeof input.inTrust === 'boolean' ? { inTrust: input.inTrust } : {}),
             ...(typeof input.fundingStatus === 'string'
               ? { fundingStatus: input.fundingStatus }

@@ -81,7 +81,11 @@ describe('assets resolvers', () => {
   });
 
   it('passes includeRetired through only when asked', async () => {
-    await gql(app, { query: ASSETS_QUERY, variables: { includeRetired: true } }, { cookie: COOKIE });
+    await gql(
+      app,
+      { query: ASSETS_QUERY, variables: { includeRetired: true } },
+      { cookie: COOKIE },
+    );
     expect(assets.listCalls).toEqual([{ accessToken: TOKENS.accessToken, includeRetired: true }]);
   });
 
@@ -150,6 +154,94 @@ describe('assets resolvers', () => {
       },
     ]);
     expect(assets.commandCalls[0]?.input).not.toHaveProperty('location');
+
+    // The other arms: a trust flip, an explicit fundingStatus CLEAR, and a
+    // client-minted idempotency key all travel.
+    const second = await gql(
+      app,
+      {
+        query: UPDATE_ASSET_MUTATION,
+        variables: {
+          assetId: ASSET.assetId,
+          expectedVersion: '4',
+          inTrust: true,
+          fundingStatus: null,
+          clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+        },
+      },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(second).errors).toBeUndefined();
+    expect(assets.commandCalls[1]).toMatchObject({
+      method: 'updateDetails',
+      input: {
+        inTrust: true,
+        fundingStatus: null,
+        clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+      },
+      expectedVersion: '4',
+    });
+  });
+
+  it('recordValuation and changeOwnership forward their commands intact', async () => {
+    const VALUATION_MUTATION =
+      'mutation RecordValuation($assetId: ID!, $expectedVersion: String!, $estValue: String!, $valuationAsOf: String!, $valuationSource: String!, $clientEventId: ID) { recordValuation(assetId: $assetId, expectedVersion: $expectedVersion, estValue: $estValue, valuationAsOf: $valuationAsOf, valuationSource: $valuationSource, clientEventId: $clientEventId) { assetId eventId version replayed } }';
+    const OWNERSHIP_MUTATION =
+      'mutation ChangeOwnership($assetId: ID!, $expectedVersion: String!, $ownershipPct: Float!, $costBasis: String, $clientEventId: ID) { changeOwnership(assetId: $assetId, expectedVersion: $expectedVersion, ownershipPct: $ownershipPct, costBasis: $costBasis, clientEventId: $clientEventId) { assetId eventId version replayed } }';
+
+    const valuation = await gql(
+      app,
+      {
+        query: VALUATION_MUTATION,
+        variables: {
+          assetId: ASSET.assetId,
+          expectedVersion: '3',
+          estValue: '900000.00',
+          valuationAsOf: '2026-08-13',
+          valuationSource: 'appraisal',
+          clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+        },
+      },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(valuation).errors).toBeUndefined();
+    // costBasis: null travels as the explicit CLEAR; no clientEventId here so
+    // none is invented for the wire.
+    const ownership = await gql(
+      app,
+      {
+        query: OWNERSHIP_MUTATION,
+        variables: {
+          assetId: ASSET.assetId,
+          expectedVersion: '4',
+          ownershipPct: 50,
+          costBasis: null,
+        },
+      },
+      { cookie: COOKIE },
+    );
+    expect(gqlBody(ownership).errors).toBeUndefined();
+    expect(assets.commandCalls).toEqual([
+      {
+        method: 'recordValuation',
+        accessToken: TOKENS.accessToken,
+        assetId: ASSET.assetId,
+        input: {
+          estValue: '900000.00',
+          valuationAsOf: '2026-08-13',
+          valuationSource: 'appraisal',
+          clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+        },
+        expectedVersion: '3',
+      },
+      {
+        method: 'changeOwnership',
+        accessToken: TOKENS.accessToken,
+        assetId: ASSET.assetId,
+        input: { ownershipPct: 50, costBasis: null },
+        expectedVersion: '4',
+      },
+    ]);
   });
 
   it('retireAsset forwards the expectedVersion and surfaces VERSION_CONFLICT', async () => {

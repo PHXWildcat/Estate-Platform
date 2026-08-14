@@ -129,14 +129,21 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     principal: 'user',
     measuredPerMinute: 30,
     maxPerWindow: 1500,
-    note: '5 lists × 5 valuations + 5 single reads measured; executor estate reads ride the same class by design',
+    note:
+      'historical peak 30/min measured pre-M19 on the 4-field list; M19 PR1 narrowed the list ' +
+      'to ONE est_value decrypt per row, and the M19 PR2 journey (create→detail→edit→value→' +
+      'retire, reload after each command) peaked ~10/min — asset_list=1/row, asset_read=4 per ' +
+      'detail load, net_worth=1/valued row; executor estate reads ride the same class by design',
   },
   {
     prefix: 'asset_event',
     principal: 'user',
-    measuredPerMinute: 0,
+    measuredPerMinute: 3,
     maxPerWindow: 1500,
-    note: 'asset history decrypts one payload per ledger event — scales with ledger length; provisional, sized on asset',
+    note:
+      'asset history decrypts one payload per ledger event, loaded strictly ON DEMAND (never ' +
+      'prefetched, dropped to idle after a command); first real measurement M19 PR2 — a 3-event ' +
+      'asset = 3 decrypts in one press; scales with ledger length',
   },
   {
     prefix: 'asset_event',
