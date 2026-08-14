@@ -21,6 +21,7 @@ import {
   type MfaLevel,
 } from '@estate/contracts';
 import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
+import { SETTLEMENT_AUTHORITY, type StageAccessAuthority } from '@estate/settlement-client';
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -62,6 +63,25 @@ const fakeVerifier: SessionVerifier = {
 const bearer = (level: 'mfa' | 'stepup', userId: string): Record<string, string> => ({
   authorization: `Bearer ${level}:${userId}`,
 });
+
+/**
+ * Controllable stand-in for settlement's staged-access authority (the real
+ * HttpSettlementAuthority fails CLOSED on any transport error, so the service
+ * only ever observes `allowed: true | false` — both driven here). Refuses by
+ * default; the executor tests flip `answer` per case.
+ */
+const settlementGate = {
+  answer: { allowed: false } as StageAccessAuthority,
+  calls: [] as Array<{ bearerToken: string; ownerUserId: string; stage: string }>,
+  checkStageAccess(input: {
+    bearerToken: string;
+    ownerUserId: string;
+    stage: 'inventory' | 'documents' | 'vault';
+  }): Promise<StageAccessAuthority> {
+    settlementGate.calls.push({ ...input });
+    return Promise.resolve(settlementGate.answer);
+  },
+};
 const CONTACT_A = randomUUID();
 const CONTACT_B = randomUUID();
 const TITLE = 'Lake house on Shore Road';
@@ -129,6 +149,8 @@ describeIfPg('asset ledger service end to end', () => {
       .useValue({ connectionString: pgUrl, options: `-c search_path=${schema}` })
       .overrideProvider(SESSION_VERIFIER)
       .useValue(fakeVerifier)
+      .overrideProvider(SETTLEMENT_AUTHORITY)
+      .useValue(settlementGate)
       .compile();
     app = moduleRef.createNestApplication({ logger: false });
     await app.init();
@@ -204,11 +226,51 @@ describeIfPg('asset ledger service end to end', () => {
     expect(dto.estValue).toBe(VALUE);
     expect(dto.notes).toBe(SECRET_NOTES);
     expect(dto.version).toBe('1');
+  });
+
+  it('cross-owner probes answer the uniform 404 — reads AND commands (no oracle)', async () => {
+    // A stranger probing a REAL id must get the byte-identical answer a
+    // nonexistent id gets: a distinct 403 would confirm the guess named
+    // someone's asset (M19 PR1; the M10 PEP / M13 profile rule).
+    const denied = await request(server).get(`/v1/assets/${assetId}`).set(asStranger()).expect(404);
+    const missing = await request(server)
+      .get(`/v1/assets/${randomUUID()}`)
+      .set(asStranger())
+      .expect(404);
+    expect(denied.body).toEqual({ error: 'not_found' });
+    expect(denied.body).toEqual(missing.body);
 
     await request(server)
-      .get(`/v1/assets/${assetId}`)
+      .patch(`/v1/assets/${assetId}`)
       .set(asStranger())
-      .expect(403, { error: 'forbidden' });
+      .send({ title: 'mine now' })
+      .expect(404, { error: 'not_found' });
+    await request(server)
+      .get(`/v1/assets/${assetId}/beneficiaries`)
+      .set(asStranger())
+      .expect(404, { error: 'not_found' });
+  });
+
+  it('the list decrypts exactly est_value per row (the audited decrypt budget)', async () => {
+    // notes/location ciphertext exists on this row; a list that decrypted it
+    // would surface here as a non-est_value crypto.field.decrypted event.
+    const before = producer.messages.length;
+    const res = await request(server).get('/v1/assets').set(asOwner()).expect(200);
+    const rows = res.body as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty('notes');
+    expect(rows[0]).not.toHaveProperty('location');
+    expect(rows[0]).not.toHaveProperty('costBasis');
+    const decrypts = producer.messages
+      .slice(before)
+      .filter((m) => m.topic === TOPICS.auditEvents)
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+      .filter((e) => e.action === 'crypto.field.decrypted');
+    expect(decrypts.length).toBeGreaterThan(0);
+    for (const e of decrypts) {
+      expect(e.detail['field']).toMatch(/\.est_value$/);
+      expect(e.detail['purpose']).toBe('asset_list');
+    }
   });
 
   it('appends valuations and enforces If-Match optimistic concurrency', async () => {
@@ -339,6 +401,62 @@ describeIfPg('asset ledger service end to end', () => {
     expect(nw.inTrustPct).toBe(100);
   });
 
+  it('executor estate read: refused without a settlement grant, full audited inventory with one', async () => {
+    // First coverage this route has ever had (M19 PR1): docs/03 §5.1
+    // control 5 shipped in M7 PR2 with no caller and no test anywhere.
+    const EXECUTOR = randomUUID();
+    settlementGate.calls.length = 0;
+
+    // Settlement grants nothing → uniform 403. Deliberately NOT the asset
+    // 404: the path names an owner id the caller already knows, so there is
+    // no guessable-resource oracle for the 404 rule to close.
+    await request(server)
+      .get(`/v1/estates/${OWNER}/assets`)
+      .set(bearer('mfa', EXECUTOR))
+      .expect(403, { error: 'forbidden' });
+
+    // Approved inventory stage → the FULL inventory (the executor's only
+    // read surface — no executor detail route exists), every decrypt
+    // attributed to the EXECUTOR, and the read audited on the owner's trail.
+    const caseId = randomUUID();
+    settlementGate.answer = { allowed: true, caseId };
+    const before = producer.messages.length;
+    const res = await request(server)
+      .get(`/v1/estates/${OWNER}/assets`)
+      .set(bearer('mfa', EXECUTOR))
+      .expect(200);
+    settlementGate.answer = { allowed: false };
+
+    const inventory = res.body as AssetDto[];
+    expect(inventory).toHaveLength(1);
+    expect(inventory[0]!.title).toBe(TITLE);
+    expect(inventory[0]!.notes).toBe(SECRET_NOTES);
+
+    // Both requests asked settlement the exact staged question on the
+    // CALLER's own bearer — assets mints no authority of its own.
+    expect(settlementGate.calls).toEqual([
+      { bearerToken: `mfa:${EXECUTOR}`, ownerUserId: OWNER, stage: 'inventory' },
+      { bearerToken: `mfa:${EXECUTOR}`, ownerUserId: OWNER, stage: 'inventory' },
+    ]);
+
+    const events = producer.messages
+      .slice(before)
+      .filter((m) => m.topic === TOPICS.auditEvents)
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)));
+    const decrypts = events.filter((e) => e.action === 'crypto.field.decrypted');
+    expect(decrypts.length).toBeGreaterThan(0);
+    for (const e of decrypts) {
+      expect(e.actorId).toBe(EXECUTOR);
+      expect(e.detail['purpose']).toBe('estate_inventory');
+    }
+    const viewed = events.filter((e) => e.action === 'asset.estate.viewed');
+    expect(viewed).toHaveLength(1);
+    expect(viewed[0]!.actorId).toBe(EXECUTOR);
+    expect(viewed[0]!.onBehalfOf).toBe(OWNER);
+    expect(viewed[0]!.detail['caseId']).toBe(caseId);
+    expect(Number(viewed[0]!.detail['count'])).toBe(1);
+  });
+
   it('serves full event history (decrypted payloads, seq versions)', async () => {
     const res = await request(server)
       .get(`/v1/assets/${assetId}/events`)
@@ -355,7 +473,11 @@ describeIfPg('asset ledger service end to end', () => {
       'BeneficiaryRemoved',
     ]);
     expect(history[0]!.payload.title).toBe(TITLE);
-    await request(server).get(`/v1/assets/${assetId}/events`).set(asStranger()).expect(403);
+    // Same uniform 404 as every other cross-owner probe on a real id.
+    await request(server)
+      .get(`/v1/assets/${assetId}/events`)
+      .set(asStranger())
+      .expect(404, { error: 'not_found' });
   });
 
   it('append-only: a non-owner role cannot UPDATE or DELETE ledger rows', async () => {

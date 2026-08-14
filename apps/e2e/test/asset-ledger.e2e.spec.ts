@@ -159,10 +159,11 @@ describeIfPg('asset ledger: event-sourced commands → audit chain + domain topi
       .send({ contactId: CONTACT, designation: 'primary', sharePct: 100 })
       .expect(201);
 
-    // decrypted read for the owner; deny-by-default for anyone else
+    // decrypted read for the owner; deny-by-default for anyone else — and the
+    // deny is the uniform 404, not a 403 that confirms the id exists (M19 PR1)
     const read = await http.get(`/v1/assets/${assetId}`).set(owner).expect(200);
     expect((read.body as { estValue: string }).estValue).toBe('325000.00');
-    await http.get(`/v1/assets/${assetId}`).set(bearer('mfa', randomUUID())).expect(403);
+    await http.get(`/v1/assets/${assetId}`).set(bearer('mfa', randomUUID())).expect(404);
 
     // temporal query: nothing held before the ledger began
     const empty = await http.get('/v1/assets?asOf=2020-01-01').set(owner).expect(200);
