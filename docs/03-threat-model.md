@@ -39,7 +39,7 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 
 **TB4 — Data stores**
 - *Tampering:* Audit chain hash-anchored to WORM storage; DB roles cannot UPDATE/DELETE event tables; nightly chain verification with paging on gap.
-- *Info disclosure:* Bulk-decryption detection — per-principal decrypt-rate baselines with hard circuit breakers. DETECTION SHIPPED IN M18 (§6q) and its signal is the `crypto.field.decrypted` audit stream, NOT KMS telemetry: every Zone B decrypt emits fail-closed before plaintext is released, while the 5-minute DEK cache means N reads under a hot key are N audit events and ZERO KMS operations — KMS-side monitoring structurally cannot see read volume, in the cloud exactly as locally. Bounds are fixed reviewed constants set from measured ceilings (never a learned baseline an attacker could train, and never the old "normal × 50" formula). ENFORCEMENT — suspending the KMS grant, paging a security operator — remains cloud-blocked (real IAM, TB7): the grant is still the RESPONSE chokepoint, but it was never the detection signal.
+- *Info disclosure:* Bulk-decryption detection — per-principal decrypt-rate baselines with hard circuit breakers. DETECTION SHIPPED IN M18 (§6q) and its signal is the `crypto.field.decrypted` audit stream, NOT KMS telemetry: every Zone B decrypt emits fail-closed before plaintext is released, while the 5-minute DEK cache means N reads under a hot key are N audit events and ZERO KMS operations — KMS-side monitoring structurally cannot see read volume, in the cloud exactly as locally. Bounds are fixed reviewed constants set from measured ceilings (never a learned baseline an attacker could train, and never the old "normal × 50" formula), and for the one class whose legitimate volume scales with ESTATE SIZE rather than with activity a count is joined by a DISTINCT-SUBJECT condition — both must be exceeded, which suppresses re-reading without moving the threshold at which a mass read of different rows breaches (§6q(ii)). ENFORCEMENT — suspending the KMS grant, paging a security operator — remains cloud-blocked (real IAM, TB7): the grant is still the RESPONSE chokepoint, but it was never the detection signal.
 - *Elevation:* IRSA-scoped pod identities; no shared DB users; RLS as a second net under application authz.
 
 **TB5 — Third parties**
@@ -2471,6 +2471,78 @@ runs with a live detector and no anomaly assertion over it. Nothing in that
 journey reaches a decrypt class the dev journey does not, which is why this
 is recorded rather than duplicated; a production-only decrypt path arriving
 later owes the gate a second home.
+
+### 6q(ii). AMENDMENT — the distinct-subject condition (2026-08-14)
+
+**The alarm fired on an owner reading their own estate.** MEASURED against
+the running stack: seven ordinary `/assets` page loads of a 120-asset estate
+produced 1680 `asset` decrypts in about twenty seconds and raised
+`crypto.decrypt_rate.exceeded` (`boundName=asset_user count=1680 bound=1500`).
+Nothing was wrong with the reader, the reading, or the count — the count was
+right. `asset` is the ONE bound in the table whose legitimate volume scales
+with ESTATE SIZE rather than with activity: one `/assets` page load issues
+Assets and NetWorth together, so it costs 2 decrypts PER ASSET OWNED, and the
+1500 was itself calibrated on the M19 PR2 journey, an estate of a handful of
+assets. Estate size is unbounded, so no constant survives it: raise the number
+and you false-positive on some larger estate while blinding the detector for
+every smaller one. A per-principal count cannot express this, which is why the
+fix is a second dimension rather than a bigger number.
+
+**What shipped.** `DecryptRateBound` gained an optional
+`maxDistinctSubjectsPerWindow`, and a breach now requires BOTH thresholds to be
+strictly exceeded. The subject is the row id already inside the field name,
+located by a position declared per prefix in `DECRYPT_FIELD_SUBJECTS`
+(@estate/contracts) and counted by the sweep's own
+`count(DISTINCT CASE … split_part …)`. Exactly one bound carries the condition
+(`asset`/`user`); every other prefix declares no subject, reports 0 distinct,
+and decides on the count exactly as before.
+
+**THE DETECTION THRESHOLD IS UNCHANGED — only the amplification is removed.**
+The AND is safe because a principal touching N distinct subjects has made at
+least N decrypts, so distinct ≤ count always; with the distinct threshold at or
+below the count threshold (a table invariant, asserted), anything that clears
+the count bound on DISTINCT rows clears the distinct bound too. A mass read of
+N different assets still breaches at exactly the N it breached at before. What
+the condition suppresses is precisely RE-READING, which moves no plaintext the
+principal had not already seen.
+
+**It can only ever suppress, which is why it is declared rather than inferred.**
+A wrong subject position is a blind spot, not noise, so `doc` is the recorded
+counter-example and is deliberately ABSENT: its field is
+`doc.<ownerUserId>.v<n>.<sha>`, so the tempting segment 2 holds the OWNER — the
+same value for every document a person holds — and declaring it would collapse
+a whole library to one subject and suppress a mass document read. Sampling the
+live stream shows a UUID there and invites exactly that mistake, so the
+position is read from the code that BUILDS the string:
+`packages/contracts/test/decrypt-field-subjects.spec.ts` pins every declared
+position to its constructor in the owning service's source, and asserts both
+halves of the `doc` case (undeclared, and segment 2 really is the owner).
+Merging the sentinel's two actor types SUMS distinct counts, which over-counts
+— deliberately, because an upper bound errs toward breaching, the only
+direction a suppressing condition may fail in.
+
+**Residuals, stated rather than implied.**
+- An estate with MORE than 1500 distinct assets still trips on a single page
+  load. That is the detection threshold doing its job at the size where the two
+  readings genuinely converge, and it is the honest cost of a constant: the
+  detector runs in the audit cluster and cannot know how large an estate
+  legitimately is without a cross-cluster read its fenced zero-credential
+  posture forbids. Re-calibration is a reviewed commit, as for every other row.
+- A principal who has already read a set may now re-read it without limit. That
+  was true of any count bound sitting above the set's size; what changed is
+  that it is now true by construction rather than by luck.
+- The distinct count is only as good as the declaration. A prefix whose id tail
+  is not per-row must never be declared, and the fence above is what keeps that
+  from being a matter of memory.
+
+**Evidence, one database, one table.** Three principals with the same estate
+shape and the same browsing: the pre-fix run (1680 decrypts / 120 distinct)
+raised an anomaly carrying `count: 1680` and no distinct fields; two post-fix
+runs with byte-identical economics raised none. In the same window a
+1501-asset estate read ONCE (3002 decrypts / 1501 distinct) breached, carrying
+`distinctSubjects: 1501, distinctBound: 1500` — so the detector demonstrably
+ran, and the silence on the browsing principals is a decision rather than a
+dead tick.
 
 ## 6r. Threat-model delta — M19 the assets surface (2026-08-13)
 

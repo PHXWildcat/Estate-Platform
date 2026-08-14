@@ -62,6 +62,61 @@ export type DecryptFieldPrefix = keyof typeof DECRYPT_FIELD_PREFIXES;
 export type DecryptEmittingService = (typeof DECRYPT_FIELD_PREFIXES)[DecryptFieldPrefix];
 
 /**
+ * WHERE THE SUBJECT'S ID SITS IN A FIELD NAME — 1-based, `split_part` order.
+ *
+ * The header above calls the id tail "cardinality, not class", which is right
+ * for attribution and wrong for detection: HOW MANY DISTINCT THINGS a principal
+ * decrypted is the closest thing the audit stream holds to "how much data left
+ * the envelope". A fixed count bound cannot tell a 120-asset estate browsed
+ * seven times (1680 decrypts, 120 subjects) from a mass read of 1680 different
+ * assets (1680 decrypts, 1680 subjects) — MEASURED, and the first of those
+ * raised the TB4 alarm on a legitimate owner reading their own estate through
+ * the product's own pages.
+ *
+ * DELIBERATELY SPARSE, and the empty entries are the point rather than an
+ * omission. A declaration here lets a bound SUPPRESS an alarm, so a wrong one
+ * is a blind spot: every entry is verified against the field's own construction
+ * in the owning service, and `test/decrypt-field-subjects.spec.ts` re-checks
+ * that against source. Anything not named here is counted, never suppressed.
+ *
+ * `doc` is the cautionary entry and is deliberately ABSENT. Its field is
+ * `doc.<ownerUserId>.v<n>.<sha>` (documents/content-cipher.ts), so segment 2 is
+ * the OWNER — the same value for every document a person holds. Sampling the
+ * live stream shows a UUID there and invites exactly the wrong declaration,
+ * which would collapse an owner's whole library to one subject and suppress a
+ * mass document read. The position is read from the code that builds the
+ * string, never from what the data looks like.
+ */
+export const DECRYPT_FIELD_SUBJECTS: Partial<Record<DecryptFieldPrefix, number>> = {
+  // `asset.<assetId>.<column>` — assets.service.ts viewField(). The one prefix
+  // whose legitimate volume scales with the size of the owner's estate rather
+  // than with their activity, and so the one that needs this.
+  asset: 2,
+};
+
+/**
+ * The subject id inside a field name, or null when this prefix declares none.
+ *
+ * Same hasOwnProperty guard as `decryptFieldServiceFor`, and for the same
+ * reason: field names are attacker-adjacent strings, so `constructor` must not
+ * resolve through the prototype into a segment index.
+ */
+export function decryptFieldSubject(field: string): string | null {
+  const prefix = decryptFieldPrefix(field);
+  // ONE guard, not two: "the prefix is not declared" and "it is declared as
+  // undefined" are the same answer — no position — and splitting them left the
+  // second arm unreachable by any test, which is a branch nobody has read.
+  const at = Object.prototype.hasOwnProperty.call(DECRYPT_FIELD_SUBJECTS, prefix)
+    ? DECRYPT_FIELD_SUBJECTS[prefix as DecryptFieldPrefix]
+    : undefined;
+  if (at === undefined) {
+    return null;
+  }
+  const segment = field.split('.')[at - 1];
+  return segment !== undefined && segment.length > 0 ? segment : null;
+}
+
+/**
  * First dotted token of a decrypt field name — the registry key. A field
  * with no dot is its own prefix (no such field exists today; one would
  * classify as unknown unless someone registers it).

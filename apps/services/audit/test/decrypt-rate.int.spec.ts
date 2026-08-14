@@ -7,7 +7,7 @@ import { AuditEventSchema } from '@estate/contracts';
 import { Client } from 'pg';
 import { AuditIngestor } from '../src/ingestor';
 import { ChainVerifier } from '../src/verifier';
-import { DecryptRateDetector } from '../src/decrypt-rate-detector';
+import { DECRYPT_RATE_SQL, DecryptRateDetector } from '../src/decrypt-rate-detector';
 import { boundFor } from '../src/decrypt-rate-bounds';
 import { makeEvent } from './helpers';
 
@@ -217,5 +217,151 @@ describeIfPg('decrypt-rate detector (integration)', () => {
 
   it('the whole chain still verifies over everything this suite appended', async () => {
     await expect(verifier.verify()).resolves.toMatchObject({ ok: true });
+  });
+});
+
+/**
+ * The distinct-subject dimension against real Postgres.
+ *
+ * `count(DISTINCT CASE …)` is the one piece of this detector no unit test can
+ * reach: the segment index lives in a SQL string, and whether Postgres pulls
+ * out the subject the declaration names is a question only Postgres answers.
+ * These cases run the EXPORTED constant rather than a copy, so the query under
+ * test cannot drift from the query that ships.
+ *
+ * Its own schema and its own detector: the block above is one continuous
+ * episode story whose message counts are load-bearing, and 1500-row bursts do
+ * not belong inside it.
+ */
+describeIfPg('decrypt-rate distinct subjects (integration)', () => {
+  const url = process.env['PG_TEST_URL'] ?? '';
+  const schema = `audit_distinct_${randomBytes(4).toString('hex')}`;
+  let admin: Client;
+  let session: Client;
+  let ingestor: AuditIngestor;
+  let producer: InMemoryAuditProducer;
+  let detector: DecryptRateDetector;
+
+  const assetBound = boundFor('asset', 'user');
+  const countMax = assetBound.maxPerWindow;
+  const distinctMax = assetBound.maxDistinctSubjectsPerWindow as number;
+
+  const browser = randomUUID();
+  const harvester = randomUUID();
+
+  beforeAll(async () => {
+    admin = new Client({ connectionString: url });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    session = new Client({ connectionString: url, options: `-c search_path=${schema}` });
+    await session.connect();
+    await new Migrator(session, join(__dirname, '..', 'migrations')).migrate();
+    ingestor = new AuditIngestor(session);
+    producer = new InMemoryAuditProducer();
+    detector = new DecryptRateDetector(session, new AuditEmitter(producer), () => NOW);
+  });
+
+  afterAll(async () => {
+    await session.end();
+    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await admin.end();
+  });
+
+  /** `n` decrypts for `actorId`, cycling over `subjects` distinct asset ids. */
+  async function ingestAssetReads(n: number, actorId: string, subjects: string[]): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      const assetId = subjects[i % subjects.length] as string;
+      const result = await ingestor.ingest(
+        JSON.stringify(
+          makeEvent({
+            action: 'crypto.field.decrypted',
+            actorType: 'user',
+            actorId,
+            resourceType: 'field',
+            occurredAt: IN_WINDOW,
+            detail: {
+              dekId: randomUUID(),
+              field: `asset.${assetId}.est_value`,
+              purpose: 'int_probe',
+            },
+          }),
+        ),
+      );
+      expect(result).toMatchObject({ status: 'appended' });
+    }
+  }
+
+  const ids = (n: number): string[] => Array.from({ length: n }, () => randomUUID());
+
+  it('the SQL extracts the DECLARED segment, and reports 0 for a prefix that declares none', async () => {
+    const reader = randomUUID();
+    const two = ids(2);
+    await ingestAssetReads(6, reader, two);
+    // A doc read by the same principal: `doc.<owner>.v1.<sha>` declares no
+    // subject, so its CASE arm is NULL and count(DISTINCT) ignores it. If
+    // someone declared `doc` at segment 2 (the tempting position — it holds a
+    // UUID), this row would report 1 instead of 0 for four different
+    // documents, which is the blind spot the declaration's docstring warns of.
+    for (let i = 0; i < 4; i++) {
+      await ingestor.ingest(
+        JSON.stringify(
+          makeEvent({
+            action: 'crypto.field.decrypted',
+            actorType: 'user',
+            actorId: reader,
+            resourceType: 'field',
+            occurredAt: IN_WINDOW,
+            detail: {
+              dekId: randomUUID(),
+              field: `doc.${reader}.v1.${randomBytes(8).toString('hex')}`,
+              purpose: 'int_probe',
+            },
+          }),
+        ),
+      );
+    }
+    const since = new Date(NOW.getTime() - 300_000);
+    const { rows } = await session.query<{
+      prefix: string;
+      actor_id: string;
+      n: number;
+      distinct_subjects: number;
+    }>(DECRYPT_RATE_SQL, [since]);
+    const mine = rows.filter((r) => r.actor_id === reader);
+    expect(mine).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ prefix: 'asset', n: 6, distinct_subjects: 2 }),
+        expect.objectContaining({ prefix: 'doc', n: 4, distinct_subjects: 0 }),
+      ]),
+    );
+  });
+
+  it('a large estate read repeatedly is SILENT — high count, bounded subjects', async () => {
+    // The measured false positive, reproduced at the real bound against the
+    // real index: over the count bound by a wide margin, well under the
+    // distinct bound, because re-reading a row you already read moves no
+    // plaintext you had not already seen.
+    await ingestAssetReads(countMax + 200, browser, ids(120));
+    await detector.tick();
+    expect(producer.messages).toHaveLength(0);
+  });
+
+  it('a mass read of DIFFERENT assets breaches — the positive control', async () => {
+    await ingestAssetReads(distinctMax + 1, harvester, ids(distinctMax + 1));
+    await detector.tick();
+    expect(producer.messages).toHaveLength(1);
+    const event = AuditEventSchema.parse(JSON.parse(producer.messages[0]?.value ?? ''));
+    expect(event.resourceId).toBe(harvester);
+    expect(event.detail).toMatchObject({
+      boundName: 'asset_user',
+      prefixClass: 'asset',
+      count: distinctMax + 1,
+      distinctSubjects: distinctMax + 1,
+      distinctBound: distinctMax,
+    });
+    // And the browser, still over the count bound in the same window, is
+    // still silent — the two principals are evaluated on the same tick, so
+    // this is one detector telling them apart rather than two runs.
+    expect(producer.messages).toHaveLength(1);
   });
 });

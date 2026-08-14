@@ -5107,6 +5107,73 @@ cross-cluster authorization change and belongs to a milestone that can take that
 decision; the fence forces a new enforced pair to arrive in the same change as
 the code that reads it.
 
+### Interlude — the insider alarm fired on an owner reading their own estate (2026-08-14)
+
+The second of the two defects found while scoping M20, fixed on its own branch
+for the same reason as the first.
+
+**The finding, measured before it was argued.** Seven ordinary `/assets` page
+loads of a 120-asset estate raised M18's TB4 insider alarm:
+`crypto.decrypt_rate.exceeded`, `boundName=asset_user count=1680 bound=1500`. The
+count was correct — the page issues Assets and NetWorth together, so a page load
+costs **2 decrypts per asset owned** — and `asset` is the one bound in the table
+whose legitimate volume scales with ESTATE SIZE rather than with activity, while
+the 1500 was calibrated on the M19 PR2 journey, an estate of a handful of assets.
+A bigger number does not fix an unbounded quantity: it false-positives on some
+larger estate and blinds the detector for every smaller one. And a security
+alarm that fires on the product's own happy path is the M5 permanently-red-gate
+lesson arriving at the one control docs/03 §4 calls the most important insider
+control there is.
+
+**The fix is a second dimension, ANDed.** A bound may now also carry
+`maxDistinctSubjectsPerWindow`, and a breach requires both thresholds strictly
+exceeded. The subject is the row id already inside the field name, located by a
+position declared per prefix in `DECRYPT_FIELD_SUBJECTS` (@estate/contracts) and
+counted by the sweep's own `count(DISTINCT CASE … split_part …)`. Exactly one
+bound carries it today.
+
+**Why that is not a hole.** distinct ≤ count always, and the table invariant
+keeps the distinct threshold at or below the count threshold, so anything that
+clears the count bound on DISTINCT rows clears both: a mass read of N different
+assets breaches at exactly the N it did before. **The detection threshold is
+unchanged; only the amplification from re-reading is removed** — and re-reading
+a row you already read moves no plaintext you had not already seen.
+
+**The declaration is deliberately sparse, and `doc` is the recorded trap.** A
+declaration can only ever SUPPRESS, so a wrong one is a blind spot rather than
+noise. `doc.<ownerUserId>.v<n>.<sha>` puts the OWNER at the tempting segment 2 —
+sampling the live stream shows a UUID there and invites exactly the declaration
+that would collapse a whole document library to one subject.
+`packages/contracts/test/decrypt-field-subjects.spec.ts` therefore pins every
+declared position to its constructor in the owning service's SOURCE, and asserts
+both halves of the `doc` case. That fence found its own defect on its first run:
+it read a backtick span inside a `//` comment (`asset.estate.viewed`, an audit
+action) as a template literal — the repo's `code()` rule, restated for a scanner
+that must keep template bodies intact.
+
+**Proven at three layers.** Unit (the evaluator's two-axis boundary, the table
+invariants, the merge's deliberate over-count); integration against real
+Postgres running the EXPORTED query rather than a copy, including the 1501-row
+suppression and its positive control; and live, where one table carries the whole
+result — a pre-fix run (1680 decrypts / 120 distinct) raised an anomaly with no
+distinct fields, two post-fix runs with byte-identical economics raised none, and
+in the same window a 1501-asset estate read once (3002 / 1501) breached with
+`distinctSubjects: 1501, distinctBound: 1500`, so the detector's silence is a
+decision rather than a dead tick. Eight mutations red.
+
+**Left open** (docs/03 §6q(ii)): an estate above 1500 distinct assets still trips
+on a single page load — the threshold doing its job where the two readings
+converge, and the honest cost of a constant, since the detector runs in the audit
+cluster and cannot ask how large an estate legitimately is without a
+cross-cluster read its zero-credential posture forbids.
+
+**Observed while driving it, out of scope and recorded:** a sustained
+asset-create loop twice killed the assets service with a V8 `Deoptimizer` fatal
+("unreachable code", node 22.22 on arm64), leaving the container `running=true`
+with `restarts=0` and the port answering nothing — the M8 "up with a dead
+service" shape, from a runtime crash rather than from our code. It reproduced
+under load and not otherwise; nothing here depends on it.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

@@ -1,6 +1,11 @@
 import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
 import { InMemoryAuditProducer } from '@estate/kafka';
-import { AuditEventSchema, DECRYPT_FIELD_PREFIXES, TOPICS } from '@estate/contracts';
+import {
+  AuditEventSchema,
+  DECRYPT_FIELD_PREFIXES,
+  DECRYPT_FIELD_SUBJECTS,
+  TOPICS,
+} from '@estate/contracts';
 import {
   boundFor,
   DECRYPT_RATE_BOUNDS,
@@ -12,7 +17,9 @@ import {
 } from '../src/decrypt-rate-bounds';
 import {
   DecryptRateDetector,
+  distinctSubjectExpression,
   evaluateDecryptRates,
+  mergeObservations,
   type DecryptRateObservation,
   type DetectorDb,
 } from '../src/decrypt-rate-detector';
@@ -29,7 +36,14 @@ const USER_A = '11111111-1111-4111-8111-111111111111';
 const USER_B = '22222222-2222-4222-8222-222222222222';
 
 function obs(over: Partial<DecryptRateObservation>): DecryptRateObservation {
-  return { prefix: 'doc', actorType: 'user', actorId: USER_A, count: 1, ...over };
+  return {
+    prefix: 'doc',
+    actorType: 'user',
+    actorId: USER_A,
+    count: 1,
+    distinctSubjects: 0,
+    ...over,
+  };
 }
 
 describe('the bounds table (reviewed data)', () => {
@@ -147,17 +161,186 @@ describe('evaluateDecryptRates (pure)', () => {
   });
 });
 
+describe('the distinct-subject condition', () => {
+  const assetBound = boundFor('asset', 'user');
+  const countMax = assetBound.maxPerWindow;
+  const distinctMax = assetBound.maxDistinctSubjectsPerWindow as number;
+
+  const asset = (count: number, distinctSubjects: number): DecryptRateObservation =>
+    obs({ prefix: 'asset', count, distinctSubjects });
+
+  it('the asset/user bound carries the condition and nothing else does', () => {
+    // Adding it anywhere else is a deliberate narrowing that has to be
+    // reviewed — it can only ever SUPPRESS. This is the whole blast radius of
+    // the dimension, asserted as a set rather than described.
+    const carriers = DECRYPT_RATE_BOUNDS.filter(
+      (b) => b.maxDistinctSubjectsPerWindow !== undefined,
+    ).map((b) => `${b.prefix}_${b.principal}`);
+    expect(carriers).toEqual(['asset_user']);
+  });
+
+  it('a bound may only carry the condition for a prefix that declares a subject', () => {
+    // Without a declared position every field yields NULL, so distinct is
+    // always 0 — a condition on such a bound would suppress EVERY breach of
+    // it, silently and permanently.
+    for (const row of DECRYPT_RATE_BOUNDS) {
+      if (row.maxDistinctSubjectsPerWindow === undefined) {
+        continue;
+      }
+      expect(Object.keys(DECRYPT_FIELD_SUBJECTS)).toContain(row.prefix);
+    }
+  });
+
+  it('NO NEW BLINDNESS: the distinct threshold never sits above the count threshold', () => {
+    // The property that makes the AND safe. A principal touching N distinct
+    // subjects has made at least N decrypts, so distinct <= count always;
+    // with distinctMax <= countMax, anything clearing the count bound on
+    // DISTINCT rows also clears the distinct bound. Were distinctMax the
+    // larger, a mass read of countMax+1 DIFFERENT subjects would be
+    // suppressed — the exfiltration this detector exists to catch.
+    for (const row of DECRYPT_RATE_BOUNDS) {
+      if (row.maxDistinctSubjectsPerWindow === undefined) {
+        continue;
+      }
+      expect(row.maxDistinctSubjectsPerWindow).toBeLessThanOrEqual(row.maxPerWindow);
+    }
+  });
+
+  it('the ZERO defaults never carry the condition (a loud bound must stay loud)', () => {
+    for (const name of ['trust', 'distributions']) {
+      expect(boundFor(name, 'user').maxDistinctSubjectsPerWindow).toBeUndefined();
+    }
+    expect(boundFor('doc', 'sentinel').maxDistinctSubjectsPerWindow).toBeUndefined();
+  });
+
+  it('re-reading a bounded set of subjects is suppressed however high the count goes', () => {
+    // THE MEASURED CASE: seven ordinary /assets loads of a 120-asset estate
+    // produced 1680 decrypts over 120 subjects and raised the TB4 alarm on an
+    // owner reading their own estate through the product's own pages.
+    expect(evaluateDecryptRates([asset(1680, 120)])).toEqual([]);
+    // Volume alone never breaches while the subject set stays small.
+    expect(evaluateDecryptRates([asset(countMax * 100, 120)])).toEqual([]);
+  });
+
+  it('a mass read of DIFFERENT subjects still breaches — the positive control', () => {
+    const breaches = evaluateDecryptRates([asset(countMax + 1, countMax + 1)]);
+    expect(breaches).toHaveLength(1);
+    expect(breaches[0]).toMatchObject({
+      boundName: 'asset_user',
+      count: countMax + 1,
+      maxPerWindow: countMax,
+      distinctSubjects: countMax + 1,
+      maxDistinctSubjectsPerWindow: distinctMax,
+    });
+  });
+
+  it('BOTH conditions are strict, and both must hold (the off-by-one on each axis)', () => {
+    // At the count bound: silent whatever the subjects.
+    expect(evaluateDecryptRates([asset(countMax, distinctMax + 1)])).toEqual([]);
+    // Over the count bound, AT the distinct bound: still silent.
+    expect(evaluateDecryptRates([asset(countMax + 1, distinctMax)])).toEqual([]);
+    // Over both by one: breach.
+    expect(evaluateDecryptRates([asset(countMax + 1, distinctMax + 1)])).toHaveLength(1);
+  });
+
+  it('a bound WITHOUT the condition ignores distinctSubjects entirely', () => {
+    const docMax = boundFor('doc', 'user').maxPerWindow;
+    // doc declares no subject, so its rows always report 0 distinct. If the
+    // evaluator applied a distinct condition by default, this would be
+    // suppressed — every un-conditioned bound in the table would go silent.
+    const breaches = evaluateDecryptRates([obs({ count: docMax + 1, distinctSubjects: 0 })]);
+    expect(breaches).toHaveLength(1);
+    expect(breaches[0]?.distinctSubjects).toBeUndefined();
+    expect(breaches[0]?.maxDistinctSubjectsPerWindow).toBeUndefined();
+  });
+});
+
+describe('distinctSubjectExpression (the one place a query is built from a table)', () => {
+  it('builds one CASE arm per declaration, at the declared segment', () => {
+    expect(distinctSubjectExpression({ asset: 2 })).toBe(
+      "CASE split_part(detail->>'field', '.', 1) WHEN 'asset' THEN split_part(detail->>'field', '.', 2) END",
+    );
+  });
+
+  it('collapses to NULL with no declarations — `CASE END` is a syntax error', () => {
+    // NULL keeps every distinct count at 0, which is the never-suppress
+    // default: a bound with no distinct condition is unaffected, and one with
+    // a condition would breach on count alone.
+    expect(distinctSubjectExpression({})).toBe('NULL');
+  });
+
+  it.each([
+    ['a prefix that is not an identifier', { "a'; DROP TABLE audit_events; --": 2 }],
+    ['an uppercase prefix', { Asset: 2 }],
+    ['a position of zero', { asset: 0 }],
+    ['a fractional position', { asset: 1.5 }],
+    ['a position past the end', { asset: 9 }],
+    ['a declared-but-absent position', { asset: undefined }],
+  ])('refuses %s rather than letting it become SQL', (_label, table) => {
+    expect(() => distinctSubjectExpression(table)).toThrow(/decrypt-rate detector/);
+  });
+});
+
+describe('mergeObservations (distinct counting)', () => {
+  it('carries distinct_subjects through, and reads a missing column as 0', () => {
+    const merged = mergeObservations([
+      { prefix: 'asset', actor_type: 'user', actor_id: USER_A, n: 9, distinct_subjects: 4 },
+      { prefix: 'doc', actor_type: 'user', actor_id: USER_B, n: 3 },
+    ]);
+    expect(merged).toEqual([
+      { prefix: 'asset', actorType: 'user', actorId: USER_A, count: 9, distinctSubjects: 4 },
+      { prefix: 'doc', actorType: 'user', actorId: USER_B, count: 3, distinctSubjects: 0 },
+    ]);
+  });
+
+  it('SUMS distinct across merged rows — an upper bound, which fails toward breaching', () => {
+    // The sentinel's two actor types merge onto one principal. Two rows may
+    // have touched the same subject, so the sum over-counts; that errs toward
+    // an alarm, which is the direction a SUPPRESSING condition must fail in.
+    const merged = mergeObservations([
+      {
+        prefix: 'asset',
+        actor_type: 'service',
+        actor_id: SENTINEL_ACTOR_ID,
+        n: 5,
+        distinct_subjects: 5,
+      },
+      {
+        prefix: 'asset',
+        actor_type: 'system',
+        actor_id: SENTINEL_ACTOR_ID,
+        n: 7,
+        distinct_subjects: 7,
+      },
+    ]);
+    expect(merged).toEqual([
+      {
+        prefix: 'asset',
+        actorType: 'service',
+        actorId: SENTINEL_ACTOR_ID,
+        count: 12,
+        distinctSubjects: 12,
+      },
+    ]);
+  });
+});
+
 /** DetectorDb whose rows are swapped per tick. */
 class FakeDb implements DetectorDb {
-  rows: Array<{ prefix: string | null; actor_type: string; actor_id: string | null; n: number }> =
-    [];
+  rows: Array<{
+    prefix: string | null;
+    actor_type: string;
+    actor_id: string | null;
+    n: number;
+    distinct_subjects?: number;
+  }> = [];
   queries = 0;
   fail = false;
   query(
     _text: string,
     _values: unknown[],
   ): Promise<{
-    rows: Array<{ prefix: string | null; actor_type: string; actor_id: string | null; n: number }>;
+    rows: FakeDb['rows'];
   }> {
     this.queries += 1;
     if (this.fail) {
@@ -390,6 +573,41 @@ describe('DecryptRateDetector (episodes, faults, emit shape)', () => {
     expect(mem.messages).toHaveLength(1);
     const event = AuditEventSchema.parse(JSON.parse(mem.messages[0]?.value ?? ''));
     expect(event.detail).toMatchObject({ principal: 'sentinel', count: half * 2 });
+  });
+
+  it('the emitted detail carries the distinct numbers ONLY where the bound has them', async () => {
+    // The doc case above asserts the detail with toEqual, so their ABSENCE is
+    // already pinned there. This is the other half: a reader of the trail can
+    // tell "read a lot" from "read a lot of DIFFERENT things", which is the
+    // whole difference between a large estate and an exfiltration — and it is
+    // counts and thresholds only, never the subjects themselves.
+    const { db, detector, producer } = build();
+    const mem = producer as InMemoryAuditProducer;
+    const asset = boundFor('asset', 'user');
+    const distinctMax = asset.maxDistinctSubjectsPerWindow as number;
+    db.rows = [
+      {
+        prefix: 'asset',
+        actor_type: 'user',
+        actor_id: USER_A,
+        n: asset.maxPerWindow + 2,
+        distinct_subjects: distinctMax + 2,
+      },
+    ];
+    await detector.tick();
+    expect(mem.messages).toHaveLength(1);
+    const event = AuditEventSchema.parse(JSON.parse(mem.messages[0]?.value ?? ''));
+    expect(event.detail).toEqual({
+      boundName: 'asset_user',
+      principal: 'user',
+      actorType: 'user',
+      prefixClass: 'asset',
+      count: asset.maxPerWindow + 2,
+      bound: asset.maxPerWindow,
+      windowSeconds: DECRYPT_WINDOW_SECONDS,
+      distinctSubjects: distinctMax + 2,
+      distinctBound: distinctMax,
+    });
   });
 
   it('a decrypt row with no field surfaces as an unknown-prefix breach, not an unemittable token', async () => {

@@ -82,6 +82,19 @@ export interface DecryptRateBound {
   measuredPerMinute: number;
   /** Breach when the windowed count strictly EXCEEDS this. */
   maxPerWindow: number;
+  /**
+   * A SECOND condition, and both must hold for a breach (see `boundFor`).
+   *
+   * Only meaningful for a prefix that declares a subject position
+   * (`DECRYPT_FIELD_SUBJECTS`); undefined everywhere else, which means the
+   * count alone decides exactly as it did before. Present ONLY where a
+   * legitimate reading is high-count and low-subject — the pattern a count
+   * bound cannot tell from a mass read, and the one this dimension exists for.
+   *
+   * It can only ever SUPPRESS an alarm, so adding it to a bound is a
+   * deliberate narrowing that has to say why, in the note.
+   */
+  maxDistinctSubjectsPerWindow?: number;
   note: string;
 }
 
@@ -129,11 +142,22 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     principal: 'user',
     measuredPerMinute: 30,
     maxPerWindow: 1500,
+    maxDistinctSubjectsPerWindow: 1500,
     note:
-      'historical peak 30/min measured pre-M19 on the 4-field list; M19 PR1 narrowed the list ' +
-      'to ONE est_value decrypt per row, and the M19 PR2 journey (create→detail→edit→value→' +
-      'retire, reload after each command) peaked ~10/min — asset_list=1/row, asset_read=4 per ' +
-      'detail load, net_worth=1/valued row; executor estate reads ride the same class by design',
+      'TWO conditions, because a count alone cannot express this one. Legitimate volume here ' +
+      'scales with ESTATE SIZE, which is unbounded, while every other bound in this table ' +
+      'scales with activity: one /assets page load issues Assets + NetWorth together, so it ' +
+      'costs 2 decrypts PER ASSET OWNED. MEASURED: seven ordinary page loads of a 120-asset ' +
+      'estate produced 1680 asset decrypts in ~20s and raised this alarm on an owner reading ' +
+      'their own estate through the product — and the 1500 was itself calibrated on the M19 ' +
+      'PR2 journey, an estate of a handful of assets. Raising the count is not the fix: any ' +
+      'constant false-positives some estate and blinds the detector for every smaller one. ' +
+      'The DISTINCT bound is what separates the two readings — that same browsing touched 120 ' +
+      'distinct assets, while a mass read of 1680 assets touches 1680. Re-reading a row you ' +
+      'already read exfiltrates nothing new, so suppressing repetition costs no detection; ' +
+      'the distinct bound sits at the count bound so a genuine mass read still breaches both. ' +
+      'Per-shape economics unchanged: asset_list=1/row, net_worth=1/valued row, asset_read=4 ' +
+      'per detail load; executor estate reads ride this class by design',
   },
   {
     prefix: 'asset_event',
@@ -238,6 +262,13 @@ export type BoundName =
 export interface ResolvedBound {
   name: BoundName;
   maxPerWindow: number;
+  /**
+   * Undefined ⇒ the count alone decides, which is every bound but one. The
+   * ZERO-defaults above never carry it: an unknown prefix, an encrypt-only
+   * one and an unmodeled principal must breach at the first decrypt, and a
+   * second condition could only ever hold that back.
+   */
+  maxDistinctSubjectsPerWindow?: number;
 }
 
 /**
@@ -257,7 +288,13 @@ export function boundFor(prefix: string, principal: PrincipalClass): ResolvedBou
   if (!row) {
     return { name: 'unmodeled_principal', maxPerWindow: 0 };
   }
-  return { name: `${row.prefix}_${row.principal}`, maxPerWindow: row.maxPerWindow };
+  return {
+    name: `${row.prefix}_${row.principal}`,
+    maxPerWindow: row.maxPerWindow,
+    ...(row.maxDistinctSubjectsPerWindow === undefined
+      ? {}
+      : { maxDistinctSubjectsPerWindow: row.maxDistinctSubjectsPerWindow }),
+  };
 }
 
 /** Registered prefixes with neither a bound row nor an encrypt-only reason

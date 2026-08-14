@@ -1,4 +1,4 @@
-import type { ActorType } from '@estate/contracts';
+import { DECRYPT_FIELD_SUBJECTS, type ActorType } from '@estate/contracts';
 import { AuditEmitter } from '@estate/audit-emitter';
 import { log } from './logger';
 import {
@@ -49,11 +49,58 @@ import {
  * (leading occurred_at — a pure time-range over all principals). The prefix
  * is token-safe by construction: detail values passed SAFE_TOKEN_PATTERN at
  * ingest, and split_part yields a substring. */
-const DECRYPT_RATE_SQL = `
+/**
+ * The distinct-subject expression, BUILT FROM `DECRYPT_FIELD_SUBJECTS` rather
+ * than written out, so the segment index exists once. A prefix with no
+ * declaration contributes NULL, which `count(DISTINCT …)` ignores — so it
+ * reports 0 subjects and its bound, which carries no distinct condition, is
+ * unaffected.
+ *
+ * Both interpolated values are checked before they reach the string: the keys
+ * are TypeScript identifiers from a const object and the positions are small
+ * integers, and a declaration that is neither fails at module load rather than
+ * becoming SQL. That is cheap insurance on the one place in this service that
+ * assembles a query from a table.
+ *
+ * The table is a PARAMETER (defaulted to the real one) purely so those refusals
+ * and the empty case are reachable from a test. Validation nothing can trigger
+ * is validation nobody has read — the M13 round-3 rule — and a throw on a
+ * module-load path is the worst place to discover that.
+ */
+export function distinctSubjectExpression(
+  subjects: Record<string, number | undefined> = DECRYPT_FIELD_SUBJECTS,
+): string {
+  const whens = Object.entries(subjects).map(([prefix, at]) => {
+    if (!/^[a-z][a-z0-9_]*$/.test(prefix)) {
+      throw new Error(`decrypt-rate detector: unusable subject prefix ${JSON.stringify(prefix)}`);
+    }
+    if (at === undefined || !Number.isInteger(at) || at < 1 || at > 8) {
+      throw new Error(`decrypt-rate detector: unusable subject position for ${prefix}`);
+    }
+    return `WHEN '${prefix}' THEN split_part(detail->>'field', '.', ${at})`;
+  });
+  if (whens.length === 0) {
+    // No declarations ⇒ nothing to count, and `CASE END` with no WHEN is a
+    // syntax error. NULL keeps every distinct count at 0, which is the
+    // never-suppress default.
+    return 'NULL';
+  }
+  return `CASE split_part(detail->>'field', '.', 1) ${whens.join(' ')} END`;
+}
+
+/**
+ * Exported for the int spec ONLY. `count(DISTINCT CASE …)` is the one piece of
+ * this detector no unit test can prove — the segment index lives in a SQL
+ * string, and whether Postgres extracts the subject the declaration names is a
+ * question only Postgres answers. The int spec runs THIS constant rather than a
+ * copy of it, so a divergence is impossible by construction.
+ */
+export const DECRYPT_RATE_SQL = `
   SELECT split_part(detail->>'field', '.', 1) AS prefix,
          actor_type,
          actor_id,
-         count(*)::int AS n
+         count(*)::int AS n,
+         count(DISTINCT ${distinctSubjectExpression()})::int AS distinct_subjects
     FROM audit_events
    WHERE action = 'crypto.field.decrypted'
      AND occurred_at >= $1
@@ -67,7 +114,13 @@ export interface DetectorDb {
     text: string,
     values: unknown[],
   ): Promise<{
-    rows: Array<{ prefix: string | null; actor_type: string; actor_id: string | null; n: number }>;
+    rows: Array<{
+      prefix: string | null;
+      actor_type: string;
+      actor_id: string | null;
+      n: number;
+      distinct_subjects?: number;
+    }>;
   }>;
 }
 
@@ -76,6 +129,8 @@ export interface DecryptRateObservation {
   actorType: ActorType;
   actorId: string | null;
   count: number;
+  /** Distinct subjects touched; 0 for a prefix that declares no subject. */
+  distinctSubjects: number;
 }
 
 export interface DecryptRateBreach {
@@ -86,9 +141,27 @@ export interface DecryptRateBreach {
   actorId: string | null;
   count: number;
   maxPerWindow: number;
+  /** Carried into the emitted detail only when the bound has the condition. */
+  distinctSubjects?: number;
+  maxDistinctSubjectsPerWindow?: number;
 }
 
-/** Pure: observations in, breaches out. Breach = count STRICTLY exceeds. */
+/**
+ * Pure: observations in, breaches out.
+ *
+ * Breach = the count STRICTLY exceeds its bound AND — where the bound carries
+ * the second condition — the distinct-subject count strictly exceeds its own.
+ * AND, not OR, and the asymmetry is the point: the distinct condition exists
+ * to SUPPRESS the one legitimate pattern a count cannot describe (a large
+ * estate read repeatedly), never to raise an alarm the count did not.
+ *
+ * It cannot introduce blindness the count bound did not already have. A
+ * principal touching N distinct subjects has made at least N decrypts, so
+ * distinct ≤ count always; with both thresholds equal, anything that clears
+ * the count bound on DISTINCT rows clears the distinct bound too. What it
+ * suppresses is exactly re-reading — which moves no plaintext the principal
+ * had not already seen.
+ */
 export function evaluateDecryptRates(
   observations: readonly DecryptRateObservation[],
 ): DecryptRateBreach[] {
@@ -96,6 +169,10 @@ export function evaluateDecryptRates(
     const principal = principalClassOf(o.actorType, o.actorId);
     const bound = boundFor(o.prefix, principal);
     if (o.count <= bound.maxPerWindow) {
+      return [];
+    }
+    const maxDistinct = bound.maxDistinctSubjectsPerWindow;
+    if (maxDistinct !== undefined && o.distinctSubjects <= maxDistinct) {
       return [];
     }
     return [
@@ -107,6 +184,12 @@ export function evaluateDecryptRates(
         actorId: o.actorId,
         count: o.count,
         maxPerWindow: bound.maxPerWindow,
+        ...(maxDistinct === undefined
+          ? {}
+          : {
+              distinctSubjects: o.distinctSubjects,
+              maxDistinctSubjectsPerWindow: maxDistinct,
+            }),
       },
     ];
   });
@@ -136,6 +219,7 @@ export function mergeObservations(
     actor_type: string;
     actor_id: string | null;
     n: number;
+    distinct_subjects?: number;
   }[],
 ): DecryptRateObservation[] {
   const merged = new Map<string, DecryptRateObservation>();
@@ -146,12 +230,28 @@ export function mergeObservations(
     const prefix = row.prefix && row.prefix.length > 0 ? row.prefix : 'missing_field';
     const actorType = row.actor_type as ActorType;
     const key = `${prefix}|${principalClassOf(actorType, row.actor_id)}|${row.actor_id ?? 'none'}`;
+    // SUMMING DISTINCT COUNTS OVER-COUNTS, deliberately. Two merged rows may
+    // have touched the same subject, so the sum is an UPPER BOUND on the true
+    // distinct count — which errs toward breaching, the direction a
+    // suppressing condition must fail in. An exact answer would need the
+    // subjects themselves rather than their count, which is a far larger
+    // result set for a number that only decides between "alarm" and "alarm
+    // suppressed" on rows the sentinel merge produces (and no sentinel bound
+    // carries the distinct condition today).
+    const distinct = row.distinct_subjects ?? 0;
     const existing = merged.get(key);
     if (existing) {
       existing.count += row.n;
+      existing.distinctSubjects += distinct;
       continue;
     }
-    merged.set(key, { prefix, actorType, actorId: row.actor_id, count: row.n });
+    merged.set(key, {
+      prefix,
+      actorType,
+      actorId: row.actor_id,
+      count: row.n,
+      distinctSubjects: distinct,
+    });
   }
   return [...merged.values()];
 }
@@ -239,6 +339,18 @@ export class DecryptRateDetector {
               count: breach.count,
               bound: breach.maxPerWindow,
               windowSeconds: DECRYPT_WINDOW_SECONDS,
+              // Present only when the bound carries the second condition, so
+              // whoever reads this can tell "read a lot" from "read a lot of
+              // DIFFERENT things" — which is the whole difference between a
+              // large estate and an exfiltration. Counts and thresholds only:
+              // the subjects themselves are entity ids and stay out of the
+              // trail's detail, exactly as every other event here.
+              ...(breach.maxDistinctSubjectsPerWindow === undefined
+                ? {}
+                : {
+                    distinctSubjects: breach.distinctSubjects ?? 0,
+                    distinctBound: breach.maxDistinctSubjectsPerWindow,
+                  }),
             },
           });
         } catch (err) {
