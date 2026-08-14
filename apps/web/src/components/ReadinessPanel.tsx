@@ -80,10 +80,26 @@ const STAT_LABEL = 'text-[0.6875rem] font-semibold uppercase tracking-[0.08em] t
 
 function FindingRow({ finding }: { finding: FindingInfo }): ReactElement {
   const copy = findingCopy(finding);
+  // A finding about a SPECIFIC asset links to the place the owner can act on
+  // it (M19 PR3 — the incoherence this milestone closes, closed literally):
+  // the readiness page said "no beneficiary designated" for years about
+  // designations the product offered no way to create.
+  const assetHref =
+    finding.subject.kind === 'asset' && finding.subject.ref !== null
+      ? `/assets/${encodeURIComponent(finding.subject.ref)}`
+      : null;
   return (
     <li className="border-b border-line py-3 last:border-b-0">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="text-sm font-medium">{copy.title}</p>
+        <p className="text-sm font-medium">
+          {assetHref !== null ? (
+            <Link className="hover:underline" href={assetHref}>
+              {copy.title}
+            </Link>
+          ) : (
+            copy.title
+          )}
+        </p>
         <span className={SEVERITY_CHIP[finding.severity]}>{SEVERITY_LABEL[finding.severity]}</span>
       </div>
       <p className="mt-1 max-w-prose text-[0.8125rem] text-ink-muted">{copy.body}</p>

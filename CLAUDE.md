@@ -5825,3 +5825,118 @@ deviating from them, stop and propose the change with rationale — do not silen
   slice. Assets' own write surface is exempt "pending M19 PR2/PR3", and
   those PRs flip the exemptions to consumers in the same change as the
   clients — the M9 PR2 holders-flip pattern.
+- 2026-08-13 — M19 PR3, THE SERVICE CHANGE IS TWO LINES AND BOTH ARE THE
+  ZERO-CALLERS SHAPE IN MINIATURE. The remove route finally passes `eventId`:
+  `RemoveBeneficiarySchema` accepted it since M3 and the controller never
+  bound the query parameter — an idempotency key that existed at every layer
+  except the one connecting them, found by wiring its first consumer. And
+  `runCommand` gained an idempotent-replay PRE-CHECK (`findByEventId` before
+  the transaction, answering the original ack with `replayed: true`), because
+  the idempotency the unique index promises was UNREACHABLE for any command
+  whose precondition examines state its own first execution changed: a
+  retried remove re-ran softRemove's designation-exists precondition against
+  the world the first execution had altered and 404'd — the retry of a
+  SUCCESSFUL command reporting the command had never been possible. The index
+  stays as the race backstop for two concurrent firsts; the pre-check serves
+  the sequential retry, which is what retries actually are. Pinned at the int
+  layer (a replayed remove answers its original ack), because the defect
+  lived in ordering a fake repo cannot see — the M13 SQL-pin rule.
+- 2026-08-13 — M19 PR3's MEMBERSHIP CHECK LIVES IN THE BFF BECAUSE THE BFF IS
+  THE ONLY LAYER THAT SEES BOTH CLUSTERS. docs/02 §8 forbids a cross-cluster
+  FK, so nothing in the database makes `asset_beneficiaries.contact_id` name
+  a real contact; assets holds no profile credential by design. Designate
+  therefore refuses a contactId absent from the caller's own contacts
+  (INVALID_REQUEST, before the write) or the designation would be dangling
+  FROM BIRTH. Remove is DELIBERATELY unchecked — a designation whose contact
+  was deleted must stay removable or the dangling row is permanent — and the
+  asymmetry is pinned by a mutation that ADDS the check to remove and goes
+  red. Names compose ONLY when designations exist (each name is one audited
+  decrypt; a zero-designation read costs zero), and a dangling contactId
+  renders `name: null`, never dropped. The direct-API residual (a caller
+  speaking to assets directly mints a dangling designation in their own
+  estate) is recorded in docs/03 §6r rather than closed: every closure either
+  builds a cross-cluster projection or hands assets a credential, for a
+  hygiene property whose failure renders honestly and stays removable.
+- 2026-08-13 — M19 PR3's CEREMONY: ONE StepUpPrompt, and the retry binding is
+  a DISCRIMINATED UNION carrying the refused action's own arguments — the
+  M13-review defect (a shared handler running a different action than the one
+  refused) has no shape to reoccur in, because the pending state carries
+  {kind, contactId, designation, sharePct} and the retry dispatches on THAT,
+  never on what the form now says. THE PICKER FORM HIDES WHILE THE CEREMONY
+  IS UP: the first version showed two "Cancel" buttons at once (the picker's
+  and the prompt's — the M15 identical-label ambiguity), caught by this PR's
+  own test asserting the hidden form and the restored values after cancel.
+  Contacts load lazily (picker open only), ack.version flows up through
+  onVersionBumped so no re-read and no decrypt is spent on a number the ack
+  already carries, and readiness findings about a specific asset deep-link to
+  /assets/[id] — the incoherence the milestone exists to close, closed
+  literally. DELIBERATELY NO STACK-E2E: the service-level
+  designate-through-real-step-up leg has existed in stack.e2e.spec.ts since
+  the M3 era, the BFF has resolver suites including the membership refusal,
+  and the UI was proven in the real browser.
+- 2026-08-13 — M19 PR3's PRE-PUSH REVIEW FOUND THAT THE IDEMPOTENCY FIX WAS
+  ITSELF INCOMPLETE, in the direction its own comment claimed was covered. The
+  replay fast path reads on the POOL, outside the transaction — so a retry
+  RACING its still-in-flight original sees nothing, serializes behind
+  `lockById FOR UPDATE`, and after the original commits dies at If-Match (409,
+  the product path — `expectedVersion` is non-nullable on the mutation) or at
+  softRemove's already-removed precondition (404). Neither reaches the append,
+  so the unique index the comment credited as "the backstop for two carriers of
+  one id" is STRUCTURALLY UNREACHABLE for a remove race: a COMMITTED command
+  answered as impossible, in exactly the window (a slow original) where
+  timeout-driven retries happen. Measured 404 before the fix. Closed by
+  RESTATING the predicate under the row lock (the M7 read-then-restate shape),
+  where the retry's fresh READ COMMITTED snapshot sees the committed event; the
+  pool read stays as the fast path, and the catch's remit narrows to CREATE
+  races, which take no row lock. The general rule: a pre-transaction read and
+  the transaction it guards are separated by every commit that lands between
+  them, so a check that must hold AT THE WRITE has to be restated where the
+  write serializes — and a comment assigning the leftover case to a backstop
+  is worth checking against the code path that backstop actually sits on.
+- 2026-08-13 — AND THAT PRE-CHECK HAD OPENED AN EVENT-EXISTENCE ORACLE AHEAD
+  OF THE UNIFORM 404 THE SAME MILESTONE SHIPPED. Running before `lockById` and
+  `assertCanOrNotFound`, it answered 409 for an eventId naming ANY user's
+  ledger event and 404 for an unknown one (measured: 409 vs 404) — so M19 PR1
+  closed the 404-vs-403 oracle and M19 PR3 re-opened a narrower one two PRs
+  later, because a new fast path was added ABOVE the authz it was supposed to
+  sit under. Fixed by scoping the lookup to the CALLER: a foreign id behaves
+  exactly like an unknown one and dies at the uniform 404, pinned by a probe
+  asserting the two responses are byte-identical. THE LESSON IS ABOUT
+  ORDERING, not about idempotency: any read placed before the authz gate
+  answers a question about somebody else's data, however narrow the answer
+  looks — an optimization that moves work earlier moves it out from under
+  every control it used to sit beneath.
+- 2026-08-13 — M19 PR3 review, the display half: `100 - total.sharePct` is
+  ARITHMETIC ON A FLOAT and rendered "97.94200000000001% unassigned" for a
+  2.058% share. Measured across the legal 3-decimal domain (PctSchema admits
+  3dp): 32,448 of ~100,000 valid shares print noise. `apps/web/src/lib/
+  percent.ts` formats at the WIRE'S OWN precision — 3dp is not a display
+  preference but the full precision of the value, so rounding there can never
+  hide a digit the server sent — and is applied to ECHOED values too, so the
+  next computed percentage cannot skip it by looking like all the others. This
+  is the formatMoney rule arriving for the product's other numeric type: a
+  number a person reads goes through a formatter, and the moment one is
+  COMPUTED rather than echoed that stops being style and becomes correctness.
+  Pinned twice: in the formatter's own spec over the whole 3-decimal domain,
+  and at the COMPONENT, because the defect was a raw interpolation there
+  rather than a broken formatter.
+- 2026-08-13 — M19 PR3 DRIVEN IN THE REAL BROWSER against images rebuilt from
+  the reviewed commit, and the whole ceremony is visible in one audit trail:
+  the step-up prompt with its designate-specific wording and the picker form
+  HIDDEN behind it (exactly one "Cancel" in the DOM, `Share %` gone — the M15
+  identical-label rule holding live rather than in a test), a genuine TOTP
+  elevation, the retry applying, and `2.058% designated (97.942% unassigned)`
+  — the precise value that printed 97.94200000000001 before the review's
+  formatter fix. Then the share-sum refusal with its own copy, appending
+  NOTHING to the ledger; a designated contact deleted from /people (profile
+  permits it — a designation is not a role, so `contact_in_use` never fires),
+  rendering as "No longer in your contacts" and still removable with no
+  membership question asked; and the readiness finding "Shore Road cottage
+  names beneficiaries AND sits in your trust" CLICKING THROUGH to that
+  asset's own page — the M10 incoherence closed end to end. THE DECRYPT
+  BUDGET WAS MEASURED RATHER THAN REASONED ABOUT: five `contact.name`
+  decrypts for one designation on a one-contact estate — picker 1, membership
+  checks 3 (the refused attempt plus two retry polls; the elevation
+  propagated on the SECOND poll, not the seventeenth), name composition 1 —
+  which turns the review's "up to ~20 loads" worst case into a number, and it
+  is the number that went into docs/03 §6r.

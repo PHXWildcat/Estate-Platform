@@ -425,7 +425,10 @@ export class AssetsService {
   async getAsset(actor: string, assetId: string): Promise<AssetDto> {
     // Retired assets stay READABLE (M19 PR2): the detail is the record of a
     // disposal, and hiding it contradicted "asset history is the product".
-    // Commands against a retired asset still 404 inside runCommand.
+    // Commands against a retired asset still 404 inside runCommand — with
+    // exactly one exception, deliberate and pinned: a REPLAY of a command
+    // that committed before retirement answers its original ack, because a
+    // retry must never report a committed command as impossible.
     const row = await this.views.getAny(this.db, assetId);
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
@@ -648,6 +651,24 @@ export class AssetsService {
    * returns the original append's acknowledgement.
    */
   private async runCommand(spec: CommandSpec): Promise<CommandResult> {
+    if (spec.eventId !== undefined) {
+      // A client-supplied eventId may name a command that ALREADY EXECUTED.
+      // Replay must return the ORIGINAL ack without re-evaluating
+      // preconditions: a retried remove whose designation is already gone
+      // would otherwise re-fail its own precondition as a 404 (found wiring
+      // the first remove consumer, M19 PR3). This fast path serves the
+      // sequential retry — the common case — without re-encrypting anything
+      // or taking the row lock. Scoped to the CALLER: a foreign event id
+      // proceeds as unknown and dies at the uniform 404 below, so this read
+      // is not an existence oracle over other ledgers (M19 PR3 review). The
+      // same predicate is RESTATED under the row lock inside the
+      // transaction (the M7 read-then-restate shape), because this read and
+      // the lock are separated by the original's commit window.
+      const original = await this.findOwnEvent(this.db, spec.actor, spec.eventId);
+      if (original) {
+        return this.ackFor(original, spec.assetId, spec.expectExisting);
+      }
+    }
     const eventId = spec.eventId ?? randomUUID();
     // Pre-materialize the owner's DEK once so parallel field encrypts can
     // never race a first-write mint (M2 pattern), then encrypt outside the
@@ -662,6 +683,24 @@ export class AssetsService {
     try {
       return await this.db.withTransaction(spec.actor, async (tx) => {
         const row = await this.views.lockById(tx, spec.assetId);
+        if (spec.eventId !== undefined) {
+          // The fast path's predicate RESTATED under the lock: a retry that
+          // raced its still-in-flight original saw nothing above (the
+          // original's append was uncommitted), serialized here behind the
+          // row lock, and this statement's fresh READ COMMITTED snapshot now
+          // sees the committed event — without this, that retry would fall
+          // through to the If-Match or precondition checks and report a
+          // COMMITTED command as a conflict or a 404 (M19 PR3 review).
+          // Deliberately BEFORE the deleted_at check: the replay of a
+          // command that committed before retirement answers its original
+          // ack — "commands against a retired asset 404" has exactly this
+          // one exception, because a retry must never report a committed
+          // command as impossible.
+          const original = await this.findOwnEvent(tx, spec.actor, spec.eventId);
+          if (original) {
+            return this.ackFor(original, spec.assetId, spec.expectExisting);
+          }
+        }
         if (spec.expectExisting) {
           if (!row || row.deleted_at !== null) {
             // Retired assets refuse further commands; their history remains.
@@ -735,29 +774,59 @@ export class AssetsService {
     await spec.project!(tx, row);
   }
 
-  /** Resolve an idempotent retry to the original command's acknowledgement. */
+  /**
+   * The caller's OWN original append for a retried eventId, or null. Scoped
+   * to the actor so a foreign event id behaves exactly like an unknown one
+   * (the command proceeds and dies at the uniform 404/authz) rather than a
+   * distinguishable conflict — the pre-authz lookup must not become an
+   * event-existence oracle over other users' ledgers (M19 PR3 review).
+   */
+  private async findOwnEvent(
+    q: Queryable,
+    actor: string,
+    eventId: string,
+  ): Promise<LedgerRow | null> {
+    const original = await this.ledger.findByEventId(q, eventId);
+    return original !== null && original.user_id === actor ? original : null;
+  }
+
+  /** The original command's acknowledgement, for an idempotent retry. */
+  private ackFor(original: LedgerRow, assetId: string, expectExisting: boolean): CommandResult {
+    if (expectExisting && original.asset_id !== assetId) {
+      // The caller's own event id aimed at a different asset: a mixed-up
+      // retry, refused as a conflict. Depends only on the caller's own
+      // ledger, so it leaks nothing about the asset id they named.
+      throw new ConflictException({ error: 'version_conflict' });
+    }
+    return {
+      assetId: original.asset_id,
+      eventId: original.event_id,
+      version: original.seq,
+      occurredAt: original.occurred_at.toISOString(),
+      replayed: true,
+    };
+  }
+
+  /**
+   * Resolve a unique-violation retry to the original ack. With the in-lock
+   * restatement above, this catch path's remit is CREATE races only — two
+   * concurrent creates share no row to serialize on, so the loser lands
+   * here — plus the cross-user id collision, which answers a generic
+   * conflict: the append-path answer for a foreign id has to be SOME error,
+   * and this one depends on nothing but the collision itself (the residual
+   * oracle this leaves is recorded in docs/03 §6r).
+   */
   private async replayAck(
     actor: string,
     assetId: string,
     eventId: string,
     expectExisting: boolean,
   ): Promise<CommandResult> {
-    const original = await this.ledger.findByEventId(this.db, eventId);
-    if (!original || original.user_id !== actor) {
-      // The eventId belongs to someone else (or vanished): do not leak
-      // whether it exists — a generic conflict is all a client learns.
+    const original = await this.findOwnEvent(this.db, actor, eventId);
+    if (!original) {
       throw new ConflictException({ error: 'version_conflict' });
     }
-    if (expectExisting && original.asset_id !== assetId) {
-      throw new ConflictException({ error: 'version_conflict' });
-    }
-    return {
-      assetId: original.asset_id,
-      eventId,
-      version: original.seq,
-      occurredAt: original.occurred_at.toISOString(),
-      replayed: true,
-    };
+    return this.ackFor(original, assetId, expectExisting);
   }
 
   // ------------------------------------------------------------------- helpers

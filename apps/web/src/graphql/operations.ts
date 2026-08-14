@@ -247,6 +247,41 @@ export const RETIRE_ASSET_MUTATION = `mutation RetireAsset($assetId: ID!, $expec
   }
 }`;
 
+export const ASSET_BENEFICIARIES_QUERY = `query AssetBeneficiaries($assetId: ID!) {
+  assetBeneficiaries(assetId: $assetId) {
+    assetId
+    beneficiaries {
+      contactId
+      name
+      designation
+      sharePct
+    }
+    totals {
+      designation
+      sharePct
+      designationComplete
+    }
+  }
+}`;
+
+export const DESIGNATE_BENEFICIARY_MUTATION = `mutation DesignateBeneficiary($assetId: ID!, $expectedVersion: String!, $contactId: ID!, $designation: String!, $sharePct: Float!, $clientEventId: ID) {
+  designateBeneficiary(assetId: $assetId, expectedVersion: $expectedVersion, contactId: $contactId, designation: $designation, sharePct: $sharePct, clientEventId: $clientEventId) {
+    assetId
+    eventId
+    version
+    replayed
+  }
+}`;
+
+export const REMOVE_BENEFICIARY_MUTATION = `mutation RemoveBeneficiary($assetId: ID!, $expectedVersion: String!, $contactId: ID!, $designation: String!, $clientEventId: ID) {
+  removeBeneficiary(assetId: $assetId, expectedVersion: $expectedVersion, contactId: $contactId, designation: $designation, clientEventId: $clientEventId) {
+    assetId
+    eventId
+    version
+    replayed
+  }
+}`;
+
 export const READINESS_QUERY = `query Readiness {
   readiness {
     funding {
@@ -742,6 +777,9 @@ export const operations = {
   RecordValuation: RECORD_VALUATION_MUTATION,
   ChangeOwnership: CHANGE_OWNERSHIP_MUTATION,
   RetireAsset: RETIRE_ASSET_MUTATION,
+  AssetBeneficiaries: ASSET_BENEFICIARIES_QUERY,
+  DesignateBeneficiary: DESIGNATE_BENEFICIARY_MUTATION,
+  RemoveBeneficiary: REMOVE_BENEFICIARY_MUTATION,
   Readiness: READINESS_QUERY,
   Consents: CONSENTS_QUERY,
   GrantConsent: GRANT_CONSENT_MUTATION,

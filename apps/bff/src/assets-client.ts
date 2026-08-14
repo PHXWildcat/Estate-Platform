@@ -86,6 +86,31 @@ const HistoryEntrySchema = z.object({
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
 /**
+ * Beneficiary designations for one asset, exactly as the service shapes them:
+ * CONTACT IDS, never names — the financial cluster cannot dereference a core-
+ * cluster contact (docs/02 §8), so name composition happens in the BFF
+ * resolver on the caller's own bearer, and only when designations exist.
+ */
+const BeneficiariesSchema = z.object({
+  assetId: z.string().min(1),
+  beneficiaries: z.array(
+    z.object({
+      contactId: z.string().min(1),
+      designation: z.string().min(1),
+      sharePct: z.number(),
+    }),
+  ),
+  totals: z.array(
+    z.object({
+      designation: z.string().min(1),
+      sharePct: z.number(),
+      designationComplete: z.boolean(),
+    }),
+  ),
+});
+export type Beneficiaries = z.infer<typeof BeneficiariesSchema>;
+
+/**
  * A valuation is not a bare number: the ledger requires `estValue`,
  * `valuationAsOf` and `valuationSource` TOGETHER, or none of them (a
  * `.refine` on CreateAssetSchema). An amount with no date and no provenance
@@ -142,6 +167,13 @@ export type RetireAssetInput = {
   readonly clientEventId?: string;
 };
 
+export type DesignateBeneficiaryInput = {
+  readonly contactId: string;
+  readonly designation: string;
+  readonly sharePct: number;
+  readonly clientEventId?: string;
+};
+
 export interface AssetsClient {
   list(accessToken: string, includeRetired?: boolean): Promise<Asset[]>;
   netWorth(accessToken: string): Promise<NetWorth>;
@@ -170,6 +202,21 @@ export interface AssetsClient {
     accessToken: string,
     assetId: string,
     input: RetireAssetInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck>;
+  beneficiaries(accessToken: string, assetId: string): Promise<Beneficiaries>;
+  designateBeneficiary(
+    accessToken: string,
+    assetId: string,
+    input: DesignateBeneficiaryInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck>;
+  removeBeneficiary(
+    accessToken: string,
+    assetId: string,
+    contactId: string,
+    designation: string,
+    clientEventId?: string,
     expectedVersion?: string,
   ): Promise<CommandAck>;
 }
@@ -297,6 +344,57 @@ export class FetchAssetsClient implements AssetsClient {
     );
   }
 
+  async beneficiaries(accessToken: string, assetId: string): Promise<Beneficiaries> {
+    const res = await this.request(
+      'GET',
+      `/v1/assets/${encodeURIComponent(assetId)}/beneficiaries`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, BeneficiariesSchema);
+  }
+
+  async designateBeneficiary(
+    accessToken: string,
+    assetId: string,
+    input: DesignateBeneficiaryInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command(
+      'POST',
+      `/v1/assets/${encodeURIComponent(assetId)}/beneficiaries`,
+      accessToken,
+      input,
+      expectedVersion,
+    );
+  }
+
+  async removeBeneficiary(
+    accessToken: string,
+    assetId: string,
+    contactId: string,
+    designation: string,
+    clientEventId?: string,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    // A DELETE carries no body: designation and the idempotency key ride the
+    // query string, which is what the service route reads.
+    const query = new URLSearchParams({ designation });
+    if (clientEventId !== undefined) {
+      query.set('eventId', clientEventId);
+    }
+    const path =
+      `/v1/assets/${encodeURIComponent(assetId)}/beneficiaries/` +
+      `${encodeURIComponent(contactId)}?${query.toString()}`;
+    const res = await this.request('DELETE', path, accessToken, undefined, expectedVersion);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, CommandAckSchema);
+  }
+
   private async command(
     method: 'POST' | 'PATCH',
     path: string,
@@ -319,7 +417,7 @@ export class FetchAssetsClient implements AssetsClient {
   }
 
   private async request(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     accessToken: string,
     body?: Record<string, unknown>,
@@ -369,6 +467,12 @@ export class FetchAssetsClient implements AssetsClient {
       // Stale If-Match. The remedy is RE-READ, never blind-retry — the UI
       // reloads the asset and shows what changed before asking again.
       return bffError('VERSION_CONFLICT');
+    }
+    if (res.status === 422 && token === 'share_sum_exceeded') {
+      // Checked BEFORE the generic 422: "those shares add past 100%" is the
+      // one refusal the owner fixes by choosing a different number, and
+      // folding it into INVALID_REQUEST would hide the only actionable fact.
+      return bffError('SHARE_SUM_EXCEEDED');
     }
     if (res.status === 400 || res.status === 422) {
       return bffError('INVALID_REQUEST');

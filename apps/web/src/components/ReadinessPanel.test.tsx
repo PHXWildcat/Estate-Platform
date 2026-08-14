@@ -122,6 +122,33 @@ describe('findings render as sentences, never as codes', () => {
     expect(screen.queryByText(/a_code_from_the_future/)).not.toBeInTheDocument();
   });
 
+  it('an asset finding links to the asset it is about; an estate finding does not', async () => {
+    // The M19 PR3 closure of the M10 incoherence: the page that says "no
+    // beneficiary designated" now takes the owner to the place they can act.
+    installGraphqlFetchMock(
+      handlers({
+        readiness: readiness({
+          funding: analysis({
+            findings: [
+              finding(),
+              finding({
+                code: 'no_trust_on_file',
+                subject: { kind: 'estate', ref: null, label: null },
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    render(<ReadinessPanel />);
+    const links = await screen.findAllByRole('link');
+    const assetLinks = links.filter((l) => l.getAttribute('href')?.startsWith('/assets/'));
+    // Exactly ONE finding links (the asset-scoped one); the estate-wide
+    // finding renders as plain text.
+    expect(assetLinks).toHaveLength(1);
+    expect(assetLinks[0]).toHaveAttribute('href', '/assets/a1');
+  });
+
   it('renders EVERY finding when several share a code and no subject row', async () => {
     // The commonest analysis in the product emits exactly this shape: "no
     // guardian designation on file" and "no HIPAA authorization on file" are

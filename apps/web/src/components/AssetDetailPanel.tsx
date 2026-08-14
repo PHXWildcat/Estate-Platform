@@ -11,6 +11,7 @@ import {
 import { commandEventId, type CommandId } from '../lib/command-id';
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
+import { AssetBeneficiaries } from './AssetBeneficiaries';
 import { FUNDING_LABELS } from './AssetsPanel';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
@@ -562,6 +563,22 @@ export function AssetDetailPanel({ assetId }: { assetId: string }): ReactElement
           </form>
         ) : null}
       </section>
+
+      <AssetBeneficiaries
+        assetId={assetId}
+        version={asset.version}
+        retired={retired}
+        onVersionBumped={(newVersion) => {
+          // A designation is a ledger event: it advances the asset's version,
+          // and this panel's own If-Match must follow WITHOUT re-reading the
+          // detail (a re-read would spend four audited decrypts on a number).
+          setState((current) =>
+            current.kind === 'ready'
+              ? { kind: 'ready', asset: { ...current.asset, version: newVersion } }
+              : current,
+          );
+        }}
+      />
 
       {!retired ? (
         <section aria-labelledby="record-value" className="card p-6">
