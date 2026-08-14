@@ -2,7 +2,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GraphQLSchema } from 'graphql';
 import { createSchema } from 'graphql-yoga';
 import type { MfaLevel, SessionAudience } from '@estate/contracts';
-import type { Asset, AssetsClient, CreateResult, NetWorth } from './assets-client';
+import type {
+  Asset,
+  AssetDetail,
+  AssetsClient,
+  CommandAck,
+  HistoryEntry,
+  NetWorth,
+} from './assets-client';
 import type {
   AnalysisName,
   AnalysisView,
@@ -84,6 +91,13 @@ export const typeDefs = /* GraphQL */ `
     otpauthUri: String!
   }
 
+  """
+  The LIST shape. It deliberately has NO costBasis/location/notes fields —
+  the service's list decrypts exactly est_value (one audited decrypt per
+  row), and a field the list cannot carry must be unrequestable rather than
+  null (null would conflate "not carried" with "not set"). Detail fields
+  live on AssetDetail.
+  """
   type Asset {
     assetId: ID!
     category: String!
@@ -91,9 +105,47 @@ export const typeDefs = /* GraphQL */ `
     "Decimal string — money is never a Float."
     estValue: String
     valuationAsOf: String
+    valuationSource: String
     ownershipPct: Float!
     inTrust: Boolean!
+    fundingStatus: String
+    "live | retired — a retired asset is a record of a disposal, not a deletion."
+    status: String!
+    retiredAt: String
+    "Optimistic-concurrency token: pass back as expectedVersion on mutations."
     version: String!
+  }
+
+  "The full record, served by the asset detail query (four audited decrypts)."
+  type AssetDetail {
+    assetId: ID!
+    category: String!
+    title: String!
+    estValue: String
+    valuationAsOf: String
+    valuationSource: String
+    ownershipPct: Float!
+    costBasis: String
+    location: String
+    notes: String
+    inTrust: Boolean!
+    fundingStatus: String
+    status: String!
+    retiredAt: String
+    version: String!
+  }
+
+  """
+  One ledger event. The payload is the assets service's own validated event
+  body (an OUTPUT of data it already parsed — the readiness JSON precedent);
+  the client renders known keys defensively and never treats it as input.
+  """
+  type AssetHistoryEntry {
+    version: String!
+    eventId: ID!
+    eventType: String!
+    occurredAt: String!
+    payload: JSON!
   }
 
   type NetWorth {
@@ -104,9 +156,37 @@ export const typeDefs = /* GraphQL */ `
     inTrustValue: String!
   }
 
-  type CreatedAsset {
+  """
+  Every asset command's acknowledgement. replayed=true means the command was
+  an idempotent retry (same clientEventId) answered with the ORIGINAL ack.
+  """
+  type AssetCommandAck {
     assetId: ID!
+    eventId: ID!
     version: String!
+    occurredAt: String!
+    replayed: Boolean!
+  }
+
+  """
+  Records an asset. A valuation is all-or-nothing: estValue, valuationAsOf
+  and valuationSource together, or none. clientEventId is the idempotency
+  key — mint it in the browser and hold it across retries of the SAME
+  payload, so a resend after a lost response is a no-op.
+  """
+  input CreateAssetInput {
+    category: String!
+    title: String!
+    ownershipPct: Float
+    inTrust: Boolean
+    fundingStatus: String
+    estValue: String
+    valuationAsOf: String
+    valuationSource: String
+    costBasis: String
+    location: String
+    notes: String
+    clientEventId: ID
   }
 
   """
@@ -520,7 +600,15 @@ export const typeDefs = /* GraphQL */ `
     """
     passkeys: [Passkey!]!
     "The caller's assets. The BFF forwards the caller's own bearer token."
-    assets: [Asset!]!
+    assets(includeRetired: Boolean): [Asset!]!
+    "One asset's full record — retired assets stay readable (M19 PR2)."
+    asset(assetId: ID!): AssetDetail!
+    """
+    The asset's full ledger history, oldest first. Requested EXPLICITLY and
+    never prefetched: the service decrypts one payload per event, each an
+    audited crypto.field.decrypted (the M18 decrypt budget).
+    """
+    assetHistory(assetId: ID!): [AssetHistoryEntry!]!
     netWorth: NetWorth!
     """
     The four deterministic analyses, computed by the assistant service from the
@@ -709,17 +797,54 @@ export const typeDefs = /* GraphQL */ `
     """
     verifyEmail(code: String!): Ok!
     """
-    Records an asset. A valuation is all-or-nothing: supply estValue,
-    valuationAsOf and valuationSource together, or none of them — an amount
-    with no date and no provenance is not an auditable claim.
+    Records an asset (full input — M19 PR2). A valuation is all-or-nothing:
+    supply estValue, valuationAsOf and valuationSource together, or none —
+    an amount with no date and no provenance is not an auditable claim.
     """
-    createAsset(
-      category: String!
-      title: String!
-      estValue: String
-      valuationAsOf: String
-      valuationSource: String
-    ): CreatedAsset!
+    createAsset(input: CreateAssetInput!): AssetCommandAck!
+    """
+    Edits an asset's details. ABSENT means unchanged; explicit NULL clears
+    (location, notes, fundingStatus). expectedVersion is the version the
+    caller last read — a stale one answers VERSION_CONFLICT, and the remedy
+    is re-read, never blind retry.
+    """
+    updateAsset(
+      assetId: ID!
+      expectedVersion: String!
+      title: String
+      location: String
+      notes: String
+      inTrust: Boolean
+      fundingStatus: String
+      clientEventId: ID
+    ): AssetCommandAck!
+    "Appends a valuation (the all-or-nothing triple, all three required here)."
+    recordValuation(
+      assetId: ID!
+      expectedVersion: String!
+      estValue: String!
+      valuationAsOf: String!
+      valuationSource: String!
+      clientEventId: ID
+    ): AssetCommandAck!
+    "Changes the ownership share; costBasis NULL clears it."
+    changeOwnership(
+      assetId: ID!
+      expectedVersion: String!
+      ownershipPct: Float!
+      costBasis: String
+      clientEventId: ID
+    ): AssetCommandAck!
+    """
+    Retires an asset — records a disposal (sold, gifted, lost…). The record
+    and its full history remain readable; further changes are refused.
+    """
+    retireAsset(
+      assetId: ID!
+      expectedVersion: String!
+      reason: String
+      clientEventId: ID
+    ): AssetCommandAck!
     """
     Grants one assistant consent scope. STEP-UP GATED downstream (docs/01 §5:
     a grant widens what may reach a third-party model provider, which is
@@ -1241,8 +1366,21 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         },
         passkeys: async (_parent: unknown, _args: unknown, ctx: RequestContext) =>
           identity.passkeys(requireAccessToken(ctx)),
-        assets: async (_parent: unknown, _args: unknown, ctx: RequestContext): Promise<Asset[]> =>
-          assets.list(requireAccessToken(ctx)),
+        assets: async (
+          _parent: unknown,
+          args: { includeRetired?: boolean | null },
+          ctx: RequestContext,
+        ): Promise<Asset[]> => assets.list(requireAccessToken(ctx), args.includeRetired === true),
+        asset: async (
+          _parent: unknown,
+          args: { assetId: string },
+          ctx: RequestContext,
+        ): Promise<AssetDetail> => assets.get(requireAccessToken(ctx), args.assetId),
+        assetHistory: async (
+          _parent: unknown,
+          args: { assetId: string },
+          ctx: RequestContext,
+        ): Promise<HistoryEntry[]> => assets.history(requireAccessToken(ctx), args.assetId),
         netWorth: async (
           _parent: unknown,
           _args: unknown,
@@ -1437,26 +1575,49 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         createAsset: async (
           _parent: unknown,
           args: {
-            category: string;
-            title: string;
-            estValue?: string | null;
-            valuationAsOf?: string | null;
-            valuationSource?: string | null;
+            input: {
+              category: string;
+              title: string;
+              ownershipPct?: number | null;
+              inTrust?: boolean | null;
+              fundingStatus?: string | null;
+              estValue?: string | null;
+              valuationAsOf?: string | null;
+              valuationSource?: string | null;
+              costBasis?: string | null;
+              location?: string | null;
+              notes?: string | null;
+              clientEventId?: string | null;
+            };
           },
           ctx: RequestContext,
-        ): Promise<CreateResult> => {
+        ): Promise<CommandAck> => {
+          const input = args.input;
           // Reject a PARTIAL valuation here rather than forwarding it: the
           // ledger would refuse it anyway, and a stable INVALID_REQUEST is a
           // better answer than a masked downstream 400.
-          const parts = [args.estValue, args.valuationAsOf, args.valuationSource].filter(
+          const parts = [input.estValue, input.valuationAsOf, input.valuationSource].filter(
             (part): part is string => typeof part === 'string' && part.length > 0,
           );
           if (parts.length !== 0 && parts.length !== 3) {
             throw bffError('INVALID_REQUEST');
           }
           return assets.create(requireAccessToken(ctx), {
-            category: args.category,
-            title: args.title,
+            category: input.category,
+            title: input.title,
+            ...(typeof input.ownershipPct === 'number'
+              ? { ownershipPct: input.ownershipPct }
+              : {}),
+            ...(typeof input.inTrust === 'boolean' ? { inTrust: input.inTrust } : {}),
+            ...(typeof input.fundingStatus === 'string'
+              ? { fundingStatus: input.fundingStatus }
+              : {}),
+            ...(typeof input.costBasis === 'string' ? { costBasis: input.costBasis } : {}),
+            ...(typeof input.location === 'string' ? { location: input.location } : {}),
+            ...(typeof input.notes === 'string' ? { notes: input.notes } : {}),
+            ...(typeof input.clientEventId === 'string'
+              ? { clientEventId: input.clientEventId }
+              : {}),
             ...(parts.length === 3
               ? {
                   valuation: {
@@ -1468,6 +1629,108 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
               : {}),
           });
         },
+        updateAsset: async (
+          _parent: unknown,
+          args: {
+            assetId: string;
+            expectedVersion: string;
+            title?: string | null;
+            location?: string | null;
+            notes?: string | null;
+            inTrust?: boolean | null;
+            fundingStatus?: string | null;
+            clientEventId?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<CommandAck> => {
+          // ABSENT (undefined) = unchanged; explicit NULL = clear. GraphQL
+          // keeps the two apart in coerced args, and JSON.stringify in the
+          // client preserves exactly that split on the wire.
+          return assets.updateDetails(
+            requireAccessToken(ctx),
+            args.assetId,
+            {
+              ...(typeof args.title === 'string' ? { title: args.title } : {}),
+              ...(args.location !== undefined ? { location: args.location } : {}),
+              ...(args.notes !== undefined ? { notes: args.notes } : {}),
+              ...(typeof args.inTrust === 'boolean' ? { inTrust: args.inTrust } : {}),
+              ...(args.fundingStatus !== undefined ? { fundingStatus: args.fundingStatus } : {}),
+              ...(typeof args.clientEventId === 'string'
+                ? { clientEventId: args.clientEventId }
+                : {}),
+            },
+            args.expectedVersion,
+          );
+        },
+        recordValuation: async (
+          _parent: unknown,
+          args: {
+            assetId: string;
+            expectedVersion: string;
+            estValue: string;
+            valuationAsOf: string;
+            valuationSource: string;
+            clientEventId?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<CommandAck> =>
+          assets.recordValuation(
+            requireAccessToken(ctx),
+            args.assetId,
+            {
+              estValue: args.estValue,
+              valuationAsOf: args.valuationAsOf,
+              valuationSource: args.valuationSource,
+              ...(typeof args.clientEventId === 'string'
+                ? { clientEventId: args.clientEventId }
+                : {}),
+            },
+            args.expectedVersion,
+          ),
+        changeOwnership: async (
+          _parent: unknown,
+          args: {
+            assetId: string;
+            expectedVersion: string;
+            ownershipPct: number;
+            costBasis?: string | null;
+            clientEventId?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<CommandAck> =>
+          assets.changeOwnership(
+            requireAccessToken(ctx),
+            args.assetId,
+            {
+              ownershipPct: args.ownershipPct,
+              ...(args.costBasis !== undefined ? { costBasis: args.costBasis } : {}),
+              ...(typeof args.clientEventId === 'string'
+                ? { clientEventId: args.clientEventId }
+                : {}),
+            },
+            args.expectedVersion,
+          ),
+        retireAsset: async (
+          _parent: unknown,
+          args: {
+            assetId: string;
+            expectedVersion: string;
+            reason?: string | null;
+            clientEventId?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<CommandAck> =>
+          assets.retire(
+            requireAccessToken(ctx),
+            args.assetId,
+            {
+              ...(typeof args.reason === 'string' ? { reason: args.reason } : {}),
+              ...(typeof args.clientEventId === 'string'
+                ? { clientEventId: args.clientEventId }
+                : {}),
+            },
+            args.expectedVersion,
+          ),
         startConversation: async (
           _parent: unknown,
           _args: unknown,

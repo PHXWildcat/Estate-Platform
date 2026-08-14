@@ -103,6 +103,18 @@ describe('AssetsPanel', () => {
     expect(await screen.findByText(/Nothing recorded yet/)).toBeInTheDocument();
   });
 
+  it('reads a BFF response missing its fields as NO DATA, never as an empty estate (M11)', async () => {
+    // A BFF predating the expanded query answers {"data":{}} with ok=true.
+    // Rendering that as an empty estate would tell an owner they hold
+    // nothing; the only honest answer is the error state.
+    installGraphqlFetchMock({
+      Assets: () => jsonResponse({ data: {} }),
+      NetWorth: netWorthHandler(),
+    });
+    render(<AssetsPanel />);
+    expect(await screen.findByText(/couldn’t load your assets/)).toBeInTheDocument();
+  });
+
   it('creates an asset with no valuation, then reloads', async () => {
     let requests: RecordedRequest[] = [];
     let listCalls = 0;
@@ -125,8 +137,15 @@ describe('AssetsPanel', () => {
       expect(listCalls).toBeGreaterThan(1); // reloaded after success
     });
     const create = requests.find((r) => r.body.query?.includes('CreateAsset'));
-    // No valuation keys at all — not nulls, not empty strings.
-    expect(create?.body.variables).toEqual({ category: 'cash', title: 'Wallet' });
+    // No valuation keys at all — not nulls, not empty strings — plus the
+    // client-minted idempotency key (a UUID, fresh per payload).
+    expect(create?.body.variables).toEqual({
+      input: {
+        category: 'cash',
+        title: 'Wallet',
+        clientEventId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown as string,
+      },
+    });
   });
 
   it('sends the valuation TRIPLE together when a value is given', async () => {
@@ -147,11 +166,14 @@ describe('AssetsPanel', () => {
     });
     const create = requests.find((r) => r.body.query?.includes('CreateAsset'));
     expect(create?.body.variables).toEqual({
-      category: 'cash',
-      title: 'Chase checking',
-      estValue: '12500.50',
-      valuationAsOf: '2026-07-01',
-      valuationSource: 'owner_estimate',
+      input: {
+        category: 'cash',
+        title: 'Chase checking',
+        estValue: '12500.50',
+        valuationAsOf: '2026-07-01',
+        valuationSource: 'owner_estimate',
+        clientEventId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown as string,
+      },
     });
   });
 

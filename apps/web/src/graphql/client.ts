@@ -130,9 +130,61 @@ export interface AssetInfo {
   title: string;
   /** Decimal string — money is never a Float. */
   estValue: string | null;
+  valuationAsOf: string | null;
+  valuationSource: string | null;
   ownershipPct: number;
   inTrust: boolean;
+  fundingStatus: string | null;
+  /** 'live' | 'retired' — a retired asset is a record, not a deletion. */
+  status: string;
+  retiredAt: string | null;
   version: string;
+}
+
+/**
+ * The full record. A SEPARATE type from AssetInfo on purpose: the list
+ * deliberately cannot carry costBasis/location/notes (the service decrypts
+ * exactly est_value per list row), and folding the shapes together would
+ * make "not carried" indistinguishable from "not set".
+ */
+export interface AssetDetailInfo extends AssetInfo {
+  costBasis: string | null;
+  location: string | null;
+  notes: string | null;
+}
+
+export interface AssetHistoryEntryInfo {
+  version: string;
+  eventId: string;
+  eventType: string;
+  occurredAt: string;
+  /** The service's own validated event body — rendered defensively, never parsed as instructions. */
+  payload: Record<string, unknown>;
+}
+
+export interface AssetCommandAckInfo {
+  assetId: string;
+  eventId: string;
+  version: string;
+  /** True when this call was an idempotent retry answered with the original ack. */
+  replayed: boolean;
+}
+
+/** The full create input (M19 PR2). A valuation is all-or-nothing. */
+export interface CreateAssetInputInfo {
+  category: string;
+  title: string;
+  ownershipPct?: number;
+  inTrust?: boolean;
+  fundingStatus?: string;
+  estValue?: string;
+  valuationAsOf?: string;
+  valuationSource?: string;
+  costBasis?: string;
+  location?: string;
+  notes?: string;
+  /** Idempotency key: mint per payload, hold across retries of the SAME payload. */
+  clientEventId?: string;
 }
 
 export interface NetWorthInfo {
@@ -445,18 +497,66 @@ interface OperationSignatures {
   ExportDemo: { variables: EmptyVariables; data: { exportDemo: { ok: boolean } } };
   Session: { variables: EmptyVariables; data: { session: SessionInfo } };
   Logout: { variables: EmptyVariables; data: { logout: { ok: boolean } } };
-  Assets: { variables: EmptyVariables; data: { assets: AssetInfo[] } };
+  Assets: {
+    variables: { includeRetired?: boolean };
+    data: { assets: AssetInfo[] };
+  };
+  Asset: {
+    variables: { assetId: string };
+    data: { asset: AssetDetailInfo };
+  };
+  AssetHistory: {
+    variables: { assetId: string };
+    data: { assetHistory: AssetHistoryEntryInfo[] };
+  };
   NetWorth: { variables: EmptyVariables; data: { netWorth: NetWorthInfo } };
   CreateAsset: {
+    variables: { input: CreateAssetInputInfo };
+    data: { createAsset: AssetCommandAckInfo };
+  };
+  UpdateAsset: {
     variables: {
-      category: string;
-      title: string;
-      /** All three together, or none: the ledger refuses a partial valuation. */
-      estValue?: string;
-      valuationAsOf?: string;
-      valuationSource?: string;
+      assetId: string;
+      expectedVersion: string;
+      title?: string;
+      /** ABSENT = unchanged; explicit null = clear. */
+      location?: string | null;
+      notes?: string | null;
+      inTrust?: boolean;
+      fundingStatus?: string | null;
+      clientEventId?: string;
     };
-    data: { createAsset: { assetId: string; version: string } };
+    data: { updateAsset: AssetCommandAckInfo };
+  };
+  RecordValuation: {
+    variables: {
+      assetId: string;
+      expectedVersion: string;
+      estValue: string;
+      valuationAsOf: string;
+      valuationSource: string;
+      clientEventId?: string;
+    };
+    data: { recordValuation: AssetCommandAckInfo };
+  };
+  ChangeOwnership: {
+    variables: {
+      assetId: string;
+      expectedVersion: string;
+      ownershipPct: number;
+      costBasis?: string | null;
+      clientEventId?: string;
+    };
+    data: { changeOwnership: AssetCommandAckInfo };
+  };
+  RetireAsset: {
+    variables: {
+      assetId: string;
+      expectedVersion: string;
+      reason?: string;
+      clientEventId?: string;
+    };
+    data: { retireAsset: AssetCommandAckInfo };
   };
   Readiness: { variables: EmptyVariables; data: { readiness: ReadinessInfo } };
   Conversations: { variables: EmptyVariables; data: { conversations: ConversationInfo[] } };

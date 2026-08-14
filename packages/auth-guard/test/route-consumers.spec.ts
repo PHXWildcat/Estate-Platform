@@ -201,10 +201,6 @@ const consumed = (...files: string[]): RouteDecl => ({ consumers: files });
  * one-line diff the PR that lands the consumer carries (the M9 PR2
  * holders-flip pattern).
  */
-const EXEMPT_M19_PR2 =
-  'M19 PR2 lands the BFF/web read+write asset surface (detail, history, edit, valuations, ' +
-  'ownership, retire); this exemption flips to consumer entries in that PR — until then the ' +
-  'routes are int-test-proven only (apps/services/assets/test).';
 const EXEMPT_M19_PR3 =
   'M19 PR3 lands the step-up beneficiary-designation ceremony as the BFF/web consumer; ' +
   'designation routes have been step-up-gated since M3 and are int-test-proven only until then.';
@@ -258,12 +254,14 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'assets GET /v1/assets': consumed(`${BFF}/assets-client.ts`, `${AI}/assets.client.ts`),
   'assets GET /v1/net-worth': consumed(`${BFF}/assets-client.ts`, `${AI}/assets.client.ts`),
   'assets GET /v1/assets/:assetId/beneficiaries': consumed(`${AI}/assets.client.ts`),
-  'assets GET /v1/assets/:assetId': { exempt: EXEMPT_M19_PR2 },
-  'assets GET /v1/assets/:assetId/events': { exempt: EXEMPT_M19_PR2 },
-  'assets PATCH /v1/assets/:assetId': { exempt: EXEMPT_M19_PR2 },
-  'assets POST /v1/assets/:assetId/valuations': { exempt: EXEMPT_M19_PR2 },
-  'assets POST /v1/assets/:assetId/ownership': { exempt: EXEMPT_M19_PR2 },
-  'assets POST /v1/assets/:assetId/retire': { exempt: EXEMPT_M19_PR2 },
+  // M19 PR2 flipped these six from EXEMPT("pending M19 PR2") to consumers in
+  // the same change as the client — the M9 PR2 holders-flip pattern.
+  'assets GET /v1/assets/:assetId': consumed(`${BFF}/assets-client.ts`),
+  'assets GET /v1/assets/:assetId/events': consumed(`${BFF}/assets-client.ts`),
+  'assets PATCH /v1/assets/:assetId': consumed(`${BFF}/assets-client.ts`),
+  'assets POST /v1/assets/:assetId/valuations': consumed(`${BFF}/assets-client.ts`),
+  'assets POST /v1/assets/:assetId/ownership': consumed(`${BFF}/assets-client.ts`),
+  'assets POST /v1/assets/:assetId/retire': consumed(`${BFF}/assets-client.ts`),
   'assets POST /v1/assets/:assetId/beneficiaries': { exempt: EXEMPT_M19_PR3 },
   'assets DELETE /v1/assets/:assetId/beneficiaries/:contactId': { exempt: EXEMPT_M19_PR3 },
   'assets GET /v1/estates/:ownerUserId/assets': { exempt: EXEMPT_EXECUTOR_SURFACE },

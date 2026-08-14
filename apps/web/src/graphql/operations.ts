@@ -146,15 +146,50 @@ export const LOGOUT_MUTATION = `mutation Logout {
   }
 }`;
 
-export const ASSETS_QUERY = `query Assets {
-  assets {
+export const ASSETS_QUERY = `query Assets($includeRetired: Boolean) {
+  assets(includeRetired: $includeRetired) {
     assetId
     category
     title
     estValue
+    valuationAsOf
+    valuationSource
     ownershipPct
     inTrust
+    fundingStatus
+    status
+    retiredAt
     version
+  }
+}`;
+
+export const ASSET_QUERY = `query Asset($assetId: ID!) {
+  asset(assetId: $assetId) {
+    assetId
+    category
+    title
+    estValue
+    valuationAsOf
+    valuationSource
+    ownershipPct
+    costBasis
+    location
+    notes
+    inTrust
+    fundingStatus
+    status
+    retiredAt
+    version
+  }
+}`;
+
+export const ASSET_HISTORY_QUERY = `query AssetHistory($assetId: ID!) {
+  assetHistory(assetId: $assetId) {
+    version
+    eventId
+    eventType
+    occurredAt
+    payload
   }
 }`;
 
@@ -167,10 +202,48 @@ export const NET_WORTH_QUERY = `query NetWorth {
   }
 }`;
 
-export const CREATE_ASSET_MUTATION = `mutation CreateAsset($category: String!, $title: String!, $estValue: String, $valuationAsOf: String, $valuationSource: String) {
-  createAsset(category: $category, title: $title, estValue: $estValue, valuationAsOf: $valuationAsOf, valuationSource: $valuationSource) {
+export const CREATE_ASSET_MUTATION = `mutation CreateAsset($input: CreateAssetInput!) {
+  createAsset(input: $input) {
     assetId
+    eventId
     version
+    replayed
+  }
+}`;
+
+export const UPDATE_ASSET_MUTATION = `mutation UpdateAsset($assetId: ID!, $expectedVersion: String!, $title: String, $location: String, $notes: String, $inTrust: Boolean, $fundingStatus: String, $clientEventId: ID) {
+  updateAsset(assetId: $assetId, expectedVersion: $expectedVersion, title: $title, location: $location, notes: $notes, inTrust: $inTrust, fundingStatus: $fundingStatus, clientEventId: $clientEventId) {
+    assetId
+    eventId
+    version
+    replayed
+  }
+}`;
+
+export const RECORD_VALUATION_MUTATION = `mutation RecordValuation($assetId: ID!, $expectedVersion: String!, $estValue: String!, $valuationAsOf: String!, $valuationSource: String!, $clientEventId: ID) {
+  recordValuation(assetId: $assetId, expectedVersion: $expectedVersion, estValue: $estValue, valuationAsOf: $valuationAsOf, valuationSource: $valuationSource, clientEventId: $clientEventId) {
+    assetId
+    eventId
+    version
+    replayed
+  }
+}`;
+
+export const CHANGE_OWNERSHIP_MUTATION = `mutation ChangeOwnership($assetId: ID!, $expectedVersion: String!, $ownershipPct: Float!, $costBasis: String, $clientEventId: ID) {
+  changeOwnership(assetId: $assetId, expectedVersion: $expectedVersion, ownershipPct: $ownershipPct, costBasis: $costBasis, clientEventId: $clientEventId) {
+    assetId
+    eventId
+    version
+    replayed
+  }
+}`;
+
+export const RETIRE_ASSET_MUTATION = `mutation RetireAsset($assetId: ID!, $expectedVersion: String!, $reason: String, $clientEventId: ID) {
+  retireAsset(assetId: $assetId, expectedVersion: $expectedVersion, reason: $reason, clientEventId: $clientEventId) {
+    assetId
+    eventId
+    version
+    replayed
   }
 }`;
 
@@ -661,8 +734,14 @@ export const operations = {
   RevokePasskey: REVOKE_PASSKEY_MUTATION,
   RenamePasskey: RENAME_PASSKEY_MUTATION,
   Assets: ASSETS_QUERY,
+  Asset: ASSET_QUERY,
+  AssetHistory: ASSET_HISTORY_QUERY,
   NetWorth: NET_WORTH_QUERY,
   CreateAsset: CREATE_ASSET_MUTATION,
+  UpdateAsset: UPDATE_ASSET_MUTATION,
+  RecordValuation: RECORD_VALUATION_MUTATION,
+  ChangeOwnership: CHANGE_OWNERSHIP_MUTATION,
+  RetireAsset: RETIRE_ASSET_MUTATION,
   Readiness: READINESS_QUERY,
   Consents: CONSENTS_QUERY,
   GrantConsent: GRANT_CONSENT_MUTATION,

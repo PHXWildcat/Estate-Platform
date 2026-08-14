@@ -6,10 +6,16 @@ import type { Response as SupertestResponse } from 'supertest';
 import { createBffApp } from '../src/app';
 import type {
   Asset,
+  AssetDetail,
   AssetsClient,
+  ChangeOwnershipInput,
+  CommandAck,
   CreateAssetInput,
-  CreateResult,
+  HistoryEntry,
   NetWorth,
+  RecordValuationInput,
+  RetireAssetInput,
+  UpdateDetailsInput,
 } from '../src/assets-client';
 import type {
   AnalysisName,
@@ -288,16 +294,53 @@ export const ASSET: Asset = {
   title: 'Checking account',
   estValue: '1200.50',
   valuationAsOf: '2026-07-01',
+  valuationSource: 'owner_estimate',
   ownershipPct: 100,
   inTrust: false,
+  fundingStatus: null,
+  status: 'live',
+  retiredAt: null,
   version: '3',
+};
+
+export const ASSET_DETAIL: AssetDetail = {
+  ...ASSET,
+  costBasis: null,
+  location: 'top drawer of the desk',
+  notes: 'joint with Sam',
+};
+
+export const ASSET_ACK: CommandAck = {
+  assetId: ASSET.assetId,
+  eventId: 'e2c2e6a4-0000-4000-8000-00000000000e',
+  version: '4',
+  occurredAt: '2026-08-13T00:00:00.000Z',
+  replayed: false,
+};
+
+export const HISTORY_ENTRY: HistoryEntry = {
+  version: '1',
+  eventId: 'e2c2e6a4-0000-4000-8000-00000000000f',
+  eventType: 'AssetCreated',
+  occurredAt: '2026-07-01T00:00:00.000Z',
+  actorId: 'a2c2e6a4-0000-4000-8000-00000000000b',
+  payload: { v: 1, type: 'AssetCreated', category: 'cash', title: 'Checking account' },
 };
 
 /** Configurable in-memory fake; records every call and the token it saw. */
 export class FakeAssetsClient implements AssetsClient {
-  listCalls: string[] = [];
+  listCalls: Array<{ accessToken: string; includeRetired: boolean }> = [];
   netWorthCalls: string[] = [];
+  getCalls: Array<{ accessToken: string; assetId: string }> = [];
+  historyCalls: Array<{ accessToken: string; assetId: string }> = [];
   createCalls: Array<{ accessToken: string; input: CreateAssetInput }> = [];
+  commandCalls: Array<{
+    method: 'updateDetails' | 'recordValuation' | 'changeOwnership' | 'retire';
+    accessToken: string;
+    assetId: string;
+    input: unknown;
+    expectedVersion: string | undefined;
+  }> = [];
 
   listResult: Asset[] = [ASSET];
   netWorthResult: NetWorth = {
@@ -306,11 +349,15 @@ export class FakeAssetsClient implements AssetsClient {
     valuedAssetCount: 1,
     inTrustValue: '0',
   };
-  createResult: CreateResult = { assetId: ASSET.assetId, version: '1' };
+  getResult: AssetDetail = ASSET_DETAIL;
+  historyResult: HistoryEntry[] = [HISTORY_ENTRY];
+  ackResult: CommandAck = ASSET_ACK;
   listError: Error | null = null;
+  getError: Error | null = null;
+  commandError: Error | null = null;
 
-  list(accessToken: string): Promise<Asset[]> {
-    this.listCalls.push(accessToken);
+  list(accessToken: string, includeRetired = false): Promise<Asset[]> {
+    this.listCalls.push({ accessToken, includeRetired });
     return this.listError ? Promise.reject(this.listError) : Promise.resolve(this.listResult);
   }
 
@@ -319,9 +366,66 @@ export class FakeAssetsClient implements AssetsClient {
     return Promise.resolve(this.netWorthResult);
   }
 
-  create(accessToken: string, input: CreateAssetInput): Promise<CreateResult> {
+  get(accessToken: string, assetId: string): Promise<AssetDetail> {
+    this.getCalls.push({ accessToken, assetId });
+    return this.getError ? Promise.reject(this.getError) : Promise.resolve(this.getResult);
+  }
+
+  history(accessToken: string, assetId: string): Promise<HistoryEntry[]> {
+    this.historyCalls.push({ accessToken, assetId });
+    return Promise.resolve(this.historyResult);
+  }
+
+  create(accessToken: string, input: CreateAssetInput): Promise<CommandAck> {
     this.createCalls.push({ accessToken, input });
-    return Promise.resolve(this.createResult);
+    return this.commandError ? Promise.reject(this.commandError) : Promise.resolve(this.ackResult);
+  }
+
+  private command(
+    method: 'updateDetails' | 'recordValuation' | 'changeOwnership' | 'retire',
+    accessToken: string,
+    assetId: string,
+    input: unknown,
+    expectedVersion: string | undefined,
+  ): Promise<CommandAck> {
+    this.commandCalls.push({ method, accessToken, assetId, input, expectedVersion });
+    return this.commandError ? Promise.reject(this.commandError) : Promise.resolve(this.ackResult);
+  }
+
+  updateDetails(
+    accessToken: string,
+    assetId: string,
+    input: UpdateDetailsInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command('updateDetails', accessToken, assetId, input, expectedVersion);
+  }
+
+  recordValuation(
+    accessToken: string,
+    assetId: string,
+    input: RecordValuationInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command('recordValuation', accessToken, assetId, input, expectedVersion);
+  }
+
+  changeOwnership(
+    accessToken: string,
+    assetId: string,
+    input: ChangeOwnershipInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command('changeOwnership', accessToken, assetId, input, expectedVersion);
+  }
+
+  retire(
+    accessToken: string,
+    assetId: string,
+    input: RetireAssetInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command('retire', accessToken, assetId, input, expectedVersion);
   }
 }
 

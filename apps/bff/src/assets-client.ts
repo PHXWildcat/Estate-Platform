@@ -14,6 +14,14 @@ import { bffError } from './identity-client';
  * Same error contract as the identity client: downstream response text is
  * NEVER forwarded to GraphQL clients; recognized machine tokens map to stable
  * codes and everything else becomes a masked generic error.
+ *
+ * TWO ASSET SHAPES, deliberately (M19): the LIST shape has no
+ * costBasis/location/notes because the service's list decrypts exactly
+ * est_value (one audited decrypt per row — the M18 decrypt-rate budget), and
+ * the DETAIL shape carries everything. Sharing one nullable type would make
+ * "the list doesn't carry notes" indistinguishable from "this asset has no
+ * notes", which is the M11 missing-field-is-NO-DATA rule violated at the
+ * type level.
  */
 
 export const AssetSchema = z.object({
@@ -22,11 +30,22 @@ export const AssetSchema = z.object({
   title: z.string(),
   estValue: z.string().nullable(),
   valuationAsOf: z.string().nullable(),
+  valuationSource: z.string().nullable(),
   ownershipPct: z.number(),
   inTrust: z.boolean(),
+  fundingStatus: z.string().nullable(),
+  status: z.enum(['live', 'retired']),
+  retiredAt: z.string().nullable(),
   version: z.string().min(1),
 });
 export type Asset = z.infer<typeof AssetSchema>;
+
+export const AssetDetailSchema = AssetSchema.extend({
+  costBasis: z.string().nullable(),
+  location: z.string().nullable(),
+  notes: z.string().nullable(),
+});
+export type AssetDetail = z.infer<typeof AssetDetailSchema>;
 
 export const NetWorthSchema = z.object({
   totalValue: z.string(),
@@ -36,11 +55,35 @@ export const NetWorthSchema = z.object({
 });
 export type NetWorth = z.infer<typeof NetWorthSchema>;
 
-const CreateResultSchema = z.object({
+/**
+ * Every command acknowledgement, create included. `replayed` is the
+ * idempotency signal: a retry carrying the same clientEventId is a no-op
+ * that returns the ORIGINAL append's ack.
+ */
+const CommandAckSchema = z.object({
   assetId: z.string().min(1),
+  eventId: z.string().min(1),
   version: z.string().min(1),
+  occurredAt: z.string().min(1),
+  replayed: z.boolean(),
 });
-export type CreateResult = z.infer<typeof CreateResultSchema>;
+export type CommandAck = z.infer<typeof CommandAckSchema>;
+
+/**
+ * One ledger event. The payload is the service's own validated event body
+ * (deserialized through its zod union before it ever reaches the wire), so
+ * it crosses here as an object the web surface renders defensively — the
+ * same OUTPUT-of-validated-data reasoning as the readiness JSON scalar.
+ */
+const HistoryEntrySchema = z.object({
+  version: z.string().min(1),
+  eventId: z.string().min(1),
+  eventType: z.string().min(1),
+  occurredAt: z.string().min(1),
+  actorId: z.string().min(1),
+  payload: z.record(z.unknown()),
+});
+export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
 /**
  * A valuation is not a bare number: the ledger requires `estValue`,
@@ -49,22 +92,86 @@ export type CreateResult = z.infer<typeof CreateResultSchema>;
  * is not a claim anyone could later audit, so the API refuses it — and this
  * type makes that all-or-nothing rule impossible to get wrong from here.
  */
-export interface Valuation {
+export type Valuation = {
   readonly estValue: string;
   readonly valuationAsOf: string;
   readonly valuationSource: string;
-}
+};
 
-export interface CreateAssetInput {
+/**
+ * `clientEventId` is the idempotency key, minted by the TRUE client (the
+ * browser form) and held across retries so a resend after a lost response
+ * is a no-op. The BFF forwards it verbatim; the service validates it — one
+ * validator, never a second opinion here (the M12 upload-client rule).
+ */
+export type CreateAssetInput = {
   readonly category: string;
   readonly title: string;
+  readonly ownershipPct?: number;
+  readonly inTrust?: boolean;
+  readonly fundingStatus?: string;
   readonly valuation?: Valuation;
+  readonly costBasis?: string;
+  readonly location?: string;
+  readonly notes?: string;
+  readonly clientEventId?: string;
+}
+
+/** Absent = unchanged; explicit null = clear (the service's own semantics). */
+export type UpdateDetailsInput = {
+  readonly title?: string;
+  readonly location?: string | null;
+  readonly notes?: string | null;
+  readonly inTrust?: boolean;
+  readonly fundingStatus?: string | null;
+  readonly clientEventId?: string;
+}
+
+export type RecordValuationInput = Valuation & {
+  readonly clientEventId?: string;
+}
+
+export type ChangeOwnershipInput = {
+  readonly ownershipPct: number;
+  readonly costBasis?: string | null;
+  readonly clientEventId?: string;
+}
+
+export type RetireAssetInput = {
+  readonly reason?: string;
+  readonly clientEventId?: string;
 }
 
 export interface AssetsClient {
-  list(accessToken: string): Promise<Asset[]>;
+  list(accessToken: string, includeRetired?: boolean): Promise<Asset[]>;
   netWorth(accessToken: string): Promise<NetWorth>;
-  create(accessToken: string, input: CreateAssetInput): Promise<CreateResult>;
+  get(accessToken: string, assetId: string): Promise<AssetDetail>;
+  history(accessToken: string, assetId: string): Promise<HistoryEntry[]>;
+  create(accessToken: string, input: CreateAssetInput): Promise<CommandAck>;
+  updateDetails(
+    accessToken: string,
+    assetId: string,
+    input: UpdateDetailsInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck>;
+  recordValuation(
+    accessToken: string,
+    assetId: string,
+    input: RecordValuationInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck>;
+  changeOwnership(
+    accessToken: string,
+    assetId: string,
+    input: ChangeOwnershipInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck>;
+  retire(
+    accessToken: string,
+    assetId: string,
+    input: RetireAssetInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck>;
 }
 
 type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
@@ -79,8 +186,9 @@ export class FetchAssetsClient implements AssetsClient {
     this.fetchFn = fetchFn ?? ((input, init): Promise<Response> => globalThis.fetch(input, init));
   }
 
-  async list(accessToken: string): Promise<Asset[]> {
-    const res = await this.request('GET', '/v1/assets', accessToken);
+  async list(accessToken: string, includeRetired = false): Promise<Asset[]> {
+    const path = includeRetired ? '/v1/assets?includeRetired=true' : '/v1/assets';
+    const res = await this.request('GET', path, accessToken);
     if (!res.ok) {
       throw await this.mapError(res);
     }
@@ -95,26 +203,137 @@ export class FetchAssetsClient implements AssetsClient {
     return this.parseBody(res, NetWorthSchema);
   }
 
-  async create(accessToken: string, input: CreateAssetInput): Promise<CreateResult> {
+  async get(accessToken: string, assetId: string): Promise<AssetDetail> {
+    const res = await this.request(
+      'GET',
+      `/v1/assets/${encodeURIComponent(assetId)}`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, AssetDetailSchema);
+  }
+
+  async history(accessToken: string, assetId: string): Promise<HistoryEntry[]> {
+    const res = await this.request(
+      'GET',
+      `/v1/assets/${encodeURIComponent(assetId)}/events`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(HistoryEntrySchema));
+  }
+
+  async create(accessToken: string, input: CreateAssetInput): Promise<CommandAck> {
+    const { valuation, clientEventId, ...rest } = input;
     const res = await this.request('POST', '/v1/assets', accessToken, {
-      category: input.category,
-      title: input.title,
+      ...rest,
       // All three or none — never a partial valuation.
-      ...(input.valuation ?? {}),
+      ...(valuation ?? {}),
+      ...(clientEventId !== undefined ? { eventId: clientEventId } : {}),
     });
     if (!res.ok) {
       throw await this.mapError(res);
     }
-    return this.parseBody(res, CreateResultSchema);
+    return this.parseBody(res, CommandAckSchema);
+  }
+
+  async updateDetails(
+    accessToken: string,
+    assetId: string,
+    input: UpdateDetailsInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command(
+      'PATCH',
+      `/v1/assets/${encodeURIComponent(assetId)}`,
+      accessToken,
+      input,
+      expectedVersion,
+    );
+  }
+
+  async recordValuation(
+    accessToken: string,
+    assetId: string,
+    input: RecordValuationInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command(
+      'POST',
+      `/v1/assets/${encodeURIComponent(assetId)}/valuations`,
+      accessToken,
+      input,
+      expectedVersion,
+    );
+  }
+
+  async changeOwnership(
+    accessToken: string,
+    assetId: string,
+    input: ChangeOwnershipInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command(
+      'POST',
+      `/v1/assets/${encodeURIComponent(assetId)}/ownership`,
+      accessToken,
+      input,
+      expectedVersion,
+    );
+  }
+
+  async retire(
+    accessToken: string,
+    assetId: string,
+    input: RetireAssetInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    return this.command(
+      'POST',
+      `/v1/assets/${encodeURIComponent(assetId)}/retire`,
+      accessToken,
+      input,
+      expectedVersion,
+    );
+  }
+
+  private async command(
+    method: 'POST' | 'PATCH',
+    path: string,
+    accessToken: string,
+    input: { readonly clientEventId?: string | undefined; readonly [key: string]: unknown },
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    const { clientEventId, ...rest } = input;
+    const body = {
+      ...rest,
+      ...(clientEventId !== undefined ? { eventId: clientEventId } : {}),
+    };
+    // JSON.stringify keeps explicit nulls (= clear) and drops undefined
+    // (= unchanged) — exactly the service's UpdateDetails wire semantics.
+    const res = await this.request(method, path, accessToken, body, expectedVersion);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, CommandAckSchema);
   }
 
   private async request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PATCH',
     path: string,
     accessToken: string,
-    body?: Record<string, string>,
+    body?: Record<string, unknown>,
+    expectedVersion?: string,
   ): Promise<Response> {
     const headers: Record<string, string> = { authorization: `Bearer ${accessToken}` };
+    if (expectedVersion !== undefined) {
+      // The optimistic-concurrency token: the version the caller last READ.
+      headers['if-match'] = expectedVersion;
+    }
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers['content-type'] = 'application/json';
@@ -144,6 +363,16 @@ export class FetchAssetsClient implements AssetsClient {
     }
     if (res.status === 403 && token === 'stepup_required') {
       return bffError('STEPUP_REQUIRED');
+    }
+    if (res.status === 404) {
+      // The service's UNIFORM 404 (M19 PR1): "no such asset", "not yours" and
+      // "retired refuses commands" are one answer, and the BFF keeps them one.
+      return bffError('NOT_FOUND');
+    }
+    if (res.status === 409 && token === 'version_conflict') {
+      // Stale If-Match. The remedy is RE-READ, never blind-retry — the UI
+      // reloads the asset and shows what changed before asking again.
+      return bffError('VERSION_CONFLICT');
     }
     if (res.status === 400 || res.status === 422) {
       return bffError('INVALID_REQUEST');

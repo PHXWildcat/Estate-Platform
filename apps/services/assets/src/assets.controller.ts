@@ -24,6 +24,7 @@ import {
   ChangeOwnershipSchema,
   CreateAssetSchema,
   IfMatchSchema,
+  IncludeRetiredSchema,
   parse,
   RecordValuationSchema,
   RetireAssetSchema,
@@ -66,8 +67,16 @@ export class AssetsController {
 
   @Get('assets')
   @HttpCode(200)
-  list(@Req() req: CallerRequest, @Query('asOf') asOf?: string): Promise<AssetSummaryDto[]> {
-    return this.assets.listAssets(requireCaller(req).userId, parse(AsOfQuerySchema, asOf));
+  list(
+    @Req() req: CallerRequest,
+    @Query('asOf') asOf?: string,
+    @Query('includeRetired') includeRetired?: string,
+  ): Promise<AssetSummaryDto[]> {
+    return this.assets.listAssets(
+      requireCaller(req).userId,
+      parse(AsOfQuerySchema, asOf),
+      parse(IncludeRetiredSchema, includeRetired),
+    );
   }
 
   /**

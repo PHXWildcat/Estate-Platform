@@ -81,7 +81,7 @@ describe('AssetsService commands', () => {
     expect(dto.version).toBe('2');
   });
 
-  it('404s commands on missing or retired assets; history survives retirement', async () => {
+  it('404s commands on missing or retired assets; the RECORD survives retirement', async () => {
     const { service } = build();
     await expect(
       service.recordValuation(OWNER, randomUUID(), {
@@ -93,10 +93,19 @@ describe('AssetsService commands', () => {
 
     const { assetId } = await service.createAsset(OWNER, { category: 'vehicle', title: 'Truck' });
     await service.retireAsset(OWNER, assetId, { reason: 'sold' });
-    await expect(service.getAsset(OWNER, assetId)).rejects.toThrow(NotFoundException);
+    // The detail stays READABLE with an explicit status (M19 PR2): a disposal
+    // is a record, not a deletion. Commands still refuse.
+    const retired = await service.getAsset(OWNER, assetId);
+    expect(retired.status).toBe('retired');
+    expect(retired.retiredAt).not.toBeNull();
     await expect(service.updateDetails(OWNER, assetId, { title: 'Zombie truck' })).rejects.toThrow(
       NotFoundException,
     );
+    // Default list excludes it; includeRetired serves it with its status.
+    expect(await service.listAssets(OWNER)).toEqual([]);
+    const withRetired = await service.listAssets(OWNER, undefined, true);
+    expect(withRetired).toHaveLength(1);
+    expect(withRetired[0]!.status).toBe('retired');
     const history = await service.getHistory(OWNER, assetId);
     expect(history.map((h) => h.eventType)).toEqual(['AssetCreated', 'AssetRetired']);
     expect(history[0]!.payload.type).toBe('AssetCreated');

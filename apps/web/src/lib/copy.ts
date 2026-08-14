@@ -25,7 +25,10 @@ export const errorCopy: Record<GqlFailureCode, string> = {
     'We don’t have an attorney-reviewed template for that document in that state yet.',
   CONTENT_ERASED:
     'This version’s contents were permanently erased. The record of it remains, but the text cannot be recovered.',
-  VERSION_CONFLICT: 'This document changed since you opened it. Reload and try again.',
+  // Surface-neutral on purpose (M19): the same stale-If-Match refusal now
+  // covers documents AND assets, and the remedy is identical — re-read, then
+  // decide again. Never auto-retry over someone else's newer change.
+  VERSION_CONFLICT: 'This changed since you opened it. Reload to see the latest, then try again.',
   DOCUMENT_NOT_EDITABLE:
     'This document has been signed, so its wording is now a legal record. Revoke or supersede it before creating a replacement.',
   // M12 PR2. The three upload refusals all mean the same thing about storage —

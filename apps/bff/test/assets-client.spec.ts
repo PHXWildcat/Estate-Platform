@@ -24,9 +24,28 @@ const ASSET = {
   title: 'Checking',
   estValue: '10.00',
   valuationAsOf: '2026-07-01',
+  valuationSource: 'owner_estimate',
   ownershipPct: 100,
   inTrust: false,
+  fundingStatus: null,
+  status: 'live',
+  retiredAt: null,
   version: '2',
+};
+
+const DETAIL = {
+  ...ASSET,
+  costBasis: null,
+  location: 'safe',
+  notes: 'gate code',
+};
+
+const ACK = {
+  assetId: 'a2c2e6a4-0000-4000-8000-00000000000a',
+  eventId: 'e2c2e6a4-0000-4000-8000-00000000000e',
+  version: '3',
+  occurredAt: '2026-08-13T00:00:00.000Z',
+  replayed: false,
 };
 
 describe('FetchAssetsClient', () => {
@@ -38,6 +57,47 @@ describe('FetchAssetsClient', () => {
     expect(url).toBe(`${BASE}/v1/assets`);
     expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
     expect(init.method).toBe('GET');
+  });
+
+  it('asks for retired rows only when told to', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, []));
+    await new FetchAssetsClient(BASE, fetchFn).list(TOKEN, true);
+    expect((fetchFn.mock.calls[0] as [string, RequestInit])[0]).toBe(
+      `${BASE}/v1/assets?includeRetired=true`,
+    );
+  });
+
+  it('GETs the detail and parses the full shape (list shape is refused there)', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, DETAIL));
+    const client = new FetchAssetsClient(BASE, fetchFn);
+    await expect(client.get(TOKEN, ASSET.assetId)).resolves.toEqual(DETAIL);
+    expect((fetchFn.mock.calls[0] as [string, RequestInit])[0]).toBe(
+      `${BASE}/v1/assets/${ASSET.assetId}`,
+    );
+    // A LIST row is not a detail: the detail schema requires the fields the
+    // list deliberately lacks, so a version-skewed response is NO DATA.
+    const skewed = jest.fn().mockResolvedValue(response(200, ASSET));
+    await expect(new FetchAssetsClient(BASE, skewed).get(TOKEN, ASSET.assetId)).rejects.toThrow(
+      'assets response failed validation',
+    );
+  });
+
+  it('GETs history entries with their payloads', async () => {
+    const entry = {
+      version: '1',
+      eventId: 'e2c2e6a4-0000-4000-8000-00000000000e',
+      eventType: 'AssetCreated',
+      occurredAt: '2026-08-01T00:00:00.000Z',
+      actorId: 'a2c2e6a4-0000-4000-8000-00000000000b',
+      payload: { v: 1, type: 'AssetCreated', category: 'cash', title: 'Checking' },
+    };
+    const fetchFn = jest.fn().mockResolvedValue(response(200, [entry]));
+    await expect(
+      new FetchAssetsClient(BASE, fetchFn).history(TOKEN, ASSET.assetId),
+    ).resolves.toEqual([entry]);
+    expect((fetchFn.mock.calls[0] as [string, RequestInit])[0]).toBe(
+      `${BASE}/v1/assets/${ASSET.assetId}/events`,
+    );
   });
 
   it('sends the bearer on net worth', async () => {
@@ -53,7 +113,7 @@ describe('FetchAssetsClient', () => {
   });
 
   it('POSTs a create with the whole valuation triple flattened onto the body', async () => {
-    const fetchFn = jest.fn().mockResolvedValue(response(201, { assetId: 'x', version: '1' }));
+    const fetchFn = jest.fn().mockResolvedValue(response(201, ACK));
     await new FetchAssetsClient(BASE, fetchFn).create(TOKEN, {
       category: 'cash',
       title: 'Savings',
@@ -74,13 +134,87 @@ describe('FetchAssetsClient', () => {
   });
 
   it('omits valuation keys entirely when there is no valuation', async () => {
-    const fetchFn = jest.fn().mockResolvedValue(response(201, { assetId: 'x', version: '1' }));
+    const fetchFn = jest.fn().mockResolvedValue(response(201, ACK));
     await new FetchAssetsClient(BASE, fetchFn).create(TOKEN, {
       category: 'cash',
       title: 'Wallet',
     });
     const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ category: 'cash', title: 'Wallet' });
+  });
+
+  it('forwards clientEventId as the wire eventId — the idempotency key', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(201, ACK));
+    await new FetchAssetsClient(BASE, fetchFn).create(TOKEN, {
+      category: 'cash',
+      title: 'Wallet',
+      clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+    });
+    const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      category: 'cash',
+      title: 'Wallet',
+      eventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+    });
+  });
+
+  it('PATCHes an update with If-Match, keeping nulls (clear) and dropping absents', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, ACK));
+    await new FetchAssetsClient(BASE, fetchFn).updateDetails(
+      TOKEN,
+      ASSET.assetId,
+      { title: 'Renamed', notes: null, clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c' },
+      '2',
+    );
+    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE}/v1/assets/${ASSET.assetId}`);
+    expect(init.method).toBe('PATCH');
+    expect((init.headers as Record<string, string>)['if-match']).toBe('2');
+    // notes:null survives (the CLEAR); location is absent (unchanged); the
+    // clientEventId travels as eventId.
+    expect(JSON.parse(init.body as string)).toEqual({
+      title: 'Renamed',
+      notes: null,
+      eventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+    });
+  });
+
+  it('POSTs valuations / ownership / retire to their command routes', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, ACK));
+    const client = new FetchAssetsClient(BASE, fetchFn);
+    await client.recordValuation(
+      TOKEN,
+      ASSET.assetId,
+      { estValue: '1.00', valuationAsOf: '2026-08-01', valuationSource: 'market' },
+      '2',
+    );
+    await client.changeOwnership(TOKEN, ASSET.assetId, { ownershipPct: 50, costBasis: null }, '3');
+    await client.retire(TOKEN, ASSET.assetId, { reason: 'sold' }, '4');
+    const urls = fetchFn.mock.calls.map((c) => (c as [string, RequestInit])[0]);
+    expect(urls).toEqual([
+      `${BASE}/v1/assets/${ASSET.assetId}/valuations`,
+      `${BASE}/v1/assets/${ASSET.assetId}/ownership`,
+      `${BASE}/v1/assets/${ASSET.assetId}/retire`,
+    ]);
+    const ownershipBody = JSON.parse(
+      (fetchFn.mock.calls[1] as [string, RequestInit])[1].body as string,
+    ) as Record<string, unknown>;
+    expect(ownershipBody).toEqual({ ownershipPct: 50, costBasis: null });
+    const versions = fetchFn.mock.calls.map(
+      (c) => ((c as [string, RequestInit])[1].headers as Record<string, string>)['if-match'],
+    );
+    expect(versions).toEqual(['2', '3', '4']);
+  });
+
+  it('maps the uniform 404 to NOT_FOUND and a stale If-Match to VERSION_CONFLICT', async () => {
+    const notFound = jest.fn().mockResolvedValue(response(404, { error: 'not_found' }));
+    await expect(
+      new FetchAssetsClient(BASE, notFound).get(TOKEN, ASSET.assetId),
+    ).rejects.toMatchObject({ extensions: { code: 'NOT_FOUND' } });
+    const conflict = jest.fn().mockResolvedValue(response(409, { error: 'version_conflict' }));
+    await expect(
+      new FetchAssetsClient(BASE, conflict).retire(TOKEN, ASSET.assetId, {}, '1'),
+    ).rejects.toMatchObject({ extensions: { code: 'VERSION_CONFLICT' } });
   });
 
   it.each([
