@@ -2471,6 +2471,62 @@ journey reaches a decrypt class the dev journey does not, which is why this
 is recorded rather than duplicated; a production-only decrypt path arriving
 later owes the gate a second home.
 
+## 6r. Threat-model delta — M19 the assets surface (2026-08-13)
+
+M19 put the product's first owner-facing surface on the oldest domain
+service in the repo. PR1's service hardening (the uniform 404 closing the
+404-vs-403 oracle on every asset-scoped path, the list narrowed to one
+decrypt per row) and the repo-wide route↔consumer fence are recorded in
+docs/04; what belongs HERE is what the ceremony surface (PR3) changes about
+the model and what it deliberately leaves open.
+
+**The BFF membership check is best-effort hygiene at the edge, not a
+security control, and a direct-API caller walks past it.** Designating a
+beneficiary crosses two clusters — the designation lives in the financial
+cluster, the contact in core — and docs/02 §8 forbids a cross-cluster FK,
+so nothing in the database can make `asset_beneficiaries.contact_id` name a
+real contact. The BFF refuses a designate whose contactId is not among the
+caller's own contacts, because it is the only layer holding both clients on
+the caller's own bearer. A caller speaking to the assets service directly
+(any valid session; the service is CallerGuard + StepUpGuard) can still
+mint a designation naming any UUID. What bounds it: the designation is in
+the caller's OWN estate (Cedar scopes every asset route to the owner), it
+directs nothing anywhere (no beneficiary visibility exists — below), the
+dangling row renders honestly in the product ("No longer in your contacts")
+and stays removable because remove is deliberately unchecked. Closing it
+for real means either a projection of contact ids into the financial
+cluster (a new consistency surface) or assets consulting profile
+server-side (a new credential edge for a hygiene property) — neither is
+worth its cost today, and this paragraph is the record of that decision.
+
+**A designation is not access, and the surface says so out loud.** Naming a
+beneficiary writes a ledger event and a projection row; it grants no read,
+no notification, no visibility of any kind. docs/00 §5.5's "beneficiaries
+see only assets naming them" remains UNBUILT — `namedBeneficiaries`
+resolution requires the contact-link projection (M13's ceremony provides
+the link; no milestone has yet joined it to designations), and until then a
+beneficiary structurally cannot learn they were named. The ceremony's copy
+carries both truths so an owner does not mistake a designation for an
+arrangement anyone else can see. The share-sum constraint
+(`share_sum_exceeded`, the repo's one CONSTRAINT TRIGGER) is enforced
+per-class in the service and surfaced as its own refusal.
+
+**The step-up retry loop spends decrypts during the propagation window,
+and the spend is attributed to the owner themselves.** A step-up-refused
+designate re-runs the full mutation while the peer's 30s session cache is
+stale (the M13 prompt-and-retry contract), and each retry re-runs the BFF's
+membership check — one contacts load, one audited decrypt per contact name
+— before assets refuses downstream. MEASURED against the running stack for
+one designation on a one-contact estate: five `contact.name` decrypts in
+total — one for the picker, THREE membership checks (the refused attempt
+plus two retry polls, the elevation propagating on the second), and one for
+the name composition on reload. The theoretical worst case is the 35s
+propagation budget (~17 polls), still far under the M18 `contact/user`
+bound, and every event is in the owner's own trail. Recorded rather than
+re-engineered: every alternative either duplicates the freshness gate at
+the edge (a second copy that drifts) or adds a client-controllable skip
+flag to a check whose absence is already a recorded residual (above).
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

@@ -187,6 +187,15 @@ export type BffErrorCode =
    */
   | 'VERSION_CONFLICT'
   /**
+   * Live beneficiary shares for one designation class would exceed 100%
+   * (M19 PR3 — the ledger's share-sum invariant, app check + DB trigger).
+   * Its own code because it is the one refusal the owner fixes by choosing a
+   * DIFFERENT NUMBER; folded into INVALID_REQUEST it would read as a form
+   * mistake rather than as arithmetic over designations they cannot see from
+   * the form.
+   */
+  | 'SHARE_SUM_EXCEEDED'
+  /**
    * Regeneration refused because signing has started (M12). A signed or
    * executed instrument's content is a legal record; the way forward is to
    * revoke or supersede it, not to rewrite it underneath the signatures.
@@ -309,6 +318,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   TEMPLATE_NOT_FOUND: 'No template available',
   CONTENT_ERASED: 'This content has been erased',
   VERSION_CONFLICT: 'This document changed since it was loaded',
+  SHARE_SUM_EXCEEDED: 'Those shares would add past 100%',
   DOCUMENT_NOT_EDITABLE: 'This document can no longer be regenerated',
   LEGAL_HOLD: 'This document is under legal hold',
   INVALID_TRANSITION: 'That is not the next step for this document',

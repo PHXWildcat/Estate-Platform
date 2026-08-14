@@ -206,6 +206,95 @@ describe('FetchAssetsClient', () => {
     expect(versions).toEqual(['2', '3', '4']);
   });
 
+  it('reads beneficiaries, designates with If-Match, and removes via query-string DELETE', async () => {
+    const beneficiaries = {
+      assetId: ASSET.assetId,
+      beneficiaries: [
+        { contactId: 'f0000000-0000-4000-8000-000000000001', designation: 'primary', sharePct: 60 },
+      ],
+      totals: [{ designation: 'primary', sharePct: 60, designationComplete: false }],
+    };
+    const readFn = jest.fn().mockResolvedValue(response(200, beneficiaries));
+    await expect(
+      new FetchAssetsClient(BASE, readFn).beneficiaries(TOKEN, ASSET.assetId),
+    ).resolves.toEqual(beneficiaries);
+    expect((readFn.mock.calls[0] as [string, RequestInit])[0]).toBe(
+      `${BASE}/v1/assets/${ASSET.assetId}/beneficiaries`,
+    );
+
+    const designateFn = jest.fn().mockResolvedValue(response(201, ACK));
+    await new FetchAssetsClient(BASE, designateFn).designateBeneficiary(
+      TOKEN,
+      ASSET.assetId,
+      {
+        contactId: 'f0000000-0000-4000-8000-000000000001',
+        designation: 'primary',
+        sharePct: 60,
+        clientEventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+      },
+      '3',
+    );
+    const [designateUrl, designateInit] = designateFn.mock.calls[0] as [string, RequestInit];
+    expect(designateUrl).toBe(`${BASE}/v1/assets/${ASSET.assetId}/beneficiaries`);
+    expect((designateInit.headers as Record<string, string>)['if-match']).toBe('3');
+    expect(JSON.parse(designateInit.body as string)).toEqual({
+      contactId: 'f0000000-0000-4000-8000-000000000001',
+      designation: 'primary',
+      sharePct: 60,
+      eventId: 'c1c2e6a4-0000-4000-8000-00000000000c',
+    });
+
+    // A DELETE carries no body: designation AND the idempotency key ride the
+    // query string, which is what the service route reads.
+    const removeFn = jest.fn().mockResolvedValue(response(200, ACK));
+    await new FetchAssetsClient(BASE, removeFn).removeBeneficiary(
+      TOKEN,
+      ASSET.assetId,
+      'f0000000-0000-4000-8000-000000000001',
+      'primary',
+      'c1c2e6a4-0000-4000-8000-00000000000d',
+      '4',
+    );
+    const [removeUrl, removeInit] = removeFn.mock.calls[0] as [string, RequestInit];
+    expect(removeUrl).toBe(
+      `${BASE}/v1/assets/${ASSET.assetId}/beneficiaries/f0000000-0000-4000-8000-000000000001?designation=primary&eventId=c1c2e6a4-0000-4000-8000-00000000000d`,
+    );
+    expect(removeInit.method).toBe('DELETE');
+    expect((removeInit.headers as Record<string, string>)['if-match']).toBe('4');
+    expect(removeInit.body).toBeUndefined();
+  });
+
+  it('remove without an eventId leaves it off the query string entirely', async () => {
+    const removeFn = jest.fn().mockResolvedValue(response(200, ACK));
+    await new FetchAssetsClient(BASE, removeFn).removeBeneficiary(
+      TOKEN,
+      ASSET.assetId,
+      'f0000000-0000-4000-8000-000000000001',
+      'primary',
+    );
+    const [removeUrl, removeInit] = removeFn.mock.calls[0] as [string, RequestInit];
+    expect(removeUrl).toBe(
+      `${BASE}/v1/assets/${ASSET.assetId}/beneficiaries/f0000000-0000-4000-8000-000000000001?designation=primary`,
+    );
+    expect((removeInit.headers as Record<string, string>)['if-match']).toBeUndefined();
+  });
+
+  it('share_sum_exceeded is its own code; a plain 422 stays INVALID_REQUEST', async () => {
+    const overFn = jest.fn().mockResolvedValue(response(422, { error: 'share_sum_exceeded' }));
+    await expect(
+      new FetchAssetsClient(BASE, overFn).designateBeneficiary(
+        TOKEN,
+        ASSET.assetId,
+        { contactId: 'f0000000-0000-4000-8000-000000000001', designation: 'primary', sharePct: 90 },
+        '3',
+      ),
+    ).rejects.toMatchObject({ extensions: { code: 'SHARE_SUM_EXCEEDED' } });
+    const plainFn = jest.fn().mockResolvedValue(response(422, { error: 'invalid_request' }));
+    await expect(new FetchAssetsClient(BASE, plainFn).list(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'INVALID_REQUEST' },
+    });
+  });
+
   it('maps errors on every read path, not only the list', async () => {
     const boom = () => jest.fn().mockResolvedValue(response(500, { error: 'internals' }));
     await expect(new FetchAssetsClient(BASE, boom()).netWorth(TOKEN)).rejects.toThrow(/status 500/);

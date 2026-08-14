@@ -25,6 +25,9 @@ import { SETTLEMENT_AUTHORITY, type StageAccessAuthority } from '@estate/settlem
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { serializePayload } from '../src/asset-events';
+import { payloadField } from '../src/assets.service';
+import { FieldCipher } from '../src/field-cipher';
 import type { AssetDto, CommandResult, NetWorthDto } from '../src/assets.service';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
@@ -361,10 +364,24 @@ describeIfPg('asset ledger service end to end', () => {
   });
 
   it('captures versions with actor attribution when a designation is removed', async () => {
-    await request(server)
-      .delete(`/v1/assets/${assetId}/beneficiaries/${CONTACT_B}?designation=primary`)
+    const removeEventId = randomUUID();
+    const first = await request(server)
+      .delete(
+        `/v1/assets/${assetId}/beneficiaries/${CONTACT_B}?designation=primary&eventId=${removeEventId}`,
+      )
       .set(withStepUp())
       .expect(200);
+    // A retried remove is an idempotent no-op, not a 404: the eventId rides
+    // the query string because a DELETE carries no body (M19 PR3 — the
+    // controller finally passes it through to the schema that always took it).
+    const retry = await request(server)
+      .delete(
+        `/v1/assets/${assetId}/beneficiaries/${CONTACT_B}?designation=primary&eventId=${removeEventId}`,
+      )
+      .set(withStepUp())
+      .expect(200);
+    expect((retry.body as CommandResult).replayed).toBe(true);
+    expect((retry.body as CommandResult).version).toBe((first.body as CommandResult).version);
     const { rows } = await admin.query<{ operation: string; actor_id: string }>(
       `SELECT operation, row_data, actor_id FROM asset_beneficiaries_versions
         WHERE row_data->>'contact_id' = $1
@@ -592,6 +609,164 @@ describeIfPg('asset ledger service end to end', () => {
       [newUser],
     );
     expect(rows[0]!.n).toBe(1);
+  });
+
+  // ---------------------------------------------------------------- M19 PR3
+  // Replay integrity, from the PR3 adversarial review. Each of these three
+  // was proven RED against the pool-only pre-check before the fix (the
+  // in-lock restatement + actor scoping) turned them green.
+
+  it('a retry racing its still-in-flight original gets the original ack, not a conflict', async () => {
+    // The window: a client times out and retries while the original
+    // transaction is still open. The retry's fast-path lookup cannot see the
+    // uncommitted event, so it serializes behind the row lock — and before
+    // the in-lock restatement it then re-failed its own precondition (404)
+    // or If-Match (409): the retry of a COMMITTED command reported as a
+    // failure, which is the exact defect the pre-check was added to fix.
+    const racer = randomUUID();
+    const contact = randomUUID();
+    const created = await request(server)
+      .post('/v1/assets')
+      .set(bearer('mfa', racer))
+      .send({ category: 'real_estate', title: 'Race probe cabin' })
+      .expect(201);
+    const racerAsset = (created.body as CommandResult).assetId;
+    await request(server)
+      .post(`/v1/assets/${racerAsset}/beneficiaries`)
+      .set(bearer('stepup', racer))
+      .send({ contactId: contact, designation: 'primary', sharePct: 40 })
+      .expect(201);
+
+    const eventId = randomUUID();
+    // A REAL payload ciphertext (same AAD the service would use), so any
+    // later whole-ledger replay or rebuild can still open this event.
+    const cipher = app.get(FieldCipher);
+    const { ciphertext } = await cipher.encrypt(
+      racer,
+      payloadField(eventId),
+      serializePayload({
+        v: 1,
+        type: 'BeneficiaryRemoved',
+        contactId: contact,
+        designation: 'primary',
+      }),
+    );
+
+    // T1 = the original remove, still in flight: holds the row lock with its
+    // append and projection write uncommitted.
+    const t1 = new Client({ connectionString: pgUrl, options: `-c search_path=${schema}` });
+    await t1.connect();
+    try {
+      await t1.query('BEGIN');
+      await t1.query('SELECT 1 FROM assets_view WHERE asset_id = $1 FOR UPDATE', [racerAsset]);
+      const inserted = await t1.query<{ seq: string }>(
+        `INSERT INTO asset_events (event_id, asset_id, user_id, event_type, payload_ct, actor_id, actor_role)
+         VALUES ($1, $2, $3, 'BeneficiaryRemoved', $4, $3, 'owner') RETURNING seq`,
+        [eventId, racerAsset, racer, ciphertext],
+      );
+      await t1.query(
+        `UPDATE asset_beneficiaries SET deleted_at = now()
+          WHERE asset_id = $1 AND contact_id = $2 AND designation = 'primary' AND deleted_at IS NULL`,
+        [racerAsset, contact],
+      );
+      // Fire the retry; it blocks on the row lock inside its transaction.
+      const retryPromise = request(server)
+        .delete(
+          `/v1/assets/${racerAsset}/beneficiaries/${contact}?designation=primary&eventId=${eventId}`,
+        )
+        .set(bearer('stepup', racer))
+        .then((r) => r);
+      // Poll + deadline (never a bare sleep) until the retry's backend is
+      // genuinely lock-blocked; only then let the original commit.
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const { rows } = await admin.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND query LIKE '%FROM assets_view%'
+              AND pid <> pg_backend_pid()`,
+        );
+        if (rows[0]!.n > 0) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          throw new Error('the retry never blocked on the row lock');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await t1.query('COMMIT');
+      const retry = await retryPromise;
+      expect(retry.status).toBe(200);
+      expect((retry.body as CommandResult).replayed).toBe(true);
+      expect((retry.body as CommandResult).version).toBe(inserted.rows[0]!.seq);
+    } finally {
+      await t1.end();
+    }
+  });
+
+  it('a foreign event id answers byte-identically to an unknown one (uniform 404)', async () => {
+    // Pre-fix, the pool pre-check ran BEFORE authz and answered 409 for an
+    // event id in ANYONE's ledger vs 404 for an unknown one — an
+    // event-existence oracle ahead of the M19 PR1 uniform-404 control. The
+    // actor-scoped lookup makes a foreign id proceed exactly as unknown.
+    const strangerCreate = await request(server)
+      .post('/v1/assets')
+      .set(bearer('mfa', STRANGER))
+      .send({ category: 'cash', title: 'Stranger account' })
+      .expect(201);
+    const strangerAsset = (strangerCreate.body as CommandResult).assetId;
+    const strangerEvent = (strangerCreate.body as CommandResult).eventId;
+    const probeWith = (eid: string) =>
+      request(server)
+        .delete(
+          `/v1/assets/${strangerAsset}/beneficiaries/${randomUUID()}?designation=primary&eventId=${eid}`,
+        )
+        .set(withStepUp());
+    const foreign = await probeWith(strangerEvent);
+    const unknown = await probeWith(randomUUID());
+    expect(foreign.status).toBe(404);
+    expect(unknown.status).toBe(404);
+    expect(foreign.body).toEqual(unknown.body);
+  });
+
+  it('replay of a command that committed before retirement answers its ack; fresh commands still 404', async () => {
+    // The one deliberate exception to "commands against a retired asset
+    // 404": a replay answers the ORIGINAL ack, because a retry must never
+    // report a committed command as impossible.
+    const owner2 = randomUUID();
+    const contact = randomUUID();
+    const created = await request(server)
+      .post('/v1/assets')
+      .set(bearer('mfa', owner2))
+      .send({ category: 'vehicle', title: 'Old truck' })
+      .expect(201);
+    const aid = (created.body as CommandResult).assetId;
+    await request(server)
+      .post(`/v1/assets/${aid}/beneficiaries`)
+      .set(bearer('stepup', owner2))
+      .send({ contactId: contact, designation: 'primary', sharePct: 25 })
+      .expect(201);
+    const removeId = randomUUID();
+    const first = await request(server)
+      .delete(`/v1/assets/${aid}/beneficiaries/${contact}?designation=primary&eventId=${removeId}`)
+      .set(bearer('stepup', owner2))
+      .expect(200);
+    await request(server)
+      .post(`/v1/assets/${aid}/retire`)
+      .set(bearer('mfa', owner2))
+      .send({ reason: 'sold' })
+      .expect(200);
+    const replay = await request(server)
+      .delete(`/v1/assets/${aid}/beneficiaries/${contact}?designation=primary&eventId=${removeId}`)
+      .set(bearer('stepup', owner2))
+      .expect(200);
+    expect((replay.body as CommandResult).replayed).toBe(true);
+    expect((replay.body as CommandResult).version).toBe((first.body as CommandResult).version);
+    await request(server)
+      .delete(
+        `/v1/assets/${aid}/beneficiaries/${contact}?designation=primary&eventId=${randomUUID()}`,
+      )
+      .set(bearer('stepup', owner2))
+      .expect(404);
   });
 
   it('every produced message passes the PII firewall (no values, titles, or notes)', () => {

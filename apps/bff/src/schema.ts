@@ -6,6 +6,7 @@ import type {
   Asset,
   AssetDetail,
   AssetsClient,
+  Beneficiaries,
   CommandAck,
   HistoryEntry,
   NetWorth,
@@ -146,6 +147,30 @@ export const typeDefs = /* GraphQL */ `
     eventType: String!
     occurredAt: String!
     payload: JSON!
+  }
+
+  """
+  One beneficiary designation. The name is composed from the caller's own
+  contacts on their own bearer; NULL means the contact is no longer on file —
+  a fact worth showing, never hiding, and the designation stays removable.
+  """
+  type AssetBeneficiary {
+    contactId: ID!
+    name: String
+    designation: String!
+    sharePct: Float!
+  }
+
+  type DesignationTotal {
+    designation: String!
+    sharePct: Float!
+    designationComplete: Boolean!
+  }
+
+  type AssetBeneficiaries {
+    assetId: ID!
+    beneficiaries: [AssetBeneficiary!]!
+    totals: [DesignationTotal!]!
   }
 
   type NetWorth {
@@ -609,6 +634,12 @@ export const typeDefs = /* GraphQL */ `
     audited crypto.field.decrypted (the M18 decrypt budget).
     """
     assetHistory(assetId: ID!): [AssetHistoryEntry!]!
+    """
+    Beneficiary designations with contact names composed in. Names are
+    resolved from the caller's own contacts ONLY when designations exist —
+    a zero-designation asset costs zero contact decrypts.
+    """
+    assetBeneficiaries(assetId: ID!): AssetBeneficiaries!
     netWorth: NetWorth!
     """
     The four deterministic analyses, computed by the assistant service from the
@@ -843,6 +874,35 @@ export const typeDefs = /* GraphQL */ `
       assetId: ID!
       expectedVersion: String!
       reason: String
+      clientEventId: ID
+    ): AssetCommandAck!
+    """
+    Designates a beneficiary on one asset. STEP-UP GATED downstream
+    (docs/01 §5: beneficiary changes). The contact must be one of the
+    CALLER'S OWN — the BFF is the only layer that sees both the financial
+    cluster's designation and the core cluster's contact, so the membership
+    check lives here; the service accepts a UUID by design (docs/02 §8, no
+    cross-cluster FK). Naming someone grants them NOTHING — a designation is
+    not access, and beneficiary visibility does not exist yet.
+    """
+    designateBeneficiary(
+      assetId: ID!
+      expectedVersion: String!
+      contactId: ID!
+      designation: String!
+      sharePct: Float!
+      clientEventId: ID
+    ): AssetCommandAck!
+    """
+    Removes a designation. Equally step-up gated (the profile role-removal
+    precedent: equal, never harder). Deliberately NO membership check —
+    removing a designation whose contact is no longer on file must work.
+    """
+    removeBeneficiary(
+      assetId: ID!
+      expectedVersion: String!
+      contactId: ID!
+      designation: String!
       clientEventId: ID
     ): AssetCommandAck!
     """
@@ -1381,6 +1441,35 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           args: { assetId: string },
           ctx: RequestContext,
         ): Promise<HistoryEntry[]> => assets.history(requireAccessToken(ctx), args.assetId),
+        assetBeneficiaries: async (
+          _parent: unknown,
+          args: { assetId: string },
+          ctx: RequestContext,
+        ): Promise<{
+          assetId: string;
+          totals: Beneficiaries['totals'];
+          beneficiaries: Array<Beneficiaries['beneficiaries'][number] & { name: string | null }>;
+        }> => {
+          const token = requireAccessToken(ctx);
+          const result = await assets.beneficiaries(token, args.assetId);
+          // Contact names cost one audited decrypt per contact row (M13's
+          // narrowed list), so they are composed ONLY when there is a
+          // designation to name — the common zero-designation asset costs
+          // nothing (the M18 decrypt budget).
+          const names =
+            result.beneficiaries.length > 0
+              ? new Map((await profile.contacts(token)).map((c) => [c.id, c.name] as const))
+              : new Map<string, string>();
+          return {
+            assetId: result.assetId,
+            totals: result.totals,
+            beneficiaries: result.beneficiaries.map((b) => ({
+              ...b,
+              // NULL means "no longer in your contacts" — shown, not hidden.
+              name: names.get(b.contactId) ?? null,
+            })),
+          };
+        },
         netWorth: async (
           _parent: unknown,
           _args: unknown,
@@ -1727,6 +1816,67 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
                 ? { clientEventId: args.clientEventId }
                 : {}),
             },
+            args.expectedVersion,
+          ),
+        designateBeneficiary: async (
+          _parent: unknown,
+          args: {
+            assetId: string;
+            expectedVersion: string;
+            contactId: string;
+            designation: string;
+            sharePct: number;
+            clientEventId?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<CommandAck> => {
+          const token = requireAccessToken(ctx);
+          // THE MEMBERSHIP CHECK. The service accepts any UUID by design
+          // (docs/02 §8 — no cross-cluster FK), so the BFF, the only layer
+          // that sees both the caller's contacts and their assets, refuses a
+          // contactId that is not the CALLER'S OWN before anything reaches
+          // the ledger. Closes the product path against the cross-owner
+          // designation shape the M13 review closed in profile. This is
+          // EDGE HYGIENE, not a security boundary — a caller speaking to the
+          // assets service directly walks past it, in their own estate, and
+          // that residual with its bounds is recorded in docs/03 §6r.
+          const contacts = await profile.contacts(token);
+          if (!contacts.some((contact) => contact.id === args.contactId)) {
+            throw bffError('INVALID_REQUEST');
+          }
+          return assets.designateBeneficiary(
+            token,
+            args.assetId,
+            {
+              contactId: args.contactId,
+              designation: args.designation,
+              sharePct: args.sharePct,
+              ...(typeof args.clientEventId === 'string'
+                ? { clientEventId: args.clientEventId }
+                : {}),
+            },
+            args.expectedVersion,
+          );
+        },
+        removeBeneficiary: async (
+          _parent: unknown,
+          args: {
+            assetId: string;
+            expectedVersion: string;
+            contactId: string;
+            designation: string;
+            clientEventId?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<CommandAck> =>
+          // Deliberately NO membership check: a designation whose contact was
+          // deleted must stay removable, or the dangling row is permanent.
+          assets.removeBeneficiary(
+            requireAccessToken(ctx),
+            args.assetId,
+            args.contactId,
+            args.designation,
+            typeof args.clientEventId === 'string' ? args.clientEventId : undefined,
             args.expectedVersion,
           ),
         startConversation: async (

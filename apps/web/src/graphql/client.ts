@@ -29,6 +29,8 @@ export const GQL_ERROR_CODES = [
   'CONTENT_ERASED',
   /** The document moved on between read and write. Reload, then retry (M12). */
   'VERSION_CONFLICT',
+  /** Beneficiary shares for one class would pass 100% (M19 PR3). */
+  'SHARE_SUM_EXCEEDED',
   /** Signing has started, so the content is a legal record now (M12). */
   'DOCUMENT_NOT_EDITABLE',
   /** Preserved for an estate matter — the one refusal step-up cannot fix (M12). */
@@ -160,6 +162,30 @@ export interface AssetHistoryEntryInfo {
   occurredAt: string;
   /** The service's own validated event body — rendered defensively, never parsed as instructions. */
   payload: Record<string, unknown>;
+}
+
+/**
+ * One designation. `name` is composed by the BFF from the caller's own
+ * contacts; NULL means the contact is no longer on file — a fact the row
+ * states while staying removable, never a value to guess at.
+ */
+export interface AssetBeneficiaryInfo {
+  contactId: string;
+  name: string | null;
+  designation: string;
+  sharePct: number;
+}
+
+export interface DesignationTotalInfo {
+  designation: string;
+  sharePct: number;
+  designationComplete: boolean;
+}
+
+export interface AssetBeneficiariesInfo {
+  assetId: string;
+  beneficiaries: AssetBeneficiaryInfo[];
+  totals: DesignationTotalInfo[];
 }
 
 export interface AssetCommandAckInfo {
@@ -557,6 +583,31 @@ interface OperationSignatures {
       clientEventId?: string;
     };
     data: { retireAsset: AssetCommandAckInfo };
+  };
+  AssetBeneficiaries: {
+    variables: { assetId: string };
+    data: { assetBeneficiaries: AssetBeneficiariesInfo };
+  };
+  DesignateBeneficiary: {
+    variables: {
+      assetId: string;
+      expectedVersion: string;
+      contactId: string;
+      designation: string;
+      sharePct: number;
+      clientEventId?: string;
+    };
+    data: { designateBeneficiary: AssetCommandAckInfo };
+  };
+  RemoveBeneficiary: {
+    variables: {
+      assetId: string;
+      expectedVersion: string;
+      contactId: string;
+      designation: string;
+      clientEventId?: string;
+    };
+    data: { removeBeneficiary: AssetCommandAckInfo };
   };
   Readiness: { variables: EmptyVariables; data: { readiness: ReadinessInfo } };
   Conversations: { variables: EmptyVariables; data: { conversations: ConversationInfo[] } };

@@ -29,6 +29,10 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // covers documents AND assets, and the remedy is identical — re-read, then
   // decide again. Never auto-retry over someone else's newer change.
   VERSION_CONFLICT: 'This changed since you opened it. Reload to see the latest, then try again.',
+  // The one refusal fixed by choosing a different number: the shares already
+  // designated plus this one would pass 100% for that class.
+  SHARE_SUM_EXCEEDED:
+    'Those shares would add past 100%. Lower this share, or reduce another designation first.',
   DOCUMENT_NOT_EDITABLE:
     'This document has been signed, so its wording is now a legal record. Revoke or supersede it before creating a replacement.',
   // M12 PR2. The three upload refusals all mean the same thing about storage —

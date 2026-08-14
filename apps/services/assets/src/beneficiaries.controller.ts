@@ -55,12 +55,17 @@ export class BeneficiariesController {
     @Param('assetId') assetId: string,
     @Param('contactId') contactId: string,
     @Query('designation') designation?: string,
+    @Query('eventId') eventId?: string,
   ): Promise<CommandResult> {
+    // eventId rides the query string (a DELETE carries no body): the schema
+    // accepted it since M3 and the controller never passed it through, so a
+    // retried remove was a 404 instead of an idempotent no-op (found wiring
+    // the first consumer, M19 PR3 — the zero-callers shape in miniature).
     return this.assets.removeBeneficiary(
       requireCaller(req).userId,
       parse(UuidSchema, assetId),
       parse(UuidSchema, contactId),
-      parse(RemoveBeneficiarySchema, { designation }),
+      parse(RemoveBeneficiarySchema, { designation, eventId }),
       ifMatchOf(req),
     );
   }

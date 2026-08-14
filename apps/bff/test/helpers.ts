@@ -8,9 +8,11 @@ import type {
   Asset,
   AssetDetail,
   AssetsClient,
+  Beneficiaries,
   ChangeOwnershipInput,
   CommandAck,
   CreateAssetInput,
+  DesignateBeneficiaryInput,
   HistoryEntry,
   NetWorth,
   RecordValuationInput,
@@ -426,6 +428,66 @@ export class FakeAssetsClient implements AssetsClient {
     expectedVersion?: string,
   ): Promise<CommandAck> {
     return this.command('retire', accessToken, assetId, input, expectedVersion);
+  }
+
+  beneficiariesCalls: Array<{ accessToken: string; assetId: string }> = [];
+  designateCalls: Array<{
+    accessToken: string;
+    assetId: string;
+    input: DesignateBeneficiaryInput;
+    expectedVersion: string | undefined;
+  }> = [];
+  removeBeneficiaryCalls: Array<{
+    accessToken: string;
+    assetId: string;
+    contactId: string;
+    designation: string;
+    clientEventId: string | undefined;
+    expectedVersion: string | undefined;
+  }> = [];
+  beneficiariesResult: Beneficiaries = {
+    assetId: ASSET.assetId,
+    beneficiaries: [],
+    totals: [],
+  };
+  beneficiaryError: Error | null = null;
+
+  beneficiaries(accessToken: string, assetId: string): Promise<Beneficiaries> {
+    this.beneficiariesCalls.push({ accessToken, assetId });
+    return Promise.resolve(this.beneficiariesResult);
+  }
+
+  designateBeneficiary(
+    accessToken: string,
+    assetId: string,
+    input: DesignateBeneficiaryInput,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    this.designateCalls.push({ accessToken, assetId, input, expectedVersion });
+    return this.beneficiaryError
+      ? Promise.reject(this.beneficiaryError)
+      : Promise.resolve(this.ackResult);
+  }
+
+  removeBeneficiary(
+    accessToken: string,
+    assetId: string,
+    contactId: string,
+    designation: string,
+    clientEventId?: string,
+    expectedVersion?: string,
+  ): Promise<CommandAck> {
+    this.removeBeneficiaryCalls.push({
+      accessToken,
+      assetId,
+      contactId,
+      designation,
+      clientEventId,
+      expectedVersion,
+    });
+    return this.beneficiaryError
+      ? Promise.reject(this.beneficiaryError)
+      : Promise.resolve(this.ackResult);
   }
 }
 
