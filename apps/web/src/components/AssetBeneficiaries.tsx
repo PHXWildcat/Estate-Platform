@@ -346,7 +346,11 @@ export function AssetBeneficiaries({
           the refused action's own arguments, and two visible Cancels — the
           form's and the ceremony's — would be the M15 identical-label
           ambiguity for a person and a test alike. */}
-      {picker.kind === 'open' && pending === null ? (
+      {/* `!retired` again, for the same reason it is on the opening button: an
+          open picker survives the parent's retirement (both controls are
+          reachable at once), and a designation on a retired asset is refused.
+          Never offer what the server would refuse. */}
+      {picker.kind === 'open' && pending === null && !retired ? (
         picker.contacts.length === 0 ? (
           <p className="mt-4 text-sm text-ink-muted">
             You have no contacts yet. Add the person under People first — a designation names one of

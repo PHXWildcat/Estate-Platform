@@ -274,6 +274,33 @@ describe('FetchIdentityClient — sessions, revoke and pairing', () => {
     });
   });
 
+  /**
+   * M19 PR4 review. Identity's step-up cap (M17 PR6's two-scope bound) answers
+   * 429 `too_many_attempts`, and every route on this client routes its refusals
+   * through one `mapError` — which had no 429 branch, so a control firing
+   * exactly as designed fell through to `Error('identity responded with status
+   * 429')` and reached the browser as "something went wrong on our side".
+   *
+   * That is the M9 rule (a control firing must not read as an outage), and the
+   * identical shape the 404 branch three lines below it already names. M19 is
+   * what made it worth fixing rather than recording: PR3 and PR4 put step-up
+   * ceremonies on the assets surface (a designation, a retirement), so the cap
+   * is now reachable from two more places, and the user meeting it is told to
+   * retry the thing they must in fact WAIT to retry.
+   *
+   * PROVEN BY EXECUTION against the running stack before it was fixed: five
+   * wrong codes at `POST /v1/auth/stepup` answer 401 `invalid_code`, the sixth
+   * answers 429 `too_many_attempts`.
+   */
+  it('names identity’s rate cap rather than letting a control read as an outage', async () => {
+    const { client } = clientWith(() => response(429, { error: 'too_many_attempts' }));
+    await expect(client.stepUp(TOKEN, '000000')).rejects.toMatchObject({
+      extensions: { code: 'TOO_MANY_ATTEMPTS' },
+    });
+    // Not the generic branch, whose message names a status code.
+    await expect(client.stepUp(TOKEN, '000000')).rejects.not.toThrow(/status 429/);
+  });
+
   it('refuses a malformed pairing body as a PAIRING failure, not a vault one', async () => {
     const { client } = clientWith(() => response(201, { expiresAt: MINTED.expiresAt }));
     await expect(client.startExtensionPairing(TOKEN)).rejects.toMatchObject({

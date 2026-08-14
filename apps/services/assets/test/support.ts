@@ -62,11 +62,11 @@ export function fakeDb(): Db {
   } as unknown as Db;
 }
 
-/** Mimics the ux_asset_events_event_id unique violation shape from pg. */
+/** Mimics the ux_asset_events_user_event_id unique violation shape from pg. */
 function eventIdConflict(): Error & { code: string; constraint: string } {
   return Object.assign(new Error('duplicate key'), {
     code: '23505',
-    constraint: 'ux_asset_events_event_id',
+    constraint: 'ux_asset_events_user_event_id',
   });
 }
 
@@ -77,8 +77,17 @@ export class FakeLedger {
   /** Fixed clock hook so as-of tests can plant events in the past. */
   nextOccurredAt: Date | null = null;
 
+  /**
+   * THE UNIQUENESS IS PER OWNER, matching migration `002`'s index — and this
+   * line is where the M19 PR4 finding hid. It collided on `event_id` ALONE, so
+   * the double reproduced the global index the service actually had, and every
+   * unit test over the idempotency path agreed with the defect: a stranger's
+   * event id took a conflict here exactly as it did in Postgres, so nothing in
+   * the suite could see that the conflict was an existence oracle. A double
+   * that mirrors the DDL is what makes the SQL-shaped question askable at all.
+   */
   append(_q: Queryable, input: AppendInput): Promise<{ seq: string; occurredAt: Date }> {
-    if (this.rows.some((r) => r.event_id === input.eventId)) {
+    if (this.rows.some((r) => r.user_id === input.userId && r.event_id === input.eventId)) {
       return Promise.reject(eventIdConflict());
     }
     this.seq += 1;
@@ -99,8 +108,10 @@ export class FakeLedger {
     return Promise.resolve({ seq: row.seq, occurredAt });
   }
 
-  findByEventId(_q: Queryable, eventId: string): Promise<LedgerRow | null> {
-    return Promise.resolve(this.rows.find((r) => r.event_id === eventId) ?? null);
+  findOwnByEventId(_q: Queryable, userId: string, eventId: string): Promise<LedgerRow | null> {
+    return Promise.resolve(
+      this.rows.find((r) => r.user_id === userId && r.event_id === eventId) ?? null,
+    );
   }
 
   latestSeq(_q: Queryable, assetId: string): Promise<string | null> {
@@ -108,11 +119,10 @@ export class FakeLedger {
     return Promise.resolve(rows.length > 0 ? rows[rows.length - 1]!.seq : null);
   }
 
-  latestSeqByAssets(_q: Queryable, assetIds: readonly string[]): Promise<Map<string, string>> {
+  latestSeqByUser(_q: Queryable, userId: string): Promise<Map<string, string>> {
     const out = new Map<string, string>();
-    for (const id of assetIds) {
-      const rows = this.rows.filter((r) => r.asset_id === id);
-      if (rows.length > 0) out.set(id, rows[rows.length - 1]!.seq);
+    for (const row of this.rows.filter((r) => r.user_id === userId)) {
+      out.set(row.asset_id, row.seq);
     }
     return Promise.resolve(out);
   }

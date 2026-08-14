@@ -87,6 +87,19 @@ function serviceNames(): string[] {
     .sort();
 }
 
+/**
+ * EVERY Nest HTTP method decorator, not the five that happened to be in use.
+ * `@All`/`@Head`/`@Options`/`@Search` were absent from the old alternation,
+ * so a handler using one derived no route at all — invisible to both halves of
+ * the fence.
+ */
+const ROUTE_VERBS = 'Get|Put|Post|Patch|Delete|All|Head|Options|Search';
+const ROUTE_DECORATOR = new RegExp(`@(${ROUTE_VERBS})\\(\\s*(?:'([^']*)')?\\s*\\)`, 'g');
+const ROUTE_DECORATOR_OPENER = new RegExp(`@(?:${ROUTE_VERBS})\\(`, 'g');
+
+/** Route decorators the parser above could not read; asserted empty below. */
+const unparseable: string[] = [];
+
 function deriveRoutes(): DerivedRoute[] {
   const routes: DerivedRoute[] = [];
   for (const service of serviceNames()) {
@@ -102,7 +115,7 @@ function deriveRoutes(): DerivedRoute[] {
           .filter(Boolean);
         const internal = guards.some((g) => INTERNAL_GUARD_CLASSES.has(g));
         const prefix = /@Controller\(\s*'([^']*)'/.exec(chunk)?.[1] ?? '';
-        for (const m of chunk.matchAll(/@(Get|Put|Post|Patch|Delete)\(\s*(?:'([^']*)')?\s*\)/g)) {
+        for (const m of chunk.matchAll(ROUTE_DECORATOR)) {
           const segment = m[2] ? `${prefix}/${m[2]}` : prefix;
           routes.push({
             service,
@@ -110,6 +123,21 @@ function deriveRoutes(): DerivedRoute[] {
             path: `/${segment}`,
             internal,
           });
+        }
+        // A decorator this parser cannot read must be LOUD, not skipped. The
+        // regex demands a bare single-quoted path, so `@Get(['a','b'])`, a
+        // template literal, a constant, and the multi-line trailing-comma form
+        // were all invisible in BOTH directions — no route derived, so no
+        // registry entry demanded and no stale-entry pressure either, while
+        // the file header promised "a new route is a red suite until its
+        // author writes one or the other" (M19 PR4 review, measured: three
+        // such routes could be added and DERIVED never moved).
+        for (const m of chunk.matchAll(ROUTE_DECORATOR_OPENER)) {
+          const at = m.index ?? 0;
+          const window = chunk.slice(at, at + 200);
+          if (!new RegExp(`^${ROUTE_DECORATOR.source}`).test(window)) {
+            unparseable.push(`${service}: ${window.split('\n')[0]?.trim() ?? window.slice(0, 60)}`);
+          }
         }
       }
     }
@@ -142,8 +170,26 @@ function extractTemplates(file: string): string[] {
   return [...templates];
 }
 
-/** Segment-wise match where `:name` / `:p` on either side is a wildcard. */
-function templateMatchesPath(template: string, path: string): boolean {
+/**
+ * Segment-wise match. THE WILDCARD IS ONE-DIRECTIONAL, and that is the whole
+ * correctness of the consumer half (M19 PR4 review).
+ *
+ * A consumer's `:p` stands for an INTERPOLATION — `${assetId}` — so it may
+ * only line up with a route's own PARAMETER segment. Letting it match a
+ * LITERAL route segment is what made the fence inert: `/v1/documents/:p`,
+ * produced by any `getDocument`-shaped call, is three segments like
+ * `/v1/documents/export`, so one parameterised call site in a declared
+ * consumer certified every sibling route of the same arity. Measured on this
+ * tree before the fix: twelve declared routes stayed GREEN with their real
+ * call site deleted, including `POST /v1/documents/generate`,
+ * `POST /v1/documents/upload` and `DELETE /v1/vault/emergency-access/:policyId`
+ * — precisely the routes for which a zero-caller regression matters.
+ *
+ * The reverse (a route parameter against a consumer literal) stays allowed: a
+ * consumer addressing a specific id through a constant is unusual but honest,
+ * and it names the route it means.
+ */
+function templateMatchesPath(template: string, path: string, enumerated = false): boolean {
   const t = template.split('/');
   const p = path.split('/');
   if (t.length !== p.length) {
@@ -151,7 +197,16 @@ function templateMatchesPath(template: string, path: string): boolean {
   }
   return t.every((seg, i) => {
     const other = p[i] as string;
-    return seg === other || seg.startsWith(':') || other.startsWith(':');
+    if (seg === other) {
+      return true;
+    }
+    // A route parameter accepts whatever the consumer wrote there.
+    if (other.startsWith(':')) {
+      return true;
+    }
+    // …and a consumer wildcard reaches a LITERAL route segment only where the
+    // route DECLARED that its consumer enumerates route names there.
+    return enumerated && seg.startsWith(':');
   });
 }
 
@@ -162,22 +217,57 @@ function templateMatchesPath(template: string, path: string): boolean {
  * dedicated test below asserts each pair really exists in server.ts source —
  * so a rewritten match is never a free-text claim.
  */
-const EDGE_REWRITES: ReadonlyArray<{ from: string; to: string }> = [
-  { from: '/api/vault/', to: '/v1/vault/' },
-  { from: '/api/auth/', to: '/v1/auth/' },
-  { from: '/api/grantee-candidates', to: '/v1/contacts/grantee-candidates' },
-];
+const EDGE_REWRITES: ReadonlyArray<{ from: string; to: string }> = deriveEdgeRewrites();
 
-function fileMatchesPath(file: string, path: string): boolean {
+/**
+ * DERIVED FROM THE EDGE'S OWN TABLES, never hand-written (M19 PR4 review).
+ *
+ * The hand-written version carried `{ from: '/api/auth/', to: '/v1/auth/' }` —
+ * a PREFIX rewrite the edge deliberately does not implement. `PROXY_ROUTES`
+ * enumerates three exact identity entries with `tree: false` precisely so
+ * `/v1/auth/handoff` stays unreachable, and a fence claiming the prefix would
+ * certify every `/v1/auth/<anything>` route from any `/api/auth/<anything>`
+ * literal in a declared consumer — measured: it retired a correct
+ * EXEMPT_RECOVERY_SURFACE exemption on the strength of a call the edge would
+ * answer 404. The docstring above it promised a test asserted each pair, and
+ * the test asserted neither that pair nor the grantee-candidates one: unchecked
+ * free text under a sentence saying it was checked.
+ *
+ * Deriving removes the class. A pair exists here only because it exists there,
+ * `tree` decides prefix-versus-exact, and the assertions below pin that the
+ * scrape found real tables rather than silently nothing.
+ */
+function deriveEdgeRewrites(): ReadonlyArray<{ from: string; to: string }> {
+  const server = read(join(REPO_ROOT, 'apps/vault-web/src/server.ts'));
+  const rewrites: Array<{ from: string; to: string }> = [];
+  // PROXY_ROUTES: tree entries rewrite a prefix, exact entries a whole path.
+  for (const m of server.matchAll(
+    /\{\s*prefix:\s*'([^']+)',[^}]*rewriteTo:\s*'([^']+)',\s*tree:\s*(true|false)\s*\}/g,
+  )) {
+    rewrites.push({ from: m[1] as string, to: m[2] as string });
+  }
+  // PASS_THROUGH_ROUTES: the two credential-free identity calls.
+  for (const m of server.matchAll(/\{\s*path:\s*'([^']+)',\s*upstreamPath:\s*'([^']+)'\s*\}/g)) {
+    rewrites.push({ from: m[1] as string, to: m[2] as string });
+  }
+  // The one projection with its own constant rather than a table row.
+  const grantee = /GRANTEE_CANDIDATES_PATH\s*=\s*'([^']+)'/.exec(server)?.[1];
+  if (grantee !== undefined && server.includes("'/v1/contacts/grantee-candidates'")) {
+    rewrites.push({ from: grantee, to: '/v1/contacts/grantee-candidates' });
+  }
+  return rewrites;
+}
+
+function fileMatchesPath(file: string, path: string, enumerated = false): boolean {
   const templates = extractTemplates(file);
   for (const template of templates) {
-    if (templateMatchesPath(template, path)) {
+    if (templateMatchesPath(template, path, enumerated)) {
       return true;
     }
     for (const rewrite of EDGE_REWRITES) {
       if (template.startsWith(rewrite.from)) {
         const rewritten = rewrite.to + template.slice(rewrite.from.length);
-        if (templateMatchesPath(rewritten, path)) {
+        if (templateMatchesPath(rewritten, path, enumerated)) {
           return true;
         }
       }
@@ -191,9 +281,30 @@ function fileMatchesPath(file: string, path: string): boolean {
 // verified consumer files, or an exemption whose reason is the review.
 // ---------------------------------------------------------------------------
 
-type RouteDecl = { readonly consumers: readonly string[] } | { readonly exempt: string };
+type RouteDecl =
+  | { readonly consumers: readonly string[]; readonly enumerated?: string }
+  | { readonly exempt: string };
 
 const consumed = (...files: string[]): RouteDecl => ({ consumers: files });
+
+/**
+ * A consumer that addresses this route through an INTERPOLATION WHOSE VALUES
+ * ARE THE ROUTE NAMES — not an id. `templateMatchesPath` refuses a consumer
+ * `:p` against a literal route segment (one parameterised call site would
+ * otherwise certify every sibling route of the same arity, which is what made
+ * this fence inert before the M19 PR4 review), and that refusal is right for
+ * `/v1/documents/${documentId}` and wrong for `/v1/analysis/${name}` where
+ * `name` is a closed union of the four analysis names.
+ *
+ * The two are the same STRING and different FACTS, so the difference cannot be
+ * matched — it is declared, with the reason, exactly as this repo declares
+ * every other exception to a fence. The reason must name what bounds the
+ * interpolation; an id never does.
+ */
+const consumedByName = (reason: string, ...files: string[]): RouteDecl => ({
+  consumers: files,
+  enumerated: reason,
+});
 
 /**
  * Exemption reasons are GROUPED constants: each names the decision that
@@ -201,6 +312,18 @@ const consumed = (...files: string[]): RouteDecl => ({ consumers: files });
  * one-line diff the PR that lands the consumer carries (the M9 PR2
  * holders-flip pattern).
  */
+/**
+ * The one enumerated-interpolation reason in the repo today. `analysis(name)`
+ * takes `AnalysisName`, a closed union of exactly these four route names, so
+ * `/v1/analysis/${name}` really does address all four — unlike
+ * `/v1/documents/${documentId}`, whose interpolation is an id and names no
+ * route at all.
+ */
+const ANALYSIS_BY_NAME =
+  'apps/bff/src/assistant-client.ts calls `/v1/analysis/${name}` where `name: AnalysisName` is a ' +
+  'CLOSED union of exactly these four route names — the interpolation enumerates routes, not ids, ' +
+  'so the one call site genuinely addresses each of them.';
+
 const EXEMPT_EXECUTOR_SURFACE =
   'Executor reads resolve through settlement staged grants (M7 PR2, docs/03 §5.1 control 5); ' +
   'the executor-facing product surface is its own milestone. First-ever route tests landed in ' +
@@ -231,10 +354,22 @@ const VX = 'apps/vault-extension/src';
 
 const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   // ------------------------------------------------------------ ai-assistant
-  'ai-assistant GET /v1/analysis/beneficiary-conflicts': consumed(`${BFF}/assistant-client.ts`),
-  'ai-assistant GET /v1/analysis/estate-tax': consumed(`${BFF}/assistant-client.ts`),
-  'ai-assistant GET /v1/analysis/funding': consumed(`${BFF}/assistant-client.ts`),
-  'ai-assistant GET /v1/analysis/missing-documents': consumed(`${BFF}/assistant-client.ts`),
+  'ai-assistant GET /v1/analysis/beneficiary-conflicts': consumedByName(
+    ANALYSIS_BY_NAME,
+    `${BFF}/assistant-client.ts`,
+  ),
+  'ai-assistant GET /v1/analysis/estate-tax': consumedByName(
+    ANALYSIS_BY_NAME,
+    `${BFF}/assistant-client.ts`,
+  ),
+  'ai-assistant GET /v1/analysis/funding': consumedByName(
+    ANALYSIS_BY_NAME,
+    `${BFF}/assistant-client.ts`,
+  ),
+  'ai-assistant GET /v1/analysis/missing-documents': consumedByName(
+    ANALYSIS_BY_NAME,
+    `${BFF}/assistant-client.ts`,
+  ),
   'ai-assistant GET /v1/consents': consumed(`${BFF}/assistant-client.ts`),
   'ai-assistant PUT /v1/consents/:scope': consumed(`${BFF}/assistant-client.ts`),
   'ai-assistant DELETE /v1/consents/:scope': consumed(`${BFF}/assistant-client.ts`),
@@ -454,6 +589,15 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
   const nonInternal = DERIVED.filter((r) => !r.internal);
   const internal = DERIVED.filter((r) => r.internal);
 
+  it('every route decorator in the repo is one this parser can read', () => {
+    // The failure mode being closed: an UNREADABLE decorator used to derive
+    // nothing, so the route existed with no entry demanded and no stale
+    // pressure — silently outside the fence that claims to cover it. Anything
+    // this parser cannot read now names itself here, and the remedy is to
+    // write the route in the plain form or to teach the parser deliberately.
+    expect(unparseable).toEqual([]);
+  });
+
   it('derives a real route surface (anti-vacuity)', () => {
     // A derivation that stops matching goes green with an empty registry —
     // the 2026-08-07 fence lesson. These floors are the current counts with
@@ -492,7 +636,7 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
       for (const file of decl.consumers) {
         if (!existsSync(join(REPO_ROOT, file))) {
           failures.push(`${key}: consumer file does not exist: ${file}`);
-        } else if (!fileMatchesPath(file, path)) {
+        } else if (!fileMatchesPath(file, path, decl.enumerated !== undefined)) {
           failures.push(`${key}: ${file} contains no URL template addressing ${path}`);
         }
       }
@@ -514,19 +658,27 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     }
   });
 
-  it('the edge rewrites the matcher relies on exist in server.ts source', () => {
-    // A rewritten match is only honest while the rewrite is real: the vault
-    // tree pair, and the exact-entry targets for every /api/auth/… and the
-    // grantee-candidates projection, must all appear in the edge's source.
-    const server = read(join(REPO_ROOT, 'apps/vault-web/src/server.ts'));
-    expect(server).toContain("'/api/vault/'");
-    expect(server).toContain("'/v1/vault/'");
-    expect(server).toContain("'/v1/auth/session'");
-    expect(server).toContain("'/v1/auth/stepup'");
-    expect(server).toContain("'/v1/auth/logout'");
-    expect(server).toContain("'/v1/auth/refresh'");
-    expect(server).toContain("'/v1/auth/extension/pairing/redeem'");
-    expect(server).toContain("'/v1/contacts/grantee-candidates'");
+  it('the edge rewrites are DERIVED from server.ts, and the scrape really found them', () => {
+    // Anti-vacuity: a regex that stops matching would empty this table and
+    // silently narrow the fence rather than fail it. The pairs are asserted by
+    // SHAPE (each is a real /api/… → /v1/… mapping) and by count, and the one
+    // pair the hand-written table invented — the `/api/auth/` PREFIX — is
+    // asserted ABSENT, because the edge enumerates three exact identity routes
+    // so that `/v1/auth/handoff` cannot be reached from this origin.
+    expect(EDGE_REWRITES.length).toBeGreaterThanOrEqual(6);
+    for (const { from, to } of EDGE_REWRITES) {
+      expect(from.startsWith('/api/')).toBe(true);
+      expect(to.startsWith('/v1/')).toBe(true);
+    }
+    const froms = EDGE_REWRITES.map((r) => r.from);
+    expect(froms).toContain('/api/vault/');
+    expect(froms).toContain('/api/auth/session');
+    expect(froms).toContain('/api/grantee-candidates');
+    expect(froms).not.toContain('/api/auth/');
+    // And no derived pair may reach identity's handoff mint.
+    for (const { to } of EDGE_REWRITES) {
+      expect(to.startsWith('/v1/auth/handoff')).toBe(false);
+    }
   });
 
   it('template extraction sees a real corpus (anti-vacuity)', () => {

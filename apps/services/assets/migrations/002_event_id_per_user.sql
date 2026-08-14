@@ -1,0 +1,50 @@
+-- M19 PR4 (the security review): scope the idempotency index to the OWNER.
+--
+-- WHAT WAS WRONG. `ux_asset_events_event_id` was unique over `event_id` alone,
+-- across every user in the cluster. A client-supplied `eventId` is an
+-- idempotency key, so a create carrying one that ALREADY EXISTS took a unique
+-- violation — and `replayAck` correctly refuses to serve another user's event
+-- as your ack, so the request ended as 409 `version_conflict` while an unused
+-- key ended as 201. Proven live on the running stack:
+--
+--     stranger creates with eventId X          -> 201
+--     owner creates with the SAME eventId X    -> 409 {"error":"version_conflict"}
+--     owner creates with an unused eventId Y   -> 201
+--
+-- That is a cross-user event-existence oracle: a caller learns whether a UUID
+-- names a command somewhere in the estate platform, for accounts they have no
+-- relationship to. The values are 122-bit random so nobody is guessing them
+-- blind, but it also confirms an id LEARNED elsewhere (a log, a screenshot, a
+-- shared device) belongs to a real command — which is exactly the confirmation
+-- the uniform 404 exists to withhold everywhere else in this service.
+--
+-- WHY SCOPE RATHER THAN CATCH. The alternative is to keep the global index and
+-- map the foreign collision onto a success-shaped answer, which means minting a
+-- fake ack for a command that did not run. Idempotency is a per-CALLER property
+-- — "did I already send this" — and it was expressed as a global one. Fixing
+-- the index makes the oracle structurally absent instead of handled.
+--
+-- NO PRE-FLIGHT, AND THE REASON MATTERS. `002` WIDENS what the database will
+-- accept: every row that satisfied the old global index satisfies (user_id,
+-- event_id) too, so there is nothing to refuse and nothing to choose between.
+-- A NARROWING migration in this repo (`004_role_assignments_unique.sql`,
+-- `002_dek_unique_active.sql`) must RAISE over pre-existing violations rather
+-- than pick which rows die; this one cannot have any.
+--
+-- ORDER. The DROP and the CREATE are one transaction (the migrator wraps every
+-- file in BEGIN/COMMIT), so no window exists in which appends are unguarded.
+-- `CREATE UNIQUE INDEX CONCURRENTLY` is structurally inexpressible inside that
+-- transaction; on a populated cluster the build takes a lock on `asset_events`
+-- for its duration, which is the same trade `005_auth_events_index.sql` records
+-- in identity.
+--
+-- THE SERVICE SIDE SHIPS WITH THIS FILE. `LedgerRepo.findOwnByEventId` is
+-- scoped by `user_id` in the same change, because two users may now hold the
+-- same event id: a lookup by `event_id` alone would return an arbitrary one of
+-- them, so a caller's own retry could be answered from a stranger's row and
+-- then re-append. The predicate rides the statement rather than sitting in a
+-- check above it.
+
+DROP INDEX IF EXISTS ux_asset_events_event_id;
+
+CREATE UNIQUE INDEX ux_asset_events_user_event_id ON asset_events (user_id, event_id);

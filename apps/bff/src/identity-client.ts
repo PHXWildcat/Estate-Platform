@@ -181,9 +181,17 @@ export type BffErrorCode =
    */
   | 'CONTENT_ERASED'
   /**
-   * Someone else advanced the document between read and write (M12). Distinct
-   * from DOCUMENT_NOT_EDITABLE because the remedy is different: reload, then
-   * try again.
+   * Someone else advanced the RESOURCE between read and write — a document
+   * (M12) or an asset (M19, whose six ledger commands all carry
+   * `expectedVersion`). Distinct from DOCUMENT_NOT_EDITABLE because the remedy
+   * is different: reload, then try again.
+   *
+   * The wording below is deliberately resource-NEUTRAL. It said "this document
+   * changed" until the M19 PR4 review, which meant an asset conflict reached
+   * the wire describing a document the mutation never touched — `maskedErrors`
+   * passes GraphQLErrors through unchanged, so this string IS what a non-web
+   * client reads. apps/web keys on `extensions.code` and has its own copy, so
+   * no browser ever showed it; that is what let it drift.
    */
   | 'VERSION_CONFLICT'
   /**
@@ -306,7 +314,26 @@ export type BffErrorCode =
    * INVALID_REQUEST's generic one — the M12 rule, applied before the collision
    * rather than after it.
    */
-  | 'WEBAUTHN_FAILED';
+  | 'WEBAUTHN_FAILED'
+  /**
+   * M19 PR4 review. A rate bound refused the request — identity's step-up cap
+   * (M17 PR6's two-scope bound: a stolen credential exhausts its OWN budget
+   * under an account ceiling) answers 429 `too_many_attempts`.
+   *
+   * ITS OWN CODE because without one it fell through to the generic branch and
+   * a control firing exactly as designed reached the browser as "something went
+   * wrong on our side" — the M9 rule inverted, and the same reason the 404
+   * branch beside it is mapped rather than left generic. The remedy is also the
+   * one remedy no other code on this list implies: WAIT. Every other refusal
+   * here is fixed by doing something differently now; this one is fixed by
+   * doing the same thing later, so copy that says "try again" is actively
+   * wrong.
+   *
+   * Deliberately NOT folded into INVALID_CREDENTIALS, which is what the step-up
+   * surfaces render for a rejected code: the whole point of the cap is that the
+   * next code will not be accepted either, however correct it is.
+   */
+  | 'TOO_MANY_ATTEMPTS';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -317,7 +344,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   ASSISTANT_DISABLED: 'The assistant is switched off',
   TEMPLATE_NOT_FOUND: 'No template available',
   CONTENT_ERASED: 'This content has been erased',
-  VERSION_CONFLICT: 'This document changed since it was loaded',
+  VERSION_CONFLICT: 'This changed since it was loaded',
   SHARE_SUM_EXCEEDED: 'Those shares would add past 100%',
   DOCUMENT_NOT_EDITABLE: 'This document can no longer be regenerated',
   LEGAL_HOLD: 'This document is under legal hold',
@@ -336,6 +363,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   VAULT_UNAVAILABLE: 'We could not open the vault right now',
   PAIRING_UNAVAILABLE: 'We could not create a pairing code right now',
   WEBAUTHN_FAILED: 'The passkey ceremony was not accepted',
+  TOO_MANY_ATTEMPTS: 'Too many attempts — wait a few minutes before trying again',
 };
 
 /**
@@ -832,6 +860,15 @@ export class FetchIdentityClient implements IdentityClient {
     }
     if (res.status === 403 && token === 'stepup_required') {
       return bffError('STEPUP_REQUIRED');
+    }
+    // M19 PR4 review: identity's rate bounds (M16/M17) answer 429. Mapped for
+    // the same reason as the 404 below — a control answering correctly must not
+    // surface as an opaque server error — and status-keyed rather than
+    // token-keyed on purpose: 429 means one thing on every route, and a future
+    // bound arriving with a token this edge has not learned yet should still be
+    // told apart from an outage.
+    if (res.status === 429) {
+      return bffError('TOO_MANY_ATTEMPTS');
     }
     if (res.status === 400) {
       return bffError('INVALID_REQUEST');

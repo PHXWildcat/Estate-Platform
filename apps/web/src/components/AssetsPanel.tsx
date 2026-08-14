@@ -6,6 +6,7 @@ import { gqlRequest, type AssetInfo, type NetWorthInfo } from '../graphql/client
 import { commandEventId, type CommandId } from '../lib/command-id';
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
+import { formatPct } from '../lib/percent';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
 
@@ -332,7 +333,7 @@ export function AssetsPanel(): ReactElement {
                     </p>
                     {asset.ownershipPct !== 100 ? (
                       <p className="mt-0.5 text-xs text-ink-muted">
-                        {asset.ownershipPct}% ownership
+                        {formatPct(asset.ownershipPct)}% ownership
                       </p>
                     ) : null}
                   </div>

@@ -275,6 +275,28 @@ describe('the watermark', () => {
 });
 
 describe('load states', () => {
+  it.each([
+    ['readiness', { readiness: undefined, consents: ['assistant.enabled'] }],
+    ['consents', { readiness: null, consents: undefined }],
+  ])('reads a response missing its %s field as NO DATA, never as data (M11)', async (_which, d) => {
+    // A BFF predating either query answers {"data":{}} with ok=true, and
+    // `gqlRequest` answers ok for any `data` object — so an absent field
+    // reached the renderer as `undefined` and blanked the page. The M11/M12/M15
+    // shape, found a fourth time by the M19 PR4 review. This case exists
+    // because the mutation that removes the guard survived without it.
+    installGraphqlFetchMock({
+      Readiness: () =>
+        jsonResponse({
+          data: d.readiness === undefined ? {} : { readiness: readiness() },
+        }),
+      Consents: () =>
+        jsonResponse({ data: d.consents === undefined ? {} : { consents: d.consents } }),
+    });
+    render(<ReadinessPanel />);
+
+    expect(await screen.findByText(/couldn’t run these checks|couldn’t/i)).toBeInTheDocument();
+  });
+
   it('offers sign-in rather than an empty estate when unauthenticated', async () => {
     installGraphqlFetchMock({
       Readiness: () => graphqlError('UNAUTHENTICATED'),
