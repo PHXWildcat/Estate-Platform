@@ -6131,3 +6131,73 @@ deviating from them, stop and propose the change with rationale — do not silen
   intent rather than a shipped control, and §5.5 now says so beside it. Building
   it is a cross-cluster authorization change; the fence forces a new enforced
   pair to arrive in the same change as the code that reads it.
+- 2026-08-14 — THE TB4 INSIDER ALARM FIRED ON AN OWNER READING THEIR OWN ESTATE,
+  and the fix is a second DIMENSION rather than a bigger number. MEASURED before
+  it was argued: seven ordinary `/assets` page loads of a 120-asset estate raised
+  `crypto.decrypt_rate.exceeded` (`asset_user count=1680 bound=1500`). The count
+  was right — a page load issues Assets and NetWorth together, so it costs 2
+  decrypts PER ASSET OWNED — and `asset` is the ONE bound whose legitimate volume
+  scales with ESTATE SIZE rather than with activity, while the 1500 was itself
+  calibrated on the M19 PR2 journey, an estate of a handful of assets. Estate size
+  is unbounded, so no constant survives it: raise the number and you
+  false-positive on some larger estate while blinding the detector for every
+  smaller one. A security alarm firing on the product's own happy path is the M5
+  permanently-red-gate lesson arriving at the control docs/03 §4 calls the single
+  most important insider control there is. `DecryptRateBound` gained an optional
+  `maxDistinctSubjectsPerWindow` and a breach now needs BOTH thresholds strictly
+  exceeded; the subject is the row id already inside the field name, located by a
+  position declared per prefix in `DECRYPT_FIELD_SUBJECTS` and counted by the
+  sweep's own `count(DISTINCT CASE … split_part …)`.
+  THE DETECTION THRESHOLD IS UNCHANGED AND THAT IS THE WHOLE ARGUMENT: distinct ≤
+  count always, and a table invariant keeps the distinct threshold at or below the
+  count threshold, so anything clearing the count bound on DISTINCT rows clears
+  both — a mass read of N different assets breaches at exactly the N it did
+  before. What is suppressed is precisely RE-READING, which moves no plaintext the
+  principal had not already seen. Recorded as the cost (docs/03 §6q(ii)): an
+  estate above 1500 distinct assets still trips on one page load, which is the
+  threshold doing its job where the two readings converge, and the honest price of
+  a constant — the detector runs in the audit cluster and cannot ask how large an
+  estate legitimately is without a cross-cluster read its fenced zero-credential
+  posture forbids.
+- 2026-08-14 — A DECLARATION THAT CAN ONLY SUPPRESS IS A BLIND SPOT WHEN IT IS
+  WRONG, so `DECRYPT_FIELD_SUBJECTS` is deliberately sparse and pinned to source.
+  `doc` is the recorded trap and is ABSENT: its field is
+  `doc.<ownerUserId>.v<n>.<sha>`, so the tempting segment 2 holds the OWNER — the
+  same value for every document a person holds — and declaring it would collapse a
+  whole library to one subject and suppress a mass document read. Sampling the
+  live stream shows a UUID there and invites exactly that mistake, so the position
+  is read from the code that BUILDS the string:
+  `packages/contracts/test/decrypt-field-subjects.spec.ts` pins every declared
+  position to its constructor in the owning service's source (identifier included,
+  so reordering a constructor's arguments is red rather than silent) and asserts
+  BOTH halves of the `doc` case — undeclared, and segment 2 really is the owner.
+  The fence found its own defect on its first run: it read a backtick span inside
+  a `//` comment (`asset.estate.viewed`, an audit action) as a template literal,
+  which is the repo's `code()` rule restated for a scanner that must keep template
+  bodies intact. Merging the sentinel's two actor types SUMS distinct counts,
+  which over-counts deliberately — an upper bound errs toward breaching, the only
+  direction a suppressing condition may fail in.
+- 2026-08-14 — THE LIVE PROOF IS ONE TABLE, AND THE COUNTERFACTUAL IS IN IT.
+  Three principals in one database: the PRE-fix run (1680 decrypts / 120 distinct)
+  raised an anomaly carrying `count: 1680` and no distinct fields; two POST-fix
+  runs with byte-identical economics raised none; and in the same window a
+  1501-asset estate read ONCE (3002 decrypts / 1501 distinct) breached with
+  `distinctSubjects: 1501, distinctBound: 1500`. The positive control is what
+  makes the silence meaningful — without a breach in the same window, "no anomaly"
+  is vacuously green over a dead detector (the M8 dead-consumer shape). The int
+  layer runs the EXPORTED `DECRYPT_RATE_SQL` rather than a copy, because whether
+  Postgres extracts the segment the declaration names is a question only Postgres
+  answers. Eight mutations red, including the one that matters most — raising the
+  distinct threshold above the count threshold, which is the only way this
+  mechanism could introduce blindness the count bound did not already have.
+- 2026-08-14 — OBSERVED WHILE DRIVING IT, out of scope and recorded so it is not
+  rediscovered as a mystery: a sustained asset-create loop twice killed the assets
+  service with a V8 `Deoptimizer` fatal ("unreachable code", node 22.22 on
+  arm64), leaving the container `running=true` with `restarts=0` and the port
+  answering nothing — the M8 "up with a dead service" shape produced by a RUNTIME
+  crash rather than by our code. It reproduced under load and not otherwise (1501
+  creates in 6.7s on the retry), and the 1501-asset list read itself takes 0.8s,
+  so the headers timeouts that first looked like a slow product were the crash.
+  The tell was `restarts=0` alongside a dead port: a container that never
+  restarted cannot have exited, so the process died without the container
+  noticing.

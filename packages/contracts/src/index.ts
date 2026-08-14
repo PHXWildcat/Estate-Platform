@@ -75,8 +75,10 @@ export {
 } from './document-events';
 export {
   DECRYPT_FIELD_PREFIXES,
+  DECRYPT_FIELD_SUBJECTS,
   decryptFieldPrefix,
   decryptFieldServiceFor,
+  decryptFieldSubject,
   type DecryptEmittingService,
   type DecryptFieldPrefix,
 } from './decrypt-field-prefixes';
