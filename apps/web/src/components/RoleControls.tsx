@@ -50,29 +50,64 @@ export interface RoleControlsProps {
   linked: boolean | null;
 }
 
-/** What a role may be granted over. One entry per resource the platform has. */
-const RESOURCES: ReadonlyArray<{ resource: string; label: string; description: string }> = [
+/**
+ * What a role may be granted over.
+ *
+ * `grantable` IS THE FINDING. This list used to offer three buttons — contacts,
+ * assets, documents — and exactly one of them did anything: profile's only
+ * grant reader filters `resource = 'contact' AND action = 'read'`, so pressing
+ * "Allow: Your assets" wrote a row, listed it back here as an allowance, and
+ * conferred nothing. An owner was told they had shared their assets with their
+ * executor when they had not, and the only way to find out was to notice that
+ * nothing happened.
+ *
+ * The service refuses those pairs now (`enforced-grants.ts`), and this surface
+ * stops offering them — the M12 rule that a client must never offer what the
+ * server would refuse, applied to something worse than a refusal. The entries
+ * SURVIVE rather than being deleted, for two reasons: a grant written before
+ * the vocabulary closed still has to render as something a person can read and
+ * withdraw, and stating what is not yet shareable is more honest than a page
+ * that silently only ever mentions contacts.
+ */
+const RESOURCES: ReadonlyArray<{
+  resource: string;
+  label: string;
+  description: string;
+  grantable: boolean;
+}> = [
   {
     resource: 'contact',
     label: 'Your estate contacts',
     description: 'The other people your plan names, and their contact details.',
+    grantable: true,
   },
   {
     resource: 'asset',
     label: 'Your assets',
     description: 'What you own, what it is worth, and who is named on it.',
+    grantable: false,
   },
   {
     resource: 'document',
     label: 'Your documents',
     description: 'Which documents exist and, with download, their contents.',
+    grantable: false,
   },
 ];
 
+/**
+ * Display labels for the action on a grant. `download` is display-only and
+ * always was: this surface has only ever SENT `read`, and nothing in the
+ * platform reads a `download` grant, so it appears here to label a row rather
+ * than to offer a choice.
+ */
 const ACTIONS: ReadonlyArray<{ action: string; label: string }> = [
   { action: 'read', label: 'Read' },
   { action: 'download', label: 'Read and download' },
 ];
+
+/** What this build can actually share, for the sentence under the buttons. */
+const NOT_YET_SHAREABLE = RESOURCES.filter((r) => !r.grantable);
 
 /**
  * The action a step-up is being collected FOR — carried in full, because the
@@ -344,7 +379,9 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
                   )}
                   <div className="mt-2 flex flex-wrap gap-2">
                     {RESOURCES.filter(
-                      (resource) => !grants.some((grant) => grant.resource === resource.resource),
+                      (resource) =>
+                        resource.grantable &&
+                        !grants.some((grant) => grant.resource === resource.resource),
                     ).map((resource) => (
                       <button
                         key={resource.resource}
@@ -359,6 +396,18 @@ export function RoleControls({ contactId, contactName, linked }: RoleControlsPro
                       </button>
                     ))}
                   </div>
+                  {/*
+                   * Said out loud, on the surface where someone would otherwise
+                   * go looking for it. A page that simply never mentioned assets
+                   * or documents would leave an owner assuming a share they had
+                   * arranged elsewhere, which is the same wrong belief the old
+                   * buttons created — just quieter.
+                   */}
+                  <p className="mt-2 max-w-prose text-[0.8125rem] text-ink-muted">
+                    Estate contacts are the only thing a role can be allowed to read today — your{' '}
+                    {NOT_YET_SHAREABLE.map((r) => r.label.replace(/^Your /, '')).join(' and ')} are
+                    not shareable yet, and nobody but you can read them whatever role they hold.
+                  </p>
                 </div>
               </li>
             );

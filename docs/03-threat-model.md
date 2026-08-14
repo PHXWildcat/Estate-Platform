@@ -84,6 +84,7 @@ section originally described, and the narrowing is the result of measuring the p
 ### 5.5 Beneficiary-conflict information abuse
 **Attack:** A beneficiary with read access enumerates other beneficiaries' shares to contest or coerce.
 **Controls:** ABAC default — beneficiaries see only assets naming them and only their own designation, unless the owner explicitly opens visibility; access-pattern anomalies (rapid enumeration) alert the owner.
+**As built:** the ABAC default is real and enforced for CONTACTS (`effectiveContactReadGrants` → the Cedar PEP). "Unless the owner explicitly opens visibility" is intent, not a shipped control: no mechanism shares an asset or a document with a role-holder, and the platform now refuses to record a grant claiming otherwise (§6s). Rapid-enumeration alerting is §6q's decrypt-rate detector, which raises to the audit chain and a log line — there is no owner notification (§6q).
 
 ### 5.6 Ransomware / destructive attack
 **Attack:** Encrypt-and-extort against databases and object storage.
@@ -2582,6 +2583,65 @@ precisely why it must not borrow the credential code's "enter the current
 code" wording. The copy deliberately does not state the window in minutes:
 that number is a reviewed constant in a service the web app cannot import, and
 a figure people plan around must not be a second copy free to drift.
+
+## 6s. Threat-model delta — permission grants confer only what something reads (2026-08-14)
+
+Found while scoping the next milestone, fixed on its own before it: **the
+platform accepted permission grants it did not honour, and told the owner it
+had.** `permission_grants` took any lowercase token as a `resource` and any of
+three actions; `RolesService.addPermission` wrote the row, `events.service`
+audited `permission.granted`, and the people surface listed it back under "What
+this role may read". Exactly one pair is read by anything —
+`RolesRepo.effectiveContactReadGrants`, profile's only grant reader and the
+enforcement behind §5.5's contact boundary, filters `pg.resource = 'contact' AND
+pg.action = 'read'`. MEASURED against real Postgres over the six combinations the
+surface offered: one conferred access, five conferred nothing, and two of those
+five were buttons an owner could press ("Allow: Your assets", "Allow: Your
+documents").
+
+**This is worse than a refusal, which is why it is here rather than in a
+changelog.** A refused grant is visible and can be worked around. An accepted one
+that confers nothing produces a durable false belief about who can see an estate
+— an owner who "shared their assets with their executor" has a written record
+saying so, and the only way to discover otherwise is to notice that nothing
+happened. Nobody gains access they should not have; the exposure is that the
+owner's mental model of their own estate is wrong in the permissive direction,
+which is the direction that stops them arranging real access.
+
+**What changed.** `enforced-grants.ts` declares the (resource, action) pairs
+something honours, with a reason per entry; `addPermission` refuses everything
+else with `422 grant_not_enforced` — its own token, kept apart from the generic
+parse 400 through the BFF and into the app's copy, because "we have not built
+this" and "your request was malformed" send a person to different places (the M9
+rule applied to a refusal). The refusal sits AFTER the ownership check, so it can
+never answer a question about somebody else's estate (the M10 rule). The people
+surface stops offering what nothing enforces and SAYS which parts of an estate
+are not shareable, because silence would leave the same wrong belief more
+quietly; the link-redemption panel's "anything they choose to share with you" is
+narrowed for the same reason. Two fences hold it: profile's asserts the declared
+table equals what the reader's SQL really filters on and that no undeclared file
+reads grants, and the web's asserts what the surface offers equals what profile
+declares — neither side could see this drift alone, since both lists were
+internally consistent and both suites were green for three milestones.
+
+**OPEN, and stated rather than implied: role-based sharing covers estate
+contacts and nothing else.** There is no mechanism by which an owner can let a
+trustee, executor or beneficiary read an asset or a document — not a broken one,
+none. §5.5's "unless the owner explicitly opens visibility" and risk #1's
+"trusted-contact review mode" describe intent, not shipped controls, and §6r
+already records that no beneficiary visibility exists. Building it is a
+cross-cluster authorization change (assets and documents are separate services on
+separate clusters and hold no profile credential), so it belongs to a milestone
+that can take that decision; a new enforced pair arrives in the same change as
+the code that reads it, which is what the fence forces.
+
+**Two residuals.** Rows written before the vocabulary closed are inert and remain
+in the table: they render with their label and stay withdrawable rather than
+being hidden or degraded to a bare token, because an owner must be able to see
+and remove a permission that exists. And the DDL keeps its open `TEXT` column
+deliberately — `permission_grants` is docs/02 §2 verbatim, migrations are
+append-only, and narrowing it would need a pre-flight over exactly those inert
+rows; the API is the enforcement point and the reader ignores everything else.
 
 ## 7. Validation program
 

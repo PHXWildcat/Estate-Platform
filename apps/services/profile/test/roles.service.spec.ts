@@ -1,4 +1,8 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { coreResource, ProfileAuthz } from '../src/authz.service';
 import { RolesService } from '../src/roles.service';
@@ -89,7 +93,10 @@ class FakeGrantsRepo {
 
 class RecordingEvents {
   readonly revoked: string[] = [];
-  permissionGranted(): Promise<void> {
+  /** Grant ids audited as `permission.granted`. */
+  readonly granted: string[] = [];
+  permissionGranted(_actor: string, grantId: string): Promise<void> {
+    this.granted.push(grantId);
     return Promise.resolve();
   }
   permissionRevoked(_actor: string, grantId: string): Promise<void> {
@@ -140,6 +147,45 @@ describe('RolesService (owner-managed grants)', () => {
     expect(list[0]?.scopeId).toBe(CONTACT);
 
     await expect(service.revoke(OWNER, ra.id)).resolves.toBeUndefined();
+  });
+
+  it('refuses a grant nothing honours, and writes NOTHING when it does', async () => {
+    // The finding this closes: `permission_grants` took any lowercase token as a
+    // resource, stored the row, listed it back to the owner as an allowance and
+    // audited it as `permission.granted` — while `effectiveContactReadGrants`,
+    // the only reader, filters `contact`/`read` and ignored the rest. An owner
+    // who allowed "Your assets" was told they had shared their assets and had
+    // not. Refusing is the honest answer; recording an inert row is not.
+    const { grants, events, service } = buildWithEvents();
+    const ra = await service.grantRole(OWNER, {
+      contactId: CONTACT,
+      role: 'executor',
+      scopeType: 'estate',
+      effectiveCondition: 'immediate',
+    });
+
+    for (const input of [
+      { resource: 'asset', action: 'read' as const },
+      { resource: 'document', action: 'read' as const },
+      // Not two independent enums: both tokens appear in the enforced pair, and
+      // the PAIR is still unenforced. A per-field check could not see this.
+      { resource: 'contact', action: 'download' as const },
+    ]) {
+      await expect(service.addPermission(OWNER, ra.id, input)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
+    }
+
+    expect(grants.inserted).toEqual([]);
+    // And no audit event claiming a permission was granted: the trail must not
+    // record an allowance that does not exist.
+    expect(events.granted).toEqual([]);
+
+    // The control, so the refusal above is not simply "this fake refuses
+    // everything": the one enforced pair still goes through and is audited.
+    await service.addPermission(OWNER, ra.id, { resource: 'contact', action: 'read' });
+    expect(grants.inserted).toEqual([{ raId: ra.id, resource: 'contact', action: 'read' }]);
+    expect(events.granted).toHaveLength(1);
   });
 
   it('404s adding a permission to a role assignment owned by someone else', async () => {

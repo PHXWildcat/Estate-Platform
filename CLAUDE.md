@@ -6065,3 +6065,69 @@ deviating from them, stop and propose the change with rationale — do not silen
   expansion, grepping for `✕` outside verbose mode, and length-instead-of-content
   no-op checks, there is now ANCHORING ON A NON-UNIQUE STRING. A mutation is only
   evidence about the test if you know which bytes it changed.
+- 2026-08-14 — A PERMISSION THE PLATFORM DID NOT HONOUR WAS RECORDED AS ONE IT
+  DID, found while scoping M20 and fixed on its own branch first, because a live
+  defect must not hide inside a feature change. `permission_grants` accepted any
+  lowercase token as a `resource` and any of three actions; the row was stored,
+  audited `permission.granted`, and listed back to the owner under "What this
+  role may read". Exactly ONE pair is read by anything —
+  `effectiveContactReadGrants`, profile's only grant reader and the enforcement
+  behind docs/03 §5.5, filters `pg.resource = 'contact' AND pg.action = 'read'`.
+  MEASURED against real Postgres over the six combinations the people surface
+  offered: one conferred access, five conferred nothing, and two of those five
+  were buttons an owner could press. THIS IS WORSE THAN A REFUSAL — a refused
+  grant is visible and can be worked around, while an accepted one that confers
+  nothing produces a durable false belief about who can see an estate, with a
+  written record saying so, discoverable only by noticing that nothing happened.
+  Nobody gains access they should not have; the harm is that the owner's model of
+  their own estate is wrong in the permissive direction, which is the direction
+  that stops them arranging real access.
+  THE DEFECT WAS A DRIFT BETWEEN TWO INTERNALLY-CONSISTENT LISTS and neither
+  side's tests could see it: the surface's `RESOURCES` had three entries, the
+  reader had one, both had been that way since M13, every suite green. The
+  zero-callers shape inverted — not a route with no consumer, but a consumer with
+  no enforcement. Fixed with `enforced-grants.ts` (the honoured pairs as data,
+  reason per entry) and a `422 grant_not_enforced` refusal placed AFTER the
+  ownership check so it cannot become an oracle (the M10 rule). THE CHECK IS ON
+  THE PAIR AND LIVES IN THE SERVICE, not in the zod schema: `contact` and `read`
+  are each enforced while `contact`+`download` is not, so a per-field enum could
+  never express it — and keeping the schema to SHAPE leaves a malformed body an
+  ordinary 400 while an unenforced pair gets its own token, since "we have not
+  built this" and "your request was malformed" send a person to different places.
+- 2026-08-14 — TWO FENCES, BECAUSE NEITHER SIDE OF THAT DRIFT COULD SEE IT ALONE.
+  `apps/services/profile/test/enforced-grants.spec.ts` asserts the declared table
+  equals the literals the reader's SQL really filters on, and that no undeclared
+  file reads grants (derived from the directory, not a hand-kept list). It
+  REFUSES a SQL shape it cannot parse rather than matching nothing — a second
+  enforced pair needs an `IN`, and a fence that stops matching goes green (the
+  2026-08-07 lesson). `apps/web/src/components/RoleControls.enforced.test.ts`
+  asserts what the surface OFFERS equals what profile ENFORCES by reading the
+  other file (the compose-parity mechanism; the web app cannot import a Nest
+  package), with anti-vacuity floors on both scans because two regexes that
+  quietly match nothing agree perfectly. One case exists purely to make the
+  equality TOTAL: an entry missing its `grantable` flag fails safe at runtime
+  (no button) and fails SILENT at the fence (absent from both lists), so the flag
+  is required per entry. Nine mutations, all red, all restored — the two that
+  matter being the refusal deleted (red at the service AND over real HTTP against
+  real Postgres) and `grantable: true` put back on assets.
+  THE INT SUITE'S OWN FIXTURES HAD TO CHANGE, and that is the sharpest part: two
+  existing cases used `document`/`read` and `asset`/`read` as convenient grants
+  and passed. A test that reaches for an inert value as a fixture is how a
+  promise with no enforcement behind it survives a test run — the M13 "a test
+  named for a property it never touched" shape, one layer over, in a fixture
+  rather than an assertion.
+- 2026-08-14 — SAYING WHAT IS NOT SHAREABLE IS PART OF THE FIX, not decoration.
+  Dropping the two buttons would have left a page that silently only ever
+  mentions contacts, which produces the same wrong belief more quietly — an owner
+  assumes the share was arranged elsewhere. So the surface names both omitted
+  resources and states that nobody but the owner can read them whatever role they
+  hold, and the link-redemption panel's "anything they choose to share with you"
+  is narrowed to what a role can actually be allowed. Grants written before the
+  vocabulary closed still render with their label and stay withdrawable: hiding
+  an inert row strands it, and dropping the label renders it as a bare token.
+  RECORDED OPEN in docs/03 §6s rather than implied: there is NO mechanism by
+  which an owner can share an asset or a document with a role-holder — not a
+  broken one, none — so §5.5's "unless the owner explicitly opens visibility" is
+  intent rather than a shipped control, and §5.5 now says so beside it. Building
+  it is a cross-cluster authorization change; the fence forces a new enforced
+  pair to arrive in the same change as the code that reads it.

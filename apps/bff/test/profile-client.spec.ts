@@ -322,7 +322,15 @@ describe('FetchProfileClient', () => {
       [409, 'role_already_granted', 'ROLE_ALREADY_GRANTED'],
       [409, 'permission_already_granted', 'PERMISSION_ALREADY_GRANTED'],
       [409, 'profile_key_retired', 'CONTENT_ERASED'],
+      // A grant over something nothing enforces. It must NOT land in the
+      // generic 422→INVALID_REQUEST below it: "we have not built this" and
+      // "your request was malformed" send a caller to different places, and
+      // this token is the only signal telling them apart.
+      [422, 'grant_not_enforced', 'GRANT_NOT_ENFORCED'],
       [400, 'invalid_request', 'INVALID_REQUEST'],
+      // ...and an unrecognised 422 still falls through to the generic code, so
+      // the case above is proving the token and not merely the status.
+      [422, 'something_else', 'INVALID_REQUEST'],
     ])('maps %i %s to %s', async (status, token, code) => {
       const fetchFn = jest.fn().mockResolvedValue(response(status, { error: token }));
       await expect(client(fetchFn).contacts(TOKEN)).rejects.toMatchObject({

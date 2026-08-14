@@ -381,40 +381,86 @@ describeIfPg('profile & contacts service end to end', () => {
     expect((list.body as unknown[]).length).toBe(3);
   });
 
+  it('refuses a permission grant nothing honours, storing nothing', async () => {
+    // Until this landed the route took any lowercase token as a resource, wrote
+    // the row, listed it back as an allowance and audited `permission.granted`,
+    // while `effectiveContactReadGrants` — the only reader — filters
+    // `contact`/`read` and ignored the rest. TWO CASES IN THIS SUITE USED THOSE
+    // INERT PAIRS AS FIXTURES (`document`/`read` and `asset`/`read`) and passed,
+    // which is how a promise with no enforcement behind it survives a test run.
+    const before = await admin.query(`SELECT count(*)::int AS n FROM ${schema}.permission_grants`);
+
+    for (const body of [
+      { resource: 'asset', action: 'read' },
+      { resource: 'document', action: 'read' },
+      // The PAIR is the unit: both tokens appear in the one enforced pair.
+      { resource: 'contact', action: 'download' },
+      { resource: 'anything_at_all', action: 'read' },
+    ]) {
+      const refused = await request(server)
+        .post(`/v1/role-assignments/${roleAssignmentId}/permissions`)
+        .set('authorization', asElevated(OWNER))
+        .send(body);
+      // Its own status and token — a client that drifts ahead of the platform
+      // must be able to tell "not implemented" from "malformed" (M9).
+      expect(refused.status).toBe(422);
+      expect(refused.body).toEqual({ error: 'grant_not_enforced' });
+    }
+
+    // Nothing reached the table. A refusal that still writes an inert row would
+    // be the finding with an error message on top.
+    const after = await admin.query(`SELECT count(*)::int AS n FROM ${schema}.permission_grants`);
+    expect((after.rows[0] as { n: number }).n).toBe((before.rows[0] as { n: number }).n);
+  });
+
   it('an owner can read and withdraw a permission grant (M13 PR1)', async () => {
-    // A second grant, so withdrawing one leaves the §5.5 fixture above intact.
-    const extra = await request(server)
-      .post(`/v1/role-assignments/${roleAssignmentId}/permissions`)
+    // On a SECOND assignment, so withdrawing leaves the §5.5 fixture above
+    // intact. It used to be a second grant on the same assignment — which is no
+    // longer expressible, there being exactly one enforced pair and migration
+    // 005's unique index being per (assignment, resource, action).
+    const second = await request(server)
+      .post('/v1/role-assignments')
       .set('authorization', asElevated(OWNER))
-      .send({ resource: 'document', action: 'read' });
+      .send({ contactId: linkedContactId, role: 'viewer', scopeType: 'estate' });
+    expect(second.status).toBe(201);
+    const secondRaId = (second.body as { id: string }).id;
+
+    const extra = await request(server)
+      .post(`/v1/role-assignments/${secondRaId}/permissions`)
+      .set('authorization', asElevated(OWNER))
+      .send({ resource: 'contact', action: 'read' });
     expect(extra.status).toBe(201);
     const extraId = (extra.body as { id: string }).id;
 
     const list = await request(server)
-      .get(`/v1/role-assignments/${roleAssignmentId}/permissions`)
+      .get(`/v1/role-assignments/${secondRaId}/permissions`)
       .set('authorization', asUser(OWNER));
     expect(list.status).toBe(200);
-    expect((list.body as Array<{ resource: string }>).map((g) => g.resource).sort()).toEqual([
-      'contact',
-      'document',
-    ]);
+    expect((list.body as Array<{ resource: string }>).map((g) => g.resource)).toEqual(['contact']);
 
     // Withdrawal needs NO step-up: the protective act must never be harder than
     // the permissive one (the M6 rule).
     const del = await request(server)
-      .delete(`/v1/role-assignments/${roleAssignmentId}/permissions/${extraId}`)
+      .delete(`/v1/role-assignments/${secondRaId}/permissions/${extraId}`)
       .set('authorization', asUser(OWNER));
     expect(del.status).toBe(204);
 
     const again = await request(server)
-      .delete(`/v1/role-assignments/${roleAssignmentId}/permissions/${extraId}`)
+      .delete(`/v1/role-assignments/${secondRaId}/permissions/${extraId}`)
       .set('authorization', asUser(OWNER));
     expect(again.status).toBe(404);
 
     const after = await request(server)
+      .get(`/v1/role-assignments/${secondRaId}/permissions`)
+      .set('authorization', asUser(OWNER));
+    expect((after.body as unknown[]).length).toBe(0);
+    // ...and the §5.5 fixture on the first assignment is untouched.
+    const original = await request(server)
       .get(`/v1/role-assignments/${roleAssignmentId}/permissions`)
       .set('authorization', asUser(OWNER));
-    expect((after.body as Array<{ resource: string }>).map((g) => g.resource)).toEqual(['contact']);
+    expect((original.body as Array<{ resource: string }>).map((g) => g.resource)).toEqual([
+      'contact',
+    ]);
     // revoked_at is the history — the row survives (no soft delete on this table).
     const { rows } = await admin.query(
       `SELECT revoked_at FROM ${schema}.permission_grants WHERE id = $1`,
@@ -436,7 +482,9 @@ describeIfPg('profile & contacts service end to end', () => {
     const grant = await request(server)
       .post(`/v1/role-assignments/${secondRaId}/permissions`)
       .set('authorization', asElevated(OWNER))
-      .send({ resource: 'asset', action: 'read' });
+      // `contact`/`read` because it is now the only pair the platform accepts;
+      // this case is about the revoke predicate's scoping, not the vocabulary.
+      .send({ resource: 'contact', action: 'read' });
     const grantId = (grant.body as { id: string }).id;
 
     const wrongParent = await request(server)

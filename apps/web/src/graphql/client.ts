@@ -56,6 +56,12 @@ export const GQL_ERROR_CODES = [
   /** That permission is already live on that role (M13). */
   'PERMISSION_ALREADY_GRANTED',
   /**
+   * A permission over something nothing enforces. The people surface offers
+   * only what is enforced, so reaching this means the app is running ahead of
+   * the service — and it must read as "not built yet", never as an outage.
+   */
+  'GRANT_NOT_ENFORCED',
+  /**
    * A verification code was refused — one answer for unknown, expired, spent,
    * revoked and attempt-exhausted, by design (M14). Kept apart from
    * INVALID_CREDENTIALS because that token means "email and password" on the

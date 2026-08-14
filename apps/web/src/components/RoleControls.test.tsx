@@ -209,7 +209,41 @@ describe('granting a permission', () => {
     expect(
       screen.queryByRole('button', { name: 'Allow: Your estate contacts' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Allow: Your assets' })).toBeInTheDocument();
+  });
+
+  it('offers ONLY what the platform enforces — no button that confers nothing', async () => {
+    // The finding. Three buttons used to sit here and one of them worked:
+    // profile's only grant reader filters `contact`/`read`, so "Allow: Your
+    // assets" wrote a row, listed it back as an allowance, audited it, and
+    // conferred nothing. The service refuses those pairs now; a button that
+    // reaches a refusal is the M12 rule broken, and one that reaches a silent
+    // no-op is worse.
+    mount([EXECUTOR], []);
+    expect(
+      await screen.findByRole('button', { name: 'Allow: Your estate contacts' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow: Your assets' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow: Your documents' })).not.toBeInTheDocument();
+  });
+
+  it('says what is NOT shareable, rather than quietly not mentioning it', async () => {
+    // Silence would leave the same wrong belief the buttons created. Both
+    // omitted resources are named, so nobody concludes from an absence.
+    mount([EXECUTOR], []);
+    const note = await screen.findByText(/are not shareable yet/);
+    expect(note.textContent).toContain('assets');
+    expect(note.textContent).toContain('documents');
+    expect(note.textContent).toMatch(/only thing a role can be allowed to read/);
+  });
+
+  it('still renders — and can withdraw — a grant written before the vocabulary closed', async () => {
+    // Rows predating the refusal are inert, and an owner must be able to SEE
+    // and remove one. Dropping the label with the button would render it as a
+    // bare token; hiding the row would strand it.
+    const legacy = { ...CONTACT_GRANT, id: 'g-legacy', resource: 'asset', action: 'read' };
+    mount([EXECUTOR], [legacy]);
+    expect(await screen.findByText(/Your assets — Read/)).toBeInTheDocument();
+    expect(within(heldRoles()).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
   });
 });
 
@@ -391,7 +425,7 @@ describe('the retry outcome is reported, not guessed', () => {
       GrantRolePermission: () => graphqlError('INVALID_REQUEST'),
     });
     await screen.findByText(/Without a permission here/);
-    fireEvent.click(screen.getByRole('button', { name: 'Allow: Your assets' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow: Your estate contacts' }));
     expect(await screen.findByText(/wasn’t right/)).toBeInTheDocument();
     expect(opNames(requests).filter((n) => n === 'GrantRolePermission')).toHaveLength(1);
     expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
