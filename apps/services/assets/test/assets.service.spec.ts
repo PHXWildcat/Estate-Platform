@@ -6,22 +6,26 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
+import type { SettlementStageAuthority, StageAccessAuthority } from '@estate/settlement-client';
 import { AssetsService, viewField } from '../src/assets.service';
 import { AssetsAuthz } from '../src/authz.service';
+import type { FieldCipher } from '../src/field-cipher';
 import { buildCipher, fakeDb, FakeBens, FakeLedger, FakeViews, noopEvents } from './support';
 
 const OWNER = randomUUID();
 const STRANGER = randomUUID();
 
-function build(): {
+function build(options?: { settlement?: SettlementStageAuthority }): {
   service: AssetsService;
   ledger: FakeLedger;
   views: FakeViews;
   bens: FakeBens;
+  cipher: FieldCipher;
 } {
   const ledger = new FakeLedger();
   const views = new FakeViews();
   const bens = new FakeBens();
+  const cipher = buildCipher();
   // The fakes are structurally compatible with the repo classes (stateless,
   // public-method-only), so no casts are needed.
   const service = new AssetsService(
@@ -29,14 +33,16 @@ function build(): {
     ledger,
     views,
     bens,
-    buildCipher(),
+    cipher,
     new AssetsAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
     noopEvents,
     // Settlement refuses by default: these suites cover the OWNER paths, and a
     // refusing gate keeps the executor route from accidentally passing here.
-    { checkStageAccess: () => Promise.resolve({ allowed: false as const }) },
+    options?.settlement ?? {
+      checkStageAccess: () => Promise.resolve({ allowed: false as const }),
+    },
   );
-  return { service, ledger, views, bens };
+  return { service, ledger, views, bens, cipher };
 }
 
 describe('AssetsService commands', () => {
@@ -96,14 +102,73 @@ describe('AssetsService commands', () => {
     expect(history[0]!.payload.type).toBe('AssetCreated');
   });
 
-  it('denies non-owners (deny-by-default PEP)', async () => {
+  it('denies non-owners with the SAME 404 a missing asset gets (no existence oracle)', async () => {
     const { service } = build();
     const { assetId } = await service.createAsset(OWNER, { category: 'art', title: 'Painting' });
-    await expect(service.getAsset(STRANGER, assetId)).rejects.toThrow(ForbiddenException);
+    // Deny-by-default PEP still decides; the ANSWER is the missing-row 404,
+    // so a guessed id that names a real asset is indistinguishable from one
+    // that names nothing (assertCanOrNotFound).
+    await expect(service.getAsset(STRANGER, assetId)).rejects.toThrow(NotFoundException);
     await expect(service.updateDetails(STRANGER, assetId, { title: 'Mine now' })).rejects.toThrow(
-      ForbiddenException,
+      NotFoundException,
     );
+    await expect(service.getHistory(STRANGER, assetId)).rejects.toThrow(NotFoundException);
+    await expect(service.getBeneficiaries(STRANGER, assetId)).rejects.toThrow(NotFoundException);
     expect(await service.listAssets(STRANGER)).toEqual([]);
+  });
+
+  it('the list decrypts EXACTLY est_value and carries no detail fields', async () => {
+    const { service, cipher } = build();
+    await service.createAsset(OWNER, {
+      category: 'real_estate',
+      title: 'Lake house',
+      estValue: '850000.00',
+      valuationAsOf: '2026-07-01',
+      valuationSource: 'appraisal',
+      costBasis: '400000.00',
+      location: 'safe behind the painting',
+      notes: 'combination is 12-34-56',
+    });
+    const decryptSpy = jest.spyOn(cipher, 'decrypt');
+    const list = await service.listAssets(OWNER);
+    expect(list).toHaveLength(1);
+    expect(list[0]!.estValue).toBe('850000.00');
+    // The wire shape has NO keys for the detail fields — not null values,
+    // absent keys (AssetSummaryDto is deliberately not Omit<AssetDto,…>).
+    expect(list[0]).not.toHaveProperty('costBasis');
+    expect(list[0]).not.toHaveProperty('location');
+    expect(list[0]).not.toHaveProperty('notes');
+    // Every decrypt the list performed was an est_value decrypt: each other
+    // ciphertext field would be one audited crypto.field.decrypted PER ROW
+    // on the hottest read (docs/03 §4 TB4 — the M18 decrypt-rate baseline).
+    const fields = decryptSpy.mock.calls.map(([input]) => input.field);
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      expect(field).toMatch(/\.est_value$/);
+    }
+    // Control: the DETAIL read still decrypts the full row.
+    decryptSpy.mockClear();
+    const dto = await service.getAsset(OWNER, list[0]!.assetId);
+    expect(dto.notes).toBe('combination is 12-34-56');
+    expect(dto.costBasis).toBe('400000.00');
+    decryptSpy.mockRestore();
+  });
+
+  it('getHistory resolves the owner DEK once, not once per event', async () => {
+    const { service, cipher } = build();
+    const { assetId } = await service.createAsset(OWNER, { category: 'cash', title: 'Checking' });
+    await service.recordValuation(OWNER, assetId, {
+      estValue: '12000.00',
+      valuationAsOf: '2026-07-20',
+      valuationSource: 'owner_estimate',
+    });
+    await service.updateDetails(OWNER, assetId, { inTrust: true });
+    const dekSpy = jest.spyOn(cipher, 'getOrCreateDek');
+    const history = await service.getHistory(OWNER, assetId);
+    expect(history).toHaveLength(3);
+    // Three events, one owner, one DEK lookup for the whole request.
+    expect(dekSpy).toHaveBeenCalledTimes(1);
+    dekSpy.mockRestore();
   });
 
   it('enforces optimistic concurrency via If-Match', async () => {
@@ -184,6 +249,79 @@ describe('AssetsService commands', () => {
   });
 });
 
+describe('AssetsService executor estate reads (docs/03 §5.1 control 5)', () => {
+  const EXECUTOR = randomUUID();
+  const CASE_ID = randomUUID();
+
+  function buildWithGate(): {
+    service: AssetsService;
+    gate: { answer: StageAccessAuthority; calls: Array<Record<string, string>> };
+  } {
+    const gate = {
+      answer: { allowed: false } as StageAccessAuthority,
+      calls: [] as Array<Record<string, string>>,
+      checkStageAccess(input: {
+        bearerToken: string;
+        ownerUserId: string;
+        stage: string;
+      }): Promise<StageAccessAuthority> {
+        gate.calls.push({ ...input });
+        return Promise.resolve(gate.answer);
+      },
+    };
+    const settlement: SettlementStageAuthority = gate;
+    const { service } = build({ settlement });
+    return { service, gate };
+  }
+
+  it('refuses with a uniform 403 when settlement grants nothing', async () => {
+    const { service, gate } = buildWithGate();
+    await expect(service.listEstateAssets(EXECUTOR, 'bearer-token', OWNER)).rejects.toThrow(
+      ForbiddenException,
+    );
+    // The refusal asked settlement exactly the staged-access question, on the
+    // CALLER's own bearer — assets never invents authority of its own.
+    expect(gate.calls).toEqual([
+      { bearerToken: 'bearer-token', ownerUserId: OWNER, stage: 'inventory' },
+    ]);
+  });
+
+  it('serves the FULL inventory on an approved inventory stage', async () => {
+    const { service, gate } = buildWithGate();
+    await service.createAsset(OWNER, {
+      category: 'real_estate',
+      title: 'Lake house',
+      estValue: '850000.00',
+      valuationAsOf: '2026-07-01',
+      valuationSource: 'appraisal',
+      location: 'safe behind the painting',
+      notes: 'deed in safe',
+    });
+    gate.answer = { allowed: true, caseId: CASE_ID };
+    const inventory = await service.listEstateAssets(EXECUTOR, 'executor-bearer', OWNER);
+    expect(inventory).toHaveLength(1);
+    // Full DTOs, deliberately unlike the owner LIST: inventory is the
+    // executor's ONLY read surface (there is no executor detail route), and
+    // §5.1's inventory rung exists so an executor can FIND assets — every
+    // decrypt is executor-attributed and audited.
+    expect(inventory[0]!.estValue).toBe('850000.00');
+    expect(inventory[0]!.location).toBe('safe behind the painting');
+    expect(inventory[0]!.notes).toBe('deed in safe');
+  });
+
+  it('an approved stage for one estate grants nothing about another', async () => {
+    const { service, gate } = buildWithGate();
+    const otherOwner = randomUUID();
+    await service.createAsset(otherOwner, { category: 'cash', title: 'Checking' });
+    gate.answer = { allowed: true, caseId: CASE_ID };
+    // The grant is scoped by the ownerUserId settlement was ASKED about; the
+    // service reads exactly that owner's rows and no one else's.
+    const inventory = await service.listEstateAssets(EXECUTOR, 'executor-bearer', OWNER);
+    expect(inventory).toEqual([]);
+    expect(gate.calls[0]!['ownerUserId']).toBe(OWNER);
+  });
+});
+
 describe('AssetsService queries', () => {
   it('answers "what did the estate hold on date X" by ledger replay', async () => {
     const { service, ledger } = build();
@@ -206,6 +344,9 @@ describe('AssetsService queries', () => {
     const feb = await service.listAssets(OWNER, '2026-02-01');
     expect(feb.map((a) => a.title)).toEqual(['Coins']);
     expect(feb[0]!.estValue).toBeNull();
+    // The as-of path shares the LIST wire shape (no detail fields), even
+    // though the replay necessarily decrypted whole payloads to fold.
+    expect(feb[0]).not.toHaveProperty('notes');
     // After valuation, before the truck.
     const april = await service.listAssets(OWNER, '2026-04-01');
     expect(april[0]!.estValue).toBe('9000.00');

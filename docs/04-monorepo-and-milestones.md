@@ -4600,6 +4600,130 @@ than-the-window loss, the in-process-compromise boundary on
 "a complete record of released plaintext", and the production-profile
 coverage gap.
 
+### M19 — The assets surface (approved 2026-08-13; PR1 in progress)
+
+The runner-up of the 2026-08-12 selection, now chosen. The assets service is
+the OLDEST domain service in the repo (M3), and M19 closes its zero-callers
+gap the way M13 closed profile's: **order is the point** — the shipped service
+was adversarially read before any UI was designed, and PR1 hardens what that
+read found before PR2 puts a surface on it.
+
+**Discovery corrected the selection sweep in both directions.** The sweep's
+"`CreateAssetInput` carries no `inTrust`" was true of the BFF's GraphQL input
+and FALSE of the service: `CreateAssetSchema` has accepted `inTrust`,
+`fundingStatus`, `ownershipPct`, `costBasis`, `location`, `notes` and the
+valuation triple since M3, and the sweep's route list missed
+`PATCH /v1/assets/:assetId` entirely — full edit semantics (null clears,
+absent leaves unchanged: the M13 profile-SSN rule, already right in M3-era
+code). So the milestone needs NO service DDL and no new event types; the gap
+is 13 routes against a BFF client with three methods, an `Asset` GraphQL type
+with 8 of 13 fields, one `createAsset` mutation taking five flat args, and no
+`[assetId]` route in the web app.
+
+**What the pre-read found (PR1's payload):**
+
+1. **`GET /v1/estates/:ownerUserId/assets` had never executed — anywhere.**
+   The M7 PR2 executor-inventory route (docs/03 §5.1 control 5, the first
+   staged grant) had zero product callers, zero e2e references, and zero
+   int-spec coverage: an entire authorization path — settlement staged-grant
+   check, uniform 403, `asset.estate.viewed` audit — that had never once run.
+   PR1 gives it its first tests at both layers (unit over a controllable
+   `SettlementStageAuthority` double; int against real Postgres asserting the
+   executor-attributed decrypts, the `onBehalfOf` audit event, and that the
+   refused path asks settlement the exact staged question on the caller's own
+   bearer). The seam's OTHER side was already proven — settlement's
+   stage-access authority in its own suites, the client against a mocked
+   transport — so the int layer now covers the seam from both ends. A
+   full-stack executor journey is deliberately absent: the stack cannot lapse
+   a real 5..60-day waiting period, and the executor surface is its own
+   milestone (the fence records the route as exempt for exactly that reason).
+2. **The 404-vs-403 oracle was live on every asset-scoped path.** Cedar's
+   deny threw a generic 403 while a missing row threw 404, so a cross-owner
+   probe on getAsset/getHistory/getBeneficiaries or any command distinguished
+   "exists, not yours" from "does not exist". Closed service-side
+   (`assertCanOrNotFound`): a deny now answers the byte-identical missing-row
+   404, the M10 assistant-PEP rule and the M13 profile predicate applied to
+   the third service. The executor route's 403 deliberately stays — its param
+   is an owner id the caller already knows, not a guessable resource id — and
+   documents' own 404-oracle remains open as the M4 review recorded it.
+3. **The owner list decrypted FOUR ciphertext fields per row** (est_value +
+   cost_basis + location + notes) — 80 audited `crypto.field.decrypted`
+   events for a 20-asset list that renders none of the last three. The list
+   is now `AssetSummaryDto` (deliberately an explicit interface, not
+   `Omit<AssetDto,…>`, so a field added to the full DTO cannot join the list
+   wire shape silently) and decrypts EXACTLY `est_value` — one decrypt per
+   row, proven at both layers by decrypt-audit assertions. `getAsset` keeps
+   the full DTO; the executor inventory keeps full DTOs too, because it is
+   the executor's ONLY read surface (no executor detail route exists) and
+   §5.1's inventory rung exists so an executor can FIND assets. Verified
+   consumers unaffected: the BFF's list schema never read the dropped fields,
+   and the assistant's client strips them by design.
+4. Minor: `getHistory` resolved the owner's DEK once per event; hoisted to
+   once per request (pinned by a call-count case).
+
+**The route↔consumer fence** (`packages/auth-guard/test/route-consumers.spec.ts`)
+ships repo-wide in PR1, because the motivating cases sit OUTSIDE assets:
+zero-callers is the repo's most-repeated defect class (M4 legal hold, M6
+`wrapped_private_key`, M7's executor read above, settlement's 25
+operator/reporter routes) and a fence scoped to one service would have missed
+every one of them. Design, from the established precedents:
+
+- **Derived, never listed** (the credential-graph technique): every
+  controller route in `apps/services/*` is scanned out of comment-stripped
+  source; routes behind a credential-graph guard CLASS are excluded, because
+  the graph's `opens` rule already fences those — one fence per fact. The
+  guard classification reads class-level `@UseGuards` only, matching how
+  every internal controller is written; a handler-level credential guard
+  would surface as a route DEMANDING a consumer entry, the failure direction
+  that asks a human rather than hiding a route.
+- **`ROUTE_CONSUMERS` is declared data, checked BOTH directions** (the
+  declared-importers shape): every non-internal route needs exactly one
+  entry; a stale entry (route gone) is red; every consumer entry names a
+  file that must EXIST and CONTAIN a URL template addressing the route
+  (interpolations collapsed to wildcards, matched segment-wise — which is
+  how `/v1/analysis/${name}` covers four static analysis routes); every
+  exemption carries a substantive grouped reason. Vault routes are consumed
+  through the M15 edge, so `/api/…` templates are matched under the edge's
+  rewrites and a dedicated case asserts each rewrite pair exists in
+  `server.ts` source — a rewritten match is never a free-text claim.
+- **Stated limits:** matching is PATH-based (two methods sharing a path are
+  covered by one literal — parsing per-call transport options is a different
+  fence), and e2e/int suites deliberately do NOT count as consumers, since a
+  route only tests can reach is exactly what the fence exists to surface.
+- **Mutation-tested six ways**, each red on the assertion that names it: a
+  new undeclared route; a registry entry pointing at a file that does not
+  address its route; a phantom consumer file; a deleted route leaving a
+  stale entry; an internal controller losing its credential guard (the
+  route floods into the fence demanding an entry — fail-safe); and a
+  consumer literal renamed out from under its entry.
+
+**The fence's first run found a finding beyond assets:** M17 shipped six
+account-recovery/address-change routes (`POST /v1/auth/password`, the two
+reset routes, the three email-change routes) with NO product consumer — the
+milestone that closed "identity has no password reset" left the ceremonies
+unreachable from the product. Recorded as `EXEMPT_RECOVERY_SURFACE` with the
+pending frontend slice named; the settlement reporter/operator split, the
+Plaid UI deferral, and the external webhook each carry their own reasoned
+exemption group. Assets' own write surface is exempt as "pending M19
+PR2/PR3", and those PRs flip the exemptions to consumer entries in the same
+change as the clients — the M9 PR2 holders-flip pattern, so the milestone's
+story is told in the fence's diff.
+
+**Remaining PRs:** PR2 — the BFF's expanded client + the web read/write
+surface (full `Asset` type, `AssetHistoryEntry`, a real `CreateAssetInput`
+input object, browser-minted `clientEventId` idempotency, `expectedVersion`
+→ If-Match with a `VERSION_CONFLICT` re-read-never-blind-retry UI, the
+`/assets/[assetId]` page, retired-asset visibility via a `status` field +
+`includeRetired`, APQ manifest regeneration + BOTH hand-copies, and a
+decrypt-budget measurement with recalibration of the provisional
+`asset_event/user` bound per docs/03 §6q). PR3 — the step-up
+beneficiary-designation ceremony (BFF composes contact names via the
+existing profile client on the caller's own bearer; dangling contacts render
+honestly; StepUpPrompt reused with the discriminated-union retry binding;
+copy carries both truths: a designation is not access, and no beneficiary
+can see anything yet — `namedBeneficiaries` is structurally empty until the
+contact-link projection lands). PR4 — the adversarial security review.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
@@ -4715,11 +4839,10 @@ That is genuine and unusual user value, and it is why this is a re-sequence.
 survives, since the 2026-08-12 selection found that the largest remaining gaps
 are SURFACES over shipped backends rather than new domains:
 
-- *The assets surface.* 13 owner-facing routes against a BFF client with three
-  methods; no `[assetId]` route; `CreateAssetInput` carries no `inTrust`, so the
-  in-trust badge reads zero for any estate created through the product, and the
-  readiness page advises users about designations they cannot create. Carries
-  the route↔consumer fence as its PR1.
+- *The assets surface.* Approved 2026-08-13 as M19 (section above), carrying
+  the route↔consumer fence as its PR1. (The sweep's "`CreateAssetInput`
+  carries no `inTrust`" was true only of the BFF layer — corrected in the
+  M19 section.)
 - *The settlement surface.* The largest zero-callers gap by route count (28
   across three controllers, no client in the BFF), and `ContactLinkControls`
   already tells owners a linked contact can report a death — a promise with no

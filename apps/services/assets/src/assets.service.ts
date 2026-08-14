@@ -64,6 +64,32 @@ export interface AssetDto {
   version: string;
 }
 
+/**
+ * The LIST projection of an asset — everything `AssetDto` carries except
+ * `costBasis`, `location` and `notes`. Deliberately an explicit interface
+ * rather than `Omit<AssetDto, …>`: a field added to `AssetDto` must not join
+ * the list wire shape silently, because every ciphertext field here is one
+ * audited `crypto.field.decrypted` PER ROW on the hottest read in the service
+ * (docs/03 §4 TB4 — the decrypt-rate baseline M18 now enforces). The list
+ * decrypts exactly `est_value`; detail-page fields cost their decrypts only
+ * on `GET /v1/assets/:assetId`. Verified consumers as of M19: the BFF's list
+ * schema never read the dropped fields, and the assistant's client strips
+ * them by design (its schema IS its narrowing).
+ */
+export interface AssetSummaryDto {
+  assetId: string;
+  category: string;
+  title: string;
+  estValue: string | null;
+  valuationAsOf: string | null;
+  valuationSource: string | null;
+  ownershipPct: number;
+  inTrust: boolean;
+  fundingStatus: string | null;
+  /** Optimistic-concurrency token: the asset's latest ledger seq. */
+  version: string;
+}
+
 /** Thin command acknowledgement (CQRS: reads come from the queries). */
 export interface CommandResult {
   assetId: string;
@@ -389,27 +415,31 @@ export class AssetsService {
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    this.authz.assertCan(actor, 'read', assetResource(assetId, row.user_id));
+    // A deny is the same 404 as a missing row: "not yours" must not confirm
+    // that the guessed id exists (assertCanOrNotFound's contract).
+    this.authz.assertCanOrNotFound(actor, 'read', assetResource(assetId, row.user_id));
     const version = (await this.ledger.latestSeq(this.db, assetId)) ?? '0';
     return this.toDto(row, actor, 'asset_read', version);
   }
 
-  async listAssets(actor: string, asOf?: string): Promise<AssetDto[]> {
+  async listAssets(actor: string, asOf?: string): Promise<AssetSummaryDto[]> {
     if (asOf) {
       const replayed = await this.replayForUser(actor, endOfDayUtc(asOf), 'asset_list_asof');
-      return replayed.map((r) => plainStateToDto(r.state, r.version));
+      return replayed.map((r) => plainStateToSummary(r.state, r.version));
     }
     const rows = await this.views.listLiveByUser(this.db, actor);
     const versions = await this.ledger.latestSeqByAssets(
       this.db,
       rows.map((r) => r.asset_id),
     );
-    const dtos: AssetDto[] = [];
+    const dtos: AssetSummaryDto[] = [];
     for (const row of rows) {
       if (!this.authz.can(actor, 'read', assetResource(row.asset_id, row.user_id))) {
         continue; // owner-only in M3; defensive per-item check like profile
       }
-      dtos.push(await this.toDto(row, actor, 'asset_list', versions.get(row.asset_id) ?? '0'));
+      dtos.push(
+        await this.toSummaryDto(row, actor, 'asset_list', versions.get(row.asset_id) ?? '0'),
+      );
     }
     return dtos;
   }
@@ -420,11 +450,15 @@ export class AssetsService {
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    this.authz.assertCan(actor, 'read', assetResource(assetId, row.user_id));
+    // Same uniform 404 as getAsset: a deny must not confirm the id is real.
+    this.authz.assertCanOrNotFound(actor, 'read', assetResource(assetId, row.user_id));
     const events = await this.ledger.listByAsset(this.db, assetId);
+    // One DEK resolution for the whole request — every event of one asset is
+    // the same owner's, so per-event lookups would be N identical reads.
+    const dekId = await this.dekIdForOwner(row.user_id);
     const entries: HistoryEntryDto[] = [];
     for (const evt of events) {
-      const payload = await this.decryptPayload(evt, actor, 'asset_history');
+      const payload = await this.decryptPayload(evt, dekId, actor, 'asset_history');
       entries.push({
         version: evt.seq,
         eventId: evt.event_id,
@@ -491,7 +525,8 @@ export class AssetsService {
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    this.authz.assertCan(actor, 'read', assetResource(assetId, row.user_id));
+    // Same uniform 404 as getAsset: a deny must not confirm the id is real.
+    this.authz.assertCanOrNotFound(actor, 'read', assetResource(assetId, row.user_id));
     const live = await this.beneficiaries.listLive(this.db, assetId);
     const states = live.map((r) => ({
       contactId: r.contact_id,
@@ -606,7 +641,13 @@ export class AssetsService {
             // Retired assets refuse further commands; their history remains.
             throw new NotFoundException({ error: 'not_found' });
           }
-          this.authz.assertCan(spec.actor, 'update', assetResource(spec.assetId, row.user_id));
+          // A deny answers the missing-row 404, not a 403: a command against a
+          // guessed id must not confirm the id names someone's real asset.
+          this.authz.assertCanOrNotFound(
+            spec.actor,
+            'update',
+            assetResource(spec.assetId, row.user_id),
+          );
         } else if (row) {
           // Fresh random UUID collided with an existing asset — treat as a
           // conflict rather than corrupting another asset's stream.
@@ -748,12 +789,13 @@ export class AssetsService {
 
   private async decryptPayload(
     evt: LedgerRow,
+    dekId: string,
     actorId: string,
     purpose: string,
   ): Promise<AssetEventPayload> {
     const json = await this.cipher.decrypt({
       ownerUserId: evt.user_id,
-      dekId: await this.dekIdForEvent(evt),
+      dekId,
       field: payloadField(evt.event_id),
       ciphertext: evt.payload_ct,
       actorId,
@@ -766,10 +808,12 @@ export class AssetsService {
    * Ledger rows do not carry a dek_id column (docs/02 §3 DDL); payloads are
    * encrypted under the owner's active DEK at append time. With at most one
    * active DEK per user (DB-enforced here) that is the owner's current DEK;
-   * after a crypto-shred the payloads are unrecoverable by design.
+   * after a crypto-shred the payloads are unrecoverable by design. Resolved
+   * ONCE per request — every event a history or replay walks belongs to one
+   * owner, so a per-event lookup would be N identical reads.
    */
-  private async dekIdForEvent(evt: LedgerRow): Promise<string> {
-    return this.cipher.getOrCreateDek(evt.user_id);
+  private async dekIdForOwner(ownerUserId: string): Promise<string> {
+    return this.cipher.getOrCreateDek(ownerUserId);
   }
 
   /** Replay an owner's ledger to plaintext states (as-of queries). */
@@ -779,6 +823,7 @@ export class AssetsService {
     purpose: string,
   ): Promise<Array<{ state: AssetState<string>; version: string }>> {
     const rows = await this.ledger.listByUser(this.db, actor, upTo);
+    const dekId = rows.length > 0 ? await this.dekIdForOwner(actor) : '';
     const results: Array<{ state: AssetState<string>; version: string }> = [];
     let current: AssetState<string> | null = null;
     let lastSeq = '0';
@@ -795,7 +840,7 @@ export class AssetsService {
         flush();
         currentAssetId = row.asset_id;
       }
-      const payload = await this.decryptPayload(row, actor, purpose);
+      const payload = await this.decryptPayload(row, dekId, actor, purpose);
       current = applyAssetEvent<string>(
         current,
         { assetId: row.asset_id, userId: row.user_id, occurredAt: row.occurred_at, payload },
@@ -838,6 +883,38 @@ export class AssetsService {
       version,
     };
   }
+
+  /**
+   * The list projection: decrypts EXACTLY `est_value`. costBasis/location/
+   * notes stay ciphertext — each would be one audited decrypt per row on the
+   * hottest read (see AssetSummaryDto). `getAsset` serves the full DTO.
+   */
+  private async toSummaryDto(
+    row: AssetViewRow,
+    actor: string,
+    purpose: string,
+    version: string,
+  ): Promise<AssetSummaryDto> {
+    return {
+      assetId: row.asset_id,
+      category: row.category,
+      title: row.title,
+      estValue: await this.cipher.decrypt({
+        ownerUserId: row.user_id,
+        dekId: row.dek_id,
+        field: viewField(row.asset_id, 'est_value'),
+        ciphertext: row.est_value_ct,
+        actorId: actor,
+        purpose,
+      }),
+      valuationAsOf: row.valuation_as_of,
+      valuationSource: row.valuation_source,
+      ownershipPct: sqlToPct(row.ownership_pct),
+      inTrust: row.in_trust,
+      fundingStatus: row.funding_status,
+      version,
+    };
+  }
 }
 
 /** Convert a projection row back into reducer state (ciphertext-valued). */
@@ -864,7 +941,12 @@ function rowToState(row: AssetViewRow, activeDekId: string): AssetState<Buffer |
   };
 }
 
-function plainStateToDto(state: AssetState<string>, version: string): AssetDto {
+/**
+ * As-of list entries share the LIST wire shape. The replay has already
+ * decrypted every payload (that is what a temporal query costs), but the
+ * route's response type must not fork on whether `asOf` was passed.
+ */
+function plainStateToSummary(state: AssetState<string>, version: string): AssetSummaryDto {
   return {
     assetId: state.assetId,
     category: state.category,
@@ -873,9 +955,6 @@ function plainStateToDto(state: AssetState<string>, version: string): AssetDto {
     valuationAsOf: state.valuationAsOf,
     valuationSource: state.valuationSource,
     ownershipPct: state.ownershipPct,
-    costBasis: state.costBasis,
-    location: state.location,
-    notes: state.notes,
     inTrust: state.inTrust,
     fundingStatus: state.fundingStatus,
     version,

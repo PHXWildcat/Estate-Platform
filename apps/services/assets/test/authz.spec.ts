@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { AssetsAuthz, assetResource } from '../src/authz.service';
 
@@ -47,6 +47,20 @@ describe('AssetsAuthz (Cedar PEP, deny by default)', () => {
       fail('expected ForbiddenException');
     } catch (err) {
       expect((err as ForbiddenException).getResponse()).toEqual({ error: 'forbidden' });
+    }
+  });
+
+  it('assertCanOrNotFound answers a deny with the missing-row 404, allow passes', () => {
+    // The oracle-closing variant: on asset-id-scoped paths, "exists but not
+    // yours" must be byte-identical to "does not exist" (M19 PR1).
+    const resource = assetResource(ASSET, OWNER);
+    expect(() => authz.assertCanOrNotFound(OWNER, 'read', resource)).not.toThrow();
+    try {
+      authz.assertCanOrNotFound(STRANGER, 'read', resource);
+      fail('expected NotFoundException');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect((err as NotFoundException).getResponse()).toEqual({ error: 'not_found' });
     }
   });
 });

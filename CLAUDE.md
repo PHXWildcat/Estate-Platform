@@ -5722,3 +5722,63 @@ deviating from them, stop and propose the change with rationale — do not silen
   minutes — in-process compromise decrypts with no event and no KMS call,
   which is the enforcement chokepoint's job, not this detector's; and the
   false-positive gate runs in the development profile only.
+- 2026-08-13 — M19 IS THE ASSETS SURFACE (approved; the 2026-08-12 runner-up
+  chosen): four PRs — PR1 hardens the shipped M3-era service + the repo-wide
+  route↔consumer fence (no new surface, the M13 "order is the point"
+  precedent), PR2 the BFF/web read+write surface, PR3 the beneficiary
+  ceremony, PR4 the review. Scope forks decided: the fence is REPO-WIDE
+  owner-facing (its motivating cases — settlement's 25, M17's recovery
+  routes — sit outside assets), and PR2 makes RETIRED assets visible
+  (status + includeRetired + getAsset serves retired; a sold house must not
+  vanish from a product whose own comment says "asset history is the
+  product"). Discovery corrected the selection sweep: `CreateAssetSchema`
+  has accepted the full input set since M3 and `PATCH /v1/assets/:assetId`
+  already does null-clears edit semantics — the sweep's route list missed
+  it — so M19 needs NO service DDL; the whole gap is BFF/GraphQL/web. The
+  executor estate surface, Plaid UI, temporal/asOf UI, pagination and §5.5
+  beneficiary visibility are named OUT.
+- 2026-08-13 — M19 PR1 hardening, three fixes and a first. (1) THE M7
+  EXECUTOR-INVENTORY ROUTE HAD NEVER EXECUTED: `GET /v1/estates/:ownerUserId/
+  assets` (docs/03 §5.1 control 5) shipped in M7 PR2 with zero callers, zero
+  e2e references and zero int coverage — an entire authorization path no test
+  had ever run; it now has both layers (a controllable StageAuthority double;
+  int cases asserting the staged question is asked on the CALLER's own
+  bearer, the refused path's uniform 403, executor-attributed decrypts and
+  the onBehalfOf audit event), with the full-stack journey deliberately
+  absent — the stack cannot lapse a real waiting period, and the seam's
+  settlement side already had its own suites. (2) UNIFORM 404 ON CROSS-OWNER
+  PROBES: Cedar's deny answered 403 where a missing row answered 404, an
+  existence oracle on every asset-scoped path; `assertCanOrNotFound` now
+  answers the byte-identical missing-row 404 (the M10 PEP / M13 profile rule,
+  third service). The executor route's 403 stays — its param is an owner id
+  the caller already knows. Documents' own oracle stays open as recorded.
+  (3) THE LIST DECRYPTED FOUR FIELDS PER ROW for a page that renders one:
+  `AssetSummaryDto` (an explicit interface, deliberately NOT `Omit` — a field
+  added to the full DTO must not join the hottest wire shape silently)
+  decrypts exactly `est_value`; detail keeps the full DTO, and the executor
+  inventory KEEPS full DTOs because it is the executor's only read surface.
+  Both consumers verified unaffected (the BFF never read the dropped fields;
+  the assistant's schema strips them by design). All fixes mutation-tested;
+  the harness refuses no-op mutations and reads only the jest summary line.
+- 2026-08-13 — THE ROUTE↔CONSUMER FENCE (M19 PR1,
+  `packages/auth-guard/test/route-consumers.spec.ts`): zero-callers made
+  data, the credential-graph shape applied to the product surface. Routes are
+  DERIVED from comment-stripped controller source across all nine services;
+  routes behind credential-graph guard CLASSES are excluded (one fence per
+  fact — `opens` already covers them, and a handler-level credential guard
+  would surface as a route DEMANDING an entry, the fail-safe direction);
+  `ROUTE_CONSUMERS` maps each of the 150 non-internal routes to consumer
+  FILES verified to contain a URL template addressing the route
+  (interpolations collapsed to wildcards, matched segment-wise, vault's
+  `/api/…` templates matched under edge rewrites that are themselves
+  asserted against server.ts source) or to a grouped substantive exemption.
+  Checked in BOTH directions with anti-vacuity floors; mutation-tested six
+  ways, all red. STATED LIMITS: path-based matching (a literal covers every
+  method on its path), and tests are deliberately not consumers. FIRST-RUN
+  FINDING: M17's six recovery/address-change routes (password, reset ×2,
+  email-change ×3) have NO product consumer — the milestone that closed
+  "identity has no password reset" left the ceremonies unreachable from the
+  product; recorded as EXEMPT_RECOVERY_SURFACE naming the pending frontend
+  slice. Assets' own write surface is exempt "pending M19 PR2/PR3", and
+  those PRs flip the exemptions to consumers in the same change as the
+  clients — the M9 PR2 holders-flip pattern.

@@ -13,6 +13,7 @@ import {
 import {
   AssetsService,
   type AssetDto,
+  type AssetSummaryDto,
   type CommandResult,
   type HistoryEntryDto,
   type NetWorthDto,
@@ -65,7 +66,7 @@ export class AssetsController {
 
   @Get('assets')
   @HttpCode(200)
-  list(@Req() req: CallerRequest, @Query('asOf') asOf?: string): Promise<AssetDto[]> {
+  list(@Req() req: CallerRequest, @Query('asOf') asOf?: string): Promise<AssetSummaryDto[]> {
     return this.assets.listAssets(requireCaller(req).userId, parse(AsOfQuerySchema, asOf));
   }
 
