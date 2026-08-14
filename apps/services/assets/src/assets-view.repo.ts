@@ -74,6 +74,15 @@ export class AssetsViewRepo {
     );
   }
 
+  /** All of one owner's rows INCLUDING retired (the list's includeRetired). */
+  async listByUser(q: Queryable, userId: string): Promise<AssetViewRow[]> {
+    return q.query<AssetViewRow>(
+      `SELECT ${COLUMNS} FROM assets_view WHERE user_id = $1
+        ORDER BY title ASC, asset_id ASC`,
+      [userId],
+    );
+  }
+
   /** All rows including retired — the rebuild diff's live side. */
   async listAll(q: Queryable): Promise<AssetViewRow[]> {
     return q.query<AssetViewRow>(`SELECT ${COLUMNS} FROM assets_view ORDER BY asset_id ASC`);

@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type AssetInfo, type NetWorthInfo } from '../graphql/client';
+import { commandEventId, type CommandId } from '../lib/command-id';
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
 import { FormField } from './FormField';
@@ -49,6 +50,13 @@ function categoryLabel(category: string): string {
   return CATEGORY_LABELS[category] ?? category;
 }
 
+export const FUNDING_LABELS: Record<string, string> = {
+  unfunded: 'Not yet in trust',
+  in_progress: 'Retitling under way',
+  funded: 'Funded to trust',
+  na: 'Trust funding N/A',
+};
+
 /** Uppercase micro-label above a stat figure. */
 const STAT_LABEL = 'text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-muted';
 
@@ -63,15 +71,37 @@ export function AssetsPanel(): ReactElement {
   const [valuationAsOf, setValuationAsOf] = useState('');
   const [valuationAsOfError, setValuationAsOfError] = useState<string | null>(null);
   const [valuationSource, setValuationSource] = useState<string>('owner_estimate');
+  const [showMore, setShowMore] = useState(false);
+  const [ownershipPct, setOwnershipPct] = useState('');
+  const [ownershipError, setOwnershipError] = useState<string | null>(null);
+  const [inTrustNew, setInTrustNew] = useState(false);
+  const [fundingStatusNew, setFundingStatusNew] = useState('');
+  const [costBasis, setCostBasis] = useState('');
+  const [costBasisError, setCostBasisError] = useState<string | null>(null);
+  const [location, setLocation] = useState('');
+  const [notes, setNotes] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Idempotency: one eventId per PAYLOAD, held across retries of the same
+  // payload so a resend after a lost response is a no-op (command-id.ts).
+  const createId = useRef<CommandId | null>(null);
 
-  const load = useCallback(async (): Promise<void> => {
+  const [showRetired, setShowRetired] = useState(false);
+
+  const load = useCallback(async (includeRetired: boolean): Promise<void> => {
     const [assets, netWorth] = await Promise.all([
-      gqlRequest('Assets', {}),
+      gqlRequest('Assets', includeRetired ? { includeRetired: true } : {}),
       gqlRequest('NetWorth', {}),
     ]);
-    if (assets.ok && netWorth.ok) {
+    // SHAPE-GUARD BEFORE TRUSTING (the M11 rule, previously missing here): a
+    // BFF predating a field answers {"data":{}} with ok=true, and an empty
+    // page must read as NO DATA, never as an empty estate.
+    if (
+      assets.ok &&
+      netWorth.ok &&
+      Array.isArray(assets.data.assets) &&
+      typeof netWorth.data.netWorth?.totalValue === 'string'
+    ) {
       setState({ kind: 'ready', assets: assets.data.assets, netWorth: netWorth.data.netWorth });
       return;
     }
@@ -80,8 +110,8 @@ export function AssetsPanel(): ReactElement {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(showRetired);
+  }, [load, showRetired]);
 
   async function createAsset(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -110,26 +140,64 @@ export function AssetsPanel(): ReactElement {
     } else {
       setValuationAsOfError(null);
     }
+    const trimmedOwnership = ownershipPct.trim();
+    if (trimmedOwnership.length > 0) {
+      const pct = Number(trimmedOwnership);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        setOwnershipError('Enter a share between 0 and 100, like 50.');
+        invalid = true;
+      } else {
+        setOwnershipError(null);
+      }
+    } else {
+      setOwnershipError(null);
+    }
+    const trimmedCostBasis = costBasis.trim();
+    if (trimmedCostBasis.length > 0 && !/^\d+(\.\d{1,2})?$/.test(trimmedCostBasis)) {
+      setCostBasisError('Enter a plain amount like 12500 or 12500.50, or leave it blank.');
+      invalid = true;
+    } else {
+      setCostBasisError(null);
+    }
     if (invalid) {
       return;
     }
     setCreateBusy(true);
-    const result = await gqlRequest('CreateAsset', {
+    const trimmedLocation = location.trim();
+    const trimmedNotes = notes.trim();
+    const input = {
       category,
       title: trimmedTitle,
       ...(trimmedValue.length > 0
         ? { estValue: trimmedValue, valuationAsOf: trimmedAsOf, valuationSource }
         : {}),
+      ...(trimmedOwnership.length > 0 ? { ownershipPct: Number(trimmedOwnership) } : {}),
+      ...(inTrustNew ? { inTrust: true } : {}),
+      ...(fundingStatusNew.length > 0 ? { fundingStatus: fundingStatusNew } : {}),
+      ...(trimmedCostBasis.length > 0 ? { costBasis: trimmedCostBasis } : {}),
+      ...(trimmedLocation.length > 0 ? { location: trimmedLocation } : {}),
+      ...(trimmedNotes.length > 0 ? { notes: trimmedNotes } : {}),
+    };
+    createId.current = commandEventId(createId.current, JSON.stringify(input));
+    const result = await gqlRequest('CreateAsset', {
+      input: { ...input, clientEventId: createId.current.id },
     });
     setCreateBusy(false);
     if (!result.ok) {
       setCreateError(messageFor(result.code));
       return;
     }
+    createId.current = null;
     setTitle('');
     setEstValue('');
     setValuationAsOf('');
-    await load();
+    setOwnershipPct('');
+    setInTrustNew(false);
+    setFundingStatusNew('');
+    setCostBasis('');
+    setLocation('');
+    setNotes('');
+    await load(showRetired);
   }
 
   if (state.kind === 'loading') {
@@ -170,7 +238,10 @@ export function AssetsPanel(): ReactElement {
   }
 
   const { assets, netWorth } = state;
-  const inTrustCount = assets.filter((asset) => asset.inTrust).length;
+  // Live assets only: with "Show retired" on, a retired in-trust asset would
+  // otherwise be COUNTED beside a server total that (correctly) excludes it —
+  // a card disagreeing with itself (found by the M19 PR2 live drive).
+  const inTrustCount = assets.filter((asset) => asset.inTrust && asset.status !== 'retired').length;
   const unvaluedCount = netWorth.assetCount - netWorth.valuedAssetCount;
 
   return (
@@ -209,9 +280,21 @@ export function AssetsPanel(): ReactElement {
       </section>
 
       <section aria-labelledby="assets-heading" className="card px-5 pb-2 pt-1 sm:px-6">
-        <h2 id="assets-heading" className="sr-only">
-          Assets
-        </h2>
+        <div className="flex items-center justify-between border-b border-line py-2">
+          <h2 id="assets-heading" className={STAT_LABEL}>
+            Assets
+          </h2>
+          <label className="flex items-center gap-2 text-[0.8125rem] text-ink-muted">
+            <input
+              type="checkbox"
+              checked={showRetired}
+              onChange={(event) => {
+                setShowRetired(event.target.checked);
+              }}
+            />
+            Show retired
+          </label>
+        </div>
         {assets.length === 0 ? (
           <p className="py-4 text-sm text-ink-muted">
             Nothing recorded yet. Add your first asset below — every change is kept as a permanent,
@@ -235,9 +318,16 @@ export function AssetsPanel(): ReactElement {
                 >
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">
-                      {asset.title}
-                      {asset.inTrust ? (
+                      <Link className="hover:underline" href={`/assets/${asset.assetId}`}>
+                        {asset.title}
+                      </Link>
+                      {asset.status === 'retired' ? (
+                        <span className="chip chip-warn ml-2">Retired</span>
+                      ) : asset.inTrust ? (
                         <span className="chip chip-trust ml-2">In trust</span>
+                      ) : null}
+                      {asset.status !== 'retired' && asset.fundingStatus === 'in_progress' ? (
+                        <span className="chip ml-2">Retitling</span>
                       ) : null}
                     </p>
                     {asset.ownershipPct !== 100 ? (
@@ -354,6 +444,87 @@ export function AssetsPanel(): ReactElement {
               </div>
             </>
           ) : null}
+          {showMore ? (
+            <div className="space-y-4 border-t border-line pt-4">
+              <FormField
+                id="asset-ownership"
+                label="Ownership share % (optional)"
+                type="text"
+                inputMode="numeric"
+                hint="Leave blank for 100%. Net worth counts only your share."
+                value={ownershipPct}
+                error={ownershipError}
+                onChange={setOwnershipPct}
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={inTrustNew}
+                  onChange={(event) => {
+                    setInTrustNew(event.target.checked);
+                  }}
+                />
+                Titled in a trust
+              </label>
+              <div>
+                <label className="field-label" htmlFor="asset-funding">
+                  Trust funding status (optional)
+                </label>
+                <select
+                  id="asset-funding"
+                  className="field-input mt-1"
+                  value={fundingStatusNew}
+                  onChange={(event) => {
+                    setFundingStatusNew(event.target.value);
+                  }}
+                >
+                  <option value="">Not set</option>
+                  <option value="unfunded">{FUNDING_LABELS['unfunded']}</option>
+                  <option value="in_progress">{FUNDING_LABELS['in_progress']}</option>
+                  <option value="funded">{FUNDING_LABELS['funded']}</option>
+                  <option value="na">{FUNDING_LABELS['na']}</option>
+                </select>
+              </div>
+              <FormField
+                id="asset-cost-basis"
+                label="Cost basis (optional)"
+                type="text"
+                inputMode="numeric"
+                hint="What you paid. Stored encrypted; shown only to you."
+                value={costBasis}
+                error={costBasisError}
+                onChange={setCostBasis}
+              />
+              <FormField
+                id="asset-location"
+                label="Where to find it (optional)"
+                type="text"
+                hint="Deed drawer, safe, institution — what your executor would need. Encrypted."
+                value={location}
+                error={null}
+                onChange={setLocation}
+              />
+              <FormField
+                id="asset-notes"
+                label="Notes (optional)"
+                type="text"
+                hint="Anything else worth knowing. Encrypted."
+                value={notes}
+                error={null}
+                onChange={setNotes}
+              />
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="text-sm text-ink-muted underline"
+              onClick={() => {
+                setShowMore(true);
+              }}
+            >
+              More details (ownership, trust, cost basis, location, notes)
+            </button>
+          )}
           <FormStatus tone="error" message={createError} />
           <button type="submit" className="btn btn-primary" disabled={createBusy}>
             {createBusy ? 'Adding…' : 'Add asset'}

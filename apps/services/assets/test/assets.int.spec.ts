@@ -536,15 +536,25 @@ describeIfPg('asset ledger service end to end', () => {
     expect(producer.messages.some((m) => m.value.includes('asset.projection.rebuilt'))).toBe(true);
   });
 
-  it('retires the asset: list/read exclude it, commands 404, history survives', async () => {
+  it('retires the asset: default list excludes it, the record survives, commands 404', async () => {
     await request(server)
       .post(`/v1/assets/${assetId}/retire`)
       .set(asOwner())
       .send({ reason: 'sold' })
       .expect(200);
-    await request(server).get(`/v1/assets/${assetId}`).set(asOwner()).expect(404);
+    // The record stays readable with its status (M19 PR2) — a disposal is a
+    // fact about the estate, not a deletion.
+    const read = await request(server).get(`/v1/assets/${assetId}`).set(asOwner()).expect(200);
+    expect((read.body as AssetDto).status).toBe('retired');
+    expect((read.body as AssetDto).retiredAt).not.toBeNull();
     const list = await request(server).get('/v1/assets').set(asOwner()).expect(200);
     expect(list.body).toEqual([]);
+    const withRetired = await request(server)
+      .get('/v1/assets?includeRetired=true')
+      .set(asOwner())
+      .expect(200);
+    expect((withRetired.body as AssetDto[]).map((a) => a.status)).toEqual(['retired']);
+    await request(server).get('/v1/assets?includeRetired=banana').set(asOwner()).expect(400);
     await request(server)
       .post(`/v1/assets/${assetId}/valuations`)
       .set(asOwner())

@@ -156,6 +156,9 @@ export class FakeViews {
       [...this.rows.values()].filter((r) => r.user_id === userId && r.deleted_at === null),
     );
   }
+  listByUser(_q: Queryable, userId: string): Promise<AssetViewRow[]> {
+    return Promise.resolve([...this.rows.values()].filter((r) => r.user_id === userId));
+  }
   listAll(_q: Queryable): Promise<AssetViewRow[]> {
     return Promise.resolve([...this.rows.values()]);
   }

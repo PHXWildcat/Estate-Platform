@@ -46,6 +46,14 @@ export function viewField(assetId: string, field: EncryptedField): string {
   return `asset.${assetId}.${field}`;
 }
 
+/**
+ * Live vs retired (M19 PR2). Retirement is a LEDGER FACT, not a deletion:
+ * "we sold the boat" must stay readable in a product whose own contract is
+ * that asset history is the product. A retired asset serves its detail and
+ * history and refuses every command.
+ */
+export type AssetStatus = 'live' | 'retired';
+
 /** Decrypted, API-facing asset representation. */
 export interface AssetDto {
   assetId: string;
@@ -60,6 +68,8 @@ export interface AssetDto {
   notes: string | null;
   inTrust: boolean;
   fundingStatus: string | null;
+  status: AssetStatus;
+  retiredAt: string | null;
   /** Optimistic-concurrency token: the asset's latest ledger seq. */
   version: string;
 }
@@ -86,6 +96,8 @@ export interface AssetSummaryDto {
   ownershipPct: number;
   inTrust: boolean;
   fundingStatus: string | null;
+  status: AssetStatus;
+  retiredAt: string | null;
   /** Optimistic-concurrency token: the asset's latest ledger seq. */
   version: string;
 }
@@ -411,7 +423,10 @@ export class AssetsService {
   // ------------------------------------------------------------------- queries
 
   async getAsset(actor: string, assetId: string): Promise<AssetDto> {
-    const row = await this.views.getLive(this.db, assetId);
+    // Retired assets stay READABLE (M19 PR2): the detail is the record of a
+    // disposal, and hiding it contradicted "asset history is the product".
+    // Commands against a retired asset still 404 inside runCommand.
+    const row = await this.views.getAny(this.db, assetId);
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
     }
@@ -422,12 +437,23 @@ export class AssetsService {
     return this.toDto(row, actor, 'asset_read', version);
   }
 
-  async listAssets(actor: string, asOf?: string): Promise<AssetSummaryDto[]> {
+  async listAssets(
+    actor: string,
+    asOf?: string,
+    includeRetired = false,
+  ): Promise<AssetSummaryDto[]> {
     if (asOf) {
-      const replayed = await this.replayForUser(actor, endOfDayUtc(asOf), 'asset_list_asof');
+      const replayed = await this.replayForUser(
+        actor,
+        endOfDayUtc(asOf),
+        'asset_list_asof',
+        includeRetired,
+      );
       return replayed.map((r) => plainStateToSummary(r.state, r.version));
     }
-    const rows = await this.views.listLiveByUser(this.db, actor);
+    const rows = includeRetired
+      ? await this.views.listByUser(this.db, actor)
+      : await this.views.listLiveByUser(this.db, actor);
     const versions = await this.ledger.latestSeqByAssets(
       this.db,
       rows.map((r) => r.asset_id),
@@ -821,6 +847,7 @@ export class AssetsService {
     actor: string,
     upTo: Date,
     purpose: string,
+    includeRetired = false,
   ): Promise<Array<{ state: AssetState<string>; version: string }>> {
     const rows = await this.ledger.listByUser(this.db, actor, upTo);
     const dekId = rows.length > 0 ? await this.dekIdForOwner(actor) : '';
@@ -828,7 +855,10 @@ export class AssetsService {
     let current: AssetState<string> | null = null;
     let lastSeq = '0';
     const flush = (): void => {
-      if (current && current.retiredAt === null) {
+      // An asset retired BEFORE the as-of date is honest temporal data when
+      // retired rows were asked for; by default "what did the estate hold"
+      // means live holdings only.
+      if (current && (includeRetired || current.retiredAt === null)) {
         results.push({ state: current, version: lastSeq });
       }
       current = null;
@@ -880,6 +910,8 @@ export class AssetsService {
       notes: await decrypt('notes', row.notes_ct),
       inTrust: row.in_trust,
       fundingStatus: row.funding_status,
+      status: row.deleted_at === null ? 'live' : 'retired',
+      retiredAt: row.deleted_at?.toISOString() ?? null,
       version,
     };
   }
@@ -912,6 +944,8 @@ export class AssetsService {
       ownershipPct: sqlToPct(row.ownership_pct),
       inTrust: row.in_trust,
       fundingStatus: row.funding_status,
+      status: row.deleted_at === null ? 'live' : 'retired',
+      retiredAt: row.deleted_at?.toISOString() ?? null,
       version,
     };
   }
@@ -957,6 +991,8 @@ function plainStateToSummary(state: AssetState<string>, version: string): AssetS
     ownershipPct: state.ownershipPct,
     inTrust: state.inTrust,
     fundingStatus: state.fundingStatus,
+    status: state.retiredAt === null ? 'live' : 'retired',
+    retiredAt: state.retiredAt?.toISOString() ?? null,
     version,
   };
 }

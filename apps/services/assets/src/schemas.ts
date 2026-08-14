@@ -110,6 +110,12 @@ export type RetireAssetInput = z.infer<typeof RetireAssetSchema>;
 /** ?asOf=YYYY-MM-DD on list/net-worth queries (temporal replay). */
 export const AsOfQuerySchema = IsoDateSchema.optional();
 
+/** ?includeRetired=true on the list (M19 PR2). Only the literal strings. */
+export const IncludeRetiredSchema = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((v) => v === 'true');
+
 /** Optional If-Match version token (the asset's latest ledger seq). */
 export const IfMatchSchema = z.coerce.bigint().positive().optional();
 

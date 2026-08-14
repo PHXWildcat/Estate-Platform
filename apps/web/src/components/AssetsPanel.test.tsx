@@ -103,6 +103,45 @@ describe('AssetsPanel', () => {
     expect(await screen.findByText(/Nothing recorded yet/)).toBeInTheDocument();
   });
 
+  it('reads a BFF response missing its fields as NO DATA, never as an empty estate (M11)', async () => {
+    // A BFF predating the expanded query answers {"data":{}} with ok=true.
+    // Rendering that as an empty estate would tell an owner they hold
+    // nothing; the only honest answer is the error state.
+    installGraphqlFetchMock({
+      Assets: () => jsonResponse({ data: {} }),
+      NetWorth: netWorthHandler(),
+    });
+    render(<AssetsPanel />);
+    expect(await screen.findByText(/couldn’t load your assets/)).toBeInTheDocument();
+  });
+
+  it('the trust card counts LIVE in-trust assets only, even with retired rows shown', async () => {
+    // The server's inTrustValue already excludes retired assets; a client
+    // count that included them would make one card disagree with itself.
+    const retired = {
+      assetId: 'r1',
+      category: 'real_estate',
+      title: 'Sold lake house',
+      estValue: '900000.00',
+      valuationAsOf: '2026-08-13',
+      valuationSource: 'market',
+      ownershipPct: 100,
+      inTrust: true,
+      fundingStatus: 'funded',
+      status: 'retired',
+      retiredAt: '2026-08-14T00:00:00.000Z',
+      version: '4',
+    };
+    installGraphqlFetchMock({
+      Assets: assetsHandler([retired]),
+      NetWorth: netWorthHandler(),
+    });
+    render(<AssetsPanel />);
+    await screen.findByText('Sold lake house');
+    expect(screen.getByText('Retired')).toBeInTheDocument();
+    expect(screen.getByText('0 assets')).toBeInTheDocument();
+  });
+
   it('creates an asset with no valuation, then reloads', async () => {
     let requests: RecordedRequest[] = [];
     let listCalls = 0;
@@ -125,8 +164,13 @@ describe('AssetsPanel', () => {
       expect(listCalls).toBeGreaterThan(1); // reloaded after success
     });
     const create = requests.find((r) => r.body.query?.includes('CreateAsset'));
-    // No valuation keys at all — not nulls, not empty strings.
-    expect(create?.body.variables).toEqual({ category: 'cash', title: 'Wallet' });
+    // No valuation keys at all — not nulls, not empty strings — plus the
+    // client-minted idempotency key (a UUID, fresh per payload).
+    const { clientEventId, ...input } = (
+      create?.body.variables as { input: Record<string, unknown> }
+    ).input;
+    expect(String(clientEventId)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(input).toEqual({ category: 'cash', title: 'Wallet' });
   });
 
   it('sends the valuation TRIPLE together when a value is given', async () => {
@@ -146,13 +190,87 @@ describe('AssetsPanel', () => {
       expect(requests.some((r) => r.body.query?.includes('CreateAsset'))).toBe(true);
     });
     const create = requests.find((r) => r.body.query?.includes('CreateAsset'));
-    expect(create?.body.variables).toEqual({
+    const { clientEventId, ...input } = (
+      create?.body.variables as { input: Record<string, unknown> }
+    ).input;
+    expect(String(clientEventId)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(input).toEqual({
       category: 'cash',
       title: 'Chase checking',
       estValue: '12500.50',
       valuationAsOf: '2026-07-01',
       valuationSource: 'owner_estimate',
     });
+  });
+
+  it('the More-details disclosure sends ownership, trust, funding and the encrypted extras', async () => {
+    const { requests } = installGraphqlFetchMock({
+      Assets: assetsHandler([]),
+      NetWorth: netWorthHandler(),
+      CreateAsset: () => jsonResponse({ data: { createAsset: { assetId: 'x', version: '1' } } }),
+    });
+    render(<AssetsPanel />);
+    await screen.findByLabelText('Name');
+
+    fillCreateForm({ title: 'Family LLC' });
+    fireEvent.click(screen.getByRole('button', { name: /More details/ }));
+    fireEvent.change(screen.getByLabelText('Ownership share % (optional)'), {
+      target: { value: '50' },
+    });
+    fireEvent.click(screen.getByLabelText('Titled in a trust'));
+    fireEvent.change(screen.getByLabelText('Trust funding status (optional)'), {
+      target: { value: 'in_progress' },
+    });
+    fireEvent.change(screen.getByLabelText('Cost basis (optional)'), {
+      target: { value: '10000.00' },
+    });
+    fireEvent.change(screen.getByLabelText('Where to find it (optional)'), {
+      target: { value: 'deed drawer' },
+    });
+    fireEvent.change(screen.getByLabelText('Notes (optional)'), {
+      target: { value: 'shared with Sam' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add asset' }));
+
+    await waitFor(() => {
+      expect(requests.some((r) => r.body.query?.includes('CreateAsset'))).toBe(true);
+    });
+    const create = requests.find((r) => r.body.query?.includes('CreateAsset'));
+    const { clientEventId, ...input } = (
+      create?.body.variables as { input: Record<string, unknown> }
+    ).input;
+    expect(String(clientEventId)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(input).toEqual({
+      category: 'cash',
+      title: 'Family LLC',
+      ownershipPct: 50,
+      inTrust: true,
+      fundingStatus: 'in_progress',
+      costBasis: '10000.00',
+      location: 'deed drawer',
+      notes: 'shared with Sam',
+    });
+  });
+
+  it('validates ownership share and cost basis locally', async () => {
+    const { requests } = installGraphqlFetchMock({
+      Assets: assetsHandler([]),
+      NetWorth: netWorthHandler(),
+    });
+    render(<AssetsPanel />);
+    await screen.findByLabelText('Name');
+    fillCreateForm({ title: 'Bad numbers' });
+    fireEvent.click(screen.getByRole('button', { name: /More details/ }));
+    fireEvent.change(screen.getByLabelText('Ownership share % (optional)'), {
+      target: { value: '150' },
+    });
+    fireEvent.change(screen.getByLabelText('Cost basis (optional)'), {
+      target: { value: 'abc' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add asset' }));
+    expect(await screen.findByText(/between 0 and 100/)).toBeInTheDocument();
+    expect(screen.getByText(/plain amount like 12500/)).toBeInTheDocument();
+    expect(requests.some((r) => r.body.query?.includes('CreateAsset'))).toBe(false);
   });
 
   it('refuses to submit a value without a date — the ledger’s all-or-nothing rule', async () => {
