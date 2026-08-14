@@ -4426,7 +4426,7 @@ revoking), both latent behind machinery that does not exist yet — the M14
 precedent of writing down what arms later rather than fixing speculatively or
 hiding it.
 
-### M18 — The TB4 decrypt-rate baseline (approved 2026-08-13; PR1–PR2 shipped)
+### M18 — The TB4 decrypt-rate baseline (approved 2026-08-13; shipped, reviewed)
 
 The detection half of docs/03 §4 TB4's "per-principal decrypt-rate baselines
 with hard circuit breakers" — the control the threat model calls the single
@@ -4534,7 +4534,71 @@ owed: docs/03 §4 TB4 + §5.3 (the KMS-centric framing corrected — KMS cannot
 see read volume through the DEK cache), new §6q, docs/05's
 "cannot test anomaly detection" split into detection-local/response-cloud,
 and the escalation list above shrunk by the detection half (the M8
-take-over precedent). **PR3** — the adversarial review.
+take-over precedent).
+
+**PR3 — the security review (shipped).** Six file-scoped discovery lenses
+over the merged range, each in its own detached worktree pinned to the
+reviewed commit, then TWO adversarial verifiers per deduped finding on
+different angles (production reachability; is-it-already-a-documented-
+decision), both defaulting to refuted. **22 raw candidates, 11 unique, 12
+verifier verdicts, no agents lost.** Every confirmed finding re-proved BY
+EXECUTION before a line changed, and every fix mutation-tested by reverting
+it. TWELFTH milestone running where every confirmed finding sits in
+machinery the milestone introduced, and most falsify a claim it made about
+itself.
+
+Four defects fixed:
+
+1. **The "never a lost one" promise was false twice over.** The
+   reconciliation that ends episodes ran AFTER the emit loop inside one try,
+   so a single failed emit skipped it — a principal whose episode had
+   cleared stayed marked announced, and its NEXT genuine episode was
+   swallowed as a duplicate. Reproduced against the real detector (`[A, B]`
+   where `[A, B, A]` was owed). The same shared try meant one unemittable
+   breach cancelled its neighbours. Fixed per-emit, with the reconciliation
+   moved ahead of anything that can fail — and the harness then showed the
+   catch is the load-bearing half while the ordering is the belt, which is
+   now written in the code instead of assumed.
+2. **The advisory detector could kill ingest.** Neither pg client had an
+   `error` listener, and node-postgres emits one on connection-level death
+   (failover, an idle reaper, `pg_terminate_backend` — reproduced against a
+   real cluster: uncaught, process gone, no fatal line). So the detector's
+   mostly-idle session dying would have taken down the paging signal itself.
+   `DetectorConnection` now absorbs, discards and reconnects — a listener
+   alone would have traded the crash for permanent silence, since a pg
+   Client never reconnects — connects lazily so boot is not load-bearing on
+   an advisory component, and carries a query timeout so a black-holed
+   socket faults instead of latching the re-entrancy guard for hours. The
+   INGEST connection keeps the opposite posture and now dies through the
+   service's own fatal path.
+3. **Every projection rebuild fired the loudest alarm in the table.** The
+   rebuild has TWO sentinel decrypt sites; only the ledger replay was
+   modelled, so the live-view diff (`asset.<id>.<col>`) resolved to
+   `unmodeled_principal`/0 and breached at count 1 on any valued estate —
+   a reviewed path raising the "read path nobody reviewed" alarm, which is
+   how an alarm stops being read. Now its own bound row.
+4. **Two notions of "a principal" in one detector.** The sweep groups by
+   `actor_type` while bounds key on the principal CLASS, so the sentinel's
+   two actor types arrived as separate rows that were never merged — each
+   under the bound while their sum exceeded it. Merged onto the bounds'
+   grain before evaluation.
+
+Also corrected: three sentences the milestone had falsified (the bounds
+file's derivation "formula" that two of its own rows do not follow; the
+`mfa_methods` note claiming the M16 step-up caps limit it transitively,
+which this milestone's own 101-step-up burst disproves; the gate's "the
+smallest bound", which is two rows wrong), and the e2e gate itself, which
+asserted only the bound NAME over ALL rows for all time — blind to a
+journey-caused anomaly in the same class, and permanently red once any
+by-design alarm exists. It now asserts bound AND principal, scoped to the
+suite's own run.
+
+Recorded rather than fixed, in docs/03 §6q: the window's dependence on
+producer-authored `occurred_at` (ingest lag or clock skew silently drops
+counts; a far-future timestamp pins an episode), the emit-outage-longer-
+than-the-window loss, the in-process-compromise boundary on
+"a complete record of released plaintext", and the production-profile
+coverage gap.
 
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 

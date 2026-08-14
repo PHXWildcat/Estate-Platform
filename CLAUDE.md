@@ -5652,3 +5652,73 @@ deviating from them, stop and propose the change with rationale — do not silen
   rebuild-trips-by-design note; docs/05's "cannot test anomaly detection"
   split into detection-local / response-cloud; docs/04's escalation list
   shrank by the detection half (the M8 take-over precedent).
+- 2026-08-13 — M18 PR3 security review (six file-scoped discovery lenses over
+  the merged range, each in its OWN DETACHED WORKTREE pinned to the reviewed
+  commit — the 2026-08-12 rule, and no agents were lost this time — then TWO
+  adversarial verifiers per deduped finding on different angles, both
+  defaulting to refuted; 22 raw, 11 unique, 12 verdicts, 4 fixed). TWELFTH
+  milestone running where every confirmed finding sits in machinery the
+  milestone introduced. THE WORST ONE FALSIFIED THE MILESTONE'S OWN
+  PROMISE IN BOTH DIRECTIONS: the episode reconciliation ran AFTER the emit
+  loop inside one try, so a failed emit skipped it and a principal whose
+  episode had cleared stayed marked announced — its next genuine episode
+  swallowed as a duplicate, a LOST anomaly under a docstring, a §6q
+  paragraph and a decision-log entry all promising the fail direction was
+  always an EXTRA event. Reproduced against the real detector before the fix
+  ([A, B] where [A, B, A] was owed) and again by me independently. The same
+  shared try let one unemittable breach cancel its neighbours.
+  AND THE ADVISORY DETECTOR COULD KILL INGEST: neither pg client had an
+  `error` listener, node-postgres emits one on connection-level death, and
+  an unhandled 'error' event is an uncaught exception — so a failover or an
+  idle-session reaper on the detector's mostly-idle connection would have
+  killed the audit service, bypassing the fatal path entirely (no
+  `audit_service_fatal` line, no handle release), for the one component
+  whose docstring says its faults must never do that. Reproduced against the
+  live cluster (57P01 → uncaught → exit). The fix is a connection wrapper,
+  not a listener: a pg Client NEVER RECONNECTS, so a listener alone trades a
+  crash for permanent silent deafness — one warn line a minute, no alerting,
+  process healthy. It also connects lazily (an advisory component must not
+  make boot load-bearing) and carries a query timeout, without which a
+  black-holed socket leaves the re-entrancy guard latched for the OS
+  keepalive interval with nothing logged — the M8 dead-consumer shape,
+  arrived at from a third direction.
+- 2026-08-13 — M18 PR3's other two fixes, and the lesson each carries. EVERY
+  PROJECTION REBUILD FIRED THE LOUDEST ALARM IN THE TABLE: the rebuild has
+  TWO sentinel decrypt sites and the bounds table modelled only the ledger
+  replay, so the live-view diff (`asset.<id>.<col>`) resolved to
+  `unmodeled_principal`/0 and breached at count 1 on any valued estate — the
+  "read path nobody reviewed" class raised by a reviewed path, which is
+  precisely how an alarm stops being read (the M5 permanently-red-gate
+  lesson, reached through a loud DEFAULT rather than a noisy check). The
+  general rule: when a fail-closed default is LOUD, every legitimate path
+  must be enumerated by EXECUTION, not by memory — I had checked the
+  services' decrypt call sites and still missed a second site inside a file
+  I had already read. And TWO NOTIONS OF "A PRINCIPAL" IN ONE DETECTOR: the
+  sweep groups by `actor_type` (a column) while bounds key on the principal
+  CLASS that folds the sentinel's two actor types together, so the two rows
+  were never merged — each under the bound while their sum exceeded it.
+  Whenever a query's GROUP BY and a decision's key are different
+  vocabularies, the gap between them is an evasion path.
+- 2026-08-13 — M18 PR3: A MUTATION SURVIVED AND THE HONEST ANSWER WAS THAT MY
+  FIX HAD TWO HALVES AND ONLY ONE WAS LOAD-BEARING. Reverting the
+  reconcile-before-emit ordering alone left the suite green, because the
+  per-emit catch already stops a throw from escaping the loop; reverting BOTH
+  halves turns it red on the assertion that names the property. The repo's
+  rule says a surviving mutation means a weak test OR an unfaithful mutation
+  — this is the third case, a change that is defence in depth rather than the
+  fix, and the code now says which half is which instead of implying both.
+  Recorded because the tempting move was to weaken the mutation until it went
+  red and call the fix proven.
+- 2026-08-13 — M18 PR3 recorded-not-fixed, in docs/03 §6q: the window keys on
+  PRODUCER-authored `occurred_at` (the ingestor preserves it and there is no
+  server-authored ingest-time column), so ingest lag or a slow producer clock
+  silently drops counts and a far-future timestamp pins an episode forever —
+  the fix is a schema change (an ingest-time column, or windowing on `seq`)
+  belonging to whichever milestone needs it; an emit outage longer than the
+  300s window LOSES the anomalies raised inside it, because the retry is
+  bounded by the window that produced them; "a complete record of released
+  plaintext" holds only for code going THROUGH FieldCrypto, since the package
+  exports the AEAD open() and a Zone B process holds unwrapped DEKs for five
+  minutes — in-process compromise decrypts with no event and no KMS call,
+  which is the enforcement chokepoint's job, not this detector's; and the
+  false-positive gate runs in the development profile only.

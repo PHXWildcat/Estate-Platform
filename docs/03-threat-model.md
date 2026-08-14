@@ -2380,8 +2380,21 @@ detector degrades alerting, never safety.
 - A sustained breach emits ONCE per episode and re-arms when its window
   clears. The episode memory is per-process, so a RESTART may re-emit one
   duplicate for a still-breaching principal, and a failed emit is retried
-  next tick — in both cases the fail direction is an EXTRA event, never a
-  lost one.
+  next tick — in both cases the fail direction is an EXTRA event.
+- CORRECTED BY THE M18 PR3 REVIEW, which found the unqualified
+  "never a lost one" false twice over. (a) The reconciliation that ends
+  episodes ran after the emit loop inside the same try, so one failed emit
+  skipped it: a principal whose episode had cleared stayed marked announced
+  and its NEXT genuine episode was suppressed — a lost anomaly, reproduced
+  against the real detector. (b) The emit loop shared one try, so the first
+  unemittable breach cancelled every later breach in that tick. Both closed
+  (per-emit catch; reconciliation moved ahead of anything that can fail —
+  and the mutation harness showed the catch is the load-bearing half and the
+  ordering the belt, which is recorded in the code rather than assumed).
+- STILL TRUE AND NOT FIXABLE HERE: an emit outage lasting longer than the
+  300s window loses the anomalies raised inside it, because the retry is
+  bounded by the window that produced them. Closing it means persisting an
+  anomaly before emitting it — a different design, not a patch.
 - Bounds for classes the M18 PR1 measurement did not exercise (family,
   asset_event, plaid_item, account, assistant_tool_call, users) are
   PROVISIONAL — sized from neighbouring measured economics and marked as such
@@ -2398,10 +2411,65 @@ detector degrades alerting, never safety.
   bound. A bare zero-events assertion would be vacuously green over a dead
   detector — the M8 dead-consumer shape.
 
+**The window's clock, and what that costs (M18 PR3).** The sweep selects
+`occurred_at >= now - 300s`, and `occurred_at` is stamped by the PRODUCING
+service at emit time — the ingestor preserves it, and `audit_events` has no
+server-authored ingest-time column. Three consequences, recorded rather than
+patched, because the honest fix is a schema change (an ingest-time column, or
+windowing on the ingest-ordered `seq`) that belongs to the milestone that
+needs it:
+- Ingest lag or an audit-service outage longer than the window means the
+  backlog arrives already outside every future tick's window and is never
+  evaluated. The consumer and the detector are one process, so this is
+  exactly the state a detector most needs to survive. Fail direction: a
+  MISSED alarm, never a false one.
+- A producing service whose clock is more than a window slow has its decrypts
+  permanently outside the window — that service's prefixes go dark with no
+  fault and no log.
+- A far-future `occurred_at` is counted in every window indefinitely, and its
+  episode never clears, so that principal's later genuine anomalies are
+  suppressed. Authoring one needs a grossly misconfigured clock or the
+  ability to forge topic messages — a strictly larger break than the §5.3
+  adversary this control is credited against.
+
+**What the audit stream cannot see (M18 PR3).** "Every released plaintext is
+one audited event" is a property of code that goes THROUGH `FieldCrypto`. The
+package also exports the AEAD `open()` and the KMS unwrap, and a Zone B
+process holds unwrapped DEKs in a 5-minute cache — so code executing INSIDE a
+compromised service (RCE, a malicious dependency, a malicious-insider deploy)
+can decrypt without emitting anything, and the DEK cache means it need not
+call KMS either. That tier is not what this detector is for: it is the
+credential/identity-compromise case that drives the ordinary API, and against
+in-process compromise the answers are the enforcement chokepoint (the KMS
+grant), image signing and admission control, and §5.3's canaries. §5.3's
+control text should be read with that boundary in mind.
+
 **What remains cloud-blocked, stated precisely:** the ENFORCEMENT half —
 suspending the KMS grant and paging — needs real IAM and a TB7 operator;
 KMS-side rate limiting still bounds bulk UNWRAPS (many-user sweeps), which
 the DEK cache never hid; §5.3's canaries and CloudHSM roots are unchanged.
+
+**The detector's own session (M18 PR3).** It is lazily connected, absorbs
+connection-level `error` events, and replaces a dead session on the next
+tick. Each of those is a review finding rather than a nicety: an unhandled pg
+`error` event crashes the whole audit process (reproduced against a real
+cluster), which would have let the ADVISORY detector kill INGEST — the paging
+signal — and an error listener alone would have traded that crash for
+permanent silent deafness, since a pg Client never reconnects. The session
+also carries a query timeout, without which a black-holed socket leaves the
+re-entrancy guard latched for hours with nothing logged (the M8
+dead-consumer shape). The INGEST connection deliberately keeps the opposite
+posture: its death is fatal, and it now routes through the service's fatal
+path instead of an uncaught exception, so it dies with a structured line and
+releases its handles.
+
+**Coverage gap, stated (M18 PR3).** The stack e2e's false-positive gate runs
+in the DEVELOPMENT profile only, so the production rehearsal's journey —
+escrow arming, settlement intake, vault enrollment under production config —
+runs with a live detector and no anomaly assertion over it. Nothing in that
+journey reaches a decrypt class the dev journey does not, which is why this
+is recorded rather than duplicated; a production-only decrypt path arriving
+later owes the gate a second home.
 
 ## 7. Validation program
 

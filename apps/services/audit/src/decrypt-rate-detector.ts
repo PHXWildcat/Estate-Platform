@@ -30,9 +30,19 @@ import {
  * EPISODES, NOT TICKS: a sustained breach emits once when it starts, stays
  * silent while it persists, and re-arms when the window clears. The episode
  * memory is per-process (#announced), so a restart may re-emit one duplicate
- * for a still-breaching principal — the fail direction is an EXTRA event,
- * never a lost one (recorded in docs/03 §6q). An emit that fails is not
- * marked announced, so the next tick retries it: same fail direction.
+ * for a still-breaching principal, and an emit that fails leaves its key
+ * un-announced so the next tick retries it.
+ *
+ * THE FAIL DIRECTION IS AN EXTRA EVENT, WITH ONE STATED EXCEPTION. The M18
+ * review falsified the unqualified version of that claim twice over, and
+ * both holes are closed above (per-emit catch, reconciliation that cannot be
+ * skipped). What remains true and cannot be fixed here: a breach whose emit
+ * keeps failing until its decrypts age out of the window is LOST, not late —
+ * the retry is bounded by the window, so an emit outage longer than
+ * DECRYPT_WINDOW_SECONDS loses the anomalies raised inside it. That is a
+ * property of a windowed detector with a durable-nowhere queue, recorded in
+ * docs/03 §6q rather than papered over; closing it needs the anomaly to be
+ * persisted before it is emitted, which is a different design.
  */
 
 /** The one query. Windowed sweep over the partial index migration 002 added
@@ -106,6 +116,46 @@ function episodeKey(b: DecryptRateBreach): string {
   return `${b.principal}|${b.actorId ?? 'none'}|${b.prefix}`;
 }
 
+/**
+ * Collapse the SQL's rows onto the grain the BOUNDS use.
+ *
+ * The sweep groups by (prefix, actor_type, actor_id) because those are
+ * columns; the bound and the episode key are keyed on the PRINCIPAL CLASS,
+ * which folds the nil-UUID sentinel's two actor types ('service' for
+ * notification sends, 'system' for projection rebuilds) into one principal.
+ * Left unmerged those arrive as two rows that each sit under the bound while
+ * their sum exceeds it — one detector, two disagreeing notions of "a
+ * principal", and the disagreement is an evasion path (the M18 review).
+ *
+ * Merging keeps the ROW's actorType for the emitted detail (the first
+ * contributing row's — an attribution hint, not the grain).
+ */
+export function mergeObservations(
+  rows: readonly {
+    prefix: string | null;
+    actor_type: string;
+    actor_id: string | null;
+    n: number;
+  }[],
+): DecryptRateObservation[] {
+  const merged = new Map<string, DecryptRateObservation>();
+  for (const row of rows) {
+    // A decrypt event structurally carries detail.field; the fallback token
+    // exists so a hand-inserted malformed row surfaces as an unknown-prefix
+    // breach instead of an unemittable empty token.
+    const prefix = row.prefix && row.prefix.length > 0 ? row.prefix : 'missing_field';
+    const actorType = row.actor_type as ActorType;
+    const key = `${prefix}|${principalClassOf(actorType, row.actor_id)}|${row.actor_id ?? 'none'}`;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.count += row.n;
+      continue;
+    }
+    merged.set(key, { prefix, actorType, actorId: row.actor_id, count: row.n });
+  }
+  return [...merged.values()];
+}
+
 export class DecryptRateDetector {
   /** Episode keys already announced; cleared per key when its breach clears. */
   #announced = new Set<string>();
@@ -125,49 +175,79 @@ export class DecryptRateDetector {
 
   async tick(): Promise<void> {
     if (this.#running) {
-      // A slow tick (hung query, slow broker) must not pile re-entrant ticks
-      // onto the same connection; the next interval fires soon enough.
+      // A slow tick must not pile re-entrant ticks onto the same connection;
+      // the next interval fires soon enough. The connection carries its own
+      // query timeout (detector-connection.ts), so a black-holed socket
+      // rejects and faults rather than latching this flag forever — without
+      // that bound this guard IS the silent-death mode (the M18 review).
       return;
     }
     this.#running = true;
     try {
       const since = new Date(this.clock().getTime() - DECRYPT_WINDOW_SECONDS * 1000);
-      const { rows } = await this.db.query(DECRYPT_RATE_SQL, [since]);
-      const observations: DecryptRateObservation[] = rows.map((r) => ({
-        // A decrypt event structurally carries detail.field; the fallback
-        // token exists so a hand-inserted malformed row surfaces as an
-        // unknown-prefix breach instead of an unemittable empty token.
-        prefix: r.prefix && r.prefix.length > 0 ? r.prefix : 'missing_field',
-        actorType: r.actor_type as ActorType,
-        actorId: r.actor_id,
-        count: r.n,
-      }));
+      let rows;
+      try {
+        ({ rows } = await this.db.query(DECRYPT_RATE_SQL, [since]));
+      } catch (err) {
+        // A failed READ yields no observations, so there is nothing to
+        // reconcile against — episode memory is left exactly as it was and
+        // the next tick re-derives it. Returning here (rather than falling
+        // into a shared catch) is what keeps the reconciliation below
+        // unreachable-by-failure.
+        this.#fault('decrypt_rate_tick_failed', err);
+        return;
+      }
+      const observations = mergeObservations(rows);
       const breaches = evaluateDecryptRates(observations);
       const current = new Set(breaches.map(episodeKey));
+
+      // RECONCILE BEFORE EMITTING. The M18 review's worst finding was that
+      // this ran AFTER the emit loop inside the same try, so one failed emit
+      // skipped it: a principal whose episode had cleared stayed marked
+      // announced, and its NEXT genuine episode was suppressed as a duplicate
+      // — a LOST anomaly, in a detector whose docs promised the fail
+      // direction was always an extra event.
+      //
+      // WHICH HALF IS LOAD-BEARING, measured rather than assumed: mutating
+      // this line back below the loop leaves the suite GREEN, because the
+      // per-emit catch below already stops a throw from escaping. The catch
+      // is the fix; this ordering is the belt — it keeps the reconciliation
+      // unreachable-by-failure even if someone later adds a statement to the
+      // loop that can throw outside that catch.
+      this.#announced = new Set([...this.#announced].filter((k) => current.has(k)));
+
       for (const breach of breaches) {
         const key = episodeKey(breach);
         if (this.#announced.has(key)) {
           continue;
         }
-        await this.emitter.emit({
-          action: 'crypto.decrypt_rate.exceeded',
-          actorId: null,
-          actorType: 'system',
-          onBehalfOf: null,
-          resourceType: 'decrypt_rate',
-          // The breaching principal is the subject of the event.
-          resourceId: breach.actorId,
-          sessionId: null,
-          detail: {
-            boundName: breach.boundName,
-            principal: breach.principal,
-            actorType: breach.actorType,
-            prefixClass: breach.prefix,
-            count: breach.count,
-            bound: breach.maxPerWindow,
-            windowSeconds: DECRYPT_WINDOW_SECONDS,
-          },
-        });
+        try {
+          await this.emitter.emit({
+            action: 'crypto.decrypt_rate.exceeded',
+            actorId: null,
+            actorType: 'system',
+            onBehalfOf: null,
+            resourceType: 'decrypt_rate',
+            // The breaching principal is the subject of the event.
+            resourceId: breach.actorId,
+            sessionId: null,
+            detail: {
+              boundName: breach.boundName,
+              principal: breach.principal,
+              actorType: breach.actorType,
+              prefixClass: breach.prefix,
+              count: breach.count,
+              bound: breach.maxPerWindow,
+              windowSeconds: DECRYPT_WINDOW_SECONDS,
+            },
+          });
+        } catch (err) {
+          // PER-EMIT, so one unemittable breach cannot cancel its neighbours
+          // (the same review finding, second harm). The key stays
+          // un-announced, so the next tick retries it while the breach lasts.
+          this.#fault('decrypt_rate_emit_failed', err);
+          continue;
+        }
         this.#announced.add(key);
         // Decision 5: the alert sink is the audit action PLUS a structured
         // log line. Scalars only; ids and enums, never values.
@@ -182,18 +262,18 @@ export class DecryptRateDetector {
           actorId: breach.actorId ?? 'none',
         });
       }
-      // An episode ends when its key stops breaching; dropping it re-arms.
-      this.#announced = new Set([...this.#announced].filter((k) => current.has(k)));
-    } catch (err) {
-      this.#faults += 1;
-      log({
-        level: 'warn',
-        msg: 'decrypt_rate_tick_failed',
-        faults: this.#faults,
-        error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown',
-      });
     } finally {
       this.#running = false;
     }
+  }
+
+  #fault(msg: string, err: unknown): void {
+    this.#faults += 1;
+    log({
+      level: 'warn',
+      msg,
+      faults: this.#faults,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown',
+    });
   }
 }

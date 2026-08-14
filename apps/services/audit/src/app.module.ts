@@ -6,6 +6,8 @@ import { KafkaAuditProducer } from '@estate/kafka';
 import { loadConfig, type ServiceConfig } from './config';
 import { AuditConsumer } from './consumer';
 import { DecryptRateDetector } from './decrypt-rate-detector';
+import { DETECTOR_QUERY_TIMEOUT_MS } from './decrypt-rate-bounds';
+import { DetectorConnection } from './detector-connection';
 import { AuditIngestor } from './ingestor';
 import { ChainVerifier } from './verifier';
 
@@ -47,12 +49,24 @@ export const AUDIT_PRODUCER = 'AUDIT_PRODUCER';
       inject: [APP_CONFIG],
     },
     {
+      // NOT a connected Client: a lazily-connecting, self-healing wrapper
+      // (detector-connection.ts). Connecting here would make an ADVISORY
+      // component's connection load-bearing at boot, and holding a bare
+      // Client would let one connection-level 'error' event crash the
+      // service that ingests the audit trail — both M18-review findings.
       provide: DETECTOR_PG_CLIENT,
-      useFactory: async (config: ServiceConfig): Promise<Client> => {
-        const client = new Client({ connectionString: config.databaseUrl });
-        await client.connect();
-        return client;
-      },
+      useFactory: (config: ServiceConfig): DetectorConnection =>
+        new DetectorConnection(
+          () =>
+            new Client({
+              connectionString: config.databaseUrl,
+              // Bounds the sweep so a black-holed socket faults and retries
+              // instead of latching the detector's re-entrancy guard for the
+              // OS keepalive interval. Generous against the windowed query
+              // (measured in milliseconds), tight against hours of silence.
+              query_timeout: DETECTOR_QUERY_TIMEOUT_MS,
+            }),
+        ),
       inject: [APP_CONFIG],
     },
     {
@@ -73,8 +87,10 @@ export const AUDIT_PRODUCER = 'AUDIT_PRODUCER';
     },
     {
       provide: DecryptRateDetector,
-      useFactory: (client: Client, producer: KafkaAuditProducer): DecryptRateDetector =>
-        new DecryptRateDetector(client, new AuditEmitter(producer)),
+      useFactory: (
+        connection: DetectorConnection,
+        producer: KafkaAuditProducer,
+      ): DecryptRateDetector => new DecryptRateDetector(connection, new AuditEmitter(producer)),
       inject: [DETECTOR_PG_CLIENT, AUDIT_PRODUCER],
     },
     {

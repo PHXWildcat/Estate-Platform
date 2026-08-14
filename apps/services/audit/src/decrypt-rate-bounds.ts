@@ -11,10 +11,16 @@ import {
  * DELIBERATELY NOT A LEARNED BASELINE: an attacker can train a learned one
  * and cannot train a reviewed commit (the M16/M17 rate-bounds rule). Every
  * number here is a constant set from the ceilings MEASURED in M18 PR1
- * (docs/04 M18 — a full stack-e2e journey plus a deliberate burst driver),
- * with a generous multiplier: bound ≈ measured-peak-per-minute × the window
- * × 10. The docs/03 "normal × 50" framing is revised by this file — fixed
- * reviewed constants, not a formula.
+ * (docs/04 M18 — a full stack-e2e journey plus a deliberate burst driver).
+ * The docs/03 "normal × 50" framing is revised by this file: FIXED REVIEWED
+ * CONSTANTS, NOT A FORMULA. Most rows sit at roughly ten windows' worth of
+ * their measured peak, but that is a starting point rather than a rule — the
+ * M18 review caught an earlier version of this comment stating it AS a
+ * formula while two measured rows (notification_recipient, assistant_message)
+ * deliberately sat well above it, so a reviewer sizing the next bound by
+ * arithmetic would have computed numbers 5×–10× off. Each row's `note` is
+ * where its own reasoning lives, and a row whose headroom is unusual says why
+ * there.
  *
  * The GRAIN is (prefix class × principal class), counted per actorId — the
  * detector asks "did THIS principal exceed what THIS kind of reading is ever
@@ -56,6 +62,14 @@ export const DECRYPT_WINDOW_SECONDS = 300;
 /** Detector cadence. Also a reviewed constant; tests never run the timer. */
 export const DETECTOR_TICK_MS = 60_000;
 
+/**
+ * Query timeout for the detector's own session. Generous against the windowed
+ * sweep (milliseconds in practice) and far tighter than the OS keepalive
+ * interval, which is what a black-holed socket would otherwise wait out while
+ * the detector's re-entrancy guard stayed latched and silent.
+ */
+export const DETECTOR_QUERY_TIMEOUT_MS = 30_000;
+
 export interface DecryptRateBound {
   prefix: DecryptFieldPrefix;
   principal: PrincipalClass;
@@ -85,7 +99,7 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     principal: 'user',
     measuredPerMinute: 2,
     maxPerWindow: 100,
-    note: 'one secret decrypt per TOTP check; transitively capped by the M16 step-up bounds',
+    note: "one secret decrypt per TOTP check. An earlier note claimed the M16 step-up bounds cap this transitively; the M18 review refuted it with this milestone's own e2e — those bounds count DENIALS since the last grant, so a caller holding a live session and one valid 30-second code drives successful step-ups (and their decrypts) at whatever rate identity sustains, which is precisely how the stack gate produces its 101-step-up burst. Nothing upstream caps the success path, so THIS bound is the cap",
   },
   // profile (core cluster)
   {
@@ -129,7 +143,14 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     principal: 'sentinel',
     measuredPerMinute: 0,
     maxPerWindow: 5000,
-    note: 'projection rebuild reads the whole ledger as the sentinel; a full rebuild of a large estate trips this BY DESIGN — a mass decrypt is the detected class, and the operator running one expects the alarm (docs/03 §6q)',
+    note: 'projection rebuild replays the whole LEDGER as the sentinel; a full rebuild of a large estate trips this BY DESIGN — a mass decrypt is the detected class, and the operator running one expects the alarm (docs/03 §6q)',
+  },
+  {
+    prefix: 'asset',
+    principal: 'sentinel',
+    measuredPerMinute: 0,
+    maxPerWindow: 5000,
+    note: "the rebuild's SECOND decrypt site: diffing the live projection reads assets_view columns as asset.<id>.<col>, still as the sentinel (rebuild.service.ts diffView). Missing until the M18 review, which made every rebuild of any valued estate emit unmodeled_principal at count 1 — the loudest class in the table, fired by a reviewed path, which is exactly how an alarm stops being read. Sized with its ledger twin so a large rebuild still trips ONE designed alarm rather than an accidental one",
   },
   // documents (documents cluster)
   {
