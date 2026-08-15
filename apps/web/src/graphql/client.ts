@@ -93,6 +93,15 @@ export const GQL_ERROR_CODES = [
    * cap the current code will not be accepted either (M19 PR4 review).
    */
   'TOO_MANY_ATTEMPTS',
+  /**
+   * An address change was requested again inside identity's re-issue floor, or
+   * too many were aimed at one destination (M20 PR2). Named for the REQUEST
+   * rather than for a send: a destination that already belongs to somebody else
+   * stages nothing and mails nothing, so a caller can meet this refusal having
+   * never been sent anything, and copy telling them to use the code they were
+   * sent would send them looking for a mail that will never arrive.
+   */
+  'CODE_REQUESTED_RECENTLY',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -833,6 +842,15 @@ interface OperationSignatures {
     variables: { currentPassword: string; newPassword: string };
     data: { changePassword: { ok: boolean } };
   };
+  RequestEmailChange: {
+    variables: { currentPassword: string; newEmail: string };
+    data: { requestEmailChange: { ok: boolean } };
+  };
+  CompleteEmailChange: {
+    variables: { code: string };
+    data: { completeEmailChange: { ok: boolean } };
+  };
+  CancelEmailChange: { variables: EmptyVariables; data: { cancelEmailChange: { ok: boolean } } };
   Consents: { variables: EmptyVariables; data: { consents: string[] } };
   GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };
   RevokeConsent: { variables: { scope: string }; data: { revokeConsent: string[] } };

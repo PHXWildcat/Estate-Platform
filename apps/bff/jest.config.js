@@ -15,5 +15,8 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // M13 re-measured after the profile client, the people resolvers and the link
   // ceremony: 90.23/87.5/90.58/90.83. Ratcheted up from 88/85/88/88 — never down.
   // Ratcheted up with M19 PR2's measured 91.61/89.16/92.05/92.11 — up, never down.
-  coverageThreshold: { global: { statements: 92, branches: 89, functions: 92, lines: 92 } },
+  // Ratcheted UP, never down. M20 PR2 measured 92.09/89.20/93.13/92.56 — the
+  // address change arrived with its own specs on both sides of the wire, so
+  // functions moved a point and the other three sit at their integer floor.
+  coverageThreshold: { global: { statements: 92, branches: 89, functions: 93, lines: 92 } },
 });

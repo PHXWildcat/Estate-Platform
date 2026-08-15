@@ -6427,3 +6427,83 @@ deviating from them, stop and propose the change with rationale — do not silen
   row rather than inferring from the message — `revoked_at IS NULL` with
   `now() > access_expires_at` — which is what separates "expired" from "revoked",
   two states the UI renders identically today.
+- 2026-08-15 — M20 PR2, THE ADDRESS CHANGE, and every decision in it falls out of
+  one property of the route it consumes: THE 202 IS NOT A DELIVERY RECEIPT.
+  Identity answers the request BEFORE it knows whether it will send anything —
+  the availability lookup, the encrypt, the stage and the mail all run detached,
+  precisely so an address that already belongs to somebody else is answered
+  identically to a free one and simply never mailed. So the client returns
+  `void` (there is no field a caller could mistake for confirmation, which
+  forces the honest copy rather than merely permitting it); the success sentence
+  is CONDITIONAL — "if *address* isn't already in use here, a code is on its way
+  to it" — with its own test asserting the ABSENCE of a we-have-sent claim; and
+  the refusal for identity's `too_soon` is named `CODE_REQUESTED_RECENTLY` and
+  not `CODE_ALREADY_SENT`. That last rename is not pedantry: `too_soon` covers
+  BOTH the per-account re-issue floor and the per-DESTINATION bound, and the
+  destination bound fires on volume aimed at an address that may have staged
+  nothing and mailed nothing, so a code asserting a send would put "use the one
+  we sent you" in front of somebody with an empty inbox. A refusal on a route
+  arranged so that no answer implies delivery must not imply one either.
+- 2026-08-15 — TWO ROUTE-SPECIFIC ERROR MAPPERS, because the shared one is wrong
+  here in two different ways. `mapError` keys 400 on the STATUS and answers
+  INVALID_REQUEST, while identity answers **400** for a rejected ACCOUNT
+  PASSWORD, for both re-issue bounds, and for every refused code — so without
+  the mappers a wrong password and a rate refusal would both reach the browser
+  as "review your request", and the completion leg's single uniform refusal
+  would flatten into the same. The completion mapper additionally may not fall
+  through to the shared 401 branch, which maps `invalid_code` to
+  INVALID_CREDENTIALS: the login vocabulary, on a form whose only field is a
+  mailed code — the M12 collision, avoided by construction rather than
+  rediscovered on a fourth surface. The `mapVerifyError` precedent, applied
+  twice, and the identity-client spec pins all three 400 tokens apart.
+- 2026-08-15 — THE COMPLETION FORM IS ALWAYS AVAILABLE, and that follows from a
+  GAP rather than from a preference: identity exposes no read of a pending
+  change, so the page cannot know on load whether one is outstanding. A code
+  field that appeared only after a request made in THIS tab would strand anyone
+  who closed the page, or who reads their mail on a device other than the one
+  they asked from — which is most people. So the field, the confirm button and
+  the ungated cancel render unconditionally, and the cancel's copy states what
+  is now TRUE ("there is no pending address change") rather than claiming an
+  action happened, because identity's cancel is idempotent and silent: 204
+  whether or not anything was pending.
+- 2026-08-15 — THE M15 IDENTICAL-LABEL RULE BIT WITHIN MINUTES, AND MY OWN
+  EXISTING TESTS ARE WHAT CAUGHT IT. The new section needs the account password,
+  so it got a field labelled "Current password" — the same label the
+  password-change section two sections up already uses — and twelve
+  password-change assertions turned red on `getByLabelText` finding two. That is
+  exactly the defect `StepUpTarget`'s docblock warns about, arriving in the
+  component that hosts the warning. Fixed by naming what the field IS rather
+  than which one: "Account password". "Current" earns its place upstairs by
+  contrasting with "New password", and there is nothing here for it to contrast
+  with, so the word was carrying no meaning and all of the ambiguity. The page's
+  two mailed-code fields (`EV1-` verification, `EC1-` change) are kept distinct
+  for the same reason, pinned by a whole-page label-uniqueness assertion in
+  `AccountSecurity.test.tsx` — the only place both panels are rendered together,
+  and therefore the only place the property is observable at all.
+- 2026-08-15 — ONE PAGE, TWO PANELS, ONE FACT. Completing an address change does
+  two things in one statement: it moves the address AND vouches for it
+  (`replaceRecipient` repoints and stamps `verified_at`, because redeeming the
+  mailed code proved the mailbox seconds earlier). `EmailVerificationPanel` is a
+  SIBLING holding its own copy of that status, so a previously-unverified owner
+  would finish the ceremony and go on reading "your email address hasn't been
+  confirmed yet" directly above the sentence saying it has — one page
+  contradicting itself about a control, which is the shape M19 PR2 found in the
+  trust card and M20 PR1 found in the session card. THE FIX IS A RE-READ, NOT A
+  SHARED BOOLEAN: a small page-level client wrapper bumps a key and re-mounts
+  the panel, so the authority stays the SERVER (the ConsentControls rule) rather
+  than a flag two components must keep in step. Residual stated in docs/03 §6v
+  rather than papered over: the app-shell `UnverifiedAddressBanner` lives outside
+  that tree and re-reads only on navigation, so it can keep asking for a
+  confirmation that has just happened — the harmless direction, and closing it
+  properly needs a shared client cache this app does not have.
+- 2026-08-15 — THE SAME MUTATION SURVIVED AS IN PR1, AND FOR THE SAME REASON,
+  which is worth recording because the second instance is what makes it a
+  pattern rather than an anecdote. Reverting the step-up retry to read the live
+  inputs instead of the carried attempt left all 44 web tests green — because
+  the prompt REPLACES the form, so under a pending change there is nothing to
+  edit and the values cannot move. The carry is belt on both surfaces; the
+  replacement is the control, and it is what the tests assert. Ten of the other
+  eleven mutations were red on the assertions that name their property,
+  including the two that matter most — a success sentence claiming a send, and
+  a flipped route left `{ exempt: … }` (which the stale-exemption check added in
+  PR1 catches, one PR after being written for exactly this).

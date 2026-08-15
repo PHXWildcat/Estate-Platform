@@ -299,6 +299,50 @@ export class FakeIdentityClient implements IdentityClient {
     return this.changePasswordError ? Promise.reject(this.changePasswordError) : Promise.resolve();
   }
 
+  /**
+   * M20 PR2, the address change. Each leg records its arguments for the same
+   * reason as `changePassword`: the resolvers exist to forward values
+   * untouched, and a double that dropped them could not tell a faithful forward
+   * from a swapped or canonicalized one.
+   */
+  readonly requestEmailChangeCalls: Array<{
+    accessToken: string;
+    currentPassword: string;
+    newEmail: string;
+  }> = [];
+  requestEmailChangeError: Error | null = null;
+
+  readonly completeEmailChangeCalls: Array<{ accessToken: string; code: string }> = [];
+  completeEmailChangeError: Error | null = null;
+
+  readonly cancelEmailChangeCalls: string[] = [];
+  cancelEmailChangeError: Error | null = null;
+
+  requestEmailChange(
+    accessToken: string,
+    currentPassword: string,
+    newEmail: string,
+  ): Promise<void> {
+    this.requestEmailChangeCalls.push({ accessToken, currentPassword, newEmail });
+    return this.requestEmailChangeError
+      ? Promise.reject(this.requestEmailChangeError)
+      : Promise.resolve();
+  }
+
+  completeEmailChange(accessToken: string, code: string): Promise<void> {
+    this.completeEmailChangeCalls.push({ accessToken, code });
+    return this.completeEmailChangeError
+      ? Promise.reject(this.completeEmailChangeError)
+      : Promise.resolve();
+  }
+
+  cancelEmailChange(accessToken: string): Promise<void> {
+    this.cancelEmailChangeCalls.push(accessToken);
+    return this.cancelEmailChangeError
+      ? Promise.reject(this.cancelEmailChangeError)
+      : Promise.resolve();
+  }
+
   logoutByRefresh(refreshToken: string): Promise<void> {
     this.logoutByRefreshCalls.push(refreshToken);
     return this.logoutByRefreshError

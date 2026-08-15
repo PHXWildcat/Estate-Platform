@@ -516,3 +516,115 @@ describe('changePassword', () => {
     expect(String(thrown)).not.toContain('hash mismatch');
   });
 });
+
+/**
+ * M20 PR2 — the address change, three legs of one ceremony.
+ *
+ * THE REQUEST LEG NEEDS ITS OWN ERROR MAPPER, and that is the thing this
+ * describe exists to pin. The shared `mapError` keys 400 on the STATUS and
+ * answers INVALID_REQUEST — right for most routes and wrong for both of these,
+ * because identity answers **400** here for a rejected account password and for
+ * every refused code. Without the route-specific mappers a wrong password would
+ * reach the browser as "something about that request wasn't right", which names
+ * no field and implies no remedy.
+ */
+describe('email change', () => {
+  it('POSTs the request to /v1/auth/email/change/request on the caller bearer', async () => {
+    const { client, calls } = clientWith(() => response(202, { status: 'ok' }));
+
+    await client.requestEmailChange(TOKEN, 'the-passphrase', 'new@example.test');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/email/change/request`);
+    expect(calls[0]?.init.method).toBe('POST');
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({
+      currentPassword: 'the-passphrase',
+      newEmail: 'new@example.test',
+    });
+  });
+
+  it('resolves the request on 202 WITHOUT treating it as a delivery receipt', async () => {
+    // Identity answers before it knows whether it will send anything: the
+    // availability lookup, the encrypt, the stage and the mail all run
+    // detached, so an address that already belongs to somebody else is answered
+    // identically and never mailed. The client returns void — there is no field
+    // for a caller to mistake for confirmation — and the surface's copy is
+    // conditional because of it.
+    const { client } = clientWith(() => response(202, { status: 'ok' }));
+
+    await expect(
+      client.requestEmailChange(TOKEN, 'p', 'new@example.test'),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    [400, 'invalid_credentials', 'INVALID_CREDENTIALS'],
+    [400, 'too_soon', 'CODE_REQUESTED_RECENTLY'],
+    [400, 'invalid_request', 'INVALID_REQUEST'],
+    [403, 'stepup_required', 'STEPUP_REQUIRED'],
+    [401, '', 'UNAUTHENTICATED'],
+  ] as const)('maps request %s %s to %s', async (status, token, code) => {
+    // THREE OF THESE SHARE ONE STATUS. The shared mapper answers 400 by status
+    // alone, so all three would arrive as INVALID_REQUEST — a wrong password
+    // and a rate refusal both rendered as "review your request".
+    const { client } = clientWith(() => response(status, token === '' ? {} : { error: token }));
+
+    await expect(client.requestEmailChange(TOKEN, 'p', 'new@example.test')).rejects.toMatchObject({
+      extensions: { code },
+    });
+  });
+
+  it('POSTs the code to /v1/auth/email/change and resolves on 204', async () => {
+    const { client, calls } = clientWith(() => response(204, undefined));
+
+    await expect(client.completeEmailChange(TOKEN, 'EC1-ABCD-EFGH')).resolves.toBeUndefined();
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/email/change`);
+    expect(calls[0]?.init.method).toBe('POST');
+    // EXACTLY AS TYPED. The canonical fold decides the digest compare and lives
+    // in identity; folding here would be a second matching rule free to
+    // disagree with the one that matters.
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({ code: 'EC1-ABCD-EFGH' });
+  });
+
+  it('maps every completion refusal to the ONE uniform code', async () => {
+    // Identity gives one `invalid_code` for unknown, expired, spent, cancelled,
+    // attempt-exhausted, mis-shaped, key-rotated, and address-taken-during-the-
+    // window. That uniformity is the control — no progress meter for whoever is
+    // guessing, and no leak of another account's existence — so the edge
+    // carries it through rather than re-deriving distinctions from it.
+    const { client } = clientWith(() => response(400, { error: 'invalid_code' }));
+
+    await expect(client.completeEmailChange(TOKEN, 'EC1-WRONG')).rejects.toMatchObject({
+      extensions: { code: 'INVALID_VERIFICATION_CODE' },
+    });
+  });
+
+  it('DELETEs the cancel to /v1/auth/email/change with no body', async () => {
+    const { client, calls } = clientWith(() => response(204, undefined));
+
+    await expect(client.cancelEmailChange(TOKEN)).resolves.toBeUndefined();
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/email/change`);
+    expect(calls[0]?.init.method).toBe('DELETE');
+    expect(calls[0]?.init.body).toBeUndefined();
+  });
+
+  it('never returns identity’s response text on any leg', async () => {
+    const leak = 'staged address is victim@example.test';
+    const { client } = clientWith(() => response(400, { error: 'invalid_code', detail: leak }));
+
+    // Asserted over the WHOLE serialized error, not just `message`: a detail
+    // leaked into `extensions` would satisfy a message-only check while still
+    // reaching the browser — and on this ceremony the detail an implementation
+    // is most tempted to include is the pending address itself.
+    const thrown = await client
+      .completeEmailChange(TOKEN, 'EC1-WRONG')
+      .then(() => null)
+      .catch((err: unknown) => err);
+    expect(thrown).not.toBeNull();
+    expect(JSON.stringify(thrown)).not.toContain(leak);
+    expect(String(thrown)).not.toContain(leak);
+  });
+});

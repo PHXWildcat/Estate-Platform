@@ -102,6 +102,14 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   TOO_MANY_ATTEMPTS:
     'Too many attempts. For your protection this is paused for a few minutes — wait, then try ' +
     'again. Nothing is wrong with your code or your account.',
+  // M20 PR2. Deliberately says "asked for" and never "we sent you", because the
+  // route this comes from does not promise delivery: an address that already
+  // belongs to somebody else is answered identically and never mailed, so a
+  // reader can meet this sentence with nothing in their inbox. "If a code
+  // arrived" is the conditional that keeps it true either way.
+  CODE_REQUESTED_RECENTLY:
+    'You asked for this very recently. If a code arrived, use that one — otherwise wait a few ' +
+    'minutes before asking again.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
 };
@@ -151,5 +159,52 @@ export function stepUpMessageFor(code: GqlFailureCode): string {
 export function passwordChangeMessageFor(code: GqlFailureCode): string {
   return code === 'INVALID_CREDENTIALS'
     ? 'That current password wasn’t right. Check it and try again — your password has not been changed.'
+    : errorCopy[code];
+}
+
+/**
+ * The address change is TWO forms and therefore TWO resolvers (M20 PR2), which
+ * is the point rather than an inconvenience: `INVALID_REQUEST` means "check the
+ * address you typed" on the request leg and "that code isn't a shape we accept"
+ * on the completion leg, and one function serving both would have to pick a
+ * sentence that is wrong on one of them. The M12 rule — a form must never
+ * explain a refusal in the vocabulary of a field it does not have — applied to
+ * a ceremony whose two halves have entirely different fields.
+ *
+ * REQUEST leg. `INVALID_CREDENTIALS` is the CURRENT password (identity answers
+ * it from `verifyPassword`, exactly as on the password-change form), so the
+ * default "email and password combination" wording names a field this form does
+ * not have. `INVALID_REQUEST` is identity's answer to BOTH a malformed address
+ * and one that is already this account's — it genuinely conflates them, so this
+ * sentence names the actionable possibility without asserting which applied.
+ *
+ * Both sentences end by saying nothing changed, which is the fact a reader most
+ * needs after a refusal on a route that rewrites where they sign in.
+ */
+export function addressChangeMessageFor(code: GqlFailureCode): string {
+  if (code === 'INVALID_CREDENTIALS') {
+    return 'That current password wasn’t right. Check it and try again — your sign-in address has not been changed.';
+  }
+  if (code === 'INVALID_REQUEST') {
+    return 'We couldn’t start that change. Check the new address — if it’s the one you already sign in with, there’s nothing to change. Nothing has been changed.';
+  }
+  return errorCopy[code];
+}
+
+/**
+ * COMPLETION leg (M20 PR2). Identity answers one `invalid_code` for every way a
+ * challenge fails — unknown, expired, spent, cancelled, attempt-exhausted, and
+ * a raced registration that took the address first — so the copy has to carry
+ * the possibilities the server deliberately refuses to distinguish.
+ *
+ * The shared INVALID_VERIFICATION_CODE sentence (M14) would end "send yourself
+ * a new one", which is the remedy on the address-VERIFICATION surface and is
+ * not available here: there is no resend route for a pending change, and asking
+ * for a fresh code means cancelling this one and starting again. Offering a
+ * button that does not exist is how a stuck user stays stuck.
+ */
+export function addressCodeMessageFor(code: GqlFailureCode): string {
+  return code === 'INVALID_VERIFICATION_CODE'
+    ? 'That code wasn’t accepted. Codes are single-use, expire after a short while, and stop working once too many wrong ones are tried — cancel this change and start again to get a new one.'
     : errorCopy[code];
 }

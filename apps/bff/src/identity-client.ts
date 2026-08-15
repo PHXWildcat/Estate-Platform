@@ -152,6 +152,52 @@ export interface IdentityClient {
    * caller's own alive.
    */
   changePassword(accessToken: string, currentPassword: string, newPassword: string): Promise<void>;
+
+  /**
+   * Stage a change of the account's sign-in address (M20 PR2, M17 PR4's
+   * ceremony). VERIFY-THEN-SWITCH: nothing on file moves until a code mailed to
+   * the NEW address comes back, because login resolves users by `email_bidx` and
+   * an unproven address would lock its owner out of login itself.
+   *
+   * THE 202 IS NOT A DELIVERY RECEIPT and callers must not render it as one.
+   * Identity answers before the send: the availability lookup, the encrypt, the
+   * stage and the mail all run detached, so an address that already belongs to
+   * somebody else returns exactly this answer and simply never mails. That
+   * uniformity is the control — the caller learns nothing about who else holds
+   * an address — and it means the only honest copy is conditional.
+   *
+   * Throws STEPUP_REQUIRED (conditional, on `SecondFactorGate` — the bootstrap
+   * account with no factor is let through), INVALID_CREDENTIALS for a wrong
+   * CURRENT password, CODE_REQUESTED_RECENTLY for either re-issue bound, and
+   * INVALID_REQUEST for a malformed address OR one that is already this
+   * account's — identity answers `invalid_request` for both and the surface
+   * cannot tell them apart.
+   */
+  requestEmailChange(accessToken: string, currentPassword: string, newEmail: string): Promise<void>;
+
+  /**
+   * Finish the change by presenting the code mailed to the new address.
+   *
+   * Throws INVALID_VERIFICATION_CODE for EIGHT distinct server-side causes —
+   * unknown, expired, spent, attempts exhausted, a lost race, a rotated key, and
+   * the candidate address having been registered by somebody else mid-window.
+   * Identity answers one `invalid_code` for all of them and THAT UNIFORMITY IS
+   * THE CONTROL, so the edge carries it through rather than re-deriving
+   * distinctions; the copy enumerates possibilities instead.
+   *
+   * On success the new address is live AND already verified (the code proved
+   * it), outstanding reset and address-verification codes are swept in the same
+   * transaction, and every OTHER session is revoked.
+   */
+  completeEmailChange(accessToken: string, code: string): Promise<void>;
+
+  /**
+   * Abandon a staged change. IDEMPOTENT and ungated beyond the session: it
+   * answers 204 whether or not anything was pending, and it is deliberately not
+   * step-up gated — the M6 rule that the protective action must never be harder
+   * than the permissive one.
+   */
+  cancelEmailChange(accessToken: string): Promise<void>;
 }
 
 export interface Passkey {
@@ -366,7 +412,31 @@ export type BffErrorCode =
    * surfaces render for a rejected code: the whole point of the cap is that the
    * next code will not be accepted either, however correct it is.
    */
-  | 'TOO_MANY_ATTEMPTS';
+  | 'TOO_MANY_ATTEMPTS'
+  /**
+   * A change was requested so recently that identity refuses to start another
+   * (M20 PR2). Identity answers one `too_soon` for TWO conditions — the
+   * per-account re-issue floor and the per-destination address bound — so one
+   * sentence must cover both.
+   *
+   * ITS OWN CODE rather than `TOO_MANY_ATTEMPTS`, which is the closest existing
+   * fit and is wrong in the direction that matters: its copy ends "Nothing is
+   * wrong with your code or your account", which reads as a platform hiccup,
+   * whereas this refusal is a considered answer about a request the caller
+   * themselves made minutes ago and whose likely remedy is to go and read the
+   * mail they already asked for.
+   *
+   * NAMED FOR THE REQUEST, NOT FOR A SEND, and the distinction is load-bearing
+   * rather than pedantic: the address bound fires on volume aimed at a
+   * DESTINATION, and a destination that already belongs to somebody else stages
+   * nothing and mails nothing (the silent-availability control). So a caller
+   * can reach this refusal having never been sent anything, and a code called
+   * `CODE_ALREADY_SENT` — with copy telling them to use the one they were sent
+   * — would send them looking for a mail that will never arrive. The whole
+   * route is arranged so that no answer implies delivery; its refusals must not
+   * either.
+   */
+  | 'CODE_REQUESTED_RECENTLY';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -398,6 +468,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   PAIRING_UNAVAILABLE: 'We could not create a pairing code right now',
   WEBAUTHN_FAILED: 'The passkey ceremony was not accepted',
   TOO_MANY_ATTEMPTS: 'Too many attempts — wait a few minutes before trying again',
+  CODE_REQUESTED_RECENTLY: 'A change was requested recently — wait before asking for another',
 };
 
 /**
@@ -826,6 +897,97 @@ export class FetchIdentityClient implements IdentityClient {
     // 204 No Content. Deliberately NOT parsed: `parseBody` would throw
     // 'identity response was not JSON' on an empty body, turning every
     // SUCCESSFUL change into an error.
+  }
+
+  async requestEmailChange(
+    accessToken: string,
+    currentPassword: string,
+    newEmail: string,
+  ): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/email/change/request',
+      accessToken,
+      body: { currentPassword, newEmail },
+    });
+    if (!res.ok) {
+      throw await this.mapChangeRequestError(res);
+    }
+    // 202 Accepted, body `{status:'ok'}` — deliberately not read. It reports
+    // that the request was TAKEN, never that a mail was sent (the send is
+    // detached), so there is nothing in it a caller may act on.
+  }
+
+  async completeEmailChange(accessToken: string, code: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/email/change',
+      accessToken,
+      // Passed through UNCHANGED. Identity measures and hashes the CANONICAL
+      // fold, so folding here would be a second copy of a matching rule, free
+      // to disagree with the one that decides (the `verifyEmail` precedent).
+      body: { code },
+    });
+    if (!res.ok) {
+      throw await this.mapChangeCompleteError(res);
+    }
+    // 204 No Content — not parsed, for `changePassword`'s reason.
+  }
+
+  async cancelEmailChange(accessToken: string): Promise<void> {
+    const res = await this.request({
+      method: 'DELETE',
+      path: '/v1/auth/email/change',
+      accessToken,
+    });
+    if (!res.ok) {
+      // The shared mapper suffices: this route has no domain refusal at all.
+      // Its only non-204 is the guard's 401, so there is no token to interpret.
+      throw await this.mapError(res);
+    }
+  }
+
+  /**
+   * THE SHARED MAPPER IS WRONG FOR THIS ROUTE, which is the whole reason this
+   * exists. `mapError` is STATUS-keyed for 400 and turns every one of them into
+   * INVALID_REQUEST — but identity answers **400** (not 401) for a rejected
+   * CURRENT password here, so without this a wrong password would reach the
+   * browser as "something about that request wasn't right", which names the
+   * wrong field and implies the wrong remedy.
+   */
+  private async mapChangeRequestError(res: Response): Promise<Error> {
+    if (res.status === 400) {
+      const token = await readErrorToken(res.clone());
+      if (token === 'invalid_credentials') {
+        return bffError('INVALID_CREDENTIALS');
+      }
+      if (token === 'too_soon') {
+        return bffError('CODE_REQUESTED_RECENTLY');
+      }
+      // `invalid_request` covers BOTH a malformed address and one that is
+      // already this account's own — identity does not distinguish them, so
+      // neither can this.
+      return bffError('INVALID_REQUEST');
+    }
+    return this.mapError(res);
+  }
+
+  /**
+   * Same reason, other leg: identity answers **400** `invalid_code`, and the
+   * shared mapper's 400 branch would flatten the one uniform refusal this
+   * ceremony has into INVALID_REQUEST. (Its 401 branch already maps
+   * `invalid_code` to INVALID_CREDENTIALS, which is the login vocabulary and
+   * equally wrong on a form whose only field is a mailed code — the M12
+   * collision.)
+   */
+  private async mapChangeCompleteError(res: Response): Promise<Error> {
+    if (res.status === 400) {
+      const token = await readErrorToken(res.clone());
+      return token === 'invalid_code'
+        ? bffError('INVALID_VERIFICATION_CODE')
+        : bffError('INVALID_REQUEST');
+    }
+    return this.mapError(res);
   }
 
   async logout(accessToken: string): Promise<boolean> {

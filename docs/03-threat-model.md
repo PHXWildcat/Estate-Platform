@@ -2145,9 +2145,9 @@ retired UNCONDITIONALLY before every mint (the M14-review wedge).
 - *An honest user typing a TAKEN address waits for a mail that never comes.*
   The cost of register's uniform answer, paid here too; the floor is not burned
   for it, so retrying with a corrected address is free.
-- *The routes ship with no surface* — no BFF resolver, no screen. The same
-  zero-callers gap as PR2's and PR3's, recorded rather than implied; the
-  M14 PR3 settings page is where the ceremony belongs when the surface lands.
+- ~~*The routes ship with no surface* — no BFF resolver, no screen.~~
+  **CLOSED by M20 PR2 (§6v)**: all three legs now have a product consumer end
+  to end, on the M14 PR3 settings page exactly as this line predicted.
 - *`identity.email_changed`'s reader has no self-service response.* The notice
   reaches the old mailbox, but a hijacked owner cannot sign in (the address
   changed) and cannot reset (the reset mails the NEW address). Their remedy is
@@ -2955,6 +2955,104 @@ and PR3 flip them. Separately measured while driving this: the web app never
 refreshes an access token, so a signed-in browser reports "Your session has
 ended" after 15 minutes while its session row is live for 30 days — the gap M20
 PR4 is scoped to close, now observed rather than inferred.
+
+## 6v. Threat-model delta — M20 PR2, the address-change surface (2026-08-15)
+
+**§6n's own residual, closed by the PR that line predicted.** M17 PR4 shipped
+all three legs of the address change with their copy decisions taken and no
+surface at all, and recorded it as the same zero-callers gap as its siblings',
+naming the M14 PR3 settings page as where the ceremony belonged. This is that
+page. The route↔consumer fence's `EXEMPT_RECOVERY_SURFACE` now holds only the
+two reset legs, which need a signed-out route group of their own (PR3).
+
+**The 202 is not a delivery receipt, and no layer is allowed to render it as
+one.** Identity answers the request BEFORE it knows whether it will send
+anything: the availability lookup, the encrypt, the stage and the mail all run
+detached, precisely so an address that already belongs to somebody else is
+answered identically to a free one and simply never mailed. That uniformity is
+the control, and it constrains this surface all the way up:
+
+- The BFF client returns `void`. There is no field a caller could mistake for
+  confirmation, so the honest copy is forced rather than chosen.
+- The success sentence is CONDITIONAL — "if *address* isn't already in use here,
+  a code is on its way to it" — and its own test asserts the absence of a
+  we-have-sent claim. Rendering the 202 as a send would tell one caller, in the
+  one case that matters, exactly what the silent-availability control withholds.
+- The re-issue refusal is named for the REQUEST, not for a send
+  (`CODE_REQUESTED_RECENTLY`). Identity's `too_soon` covers the per-account floor
+  AND the per-destination bound, and the destination bound fires on volume aimed
+  at an address that may have been staged nothing and mailed nothing — so a code
+  called `CODE_ALREADY_SENT`, with copy telling the reader to use the one they
+  were sent, would send them looking for a mail that will never arrive.
+
+**Two route-specific error mappers, because the shared one is wrong here.**
+`mapError` keys 400 on the STATUS and answers `INVALID_REQUEST`; identity answers
+**400** for a rejected account password, for both re-issue bounds, and for every
+refused code. Without the mappers a wrong password and a rate refusal would both
+reach the browser as "review your request", and the completion leg's single
+uniform refusal would flatten into the same. The completion mapper also may not
+fall through to the shared 401 branch, which maps `invalid_code` to
+`INVALID_CREDENTIALS` — the login vocabulary, on a form whose only field is a
+mailed code. That is the M12 collision, avoided rather than rediscovered.
+
+**The uniform refusal is carried through, never re-derived.** Identity answers
+one `invalid_code` for a code that is unknown, expired, spent, cancelled,
+attempt-exhausted, mis-shaped, key-rotated, or whose candidate address was
+registered by somebody else during the window. That last one is why the
+uniformity matters beyond denying a progress meter: `address_taken` would leak
+another account's existence to an authenticated stranger. The edge maps all of
+them to one code, and the surface's copy carries the possibilities the server
+deliberately will not distinguish — WITHOUT offering the shared sentence's
+"send yourself a new one", because there is no resend route for a pending
+change and offering a button that does not exist is how a stuck user stays
+stuck.
+
+**The completion form is always available, and that follows from a gap rather
+than a preference.** Identity exposes no read of a pending change, so the page
+cannot know on load whether one is outstanding. A code field that appeared only
+after a request made in THIS tab would strand anyone who closed the page or who
+reads their mail on a different device — so the field, the confirm button and
+the ungated cancel are rendered unconditionally.
+
+**Asymmetry, and the M15 label rule.** Asking is step-up gated (conditionally,
+via `SecondFactorGate` — an account with no verified factor is let through, the
+bootstrap case); finishing and cancelling are not. Somebody who has just
+realised they typed the wrong address must not be sent to find an authenticator
+first. The section reuses the page's ONE `StepUpTarget` prompt rather than
+raising its own. Its password field is labelled "Account password" and not
+"Current password" — caught by the existing password-change tests refusing to
+run, because two fields on one page carrying the identical label are two inputs
+neither a person tabbing through nor a query can tell apart; the two mailed-code
+fields on the page (`EV1-` verification, `EC1-` change) are kept distinct for
+the same reason, pinned by a whole-page label-uniqueness assertion.
+
+**One page, two panels, one fact.** Completing a change moves the address AND
+vouches for it in the same statement (redeeming the code proved the mailbox
+seconds earlier), so the sibling `EmailVerificationPanel` would otherwise go on
+saying "your email address hasn't been confirmed yet" directly above the sentence
+saying it has — one page contradicting itself about a control, the shape M19 PR2
+found in the trust card and M20 PR1 found in the session card. A page-level
+client wrapper re-mounts that panel on completion, so the authority stays the
+SERVER rather than a boolean passed between siblings.
+
+### Residuals
+
+- *The app-shell `UnverifiedAddressBanner` goes stale until the next
+  navigation.* It lives outside the page's tree and re-reads on `pathname`
+  change only, so after a completed change it can keep asking for a
+  confirmation that has just happened. The harmless direction — it nags about
+  something already done rather than hiding a real gap — and closing it
+  properly needs a shared client cache this app does not have.
+- *No surface shows the address currently on file.* Neither `session` nor the
+  verification query returns it, so the "if it's the one you already sign in
+  with" reading of identity's conflated `invalid_request` cannot be pre-empted
+  by the UI. Identity genuinely does not distinguish a malformed address from
+  the account's own, so the copy names the actionable possibility without
+  asserting which applied.
+- *§6n's own remaining residuals are untouched:* an honest user typing a taken
+  address still waits for a mail that never comes, and
+  `identity.email_changed`'s reader still has no self-service response — the
+  notice is a detection control, and until TB7 the remedy is support.
 
 ## 7. Validation program
 
