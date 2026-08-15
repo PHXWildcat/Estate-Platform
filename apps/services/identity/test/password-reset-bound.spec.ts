@@ -24,6 +24,8 @@ import type { PasswordHasher } from '../src/password';
 import type { PasswordResetRepo } from '../src/password-reset.repo';
 import type { SessionsRepo } from '../src/sessions.repo';
 import type { UsersRepo } from '../src/users.repo';
+import { DELIVERED } from './notifications-double';
+import type { SendOutcome } from '@estate/notifications-client';
 
 const NOW = new Date('2026-08-13T12:00:00.000Z');
 
@@ -109,9 +111,9 @@ function makeService(opts: { userExists: boolean }): Fakes {
     { emailIndexKey: Buffer.alloc(32, 3) } as unknown as IdentityConfig,
     () => NOW,
     {
-      sendPasswordReset: (input: { code: string }): Promise<{ accepted: boolean }> => {
+      sendPasswordReset: (input: { code: string }): Promise<SendOutcome> => {
         state.mailed.push(input.code);
-        return Promise.resolve({ accepted: true });
+        return Promise.resolve(DELIVERED);
       },
     } as never,
   );

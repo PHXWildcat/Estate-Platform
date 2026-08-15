@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { emailBlindIndex, normalizeEmail } from '@estate/crypto';
-import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
+import { NOTIFICATIONS, wasDelivered, type NotificationsPort } from '@estate/notifications-client';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { IdentityConfig } from './config';
 import { Db } from './db';
@@ -209,10 +209,21 @@ export class PasswordResetService {
       kind: 'identity.password_reset',
       code,
     });
-    const delivered = outcome.accepted;
+    // `wasDelivered`, NOT `outcome.accepted`: the latter is the union's
+    // discriminant and says only that a healthy notifications service answered.
+    // `no_recipient` (M9's recipient feed is fire-and-forget, so a registration
+    // during a notifications outage leaves no row — and that user is precisely
+    // the one who later cannot sign in) and `carrier_failure` both answer
+    // `accepted: true, delivered: false`, which this read scored as a delivery.
+    const delivered = wasDelivered(outcome);
     if (!delivered) {
-      // Retire the code the user never received, or the one-live-code guard
-      // becomes a TTL-long lockout over a mail that does not exist.
+      // Retire the code nobody holds. NOT because it would otherwise lock the
+      // account out — `lastMintedAt` counts revoked rows, so retiring cannot
+      // shorten the re-issue floor, and the unconditional retire above already
+      // stops a stale code blocking the next mint. It is retired because a
+      // live reset code that reached no mailbox should not exist, and
+      // `carrier_failure` is the case where the carrier may have taken the
+      // message before failing.
       await this.codes.revokeLive(user.id, now);
     }
     await this.authEvents.insert({
@@ -295,7 +306,7 @@ export class PasswordResetService {
       userId: row.user_id,
       kind: 'identity.password_changed',
     });
-    await this.events.passwordReset(row.user_id, revoked.length, notified.accepted);
+    await this.events.passwordReset(row.user_id, revoked.length, wasDelivered(notified));
   }
 
   /**

@@ -1983,9 +1983,21 @@ deviating from them, stop and propose the change with rationale — do not silen
   UNIQUE INDEX (`WHERE revoked_at IS NULL AND verified_at IS NULL`) rather than
   check-then-act, so two concurrent logins produce one code and the loser adopts
   it. A send that does not land RETIRES its code, or the idempotence guard turns
-  into a TTL-long lockout over a mail nobody received. Deliberately still open
-  and stated in docs/03 rather than dropped: the fixed-shape/fixed-time register
-  response for the M1 enumeration timing channel.
+  into a TTL-long lockout over a mail nobody received. CORRECTED 2026-08-14 —
+  that last clause was true when written and was invalidated by M14's OWN
+  review, which made the retire UNCONDITIONAL at the top of every mint: with
+  that in place, neither guard can wedge (the live-code condition is cleared by
+  the next call's own retire, and the re-issue floor keys on `lastMintedAt`,
+  which orders over revoked rows and so cannot be shortened by retiring at all).
+  The send-failure retire survives for a different and better reason — a live
+  code that reached no mailbox should not exist, and a carrier failure is
+  precisely the case where the carrier may have taken the message before
+  failing. The same false justification was found copied into the reset and
+  address-change ceremonies and corrected there in the same pass; a milestone
+  that invalidates a sentence owns it, and the review that changed the mechanic
+  did not come back for this one. Deliberately still open and stated in docs/03
+  rather than dropped: the fixed-shape/fixed-time register response for the M1
+  enumeration timing channel.
 - 2026-08-07 — M14 decision 5: the verified bit lives on
   `notification_recipients`, NOT on `users`, so the delivery store structurally
   cannot hold an unproven address without saying so and the question "can we
@@ -6201,3 +6213,96 @@ deviating from them, stop and propose the change with rationale — do not silen
   The tell was `restarts=0` alongside a dead port: a container that never
   restarted cannot have exited, so the process died without the container
   noticing.
+- 2026-08-14 — A DISCRIMINANT IS NOT AN ANSWER, and three identity call sites
+  read one as though it were. `SendOutcome` is
+  `{accepted: true; delivered: boolean; …} | {accepted: false}`: `accepted` says
+  a healthy notifications service REPLIED, `delivered` says the mail went, and
+  the type's own docstring states the rule ("Callers record either as a
+  non-delivery"). The service answers `accepted: true, delivered: false` for
+  `no_recipient` and `carrier_failure` (a crypto-shredded DEK lands there too).
+  The mailed reset code, the reset-completed notice and the password-change
+  notice all read `outcome.accepted` alone — and each of those booleans renders
+  as the literal string `delivered` or `failed` in an APPEND-ONLY audit event,
+  so a notice nobody received was recorded as delivered. The M14 PR0 shape (an
+  audit claim inverted), sitting on the account-recovery ceremony whose entire
+  failure mode is a user who cannot get in — and reachable rather than
+  theoretical, because M9's recipient feed is fire-and-forget, so a registration
+  during a notifications outage leaves no recipient row and that user is exactly
+  the one who later cannot sign in. TYPESCRIPT CANNOT CATCH THIS BY
+  CONSTRUCTION: the union forces a narrowing on the discriminant before
+  `delivered` may be read, so STOPPING AT THE NARROWING GUARD TYPE-CHECKS
+  PERFECTLY while meaning something else.
+  Fixed as ONE SPELLING, not three edits — `wasDelivered` in
+  @estate/notifications-client, used at all seven identity sites including the
+  four already correct, because one behaviour with several spellings grows one
+  bug per copy (the M8 PR2 seven-audit-producers shape). The fence then makes
+  the wrong one unwritable: a consumer may not NAME the discriminant unless it
+  is one of three declared notifications ADAPTERS. CORRECTED, because the first
+  version of this entry got their reason wrong: they do NOT name it to answer
+  "is the service reachable" and they do NOT turn it into a 503 — that refusal
+  comes from `deliversToRealChannels`, a property of the adapter CLASS checked
+  by the service elsewhere. They name it because TypeScript will not let them
+  read `delivered` or `recipientVerified` off the union without narrowing on
+  `accepted` first, and each then collapses the refused arm to
+  `delivered: false` — which is `wasDelivered` computed by hand, so
+  "the only derivation" is true of every CONSUMER and not of the repo. They are
+  additionally held to using it only as a NEGATED gate (`if (!x.accepted)`), so
+  an adapter cannot start deriving a delivery fact any other way.
+  Mutation-tested four ways (each defect reverted, an adapter deriving delivery,
+  a dropped table entry), all red on the assertion that names the property.
+- 2026-08-14 — AND NO TEST COULD SEE IT, because NO DOUBLE EVER ANSWERED ON THE
+  DISAGREEING ARM. Of 38 specs in identity's test directory, 13 name `accepted`
+  and 12 produce an outcome, every one of them `delivered: true` — so the arm
+  where the discriminant and the answer differ was never once exercised. THE
+  FIRST WRITE-UP OF THIS ENTRY SAID "every one answered a bare
+  `{accepted: true}`" AND THAT IS FALSE, caught by an adversarial lens and then
+  measured: FOUR did (which is not a valid `SendOutcome` at all, since the
+  accepted arm carries `delivered`, `channel` and `recipientVerified`), while
+  THREE PRODUCED FULLY VALID FOUR-FIELD OUTCOMES AND WERE EXACTLY AS BLIND. That
+  is the better point and the one I had missed: the mechanism was never a
+  malformed literal, so "make the doubles well-typed" would not have found it —
+  only answering on the other arm does. The compiler could not help either,
+  because they reach their constructors through `as never` or
+  `as unknown as NotificationsPort`, and A CAST ON THE OUTER OBJECT LEAVES THE
+  INNER METHOD'S RETURN TYPE INFERRED and never compared to the port. The M16
+  PR2b `chrome-double.ts` lesson one layer beneath the fixtures. Worse, the case
+  that LOOKED like coverage — auth.service.spec's "NOTIFIES the owner, and puts
+  the outcome on the audit event" — only ever used `{accepted: false}`, the arm
+  where the discriminant and the answer AGREE, so it was green throughout: the
+  M13 "a test named for a property it never touched" shape, selecting the one
+  arm that could not fail. Outcomes are four named constants typed as
+  `SendOutcome` now (the one place no cast intervenes) and the fence forbids a
+  hand-rolled `accepted:` literal in that directory. The three adapters are left
+  alone, and that reason was overstated too: only VAULT doubles the client port
+  faithfully (`notifier-adapters.spec.ts`, typed `Promise<SendOutcome>`) —
+  settlement's `HttpNotifier` and profile's `HttpLinkNotifier` are NEVER
+  constructed in a test, their suites doubling the service-level port above
+  them. What makes them safe is not their doubles but that all three read
+  `outcome.delivered` explicitly on the accepted arm, so an incomplete literal
+  fails SAFE; that two of the three translations are untested is a residual now
+  written in docs/03 §6t rather than implied to be covered.
+- 2026-08-14 — A BULK REGEX REWROTE MY OWN PROSE, which is a new way for a
+  mechanical edit to lie. Converting the doubles with a
+  `{ accepted: true }` → `DELIVERED` replacement also rewrote three COMMENTS I
+  had just written explaining why that literal is invalid, so two of them ended
+  up asserting the opposite of the truth ("the previous double answered
+  `DELIVERED` — a shape the real service CANNOT produce"). Green everywhere; the
+  code was right and the explanation had been inverted. The rule the repo
+  already applies to scanners — a scan of source means a scan of CODE, strip
+  comments — applies to REWRITES of source as well, and the cheap check is to
+  grep the changed files for the replacement token appearing inside a comment.
+  Also relearned in the same pass: an "insert after the last `import` line"
+  heuristic lands INSIDE a multi-line import block and produces a syntax error
+  in a file the suite never selected, so `tsc --noEmit` caught what jest did not
+  — a green jest run is not a typecheck, for the third time.
+- 2026-08-14 — CORRECTED WHILE FIXING IT: the reset's retire-on-failure comment
+  claimed retiring prevents "a TTL-long lockout over a mail that does not
+  exist". It does not. `lastMintedAt` orders over ALL rows including revoked
+  ones, so retirement cannot shorten the re-issue floor — and the unconditional
+  retire before every mint already stops a stale code blocking the next one, so
+  nothing was locked out either way (`RESET_FLOOR_MS` and `RESET_TTL_MS` are
+  both 30 minutes). The code is retired because a live reset code that reached
+  no mailbox should not exist, which matters most in the `carrier_failure` case
+  where the carrier may have taken the message before failing. Recorded because
+  the plan that opened this work repeated the comment's claim as the harm, and
+  the real harm is narrower and worse: not a lockout, an inverted record.

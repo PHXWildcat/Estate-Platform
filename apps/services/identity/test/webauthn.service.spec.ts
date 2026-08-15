@@ -20,6 +20,7 @@ import type { SessionsRepo } from '../src/sessions.repo';
 import type { WebAuthnCredentialRow, WebAuthnRepo } from '../src/webauthn.repo';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import { WebAuthnService } from '../src/webauthn.service';
+import { DELIVERED, UNREACHABLE } from './notifications-double';
 
 jest.mock('@simplewebauthn/server');
 
@@ -88,9 +89,7 @@ function makeFakes(): {
       // The clone branch's ONLY outbound call. Defaults to a delivered send;
       // the case that cares about a failed one overrides it, because a double
       // that always succeeds cannot see the `notified: failed` path.
-      sendAccountSecurity: jest
-        .fn()
-        .mockResolvedValue({ accepted: true, delivered: true, channel: 'email' }),
+      sendAccountSecurity: jest.fn().mockResolvedValue(DELIVERED),
     },
     authEvents: { insert: jest.fn() },
     events: {
@@ -380,7 +379,7 @@ describe('WebAuthnService.finishAuthentication', () => {
     fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
     fakes.notifications.sendAccountSecurity.mockImplementation(() => {
       order.push('notify');
-      return Promise.resolve({ accepted: true, delivered: true, channel: 'email' });
+      return Promise.resolve(DELIVERED);
     });
     fakes.events.webauthnCloneDetected.mockImplementation(() => {
       order.push('audit');
@@ -401,7 +400,7 @@ describe('WebAuthnService.finishAuthentication', () => {
     const fakes = makeFakes();
     fakes.repo.consumeChallenge.mockResolvedValue('auth-challenge');
     fakes.repo.findCredentialById.mockResolvedValue(credRow({ sign_count: '5' }));
-    fakes.notifications.sendAccountSecurity.mockResolvedValue({ accepted: false });
+    fakes.notifications.sendAccountSecurity.mockResolvedValue(UNREACHABLE);
     mockVerifyAuth.mockResolvedValue({
       verified: true,
       authenticationInfo: { newCounter: 5, userVerified: true },

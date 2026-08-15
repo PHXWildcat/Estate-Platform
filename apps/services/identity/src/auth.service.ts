@@ -18,7 +18,7 @@ import {
   type DekRepository,
   type FieldCrypto,
 } from '@estate/crypto';
-import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
+import { NOTIFICATIONS, wasDelivered, type NotificationsPort } from '@estate/notifications-client';
 import { AddressAttemptBound } from './address-bound';
 import { AuthEventsRepo } from './auth-events.repo';
 import { Db } from './db';
@@ -596,7 +596,7 @@ export class AuthService {
       userId,
       kind: 'identity.password_changed',
     });
-    await this.events.passwordChanged(userId, sessionId, revoked.length, notified.accepted);
+    await this.events.passwordChanged(userId, sessionId, revoked.length, wasDelivered(notified));
   }
 
   /**

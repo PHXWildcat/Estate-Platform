@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { emailBlindIndex, normalizeEmail, type FieldCrypto } from '@estate/crypto';
-import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
+import { NOTIFICATIONS, wasDelivered, type NotificationsPort } from '@estate/notifications-client';
 import type { SessionContext } from '@estate/auth-guard';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { IdentityConfig } from './config';
@@ -223,10 +223,16 @@ export class EmailChangeService {
       code,
       email: normalized,
     });
-    const delivered = outcome.accepted && outcome.delivered;
+    const delivered = wasDelivered(outcome);
     if (!delivered) {
-      // Retire the code nobody received, or the one-live-change guard becomes
-      // a TTL-long lockout over a mail that does not exist (the PR3 rule).
+      // Retire the code nobody holds. NOT to avoid a lockout, which is what
+      // this comment used to claim and what the reset's twin claimed until it
+      // was measured: `lastMintedAt` orders over ALL rows including revoked
+      // ones, so retiring cannot shorten the re-issue floor, and the
+      // unconditional retire before the mint already stops a stale code
+      // blocking the next one. It is retired because a live change code that
+      // reached no mailbox should not exist — and a carrier failure is the
+      // case where the carrier may have taken the message before failing.
       await this.changes.revokeLive(userId, now);
     }
     await this.authEvents.insert({
@@ -342,7 +348,7 @@ export class EmailChangeService {
       userId,
       kind: 'identity.email_changed',
     });
-    const oldNotified = notice.accepted && notice.delivered;
+    const oldNotified = wasDelivered(notice);
 
     // THE REPLACEMENT: repoint and vouch in one statement — the address was
     // proved by the redemption seconds ago. A failure self-heals at the next

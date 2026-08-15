@@ -5174,6 +5174,50 @@ with `restarts=0` and the port answering nothing — the M8 "up with a dead
 service" shape, from a runtime crash rather than from our code. It reproduced
 under load and not otherwise; nothing here depends on it.
 
+### Interlude — a mail the carrier refused was recorded as delivered (2026-08-14)
+
+**Found while scoping the account surface, fixed on its own branch first**, on
+the standing rule that a live defect must not hide inside a feature change.
+
+`SendOutcome` is a discriminated union: `accepted` says a healthy notifications
+service replied, `delivered` says the mail went. Three identity call sites — the
+mailed reset code, the reset-completed notice and the password-change notice —
+read the DISCRIMINANT alone, and each of those booleans renders as the literal
+string `delivered` or `failed` in an append-only audit event. So a notice nobody
+received was recorded as delivered, on the account-recovery ceremony whose whole
+failure mode is a user who cannot get in. Reachable rather than theoretical:
+M9's recipient feed is fire-and-forget, so a registration during a notifications
+outage leaves no recipient row — and that user is precisely the one who later
+cannot sign in. Full record in docs/03 §6t.
+
+Two things made it invisible, and both generalize. TypeScript forces a narrowing
+on the discriminant before `delivered` may be read, so **stopping at the
+narrowing guard type-checks perfectly** while meaning something else. And NO
+DOUBLE IN IDENTITY'S TEST DIRECTORY EVER ANSWERED ON THE DISAGREEING ARM: of 38
+specs, 13 name `accepted` and 12 produce an outcome, and every one of the twelve
+was `delivered: true`. Measured, because the first write-up of this said
+"every one answered a bare `{ accepted: true }`" and that is false — four did,
+while **three produced fully valid four-field outcomes and were exactly as
+blind**. The mechanism was never a malformed literal; it was an unexercised arm,
+and the casts (`as never`, `as unknown as NotificationsPort`) meant the compiler
+could not have said so either.
+
+Fixed as ONE spelling (`wasDelivered`, the single derivation for every consumer,
+used at all seven identity sites) plus a fence that forbids a consumer naming
+the discriminant unless it is one of three declared notifications adapters,
+which must narrow to translate the wire outcome into their own port — and a
+second that forbids hand-rolled outcome literals in the test directory. Four
+mutations red, and the two new integration cases each go red on their own defect
+against real Postgres.
+
+**Two claims corrected rather than left standing.** docs/03 §6l's residual said
+an undelivered notice "leaves `notified: failed` … for an operator to re-drive";
+for the password change that was false, and it is now true. And the reset's own
+comment credited its retire-on-failure with preventing a "TTL-long lockout" —
+`lastMintedAt` orders over revoked rows too, so retirement cannot shorten the
+re-issue floor; the code is retired because a live reset code that reached no
+mailbox should not exist.
+
 ### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,

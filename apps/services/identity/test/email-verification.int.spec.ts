@@ -21,6 +21,7 @@ import {
   MAX_VERIFY_ATTEMPTS,
   VerificationRaceError,
 } from '../src/email-verification.repo';
+import { DELIVERED_UNVERIFIED } from './notifications-double';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -189,13 +190,7 @@ describeIfPg('email_verifications against Postgres (auth cluster)', () => {
       } as unknown as EventsService,
       {
         recipientStatus: () => Promise.resolve({ verified: false }),
-        sendAddressVerification: () =>
-          Promise.resolve({
-            accepted: true,
-            delivered: true,
-            channel: 'email',
-            recipientVerified: false,
-          }),
+        sendAddressVerification: () => Promise.resolve(DELIVERED_UNVERIFIED),
       } as unknown as NotificationsPort,
       () => NOW,
     );
