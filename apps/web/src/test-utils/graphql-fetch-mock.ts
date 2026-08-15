@@ -42,6 +42,14 @@ export function installGraphqlFetchMock(handlers: Record<string, OperationHandle
     const operationName = body.query?.split(/[\s({]+/)[1];
     const handler = operationName !== undefined ? handlers[operationName] : undefined;
     if (handler === undefined) {
+      // SESSION CONTINUITY (M20 PR4): any handler answering UNAUTHENTICATED
+      // now triggers the client's silent Refresh attempt. Unless a test is
+      // ABOUT refresh (then it supplies its own handler, which wins above),
+      // the honest default is a refusal — "genuinely signed out" — which is
+      // exactly the state every pre-PR4 UNAUTHENTICATED fixture was modeling.
+      if (operationName === 'Refresh') {
+        return Promise.resolve(graphqlError('UNAUTHENTICATED'));
+      }
       throw new Error(`No test handler for operation "${operationName ?? '<unknown>'}"`);
     }
     return Promise.resolve(handler(body.variables));

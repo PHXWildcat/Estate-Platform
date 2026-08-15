@@ -5301,7 +5301,8 @@ live and its refresh token good for thirty days. The app has no refresh wiring,
 so the access-token TTL is the whole usable session — confirmed by reading
 `revoked_at IS NULL` alongside an elapsed `access_expires_at`, which is what
 distinguishes expired from revoked. The UI renders those two states identically
-today, which is its own item for PR4.
+today, which is its own item for PR4. **CLOSED by PR4** — see its section
+below and docs/03 §6x.
 
 **PR2 — the address change (merged, `e1b3d69`).** All three legs, on the same
 page, which leaves only the two reset legs exempt. The load-bearing decisions:
@@ -5345,7 +5346,7 @@ eleventh — the step-up retry reading live inputs instead of the carried attemp
 the form, so the values cannot move. Recorded rather than papered over by
 weakening the mutation. Full record in docs/03 §6v.
 
-**PR3 — the password reset (this PR).** The last two exempt routes gain their
+**PR3 — the password reset (merged, `96d1ec9`).** The last two exempt routes gain their
 consumer, and the surface is the first in the product a signed-OUT caller
 drives — hence the `(auth)` route group (`/reset`, linked from the login page)
 rather than `/security`, which every other M20 slice extends. The decisions:
@@ -5386,8 +5387,50 @@ log's `identity.password_reset` + `identity.password_changed` both
 `sent_unverified` (§6t's `wasDelivered` recording the carrier's real answer for
 an unproved address). Full record in docs/03 §6w.
 
-**PR4** session continuity (wire `Refresh`) · **PR5** the adversarial security
-review.
+**PR4 — session continuity (this PR).** The `Refresh` operation had existed at
+every layer since M8 with no caller — the uncalled-operation twin of the
+milestone's route gaps — so the access token's 15-minute TTL was the whole
+usable session and "Your session has ended" was false every time it rendered.
+The decisions:
+
+- *One reactive refresh at the client's single chokepoint.* `gqlRequest`
+  retries once after UNAUTHENTICATED behind one silent Refresh; no timer, no
+  per-surface wiring. `Query.session` now distinguishes "nothing to
+  authenticate with" (null) from "dead access token with a refresh cookie
+  behind it" (UNAUTHENTICATED — the retry trigger), so an anonymous visitor
+  still costs no identity call and the session-ended copy is TRUE when it
+  finally renders: it now means the refresh itself was refused.
+- *Single-flight as correctness, not optimization.* Identity's rotation-reuse
+  detection treats a concurrently-presented rotated token as theft and revokes
+  the session, so the client removes concurrency by construction — an in-tab
+  latch plus a cross-tab Web Lock over the shared cookie jar. Proven live:
+  a page racing several queries into an expired token produced exactly ONE
+  rotation (`refresh_token_prev_h` still held the pre-drive hash).
+- *Cookies clear in one failure direction only.* Identity refusing the
+  credential as dead clears the pair (dead server-side; clearing is tidying —
+  and without it every load repeats the refusal dance); an identity outage
+  clears nothing (an outage must not wear the face of a revocation, M16 PR2a).
+- *Only queries retry, found by reviewing the PR's own claim.* The comment
+  first shipped asserting that a retry can never repeat a side effect — true
+  of one hop, false of the eleven BFF resolvers that write and then read back,
+  where a refused read-back re-runs a `createContact`/`createFamilyMember`
+  that carries no idempotency key and no constraint to catch the duplicate.
+  A mutation now reports `SESSION_RENEWED` (renewed, nothing performed, try
+  again) rather than the session-ended sentence, and the query/mutation
+  discriminator is read off each document rather than kept in a list.
+- *The fence:* `operation-consumers.test.ts` — every GraphQL operation has a
+  product caller, no exemption mechanism (the PR3 rule), reverse direction
+  owned by the compiler. Its first run named exactly one uncalled operation:
+  `Refresh`. It also asserts every document is a `query` or a `mutation`, so
+  the retry classification above cannot silently acquire a third case.
+
+Fourteen mutations, fourteen red. Driven live: expired access token → uninterrupted
+assets page + one rotation in the DB; server-side revocation → the genuine
+signed-out rendering, the failed refresh clearing the dead pair, and the next
+load answering `session: null` with no identity round trip. Residuals (the
+lost-Set-Cookie false-theft signal, the no-Web-Locks cross-tab race, the
+one-refused-Refresh cost on signed-out authenticated-only pages) in docs/03
+§6x. **PR5** the adversarial security review.
 
 ### M21 — Subscription manager (planned; re-sequenced 2026-08-12, displaced again by M20)
 

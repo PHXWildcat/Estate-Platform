@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { GraphQLSchema } from 'graphql';
+import { GraphQLError, type GraphQLSchema } from 'graphql';
 import { createSchema } from 'graphql-yoga';
 import type { MfaLevel, SessionAudience } from '@estate/contracts';
 import type {
@@ -599,7 +599,12 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type Query {
-    "Current session, or null when unauthenticated."
+    """
+    Current session; null when there is nothing to authenticate WITH. A dead
+    access token with a refresh cookie behind it errors UNAUTHENTICATED
+    instead — the client's silent refresh-and-retry trigger (M20 PR4) — so
+    null means "no credentials at all", never "expired".
+    """
     session: Session
     """
     Whether the caller has proved they receive mail at the address on file.
@@ -745,7 +750,12 @@ export const typeDefs = /* GraphQL */ `
     register(email: String!, password: String!): Ok!
     "Sets httpOnly session cookies; no token material in the response body."
     login(email: String!, password: String!): Ok!
-    "Rotates the token pair using the refresh cookie; re-sets both cookies."
+    """
+    Rotates the token pair using the refresh cookie; re-sets both cookies.
+    A refresh credential identity refuses as dead clears both cookies
+    (tidying a pair that is dead server-side); an identity outage clears
+    nothing.
+    """
     refresh: Ok!
     "Revokes THIS session server-side, then expires both cookies."
     logout: Ok!
@@ -1465,11 +1475,28 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<SessionPayload | null> => {
           const token = cookieValue(ctx, ACCESS_COOKIE);
+          // SESSION CONTINUITY (M20 PR4): "no session" and "a dead access
+          // token with a refresh credential behind it" are DIFFERENT FACTS,
+          // and answering null for both is what made the app read signed-out
+          // at the 15-minute access TTL while a 30-day refresh token sat in
+          // the jar. With a refresh cookie present this throws UNAUTHENTICATED
+          // — the client's refresh-once-and-retry trigger — so only a caller
+          // with nothing to refresh with gets null. An anonymous visitor
+          // therefore still costs one round trip and no identity call, and a
+          // browser whose refresh was already refused arrives cookie-less
+          // (the refresh resolver clears a dead pair) and gets null again.
+          const hasRefresh = cookieValue(ctx, REFRESH_COOKIE) !== null;
           if (token === null) {
+            if (hasRefresh) {
+              throw bffError('UNAUTHENTICATED');
+            }
             return null;
           }
           const session = await identity.session(token);
           if (session === null) {
+            if (hasRefresh) {
+              throw bffError('UNAUTHENTICATED');
+            }
             return null;
           }
           const expiresAt =
@@ -1694,7 +1721,25 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           if (refreshToken === null) {
             throw bffError('UNAUTHENTICATED');
           }
-          const tokens = await identity.refresh(refreshToken);
+          let tokens;
+          try {
+            tokens = await identity.refresh(refreshToken);
+          } catch (err) {
+            // Identity's 401 (mapped to UNAUTHENTICATED) means the refresh
+            // credential resolves no live session — revoked, past its 30-day
+            // lifetime, or rotation-reuse — so the pair in the jar is dead
+            // SERVER-SIDE and clearing it is tidying, not stranding: the M8
+            // rule protects live sessions, and identity just said this one is
+            // not. Without the clear, every later page load repeats the
+            // session → refresh → refusal dance against a credential that can
+            // never work again. Anything else — identity unreachable, a 5xx —
+            // leaves the cookies alone: an outage must not wear the face of a
+            // revocation (M16 PR2a), and the pair may be perfectly good.
+            if (err instanceof GraphQLError && err.extensions.code === 'UNAUTHENTICATED') {
+              clearSessionCookies(ctx.res, secureCookies);
+            }
+            throw err;
+          }
           setSessionCookies(ctx.res, tokens, secureCookies);
           return OK;
         },

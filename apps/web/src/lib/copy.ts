@@ -112,6 +112,13 @@ export const errorCopy: Record<GqlFailureCode, string> = {
     'minutes before asking again.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
+  // M20 PR4. NOT an outage and NOT a dead session: the sign-in had expired,
+  // we renewed it, and nothing was submitted. Only mutations reach this —
+  // queries are simply retried — so the honest instruction is to repeat the
+  // action, and the reassurance that it did not half-happen is the part the
+  // user needs.
+  SESSION_RENEWED:
+    'Your sign-in was renewed because it had expired. Nothing was changed — please try that again.',
 };
 
 export function messageFor(code: GqlFailureCode): string {

@@ -108,7 +108,16 @@ export const GQL_ERROR_CODES = [
 export type GqlErrorCode = (typeof GQL_ERROR_CODES)[number];
 
 /** Every way a request can fail, as seen by the UI. */
-export type GqlFailureCode = GqlErrorCode | 'NETWORK' | 'UNKNOWN';
+/**
+ * Client-only failure codes — deliberately OUTSIDE `GQL_ERROR_CODES`, which
+ * `error-codes.test.ts` fences against the BFF's own union. These are facts
+ * about this transport, never about a server answer.
+ *
+ * `SESSION_RENEWED` (M20 PR4) is the one a caller must not read as an outage:
+ * the session was expired and has just been renewed, the request was NOT
+ * performed, and trying again will work.
+ */
+export type GqlFailureCode = GqlErrorCode | 'NETWORK' | 'UNKNOWN' | 'SESSION_RENEWED';
 
 export type GqlResult<T> = { ok: true; data: T } | { ok: false; code: GqlFailureCode };
 
@@ -886,11 +895,11 @@ function extractErrorCode(payload: unknown): GqlFailureCode | null {
 }
 
 /**
- * Sends one persisted GraphQL operation to the same-origin `/graphql` endpoint.
+ * The transport half of {@link gqlRequest}: one network send, no retry.
  * Resolves to a discriminated result; never throws on server or network
  * failure and never exposes server-provided message text.
  */
-export async function gqlRequest<Name extends OperationName>(
+async function send<Name extends OperationName>(
   operation: Name,
   variables: OperationSignatures[Name]['variables'],
 ): Promise<GqlResult<OperationSignatures[Name]['data']>> {
@@ -952,4 +961,123 @@ export async function gqlRequest<Name extends OperationName>(
     return { ok: false, code: 'UNKNOWN' };
   }
   return { ok: true, data: data as OperationSignatures[Name]['data'] };
+}
+
+/**
+ * SESSION CONTINUITY (M20 PR4). The access cookie lives 15 minutes and the
+ * refresh cookie 30 days; until this existed the app had NO refresh wiring, so
+ * the access TTL was the whole usable session — measured in the M20 PR1 drive
+ * as "Your session has ended" over a live session row. The `Refresh` operation
+ * had existed at every layer since M8 with no caller; this is its caller, and
+ * `operation-consumers.test.ts` is the fence that refuses the next uncalled
+ * operation.
+ *
+ * SINGLE-FLIGHT IS A CORRECTNESS REQUIREMENT, NOT AN OPTIMIZATION. Identity's
+ * rotation-reuse detection (M16) treats an already-rotated refresh token as
+ * THEFT and revokes the whole session. Two concurrent Refresh calls carry the
+ * same cookie: the first rotates it, and the second then presents the
+ * rotated-away value — indistinguishable, by design, from a thief replaying a
+ * stolen one. So concurrency is removed BY CONSTRUCTION at two scopes: an
+ * in-tab promise latch, and a cross-tab Web Lock, because every tab of this
+ * origin shares one cookie jar. A tab that waited on the lock still sends its
+ * own Refresh afterwards — by then the jar holds the NEW token (the winner's
+ * Set-Cookie landed before the lock released), so that is an ordinary second
+ * rotation, not a reuse.
+ */
+let inflightRefresh: Promise<boolean> | null = null;
+
+function withCrossTabLock<T>(fn: () => Promise<T>): Promise<T> {
+  // jsdom and pre-15.4 Safari have no Web Locks; the in-tab latch still holds
+  // there, and the remaining cross-TAB race in those browsers is a recorded
+  // residual (docs/03 §6x), not a silent one.
+  const locks = (globalThis.navigator as (Navigator & { locks?: LockManager }) | undefined)?.locks;
+  if (locks !== undefined) {
+    return locks.request('estate.session.refresh', fn) as Promise<T>;
+  }
+  return fn();
+}
+
+function refreshSession(): Promise<boolean> {
+  inflightRefresh ??= withCrossTabLock(async () => {
+    // Through gqlRequest, NOT send: the Refresh short-circuit below is what
+    // makes this non-recursive, and going through the public entry keeps
+    // `operation-consumers.test.ts` honest — the fence counts gqlRequest
+    // callers, and this is the Refresh operation's one product caller.
+    const result = await gqlRequest('Refresh', {});
+    // A missing field is NO DATA, never data (M11): a BFF predating the
+    // mutation must read as "not refreshed", not as success.
+    return result.ok && result.data.refresh?.ok === true;
+  })
+    // `gqlRequest` never rejects; this guards the lock API itself, because
+    // the never-throws contract must survive a misbehaving LockManager.
+    .catch(() => false)
+    .finally(() => {
+      inflightRefresh = null;
+    });
+  return inflightRefresh;
+}
+
+/**
+ * Sends one persisted GraphQL operation to the same-origin `/graphql`
+ * endpoint. On UNAUTHENTICATED it silently refreshes the session once and
+ * retries once, so an expired 15-minute access token never surfaces while the
+ * 30-day refresh credential is good — and "Your session has ended" is TRUE
+ * when a caller finally renders it, because it now means the refresh itself
+ * was refused.
+ *
+ * ONLY QUERIES ARE RETRIED, AND THAT IS A CORRECTNESS LINE RATHER THAN A
+ * PREFERENCE. The tempting claim is that a retry can never repeat a side
+ * effect, because UNAUTHENTICATED means a guard refused before any handler ran
+ * — true of a SINGLE hop, and false of the eleven BFF resolvers that write and
+ * then read back (`addContact` → `contacts`, `addFamilyMember` → `family`, and
+ * so on). If the write succeeds and the read-back is refused, the whole
+ * resolver re-runs, and `createContact`/`createFamilyMember` carry no
+ * idempotency key — there is nothing to make a second create a replay, and two
+ * contacts of the same name are legitimate, so no constraint catches it
+ * either. One click would silently produce two rows. The asset commands are
+ * safe (payload-keyed `eventId`, M19) and the profile grants are safe (M13's
+ * unique indexes answer 409), but "safe" is a per-resolver fact this transport
+ * cannot see, so it does not guess: the operation's own document says whether
+ * it is a `query`, and only those repeat.
+ *
+ * A refused MUTATION therefore reports `SESSION_RENEWED`, not the original
+ * UNAUTHENTICATED — the session really was renewed, nothing was performed, and
+ * the next attempt will work. Rendering "your session has ended" there would
+ * be the false sentence this PR exists to delete, one case over.
+ *
+ * The retry's own answer is returned as-is, whatever it says: a second
+ * UNAUTHENTICATED means the session died between refresh and retry, and
+ * looping would hammer a dead credential.
+ */
+export async function gqlRequest<Name extends OperationName>(
+  operation: Name,
+  variables: OperationSignatures[Name]['variables'],
+): Promise<GqlResult<OperationSignatures[Name]['data']>> {
+  const first = await send(operation, variables);
+  if (first.ok || first.code !== 'UNAUTHENTICATED' || operation === 'Refresh') {
+    // The Refresh guard is THE recursion control: refreshSession itself calls
+    // gqlRequest('Refresh'), and without this short-circuit a refused refresh
+    // would try to refresh in order to refresh.
+    return first;
+  }
+  const refreshed = await refreshSession();
+  if (!refreshed) {
+    return first;
+  }
+  if (!isQuery(operation)) {
+    return { ok: false, code: 'SESSION_RENEWED' };
+  }
+  return send(operation, variables);
+}
+
+/**
+ * Read off the operation's OWN document, never a hand-kept list: a list of
+ * retry-safe operations is a list that goes stale the day someone adds the
+ * fifty-seventh mutation. Every document in `operations` begins with `query`
+ * or `mutation` (asserted in `operation-consumers.test.ts`), so the
+ * classification is total and cannot silently default a mutation into the
+ * retried set.
+ */
+function isQuery(operation: OperationName): boolean {
+  return operations[operation].trimStart().startsWith('query ');
 }
