@@ -14,6 +14,8 @@ import type { EventsService } from '../src/events.service';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import type { SessionsRepo } from '../src/sessions.repo';
 import type { WebAuthnRepo } from '../src/webauthn.repo';
+import { UNREACHABLE } from './notifications-double';
+import type { SendOutcome } from '@estate/notifications-client';
 
 const USER = 'b6c9a1de-0000-4000-8000-000000000042';
 const CRED = 'c1d2e3f4-0000-4000-8000-000000000001';
@@ -80,8 +82,7 @@ function makeService(opts?: {
     // cases never reach it, and a double that quietly succeeded would make an
     // unreachable path look healthy (the M17 PR2 faithful-refusal rule).
     {
-      sendAccountSecurity: (): Promise<{ accepted: boolean }> =>
-        Promise.resolve({ accepted: false }),
+      sendAccountSecurity: (): Promise<SendOutcome> => Promise.resolve(UNREACHABLE),
     } as never,
   );
   return {

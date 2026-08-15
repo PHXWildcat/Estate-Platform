@@ -15,6 +15,7 @@ import {
   canonicalCode,
 } from '../src/email-verification.service';
 import type { EventsService } from '../src/events.service';
+import { DELIVERED, UNREACHABLE } from './notifications-double';
 
 const USER = 'a1b2c3d4-0000-4000-8000-000000000001';
 const OTHER = 'a1b2c3d4-0000-4000-8000-000000000002';
@@ -72,11 +73,7 @@ function makeFakes(): Fakes {
       emailVerificationUnavailable: jest.fn(),
     },
     notifications: {
-      sendAddressVerification: jest.fn().mockResolvedValue({
-        accepted: true,
-        delivered: true,
-        channel: 'email',
-      }),
+      sendAddressVerification: jest.fn().mockResolvedValue(DELIVERED),
       markRecipientVerified: jest.fn().mockResolvedValue({ ok: true }),
       recipientStatus: jest.fn().mockResolvedValue({ verified: false }),
     },
@@ -301,7 +298,7 @@ describe('ensureVerificationRequested (the login hook)', () => {
     // Otherwise the idempotence guard turns into a lockout: it would refuse to
     // mint for a full TTL over a mail that does not exist.
     const fakes = makeFakes();
-    fakes.notifications.sendAddressVerification.mockResolvedValue({ accepted: false });
+    fakes.notifications.sendAddressVerification.mockResolvedValue(UNREACHABLE);
     await makeService(fakes).ensureVerificationRequested(USER);
     expect(fakes.codes.revokeLive).toHaveBeenCalledWith(USER, NOW);
     expect(fakes.events.emailVerificationSent).toHaveBeenCalledWith(USER, false);
@@ -346,7 +343,7 @@ describe('reissue (the user asked for another code)', () => {
     expect(await makeService(ok).reissue(USER)).toBe('sent');
 
     const undelivered = makeFakes();
-    undelivered.notifications.sendAddressVerification.mockResolvedValue({ accepted: false });
+    undelivered.notifications.sendAddressVerification.mockResolvedValue(UNREACHABLE);
     expect(await makeService(undelivered).reissue(USER)).toBe('unavailable');
   });
 });

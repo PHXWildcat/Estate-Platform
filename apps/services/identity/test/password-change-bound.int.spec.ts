@@ -39,6 +39,7 @@ import type { SecondFactorGate } from '../src/second-factor-gate';
 import { hashToken } from '../src/tokens';
 import { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
+import { DELIVERED } from './notifications-double';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -144,7 +145,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
       {} as unknown as DekRepository,
       { emailIndexKey: EMAIL_KEY } as unknown as IdentityConfig,
       () => NOW,
-      { sendAccountSecurity: () => Promise.resolve({ accepted: true, delivered: true }) } as never,
+      { sendAccountSecurity: () => Promise.resolve(DELIVERED) } as never,
       {} as unknown as EmailVerificationService,
       // The factorless bootstrap: the gate returns without demanding step-up,
       // which is exactly the account class the review's exploit targeted.

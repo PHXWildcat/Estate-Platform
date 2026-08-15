@@ -2715,6 +2715,101 @@ deliberately — `permission_grants` is docs/02 §2 verbatim, migrations are
 append-only, and narrowing it would need a pre-flight over exactly those inert
 rows; the API is the enforcement point and the reader ignores everything else.
 
+## 6t. Threat-model delta — a mail the carrier refused was recorded as delivered (2026-08-14)
+
+**Three identity call sites read a discriminated union's DISCRIMINANT as if it
+were its ANSWER.** `SendOutcome` is
+`{ accepted: true; delivered: boolean; … } | { accepted: false }`. `accepted`
+says a healthy notifications service replied; `delivered` says the mail went,
+and the type's own docstring states the rule — *"Callers record either as a
+non-delivery."* The notifications service answers `accepted: true,
+delivered: false` for `no_recipient` and `carrier_failure` (a crypto-shredded
+DEK lands in the latter). These three read the discriminant alone:
+
+- `password-reset.service.ts` — the mailed reset code (`auth.password.reset_requested`)
+- `password-reset.service.ts` — the completion notice (`auth.password.reset_completed`)
+- `auth.service.ts` — the password-change notice (`auth.password.changed`)
+
+Each of those booleans renders as the literal string `delivered` or `failed` in
+an **append-only** audit event, so a notice that never reached anyone was
+recorded as delivered. That is the M14 PR0 shape — an audit claim inverted —
+and it sat on the account-recovery ceremony, whose entire failure mode is a
+user who cannot get in.
+
+**Reachable, not theoretical.** M9's recipient feed is fire-and-forget at
+registration and login, so a registration during a notifications outage leaves
+no recipient row — and that user is exactly the one who later cannot sign in and
+asks for a reset. They receive nothing, and the trail says they were told.
+
+**TypeScript could not catch it, and that is the general lesson.** The union
+forces a narrowing on `accepted` before `delivered` may be read, so *stopping at
+the narrowing guard type-checks perfectly* while meaning something else. A
+discriminant is not an answer.
+
+**Nor could any test, because the doubles were more generous than the platform.**
+Every spec in identity's test directory hand-rolled its own notifications double
+and every one answered a bare `{ accepted: true }` — not a valid `SendOutcome`
+at all. They reached their constructors through `as never` or
+`as unknown as NotificationsPort`, and a cast on the outer object leaves the
+inner method's return type inferred and never compared to the port, so the
+compiler never saw the gap. The M16 PR2b lesson, one layer beneath the fixtures.
+The two existing cases that looked like coverage — `auth.service.spec.ts`'s
+"NOTIFIES the owner, and puts the outcome on the audit event" — only ever used
+`{ accepted: false }`, the arm where the discriminant and the answer AGREE.
+
+**§6l's residual was a promise the code did not keep.** It states that an
+undelivered notice "leaves `notified: failed` on the audit event … for an
+operator to re-drive". For the password change that was false: a carrier refusal
+left `notified: delivered`, so the one record an operator would use to re-drive
+said there was nothing to re-drive. The sentence is now true rather than
+rewritten.
+
+**The fix is one spelling and a fence, not three edits.** `wasDelivered` in
+`@estate/notifications-client` is the only derivation, used at all seven identity
+sites (the four that were already correct included — one behaviour, one place).
+`packages/notifications-client/test/delivery-outcome.spec.ts` then forbids a
+consumer from NAMING the discriminant at all unless it is one of three declared
+notifications adapters, which name it for the genuinely different question — *is
+the service reachable* — and turn that into a 503 `notifications_unavailable`;
+those are additionally held to using it only as a negated gate, so an adapter
+cannot start deriving a delivery fact either. The same fence forbids hand-rolled
+`accepted:` literals in identity's test directory, where four named constants
+typed as `SendOutcome` now carry the outcomes.
+
+**Residuals, stated.** The scan is on the identifier, so a destructure is caught
+and `Object.values(outcome)[0]` is not; closing that wants the TypeScript AST,
+which is more than a fence should carry. The constants' `SendOutcome` annotation
+is the real shape check — it is the one place no cast intervenes — and it is a
+convention the fence enforces rather than something the compiler can. Vault,
+settlement and profile double the port faithfully already (their doubles are
+typed `Promise<SendOutcome>`); their adapters read `delivered` explicitly and an
+incomplete literal there would fail SAFE, so they are left as they are.
+
+**Proven live, on the disagreeing arm.** Two probe accounts against the running
+stack with identity rebuilt from this branch; one keeps its recipient row, the
+other's is deleted, which is exactly what M9's fire-and-forget feed leaves behind
+when it misses. Both reset requests answer an identical `202`, so the
+enumeration property is untouched. The control records
+`password.reset_requested | delivered` in `auth_events` and
+`{"delivered": "delivered"}` in the audit chain, and keeps one live code. The
+recipient-less account records `failed` in both and keeps **no** live code — the
+one nobody holds was retired. `notification_sends` holds the other half of the
+proof: its `identity.password_reset` row exists with outcome `no_recipient`, and
+that row is written by the notifications service itself, so its existence proves
+the service ANSWERED (`accepted: true`) while `no_recipient` maps to
+`delivered: false` — the precise arm on which the old read and the new one
+disagree. Reverting either read turns its own integration case red against real
+Postgres.
+
+**One claim in the code was ALSO wrong and is corrected.** The comment beside the
+reset's retire-on-failure said retiring prevents "a TTL-long lockout". It does
+not: `lastMintedAt` orders over ALL rows including revoked ones, so retiring
+cannot shorten the re-issue floor, and the unconditional retire before each mint
+already stops a stale code blocking the next one. The code is retired because a
+live reset code that reached no mailbox should not exist — which matters most in
+the `carrier_failure` case, where the carrier may have taken the message before
+failing.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

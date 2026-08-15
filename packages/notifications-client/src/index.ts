@@ -12,6 +12,7 @@ export {
   SERVICE_CREDENTIAL_HEADER,
   SYSTEM_NOTIFICATION_KINDS,
   VERIFICATION_CODE_PATTERN,
+  wasDelivered,
   type AccountSecurityInput,
   type AccountSecurityKind,
   type AddressVerificationInput,

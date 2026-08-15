@@ -11,7 +11,7 @@ import {
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
 import type { SessionContext } from '@estate/auth-guard';
-import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
+import { NOTIFICATIONS, wasDelivered, type NotificationsPort } from '@estate/notifications-client';
 import { AuthEventsRepo } from './auth-events.repo';
 import type { StepUpResult } from './auth.service';
 import type { IdentityConfig } from './config';
@@ -334,11 +334,7 @@ export class WebAuthnService {
         kind: 'webauthn.clone_detected',
         decision: 'counter_regression',
       });
-      await this.events.webauthnCloneDetected(
-        userId,
-        sessionId,
-        notice.accepted && notice.delivered,
-      );
+      await this.events.webauthnCloneDetected(userId, sessionId, wasDelivered(notice));
       throw authenticationFailed();
     }
     const now = this.clock();

@@ -25,6 +25,7 @@ import type { PasswordResetRepo } from '../src/password-reset.repo';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import type { SessionsRepo } from '../src/sessions.repo';
 import type { UsersRepo } from '../src/users.repo';
+import { DELIVERED, DELIVERED_UNVERIFIED, UNREACHABLE } from './notifications-double';
 
 const NOW = new Date('2026-08-13T12:00:00.000Z');
 const USER = 'b6c9a1de-0000-4000-8000-000000000042';
@@ -182,20 +183,11 @@ function makeService(opts?: {
       sendEmailChange: (input: { code: string; email: string }): Promise<unknown> => {
         state.mailed.push({ code: input.code, email: input.email });
         state.effects.push('challenge');
-        return Promise.resolve(
-          opts?.sendAccepted === false
-            ? { accepted: false }
-            : { accepted: true, delivered: true, channel: 'email', recipientVerified: false },
-        );
+        return Promise.resolve(opts?.sendAccepted === false ? UNREACHABLE : DELIVERED_UNVERIFIED);
       },
       sendAccountSecurity: (): Promise<unknown> => {
         state.effects.push('notify-old');
-        return Promise.resolve({
-          accepted: true,
-          delivered: true,
-          channel: 'email',
-          recipientVerified: true,
-        });
+        return Promise.resolve(DELIVERED);
       },
       replaceRecipient: (): Promise<{ ok: boolean }> => {
         state.effects.push('replace');

@@ -19,6 +19,7 @@ import { STEPUP_DENIAL_WINDOW_MS, STEPUP_MAX_DENIALS } from '../src/stepup';
 import { generateOpaqueToken, hashToken } from '../src/tokens';
 import type { UsersRepo } from '../src/users.repo';
 import type { Db } from '../src/db';
+import { DELIVERED, UNDELIVERED, UNREACHABLE } from './notifications-double';
 
 const NOW = new Date('2026-07-20T12:00:00Z');
 
@@ -149,11 +150,15 @@ function makeFakes(): {
     deks: { findActiveByUser: jest.fn().mockResolvedValue(null) },
     notifications: {
       upsertRecipient: jest.fn().mockResolvedValue({ ok: true }),
-      send: jest.fn().mockResolvedValue({ accepted: false }),
-      sendAddressVerification: jest.fn().mockResolvedValue({ accepted: false }),
-      sendAccountSecurity: jest.fn().mockResolvedValue({ accepted: true }),
-      sendPasswordReset: jest.fn().mockResolvedValue({ accepted: true }),
-      sendEmailChange: jest.fn().mockResolvedValue({ accepted: true }),
+      // The declared outcomes, not hand-rolled literals: a bare accepted-true
+      // object is not a valid `SendOutcome` (the accepted arm carries `delivered`,
+      // `channel` and `recipientVerified` too), and a double that produced it
+      // is what let a read of the discriminant alone look like a delivery.
+      send: jest.fn().mockResolvedValue(UNREACHABLE),
+      sendAddressVerification: jest.fn().mockResolvedValue(UNREACHABLE),
+      sendAccountSecurity: jest.fn().mockResolvedValue(DELIVERED),
+      sendPasswordReset: jest.fn().mockResolvedValue(DELIVERED),
+      sendEmailChange: jest.fn().mockResolvedValue(DELIVERED),
       replaceRecipient: jest.fn().mockResolvedValue({ ok: true }),
       markRecipientVerified: jest.fn().mockResolvedValue({ ok: true }),
       recipientStatus: jest.fn().mockResolvedValue({ verified: true }),
@@ -671,7 +676,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       const fakes = makeFakes();
       withUser(fakes);
       fakes.hasher.verifyPassword.mockResolvedValue(true);
-      fakes.notifications.sendAccountSecurity.mockResolvedValue({ accepted: false });
+      fakes.notifications.sendAccountSecurity.mockResolvedValue(UNREACHABLE);
       const service = makeService(fakes);
 
       await service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password');
@@ -683,6 +688,27 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       expect(fakes.events.passwordChanged).toHaveBeenCalledWith('u-1', 's-1', 2, false);
     });
 
+    it('records a CARRIER REFUSAL as a non-delivery too, not just an unreachable service', async () => {
+      // THE ARM THE CASE ABOVE NEVER TOUCHED. It uses `UNREACHABLE` —
+      // the service never answered — where the discriminant and the answer
+      // agree, so it stayed green while `notified.accepted` was being read as
+      // the delivery fact. `accepted: true, delivered: false` is the arm where
+      // they disagree: the service answered and could NOT deliver
+      // (`no_recipient`, `carrier_failure`, a shredded DEK), and that was
+      // recorded as `delivered` in `auth.password.changed` — a notice the owner
+      // never got, on the audit event that exists to surface a change they did
+      // not make.
+      const fakes = makeFakes();
+      withUser(fakes);
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      fakes.notifications.sendAccountSecurity.mockResolvedValue(UNDELIVERED);
+      const service = makeService(fakes);
+
+      await service.changePassword('u-1', 's-1', caller, 'old', 'new-long-password');
+
+      expect(fakes.events.passwordChanged).toHaveBeenCalledWith('u-1', 's-1', 2, false);
+    });
+
     it('a failed NOTIFICATION does not undo the change', async () => {
       // The change is committed before the notice is attempted. A password that
       // silently reverted because a mail failed would be far worse than a late
@@ -691,7 +717,7 @@ describe('AuthService.refresh rotation + reuse detection', () => {
       const fakes = makeFakes();
       withUser(fakes);
       fakes.hasher.verifyPassword.mockResolvedValue(true);
-      fakes.notifications.sendAccountSecurity.mockResolvedValue({ accepted: false });
+      fakes.notifications.sendAccountSecurity.mockResolvedValue(UNREACHABLE);
       const service = makeService(fakes);
 
       await expect(

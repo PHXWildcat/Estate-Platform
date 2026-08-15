@@ -356,6 +356,28 @@ export type SendOutcome =
     }
   | { accepted: false };
 
+/**
+ * DID THE MAIL GO — the one spelling, because there were three wrong ones.
+ *
+ * `accepted` is this union's DISCRIMINANT, not its answer. It says a healthy
+ * notifications service replied; the service replies `accepted: true,
+ * delivered: false` whenever it could not deliver (no recipient on record, a
+ * carrier refusal, a shredded DEK). TypeScript makes you narrow on the
+ * discriminant before you may read `delivered`, and stopping AT the narrowing
+ * guard type-checks perfectly while meaning something else entirely — which is
+ * exactly how three identity call sites came to record a mail the carrier
+ * refused as `delivered` in the append-only trail.
+ *
+ * So the derivation lives here rather than at each call site, and
+ * `test/delivery-outcome.spec.ts` forbids a service from naming the
+ * discriminant at all unless it is a declared notifications adapter asking the
+ * DIFFERENT question (is the service reachable), which is what those adapters
+ * turn into a 503.
+ */
+export function wasDelivered(outcome: SendOutcome): boolean {
+  return outcome.accepted && outcome.delivered;
+}
+
 export interface NotificationsPort {
   send(input: NotificationSendInput): Promise<SendOutcome>;
   /** Registers/refreshes the user's delivery address. Identity calls this at

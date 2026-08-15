@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { NOTIFICATIONS, type NotificationsPort } from '@estate/notifications-client';
+import { NOTIFICATIONS, wasDelivered, type NotificationsPort } from '@estate/notifications-client';
 import { AuthEventsRepo } from './auth-events.repo';
 import { CLOCK, type Clock } from './di-tokens';
 import {
@@ -216,7 +216,7 @@ export class EmailVerificationService {
     }
 
     const outcome = await this.notifications.sendAddressVerification({ userId, code });
-    const delivered = outcome.accepted && outcome.delivered;
+    const delivered = wasDelivered(outcome);
     if (!delivered) {
       // RETIRE THE CODE THE USER NEVER RECEIVED. Leaving it live would make the
       // idempotence guard above refuse to mint for a full TTL over a mail that

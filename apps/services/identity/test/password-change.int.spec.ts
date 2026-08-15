@@ -41,6 +41,8 @@ import { SessionsRepo } from '../src/sessions.repo';
 import { hashToken } from '../src/tokens';
 import { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
+import { DELIVERED } from './notifications-double';
+import type { SendOutcome } from '@estate/notifications-client';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -149,14 +151,9 @@ describeIfPg('password change (auth cluster)', () => {
       {} as unknown as IdentityConfig,
       () => NOW,
       {
-        sendAccountSecurity: (input: {
-          userId: string;
-          kind: string;
-        }): Promise<{
-          accepted: boolean;
-        }> => {
+        sendAccountSecurity: (input: { userId: string; kind: string }): Promise<SendOutcome> => {
           securitySends.push(input);
-          return Promise.resolve({ accepted: true });
+          return Promise.resolve(DELIVERED);
         },
       } as never,
       {} as unknown as EmailVerificationService,

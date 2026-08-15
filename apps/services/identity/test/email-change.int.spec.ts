@@ -33,6 +33,7 @@ import { SessionsRepo } from '../src/sessions.repo';
 import { hashToken } from '../src/tokens';
 import { UsersRepo } from '../src/users.repo';
 import { Db, type Queryable } from '../src/db';
+import { DELIVERED, DELIVERED_UNVERIFIED } from './notifications-double';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -209,21 +210,11 @@ describeIfPg('email change (auth cluster)', () => {
         sendEmailChange: (input: { code: string; email: string }) => {
           mailed.push({ code: input.code, email: input.email });
           sideEffects.push('challenge');
-          return Promise.resolve({
-            accepted: true,
-            delivered: true,
-            channel: 'email',
-            recipientVerified: false,
-          });
+          return Promise.resolve(DELIVERED_UNVERIFIED);
         },
         sendAccountSecurity: () => {
           sideEffects.push('security-to-old');
-          return Promise.resolve({
-            accepted: true,
-            delivered: true,
-            channel: 'email',
-            recipientVerified: true,
-          });
+          return Promise.resolve(DELIVERED);
         },
         replaceRecipient: (input: { email: string }) => {
           sideEffects.push('replace');

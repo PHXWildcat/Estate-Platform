@@ -38,6 +38,8 @@ import { SessionsRepo } from '../src/sessions.repo';
 import { hashToken } from '../src/tokens';
 import { UsersRepo } from '../src/users.repo';
 import { Db, type Queryable } from '../src/db';
+import type { NotificationsPort, SendOutcome } from '@estate/notifications-client';
+import { DELIVERED, UNDELIVERED } from './notifications-double';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -97,6 +99,12 @@ describeIfPg('password reset (auth cluster)', () => {
   let sessions: SessionsRepo;
   let service: PasswordResetService;
   let mailed: string[];
+  /** What the notifications port answers; per-case, so a send can be made to fail. */
+  let sendOutcome: SendOutcome;
+  /** The `delivered` boolean each request-path audit event was given. */
+  let requestedDelivered: boolean[];
+  /** The `notified` boolean each completion-path audit event was given. */
+  let completedNotified: boolean[];
   let now: Date;
   /**
    * EACH TEST GETS ITS OWN TIME WINDOW, because the per-address bound and the
@@ -151,6 +159,9 @@ describeIfPg('password reset (auth cluster)', () => {
       audience: 'account',
     });
     mailed = [];
+    sendOutcome = DELIVERED;
+    requestedDelivered = [];
+    completedNotified = [];
     now = new Date(BASE.getTime());
   }
 
@@ -193,6 +204,9 @@ describeIfPg('password reset (auth cluster)', () => {
     codes = new PasswordResetRepo(db);
     sessions = new SessionsRepo(db);
     mailed = [];
+    sendOutcome = DELIVERED;
+    requestedDelivered = [];
+    completedNotified = [];
     email = emailFor(0);
     now = new Date(BASE.getTime());
 
@@ -205,8 +219,18 @@ describeIfPg('password reset (auth cluster)', () => {
         hashPassword: (): Promise<string> => Promise.resolve(NEW_HASH),
       } as unknown as PasswordHasher,
       {
-        passwordResetRequested: (): Promise<void> => Promise.resolve(),
-        passwordReset: (): Promise<void> => Promise.resolve(),
+        // The `delivered` / `notified` booleans are CAPTURED rather than
+        // discarded: each renders as the literal audit string `delivered` or
+        // `failed`, so they are the fact the M20 PR0 defect got wrong, and a
+        // double that threw them away is why no test could see it.
+        passwordResetRequested: (_userId: string, delivered: boolean): Promise<void> => {
+          requestedDelivered.push(delivered);
+          return Promise.resolve();
+        },
+        passwordReset: (_userId: string, _revoked: number, notified: boolean): Promise<void> => {
+          completedNotified.push(notified);
+          return Promise.resolve();
+        },
         passwordResetFailed: (): Promise<void> => Promise.resolve(),
         passwordResetThrottled: (): Promise<void> => Promise.resolve(),
       } as unknown as EventsService,
@@ -214,13 +238,17 @@ describeIfPg('password reset (auth cluster)', () => {
       { emailIndexKey: EMAIL_KEY } as unknown as IdentityConfig,
       () => now,
       {
-        sendPasswordReset: (input: { code: string }): Promise<{ accepted: boolean }> => {
+        // FAITHFUL to `SendOutcome`. The previous double answered a bare
+        // accepted-true object — a shape the real service CANNOT produce, since
+        // the accepted arm carries `delivered`, `channel` and
+        // `recipientVerified` — and typed itself loosely enough that the
+        // compiler never said so. That generosity is what hid the defect.
+        sendPasswordReset: (input: { code: string }): Promise<SendOutcome> => {
           mailed.push(input.code);
-          return Promise.resolve({ accepted: true });
+          return Promise.resolve(sendOutcome);
         },
-        sendAccountSecurity: (): Promise<{ accepted: boolean }> =>
-          Promise.resolve({ accepted: true }),
-      } as never,
+        sendAccountSecurity: (): Promise<SendOutcome> => Promise.resolve(sendOutcome),
+      } as unknown as NotificationsPort,
     );
   });
 
@@ -260,6 +288,44 @@ describeIfPg('password reset (auth cluster)', () => {
       await seed('deceased_pending');
       await request();
       expect(mailed).toHaveLength(1);
+    });
+
+    it('A CARRIER REFUSAL IS RECORDED AS A NON-DELIVERY, and retires the code nobody holds', async () => {
+      // THE M20 PR0 DEFECT. `SendOutcome` is a discriminated union whose
+      // `accepted` is the DISCRIMINANT: the service answers
+      // `accepted: true, delivered: false` for `no_recipient` (M9's recipient
+      // feed is fire-and-forget, so a registration during a notifications
+      // outage leaves no row — and that user is exactly the one who later
+      // cannot sign in) and for `carrier_failure`. Reading the discriminant
+      // alone type-checks perfectly and means "the service answered", so this
+      // scored as a delivery: the append-only ledger row and the audit event
+      // BOTH said `delivered` about a mail that never went.
+      sendOutcome = UNDELIVERED;
+      await request();
+
+      // The port was called — the send was attempted, not skipped.
+      expect(mailed).toHaveLength(1);
+
+      // The audit fact, which is what was wrong. `false` here renders as the
+      // literal string `failed` in `auth.password.reset_requested`.
+      expect(requestedDelivered).toEqual([false]);
+
+      // The append-only ledger says the same thing.
+      const ledger = await admin.query<{ kind: string; decision: string | null }>(
+        `SELECT kind, decision FROM ${schema}.auth_events WHERE user_id = $1 ORDER BY occurred_at`,
+        [user],
+      );
+      expect(ledger.rows).toEqual([{ kind: 'password.reset_requested', decision: 'failed' }]);
+
+      // And no live code is left behind. Not because it would otherwise lock
+      // the account — `lastMintedAt` counts revoked rows, so retirement cannot
+      // shorten the floor — but because a reset code that reached no mailbox
+      // should not exist.
+      const live = await admin.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM ${schema}.password_resets
+          WHERE revoked_at IS NULL AND redeemed_at IS NULL`,
+      );
+      expect(live.rows[0]?.n).toBe('0');
     });
 
     it('holds the re-issue floor, then mints again once it lapses', async () => {
@@ -372,6 +438,22 @@ describeIfPg('password reset (auth cluster)', () => {
         `SELECT count(*)::text AS n FROM ${schema}.password_resets WHERE redeemed_at IS NOT NULL`,
       );
       expect(spent.rows[0]?.n).toBe('1');
+    });
+
+    it('records the COMPLETION notice as failed when the carrier refused it', async () => {
+      // The same defect one route down: `auth.password.reset_completed` carries
+      // `notified: delivered|failed`, and it was derived from the discriminant
+      // too. This is the most consequential event identity emits about an
+      // account it did not authenticate — the password changed on the strength
+      // of a mailed code — so "we told the owner" has to be true when it says
+      // so. The REQUEST is delivered here (a code must reach the user at all);
+      // only the completion notice fails.
+      await request();
+      sendOutcome = UNDELIVERED;
+      await service.completeReset(lastCode(), 'a-brand-new-password');
+
+      expect(await hashOf()).toBe(NEW_HASH); // the reset itself still stands
+      expect(completedNotified).toEqual([false]);
     });
 
     it('MINTS NO SESSION — there is nothing for a stolen code to become', async () => {

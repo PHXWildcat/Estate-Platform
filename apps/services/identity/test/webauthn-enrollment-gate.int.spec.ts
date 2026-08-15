@@ -51,6 +51,8 @@ import { STEPUP_WINDOW_MS } from '../src/stepup';
 import { WebAuthnRepo } from '../src/webauthn.repo';
 import { WebAuthnService } from '../src/webauthn.service';
 import { Db } from '../src/db';
+import { UNREACHABLE } from './notifications-double';
+import type { SendOutcome } from '@estate/notifications-client';
 
 jest.mock('@simplewebauthn/server', () => ({
   ...jest.requireActual<Record<string, unknown>>('@simplewebauthn/server'),
@@ -149,8 +151,7 @@ describeIfPg('registering a passkey (auth cluster)', () => {
       // THE REAL GATE over the real repos — a fake would make this file vacuous.
       new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db)),
       {
-        sendAccountSecurity: (): Promise<{ accepted: boolean }> =>
-          Promise.resolve({ accepted: false }),
+        sendAccountSecurity: (): Promise<SendOutcome> => Promise.resolve(UNREACHABLE),
       } as never,
     );
   });
