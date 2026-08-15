@@ -947,3 +947,318 @@ describe('SecurityPanel — password change', () => {
     expect(changeCalls).toBe(1);
   });
 });
+
+/**
+ * M20 PR2 — the sign-in address change.
+ *
+ * TWO PROPERTIES ARE LOAD-BEARING HERE and neither is about the happy path.
+ * The success copy must not claim a delivery, because identity answers 202
+ * before it knows whether it will send anything — an address that already
+ * belongs to somebody else is answered identically and never mailed. And the
+ * "Finish a change" form must exist WITHOUT a request having been made in this
+ * tab, because identity exposes no read of a pending change: a code field that
+ * appeared only after a local request would strand anyone who closed the page
+ * or reads their mail on another device.
+ */
+describe('SecurityPanel — address change', () => {
+  const NEW_ADDRESS = 'somewhere.else@example.test';
+
+  function requestChange(address = NEW_ADDRESS, password = 'the-passphrase'): void {
+    fireEvent.change(screen.getByLabelText('New email address'), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText('Account password'), { target: { value: password } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send a code to the new address' }));
+  }
+
+  it('asks for a change WITHOUT claiming anything was sent', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RequestEmailChange: (variables) => {
+        calls.push(variables as Record<string, unknown>);
+        return jsonResponse({ data: { requestEmailChange: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    requestChange();
+
+    // CONDITIONAL, and that is the point: "If … isn't already in use here".
+    // The 202 is not a delivery receipt, so this surface may not render it as
+    // one — and in the one case where nothing is mailed, saying "we've sent you
+    // a code" would tell the caller what the silent-availability control exists
+    // to withhold.
+    const notice = await screen.findByText(/a code is on its way to it/);
+    expect(notice.textContent).toContain(`If ${NEW_ADDRESS} isn’t already in use here`);
+    expect(notice.textContent).toContain('Nothing has changed yet');
+    expect(screen.queryByText(/We’ve sent|We have sent/)).not.toBeInTheDocument();
+    expect(calls).toEqual([{ currentPassword: 'the-passphrase', newEmail: NEW_ADDRESS }]);
+    // The password is spent and has no reason to stay in a DOM node. The
+    // ADDRESS does: the notice above refers to it.
+    expect(screen.getByLabelText('Account password')).toHaveValue('');
+    expect(screen.getByLabelText('New email address')).toHaveValue(NEW_ADDRESS);
+  });
+
+  it('does not judge the address FORMAT — only emptiness', async () => {
+    // Identity's schema is the gate. A second opinion here could refuse what
+    // the platform would accept (the M12 upload-client rule), so a value with
+    // no @ in it must reach the server.
+    const calls: Array<Record<string, unknown>> = [];
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RequestEmailChange: (variables) => {
+        calls.push(variables as Record<string, unknown>);
+        return jsonResponse({ data: { requestEmailChange: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    requestChange('not-an-address');
+
+    await screen.findByText(/a code is on its way to it/);
+    expect(calls).toEqual([{ currentPassword: 'the-passphrase', newEmail: 'not-an-address' }]);
+  });
+
+  it('refuses an empty address, and an empty password, without calling the server', async () => {
+    let calls = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RequestEmailChange: () => {
+        calls += 1;
+        return jsonResponse({ data: { requestEmailChange: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Send a code to the new address' }));
+    expect(await screen.findByText('Enter the address you want to move to.')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('New email address'), {
+      target: { value: NEW_ADDRESS },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send a code to the new address' }));
+    expect(await screen.findByText('Enter your current password.')).toBeInTheDocument();
+    expect(calls).toBe(0);
+  });
+
+  it('explains a wrong ACCOUNT password without mentioning an email field', async () => {
+    // The M12 collision for the third time: `INVALID_CREDENTIALS` means "email
+    // and password" on login and "the password you just typed" here. The shared
+    // copy would send somebody to re-check an address that is not the problem —
+    // on the one form where an address IS present but is not what was refused,
+    // which makes the wrong sentence especially convincing.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RequestEmailChange: () => graphqlError('INVALID_CREDENTIALS'),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    requestChange();
+
+    expect(
+      await screen.findByText(
+        'That current password wasn’t right. Check it and try again — your sign-in address has not been changed.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(errorCopy.INVALID_CREDENTIALS)).not.toBeInTheDocument();
+  });
+
+  it('names the actionable possibility behind identity’s conflated INVALID_REQUEST', async () => {
+    // Identity answers `invalid_request` for BOTH a malformed address and one
+    // that is already this account's. It genuinely conflates them, so the copy
+    // names the actionable reading without asserting which applied.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RequestEmailChange: () => graphqlError('INVALID_REQUEST'),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    requestChange();
+
+    const message = await screen.findByText(/if it’s the one you already sign in with/);
+    expect(message.textContent).toContain('Nothing has been changed');
+    expect(screen.queryByText(errorCopy.INVALID_REQUEST)).not.toBeInTheDocument();
+  });
+
+  it('reports the re-issue bound as a considered answer, never as an outage', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      RequestEmailChange: () => graphqlError('CODE_REQUESTED_RECENTLY'),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    requestChange();
+
+    // "If a code arrived" — the conditional again, because the destination
+    // bound fires on volume aimed at an address that may never have been
+    // mailed at all.
+    const message = await screen.findByText(/If a code arrived, use that one/);
+    expect(message.textContent).toContain('You asked for this very recently');
+  });
+
+  it('REPLACES the request form under a step-up, and retries with the same values', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    let requests = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      RequestEmailChange: (variables) => {
+        requests += 1;
+        calls.push(variables as Record<string, unknown>);
+        return requests === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { requestEmailChange: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    requestChange();
+
+    expect(await screen.findByText(errorCopy.STEPUP_REQUIRED)).toBeInTheDocument();
+    // The form is gone, so there is nothing to edit under a pending change.
+    expect(screen.queryByLabelText('New email address')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Account password')).not.toBeInTheDocument();
+    // ONE prompt on the page, and its field is not confusable with the code
+    // field beneath it (the M15 identical-label rule, which this section's own
+    // "Account password" label exists to satisfy).
+    expect(screen.getAllByLabelText('Confirm it’s you')).toHaveLength(1);
+    expect(screen.getByLabelText('Code from the new address')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Confirm it’s you'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and send the code' }));
+
+    await screen.findByText(/a code is on its way to it/);
+    expect(calls).toEqual([
+      { currentPassword: 'the-passphrase', newEmail: NEW_ADDRESS },
+      { currentPassword: 'the-passphrase', newEmail: NEW_ADDRESS },
+    ]);
+  });
+
+  it('offers the code form with NO request made in this tab', async () => {
+    // Identity exposes no read of a pending change, so this page cannot know on
+    // load whether one is outstanding. Gating the field on a local request
+    // would strand anyone who asked from another device or closed the page.
+    installGraphqlFetchMock({ Session: sessionHandler, Sessions: sessionsHandler() });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    expect(screen.getByLabelText('Code from the new address')).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Confirm new address' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Cancel pending change' })).toBeEnabled();
+  });
+
+  it('completes the change, says what it cost, and tells the page to re-read', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const changed = jest.fn();
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      CompleteEmailChange: (variables) => {
+        calls.push(variables as Record<string, unknown>);
+        return jsonResponse({ data: { completeEmailChange: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel onAddressChanged={changed} />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.change(screen.getByLabelText('Code from the new address'), {
+      target: { value: 'EC1-ABCD-EFGH' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new address' }));
+
+    const done = await screen.findByText(/Your sign-in address has been changed/);
+    // Both consequences, on the surface that caused them: the sessions this
+    // just ended, and the fact that redeeming the code also PROVED the address.
+    expect(done.textContent).toContain('confirmed');
+    expect(done.textContent).toContain('other devices have been signed out');
+    // EXACTLY AS TYPED — the canonical fold lives in identity.
+    expect(calls).toEqual([{ code: 'EC1-ABCD-EFGH' }]);
+    // The verified status just moved too, and a sibling panel is showing it.
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer a resend that does not exist when a code is refused', async () => {
+    // Identity gives one `invalid_code` for every dead reason. The SHARED
+    // sentence for that code ends "send yourself a new one", which is the
+    // remedy on the address-VERIFICATION surface; there is no resend route for
+    // a pending change, and offering one is how a stuck user stays stuck.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      CompleteEmailChange: () => graphqlError('INVALID_VERIFICATION_CODE'),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.change(screen.getByLabelText('Code from the new address'), {
+      target: { value: 'EC1-WRONG' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new address' }));
+
+    const message = await screen.findByText(/cancel this change and start again/);
+    expect(message.textContent).toContain('single-use');
+    expect(screen.queryByText(errorCopy.INVALID_VERIFICATION_CODE)).not.toBeInTheDocument();
+  });
+
+  it('cancels without a step-up, and states what is now true rather than what it did', async () => {
+    // The M6 asymmetry: asking is the gated half. Somebody who has just
+    // realised they typed the wrong address must not be sent to find an
+    // authenticator. And identity's cancel is idempotent and silent — 204
+    // whether or not anything was pending — so the copy may not claim an action.
+    let cancels = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      CancelEmailChange: () => {
+        cancels += 1;
+        return jsonResponse({ data: { cancelEmailChange: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel pending change' }));
+
+    expect(
+      await screen.findByText(
+        'There is no pending address change. Any code already sent is now dead.',
+      ),
+    ).toBeInTheDocument();
+    expect(cancels).toBe(1);
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+  });
+
+  it('treats a missing field as NO DATA, never as success', async () => {
+    // A BFF predating these mutations answers `{"data":{}}`, which
+    // `gqlRequest` admits — and "your address has been changed" is the worst
+    // possible thing to say on the strength of a version skew.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      CompleteEmailChange: () => jsonResponse({ data: {} }),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.change(screen.getByLabelText('Code from the new address'), {
+      target: { value: 'EC1-ABCD' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new address' }));
+
+    expect(await screen.findByText(errorCopy.UNKNOWN)).toBeInTheDocument();
+    expect(screen.queryByText(/Your sign-in address has been changed/)).not.toBeInTheDocument();
+  });
+});

@@ -345,7 +345,9 @@ const EXEMPT_EXTERNAL_WEBHOOK =
 const EXEMPT_RECOVERY_SURFACE =
   'M17 shipped the password-change/reset and email-change ceremonies service-side with their ' +
   'copy decisions taken, but the account-recovery/address-change frontend slice never landed — ' +
-  'found by this fence’s first run (M19 PR1); the surface is a pending frontend milestone.';
+  'found by this fence’s first run (M19 PR1). M20 is that slice: PR1 flipped the password ' +
+  'change and PR2 the three address-change legs, leaving only the two RESET legs here, which ' +
+  'need a signed-out route group of their own (M20 PR3).';
 
 const BFF = 'apps/bff/src';
 const AI = 'apps/services/ai-assistant/src/clients';
@@ -461,16 +463,17 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     `${VW}/server.ts`,
     `${VX}/session.ts`,
   ),
-  // M20 PR1 flipped the FIRST of the six: the password change now has a
-  // product consumer end to end (BFF client -> GraphQL -> the Security page).
-  // The other five follow in PR2 (address change) and PR3 (reset), each in the
-  // same change as its own client — the M9 PR2 rule.
+  // M20 PR1 flipped the FIRST of the six (the password change) and PR2 the
+  // three address-change legs, each in the same change as its own client — the
+  // M9 PR2 rule. The two reset legs follow in PR3; they are the ones that need
+  // a route group of their own, being the only ceremony a signed-OUT caller
+  // drives.
   'identity POST /v1/auth/password': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/password/reset': { exempt: EXEMPT_RECOVERY_SURFACE },
   'identity POST /v1/auth/password/reset/request': { exempt: EXEMPT_RECOVERY_SURFACE },
-  'identity POST /v1/auth/email/change': { exempt: EXEMPT_RECOVERY_SURFACE },
-  'identity POST /v1/auth/email/change/request': { exempt: EXEMPT_RECOVERY_SURFACE },
-  'identity DELETE /v1/auth/email/change': { exempt: EXEMPT_RECOVERY_SURFACE },
+  'identity POST /v1/auth/email/change': consumed(`${BFF}/identity-client.ts`),
+  'identity POST /v1/auth/email/change/request': consumed(`${BFF}/identity-client.ts`),
+  'identity DELETE /v1/auth/email/change': consumed(`${BFF}/identity-client.ts`),
 
   // ------------------------------------------------------------------- plaid
   'plaid POST /v1/plaid/link-token': { exempt: EXEMPT_PLAID_UI },

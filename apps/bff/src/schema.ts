@@ -846,6 +846,39 @@ export const typeDefs = /* GraphQL */ `
     """
     changePassword(currentPassword: String!, newPassword: String!): Ok!
     """
+    Stage a change of the account's sign-in address (M20 PR2).
+
+    VERIFY-THEN-SWITCH: nothing on file moves until a code mailed to the NEW
+    address comes back. Login resolves accounts by their address, so storing an
+    unproven one would lock its owner out of signing in; the old address, and
+    every notification, keeps working until the proof lands.
+
+    THE RESULT IS NOT A DELIVERY RECEIPT. Identity answers before it sends, and
+    an address that already belongs to another account gets exactly the same
+    answer and is never mailed — the caller learns nothing about who holds an
+    address. Copy built on this must stay conditional.
+
+    Step-up is CONDITIONAL, on the same gate as changePassword.
+    """
+    requestEmailChange(currentPassword: String!, newEmail: String!): Ok!
+    """
+    Finish an address change with the code mailed to the new address (M20 PR2).
+
+    One refusal covers every way a code can fail — unknown, expired, already
+    used, too many attempts, or the address having been taken during the
+    ceremony. That uniformity is the control, so this does not distinguish them.
+
+    On success the new address is live and already confirmed, and every OTHER
+    session is signed out.
+    """
+    completeEmailChange(code: String!): Ok!
+    """
+    Abandon a staged address change (M20 PR2). Idempotent — it succeeds whether
+    or not anything was pending — and deliberately needs no step-up: the
+    protective action must never be harder than the permissive one.
+    """
+    cancelEmailChange: Ok!
+    """
     Records an asset (full input — M19 PR2). A valuation is all-or-nothing:
     supply estValue, valuationAsOf and valuationSource together, or none —
     an amount with no date and no provenance is not an auditable claim.
@@ -2288,6 +2321,42 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
             args.currentPassword,
             args.newPassword,
           );
+          return OK;
+        },
+        requestEmailChange: async (
+          _parent: unknown,
+          args: { currentPassword: string; newEmail: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          // The address is forwarded UNVALIDATED, and that is deliberate on the
+          // `changePassword` reasoning: identity's schema is the gate, and this
+          // edge adding a second opinion about what an address may look like is
+          // a rule free to disagree with the one that decides. Identity itself
+          // does not apply `.email()` either — it normalizes and blind-indexes,
+          // and the real answer comes from whether a code arrives.
+          await identity.requestEmailChange(
+            requireAccessToken(ctx),
+            args.currentPassword,
+            args.newEmail,
+          );
+          return OK;
+        },
+        completeEmailChange: async (
+          _parent: unknown,
+          args: { code: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          // Unchanged, for `verifyEmail`'s reason: identity folds and measures
+          // the canonical form, and a second fold here could disagree with it.
+          await identity.completeEmailChange(requireAccessToken(ctx), args.code);
+          return OK;
+        },
+        cancelEmailChange: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await identity.cancelEmailChange(requireAccessToken(ctx));
           return OK;
         },
       },

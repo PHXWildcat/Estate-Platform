@@ -4,7 +4,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type LiveSessionInfo, type SessionInfo } from '../graphql/client';
-import { messageFor, passwordChangeMessageFor, stepUpMessageFor } from '../lib/copy';
+import {
+  addressChangeMessageFor,
+  addressCodeMessageFor,
+  messageFor,
+  passwordChangeMessageFor,
+  stepUpMessageFor,
+} from '../lib/copy';
 import { formatDateTime } from '../lib/datetime';
 import { audienceCopy } from '../lib/sessions';
 import { SESSION_CACHE_TTL_MS, type StepUpRetryOutcome } from '../lib/step-up';
@@ -45,7 +51,8 @@ type DevicesState =
  * a designation the owner never chose) has no shape to reoccur in: the action
  * is bound where it is rendered, not selected afterwards from state.
  */
-type StepUpTarget = 'verify' | 'export' | 'pairing' | 'passkey-revoke' | 'password-change';
+type StepUpTarget =
+  'verify' | 'export' | 'pairing' | 'passkey-revoke' | 'password-change' | 'email-change';
 
 /**
  * The password-change attempt, CARRIED so the retry re-sends what was actually
@@ -69,6 +76,13 @@ type StepUpTarget = 'verify' | 'export' | 'pairing' | 'passkey-revoke' | 'passwo
 interface PasswordAttempt {
   readonly currentPassword: string;
   readonly newPassword: string;
+}
+
+/** The address-change request, carried for the retry on `PasswordAttempt`'s
+ * terms — belt, for the same stated reason: the prompt replaces the form. */
+interface EmailChangeAttempt {
+  readonly currentPassword: string;
+  readonly newEmail: string;
 }
 
 interface PasskeyInfo {
@@ -113,7 +127,29 @@ const PROPAGATION_SENTENCE =
   `Signing in with it is refused straight away; other parts of the platform can take up to ` +
   `${Math.ceil(SESSION_CACHE_TTL_MS / 1000)} seconds to stop accepting it.`;
 
-export function SecurityPanel(): ReactElement {
+interface SecurityPanelProps {
+  /**
+   * Called when the sign-in address has just been switched.
+   *
+   * WHY A CALLBACK AND NOT A LOCAL RE-READ. Completion does two things at once:
+   * it moves the address AND vouches for it (identity's `replaceRecipient`
+   * repoints and stamps `verified_at` in one statement, because the redemption
+   * proved the mailbox seconds earlier). `EmailVerificationPanel` is a SIBLING
+   * on this page holding its own copy of that status, so a user who was
+   * unverified would finish the ceremony and go on reading "your email address
+   * hasn't been confirmed yet" directly above the sentence saying it is — one
+   * page contradicting itself about a control, which is the shape M19 PR2 found
+   * in the trust card and M20 PR1 found in the session card.
+   *
+   * The page owner re-mounts that panel, so the authority stays the SERVER
+   * rather than a boolean this component would have to keep in step (the
+   * ConsentControls rule). Optional so every existing test and any future host
+   * can render this panel alone.
+   */
+  readonly onAddressChanged?: () => void;
+}
+
+export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): ReactElement {
   const router = useRouter();
   const [sessionState, setSessionState] = useState<SessionState>({ kind: 'loading' });
 
@@ -167,6 +203,27 @@ export function SecurityPanel(): ReactElement {
   const [pwError, setPwError] = useState<string | null>(null);
   const [pwSuccess, setPwSuccess] = useState(false);
   const [pwAttempt, setPwAttempt] = useState<PasswordAttempt | null>(null);
+
+  // Address change (M20 PR2). TWO forms, and the second one is ALWAYS
+  // available: identity exposes no read of a pending change, so this page
+  // cannot know on load whether one is outstanding — and a code field that
+  // appeared only after a request in THIS tab would strand anybody who closed
+  // the tab, or who reads their mail on the device they did not ask from.
+  const [emailNext, setEmailNext] = useState('');
+  const [emailPassword, setEmailPassword] = useState('');
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
+  const [emailAttempt, setEmailAttempt] = useState<EmailChangeAttempt | null>(null);
+  const [emailCode, setEmailCode] = useState('');
+  const [emailCodeBusy, setEmailCodeBusy] = useState(false);
+  // FIELD error (this form's own emptiness check) and SERVER failure are kept
+  // apart and rendered in one place each: the EmailVerificationPanel split,
+  // followed here so the page's two code fields behave identically, and so a
+  // refusal is never printed twice on one screen.
+  const [emailCodeError, setEmailCodeError] = useState<string | null>(null);
+  const [emailCodeFailure, setEmailCodeFailure] = useState<string | null>(null);
+  const [emailCodeNotice, setEmailCodeNotice] = useState<string | null>(null);
 
   const loadSession = useCallback(async (): Promise<void> => {
     const result = await gqlRequest('Session', {});
@@ -480,6 +537,130 @@ export function SecurityPanel(): ReactElement {
     await sendPasswordChange({ currentPassword: pwCurrent, newPassword: pwNext });
   }
 
+  /**
+   * Ask for a change. Takes the attempt as an argument for `PasswordAttempt`'s
+   * reason.
+   *
+   * THE SUCCESS COPY IS CONDITIONAL, and that is not hedging. Identity answers
+   * 202 BEFORE it knows whether it will send anything: the availability lookup,
+   * the encrypt, the stage and the mail all run detached, precisely so that an
+   * address already belonging to somebody else is answered identically to a free
+   * one and never mailed. Rendering that 202 as "we've sent you a code" would
+   * make this surface assert a delivery the platform deliberately refuses to
+   * promise — and would tell one user, in the one case that matters, something
+   * the control exists to withhold.
+   */
+  async function sendAddressChange(attempt: EmailChangeAttempt): Promise<StepUpRetryOutcome> {
+    setEmailBusy(true);
+    setEmailError(null);
+    setEmailNotice(null);
+    setEmailCodeNotice(null);
+    const result = await gqlRequest('RequestEmailChange', {
+      currentPassword: attempt.currentPassword,
+      newEmail: attempt.newEmail,
+    });
+    setEmailBusy(false);
+
+    if (result.ok && result.data.requestEmailChange?.ok === true) {
+      setStepUp(null);
+      setEmailAttempt(null);
+      // The password is a credential and has no reason to stay in a DOM node.
+      // The address does: it is what the notice below refers to.
+      setEmailPassword('');
+      setEmailNotice(
+        `If ${attempt.newEmail} isn’t already in use here, a code is on its way to it — enter it ` +
+          `below to finish. Nothing has changed yet: you keep signing in with your current ` +
+          `address until you do.`,
+      );
+      return 'applied';
+    }
+    if (!result.ok && result.code === 'STEPUP_REQUIRED') {
+      // CONDITIONAL at identity, exactly as on the password form: only an
+      // account that already holds a verified factor is refused here.
+      setEmailError(messageFor('STEPUP_REQUIRED'));
+      setStepUpSuccess(null);
+      setEmailAttempt(attempt);
+      setStepUp('email-change');
+      return 'stale';
+    }
+    // A missing field is NO DATA, never data.
+    setEmailError(addressChangeMessageFor(result.ok ? 'UNKNOWN' : result.code));
+    return 'applied';
+  }
+
+  async function submitAddressChange(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const trimmed = emailNext.trim();
+    // Emptiness only. The address FORMAT is identity's schema to judge, and a
+    // second opinion here could refuse what the platform would accept — the
+    // rule the upload client follows for the same reason.
+    if (trimmed.length === 0) {
+      setEmailError('Enter the address you want to move to.');
+      return;
+    }
+    if (emailPassword.length === 0) {
+      setEmailError('Enter your current password.');
+      return;
+    }
+    setEmailError(null);
+    await sendAddressChange({ currentPassword: emailPassword, newEmail: trimmed });
+  }
+
+  async function submitAddressCode(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const trimmed = emailCode.trim();
+    if (trimmed.length === 0) {
+      setEmailCodeError('Enter the code from the email.');
+      return;
+    }
+    setEmailCodeError(null);
+    setEmailCodeFailure(null);
+    setEmailCodeBusy(true);
+    setEmailCodeNotice(null);
+    const result = await gqlRequest('CompleteEmailChange', { code: trimmed });
+    setEmailCodeBusy(false);
+
+    if (result.ok && result.data.completeEmailChange?.ok === true) {
+      setEmailCode('');
+      setEmailNext('');
+      setEmailNotice(null);
+      setEmailCodeNotice(
+        'Your sign-in address has been changed, and confirmed — entering that code is what ' +
+          'proved it. Your other devices have been signed out; this one stays signed in.',
+      );
+      // The address AND its verified status both just moved. See
+      // `SecurityPanelProps.onAddressChanged`.
+      onAddressChanged?.();
+      return;
+    }
+    setEmailCodeFailure(addressCodeMessageFor(result.ok ? 'UNKNOWN' : result.code));
+  }
+
+  /**
+   * Withdraw a pending change. UNGATED, which is the M6 asymmetry made visible:
+   * asking is the step-up half, and somebody who has just realised they typed
+   * the wrong address must not be sent to find an authenticator first.
+   *
+   * IDEMPOTENT AND SILENT AT IDENTITY — it answers 204 whether or not anything
+   * was pending — so the copy says what is now TRUE rather than claiming an
+   * action happened.
+   */
+  async function cancelAddressChange(): Promise<void> {
+    setEmailCodeBusy(true);
+    setEmailCodeError(null);
+    setEmailCodeFailure(null);
+    setEmailCodeNotice(null);
+    const result = await gqlRequest('CancelEmailChange', {});
+    setEmailCodeBusy(false);
+    if (result.ok && result.data.cancelEmailChange?.ok === true) {
+      setEmailCode('');
+      setEmailNotice(null);
+      setEmailCodeNotice('There is no pending address change. Any code already sent is now dead.');
+      return;
+    }
+    setEmailCodeFailure(messageFor(result.ok ? 'UNKNOWN' : result.code));
+  }
+
   async function runExport(): Promise<StepUpRetryOutcome> {
     setExportBusy(true);
     setExportError(null);
@@ -730,6 +911,136 @@ export function SecurityPanel(): ReactElement {
               pwSuccess ? 'Password changed. Your other devices have been signed out.' : null
             }
           />
+        </div>
+      </section>
+
+      <section aria-labelledby="email-change-heading" className="card p-6">
+        <h2 id="email-change-heading" className="text-lg font-semibold">
+          Sign-in address
+        </h2>
+        <p className="mt-2 max-w-prose text-sm text-ink-muted">
+          Moving to a different address happens in two steps: we send a code to the new one, and
+          nothing changes until you enter it. That way a typo costs you nothing — you keep signing
+          in, and keep getting alerts, at the address you have now.
+        </p>
+        <p className="mt-2 max-w-prose text-sm text-ink-muted">
+          When it completes, your other devices are signed out and the new address counts as
+          confirmed — entering the code is what proves it.
+        </p>
+
+        {stepUp === 'email-change' ? (
+          <StepUpPrompt
+            idPrefix="email-change-stepup"
+            hint="Changing your sign-in address needs a fresh check. Enter the six-digit code from your authenticator."
+            submitLabel="Confirm and send the code"
+            onElevated={withSessionRefresh(async () =>
+              emailAttempt === null ? 'applied' : await sendAddressChange(emailAttempt),
+            )}
+            onCancel={() => {
+              setStepUp(null);
+              setEmailAttempt(null);
+            }}
+          />
+        ) : (
+          <form
+            className="mt-4 space-y-4"
+            noValidate
+            onSubmit={(event) => {
+              void submitAddressChange(event);
+            }}
+          >
+            <FormField
+              id="email-new"
+              label="New email address"
+              // A keyboard hint, not a rule: `noValidate` is on the form, so
+              // this changes what a phone offers and decides nothing.
+              type="email"
+              value={emailNext}
+              onChange={setEmailNext}
+              error={null}
+              autoComplete="email"
+              disabled={emailBusy}
+            />
+            {/*
+              LABELLED "Account password" AND NOT "Current password", and the
+              reason is the M15 PR3 rule rather than taste — caught here by
+              `SecurityPanel.test.tsx` refusing to run, because two fields on
+              one page carrying the identical label are two inputs neither a
+              person tabbing through nor a query can tell apart. "Current" is
+              also meaningless in this form: it earns its place two sections up
+              by contrasting with "New password", and there is nothing here for
+              it to contrast with. So this one names what the field IS.
+            */}
+            <FormField
+              id="email-change-password"
+              label="Account password"
+              type="password"
+              value={emailPassword}
+              onChange={setEmailPassword}
+              error={null}
+              hint="The password you sign in with — not your vault password."
+              autoComplete="current-password"
+              disabled={emailBusy}
+            />
+            <button
+              className="btn btn-primary"
+              type="submit"
+              disabled={emailBusy || stepUp !== null}
+            >
+              {emailBusy ? 'Sending…' : 'Send a code to the new address'}
+            </button>
+          </form>
+        )}
+
+        <div className="mt-3 space-y-2">
+          <FormStatus tone="error" message={emailError} />
+          <FormStatus tone="info" message={emailNotice} />
+        </div>
+
+        <div className="mt-6 border-t border-line pt-4">
+          <h3 className="text-sm font-semibold">Finish a change</h3>
+          <p className="mt-1 max-w-prose text-sm text-ink-muted">
+            Already have a code? Enter it here. This stays available even if you asked from another
+            device or closed the page.
+          </p>
+          <form
+            className="mt-3 max-w-sm"
+            noValidate
+            onSubmit={(event) => {
+              void submitAddressCode(event);
+            }}
+          >
+            <FormField
+              id="email-change-code"
+              label="Code from the new address"
+              type="text"
+              value={emailCode}
+              onChange={setEmailCode}
+              error={emailCodeError}
+              hint="It looks like EC1-… and is good for a short while."
+              autoComplete="one-time-code"
+              disabled={emailCodeBusy}
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button className="btn btn-primary" type="submit" disabled={emailCodeBusy}>
+                {emailCodeBusy ? 'Confirming…' : 'Confirm new address'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={emailCodeBusy}
+                onClick={() => {
+                  void cancelAddressChange();
+                }}
+              >
+                Cancel pending change
+              </button>
+            </div>
+          </form>
+          <div className="mt-3 space-y-2">
+            <FormStatus tone="error" message={emailCodeFailure} />
+            <FormStatus tone="success" message={emailCodeNotice} />
+          </div>
         </div>
       </section>
 

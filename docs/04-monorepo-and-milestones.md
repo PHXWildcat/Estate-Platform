@@ -5241,9 +5241,9 @@ scoping: three identity sites recorded an undelivered mail as `delivered` in the
 append-only trail. Fixed as one spelling (`wasDelivered`) plus a fence. Full
 record in docs/03 §6t.
 
-**PR1 — the password change (this PR).** The first product consumer of any of
-the six. BFF client + GraphQL mutation + a Password section on `/security`.
-Decisions worth keeping:
+**PR1 — the password change (merged, `3537f75`).** The first product consumer of
+any of the six. BFF client + GraphQL mutation + a Password section on
+`/security`. Decisions worth keeping:
 
 - *Step-up is CONDITIONAL and the UI is built for both paths.* Identity gates on
   `SecondFactorGate`, which refuses only when the account already holds a
@@ -5303,9 +5303,50 @@ so the access-token TTL is the whole usable session — confirmed by reading
 distinguishes expired from revoked. The UI renders those two states identically
 today, which is its own item for PR4.
 
-**PR2** address change (request + complete + cancel) · **PR3** password reset on
-the `(auth)` group · **PR4** session continuity (wire `Refresh`) · **PR5** the
-adversarial security review.
+**PR2 — the address change (this PR).** All three legs, on the same page, which
+leaves only the two reset legs exempt. The load-bearing decisions:
+
+- *No layer may render the 202 as a delivery receipt.* Identity answers before
+  it knows whether it will send anything — the availability lookup, the encrypt,
+  the stage and the mail all run detached, so an address that already belongs to
+  somebody else is answered identically and never mailed. The client returns
+  `void` (no field to mistake for confirmation), the success copy is
+  CONDITIONAL, and the refusal for the re-issue bounds is named
+  `CODE_REQUESTED_RECENTLY` rather than `CODE_ALREADY_SENT`: the per-destination
+  bound can fire against an address that was never mailed, so a name asserting a
+  send would put "use the one we sent you" in front of somebody with an empty
+  inbox.
+- *Two route-specific error mappers, because the shared one is wrong here.*
+  `mapError` keys 400 on the STATUS; identity answers 400 for a rejected account
+  password, for both bounds, and for every refused code. Without the mappers a
+  wrong password and a rate refusal both arrive as "review your request", and
+  the completion leg's uniform refusal flattens into the same. The `mapVerifyError`
+  precedent, applied twice.
+- *The completion form is always available*, and that follows from a gap: no
+  route reads pending state, so the page cannot know on load whether a change is
+  outstanding. Gating the field on a request made in THIS tab would strand
+  anyone who closed the page or reads mail on another device.
+- *The M15 label rule bit immediately, and the existing tests are what caught
+  it.* A second "Current password" field on the page made
+  `getByLabelText` ambiguous and turned twelve password-change assertions red.
+  Fixed by naming what the field IS ("Account password") rather than which one —
+  "current" earns its place two sections up by contrasting with "New password",
+  and there is nothing here to contrast with.
+- *One page, two panels, one fact.* Completing a change also VOUCHES for the new
+  address, so the sibling verification panel would keep saying "hasn't been
+  confirmed yet" above the sentence saying it has. `AccountSecurity` re-mounts
+  it, so the authority stays the server rather than a boolean passed between
+  siblings; the remaining staleness is the app-shell banner, recorded as a
+  residual rather than papered over.
+
+Eleven mutations, ten red on the assertions that name the property. The
+eleventh — the step-up retry reading live inputs instead of the carried attempt
+— SURVIVED, exactly as PR1's did and for the same reason: the prompt replaces
+the form, so the values cannot move. Recorded rather than papered over by
+weakening the mutation. Full record in docs/03 §6v.
+
+**PR3** password reset on the `(auth)` group · **PR4** session continuity (wire
+`Refresh`) · **PR5** the adversarial security review.
 
 ### M21 — Subscription manager (planned; re-sequenced 2026-08-12, displaced again by M20)
 
