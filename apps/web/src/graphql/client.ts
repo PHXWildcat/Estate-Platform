@@ -103,7 +103,22 @@ export type GqlFailureCode = GqlErrorCode | 'NETWORK' | 'UNKNOWN';
 
 export type GqlResult<T> = { ok: true; data: T } | { ok: false; code: GqlFailureCode };
 
-export type MfaLevel = 'none' | 'mfa' | 'stepup';
+/**
+ * How strongly the session is authenticated — the BFF enum verbatim.
+ *
+ * UPPERCASE, AND THE CASE IS THE WHOLE POINT. GraphQL serialises an enum as its
+ * NAME, so the wire carries `"NONE"`; this union said `'none' | 'mfa' |
+ * 'stepup'` from M2 until M20, which made `session.mfaLevel === 'none'`
+ * PERMANENTLY FALSE at all three of its call sites. Measured on the running
+ * stack: an account with no `mfa_methods` row and `sessions.mfa_level = 'none'`
+ * was shown "MFA enrolled" and offered "Re-enroll authenticator app". The
+ * compiler could not object — it compares values against this DECLARATION, and
+ * the declaration was the thing that was wrong — and no test could either,
+ * because every fixture used the same invented lowercase vocabulary (the M15
+ * "a fixture that invents an enum tests the fixture" lesson). `enum-parity.test.ts`
+ * now derives all five of these unions from the BFF's SDL.
+ */
+export type MfaLevel = 'NONE' | 'MFA' | 'STEPUP';
 
 export interface SessionInfo {
   userId: string;
@@ -243,6 +258,19 @@ export interface NetWorthInfo {
  * would tell someone their estate is in order on the strength of a failure.
  */
 export type AnalysisStatus = 'OK' | 'UNAVAILABLE' | 'REFUSED' | 'DISABLED';
+
+/**
+ * M14. `UNAVAILABLE` is a fact about the platform, not about the user, and
+ * collapsing it into `UNVERIFIED` would send somebody to complete a ceremony
+ * that cannot run.
+ */
+export type EmailVerificationStatus = 'VERIFIED' | 'UNVERIFIED' | 'UNAVAILABLE';
+
+/**
+ * M14. `TOO_SOON` is the re-issue floor — the only rate limit on that path — and
+ * a user told "sent" who receives nothing keeps pressing.
+ */
+export type ResendVerificationOutcome = 'SENT' | 'TOO_SOON' | 'ALREADY_VERIFIED' | 'UNAVAILABLE';
 
 export interface FindingInfo {
   /** Closed token from the analyser. `lib/findings.ts` turns it into a sentence. */
@@ -794,15 +822,17 @@ interface OperationSignatures {
    */
   EmailVerification: {
     variables: EmptyVariables;
-    data: { emailVerification: 'VERIFIED' | 'UNVERIFIED' | 'UNAVAILABLE' };
+    data: { emailVerification: EmailVerificationStatus };
   };
   ResendEmailVerification: {
     variables: EmptyVariables;
-    data: {
-      resendEmailVerification: 'SENT' | 'TOO_SOON' | 'ALREADY_VERIFIED' | 'UNAVAILABLE';
-    };
+    data: { resendEmailVerification: ResendVerificationOutcome };
   };
   VerifyEmail: { variables: { code: string }; data: { verifyEmail: { ok: boolean } } };
+  ChangePassword: {
+    variables: { currentPassword: string; newPassword: string };
+    data: { changePassword: { ok: boolean } };
+  };
   Consents: { variables: EmptyVariables; data: { consents: string[] } };
   GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };
   RevokeConsent: { variables: { scope: string }; data: { revokeConsent: string[] } };

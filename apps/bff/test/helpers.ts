@@ -282,6 +282,23 @@ export class FakeIdentityClient implements IdentityClient {
     return Promise.resolve();
   }
 
+  /**
+   * M20 PR1. Records its arguments, because the resolver's whole job is to pass
+   * both halves through untouched and a double that discarded them could not
+   * tell a correct forward from a swapped one.
+   */
+  readonly changePasswordCalls: Array<{
+    accessToken: string;
+    currentPassword: string;
+    newPassword: string;
+  }> = [];
+  changePasswordError: Error | null = null;
+
+  changePassword(accessToken: string, currentPassword: string, newPassword: string): Promise<void> {
+    this.changePasswordCalls.push({ accessToken, currentPassword, newPassword });
+    return this.changePasswordError ? Promise.reject(this.changePasswordError) : Promise.resolve();
+  }
+
   logoutByRefresh(refreshToken: string): Promise<void> {
     this.logoutByRefreshCalls.push(refreshToken);
     return this.logoutByRefreshError

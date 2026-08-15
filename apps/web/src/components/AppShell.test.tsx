@@ -16,7 +16,7 @@ jest.mock('next/navigation', () => ({
 
 const SESSION = {
   userId: 'b6c9a1de-0000-4000-8000-000000000001',
-  mfaLevel: 'mfa',
+  mfaLevel: 'MFA',
   stepUpFresh: false,
 };
 

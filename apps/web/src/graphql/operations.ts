@@ -329,6 +329,12 @@ export const VERIFY_EMAIL_MUTATION = `mutation VerifyEmail($code: String!) {
   }
 }`;
 
+export const CHANGE_PASSWORD_MUTATION = `mutation ChangePassword($currentPassword: String!, $newPassword: String!) {
+  changePassword(currentPassword: $currentPassword, newPassword: $newPassword) {
+    ok
+  }
+}`;
+
 export const CONSENTS_QUERY = `query Consents {
   consents
 }`;
@@ -757,6 +763,7 @@ export const operations = {
   EmailVerification: EMAIL_VERIFICATION_QUERY,
   ResendEmailVerification: RESEND_EMAIL_VERIFICATION_MUTATION,
   VerifyEmail: VERIFY_EMAIL_MUTATION,
+  ChangePassword: CHANGE_PASSWORD_MUTATION,
   Session: SESSION_QUERY,
   Sessions: SESSIONS_QUERY,
   RevokeSession: REVOKE_SESSION_MUTATION,

@@ -435,3 +435,84 @@ describe('the passkey vertical (M17 PR5)', () => {
     expect(JSON.parse(calls[1]?.init.body as string)).toEqual({ nickname: 'YubiKey' });
   });
 });
+
+/**
+ * M20 PR1 — the account password change, the first product consumer of any of
+ * M17's six recovery routes.
+ */
+describe('changePassword', () => {
+  it('POSTs both halves to /v1/auth/password on the caller bearer', async () => {
+    const { client, calls } = clientWith(() => response(204, undefined));
+
+    await client.changePassword(TOKEN, 'old-passphrase', 'a-much-longer-passphrase');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/password`);
+    expect(calls[0]?.init.method).toBe('POST');
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    // BOTH halves, in their own fields and not swapped: each covers what the
+    // other cannot, so a transposition would send the new password to be
+    // VERIFIED and store the old one.
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({
+      currentPassword: 'old-passphrase',
+      newPassword: 'a-much-longer-passphrase',
+    });
+  });
+
+  it('resolves on 204 without parsing the empty body', async () => {
+    // The route answers 204 No Content. Parsing it would throw 'identity
+    // response was not JSON' and turn every SUCCESSFUL change into an error —
+    // a failure that only ever shows up on the happy path.
+    const { client } = clientWith(
+      () =>
+        ({
+          ok: true,
+          status: 204,
+          json: () => Promise.reject(new Error('not JSON')),
+          clone() {
+            return this;
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(
+      client.changePassword(TOKEN, 'old', 'new-long-passphrase'),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    [401, 'invalid_credentials', 'INVALID_CREDENTIALS'],
+    [403, 'stepup_required', 'STEPUP_REQUIRED'],
+    [429, 'too_many_attempts', 'TOO_MANY_ATTEMPTS'],
+    [400, 'invalid_request', 'INVALID_REQUEST'],
+  ] as const)('maps %s %s to %s', async (status, token, code) => {
+    // These four have DIFFERENT remedies — re-check the password, find your
+    // authenticator, wait, and fix the request — so they must not collapse.
+    // 429 in particular is M17's bound firing as designed; the M9 rule is that
+    // a control firing must not read as an outage.
+    const { client } = clientWith(() => response(status, { error: token }));
+
+    await expect(client.changePassword(TOKEN, 'old', 'new-long-passphrase')).rejects.toMatchObject({
+      extensions: { code },
+    });
+  });
+
+  it('never returns identity’s response text', async () => {
+    const { client } = clientWith(() =>
+      response(401, { error: 'invalid_credentials', detail: 'hash mismatch for user 42' }),
+    );
+
+    // Asserted over the WHOLE serialized error, not just `message`: a detail
+    // leaked into `extensions` would satisfy a message-only check while still
+    // reaching the browser.
+    const thrown = await client
+      .changePassword(TOKEN, 'old', 'new-long-passphrase')
+      .then(() => null)
+      .catch((err: unknown) => err);
+    expect(thrown).not.toBeNull();
+    expect(JSON.stringify(thrown)).not.toContain('hash mismatch');
+    expect(String(thrown)).not.toContain('hash mismatch');
+  });
+});

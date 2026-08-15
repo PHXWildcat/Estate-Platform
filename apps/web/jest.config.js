@@ -38,5 +38,5 @@ module.exports = createJestConfig({
   // the audience vocabulary under test: 86.5/83.63/87.52/89.87. Branches
   // ratcheted 82 -> 83. Never down.
   // Ratcheted up with M19 PR2's measured 87.33/83.38/88.16/90.61 — up, never down.
-  coverageThreshold: { global: { statements: 87, branches: 83, functions: 88, lines: 90 } },
+  coverageThreshold: { global: { statements: 88, branches: 84, functions: 89, lines: 91 } },
 });

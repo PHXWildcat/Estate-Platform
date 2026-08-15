@@ -87,7 +87,7 @@ export function SessionCard(): ReactElement {
         <div>
           <dt className="font-semibold">Security level</dt>
           <dd className="mt-1 flex flex-wrap gap-2">
-            {session.mfaLevel === 'none' ? (
+            {session.mfaLevel === 'NONE' ? (
               <span className="chip chip-warn">MFA not enrolled</span>
             ) : (
               <span className="chip chip-success">MFA enrolled</span>

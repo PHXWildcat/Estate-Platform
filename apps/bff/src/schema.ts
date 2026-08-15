@@ -828,6 +828,24 @@ export const typeDefs = /* GraphQL */ `
     """
     verifyEmail(code: String!): Ok!
     """
+    Change the account password (M20 PR1).
+
+    BOTH halves are required and each covers what the other cannot: the current
+    password is the one thing a stolen SESSION does not carry, and the fresh
+    factor is the one thing a stolen PASSWORD does not carry. Step-up is
+    CONDITIONAL — identity refuses only when the account already holds a
+    verified factor, so an account with no factor is let through rather than
+    having its password made unchangeable forever.
+
+    This is NOT the vault password. Zone A derives its master key from the vault
+    password and the Secret Key, never from this one, so changing this leaves
+    every vault item exactly as it was.
+
+    On success identity revokes every OTHER live session and leaves the
+    caller's own alive.
+    """
+    changePassword(currentPassword: String!, newPassword: String!): Ok!
+    """
     Records an asset (full input — M19 PR2). A valuation is all-or-nothing:
     supply estValue, valuationAsOf and valuationSource together, or none —
     an amount with no date and no provenance is not an auditable claim.
@@ -2251,6 +2269,25 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           // be a SECOND copy of identity's fold, and two copies of a matching
           // rule is how they drift. Identity measures the canonical form.
           await identity.verifyEmail(requireAccessToken(ctx), args.code);
+          return OK;
+        },
+        changePassword: async (
+          _parent: unknown,
+          args: { currentPassword: string; newPassword: string },
+          ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          // Both values pass through UNCHECKED, deliberately. Identity's
+          // `ChangePasswordSchema` is the gate (min 12 on the new password),
+          // and a second copy of a validation rule at the edge is a copy free
+          // to drift from the one that decides — the M12 upload-client rule.
+          // The web form mirrors the minimum as a usability hint and pins it to
+          // identity's own source; it is not a control, and this is not one
+          // either.
+          await identity.changePassword(
+            requireAccessToken(ctx),
+            args.currentPassword,
+            args.newPassword,
+          );
           return OK;
         },
       },

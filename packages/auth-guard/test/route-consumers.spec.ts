@@ -461,7 +461,11 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     `${VW}/server.ts`,
     `${VX}/session.ts`,
   ),
-  'identity POST /v1/auth/password': { exempt: EXEMPT_RECOVERY_SURFACE },
+  // M20 PR1 flipped the FIRST of the six: the password change now has a
+  // product consumer end to end (BFF client -> GraphQL -> the Security page).
+  // The other five follow in PR2 (address change) and PR3 (reset), each in the
+  // same change as its own client — the M9 PR2 rule.
+  'identity POST /v1/auth/password': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/password/reset': { exempt: EXEMPT_RECOVERY_SURFACE },
   'identity POST /v1/auth/password/reset/request': { exempt: EXEMPT_RECOVERY_SURFACE },
   'identity POST /v1/auth/email/change': { exempt: EXEMPT_RECOVERY_SURFACE },
@@ -649,13 +653,66 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     expect(consumedCount).toBeGreaterThanOrEqual(80);
   });
 
-  it('every exemption reason is substantive', () => {
+  it('every declared reason is substantive — exemptions AND enumerations', () => {
+    // M20 PR1: this used to guard on `'exempt' in decl` alone, so the OTHER
+    // kind of reason — `consumedByName`'s `enumerated` — was checked by
+    // nothing. That string is not decoration: its mere PRESENCE widens
+    // `templateMatchesPath`'s wildcard to reach literal route segments, which
+    // is the relaxation the M19 PR4 review added deliberately and narrowly. An
+    // empty string bought the relaxation and stayed green.
+    let checked = 0;
     for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
-      if ('exempt' in decl) {
-        expect(`${key}: ${decl.exempt}`.length).toBeGreaterThanOrEqual(80);
-        expect(decl.exempt.length).toBeGreaterThanOrEqual(60);
+      const reason = 'exempt' in decl ? decl.exempt : decl.enumerated;
+      if (reason === undefined) continue;
+      checked += 1;
+      expect(`${key}: ${reason}`.length).toBeGreaterThanOrEqual(80);
+      expect(reason.length).toBeGreaterThanOrEqual(60);
+    }
+    // Anti-vacuity: both kinds exist on this tree, so a predicate that stopped
+    // matching either would show up here rather than pass silently.
+    expect(checked).toBeGreaterThanOrEqual(20);
+    expect(
+      Object.values(ROUTE_CONSUMERS).filter((d) => 'enumerated' in d).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('no exemption is STALE — an exempt route that a consumer really addresses must be flipped', () => {
+    // The hole this closes, found while wiring M20 PR1: nothing ever read an
+    // exempt entry's route against the consumer corpus, so shipping the client
+    // for a route while leaving its `{ exempt: … }` in place left the fence
+    // GREEN. That is precisely the zero-callers claim the fence exists to make,
+    // inverted — it would go on asserting "no product consumer" about a route
+    // the product had started calling.
+    //
+    // M20 lands the six recovery routes one PR at a time, so this is the check
+    // that makes flipping each entry mandatory rather than remembered.
+    const corpus = [
+      ...new Set(
+        Object.values(ROUTE_CONSUMERS).flatMap((d) => ('consumers' in d ? d.consumers : [])),
+      ),
+    ];
+    const templatesByFile = new Map(corpus.map((f) => [f, extractTemplates(f)]));
+
+    const stale: string[] = [];
+    for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
+      if (!('exempt' in decl)) continue;
+      const path = key.slice(key.lastIndexOf(' ') + 1);
+      for (const [file, templates] of templatesByFile) {
+        // `enumerated: false` — the narrow matcher. A wildcard reaching a
+        // literal here would accuse an exemption of being stale because some
+        // unrelated call site happens to share its arity, which is the exact
+        // inertness the M19 PR4 review removed.
+        if (templates.some((t) => templateMatchesPath(t, path))) {
+          stale.push(`${key} is addressed by ${file} — flip it to consumed()`);
+        }
       }
     }
+    expect(stale).toEqual([]);
+
+    // Anti-vacuity: the corpus really was read. Without this a bad path or an
+    // empty extraction would make "no stale exemptions" vacuously true.
+    expect(corpus.length).toBeGreaterThanOrEqual(10);
+    expect([...templatesByFile.values()].flat().length).toBeGreaterThanOrEqual(50);
   });
 
   it('the edge rewrites are DERIVED from server.ts, and the scrape really found them', () => {

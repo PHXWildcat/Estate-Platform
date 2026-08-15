@@ -127,6 +127,31 @@ export interface IdentityClient {
   revokePasskey(accessToken: string, id: string): Promise<void>;
   /** Label one passkey. 404 ⇒ unknown OR not theirs. */
   renamePasskey(accessToken: string, id: string, nickname: string): Promise<void>;
+  /**
+   * M20 PR1: change the ACCOUNT password. The first product consumer of any of
+   * M17's six recovery routes.
+   *
+   * BOTH halves are required and each covers what the other cannot: the current
+   * password is the one thing a stolen SESSION does not carry, and the fresh
+   * factor is the one thing a stolen PASSWORD does not carry.
+   *
+   * STEP-UP IS CONDITIONAL, and a caller must be built for both paths.
+   * Identity gates on `SecondFactorGate`, which refuses only when the account
+   * already holds a verified TOTP or passkey — an account with no factor has
+   * nothing to prove and is let through, deliberately, or its password would be
+   * unchangeable forever. So STEPUP_REQUIRED is a possible answer, not a
+   * guaranteed first one.
+   *
+   * Throws INVALID_CREDENTIALS when the CURRENT password is wrong — which on a
+   * form with no email field does not mean what `errorCopy` says it means; the
+   * web surface reads it through `passwordChangeMessageFor`.
+   * Throws TOO_MANY_ATTEMPTS (429) once M17's per-session or per-account bound
+   * is spent.
+   *
+   * On success identity revokes every OTHER live session and leaves the
+   * caller's own alive.
+   */
+  changePassword(accessToken: string, currentPassword: string, newPassword: string): Promise<void>;
 }
 
 export interface Passkey {
@@ -776,6 +801,31 @@ export class FetchIdentityClient implements IdentityClient {
     if (!res.ok) {
       throw await this.mapError(res);
     }
+  }
+
+  async changePassword(
+    accessToken: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/password',
+      accessToken,
+      body: { currentPassword, newPassword },
+    });
+    if (!res.ok) {
+      // The SHARED mapper, deliberately — unlike `verifyEmail`, this route has
+      // no uniform-refusal property to preserve. Its tokens are already covered:
+      // 401 `invalid_credentials` ⇒ INVALID_CREDENTIALS, 403 `stepup_required`
+      // ⇒ STEPUP_REQUIRED, 429 ⇒ TOO_MANY_ATTEMPTS (status-keyed, so M17's
+      // bound surfaces as a refusal rather than as an outage), 400 ⇒
+      // INVALID_REQUEST. No new `BffErrorCode` is needed.
+      throw await this.mapError(res);
+    }
+    // 204 No Content. Deliberately NOT parsed: `parseBody` would throw
+    // 'identity response was not JSON' on an empty body, turning every
+    // SUCCESSFUL change into an error.
   }
 
   async logout(accessToken: string): Promise<boolean> {
