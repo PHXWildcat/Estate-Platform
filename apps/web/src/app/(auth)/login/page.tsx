@@ -17,6 +17,12 @@ export default function LoginPage(): ReactElement {
           Create an account
         </Link>
       </p>
+      <p className="mt-2 text-sm text-ink-muted">
+        Forgotten your password?{' '}
+        <Link className="text-accent underline underline-offset-2" href="/reset">
+          Reset it
+        </Link>
+      </p>
     </div>
   );
 }

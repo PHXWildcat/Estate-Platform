@@ -5303,8 +5303,8 @@ so the access-token TTL is the whole usable session — confirmed by reading
 distinguishes expired from revoked. The UI renders those two states identically
 today, which is its own item for PR4.
 
-**PR2 — the address change (this PR).** All three legs, on the same page, which
-leaves only the two reset legs exempt. The load-bearing decisions:
+**PR2 — the address change (merged, `e1b3d69`).** All three legs, on the same
+page, which leaves only the two reset legs exempt. The load-bearing decisions:
 
 - *No layer may render the 202 as a delivery receipt.* Identity answers before
   it knows whether it will send anything — the availability lookup, the encrypt,
@@ -5345,8 +5345,49 @@ eleventh — the step-up retry reading live inputs instead of the carried attemp
 the form, so the values cannot move. Recorded rather than papered over by
 weakening the mutation. Full record in docs/03 §6v.
 
-**PR3** password reset on the `(auth)` group · **PR4** session continuity (wire
-`Refresh`) · **PR5** the adversarial security review.
+**PR3 — the password reset (this PR).** The last two exempt routes gain their
+consumer, and the surface is the first in the product a signed-OUT caller
+drives — hence the `(auth)` route group (`/reset`, linked from the login page)
+rather than `/security`, which every other M20 slice extends. The decisions:
+
+- *The 202-is-not-a-receipt rule arrives on an anonymous surface.* The request
+  answers `{ok:true}` byte-identically for an unknown address, the 30-minute
+  floor and a real send (proven on the wire), so the success copy is
+  conditional on all of it and the client returns `void`. Unlike PR2, the
+  request leg KEEPS the shared error mapper, and the reason is the inverse of
+  PR2's: the only 400 this route can answer is a malformed body — everything
+  interesting is deliberately inside the 202 — so a route-specific mapper
+  would be a second copy with nothing to distinguish.
+- *One mapper for both mailed-code redemptions.* `mapChangeCompleteError`
+  became `mapCodeRedemptionError` at its second caller (one behaviour, one
+  spelling — the M8 PR2 rule), so neither surface's refused code can reach the
+  login vocabulary. Third surface, third remedy for one refused code: "ask for
+  a new one above", because here the request form is on the same page.
+- *A reset signs you in nowhere, at every layer.* Identity mints nothing
+  (§6m's fence); the resolver touches no cookies in either direction — nothing
+  was returned to set, and a previously-signed-in browser's stale pair names a
+  session the completion just revoked, so there is nothing live to clear. The
+  success state REPLACES both forms, states both consequences (signed out
+  everywhere including this device; signed in nowhere), and offers exactly the
+  next step. The completing browser was measured landing on the signed-out
+  shell.
+- *The completion form is always available* — PR2's rule, harder: the mail
+  carries no link (M9), so a fresh browser is the DESIGNED arrival and the
+  page says so.
+- *`EXEMPT_RECOVERY_SURFACE` is deleted, not emptied.* A named empty exemption
+  invites reuse without re-argument, and PR1's stale-exemption check would
+  have refused the entries anyway. All six M17 recovery routes are consumed.
+
+Ten mutations, ten red. Driven live end to end — the wrong code's
+`reset_failed | system | {}` (no actor, empty detail), the real code retyped
+lowercase with dashes dropped, `reset_completed {"notified":"delivered",
+"revokedSessions":"1"}`, old password 401 / new password 200, and the delivery
+log's `identity.password_reset` + `identity.password_changed` both
+`sent_unverified` (§6t's `wasDelivered` recording the carrier's real answer for
+an unproved address). Full record in docs/03 §6w.
+
+**PR4** session continuity (wire `Refresh`) · **PR5** the adversarial security
+review.
 
 ### M21 — Subscription manager (planned; re-sequenced 2026-08-12, displaced again by M20)
 

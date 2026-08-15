@@ -628,3 +628,80 @@ describe('email change', () => {
     expect(String(thrown)).not.toContain(leak);
   });
 });
+
+/**
+ * M20 PR3 — the password reset, the first UNAUTHENTICATED methods added to
+ * this client since login/register. The absence of a bearer is a property,
+ * not an omission, and it is asserted rather than implied.
+ */
+describe('password reset', () => {
+  it('POSTs the request with NO authorization header', async () => {
+    const { client, calls } = clientWith(() => response(202, { status: 'ok' }));
+
+    await client.requestPasswordReset('owner@example.test');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/password/reset/request`);
+    expect(calls[0]?.init.method).toBe('POST');
+    // The caller has forgotten the credential that would authenticate them;
+    // the method has no token parameter, and no ambient one may leak in.
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBeUndefined();
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({ email: 'owner@example.test' });
+  });
+
+  it('resolves the request on 202 WITHOUT reading anything from it', async () => {
+    // The 202 reports that the request was TAKEN — never that a mail was sent,
+    // refused by the floor, or had nowhere to go. Identity answers identically
+    // for all three (the account-existence control), so there is nothing in
+    // the response a caller may act on, and the return type is void.
+    const { client } = clientWith(() => response(202, { status: 'ok' }));
+
+    await expect(client.requestPasswordReset('any@example.test')).resolves.toBeUndefined();
+  });
+
+  it('POSTs the completion with NO authorization header, values unchanged', async () => {
+    const { client, calls } = clientWith(() => response(204, undefined));
+
+    await expect(
+      client.completePasswordReset('pr1 abcd-efgh', 'a-brand-new-passphrase'),
+    ).resolves.toBeUndefined();
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/password/reset`);
+    expect(calls[0]?.init.method).toBe('POST');
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBeUndefined();
+    // The code EXACTLY as typed (the canonical fold lives in identity) and the
+    // password un-revalidated (identity's schema is the gate).
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({
+      code: 'pr1 abcd-efgh',
+      newPassword: 'a-brand-new-passphrase',
+    });
+  });
+
+  it.each([
+    [400, 'invalid_code', 'INVALID_VERIFICATION_CODE'],
+    [400, 'invalid_request', 'INVALID_REQUEST'],
+  ] as const)('maps completion %s %s to %s', async (status, token, code) => {
+    // TWO tokens share the 400 status: the dead code (ask for a new one) and a
+    // refused new password (choose a longer one). The shared status-keyed
+    // mapper would flatten both into INVALID_REQUEST — the same defect the
+    // email-change completion leg carries the mapper for, which is why both
+    // redemptions share ONE mapper rather than each growing a copy.
+    const { client } = clientWith(() => response(status, { error: token }));
+
+    await expect(
+      client.completePasswordReset('PR1-WRONG', 'a-brand-new-passphrase'),
+    ).rejects.toMatchObject({ extensions: { code } });
+  });
+
+  it('never returns identity’s response text on either leg', async () => {
+    const leak = 'reset row for user 42, digest mismatch';
+    const { client } = clientWith(() => response(400, { error: 'invalid_code', detail: leak }));
+
+    const thrown = await client
+      .completePasswordReset('PR1-WRONG', 'a-brand-new-passphrase')
+      .then(() => null)
+      .catch((err: unknown) => err);
+    expect(thrown).not.toBeNull();
+    expect(JSON.stringify(thrown)).not.toContain(leak);
+    expect(String(thrown)).not.toContain(leak);
+  });
+});

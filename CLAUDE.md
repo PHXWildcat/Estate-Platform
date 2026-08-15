@@ -6507,3 +6507,46 @@ deviating from them, stop and propose the change with rationale — do not silen
   including the two that matter most — a success sentence claiming a send, and
   a flipped route left `{ exempt: … }` (which the stale-exemption check added in
   PR1 catches, one PR after being written for exactly this).
+- 2026-08-15 — M20 PR3, THE RESET SURFACE, is the first ceremony in the product
+  a signed-OUT caller drives — hence the `(auth)` route group (`/reset`, linked
+  from the login page) rather than `/security`, which every other M20 slice
+  extends. Two mapper decisions, EACH THE INVERSE OF ITS SIBLING AND FOR THE
+  SAME UNDERLYING REASON. The request leg KEEPS the shared status-keyed
+  `mapError`, where PR2 needed a route-specific one: on this route the only 400
+  identity can produce IS a malformed body — the unknown address, the 30-minute
+  floor and the per-destination bound are all deliberately inside the uniform
+  202 (proven on the wire: `{ok:true}` byte-identical for an address with no
+  account and for the floored real one) — so a route-specific mapper would be
+  a second copy with nothing to distinguish. And the completion leg reuses
+  PR2's completion mapper, renamed `mapCodeRedemptionError` at its second
+  caller (one behaviour, one spelling — the M8 PR2 rule), so neither
+  mailed-code surface can leak a refused code into the login vocabulary.
+  THIRD SURFACE, THIRD REMEDY for the one uniform refused-code answer: the
+  verification panel says "send yourself a new one" (it has a resend button),
+  the address change says "cancel and start again" (it has a cancel), the
+  reset says "ask for a new one above" (the request form is on the same page)
+  — the remedy varies because the surfaces genuinely offer different ways out,
+  and a shared sentence would name a control two of the three do not have.
+- 2026-08-15 — A RESET SIGNS YOU IN NOWHERE, AT EVERY LAYER, and the layer M20
+  PR3 adds holds the line by doing NOTHING: identity mints no tokens (§6m's
+  mint-paths fence), so the BFF completion resolver touches no cookies in
+  either direction — there is nothing returned to set, and the stale pair a
+  previously-signed-in browser may hold names a session the completion just
+  revoked server-side, so the M8 logout rule (never clear cookies for a
+  session that was not revoked) has nothing to protect. The surface then says
+  BOTH consequences out loud — signed out everywhere including this device,
+  signed in nowhere — because a user who expects a reset to sign them in reads
+  the login screen as the reset having failed, and the success state REPLACES
+  both forms and offers exactly the one next step. Measured live: the
+  completing browser landed on the signed-out shell, the pre-reset session's
+  token answered 401, old password 401 / new password 200, and the trail
+  carried `reset_failed | system | {}` for the wrong guess (no actor, empty
+  detail — the uniform refusal preserved in the audit stream) and
+  `reset_completed {"notified":"delivered","revokedSessions":"1"}` with both
+  delivery-log rows `sent_unverified` — §6t's `wasDelivered` recording the
+  carrier's real answer for an address this account never proved.
+  `EXEMPT_RECOVERY_SURFACE` is DELETED rather than emptied — a named empty
+  exemption invites the next route to reuse it without re-arguing — and all
+  six M17 recovery routes now have product consumers. Ten mutations, ten red:
+  the belt-vs-control survivor of PR1/PR2 has no analogue here, because a
+  signed-out surface has no step-up prompt to carry an attempt through.

@@ -343,6 +343,29 @@ export class FakeIdentityClient implements IdentityClient {
       : Promise.resolve();
   }
 
+  /** M20 PR3, the password reset. Note there is NO accessToken in either
+   * shape: the client methods have no token parameter, so a resolver could not
+   * forward a session even by mistake. */
+  readonly requestPasswordResetCalls: string[] = [];
+  requestPasswordResetError: Error | null = null;
+
+  readonly completePasswordResetCalls: Array<{ code: string; newPassword: string }> = [];
+  completePasswordResetError: Error | null = null;
+
+  requestPasswordReset(email: string): Promise<void> {
+    this.requestPasswordResetCalls.push(email);
+    return this.requestPasswordResetError
+      ? Promise.reject(this.requestPasswordResetError)
+      : Promise.resolve();
+  }
+
+  completePasswordReset(code: string, newPassword: string): Promise<void> {
+    this.completePasswordResetCalls.push({ code, newPassword });
+    return this.completePasswordResetError
+      ? Promise.reject(this.completePasswordResetError)
+      : Promise.resolve();
+  }
+
   logoutByRefresh(refreshToken: string): Promise<void> {
     this.logoutByRefreshCalls.push(refreshToken);
     return this.logoutByRefreshError

@@ -2001,7 +2001,8 @@ be read as such.
 - *There is no reset SURFACE.* PR3 ships the routes; no BFF resolver and no
   screen call them, so this is a zero-callers gap of exactly the kind this repo
   keeps closing — recorded here rather than discovered later. The same is true
-  of PR2's change route.
+  of PR2's change route. **CLOSED**: the change route by M20 PR1 (§6u), the
+  address change by M20 PR2 (§6v), the reset by M20 PR3 (§6w).
 - *An unauthenticated route now causes mail.* §6h refused to fire a notification
   kind at registration for that reason, and PR1 narrowed only half of that
   refusal. The deviation is argued rather than inherited: the bound above is
@@ -2964,6 +2965,8 @@ surface at all, and recorded it as the same zero-callers gap as its siblings',
 naming the M14 PR3 settings page as where the ceremony belonged. This is that
 page. The route↔consumer fence's `EXEMPT_RECOVERY_SURFACE` now holds only the
 two reset legs, which need a signed-out route group of their own (PR3).
+**CLOSED by M20 PR3 (§6w)**: both reset legs are consumed and the constant
+itself is deleted.
 
 **The 202 is not a delivery receipt, and no layer is allowed to render it as
 one.** Identity answers the request BEFORE it knows whether it will send
@@ -3053,6 +3056,104 @@ SERVER rather than a boolean passed between siblings.
   address still waits for a mail that never comes, and
   `identity.email_changed`'s reader still has no self-service response — the
   notice is a detection control, and until TB7 the remedy is support.
+
+## 6w. Threat-model delta — M20 PR3, the password-reset surface (2026-08-15)
+
+**The last two exempt recovery routes have a consumer, and the exemption is
+GONE, not emptied.** M17 PR3 shipped the reset with every copy decision taken
+and no surface at all; §6m recorded that as the zero-callers gap it was. Both
+legs now have a product consumer (two unauthenticated BFF mutations and a
+`/reset` page on the `(auth)` route group — the first ceremony in the product a
+signed-OUT caller drives), and `EXEMPT_RECOVERY_SURFACE` is DELETED from the
+route↔consumer fence rather than left as an empty constant: a named empty
+exemption invites the next route to reuse it without re-arguing, and the fence's
+stale-exemption check (M20 PR1) would in any case have refused the two entries
+the moment the consumers landed. All six M17 recovery routes are now consumed.
+
+**§6m's mailbox-is-account decision is now REACHABLE, unchanged.** The
+weakening §6m records in bold — the mailed code and nothing else resets the
+password, even for an account holding a verified TOTP or passkey — was until
+now a property of routes nothing called. This surface is what makes it live,
+so the sentence is re-affirmed here rather than softened: for an account with
+a verified second factor, control of the mailbox is control of the account.
+What bounds it is exactly §6m's list (the vault untouched under 2SKD, every
+session revoked, the owner mailed on completion, the whole sequence audited),
+and the recovery-codes ceremony remains the change that could strengthen it.
+
+**The request leg KEEPS the shared error mapper, and that is the inverse of
+§6v's decision for the same reason.** §6v needed route-specific mappers because
+identity answers 400 for things that are not malformed bodies. On the reset
+request the only 400 identity can produce IS a malformed body — the unknown
+address, the 30-minute floor and the per-destination bound are all deliberately
+inside the uniform 202 — so a route-specific mapper here would be a second copy
+with nothing to distinguish. The completion leg reuses the SAME mapper as the
+email-change completion (`mapCodeRedemptionError`, renamed from
+`mapChangeCompleteError` at its second caller — one behaviour, one spelling,
+the M8 PR2 rule), so a refused code cannot reach the login vocabulary on
+either mailed-code surface.
+
+**Third surface, third remedy for one refused code.** Identity answers one
+`invalid_code` for every completion failure and the edge carries it through as
+one code; what varies is the remedy, because the surfaces genuinely offer
+different ways out. The verification panel says "send yourself a new one" (it
+has a resend button); the address change says "cancel and start again" (it has
+a cancel); the reset says "ask for a new one above" (the request form is on the
+same page). A shared sentence would name a control that does not exist on two
+of the three surfaces.
+
+**A reset signs you in NOWHERE, and the edge keeps it that way.** Identity
+mints nothing on completion (§6m's `mint-paths` fence) and the BFF resolver
+touches no cookies in either direction: there is nothing returned to set, and
+the stale pair a previously-signed-in browser may hold names a session the
+completion just revoked server-side — dead, not live, so the M8 logout rule
+(never clear cookies for a session that was not revoked) has nothing to
+protect and clearing them would be busywork claiming meaning. The surface says
+BOTH consequences out loud — signed out everywhere including this device,
+signed in nowhere — because a user who expects a reset to sign them in reads
+the login screen as the reset having failed, and it offers exactly the one
+next step. Pinned at the wire (no Set-Cookie on the completion response) and
+proven live: the completing browser landed on the signed-out shell.
+
+**The completion form is always available — §6v's rule, harder.** No route
+reads pending state, and the mail deliberately carries no link (M9: "we never
+link you"), so the person holding a code may never have touched this browser
+at all. Arriving at `/reset` in a fresh browser and typing the code is the
+DESIGNED path, and the page says so in words rather than treating it as an
+edge case.
+
+**Proven live, end to end.** Request → the conditional notice ("If *address*
+has an Estate account — and you haven't asked for a code in the last half
+hour…"), with `{"ok":true}` byte-identical on the wire for an address with no
+account and for the floored real one. A real SES message under the one uniform
+subject carried `PR1-…` and the vault-unchanged sentence. A wrong code got the
+uniform refusal copy on screen and `auth.password.reset_failed | system | {}`
+in the trail — no actor, empty detail, so the trail carries no oracle the wire
+withholds. The real code RETYPED THE WAY A HUMAN RETYPES IT (lowercase, every
+dash dropped) was accepted; the success state replaced both forms; the browser
+rendered the signed-out shell; the pre-reset session's token answered 401; the
+old password answered 401 and the new one 200. `password_resets` held the row
+redeemed-not-revoked; the delivery log recorded `identity.password_reset` and
+`identity.password_changed` both `sent_unverified` (this account never proved
+its address — §6t's `wasDelivered` recording the carrier's real answer); and
+the chain carried `reset_requested {"delivered":"delivered"}` and
+`reset_completed {"notified":"delivered","revokedSessions":"1"}`.
+
+### Residuals
+
+- *The request form is an anonymous mail trigger, with no client-side bound —
+  deliberately.* Identity's per-address bound and the 30-minute per-account
+  floor are the gate (§6m), and a browser-side limiter would be the M12
+  second-opinion shape: a copy of a rate rule free to disagree with the one
+  that decides. The surface widens REACH (a UI where there was curl), not
+  capability.
+- *A signed-in browser elsewhere still looks signed in after the revocation*,
+  until its next request fails and renders the session-ended state. That is
+  the access-token-TTL shape measured in PR1's drive (≤15 minutes), pointed
+  the other way; there is no push channel, and PR4's session-continuity work
+  is where the client's relationship to session lifetime gets rebuilt.
+- *§6m's remaining residuals are unchanged by having a surface*: no attempt
+  cap on redemption (the redeemer is anonymous; the bound is 160 bits, the
+  TTL and burn-on-attempt), and a reset does not clear PR1's login bound.
 
 ## 7. Validation program
 
