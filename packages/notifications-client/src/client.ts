@@ -370,9 +370,17 @@ export type SendOutcome =
  *
  * So the derivation lives here rather than at each call site, and
  * `test/delivery-outcome.spec.ts` forbids a service from naming the
- * discriminant at all unless it is a declared notifications adapter asking the
- * DIFFERENT question (is the service reachable), which is what those adapters
- * turn into a 503.
+ * discriminant at all unless it is a declared notifications ADAPTER. Those
+ * three (vault, settlement, profile) name it for a mechanical reason rather
+ * than a semantic one: they translate this wire outcome into their own
+ * service-level port, and the compiler will not let them read `delivered` or
+ * `recipientVerified` off the union without narrowing first. They are NOT the
+ * source of the 503 — `notifications_unavailable` comes from
+ * `deliversToRealChannels`, a property of the adapter class that the services
+ * check elsewhere; an earlier draft of this comment said otherwise and was
+ * wrong. Each collapses the refused arm to `delivered: false`, which is this
+ * function by hand, so the fence additionally holds them to a NEGATED gate
+ * (`if (!x.accepted)`) and nothing more.
  */
 export function wasDelivered(outcome: SendOutcome): boolean {
   return outcome.accepted && outcome.delivered;

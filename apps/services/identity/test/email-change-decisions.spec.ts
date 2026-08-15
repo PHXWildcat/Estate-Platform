@@ -356,7 +356,7 @@ describe('the staged half', () => {
     expect(f.mailed).toHaveLength(0);
   });
 
-  it('a FAILED SEND retires the code nobody received — the PR3 rule', async () => {
+  it('a FAILED SEND retires the code nobody received — not to avoid a lockout', async () => {
     const f = makeService({ sendAccepted: false });
     await drive(f);
     // Once before the mint, once after the failed send.

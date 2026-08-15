@@ -1983,9 +1983,21 @@ deviating from them, stop and propose the change with rationale — do not silen
   UNIQUE INDEX (`WHERE revoked_at IS NULL AND verified_at IS NULL`) rather than
   check-then-act, so two concurrent logins produce one code and the loser adopts
   it. A send that does not land RETIRES its code, or the idempotence guard turns
-  into a TTL-long lockout over a mail nobody received. Deliberately still open
-  and stated in docs/03 rather than dropped: the fixed-shape/fixed-time register
-  response for the M1 enumeration timing channel.
+  into a TTL-long lockout over a mail nobody received. CORRECTED 2026-08-14 —
+  that last clause was true when written and was invalidated by M14's OWN
+  review, which made the retire UNCONDITIONAL at the top of every mint: with
+  that in place, neither guard can wedge (the live-code condition is cleared by
+  the next call's own retire, and the re-issue floor keys on `lastMintedAt`,
+  which orders over revoked rows and so cannot be shortened by retiring at all).
+  The send-failure retire survives for a different and better reason — a live
+  code that reached no mailbox should not exist, and a carrier failure is
+  precisely the case where the carrier may have taken the message before
+  failing. The same false justification was found copied into the reset and
+  address-change ceremonies and corrected there in the same pass; a milestone
+  that invalidates a sentence owns it, and the review that changed the mechanic
+  did not come back for this one. Deliberately still open and stated in docs/03
+  rather than dropped: the fixed-shape/fixed-time register response for the M1
+  enumeration timing channel.
 - 2026-08-07 — M14 decision 5: the verified bit lives on
   `notification_recipients`, NOT on `users`, so the delivery store structurally
   cannot hold an unproven address without saying so and the question "can we
@@ -6225,31 +6237,50 @@ deviating from them, stop and propose the change with rationale — do not silen
   four already correct, because one behaviour with several spellings grows one
   bug per copy (the M8 PR2 seven-audit-producers shape). The fence then makes
   the wrong one unwritable: a consumer may not NAME the discriminant unless it
-  is one of three declared notifications ADAPTERS, which name it for the
-  genuinely different question — is the service reachable — and turn that into a
-  503; those are additionally held to using it only as a NEGATED gate, so an
-  adapter cannot start deriving a delivery fact either. Mutation-tested four
-  ways (each defect reverted, an adapter deriving delivery, a dropped table
-  entry), all red on the assertion that names the property.
-- 2026-08-14 — AND NO TEST COULD SEE IT, because every double was more generous
-  than the platform. All twelve specs in identity's test directory hand-rolled
-  their own notifications double and every one answered a bare
-  `{accepted: true}` — NOT A VALID `SendOutcome` at all, since the accepted arm
-  carries `delivered`, `channel` and `recipientVerified`. They reached their
-  constructors through `as never` or `as unknown as NotificationsPort`, and A
-  CAST ON THE OUTER OBJECT LEAVES THE INNER METHOD'S RETURN TYPE INFERRED and
-  never compared to the port — measured, not assumed, and it is why the compiler
-  could not be the enforcement. The M16 PR2b `chrome-double.ts` lesson one layer
-  beneath the fixtures. Worse, the case that LOOKED like coverage —
-  auth.service.spec's "NOTIFIES the owner, and puts the outcome on the audit
-  event" — only ever used `{accepted: false}`, the arm where the discriminant
-  and the answer AGREE, so it was green throughout: the M13 "a test named for a
-  property it never touched" shape, selecting the one arm that could not fail.
-  Outcomes are four named constants typed as `SendOutcome` now (the one place no
-  cast intervenes) and the fence forbids a hand-rolled `accepted:` literal in
-  that directory. Vault/settlement/profile are left alone deliberately: their
-  doubles are already typed `Promise<SendOutcome>` and their adapters read
-  `delivered` explicitly, so an incomplete literal there fails SAFE.
+  is one of three declared notifications ADAPTERS. CORRECTED, because the first
+  version of this entry got their reason wrong: they do NOT name it to answer
+  "is the service reachable" and they do NOT turn it into a 503 — that refusal
+  comes from `deliversToRealChannels`, a property of the adapter CLASS checked
+  by the service elsewhere. They name it because TypeScript will not let them
+  read `delivered` or `recipientVerified` off the union without narrowing on
+  `accepted` first, and each then collapses the refused arm to
+  `delivered: false` — which is `wasDelivered` computed by hand, so
+  "the only derivation" is true of every CONSUMER and not of the repo. They are
+  additionally held to using it only as a NEGATED gate (`if (!x.accepted)`), so
+  an adapter cannot start deriving a delivery fact any other way.
+  Mutation-tested four ways (each defect reverted, an adapter deriving delivery,
+  a dropped table entry), all red on the assertion that names the property.
+- 2026-08-14 — AND NO TEST COULD SEE IT, because NO DOUBLE EVER ANSWERED ON THE
+  DISAGREEING ARM. Of 38 specs in identity's test directory, 13 name `accepted`
+  and 12 produce an outcome, every one of them `delivered: true` — so the arm
+  where the discriminant and the answer differ was never once exercised. THE
+  FIRST WRITE-UP OF THIS ENTRY SAID "every one answered a bare
+  `{accepted: true}`" AND THAT IS FALSE, caught by an adversarial lens and then
+  measured: FOUR did (which is not a valid `SendOutcome` at all, since the
+  accepted arm carries `delivered`, `channel` and `recipientVerified`), while
+  THREE PRODUCED FULLY VALID FOUR-FIELD OUTCOMES AND WERE EXACTLY AS BLIND. That
+  is the better point and the one I had missed: the mechanism was never a
+  malformed literal, so "make the doubles well-typed" would not have found it —
+  only answering on the other arm does. The compiler could not help either,
+  because they reach their constructors through `as never` or
+  `as unknown as NotificationsPort`, and A CAST ON THE OUTER OBJECT LEAVES THE
+  INNER METHOD'S RETURN TYPE INFERRED and never compared to the port. The M16
+  PR2b `chrome-double.ts` lesson one layer beneath the fixtures. Worse, the case
+  that LOOKED like coverage — auth.service.spec's "NOTIFIES the owner, and puts
+  the outcome on the audit event" — only ever used `{accepted: false}`, the arm
+  where the discriminant and the answer AGREE, so it was green throughout: the
+  M13 "a test named for a property it never touched" shape, selecting the one
+  arm that could not fail. Outcomes are four named constants typed as
+  `SendOutcome` now (the one place no cast intervenes) and the fence forbids a
+  hand-rolled `accepted:` literal in that directory. The three adapters are left
+  alone, and that reason was overstated too: only VAULT doubles the client port
+  faithfully (`notifier-adapters.spec.ts`, typed `Promise<SendOutcome>`) —
+  settlement's `HttpNotifier` and profile's `HttpLinkNotifier` are NEVER
+  constructed in a test, their suites doubling the service-level port above
+  them. What makes them safe is not their doubles but that all three read
+  `outcome.delivered` explicitly on the accepted arm, so an incomplete literal
+  fails SAFE; that two of the three translations are untested is a residual now
+  written in docs/03 §6t rather than implied to be covered.
 - 2026-08-14 — A BULK REGEX REWROTE MY OWN PROSE, which is a new way for a
   mechanical edit to lie. Converting the doubles with a
   `{ accepted: true }` → `DELIVERED` replacement also rewrote three COMMENTS I

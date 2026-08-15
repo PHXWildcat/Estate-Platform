@@ -294,14 +294,29 @@ describe('ensureVerificationRequested (the login hook)', () => {
     ).toContain('email_verification.reissued');
   });
 
-  it('RETIRES a code whose mail never left, so the next login can try again', async () => {
-    // Otherwise the idempotence guard turns into a lockout: it would refuse to
-    // mint for a full TTL over a mail that does not exist.
+  it('RETIRES a code whose mail never left — a live code that reached no mailbox must not exist', async () => {
+    // COUNTED, NOT `toHaveBeenCalledWith`, and that is the whole point of this
+    // case. `revokeLive(userId, now)` already runs UNCONDITIONALLY before every
+    // mint with identical arguments, so the old assertion was satisfied by that
+    // call alone: deleting the conditional retire below left this test — named
+    // for exactly that block — GREEN, along with the whole 451-test suite. The
+    // M13 "a test named for a property it never touched" shape, found by an
+    // adversarial pass over this milestone. Two calls is the property: one
+    // before the mint, one after the send did not land.
     const fakes = makeFakes();
     fakes.notifications.sendAddressVerification.mockResolvedValue(UNREACHABLE);
     await makeService(fakes).ensureVerificationRequested(USER);
-    expect(fakes.codes.revokeLive).toHaveBeenCalledWith(USER, NOW);
+    expect(fakes.codes.revokeLive).toHaveBeenCalledTimes(2);
+    expect(fakes.codes.revokeLive).toHaveBeenLastCalledWith(USER, NOW);
     expect(fakes.events.emailVerificationSent).toHaveBeenCalledWith(USER, false);
+  });
+
+  it('retires ONCE when the mail lands — the second retire is the failure path, not routine', async () => {
+    // The control for the case above: without it, `toHaveBeenCalledTimes(2)`
+    // could be satisfied by a service that retires twice unconditionally.
+    const fakes = makeFakes();
+    await makeService(fakes).ensureVerificationRequested(USER);
+    expect(fakes.codes.revokeLive).toHaveBeenCalledTimes(1);
   });
 
   it('treats a lost mint race as success by somebody else', async () => {

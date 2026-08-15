@@ -5192,17 +5192,23 @@ cannot sign in. Full record in docs/03 §6t.
 
 Two things made it invisible, and both generalize. TypeScript forces a narrowing
 on the discriminant before `delivered` may be read, so **stopping at the
-narrowing guard type-checks perfectly** while meaning something else. And every
-double in identity's test directory answered a bare `{ accepted: true }` — not a
-valid `SendOutcome` — reaching its constructor through a cast that leaves the
-inner method's return type unchecked, so the compiler never said so.
+narrowing guard type-checks perfectly** while meaning something else. And NO
+DOUBLE IN IDENTITY'S TEST DIRECTORY EVER ANSWERED ON THE DISAGREEING ARM: of 38
+specs, 13 name `accepted` and 12 produce an outcome, and every one of the twelve
+was `delivered: true`. Measured, because the first write-up of this said
+"every one answered a bare `{ accepted: true }`" and that is false — four did,
+while **three produced fully valid four-field outcomes and were exactly as
+blind**. The mechanism was never a malformed literal; it was an unexercised arm,
+and the casts (`as never`, `as unknown as NotificationsPort`) meant the compiler
+could not have said so either.
 
-Fixed as ONE spelling (`wasDelivered`, used at all seven identity sites) plus a
-fence that forbids a consumer naming the discriminant unless it is one of three
-declared notifications adapters asking the different question — *is the service
-reachable* — and a second that forbids hand-rolled outcome literals in the test
-directory. Four mutations red, and the two new integration cases each go red on
-their own defect against real Postgres.
+Fixed as ONE spelling (`wasDelivered`, the single derivation for every consumer,
+used at all seven identity sites) plus a fence that forbids a consumer naming
+the discriminant unless it is one of three declared notifications adapters,
+which must narrow to translate the wire outcome into their own port — and a
+second that forbids hand-rolled outcome literals in the test directory. Four
+mutations red, and the two new integration cases each go red on their own defect
+against real Postgres.
 
 **Two claims corrected rather than left standing.** docs/03 §6l's residual said
 an undelivered notice "leaves `notified: failed` … for an operator to re-drive";

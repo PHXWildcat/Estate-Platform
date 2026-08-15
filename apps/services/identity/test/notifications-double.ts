@@ -4,18 +4,25 @@
  * WHY THIS EXISTS: the defect this PR fixes — three identity call sites
  * recording an undelivered mail as `delivered` in the append-only trail — was
  * invisible to every test in this directory, because every spec hand-rolled
- * its own double and every one of them returned `{ accepted: true }`. That is
- * NOT A VALID `SendOutcome`: the union's accepted arm carries `delivered`,
- * `channel` and `recipientVerified` too. The doubles typed themselves as
- * `Promise<{ accepted: boolean }>` or cast through `as never`, so the compiler
- * never saw the gap, and a production read of `outcome.accepted` scored true
- * against a shape the real service can never return.
+ * its own double and NOT ONE of the twelve producing an outcome ever answered
+ * on the arm where the discriminant and the answer disagree.
+ *
+ * MEASURED, because the first draft of this comment claimed something stronger
+ * and false ("every one returned `{ accepted: true }`"): of 38 specs here, 13
+ * name `accepted` and 12 produce an outcome. Four answered a bare
+ * `{ accepted: true }`, which is not a valid `SendOutcome` at all — the
+ * union's accepted arm carries `delivered`, `channel` and `recipientVerified`
+ * too. But THREE produced fully valid four-field outcomes and were just as
+ * uncheckable, which is the better point: validity of the literal was never
+ * the mechanism. Every one of them was `delivered: true`. The gap the tests
+ * could not see was not a malformed shape, it was an UNEXERCISED ARM.
  *
  * A DOUBLE MORE GENEROUS THAN THE PLATFORM IS WHERE THE BUG LIVES — the M16
  * PR2b lesson (`chrome-double.ts` supplied `getManifest` unconditionally, so
  * jsdom could not see that an offscreen document has no such method, and the
  * extension shipped unable to unlock a vault). Here the generosity was that
- * every simulated send SUCCEEDED in a way the service cannot.
+ * every simulated send SUCCEEDED, so a production read of `outcome.accepted`
+ * scored true in every test that ever ran.
  *
  * So the outcomes are CONSTANTS TYPED AS `SendOutcome`, and the annotation on
  * each constant is the real check — it is the ONE place no cast intervenes. The

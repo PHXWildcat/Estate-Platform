@@ -2746,16 +2746,25 @@ forces a narrowing on `accepted` before `delivered` may be read, so *stopping at
 the narrowing guard type-checks perfectly* while meaning something else. A
 discriminant is not an answer.
 
-**Nor could any test, because the doubles were more generous than the platform.**
-Every spec in identity's test directory hand-rolled its own notifications double
-and every one answered a bare `{ accepted: true }` — not a valid `SendOutcome`
-at all. They reached their constructors through `as never` or
-`as unknown as NotificationsPort`, and a cast on the outer object leaves the
-inner method's return type inferred and never compared to the port, so the
-compiler never saw the gap. The M16 PR2b lesson, one layer beneath the fixtures.
-The two existing cases that looked like coverage — `auth.service.spec.ts`'s
-"NOTIFIES the owner, and puts the outcome on the audit event" — only ever used
-`{ accepted: false }`, the arm where the discriminant and the answer AGREE.
+**Nor could any test, because no double ever answered on the disagreeing arm.**
+Every spec in identity's test directory hand-rolled its own notifications double,
+and of the twelve that produce an outcome, not one ever returned
+`accepted: true, delivered: false`. Measured, because the first draft of this
+section claimed something stronger and false ("every one answered a bare
+`{ accepted: true }`"): of 38 specs, 13 name `accepted` and 12 produce an
+outcome; **four** answered a bare `{ accepted: true }`, which is not a valid
+`SendOutcome` at all — the accepted arm carries `delivered`, `channel` and
+`recipientVerified` too — but **three produced fully valid four-field outcomes
+and were exactly as blind**. So the mechanism was never a malformed shape; it
+was an UNEXERCISED ARM, and every producer was `delivered: true`.
+
+The compiler could not close it either: the doubles reach their constructors
+through `as never` or `as unknown as NotificationsPort`, and a cast on the outer
+object leaves the inner method's return type inferred and never compared to the
+port. The M16 PR2b lesson, one layer beneath the fixtures. The one case that
+looked like coverage — `auth.service.spec.ts`'s "NOTIFIES the owner, and puts
+the outcome on the audit event" — only ever used `{ accepted: false }`, the arm
+where the discriminant and the answer AGREE.
 
 **§6l's residual was a promise the code did not keep.** It states that an
 undelivered notice "leaves `notified: failed` on the audit event … for an
@@ -2765,25 +2774,41 @@ said there was nothing to re-drive. The sentence is now true rather than
 rewritten.
 
 **The fix is one spelling and a fence, not three edits.** `wasDelivered` in
-`@estate/notifications-client` is the only derivation, used at all seven identity
-sites (the four that were already correct included — one behaviour, one place).
+`@estate/notifications-client` is the single derivation for every CONSUMER of a
+send outcome, used at all seven identity sites (the four that were already
+correct included — one behaviour, one place).
 `packages/notifications-client/test/delivery-outcome.spec.ts` then forbids a
 consumer from NAMING the discriminant at all unless it is one of three declared
-notifications adapters, which name it for the genuinely different question — *is
-the service reachable* — and turn that into a 503 `notifications_unavailable`;
-those are additionally held to using it only as a negated gate, so an adapter
-cannot start deriving a delivery fact either. The same fence forbids hand-rolled
-`accepted:` literals in identity's test directory, where four named constants
-typed as `SendOutcome` now carry the outcomes.
+notifications adapters — vault, settlement and profile — which must name it for
+a genuinely different reason: they translate the wire outcome into their own
+service-level port, and TypeScript will not let them read `delivered` or
+`recipientVerified` off the union without narrowing on `accepted` first. (They
+are not the 503: `notifications_unavailable` comes from `deliversToRealChannels`,
+a property of the adapter CLASS, checked by the service elsewhere. An earlier
+draft of this paragraph credited `!accepted` with that refusal and was wrong.)
+Each adapter collapses the refused arm to `delivered: false`, which is
+`wasDelivered` by hand — so the fence additionally holds them to using
+`accepted` ONLY as a negated gate (`if (!x.accepted)`), and an adapter that
+started deriving a delivery fact any other way turns it red. The same fence
+forbids hand-rolled `accepted:` literals in identity's test directory, where
+four named constants typed as `SendOutcome` now carry the outcomes.
 
 **Residuals, stated.** The scan is on the identifier, so a destructure is caught
 and `Object.values(outcome)[0]` is not; closing that wants the TypeScript AST,
 which is more than a fence should carry. The constants' `SendOutcome` annotation
 is the real shape check — it is the one place no cast intervenes — and it is a
-convention the fence enforces rather than something the compiler can. Vault,
-settlement and profile double the port faithfully already (their doubles are
-typed `Promise<SendOutcome>`); their adapters read `delivered` explicitly and an
-incomplete literal there would fail SAFE, so they are left as they are.
+convention the fence enforces rather than something the compiler can.
+
+The three adapters are left as they are, but the reason is narrower than an
+earlier draft claimed. Only VAULT doubles the client port faithfully
+(`notifier-adapters.spec.ts`, typed `NotificationsPort` / `Promise<SendOutcome>`);
+settlement's `HttpNotifier` and profile's `HttpLinkNotifier` are never
+constructed in a test at all — their suites double the SERVICE-level port above
+them, so the wire translation itself is uncovered. What makes that safe rather
+than lucky is that all three read `outcome.delivered` explicitly on the accepted
+arm, so an incomplete literal fails SAFE; the residual is that two of the three
+translations have no test of their own, which the fence bounds (they may only
+narrow) but does not close.
 
 **Proven live, on the disagreeing arm.** Two probe accounts against the running
 stack with identity rebuilt from this branch; one keeps its recipient row, the

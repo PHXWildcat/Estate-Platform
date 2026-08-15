@@ -218,10 +218,15 @@ export class EmailVerificationService {
     const outcome = await this.notifications.sendAddressVerification({ userId, code });
     const delivered = wasDelivered(outcome);
     if (!delivered) {
-      // RETIRE THE CODE THE USER NEVER RECEIVED. Leaving it live would make the
-      // idempotence guard above refuse to mint for a full TTL over a mail that
-      // does not exist — the guard turning into a lockout. Retiring it means
-      // the next login (or resend) tries again immediately.
+      // RETIRE THE CODE THE USER NEVER RECEIVED — and NOT, as this comment used
+      // to say, so that "the next login (or resend) tries again immediately".
+      // It does not: `lastMintedAt` orders over ALL rows including revoked
+      // ones, so the re-issue floor sees the row just written whatever became
+      // of it, and the unconditional retire above already stops a stale code
+      // wedging the partial unique index. It is retired because a live
+      // verification code that reached no mailbox should not exist — and a
+      // carrier failure is the case where the carrier may have taken the
+      // message before failing.
       await this.codes.revokeLive(userId, now);
     }
     await this.authEvents.insert({
