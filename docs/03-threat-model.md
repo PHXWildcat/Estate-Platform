@@ -2873,9 +2873,12 @@ finding a third time, closed the same way with `passwordChangeMessageFor`, whose
 sentence also states that nothing changed — the fact a person most needs after a
 refusal on a route that rewrites their credential.
 
-**ONE STEP-UP PROMPT PER PAGE, still.** `/security` can now be refused for five
-reasons, and the M15 PR3 defect is two identical "Confirm it's you" fields no
-person or query can tell apart. `StepUpTarget` admits one at a time and every
+**ONE STEP-UP PROMPT PER PAGE, still.** `/security` can be refused for every
+reason `StepUpTarget` names — six, after PR2 added the address change, and this
+sentence deliberately no longer carries a number that a later PR has to
+remember to update (the PR5 review found three counts in three files, of which
+only the union was right). The M15 PR3 defect is two identical "Confirm it's
+you" fields no person or query can tell apart. `StepUpTarget` admits one at a time and every
 other opener is disabled while one is up; the prompt renders as a SIBLING of the
 form, never nested inside it (the M16 PR3a rule — a form inside a form is a tree
 the DOM API accepts and no parser would build).
@@ -3257,10 +3260,145 @@ compiler's, `OperationName` being a closed union.
   idempotency key on `createContact`/`createFamilyMember`, the M19 asset-command
   shape applied to profile — is what would let mutations retry too, and it is
   a profile-service change rather than a transport one.
+- *A retried QUERY is not quite free either, and the reason it is harmless is
+  worth stating rather than assumed.* For a single-hop query the retry IS the
+  only execution — UNAUTHENTICATED means a guard refused before any handler
+  ran. `assetBeneficiaries` is the one multi-hop query resolver of the
+  twenty-five (assets, then profile for the names), and both hops decrypt, so
+  a refusal on the second hop makes the first hop's audited
+  `crypto.field.decrypted` events happen twice for one user action. That does
+  not trip TB4's detector, and specifically not by luck: `boundFor` requires
+  BOTH the count bound and `maxDistinctSubjectsPerWindow` to be exceeded
+  (2026-08-14), and a retry re-reads the SAME subjects — the count moves, the
+  distinct count does not. Nothing is disclosed to anybody new; it is the
+  owner's own trail, doubled.
 - *The 30-day session lifetime is a hard ceiling, unchanged.* `rotateTokens`
   deliberately never writes `expires_at` (M16), so refresh extends nothing and
   a month-old browser re-authenticates. That is the designed bound on a stolen
   jar, not a gap in this feature.
+
+## 6y. Threat-model delta — M20 PR5, the security review (2026-08-15)
+
+Five file-scoped discovery lenses over the milestone's own files (never a diff
+range — the M13 rule), each in its own worktree pinned with `git checkout
+--detach`, then two adversarial verifiers per candidate on different angles
+(production reachability, and is-it-already-a-recorded-decision), both
+defaulting to refuted. 21 agents, no losses; 11 raw findings, 8 verified, 3
+dropped under the cap and LOGGED BY NAME — all three were then hand-verified and
+all three were real. Every finding was re-checked by hand before anything
+changed, and the one HIGH was reproduced by execution against the running stack
+before and after the fix.
+
+Fourteenth milestone running where every confirmed finding sits in machinery the
+milestone introduced, with one exception noted below.
+
+### The one that mattered: a second route checking the account password, unbounded
+
+`POST /v1/auth/email/change/request` (M20 PR2) takes the current password for
+exactly the reason `POST /v1/auth/password` does — the stolen-session threat —
+and ran the identical gate order, conditional step-up then verification, with
+nothing between them. The M17 PR6 review had put `PASSWORD_CHANGE_BOUND` in that
+gap on the password route, measured after twenty-five unbounded guesses took an
+account over. PR2 wrote the same shape one milestone later and did not carry the
+bound.
+
+MEASURED ON THE RUNNING STACK, on a factorless account — the class
+`SecondFactorGate` deliberately admits so the bootstrap case stays reachable, and
+therefore the class that reaches a password check at all:
+
+| route | 25 wrong guesses, one session | ledger |
+|---|---|---|
+| `POST /v1/auth/email/change/request` | 25 × `400`, no refusal ever | `email_change.denied` × 25, **0 with a session id** |
+| `POST /v1/auth/password` | 5 × `401`, then `429` | `password.change_failed` × 5, all attributed |
+
+One secret, two routes, one bounded. Every other bound on the address-change
+route sits DOWNSTREAM of the verification (the per-account re-issue floor and
+the per-destination address bound both run after it), so nothing else could
+have caught it, and recovering the password there defeats the bounded route
+rather than tripping it.
+
+**The fix is a shared gate, and the shape is the point.** `AccountPasswordGate`
+(the `SecondFactorGate` precedent) is injected by both services;
+`PASSWORD_CHANGE_BOUND` became `ACCOUNT_PASSWORD_BOUND` and counts BOTH routes'
+failure kinds, because the M16 chokepoint rule says the thing to bound is the
+SET of routes that read a secret — two budgets of five are a budget of ten to
+anyone willing to alternate. The failure row is now attributed to the session,
+without which the per-session half would have been blind to this route and one
+stolen session could have spent the whole account ceiling. Post-fix, same
+attack: five 400s then `429`, `email_change.denied` × 5 all attributed, and the
+password route answers `429` HAVING SPENT NOTHING OF ITS OWN — which is the
+shared budget visible from the outside. The owner's other session still gets the
+ordinary refusal and their correct password still returns 202.
+
+**A METHOD ON ONE SERVICE IS WHAT ALLOWED IT.** The bound was reachable only
+from the class that happened to own it, so the second route did not bypass the
+control so much as never meet it.
+
+### The fence went green because its corpus was one file
+
+`rate-bounds.spec.ts` asserts that every guessing bound covers the routes that
+check its secret — over `auth.service.ts` ALONE. That was true to the property
+while every bounded route lived in that class, and stopped being true the moment
+a route moved to `email-change.service.ts`. A fence whose input is narrower than
+its claim goes green for the same reason it is wrong.
+
+The corpus is derived from the directory now, with a floor asserting it, and the
+fence gained the check it never had: EVERY call to `hasher.verifyPassword` must
+be declared with the bound that covers it, in both directions, anchored on the
+verification rather than on a route decorator or a method name — a caller cannot
+rename its way out of the call that scores a guess. Mutation-tested with the
+exact regression (a new undeclared route reading the password) and with the
+corpus narrowed back to one file.
+
+### The other confirmed findings
+
+- **An outage wore the face of a revocation.** `refreshSession` collapsed
+  "identity refused the credential" and "the refresh never completed" into one
+  boolean, so a dropped connection or an identity outage rendered "Your session
+  has ended. Please sign in again." over a live 30-day session whose cookies the
+  BFF had deliberately left in place — the M16 PR2a rule, broken by code citing
+  it three lines above. Three outcomes now; only a refusal reports the session
+  as ended.
+- **`SESSION_RENEWED` claimed what its own neighbour says cannot be claimed.** A
+  mutation refused with UNAUTHENTICATED may have written on its first hop and
+  been refused on a later one — the whole reason mutations are not retried — yet
+  the copy read "Nothing was changed — please try that again", inviting the
+  retry the no-retry rule exists to prevent. It names the uncertainty and sends
+  the reader to reload instead.
+- **The step-up prompt never closed on a non-step-up refusal.** `StepUpPrompt`
+  does not unmount itself, and these sections render it INSTEAD of their form,
+  so a refusal after a genuine elevation left an error telling the reader to
+  re-check a field no longer on screen. Four call sites, two of them
+  pre-existing, all fixed — two fixed and two not would read as intentional.
+- **The page contradicted itself about a control.** A password change or an
+  address-change completion revokes every other session, and neither re-read the
+  devices list, so "your other devices have been signed out" sat above a list
+  still showing them.
+- **The stale-exemption check could only see files already declared as
+  consumers**, so a brand-new client module calling an exempt route was
+  invisible to the check whose job is exactly that. Swept from the tree now.
+- **The password-policy fence could not see registration.** Two of identity's
+  password fields are literally named `password` — one about to be STORED, one
+  about to be compared — so a field-keyed rule excused
+  `RegisterSchema.password` dropping to `min(1)` as a presence check, satisfying
+  a file whose header claims the assertion is TOTAL. Keyed on the (schema,
+  field) pair now, classified as data, total in both directions.
+- **`loadSession` read a missing field as data**, violating the rule the two
+  loaders below it state — `{"data":{}}` produced a signed-in session of
+  `undefined` and white-screened the page. A missing field is an ERROR, not a
+  sign-out: a version skew says nothing about whether the caller is signed in.
+
+### Refuted, and the three dropped under the cap
+
+No finding was refuted by the verifiers this round, which is unusual and was
+treated as a reason for more hand-checking rather than less: all eight were
+re-derived from the source before anything was changed. The three dropped under
+the fan-out cap were each verified by hand and each was real — a comment
+asserting the reset surface "does not exist yet" (M20 PR3 shipped it), three
+different counts of the step-up targets in three files (only the union was
+right, and the prose no longer carries a number), and a line-based
+comment-stripper in `operation-consumers.test.ts` that read whole paragraphs of
+block comment as code.
 
 ## 7. Validation program
 

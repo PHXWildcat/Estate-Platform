@@ -28,6 +28,7 @@ import type { EventsService } from '../src/events.service';
 import type { PasswordHasher } from '../src/password';
 import { PasswordResetRepo } from '../src/password-reset.repo';
 import { sha256 } from '../src/readable-code';
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import { SessionsRepo } from '../src/sessions.repo';
 import { hashToken } from '../src/tokens';
@@ -137,7 +138,13 @@ describeIfPg('email change (auth cluster)', () => {
   /** Drive request + its detached half to completion — `staged()` is
    * awaitable by design (the PR3 flake's lesson), so no sleeps anywhere. */
   async function request(target?: string): Promise<void> {
-    const { staged } = await service.requestChange(user, caller, PASSWORD, target ?? newEmail);
+    const { staged } = await service.requestChange(
+      user,
+      sessionId,
+      caller,
+      PASSWORD,
+      target ?? newEmail,
+    );
     await staged().catch(() => {});
   }
 
@@ -187,6 +194,12 @@ describeIfPg('email change (auth cluster)', () => {
       // it must not refuse, so the ceremony under test is the one that runs
       // AFTER the gate admits the caller.
       { assertMayAddFactor: (): Promise<void> => Promise.resolve() } as unknown as SecondFactorGate,
+      // The account-password guessing bound (M20 PR5). Admits every attempt
+      // here: its own decision is proven in the bound's int spec, and the
+      // ceremony under test is what runs once the bound lets a caller through.
+      {
+        assertAttemptsAvailable: (): Promise<void> => Promise.resolve(),
+      } as unknown as AccountPasswordGate,
       {
         emailChangeRequested: (): Promise<void> => Promise.resolve(),
         emailChangeCompleted: (): Promise<void> => Promise.resolve(),
@@ -268,7 +281,9 @@ describeIfPg('email change (auth cluster)', () => {
     });
 
     it('changing to the CURRENT address is refused openly — a no-op must not burn the floor', async () => {
-      const refused = await refusalFrom(service.requestChange(user, caller, PASSWORD, oldEmail));
+      const refused = await refusalFrom(
+        service.requestChange(user, sessionId, caller, PASSWORD, oldEmail),
+      );
       expect(refused.getStatus()).toBe(400);
       expect(refused.getResponse()).toEqual({ error: 'invalid_request' });
       // …and a real request afterwards is NOT floor-blocked.
@@ -277,14 +292,18 @@ describeIfPg('email change (auth cluster)', () => {
     });
 
     it('a WRONG current password is refused before anything is staged', async () => {
-      const refused = await refusalFrom(service.requestChange(user, caller, 'not-it', newEmail));
+      const refused = await refusalFrom(
+        service.requestChange(user, sessionId, caller, 'not-it', newEmail),
+      );
       expect(refused.getResponse()).toEqual({ error: 'invalid_credentials' });
       expect(mailed).toEqual([]);
     });
 
     it('holds the re-issue floor, then mints again once it lapses', async () => {
       await request();
-      const refused = await refusalFrom(service.requestChange(user, caller, PASSWORD, newEmail));
+      const refused = await refusalFrom(
+        service.requestChange(user, sessionId, caller, PASSWORD, newEmail),
+      );
       expect(refused.getResponse()).toEqual({ error: 'too_soon' });
       expect(mailed).toHaveLength(1);
 

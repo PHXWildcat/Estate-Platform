@@ -43,6 +43,7 @@ import { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
 import type { SessionsRepo } from '../src/sessions.repo';
 import { STEPUP_WINDOW_MS } from '../src/stepup';
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import { SecondFactorGate } from '../src/second-factor-gate';
 import { WebAuthnRepo } from '../src/webauthn.repo';
 import type { UsersRepo } from '../src/users.repo';
@@ -128,6 +129,9 @@ describeIfPg('enrolling a second factor (auth cluster)', () => {
       // THE REAL GATE, over the real repos. A fake here would make every
       // assertion in this file vacuous — the gate IS what is under test.
       new SecondFactorGate(new MfaRepo(db), new WebAuthnRepo(db)),
+      {
+        assertAttemptsAvailable: (): Promise<void> => Promise.resolve(),
+      } as unknown as AccountPasswordGate,
       db,
     );
   });

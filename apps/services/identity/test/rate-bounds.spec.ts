@@ -29,25 +29,53 @@
  *
  * ANTI-VACUITY IS THE FIRST CASE, because a scan that stops matching goes green.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  ACCOUNT_PASSWORD_BOUND,
   LEDGER_RATE_BOUNDS,
   LOGIN_BOUND,
-  PASSWORD_CHANGE_BOUND,
   REGISTER_REFUSAL_KIND,
   STEP_UP_BOUND,
 } from '../src/rate-bounds';
 
-const SERVICE = join(__dirname, '..', 'src', 'auth.service.ts');
+const SRC = join(__dirname, '..', 'src');
+const SERVICE = join(SRC, 'auth.service.ts');
 
 function source(): string {
   return readFileSync(SERVICE, 'utf8');
 }
 
+/**
+ * THE CORPUS IS THE SERVICE, NOT ONE FILE — the M20 PR5 finding, and the most
+ * transferable thing in this suite.
+ *
+ * Every assertion below used to read `auth.service.ts` alone, which was true to
+ * the property while every bounded route lived in that class. It stopped being
+ * true when M20 PR2 put a route that reads the account password in
+ * `email-change.service.ts`: the fence went on asserting that the bounds cover
+ * the routes that check their secret, over a corpus that could not see the one
+ * route that did not. A fence whose input is narrower than its claim goes green
+ * for the same reason it is wrong.
+ *
+ * Derived from the directory rather than listed, so a tenth service file
+ * arrives inside the fence instead of beside it.
+ */
+function serviceFiles(): string[] {
+  return readdirSync(SRC)
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => join(SRC, name));
+}
+
+function allSource(): string {
+  return serviceFiles()
+    .map((f) => readFileSync(f, 'utf8'))
+    .join('\n');
+}
+
 /** Every `kind: '…'` literal the service hands the ledger. */
 function kindsWritten(): string[] {
-  return [...source().matchAll(/kind:\s*'([a-z0-9._]+)'/g)].map((m) => m[1] as string);
+  return [...allSource().matchAll(/kind:\s*'([a-z0-9._]+)'/g)].map((m) => m[1] as string);
 }
 
 /**
@@ -62,14 +90,18 @@ const MEANS_A_WRONG_SUBMISSION: Record<string, readonly string[]> = {
   login: ['login.failed'],
   // M17 PR6: `POST /v1/auth/password` reads the current password, so it is a
   // route that checks a secret and belongs here — the review found it missing.
-  'password-change': ['password.change_failed'],
+  // M20 PR5: and so does `POST /v1/auth/email/change/request`, which the same
+  // review found missing for the same reason one milestone later. ONE budget
+  // for one secret (the M16 chokepoint rule) — two bounds of five would be a
+  // bound of ten to anyone willing to alternate between the routes.
+  'account-password': ['password.change_failed', 'email_change.denied'],
 };
 
 /** A refusal BY a bound. Counting one would let a counter feed itself. */
 const REFUSALS = [
   STEP_UP_BOUND.refusalKind,
   LOGIN_BOUND.refusalKind,
-  PASSWORD_CHANGE_BOUND.refusalKind,
+  ACCOUNT_PASSWORD_BOUND.refusalKind,
   REGISTER_REFUSAL_KIND,
 ];
 
@@ -87,7 +119,7 @@ const REFUSALS = [
 const REFUSAL_EMITTERS: ReadonlyArray<readonly [string, string]> = [
   [STEP_UP_BOUND.refusalKind, 'kind: STEP_UP_BOUND.refusalKind'],
   [LOGIN_BOUND.refusalKind, 'kind: LOGIN_BOUND.refusalKind'],
-  [PASSWORD_CHANGE_BOUND.refusalKind, 'kind: PASSWORD_CHANGE_BOUND.refusalKind'],
+  [ACCOUNT_PASSWORD_BOUND.refusalKind, 'kind: ACCOUNT_PASSWORD_BOUND.refusalKind'],
   [REGISTER_REFUSAL_KIND, 'kind: REGISTER_REFUSAL_KIND'],
 ];
 
@@ -96,6 +128,13 @@ describe('every guessing bound covers the routes that check its secret', () => {
     const written = kindsWritten();
     // The floor: the scan has found a real ledger surface, not an empty match.
     expect(written.length).toBeGreaterThanOrEqual(10);
+    // …and the CORPUS floor, which is the M20 PR5 half: the scan must be reading
+    // the whole service. Without this, narrowing it back to one file would pass
+    // every assertion below, which is exactly how the address-change route came
+    // to check a password no bound was watching.
+    const files = serviceFiles();
+    expect(files.length).toBeGreaterThanOrEqual(20);
+    expect(files.some((f) => f.endsWith('email-change.service.ts'))).toBe(true);
     // …and the bound table itself is not empty, which every loop below assumes.
     expect(LEDGER_RATE_BOUNDS.length).toBeGreaterThanOrEqual(2);
     for (const kind of Object.values(MEANS_A_WRONG_SUBMISSION).flat()) {
@@ -108,7 +147,11 @@ describe('every guessing bound covers the routes that check its secret', () => {
     // declared and never written is a control with no trace: the wire already
     // says nothing (login answers a plain 401 either way), so the ledger row IS
     // the only evidence the bound fired.
-    const text = source();
+    //
+    // `allSource()`, not `source()`: the account-password refusal is emitted by
+    // `AccountPasswordGate` since M20 PR5, because two services need it. A
+    // one-file scan would have reported it as declared-and-never-written.
+    const text = allSource();
     for (const [kind, expression] of REFUSAL_EMITTERS) {
       expect({ kind, emitted: text.includes(expression) }).toEqual({ kind, emitted: true });
     }
@@ -182,6 +225,72 @@ describe('every guessing bound covers the routes that check its secret', () => {
           bound: bound.name,
           kind,
           written: true,
+        });
+      }
+    }
+  });
+
+  it('EVERY ROUTE THAT READS THE ACCOUNT PASSWORD IS DECLARED, AND BOUNDED', () => {
+    // The check this suite did not have, and whose absence is the M20 PR5
+    // finding: it asserted the second-factor readers pass a gate and asserted
+    // nothing at all about the readers of the OTHER secret. So a second route
+    // checking the account password could ship — and did — with the fence green.
+    //
+    // ANCHORED ON THE VERIFICATION, not on a route decorator or a method name.
+    // A caller cannot rename its way out of `hasher.verifyPassword(`: it is the
+    // call that scores a guess, so it is the call that has to be covered. The
+    // 2026-08-12 rule (anchor on what the runtime reads) applied to a secret
+    // rather than to a credential.
+    const declared: Record<string, { readonly bound: string; readonly why: string }> = {
+      login: {
+        bound: 'LOGIN_BOUND',
+        // Deliberately the ONLY one whose bound is checked AFTER the verify —
+        // both orderings are asserted in their own describe below, because the
+        // wrong one re-opens the account-existence timing channel.
+        why: 'unauthenticated; address bound before the lookup, account bound after the verify',
+      },
+      changePassword: {
+        bound: 'ACCOUNT_PASSWORD_BOUND',
+        why: 'M17 PR6: gate then bound then verify',
+      },
+      requestChange: {
+        bound: 'ACCOUNT_PASSWORD_BOUND',
+        why: 'M20 PR5: the same shape, found unbounded a milestone later',
+      },
+    };
+
+    // Every enclosing method that reaches a real password verification. The
+    // hasher's own definition and `dummyVerify` are excluded by construction —
+    // this looks for the CALL through the injected hasher, which is how a route
+    // scores a submitted guess.
+    const readers = new Set<string>();
+    for (const file of serviceFiles()) {
+      const text = readFileSync(file, 'utf8');
+      for (const m of text.matchAll(/this\.hasher\.verifyPassword\(/g)) {
+        const before = text.slice(0, m.index);
+        const method = [...before.matchAll(/\n {2}(?:private |public )?async (\w+)\(/g)].pop();
+        readers.add(method ? (method[1] as string) : `<top-level in ${file}>`);
+      }
+    }
+
+    // BOTH DIRECTIONS. An undeclared reader is the defect; a declared reader
+    // that no longer exists is a claim of coverage over nothing.
+    expect([...readers].sort()).toEqual(Object.keys(declared).sort());
+
+    // …and each account-password reader really does consult the shared gate
+    // BEFORE it scores the guess, in its own method.
+    for (const file of serviceFiles()) {
+      const text = readFileSync(file, 'utf8');
+      for (const m of text.matchAll(/this\.hasher\.verifyPassword\(/g)) {
+        const before = text.slice(0, m.index);
+        const method = [...before.matchAll(/\n {2}(?:private |public )?async (\w+)\(/g)].pop();
+        const name = method ? (method[1] as string) : '';
+        if (declared[name]?.bound !== 'ACCOUNT_PASSWORD_BOUND') continue;
+        const gate = before.lastIndexOf('accountPassword.assertAttemptsAvailable(');
+        const methodStart = method?.index ?? -1;
+        expect({ method: name, gatedInThisMethod: gate > methodStart }).toEqual({
+          method: name,
+          gatedInThisMethod: true,
         });
       }
     }

@@ -14,6 +14,7 @@ import { PasswordResetRepo } from './password-reset.repo';
 import { AddressAttemptBound } from './address-bound';
 import { CHANGE_ADDRESS_BOUND } from './rate-bounds';
 import { canonicalCode, canonicalLengthFor, readableCode, sha256 } from './readable-code';
+import { AccountPasswordGate } from './account-password-gate';
 import { SecondFactorGate } from './second-factor-gate';
 import { SessionsRepo } from './sessions.repo';
 import { UsersRepo } from './users.repo';
@@ -86,6 +87,7 @@ export class EmailChangeService {
     private readonly authEvents: AuthEventsRepo,
     private readonly hasher: PasswordHasher,
     private readonly factors: SecondFactorGate,
+    private readonly accountPassword: AccountPasswordGate,
     private readonly events: EventsService,
     private readonly db: Db,
     @Inject(FIELD_CRYPTO) private readonly fieldCrypto: FieldCrypto,
@@ -117,6 +119,7 @@ export class EmailChangeService {
    */
   async requestChange(
     userId: string,
+    sessionId: string,
     caller: Pick<SessionContext, 'mfaLevel' | 'stepupExpiresAt'>,
     currentPassword: string,
     newEmail: string,
@@ -125,12 +128,34 @@ export class EmailChangeService {
     // Step-up BEFORE the password check — the PR2 ordering, for its reason.
     await this.factors.assertMayAddFactor(userId, caller, now);
 
+    // THE GUESSING BOUND (M20 PR5). This route shipped without one: it runs the
+    // password-change route's gate order and omitted the cap that sits between
+    // the two halves there, so on a factorless account — which the gate above
+    // deliberately admits — it was an unlimited oracle for the account password
+    // one hop from the bounded route. Measured before it was fixed.
+    //
+    // Placed exactly where its twin places it, and for the same two reasons:
+    // AFTER the factor gate, because an account holding a factor never reaches
+    // a password check at all; BEFORE the verification, because a bound
+    // evaluated after the guess is scored is not a bound, and because the
+    // refusal's timing must not vary with whether the guess was right.
+    await this.accountPassword.assertAttemptsAvailable(userId, sessionId);
+
     const user = await this.users.findById(userId);
     if (!user || user.password_hash === null) {
       throw new BadRequestException({ error: 'invalid_credentials' });
     }
     if (!(await this.hasher.verifyPassword(user.password_hash, currentPassword))) {
-      await this.authEvents.insert({ userId, kind: 'email_change.denied', decision: 'password' });
+      // ATTRIBUTED TO THE SESSION, which is what makes the per-session half of
+      // the shared bound see this route at all. Unattributed, these rows would
+      // count only against the account ceiling, and one stolen session could
+      // spend the whole account's budget here while its own stayed untouched.
+      await this.authEvents.insert({
+        userId,
+        sessionId,
+        kind: 'email_change.denied',
+        decision: 'password',
+      });
       await this.events.emailChangeDenied(userId);
       throw new BadRequestException({ error: 'invalid_credentials' });
     }

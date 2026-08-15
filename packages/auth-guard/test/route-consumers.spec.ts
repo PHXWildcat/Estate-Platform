@@ -355,6 +355,31 @@ const AI = 'apps/services/ai-assistant/src/clients';
 const VW = 'apps/vault-web/src';
 const VX = 'apps/vault-extension/src';
 
+/**
+ * Where a consumer of a service route can live. Used by the stale-exemption
+ * check to sweep the TREE rather than the declarations — see the comment there
+ * for why that direction matters.
+ */
+const CONSUMER_ROOTS = [BFF, AI, VW, VX];
+
+/** Every `.ts` under a root, recursively, excluding tests and build output. */
+function sweepTs(root: string): string[] {
+  const absolute = join(REPO_ROOT, root);
+  if (!existsSync(absolute)) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      out.push(...sweepTs(`${root}/${entry.name}`));
+    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.spec.ts')) {
+      out.push(`${root}/${entry.name}`);
+    }
+  }
+  return out;
+}
+
 const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   // ------------------------------------------------------------ ai-assistant
   'ai-assistant GET /v1/analysis/beneficiary-conflicts': consumedByName(
@@ -688,10 +713,21 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     //
     // M20 lands the six recovery routes one PR at a time, so this is the check
     // that makes flipping each entry mandatory rather than remembered.
+    // THE CORPUS IS SWEPT FROM DISK, NOT TAKEN FROM THE DECLARATIONS — the M20
+    // PR5 finding. Building it from `d.consumers` meant only files ALREADY
+    // named as somebody's consumer could ever be searched, so a BRAND-NEW
+    // client module calling an exempt route was invisible to the check whose
+    // whole job is to notice exactly that. The staleness this catches is a fact
+    // about the tree, so the tree has to be the input (the 2026-08-06 rule).
+    //
+    // The roots are the four directories consumers live in, plus the two
+    // individually-declared files outside them. Sweeping is what makes the next
+    // client module arrive inside the check rather than beside it.
     const corpus = [
-      ...new Set(
-        Object.values(ROUTE_CONSUMERS).flatMap((d) => ('consumers' in d ? d.consumers : [])),
-      ),
+      ...new Set([
+        ...CONSUMER_ROOTS.flatMap((root) => sweepTs(root)),
+        ...Object.values(ROUTE_CONSUMERS).flatMap((d) => ('consumers' in d ? d.consumers : [])),
+      ]),
     ];
     const templatesByFile = new Map(corpus.map((f) => [f, extractTemplates(f)]));
 
@@ -715,6 +751,16 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     // empty extraction would make "no stale exemptions" vacuously true.
     expect(corpus.length).toBeGreaterThanOrEqual(10);
     expect([...templatesByFile.values()].flat().length).toBeGreaterThanOrEqual(50);
+
+    // …and the SWEEP really widened it. A `sweepTs` that silently returned
+    // nothing would leave this check reading only the declared consumers again
+    // — the exact blindness it was rewritten to remove, restored without a
+    // single assertion noticing.
+    const declared = new Set(
+      Object.values(ROUTE_CONSUMERS).flatMap((d) => ('consumers' in d ? d.consumers : [])),
+    );
+    const swept = corpus.filter((f) => !declared.has(f));
+    expect(swept.length).toBeGreaterThanOrEqual(10);
   });
 
   it('the edge rewrites are DERIVED from server.ts, and the scrape really found them', () => {

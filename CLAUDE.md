@@ -6630,3 +6630,98 @@ deviating from them, stop and propose the change with rationale — do not silen
   before believing an empty result (a killed run and a clean run look
   identical in the return value), and a review's VALUE is in the questions it
   poses — those survive the harness dying and can be answered directly.
+- 2026-08-15 — M20 PR5 security review (five file-scoped discovery lenses over
+  the milestone's OWN FILES — never a diff range, the M13 rule — each in its own
+  worktree pinned with `git checkout --detach <sha>`, then two adversarial
+  verifiers per candidate on different angles, both defaulting to refuted; 21
+  agents, no losses; 11 raw, 8 verified, 3 dropped under the cap and LOGGED BY
+  NAME, hand-verified afterwards and all three real, so eleven fixed). Every
+  finding was re-derived from source by hand before anything changed.
+  FOURTEENTH milestone running where every confirmed finding sits in machinery
+  the milestone introduced — with one exception, and the exception is the HIGH.
+  A SECOND ROUTE READS THE ACCOUNT PASSWORD AND HAD NO BOUND: M20 PR2's
+  `POST /v1/auth/email/change/request` takes the current password for exactly
+  the reason `POST /v1/auth/password` does (the stolen-session threat) and ran
+  the identical gate order — conditional step-up, then verify — with nothing in
+  the gap where the M17 PR6 review had put `PASSWORD_CHANGE_BOUND` on the other
+  route after measuring twenty-five unbounded guesses taking an account over.
+  MEASURED ON THE RUNNING STACK, on a factorless account (the class
+  `SecondFactorGate` deliberately admits so the bootstrap stays reachable, and
+  therefore the class that reaches a password check at all): 25 wrong guesses
+  got 25 × `400` and no refusal EVER, against the bounded twin's `401 × 5 →
+  429` — and all 25 `email_change.denied` rows landed with NO SESSION ID, so
+  even the per-session half would have been blind to them. Every other bound on
+  that route sits DOWNSTREAM of the verification (the re-issue floor and the
+  per-destination bound both run after it), so nothing else could catch it, and
+  recovering the password THERE defeats the bounded route rather than tripping
+  it. Fixed with `AccountPasswordGate` (the `SecondFactorGate` precedent)
+  injected into both services, and `PASSWORD_CHANGE_BOUND` widened to
+  `ACCOUNT_PASSWORD_BOUND` counting BOTH routes' failure kinds — the M16
+  chokepoint rule, because two budgets of five are a budget of ten to anyone
+  willing to alternate. THE REFUSAL KIND IS DELIBERATELY UNCHANGED
+  (`password.change_rate_limited`): renaming a ledger kind the audit consumer
+  knows makes every event of that kind a `schema_violation` for the length of a
+  rolling deploy (2026-08-12). Post-fix, same attack: `400 × 5 → 429`, all five
+  rows attributed, and the password route answers `429` HAVING SPENT NOTHING OF
+  ITS OWN — the shared budget visible from outside — while a fresh session still
+  gets an ordinary `400` and the correct password still returns `202`.
+  THE GENERAL SHAPE: a bound that lives as a private method on one service is
+  reachable only from the class that owns it, so the second route did not bypass
+  the control so much as never meet it.
+- 2026-08-15 — AND THE FENCE WENT GREEN BECAUSE ITS CORPUS WAS ONE FILE, which
+  is the same failure one layer up. `rate-bounds.spec.ts` asserts that every
+  guessing bound covers the routes that check its secret — over
+  `auth.service.ts` ALONE. That was faithful while every bounded route lived in
+  that class and stopped being faithful the moment one moved to
+  `email-change.service.ts`. A FENCE WHOSE INPUT IS NARROWER THAN ITS CLAIM GOES
+  GREEN FOR THE SAME REASON IT IS WRONG. The corpus is derived from the
+  directory now with a floor asserting it, and the fence gained the check it
+  never had: every `hasher.verifyPassword` call site must be DECLARED with the
+  bound that covers it, in both directions, plus an assertion that the gate
+  precedes the verification (a bound evaluated after the guess is scored is not
+  a bound, and its timing must not vary with whether the guess was right).
+  Anchored on the VERIFICATION CALL rather than on a route decorator or a method
+  name — the 2026-08-07/2026-08-12 rule, since a caller can rename its way out
+  of a name-keyed scan but not out of the call that scores a guess.
+  Mutation-tested with the exact regression (a new undeclared route reading the
+  password) and with the corpus narrowed back to one file.
+- 2026-08-15 — M20 PR5's other seven, each falsifying a claim the milestone made
+  about itself. (1) AN OUTAGE WORE THE FACE OF A REVOCATION: `refreshSession`
+  collapsed "identity refused the credential" and "the refresh never completed"
+  into one boolean, so a dropped connection rendered "Your session has ended.
+  Please sign in again." over a live 30-day session whose cookies the BFF had
+  deliberately left in place — the M16 PR2a rule, broken by code citing it three
+  lines above; three outcomes now, and only a REFUSAL reports the session ended.
+  (2) `SESSION_RENEWED` INVITED THE RETRY THE NO-RETRY RULE EXISTS TO PREVENT:
+  a mutation refused with UNAUTHENTICATED may have written on its first hop, so
+  "Nothing was changed — please try that again" was the one thing that must not
+  be said; it names the uncertainty and sends the reader to reload. (3) THE
+  STEP-UP PROMPT NEVER CLOSED on a non-step-up refusal — the sections render it
+  INSTEAD of their form, so a refusal after a genuine elevation left an error
+  about a field no longer on screen; four call sites, two of them pre-existing,
+  all fixed, because fixing two and not two would read as intentional. (4) THE
+  PAGE CONTRADICTED ITSELF ABOUT A CONTROL: a password change and an
+  address-change completion each revoke every other session and neither re-read
+  the devices list. (5) THE STALE-EXEMPTION CHECK (added one PR earlier, for
+  exactly this class) could only see files ALREADY declared as consumers, so a
+  brand-new client module calling an exempt route was invisible to the check
+  whose whole job is that; swept from the tree now. (6) THE PASSWORD-POLICY
+  FENCE WAS KEYED ON THE FIELD NAME and two of identity's password fields are
+  both literally `password` — one about to be STORED, one about to be COMPARED —
+  so `RegisterSchema.password` dropping to `min(1)` was excused as a presence
+  check and satisfied a file whose header claims the assertion is TOTAL; keyed
+  on the (schema, field) pair now, classified as data, total in both directions.
+  (7) `loadSession` READ A MISSING FIELD AS DATA, white-screening the page on a
+  version skew — in the one loader on that page not following the rule the two
+  below it state. Seventeen mutations, seventeen red.
+- 2026-08-15 — NO FINDING WAS REFUTED THIS ROUND, WHICH IS A REASON FOR MORE
+  HAND-CHECKING RATHER THAN LESS. Every previous review's verifiers killed
+  several candidates; when they kill none, the cheapest explanation is that the
+  verify phase agreed too easily, so all eight were re-derived from the source
+  before a line changed and the three dropped under the cap were verified by
+  hand rather than assumed low-value — all three were real (a comment asserting
+  the reset surface "does not exist yet" when PR3 shipped it; three different
+  counts of the step-up targets in three files, of which only the union was
+  right, so the prose no longer carries a number; and a LINE-BASED
+  comment-stripper reading whole paragraphs of block comment as code). A dropped
+  finding is a finding nobody looked at, not a finding somebody ranked low.

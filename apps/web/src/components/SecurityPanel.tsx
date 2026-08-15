@@ -39,7 +39,11 @@ type DevicesState =
  * WHICH refused action a step-up is being collected for.
  *
  * ONE PROMPT EXISTS ON THIS PAGE AT A TIME, which is the whole point of holding
- * this in one place. The page can refuse for three different reasons, and the
+ * this in one place. The page can refuse for every reason this union names —
+ * six of them, and the number is deliberately not repeated in prose anywhere
+ * else, because M20 PR1 and PR2 each added one and left three different counts
+ * standing in three files (this comment said three, docs/03 §6u said five). The
+ * union below is the count. And the
  * M15 PR3 defect — two fields on one screen both labelled "New vault password"
  * — is what a per-section prompt would reproduce here: `StepUpPrompt`'s field
  * is labelled "Confirm it's you" for every caller, so two of them open at once
@@ -227,11 +231,25 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
 
   const loadSession = useCallback(async (): Promise<void> => {
     const result = await gqlRequest('Session', {});
-    if (result.ok && result.data.session !== null) {
-      setSessionState({ kind: 'signedIn', session: result.data.session });
-    } else if (!result.ok && result.code === 'UNAUTHENTICATED') {
-      setSessionState({ kind: 'signedOut' });
-    } else if (result.ok) {
+    if (result.ok) {
+      // A MISSING FIELD IS NO DATA, NEVER DATA — the rule the sibling loaders
+      // below state and this one did not follow (M20 PR5). `session !== null`
+      // admitted `undefined`, so a BFF predating the query answers `{"data":{}}`
+      // and this produced `{kind:'signedIn', session: undefined}`, which
+      // white-screened the security page and the home session card on the next
+      // dereference. Nullish, so `null` and `undefined` are separated from a
+      // real session — and a MISSING field is an ERROR rather than a sign-out,
+      // because a version skew says nothing whatever about whether this caller
+      // is signed in, and claiming they are not is a claim.
+      const session = result.data.session;
+      if (session === undefined) {
+        setSessionState({ kind: 'error' });
+      } else if (session === null) {
+        setSessionState({ kind: 'signedOut' });
+      } else {
+        setSessionState({ kind: 'signedIn', session });
+      }
+    } else if (result.code === 'UNAUTHENTICATED') {
       setSessionState({ kind: 'signedOut' });
     } else {
       setSessionState({ kind: 'error' });
@@ -501,6 +519,13 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
       setPwCurrent('');
       setPwNext('');
       setPwConfirm('');
+      // …and RE-READ THE DEVICES (M20 PR5). Identity revoked every other
+      // session inside the same transaction, so without this the page claims
+      // "your other devices have been signed out" a few hundred pixels above a
+      // list still showing them as live — one page contradicting itself about a
+      // security control, which is the shape M19's trust card and M20 PR1's
+      // session card both turned out to have.
+      await loadDevices();
       return 'applied';
     }
     if (!result.ok && result.code === 'STEPUP_REQUIRED') {
@@ -515,6 +540,15 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
     }
     // A missing field is NO DATA, never data: a BFF predating this mutation
     // answers `{"data":{}}`, which `gqlRequest`'s shallow check admits.
+    //
+    // CLOSE THE PROMPT (M20 PR5). Every branch that is not `stale` has to put
+    // the form back, because `StepUpPrompt` does not unmount itself — the
+    // parent owns `stepUp`, and this section renders the prompt INSTEAD of the
+    // form. Without this a refusal after a genuine step-up left the prompt on
+    // screen with an error telling the reader to re-check a field that was no
+    // longer there.
+    setStepUp(null);
+    setPwAttempt(null);
     setPwError(passwordChangeMessageFor(result.ok ? 'UNKNOWN' : result.code));
     return 'applied';
   }
@@ -522,10 +556,11 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
   async function submitPasswordChange(event: FormEvent): Promise<void> {
     event.preventDefault();
     const nextError = validatePassword(pwNext);
-    // A typo in the NEW password is not recoverable today: the change would
-    // succeed with a value nobody knows, and the reset surface that would undo
-    // that is M20 PR3 — it does not exist yet. Hence a confirm field, which the
-    // server has no concept of and does not need.
+    // A typo in the NEW password locks the account out of everything the
+    // password gates until the owner recovers it — the reset at `/reset` (M20
+    // PR3) does undo it now, but that costs a mailed code and revokes every
+    // session, which is a heavy price for a mistyped field. Hence a confirm
+    // field, which the server has no concept of and does not need.
     const confirmError = pwNext !== pwConfirm ? 'Those passwords don’t match.' : null;
     setPwNextError(nextError);
     setPwConfirmError(confirmError);
@@ -583,7 +618,11 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
       setStepUp('email-change');
       return 'stale';
     }
-    // A missing field is NO DATA, never data.
+    // A missing field is NO DATA, never data. And the prompt closes on this
+    // branch too, for `sendPasswordChange`'s reason — this section also renders
+    // the prompt instead of its form.
+    setStepUp(null);
+    setEmailAttempt(null);
     setEmailError(addressChangeMessageFor(result.ok ? 'UNKNOWN' : result.code));
     return 'applied';
   }
@@ -631,6 +670,11 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
       // The address AND its verified status both just moved. See
       // `SecurityPanelProps.onAddressChanged`.
       onAddressChanged?.();
+      // …and so did every other session (M20 PR5): completion revokes them in
+      // the same transaction as the switch, so the notice above would otherwise
+      // sit over a devices list still calling them live. Same fix, same reason,
+      // as the password change.
+      await loadDevices();
       return;
     }
     setEmailCodeFailure(addressCodeMessageFor(result.ok ? 'UNKNOWN' : result.code));
@@ -680,6 +724,10 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
       // the prompt polls to the documented deadline (lib/step-up.ts).
       return 'stale';
     }
+    // Same close as the two above. Pre-existing rather than M20's, and fixed
+    // with them because four instances of one defect in one file, two fixed and
+    // two not, reads to the next person as though the difference were meant.
+    setStepUp(null);
     setExportError(messageFor(result.ok ? 'UNKNOWN' : result.code));
     return 'applied';
   }
@@ -714,6 +762,7 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
       setStepUp('pairing');
       return 'stale';
     }
+    setStepUp(null);
     setPairingError(messageFor(result.code));
     return 'applied';
   }

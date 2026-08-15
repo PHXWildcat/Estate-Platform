@@ -38,6 +38,7 @@ import {
   STEPUP_MAX_DENIALS,
 } from '../src/stepup';
 
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import { SecondFactorGate } from '../src/second-factor-gate';
 import type { UsersRepo } from '../src/users.repo';
 import { Db } from '../src/db';
@@ -147,6 +148,9 @@ describeIfPg('step-up attempt cap (auth cluster)', () => {
         assertMayAddFactor: (): Promise<void> => Promise.resolve(),
         holdsVerifiedFactor: (): Promise<boolean> => Promise.resolve(false),
       } as unknown as SecondFactorGate,
+      {
+        assertAttemptsAvailable: (): Promise<void> => Promise.resolve(),
+      } as unknown as AccountPasswordGate,
       db,
     );
   });

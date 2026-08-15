@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { errorCopy, stepUpMessageFor } from '../lib/copy';
+import { errorCopy, passwordChangeMessageFor, stepUpMessageFor } from '../lib/copy';
 import {
   SESSION_CACHE_TTL_MS,
   STEP_UP_PROPAGATION_BUDGET_MS,
@@ -126,6 +126,27 @@ describe('SecurityPanel', () => {
     expect(
       await screen.findByRole('button', { name: 'Set up authenticator app' }),
     ).toBeInTheDocument();
+  });
+
+  it('treats a MISSING session field as no data, never as a signed-in session', async () => {
+    // The M20 PR5 finding: `result.data.session !== null` admits `undefined`,
+    // so a BFF predating this query (`{"data":{}}`) produced
+    // `{kind:'signedIn', session: undefined}` and white-screened the page on
+    // the next dereference. A missing field is NO DATA — and an ERROR rather
+    // than a sign-out, because a version skew says nothing whatever about
+    // whether this caller is signed in.
+    installGraphqlFetchMock({
+      Session: () => jsonResponse({ data: {} }),
+      Sessions: sessionsHandler(),
+    });
+    render(<SecurityPanel />);
+
+    expect(
+      await screen.findByText(
+        'We couldn’t load your security settings. Please try again in a moment.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Sign in required')).not.toBeInTheDocument();
   });
 
   it('rejects a malformed step-up code client-side', async () => {
@@ -945,6 +966,76 @@ describe('SecurityPanel — password change', () => {
     // proceeds after consent is withdrawn is the one thing it must never do.
     expect(await screen.findByLabelText(FIELDS.next)).toBeInTheDocument();
     expect(changeCalls).toBe(1);
+  });
+
+  it('PUTS THE FORM BACK when the retried change is refused for another reason', async () => {
+    // The M20 PR5 finding. `StepUpPrompt` does not unmount itself — the parent
+    // owns `stepUp`, and this section renders the prompt INSTEAD of the form —
+    // so a non-STEPUP failure that returned 'applied' without clearing it left
+    // the prompt up, showing an error that tells the reader to re-check a field
+    // no longer on screen. It is recoverable only by pressing Cancel, which
+    // nothing suggests.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      ChangePassword: (() => {
+        let n = 0;
+        return () => {
+          n += 1;
+          // Refused for step-up, then — after a genuine elevation — refused
+          // because the current password was wrong all along.
+          return graphqlError(n === 1 ? 'STEPUP_REQUIRED' : 'INVALID_CREDENTIALS');
+        };
+      })(),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    fill({ current: 'not-the-one', next: 'the-real-new-one', confirm: 'the-real-new-one' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    await screen.findByText(errorCopy.STEPUP_REQUIRED);
+
+    fireEvent.change(screen.getByLabelText('Confirm it’s you'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and change password' }));
+
+    // The refusal names the current password — and the field it names is on
+    // screen to be corrected, which is the whole property.
+    expect(
+      await screen.findByText(passwordChangeMessageFor('INVALID_CREDENTIALS')),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(FIELDS.current)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+  });
+
+  it('RE-READS THE DEVICES after a change, so the page does not contradict itself', async () => {
+    // The success copy says "your other devices have been signed out" — true,
+    // identity revokes them in the same transaction. Without a re-read the list
+    // below went on showing them, so one page asserted both (M20 PR5).
+    let sessionsCalls = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: () => {
+        sessionsCalls += 1;
+        return jsonResponse({
+          data: {
+            sessions: sessionsCalls === 1 ? [CURRENT_BROWSER, PAIRED_EXTENSION] : [CURRENT_BROWSER],
+          },
+        });
+      },
+      ChangePassword: () => jsonResponse({ data: { changePassword: { ok: true } } }),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    expect(await screen.findByText('Browser extension')).toBeInTheDocument();
+
+    fill({ current: 'old-passphrase', next: 'a-much-longer-one', confirm: 'a-much-longer-one' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    await screen.findByText('Password changed. Your other devices have been signed out.');
+    await waitFor(() => expect(screen.queryByText('Browser extension')).not.toBeInTheDocument());
+    expect(sessionsCalls).toBe(2);
   });
 });
 

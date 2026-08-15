@@ -419,6 +419,7 @@ export class AuthController {
     const { currentPassword, newEmail } = parseBody(EmailChangeRequestSchema, body);
     const { staged } = await this.emailChange.requestChange(
       auth.userId,
+      auth.sessionId,
       auth,
       currentPassword,
       newEmail,

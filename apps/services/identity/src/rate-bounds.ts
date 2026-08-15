@@ -175,6 +175,36 @@ export const LOGIN_BOUND: LedgerRateBound = {
  * except that the whole reason it asks for the current password is the
  * stolen-session threat, so its caller is exactly the party the bound is for.
  *
+ * ═══ WIDENED BY THE M20 PR5 REVIEW, WHICH FOUND A SECOND SUCH ROUTE ═══
+ *
+ * `POST /v1/auth/email/change/request` takes the current password too, for the
+ * identical reason, and shipped in M20 PR2 with the identical gap — the fix one
+ * milestone earlier had been applied to the one INSTANCE rather than to the
+ * category. Measured on a factorless account, which `SecondFactorGate`
+ * deliberately admits: unlimited 400s at a full Argon2id verification each,
+ * while the bounded route sat one hop away.
+ *
+ * BOTH ROUTES SHARE THIS ONE BUDGET rather than getting one each, which is the
+ * M16 chokepoint rule: the thing to bound is the SET of routes that read a
+ * secret, because two bounds of five are a bound of ten to anyone willing to
+ * alternate between them. Hence the rename — a constant called
+ * `PASSWORD_CHANGE_BOUND` is exactly the name that lets the next person add a
+ * third route without noticing it should be here.
+ *
+ * `email_change.denied` IS WRITTEN IN ONE PLACE AND MEANS ONE THING (a wrong
+ * current password at the request leg), so counting the kind wholesale counts
+ * nothing else. `email_change.refused`, `.failed` and `.cancelled` are separate
+ * kinds and stay out of the set.
+ *
+ * NO EMAIL-CHANGE SUCCESS KIND CLEARS THE WINDOW, and that is the same call the
+ * reset paragraph below makes. `email_change.requested` is written DETACHED,
+ * after the response, and is skipped entirely when the destination turns out to
+ * be taken — so it is an unreliable signal of "this caller proved the
+ * password", and a success kind that can be missing is a window that clears
+ * unpredictably. The cost is bounded by `windowMs`: a legitimate user who
+ * mistyped their way to the cap waits it out instead of clearing it with a
+ * correct guess.
+ *
  * `maxPerScope` IS SET HERE, unlike `LOGIN_BOUND`, and the difference is the
  * one M16 identified: there IS a credential at the point of failure. A stolen
  * session exhausts its own budget and stops, while the owner's other sessions
@@ -188,13 +218,15 @@ export const LOGIN_BOUND: LedgerRateBound = {
  * moot — and adding a kind here that a caller can reach WITHOUT proving the
  * current password would let the reset path launder the guessing window.
  */
-export const PASSWORD_CHANGE_BOUND: LedgerRateBound = {
-  name: 'password-change',
-  failures: ['password.change_failed'],
+export const ACCOUNT_PASSWORD_BOUND: LedgerRateBound = {
+  name: 'account-password',
+  failures: ['password.change_failed', 'email_change.denied'],
   successes: ['password.changed'],
   windowMs: 15 * 60 * 1000,
   maxPerScope: 5,
   maxPerAccount: 20,
+  // Unchanged across the rename, on purpose: see `AccountPasswordGate.refuse`.
+  // The ledger kind is free to rename; the audit action beside it is not.
   refusalKind: 'password.change_rate_limited',
 };
 
@@ -202,7 +234,7 @@ export const PASSWORD_CHANGE_BOUND: LedgerRateBound = {
 export const LEDGER_RATE_BOUNDS: readonly LedgerRateBound[] = [
   STEP_UP_BOUND,
   LOGIN_BOUND,
-  PASSWORD_CHANGE_BOUND,
+  ACCOUNT_PASSWORD_BOUND,
 ];
 
 /**

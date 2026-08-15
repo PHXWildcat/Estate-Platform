@@ -19,6 +19,7 @@ import {
   type FieldCrypto,
 } from '@estate/crypto';
 import { NOTIFICATIONS, wasDelivered, type NotificationsPort } from '@estate/notifications-client';
+import { AccountPasswordGate } from './account-password-gate';
 import { AddressAttemptBound } from './address-bound';
 import { AuthEventsRepo } from './auth-events.repo';
 import { Db } from './db';
@@ -26,6 +27,7 @@ import type { IdentityConfig } from './config';
 import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
 import { EmailVerificationService } from './email-verification.service';
 import { EventsService } from './events.service';
+import { boundExceeded } from './ledger-bound';
 import { MfaRepo } from './mfa.repo';
 import { PasswordHasher } from './password';
 import { SecondFactorGate } from './second-factor-gate';
@@ -33,7 +35,6 @@ import {
   LOGIN_ADDRESS_BOUND,
   LOGIN_BOUND,
   REGISTER_ADDRESS_BOUND,
-  PASSWORD_CHANGE_BOUND,
   REGISTER_REFUSAL_KIND,
   STEP_UP_BOUND,
   type LedgerRateBound,
@@ -80,6 +81,9 @@ export class AuthService {
     @Inject(NOTIFICATIONS) private readonly notifications: NotificationsPort,
     private readonly emailVerification: EmailVerificationService,
     private readonly factors: SecondFactorGate,
+    // M20 PR5: the account-password guessing bound, shared with the
+    // address-change request route, which had none.
+    private readonly accountPassword: AccountPasswordGate,
     // M17 PR2: the password change needs a TRANSACTION, not a pooled query —
     // the hash write and the session revocation must commit together.
     private readonly db: Db,
@@ -570,7 +574,11 @@ export class AuthService {
     // password check at all, so the cap is the backstop for the factorless
     // case the gate deliberately lets through — and BEFORE the verification,
     // because a bound evaluated after the guess is scored is not a bound.
-    await this.assertPasswordChangeAttemptsAvailable(userId, sessionId);
+    //
+    // Through the shared gate since M20 PR5: this is no longer the only route
+    // that checks the account password, and the budget is shared with the
+    // address-change request rather than duplicated (the M16 chokepoint rule).
+    await this.accountPassword.assertAttemptsAvailable(userId, sessionId);
 
     if (!(await this.hasher.verifyPassword(user.password_hash, currentPassword))) {
       await this.authEvents.insert({ userId, sessionId, kind: 'password.change_failed' });
@@ -721,66 +729,17 @@ export class AuthService {
   }
 
   /**
-   * The current-password guessing cap (M17 PR6). Same two scopes as the step-up
-   * cap and for its reason: the per-SESSION budget is what a stolen credential
-   * exhausts on itself, so the refusal cannot become a lockout of the owner,
-   * who reaches this route from their own sessions with their own budgets.
+   * Counting a bound. One line, because the predicate now lives in
+   * `ledger-bound.ts` — M20 PR5 needed the identical count from
+   * `EmailChangeService`, and a second copy of it is the shape this repo keeps
+   * closing. Kept as a method so the three call sites below read unchanged.
    */
-  private async assertPasswordChangeAttemptsAvailable(
-    userId: string,
-    sessionId: string,
-  ): Promise<void> {
-    const overCap = await this.boundExceeded(PASSWORD_CHANGE_BOUND, userId, sessionId);
-    if (overCap) {
-      await this.refusePasswordChangeForRate(userId, sessionId, overCap.count);
-    }
-  }
-
-  /**
-   * 429 with its own token, on the step-up refusal's reasoning: this route
-   * already required a resolved, authenticated caller, so a distinct status
-   * tells them something about themselves and no one else. Never
-   * `invalid_credentials`, which already means "that password was wrong" and
-   * would send someone to re-check a password when the remedy is to wait.
-   *
-   * Its own ledger kind, NOT `password.change_failed` — a refusal counted by
-   * the bound that produced it feeds its own counter, and a retrying client
-   * would lock its user out for as long as it kept trying (the M16 lesson).
-   */
-  private async refusePasswordChangeForRate(
-    userId: string,
-    sessionId: string,
-    attempts: number,
-  ): Promise<never> {
-    await this.authEvents.insert({
-      userId,
-      sessionId,
-      kind: PASSWORD_CHANGE_BOUND.refusalKind,
-      decision: 'too_many_attempts',
-    });
-    await this.events.passwordChangeRateLimited(userId, sessionId, attempts);
-    throw new HttpException({ error: 'too_many_attempts' }, HttpStatus.TOO_MANY_REQUESTS);
-  }
-
   private async boundExceeded(
     bound: LedgerRateBound,
     userId: string,
     scopeId: string | null,
   ): Promise<{ scope: 'session' | 'account'; count: number } | null> {
-    const windowStart = new Date(this.clock().getTime() - bound.windowMs);
-    const counted = { failures: bound.failures, successes: bound.successes };
-
-    if (scopeId !== null && bound.maxPerScope !== null) {
-      const mine = await this.authEvents.failedAttempts(userId, windowStart, {
-        ...counted,
-        sessionId: scopeId,
-      });
-      if (mine >= bound.maxPerScope) {
-        return { scope: 'session', count: mine };
-      }
-    }
-    const account = await this.authEvents.failedAttempts(userId, windowStart, counted);
-    return account >= bound.maxPerAccount ? { scope: 'account', count: account } : null;
+    return boundExceeded(this.authEvents, this.clock(), bound, userId, scopeId);
   }
 
   /**

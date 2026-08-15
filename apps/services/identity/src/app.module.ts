@@ -46,6 +46,7 @@ import { EmailChangeService } from './email-change.service';
 import { EmailChangeRepo } from './email-change.repo';
 import { PasswordHasher } from './password';
 import { SessionGuard } from './session.guard';
+import { AccountPasswordGate } from './account-password-gate';
 import { SecondFactorGate } from './second-factor-gate';
 import { SessionsRepo } from './sessions.repo';
 import { SettlementLockController } from './settlement-lock.controller';
@@ -137,6 +138,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
     UsersRepo,
     SessionsRepo,
     SecondFactorGate,
+    AccountPasswordGate,
     MfaRepo,
     PasswordResetRepo,
     EmailChangeRepo,

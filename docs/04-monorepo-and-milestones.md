@@ -5218,7 +5218,7 @@ comment credited its retire-on-failure with preventing a "TTL-long lockout" —
 re-issue floor; the code is retired because a live reset code that reached no
 mailbox should not exist.
 
-### M20 — The account surface (in progress, 2026-08-15)
+### M20 — The account surface (shipped 2026-08-15; reviewed)
 
 **M17 built six ceremonies and no way to reach any of them.** Password change,
 password reset (request + complete) and email change (request + complete +
@@ -5430,7 +5430,80 @@ signed-out rendering, the failed refresh clearing the dead pair, and the next
 load answering `session: null` with no identity round trip. Residuals (the
 lost-Set-Cookie false-theft signal, the no-Web-Locks cross-tab race, the
 one-refused-Refresh cost on signed-out authenticated-only pages) in docs/03
-§6x. **PR5** the adversarial security review.
+§6x.
+
+**PR5 — the security review (this PR).** Five file-scoped discovery lenses over
+the milestone's own files (never a diff range — the M13 rule), each in its own
+worktree pinned with `git checkout --detach <sha>`, then two adversarial
+verifiers per candidate on different angles — production reachability, and
+is-it-already-a-recorded-decision — both defaulting to refuted. 21 agents, no
+losses. 11 raw findings, 8 verified, 3 dropped under the fan-out cap and LOGGED
+BY NAME; all three were hand-verified afterwards and all three were real, so
+eleven were fixed. Every finding was re-derived from the source by hand before
+anything changed, and the HIGH was reproduced by execution against the running
+stack both before and after the fix. Fourteenth milestone running where every
+confirmed finding sits in machinery the milestone introduced — with one
+exception, which is the HIGH.
+
+*The HIGH: a second route reads the account password, and it had no bound.*
+M20 PR2's `POST /v1/auth/email/change/request` takes the current password for
+exactly the reason `POST /v1/auth/password` does — the stolen-session threat —
+and ran the identical gate order with nothing in the gap where M17 PR6 had put
+`PASSWORD_CHANGE_BOUND` on the other route. Measured on the running stack, on a
+factorless account (the class `SecondFactorGate` deliberately admits, so the
+class that reaches a password check at all): twenty-five wrong guesses got
+twenty-five `400`s and no refusal ever, against the bounded twin's `401 × 5 →
+429`; and all twenty-five `email_change.denied` rows landed with NO session id,
+so even the per-session half of the bound would have been blind to them. Every
+other bound on that route sits DOWNSTREAM of the verification, so nothing else
+could catch it.
+
+The fix is a shared gate rather than a second copy: `AccountPasswordGate` (the
+`SecondFactorGate` precedent) injected into both services, and
+`PASSWORD_CHANGE_BOUND` widened to `ACCOUNT_PASSWORD_BOUND` counting BOTH
+routes' failure kinds — because the M16 chokepoint rule says the thing to bound
+is the SET of routes that read a secret, and two budgets of five are a budget of
+ten to anyone willing to alternate. The refusal kind is deliberately UNCHANGED
+(`password.change_rate_limited`): renaming a ledger kind an audit consumer knows
+would make every event of that kind a `schema_violation` for the length of a
+rolling deploy. Post-fix, same attack: `400 × 5 → 429`, all five rows
+attributed, and the password route answers `429` having spent nothing of its own
+— the shared budget visible from outside — while a fresh session still gets an
+ordinary `400` and the correct password still returns `202`.
+
+*The fence went green because its corpus was one file.* `rate-bounds.spec.ts`
+asserts that every guessing bound covers the routes checking its secret, over
+`auth.service.ts` ALONE — true while every bounded route lived in that class,
+false the moment one moved. A fence whose input is narrower than its claim goes
+green for the same reason it is wrong. The corpus is derived from the directory
+now with a floor under it, and the fence gained the check it never had: every
+`hasher.verifyPassword` call must be declared with the bound covering it, in
+both directions, anchored on the VERIFICATION rather than on a route decorator
+or a method name.
+
+The other seven, each falsifying something the milestone said about itself:
+`refreshSession` collapsed "identity refused the credential" and "the refresh
+never completed" into one boolean, so an outage rendered "Your session has
+ended" over a live 30-day session — the M16 PR2a rule broken by code citing it
+three lines above; `SESSION_RENEWED`'s copy read "Nothing was changed — please
+try that again", inviting the retry the no-retry rule exists to prevent;
+`StepUpPrompt` never closed on a non-step-up refusal, leaving an error about a
+field no longer on screen (four call sites, two pre-existing — fixing two and
+not two would read as intentional); a password change or address-change
+completion revokes every other session and neither re-read the devices list, so
+the page contradicted itself about a control; the stale-exemption check could
+only see files ALREADY declared as consumers, so a brand-new client calling an
+exempt route was invisible to the check whose whole job is that; the
+password-policy fence was keyed on the field name, and two of identity's
+password fields are both called `password` — one stored, one compared — so
+`RegisterSchema.password` dropping to `min(1)` satisfied a file whose header
+claims the assertion is TOTAL; and `loadSession` read a missing field as data,
+white-screening the page on a version skew, in the one loader on the page that
+did not follow the rule the two below it state.
+
+Seventeen mutations, seventeen red — the two that matter most being the fence
+corpus narrowed back to one file, and `RegisterSchema.password` dropped to
+`min(1)`. Full record in docs/03 §6y.
 
 ### M21 — Subscription manager (planned; re-sequenced 2026-08-12, displaced again by M20)
 

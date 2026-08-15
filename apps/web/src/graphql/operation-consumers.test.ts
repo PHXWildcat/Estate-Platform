@@ -25,11 +25,19 @@ import { operations } from './operations';
  * compiler's: `OperationName` is a closed union, so a typo or a removed
  * operation with a surviving caller fails `tsc`, not this scan.
  *
- * Stated limit: the scan is line-based and skips only whole-line comments
- * (`//` or block-comment continuation lines), so a commented-out caller on a
- * shared line could in principle count. Prettier's formatting makes that shape
- * unrepresentable in practice, and the failure direction is a fence that is
- * too generous about ONE caller — not one that goes quietly green with zero.
+ * COMMENTS ARE STRIPPED PROPERLY, which the first version did not do. It was
+ * line-based and dropped only lines beginning with a slash-slash, a star, or a
+ * slash-star — so a line INSIDE a block comment that did not happen to start
+ * with a star survived, and a commented-out `gqlRequest('Foo'` in one counted
+ * as a product caller (M20 PR5). The docstring called this "a commented-out
+ * caller on a shared line", understating it: whole paragraphs were being
+ * read as code. Block comments go first, then line comments, which is the
+ * `code()` helper every other fence in this repo uses.
+ *
+ * Stated limit, and it is now the small one it was claimed to be: a
+ * commented-out caller sharing a line with real code would still count. The
+ * failure direction is a fence too generous about ONE caller, never one that
+ * goes quietly green with zero.
  */
 describe('every GraphQL operation has a product caller', () => {
   const SRC_ROOT = join(__dirname, '..');
@@ -49,12 +57,8 @@ describe('every GraphQL operation has a product caller', () => {
 
   function codeLines(file: string): string {
     return readFileSync(file, 'utf8')
-      .split('\n')
-      .filter((line) => {
-        const trimmed = line.trimStart();
-        return !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*');
-      })
-      .join('\n');
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
   }
 
   const files = sourceFiles(SRC_ROOT);
