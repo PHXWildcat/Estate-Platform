@@ -21,13 +21,27 @@ jest.mock('next/navigation', () => ({
 
 const session = {
   userId: 'a0c8f6de-0000-4000-8000-000000000001',
-  mfaLevel: 'mfa',
+  mfaLevel: 'MFA',
   stepUpFresh: false,
 };
 
 function sessionHandler(): Response {
   return jsonResponse({ data: { session } });
 }
+
+/**
+ * A session with NO second factor — the state every brand-new account is in,
+ * and the branch no test had ever rendered before M20 PR1.
+ *
+ * `mfaLevel` is the BFF's GraphQL enum, so the wire carries the member NAME.
+ * This app declared the union in lowercase from M2 until M20, which made
+ * `session.mfaLevel === 'none'` permanently false and told a factorless account
+ * it had a factor. The fixtures could not catch it because they spoke the same
+ * invented vocabulary; `graphql/enum-parity.test.ts` now derives the union from
+ * the BFF's SDL, and this fixture pins what the user actually sees.
+ */
+const factorlessSessionHandler = (): Response =>
+  jsonResponse({ data: { session: { ...session, mfaLevel: 'NONE' } } });
 
 /**
  * The live-credential rows, in identity's own vocabulary. `current` is the
@@ -98,6 +112,20 @@ describe('SecurityPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and export' }));
     expect(await screen.findByText(/Export started/)).toBeInTheDocument();
     expect(exportCalls).toBe(2);
+  });
+
+  it('tells an account with no second factor that it has none, and offers to set one up', async () => {
+    installGraphqlFetchMock({ Session: factorlessSessionHandler, Sessions: sessionsHandler() });
+    render(<SecurityPanel />);
+
+    expect(await screen.findByText('MFA not enrolled')).toBeInTheDocument();
+    expect(screen.queryByText('MFA enrolled')).not.toBeInTheDocument();
+    // "Re-enroll" would tell somebody who has never enrolled that they are
+    // replacing something, which is how a factorless account concludes it is
+    // protected. Measured live before the fix: this said "Re-enroll".
+    expect(
+      await screen.findByRole('button', { name: 'Set up authenticator app' }),
+    ).toBeInTheDocument();
   });
 
   it('rejects a malformed step-up code client-side', async () => {
@@ -749,5 +777,173 @@ describe('SecurityPanel passkeys', () => {
 
     expect(await screen.findByText('Work laptop')).toBeInTheDocument();
     expect(renamed).toBe('Work laptop');
+  });
+});
+
+/**
+ * M20 PR1 — the account password change.
+ *
+ * The load-bearing case is the retry: the form stays mounted behind the prompt,
+ * so a retry that re-read the inputs could set a password the user never
+ * confirmed. It must re-send the ATTEMPT.
+ */
+describe('SecurityPanel — password change', () => {
+  const FIELDS = {
+    current: 'Current password',
+    next: 'New password',
+    confirm: 'Confirm new password',
+  } as const;
+
+  function fill(values: { current: string; next: string; confirm: string }): void {
+    fireEvent.change(screen.getByLabelText(FIELDS.current), {
+      target: { value: values.current },
+    });
+    fireEvent.change(screen.getByLabelText(FIELDS.next), { target: { value: values.next } });
+    fireEvent.change(screen.getByLabelText(FIELDS.confirm), {
+      target: { value: values.confirm },
+    });
+  }
+
+  it('changes the password and says the other devices were signed out', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      ChangePassword: (variables) => {
+        calls.push(variables as Record<string, unknown>);
+        return jsonResponse({ data: { changePassword: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    fill({ current: 'old-passphrase', next: 'a-much-longer-one', confirm: 'a-much-longer-one' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    // The consequence a user needs to know, said on the surface that caused it.
+    expect(
+      await screen.findByText('Password changed. Your other devices have been signed out.'),
+    ).toBeInTheDocument();
+    expect(calls).toEqual([
+      { currentPassword: 'old-passphrase', newPassword: 'a-much-longer-one' },
+    ]);
+    // Credentials do not linger in the DOM once they have been spent.
+    expect(screen.getByLabelText(FIELDS.current)).toHaveValue('');
+    expect(screen.getByLabelText(FIELDS.next)).toHaveValue('');
+  });
+
+  it('refuses a mismatched confirmation without calling the server', async () => {
+    // A typo here is not recoverable: the change would succeed with a value
+    // nobody knows, and the reset surface that would undo it is M20 PR3.
+    let calls = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      ChangePassword: () => {
+        calls += 1;
+        return jsonResponse({ data: { changePassword: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    fill({ current: 'old', next: 'a-much-longer-one', confirm: 'a-much-longer-typo' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    expect(await screen.findByText('Those passwords don’t match.')).toBeInTheDocument();
+    expect(calls).toBe(0);
+  });
+
+  it('explains a wrong CURRENT password without mentioning an email field', async () => {
+    // The M12 defect, one form over: `INVALID_CREDENTIALS` is shared with login,
+    // where it means "email and password". This form has no email on it.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      ChangePassword: () => graphqlError('INVALID_CREDENTIALS'),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    fill({ current: 'wrong', next: 'a-much-longer-one', confirm: 'a-much-longer-one' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    expect(
+      await screen.findByText(
+        'That current password wasn’t right. Check it and try again — your password has not been changed.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(errorCopy.INVALID_CREDENTIALS)).not.toBeInTheDocument();
+  });
+
+  it('REPLACES the form while a change is pending, and retries with the same values', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    let changeCalls = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      ChangePassword: (variables) => {
+        changeCalls += 1;
+        calls.push(variables as Record<string, unknown>);
+        return changeCalls === 1
+          ? graphqlError('STEPUP_REQUIRED')
+          : jsonResponse({ data: { changePassword: { ok: true } } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    fill({ current: 'old-passphrase', next: 'the-real-new-one', confirm: 'the-real-new-one' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    // THIS is the control, and it is why the carried attempt is belt rather
+    // than the fix: with the form gone there is nothing to edit under a pending
+    // change, so the retry cannot pick up a value the user never confirmed.
+    // (Asserted for all three fields — leaving one mounted would reopen it.)
+    expect(await screen.findByText(errorCopy.STEPUP_REQUIRED)).toBeInTheDocument();
+    expect(screen.queryByLabelText(FIELDS.current)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(FIELDS.next)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(FIELDS.confirm)).not.toBeInTheDocument();
+    // And exactly one "Confirm it's you" exists (the M15 identical-label rule).
+    expect(screen.getAllByLabelText('Confirm it’s you')).toHaveLength(1);
+
+    fireEvent.change(screen.getByLabelText('Confirm it’s you'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and change password' }));
+
+    expect(
+      await screen.findByText('Password changed. Your other devices have been signed out.'),
+    ).toBeInTheDocument();
+    // BOTH sends carry the SUBMITTED attempt. This is the assertion the M13
+    // review's defect would break.
+    expect(calls).toEqual([
+      { currentPassword: 'old-passphrase', newPassword: 'the-real-new-one' },
+      { currentPassword: 'old-passphrase', newPassword: 'the-real-new-one' },
+    ]);
+  });
+
+  it('cancelling the prompt applies nothing', async () => {
+    let changeCalls = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      ChangePassword: () => {
+        changeCalls += 1;
+        return graphqlError('STEPUP_REQUIRED');
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Password' });
+    fill({ current: 'old-passphrase', next: 'the-real-new-one', confirm: 'the-real-new-one' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    await screen.findByText(errorCopy.STEPUP_REQUIRED);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // The form is back and nothing further was sent — a consent ceremony that
+    // proceeds after consent is withdrawn is the one thing it must never do.
+    expect(await screen.findByLabelText(FIELDS.next)).toBeInTheDocument();
+    expect(changeCalls).toBe(1);
   });
 });

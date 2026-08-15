@@ -6306,3 +6306,124 @@ deviating from them, stop and propose the change with rationale — do not silen
   where the carrier may have taken the message before failing. Recorded because
   the plan that opened this work repeated the comment's claim as the harm, and
   the real harm is narrower and worse: not a lockout, an inverted record.
+- 2026-08-15 — M20 IS THE ACCOUNT SURFACE, and it exists because M17 built five
+  recovery ceremonies that nothing in the product can reach. The route↔consumer
+  fence (M19 PR1) named them on its FIRST RUN as `EXEMPT_RECOVERY_SURFACE`:
+  password change, reset request, reset complete, and the three address-change
+  legs — a milestone that closed "identity has no password reset" and left every
+  ceremony unreachable. Five PRs: PR0 the delivered-vs-accepted defect found
+  while scoping (merged as #101), PR1 the password change, PR2 the address
+  change, PR3 the reset on the `(auth)` group, PR4 session continuity, PR5 the
+  review. THE SURFACE IS `/security`, NOT A NEW `/account` PAGE (user-selected
+  over the plan's own proposal): the page already carries the verified-address
+  banner, passkeys, paired devices and the standalone step-up, so the account's
+  security controls end up in one place rather than two — and its one-prompt
+  invariant, its session card and its step-up plumbing are reused rather than
+  reimplemented. Discovery falsified the plan's `/account` premise before any
+  code was written, which is the reason the question was put to the user rather
+  than assumed.
+- 2026-08-15 — M20 PR1: THE EDGE ADDS NO GATE, WHICH IS THE WHOLE DESIGN. The BFF
+  forwards the caller's own bearer, holds no credential, and deliberately does
+  NOT re-validate the new password — identity's schema is the gate and a second
+  copy at the edge is a copy free to drift from the one that decides (the M12
+  upload-client rule), pinned by a spec asserting a four-character password
+  reaches identity and is refused THERE. `changePassword` also deliberately does
+  not parse its response: identity answers 204, and `parseBody` would throw
+  'identity response was not JSON' on an empty body, turning every SUCCESSFUL
+  change into an error. The four refusals stay four codes because their remedies
+  are four — re-check the password, find your authenticator, wait, choose a
+  longer one — and `TOO_MANY_ATTEMPTS` in particular is a control firing, which
+  the M9 rule says must not read as an outage.
+- 2026-08-15 — `INVALID_CREDENTIALS` NOW MEANS A THIRD THING, and this is the M12
+  finding arriving for the third time on the third surface. Identity answers one
+  token for a rejected password, a rejected TOTP code, and now a rejected
+  CURRENT password. M12 fixed the first collision with `stepUpMessageFor` (copy
+  telling users their email and password combination was wrong, on a form with
+  neither field on it); `passwordChangeMessageFor` is the same fix again, and its
+  sentence also states that NOTHING CHANGED — the fact a person most needs after
+  a refusal on the one route that rewrites their credential. The rule this keeps
+  restating is narrower than "step-up": a form whose only field is a secret must
+  never explain a refusal in the vocabulary of a different secret.
+- 2026-08-15 — A MUTATION PROVED MY OWN FIX WAS BELT AND NOT THE CONTROL, and the
+  honest answer was to say which half is load-bearing rather than weaken the
+  mutation. The step-up retry CARRIES the submitted attempt, which is the M13
+  review's fix for a retry that ran the action from the picker's CURRENT state.
+  Reverting the carry to read the live inputs left all 31 tests green — because
+  the real control is that the prompt REPLACES the form, so while a change is
+  pending there are no inputs to edit and the values cannot move. My test was
+  named for a property it never touched: the M13 defect, committed by me, in the
+  test that cites it. Fixed by asserting the REPLACEMENT (mutating that turns it
+  red) and keeping the carry as belt for a stated reason — the moment somebody
+  makes the form merely DISABLED rather than unmounted, a plausible and otherwise
+  harmless edit, the values become live again and the carry becomes the only
+  thing between a step-up and a password the user never confirmed.
+- 2026-08-15 — THE PASSWORD MINIMUM WAS DECLARED FOUR TIMES WITH NOTHING
+  COMPARING THEM: identity's zod schema, the browser's pre-flight, its hint text
+  and its error copy. Change the gate and three surfaces tell users something
+  false — the `GQL_ERROR_CODES` drift class in a new place.
+  `apps/web/src/lib/password-policy.test.ts` reads identity's `auth.controller.ts`
+  AS TEXT and asserts every password minimum it declares is either this app's
+  constant or a bare presence check (`min(1)`), with an anti-vacuity floor;
+  mutating identity to `min(14)` turns it red. The web app cannot import a Nest
+  package, so this is the compose-parity mechanism again — the same one that
+  keeps the session-cache sentence honest.
+- 2026-08-15 — AN EXEMPTION IS A CLAIM ABOUT THE WORLD AND IT ROTS. The
+  route↔consumer fence asserted every route is consumed OR exempt, which stays
+  green forever once a consumer lands for an exempt route — precisely the state
+  PR2 and PR3 will create if nobody remembers. It now also asserts NO EXEMPTION
+  IS STALE: an exempt route that some consumer file really addresses fails with
+  the flip instruction by name. Verified with the exact regression (leaving
+  `identity POST /v1/auth/password` exempt after wiring its client). The general
+  shape: a fence with a declared escape hatch needs a check pointing AT the hatch,
+  or the hatch is where the next zero-callers gap hides.
+- 2026-08-15 — THE SECURITY PAGE TOLD EVERY ACCOUNT IT HAD A SECOND FACTOR, found
+  by driving M20 PR1 in a real browser and older than the PR by eighteen
+  milestones. GraphQL serialises an enum as its member NAME, so the wire carries
+  `"NONE"` — and `apps/web` had declared `MfaLevel` as `'none' | 'mfa' |
+  'stepup'` since M2, which made every `session.mfaLevel === 'none'`
+  PERMANENTLY FALSE at all three of its call sites. MEASURED against an account
+  with no `mfa_methods` row and `sessions.mfa_level = 'none'`: "MFA enrolled" and
+  "Re-enroll authenticator app" on /security, and the same claim on the home
+  page's session card; after the fix, same account and same session, "MFA not
+  enrolled" and "Set up authenticator app". Not an authorization defect —
+  `SecondFactorGate` reads the database and never the browser — but a
+  misstatement about a control in the direction that stops someone acting: the
+  account most in need of a second factor is the one told it already has one,
+  and on this page that claim now sits directly above a password change whose
+  step-up gate is conditional on exactly that factor.
+- 2026-08-15 — WHY NOTHING CAUGHT IT, which is the transferable part. `tsc`
+  compares values against the DECLARATION and the declaration was the thing that
+  was wrong, so a comparison that can never be true type-checks perfectly — the
+  same shape as PR0's discriminated union, where narrowing on `accepted`
+  type-checked while meaning something other than "delivered". And every fixture
+  said `mfaLevel: 'mfa'`, so the suite agreed with itself in a vocabulary the
+  wire does not speak (the M15 "a fixture that invents an enum tests the fixture"
+  rule). The two tests that pressed the authenticator button were green under the
+  defect because both used the ENROLLED branch; the `NONE` branch every new
+  account hits had never been rendered by a test at all, and `SessionCard` had no
+  test file whatsoever. Fixed at three layers: the union, a behavioural pin on
+  the factorless branch for BOTH surfaces, and a fence.
+- 2026-08-15 — `graphql/enum-parity.test.ts` DERIVES EVERY ENUM MIRROR FROM THE
+  BFF'S SDL, because fixing `MfaLevel` alone would have left four more copies
+  nobody compares. It parses the `typeDefs` tagged template for `enum X { … }`,
+  parses `client.ts` for `export type X = 'A' | 'B'`, and asserts equality both
+  ways with anti-vacuity floors on both scans — two regexes that quietly match
+  nothing agree perfectly. The two verification enums were INLINE unions inside
+  the operation types, checked by nothing, so they were promoted to exported
+  types in the same change: a uniform rule with no escape hatch, one entry after
+  I wrote down that a fence's escape hatch is where the next gap hides.
+  Mutation-tested seven ways — the lowercase union restored, a mirror renamed
+  away, a new SDL enum with no mirror, the SDL scan broken to match nothing, and
+  each of the three live comparison sites reverted — all red on the assertion
+  that names the property. Direction is stated rather than implied: this checks
+  SDL → app and cannot check the reverse, because most unions in that file
+  (`GqlErrorCode`, `GqlFailureCode`) are not GraphQL enums, so a renamed enum
+  fails loudly on its new name and leaves the old union as harmless dead code.
+- 2026-08-15 — MEASURED WHILE DRIVING, and it is evidence for M20 PR4 rather than
+  a defect in PR1: a signed-in browser reports "Your session has ended. Please
+  sign in" after FIFTEEN MINUTES, while its `sessions` row is live and its
+  refresh token good for thirty days. The web app has no refresh wiring at all,
+  so the access token's TTL is the whole usable session. Confirmed by reading the
+  row rather than inferring from the message — `revoked_at IS NULL` with
+  `now() > access_expires_at` — which is what separates "expired" from "revoked",
+  two states the UI renders identically today.

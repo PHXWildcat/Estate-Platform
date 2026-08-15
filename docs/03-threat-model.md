@@ -2835,6 +2835,127 @@ live reset code that reached no mailbox should not exist — which matters most 
 the `carrier_failure` case, where the carrier may have taken the message before
 failing.
 
+## 6u. Threat-model delta — M20 PR1, the account password surface (2026-08-15)
+
+**§6l shipped the control and nothing could reach it.** `POST /v1/auth/password`
+has existed since M17 PR2 with no consumer anywhere — the route↔consumer fence
+(M19 PR1) recorded it, with five siblings, under `EXEMPT_RECOVERY_SURFACE`
+naming this pending slice. A password rotation nobody can perform is not a
+mitigation for anything: §5 risk #1 (account takeover) lists credential rotation
+among its responses, and until this PR the platform's answer to "your password
+may be compromised" was that there was no answer. The exemption is flipped to a
+real consumer in the same change as the client, on the M9 PR2 holders-flip rule.
+
+**The edge adds no authority and no second gate.** The BFF forwards the caller's
+own bearer and holds no credential (the M8 PR5 pattern, unchanged), so the
+strongest thing a compromised BFF can do here is replay a session it is already
+serving. It also deliberately does NOT re-validate the new password: identity's
+schema is the gate, and a second copy at the edge is a copy free to drift from
+the one that decides (the M12 upload-client rule). The BFF's own spec asserts a
+four-character password reaches identity and is refused THERE.
+
+**The refusals stay four, because their remedies are four.** `INVALID_CREDENTIALS`
+(re-check the password), `STEPUP_REQUIRED` (find your authenticator),
+`TOO_MANY_ATTEMPTS` (wait — M17 PR6's bound, whose 429 branch M19 PR4 taught the
+edge to read) and `INVALID_REQUEST` (choose a longer password). Collapsing any
+pair sends someone to do the wrong thing, and folding the bound into the
+credential refusal would render "check your password" at somebody whose next
+correct password will also be refused — the M9 rule that a control firing must
+not read as an outage.
+
+**`INVALID_CREDENTIALS` NOW MEANS A THIRD THING, AND THE COPY IS CHOSEN PER
+SURFACE.** Identity answers one token for a rejected password, a rejected TOTP
+code and now a rejected *current* password. M12 found the first collision (a
+step-up prompt telling users their email and password combination was wrong on a
+form with neither field) and fixed it with `stepUpMessageFor`; this is the same
+finding a third time, closed the same way with `passwordChangeMessageFor`, whose
+sentence also states that nothing changed — the fact a person most needs after a
+refusal on a route that rewrites their credential.
+
+**ONE STEP-UP PROMPT PER PAGE, still.** `/security` can now be refused for five
+reasons, and the M15 PR3 defect is two identical "Confirm it's you" fields no
+person or query can tell apart. `StepUpTarget` admits one at a time and every
+other opener is disabled while one is up; the prompt renders as a SIBLING of the
+form, never nested inside it (the M16 PR3a rule — a form inside a form is a tree
+the DOM API accepts and no parser would build).
+
+**WHICH HALF OF THE RETRY IS LOAD-BEARING WAS ESTABLISHED BY MUTATION, and my
+first answer was wrong.** The retry carries the submitted attempt rather than
+re-reading the inputs, which is the M13 review's fix for a step-up retry running
+the action from the form's *current* state. Reverting that carry left every test
+green: the real control is that the prompt REPLACES the form, so while a change
+is pending there are no inputs to edit. The carry is kept as belt for a stated
+reason — the moment somebody makes the form merely disabled rather than unmounted
+(a plausible, otherwise harmless edit) the values become live again — and the
+replacement itself is now pinned by its own assertion. Recorded because the
+tempting move was to weaken the mutation until it went red and call the fix
+proven.
+
+**The confirm field is a typo guard and is never sent.** It exists because this
+form replaces a credential the user cannot afterwards read back, and a mistyped
+new password is a lockout the platform's own recovery path (§6m) then has to
+undo. It is compared in the browser and dropped there; identity is asked about
+one password, not two.
+
+**The minimum was declared four times with nothing comparing them.** Identity's
+schema, the browser's pre-flight, its hint text and its error copy each carried
+`12`, so a change to the gate would have left three surfaces telling users
+something false — the drift class this repo keeps closing. `password-policy.test.ts`
+reads identity's controller as text and asserts every password minimum it
+declares is either the constant this app shows or a bare presence check;
+mutating identity to `min(14)` turns it red.
+
+**The fence gained a check for the opposite failure.** `route-consumers.spec.ts`
+asserted that every route is consumed or exempt, and would have stayed green
+forever with this route exempt after a consumer landed — an exemption is a claim
+about the world that rots. It now also asserts no exemption is STALE: an exempt
+route that some consumer really addresses fails with instructions to flip it.
+Verified with the exact regression.
+
+**THE PAGE WAS TELLING EVERY ACCOUNT IT HAD A SECOND FACTOR.** Driving this
+surface found a defect older than the PR and directly on it: GraphQL serialises
+an enum as its member NAME, so the wire carries `"NONE"`, while the web app had
+declared `MfaLevel` as `'none' | 'mfa' | 'stepup'` since M2. Every
+`session.mfaLevel === 'none'` in the app was therefore permanently false.
+Measured on the running stack against an account with no `mfa_methods` row and
+`sessions.mfa_level = 'none'`: the security page showed **"MFA enrolled"** and
+offered **"Re-enroll authenticator app"**, and the home page's session card said
+the same. After the fix, same account and same session: "MFA not enrolled" and
+"Set up authenticator app".
+
+The consequence is a misstatement about a control, in the direction that stops
+someone acting. A user reading "MFA enrolled" has no reason to enrol, so the
+account most in need of a second factor is the one told it already has one —
+and on this page that claim now sits directly above a password change whose
+step-up gate is conditional on exactly that factor, so a factorless user sees
+their password change complete with no challenge while the page insists a factor
+protects it. It is not an authorization defect: `SecondFactorGate` reads the
+database, never the browser, so nothing was permitted that should not have been.
+
+**Neither existing gate could see it, for reasons worth keeping.** `tsc` compares
+values against the DECLARATION, and the declaration was the thing that was wrong,
+so a comparison that can never be true type-checks perfectly. Every fixture said
+`mfaLevel: 'mfa'` — the same invented vocabulary — which is the M15 rule that a
+fixture inventing an enum tests the fixture; the two tests that touched the
+authenticator button were green under the defect because they used the enrolled
+branch, and the `NONE` branch that a brand-new account hits had never been
+rendered by any test. `graphql/enum-parity.test.ts` now derives all five enum
+mirrors from the BFF's SDL and asserts them member for member, and the
+factorless branch is pinned on both surfaces (`SessionCard` gained its first
+test at all).
+
+**NOT closed by this PR, and stated so it is not assumed.** There is still no
+breach-corpus check on a chosen password (§4 TB1 lists it as a control), no
+per-IP bound (§6k — identity has no client IP and neither public edge forwards
+one), and no notification-suppression concern to add: identity already mails
+`identity.password_changed` on its own security edge (§6l), which this surface
+does not touch. The remaining recovery routes — reset request/complete and the
+three address-change legs — stay exempt with their pending slices named, and PR2
+and PR3 flip them. Separately measured while driving this: the web app never
+refreshes an access token, so a signed-in browser reports "Your session has
+ended" after 15 minutes while its session row is live for 30 days — the gap M20
+PR4 is scoped to close, now observed rather than inferred.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

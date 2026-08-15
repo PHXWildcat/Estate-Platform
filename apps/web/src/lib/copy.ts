@@ -129,3 +129,27 @@ export function stepUpMessageFor(code: GqlFailureCode): string {
     ? 'That code wasn’t accepted. Codes change every 30 seconds — check your authenticator app and enter the current one.'
     : errorCopy[code];
 }
+
+/**
+ * THE THIRD SURFACE on which `INVALID_CREDENTIALS` means something else (M20
+ * PR1), and it is the same defect the M12 finding closed, one form over.
+ *
+ * On the password-change form the code means "the CURRENT password you typed
+ * was wrong" — identity answers it from `verifyPassword`. The default wording,
+ * "that email and password combination didn't work", names an email field this
+ * form does not have and sends the reader to re-check an address that is not
+ * the problem. There is no ambiguity to preserve here either: the caller is
+ * already authenticated, so the refusal cannot be an account-existence oracle
+ * and can safely say exactly which field was rejected.
+ *
+ * TOO_MANY_ATTEMPTS deliberately keeps its ordinary wording. It is reachable
+ * here — M17's bound is per-session AND per-account — and the shared copy
+ * already says to wait without naming a number of minutes, which is right,
+ * because that window is a reviewed constant in a service this app cannot
+ * import.
+ */
+export function passwordChangeMessageFor(code: GqlFailureCode): string {
+  return code === 'INVALID_CREDENTIALS'
+    ? 'That current password wasn’t right. Check it and try again — your password has not been changed.'
+    : errorCopy[code];
+}

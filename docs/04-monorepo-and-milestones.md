@@ -5218,7 +5218,96 @@ comment credited its retire-on-failure with preventing a "TTL-long lockout" —
 re-issue floor; the code is retired because a live reset code that reached no
 mailbox should not exist.
 
-### M20 — Subscription manager (planned; re-sequenced 2026-08-12)
+### M20 — The account surface (in progress, 2026-08-15)
+
+**M17 built six ceremonies and no way to reach any of them.** Password change,
+password reset (request + complete) and email change (request + complete +
+cancel) all ship service-side with their copy and control decisions taken — and
+no product code calls any of them. The route↔consumer fence found that on its
+first run and recorded it as `EXEMPT_RECOVERY_SURFACE`; M20 is the milestone
+that flips those six exemptions to consumers, one PR at a time, each in the same
+change as its own client (the M9 PR2 rule).
+
+**Where it lives: `/security`, not a new page.** The plan said "/account", and
+discovery falsified the premise — `/security` already owns every sign-in
+control (M14's address verification, M17's passkeys, M16's paired devices), and
+it already carries the invariant that matters here: ONE step-up prompt on the
+page at a time, held in a single `StepUpTarget` union after the M15 PR3
+identical-label defect. A second page would have meant a second prompt, a second
+copy of that invariant, and "how you sign in" split across two destinations.
+
+**PR0 — a discriminant read as an answer (merged, `c2a378a`).** Found while
+scoping: three identity sites recorded an undelivered mail as `delivered` in the
+append-only trail. Fixed as one spelling (`wasDelivered`) plus a fence. Full
+record in docs/03 §6t.
+
+**PR1 — the password change (this PR).** The first product consumer of any of
+the six. BFF client + GraphQL mutation + a Password section on `/security`.
+Decisions worth keeping:
+
+- *Step-up is CONDITIONAL and the UI is built for both paths.* Identity gates on
+  `SecondFactorGate`, which refuses only when the account already holds a
+  verified TOTP or passkey — an account with no factor is let through
+  deliberately, or its password would be unchangeable forever, which is the
+  worst answer for exactly the users with the least protection. So
+  `STEPUP_REQUIRED` is a possible answer, never a guaranteed first one.
+- *`INVALID_CREDENTIALS` gets a THIRD meaning* (`passwordChangeMessageFor`). The
+  shared copy says "that email and password combination didn't work" and this
+  form has no email on it — the M12 defect, one surface over, caught before it
+  shipped rather than after. The caller is already authenticated here, so the
+  refusal cannot be an account-existence oracle and can safely name the field.
+- *The prompt REPLACES the form.* That, not the carried attempt, is what stops a
+  step-up retry from picking up a value the user never confirmed — established
+  by mutation, after the carry was written up as the control and proved not to
+  be. The carry stays as belt, with the reason recorded, because it becomes
+  load-bearing the moment somebody makes the form merely disabled.
+- *A confirm field, which the server has no concept of.* A typo in the new
+  password is not recoverable today: the change succeeds with a value nobody
+  knows, and the reset surface that would undo it is PR3.
+- *The password minimum is now PINNED across the boundary.* `12` was declared
+  four times — once in the web app, three times in identity — with nothing
+  comparing them. `password-policy.test.ts` reads identity's source as text (the
+  compose-parity mechanism) and asserts every password-ish minimum is either a
+  presence check or exactly `PASSWORD_MIN_LENGTH`, so a raise fails as loudly as
+  a drop.
+
+**The fence gained two checks while being flipped**, both from holes found
+wiring PR1: the `enumerated` reason (the other kind of declared reason) was
+checked by nothing though its mere presence widens the consumer matcher; and
+NOTHING DETECTED A STALE EXEMPTION — shipping a client while leaving
+`{ exempt: … }` in place left the fence green, still asserting "no product
+consumer" about a route the product had started calling. That second one is what
+makes flipping PR2's and PR3's entries mandatory rather than remembered.
+
+**Driving PR1 in a real browser found a defect eighteen milestones old**, and it
+sat on the page this PR extends: the web app declared the `MfaLevel` GraphQL
+enum in lowercase while the wire carries the member NAME, so every
+`session.mfaLevel === 'none'` was permanently false and every account — factor
+or not — was shown "MFA enrolled" and offered "Re-enroll authenticator app".
+Measured before and after against the same account and session. It is not an
+authorization defect (the gate reads the database, not the browser) but it is a
+misstatement about a control in the direction that stops someone acting, and it
+sat directly above a password change whose step-up gate is conditional on that
+very factor. Fixed at three layers — the union, a behavioural pin on the
+factorless branch for both surfaces (`SessionCard` had no test file at all), and
+`graphql/enum-parity.test.ts`, which derives every enum mirror from the BFF's
+SDL. The two verification enums were inline unions checked by nothing and were
+promoted to exported types in the same change, so the fence is a uniform rule
+with no escape hatch. Full record in docs/03 §6u.
+
+**Also measured while driving, and it is PR4's evidence:** a signed-in browser
+reports "Your session has ended" after fifteen minutes, while its session row is
+live and its refresh token good for thirty days. The app has no refresh wiring,
+so the access-token TTL is the whole usable session — confirmed by reading
+`revoked_at IS NULL` alongside an elapsed `access_expires_at`, which is what
+distinguishes expired from revoked. The UI renders those two states identically
+today, which is its own item for PR4.
+
+**PR2** address change (request + complete + cancel) · **PR3** password reset on
+the `(auth)` group · **PR4** session continuity (wire `Refresh`) · **PR5** the
+adversarial security review.
+
+### M21 — Subscription manager (planned; re-sequenced 2026-08-12, displaced again by M20)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
 SaaS, gym, storage, insurance, domains — continue debiting after death, and every

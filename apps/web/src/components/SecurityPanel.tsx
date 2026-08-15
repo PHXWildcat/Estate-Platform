@@ -4,11 +4,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type LiveSessionInfo, type SessionInfo } from '../graphql/client';
-import { messageFor, stepUpMessageFor } from '../lib/copy';
+import { messageFor, passwordChangeMessageFor, stepUpMessageFor } from '../lib/copy';
 import { formatDateTime } from '../lib/datetime';
 import { audienceCopy } from '../lib/sessions';
 import { SESSION_CACHE_TTL_MS, type StepUpRetryOutcome } from '../lib/step-up';
-import { validateTotpCode } from '../lib/validation';
+import { PASSWORD_MIN_LENGTH, validatePassword, validateTotpCode } from '../lib/validation';
 import {
   ceremonyFailureMessage,
   decodeCreationOptions,
@@ -45,7 +45,31 @@ type DevicesState =
  * a designation the owner never chose) has no shape to reoccur in: the action
  * is bound where it is rendered, not selected afterwards from state.
  */
-type StepUpTarget = 'verify' | 'export' | 'pairing' | 'passkey-revoke';
+type StepUpTarget = 'verify' | 'export' | 'pairing' | 'passkey-revoke' | 'password-change';
+
+/**
+ * The password-change attempt, CARRIED so the retry re-sends what was actually
+ * submitted (M20 PR1).
+ *
+ * WHICH HALF IS LOAD-BEARING, stated because a mutation test proved my first
+ * answer wrong. The M13 review's worse defect was a step-up retry that ran the
+ * action from the picker's CURRENT state rather than the one that was refused.
+ * The protection against that here is that the prompt REPLACES the form, so
+ * while a change is pending there are no inputs to edit and no way for the
+ * values to move — reverting this carry to read `pwCurrent`/`pwNext` directly
+ * leaves every test green, which is exactly what a mutation showed.
+ *
+ * So this is BELT, and it is kept for a specific reason rather than for
+ * symmetry: the moment somebody makes the form merely DISABLED instead of
+ * unmounted — a plausible and otherwise harmless edit, since a disabled form
+ * lets you see what you are changing — the values become live again and this
+ * becomes the only thing standing between a step-up and a password the user
+ * never confirmed. The replacement is pinned by its own assertion below.
+ */
+interface PasswordAttempt {
+  readonly currentPassword: string;
+  readonly newPassword: string;
+}
 
 interface PasskeyInfo {
   id: string;
@@ -132,6 +156,17 @@ export function SecurityPanel(): ReactElement {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
+
+  // Password change (M20 PR1)
+  const [pwCurrent, setPwCurrent] = useState('');
+  const [pwNext, setPwNext] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [pwNextError, setPwNextError] = useState<string | null>(null);
+  const [pwConfirmError, setPwConfirmError] = useState<string | null>(null);
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSuccess, setPwSuccess] = useState(false);
+  const [pwAttempt, setPwAttempt] = useState<PasswordAttempt | null>(null);
 
   const loadSession = useCallback(async (): Promise<void> => {
     const result = await gqlRequest('Session', {});
@@ -385,6 +420,66 @@ export function SecurityPanel(): ReactElement {
     }
   }
 
+  /**
+   * Send one password change. Takes the attempt as an ARGUMENT rather than
+   * reading the inputs, so the step-up retry re-sends exactly what was
+   * submitted — see `PasswordAttempt`.
+   */
+  async function sendPasswordChange(attempt: PasswordAttempt): Promise<StepUpRetryOutcome> {
+    setPwBusy(true);
+    setPwError(null);
+    setPwSuccess(false);
+    const result = await gqlRequest('ChangePassword', {
+      currentPassword: attempt.currentPassword,
+      newPassword: attempt.newPassword,
+    });
+    setPwBusy(false);
+
+    if (result.ok && result.data.changePassword?.ok === true) {
+      setStepUp(null);
+      setPwAttempt(null);
+      setPwSuccess(true);
+      // Clear every field. These are credentials, and one of them is now the
+      // live account password sitting in a DOM node with no reason to be there.
+      setPwCurrent('');
+      setPwNext('');
+      setPwConfirm('');
+      return 'applied';
+    }
+    if (!result.ok && result.code === 'STEPUP_REQUIRED') {
+      // CONDITIONAL at identity: only an account that already holds a verified
+      // factor is refused here, so this branch is a possible answer rather than
+      // a guaranteed first one — an account with no factor never reaches it.
+      setPwError(messageFor('STEPUP_REQUIRED'));
+      setStepUpSuccess(null);
+      setPwAttempt(attempt);
+      setStepUp('password-change');
+      return 'stale';
+    }
+    // A missing field is NO DATA, never data: a BFF predating this mutation
+    // answers `{"data":{}}`, which `gqlRequest`'s shallow check admits.
+    setPwError(passwordChangeMessageFor(result.ok ? 'UNKNOWN' : result.code));
+    return 'applied';
+  }
+
+  async function submitPasswordChange(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const nextError = validatePassword(pwNext);
+    // A typo in the NEW password is not recoverable today: the change would
+    // succeed with a value nobody knows, and the reset surface that would undo
+    // that is M20 PR3 — it does not exist yet. Hence a confirm field, which the
+    // server has no concept of and does not need.
+    const confirmError = pwNext !== pwConfirm ? 'Those passwords don’t match.' : null;
+    setPwNextError(nextError);
+    setPwConfirmError(confirmError);
+    if (nextError !== null || confirmError !== null) return;
+    if (pwCurrent.length === 0) {
+      setPwError('Enter your current password.');
+      return;
+    }
+    await sendPasswordChange({ currentPassword: pwCurrent, newPassword: pwNext });
+  }
+
   async function runExport(): Promise<StepUpRetryOutcome> {
     setExportBusy(true);
     setExportError(null);
@@ -541,7 +636,7 @@ export function SecurityPanel(): ReactElement {
           Session
         </h2>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {session.mfaLevel === 'none' ? (
+          {session.mfaLevel === 'NONE' ? (
             <span className="chip chip-warn">MFA not enrolled</span>
           ) : (
             <span className="chip chip-success">MFA enrolled</span>
@@ -553,6 +648,89 @@ export function SecurityPanel(): ReactElement {
           )}
         </div>
         <p className="mt-3 font-mono text-xs text-ink-muted">{session.userId}</p>
+      </section>
+
+      <section aria-labelledby="password-heading" className="card p-6">
+        <h2 id="password-heading" className="text-lg font-semibold">
+          Password
+        </h2>
+        <p className="mt-2 max-w-prose text-sm text-ink-muted">
+          Changing this signs out your other devices. This one stays signed in.
+        </p>
+        <p className="mt-2 max-w-prose text-sm text-ink-muted">
+          This is not your vault password. Your vault is unlocked with its own password and your
+          Secret Key, so changing this leaves everything in it exactly as it is.
+        </p>
+        {stepUp === 'password-change' ? (
+          <StepUpPrompt
+            idPrefix="password-change-stepup"
+            hint="Changing your password needs a fresh check. Enter the six-digit code from your authenticator."
+            submitLabel="Confirm and change password"
+            // Bound HERE, to the attempt that was refused. See `PasswordAttempt`
+            // for why this is belt rather than the control: the form is
+            // unmounted while this prompt is up, which is what actually keeps
+            // the values from moving.
+            onElevated={withSessionRefresh(async () =>
+              pwAttempt === null ? 'applied' : await sendPasswordChange(pwAttempt),
+            )}
+            onCancel={() => {
+              setStepUp(null);
+              setPwAttempt(null);
+            }}
+          />
+        ) : (
+          <form
+            className="mt-4 space-y-4"
+            noValidate
+            onSubmit={(event) => {
+              void submitPasswordChange(event);
+            }}
+          >
+            <FormField
+              id="password-current"
+              label="Current password"
+              type="password"
+              value={pwCurrent}
+              onChange={setPwCurrent}
+              error={null}
+              autoComplete="current-password"
+              disabled={pwBusy}
+            />
+            <FormField
+              id="password-new"
+              label="New password"
+              type="password"
+              value={pwNext}
+              onChange={setPwNext}
+              error={pwNextError}
+              hint={`At least ${PASSWORD_MIN_LENGTH} characters. A short, memorable sentence works well.`}
+              autoComplete="new-password"
+              disabled={pwBusy}
+            />
+            <FormField
+              id="password-confirm"
+              label="Confirm new password"
+              type="password"
+              value={pwConfirm}
+              onChange={setPwConfirm}
+              error={pwConfirmError}
+              autoComplete="new-password"
+              disabled={pwBusy}
+            />
+            <button className="btn btn-primary" type="submit" disabled={pwBusy || stepUp !== null}>
+              {pwBusy ? 'Changing…' : 'Change password'}
+            </button>
+          </form>
+        )}
+        <div className="mt-3 space-y-2">
+          <FormStatus tone="error" message={pwError} />
+          <FormStatus
+            tone="success"
+            message={
+              pwSuccess ? 'Password changed. Your other devices have been signed out.' : null
+            }
+          />
+        </div>
       </section>
 
       <section aria-labelledby="totp-heading" className="card p-6">
@@ -574,7 +752,7 @@ export function SecurityPanel(): ReactElement {
           >
             {enrollBusy
               ? 'Preparing…'
-              : session.mfaLevel === 'none'
+              : session.mfaLevel === 'NONE'
                 ? 'Set up authenticator app'
                 : 'Re-enroll authenticator app'}
           </button>
