@@ -851,6 +851,14 @@ interface OperationSignatures {
     data: { completeEmailChange: { ok: boolean } };
   };
   CancelEmailChange: { variables: EmptyVariables; data: { cancelEmailChange: { ok: boolean } } };
+  RequestPasswordReset: {
+    variables: { email: string };
+    data: { requestPasswordReset: { ok: boolean } };
+  };
+  CompletePasswordReset: {
+    variables: { code: string; newPassword: string };
+    data: { completePasswordReset: { ok: boolean } };
+  };
   Consents: { variables: EmptyVariables; data: { consents: string[] } };
   GrantConsent: { variables: { scope: string }; data: { grantConsent: string[] } };
   RevokeConsent: { variables: { scope: string }; data: { revokeConsent: string[] } };

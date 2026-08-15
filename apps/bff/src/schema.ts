@@ -879,6 +879,26 @@ export const typeDefs = /* GraphQL */ `
     """
     cancelEmailChange: Ok!
     """
+    Ask for a password-reset code (M20 PR3). UNAUTHENTICATED — the caller has
+    forgotten the credential that would authenticate them.
+
+    THE RESULT IS NOT A DELIVERY RECEIPT, and it is not even the address
+    change's "taken, may not mail": identity answers identically for an
+    unknown address, a recently-asked one, and a real send, deliberately, so a
+    caller cannot learn from this route where to point a mailbox compromise.
+    Success copy must be conditional on all three.
+    """
+    requestPasswordReset(email: String!): Ok!
+    """
+    Redeem a reset code and choose a new password (M20 PR3). UNAUTHENTICATED —
+    the code is the authority. One refusal covers every way a code can fail;
+    that uniformity is the control.
+
+    On success EVERY session is signed out and NONE is created: this mutation
+    sets no cookie, and the caller signs in with the password they just chose.
+    """
+    completePasswordReset(code: String!, newPassword: String!): Ok!
+    """
     Records an asset (full input — M19 PR2). A valuation is all-or-nothing:
     supply estValue, valuationAsOf and valuationSource together, or none —
     an amount with no date and no provenance is not an auditable claim.
@@ -2357,6 +2377,34 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<typeof OK> => {
           await identity.cancelEmailChange(requireAccessToken(ctx));
+          return OK;
+        },
+        requestPasswordReset: async (
+          _parent: unknown,
+          args: { email: string },
+          _ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          // No session read, no cookie touched, and the address forwarded
+          // UNCHANGED — identity normalizes and blind-indexes it itself, and a
+          // second normalizer here could resolve a different account than the
+          // one this surface echoed back (the requestEmailChange rule).
+          await identity.requestPasswordReset(args.email);
+          return OK;
+        },
+        completePasswordReset: async (
+          _parent: unknown,
+          args: { code: string; newPassword: string },
+          // `_ctx` UNUSED IS THE DECISION, not an accident: identity returned
+          // no tokens (a reset signs you in nowhere — the M15 PR4 lesson), so
+          // there is nothing to hand setSessionCookies. And this browser's
+          // possibly-present cookies name sessions the reset just revoked
+          // server-side; they are left alone rather than expired, because
+          // clearing them would be cosmetic (the M8 logout rule is about not
+          // clearing cookies over a LIVE session — these are dead) and the
+          // sign-in the user performs next overwrites them anyway.
+          _ctx: RequestContext,
+        ): Promise<typeof OK> => {
+          await identity.completePasswordReset(args.code, args.newPassword);
           return OK;
         },
       },

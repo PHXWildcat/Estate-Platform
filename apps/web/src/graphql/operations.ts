@@ -353,6 +353,18 @@ export const CANCEL_EMAIL_CHANGE_MUTATION = `mutation CancelEmailChange {
   }
 }`;
 
+export const REQUEST_PASSWORD_RESET_MUTATION = `mutation RequestPasswordReset($email: String!) {
+  requestPasswordReset(email: $email) {
+    ok
+  }
+}`;
+
+export const COMPLETE_PASSWORD_RESET_MUTATION = `mutation CompletePasswordReset($code: String!, $newPassword: String!) {
+  completePasswordReset(code: $code, newPassword: $newPassword) {
+    ok
+  }
+}`;
+
 export const CONSENTS_QUERY = `query Consents {
   consents
 }`;
@@ -785,6 +797,8 @@ export const operations = {
   RequestEmailChange: REQUEST_EMAIL_CHANGE_MUTATION,
   CompleteEmailChange: COMPLETE_EMAIL_CHANGE_MUTATION,
   CancelEmailChange: CANCEL_EMAIL_CHANGE_MUTATION,
+  RequestPasswordReset: REQUEST_PASSWORD_RESET_MUTATION,
+  CompletePasswordReset: COMPLETE_PASSWORD_RESET_MUTATION,
   Session: SESSION_QUERY,
   Sessions: SESSIONS_QUERY,
   RevokeSession: REVOKE_SESSION_MUTATION,

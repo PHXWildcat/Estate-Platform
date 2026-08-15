@@ -208,3 +208,29 @@ export function addressCodeMessageFor(code: GqlFailureCode): string {
     ? 'That code wasn’t accepted. Codes are single-use, expire after a short while, and stop working once too many wrong ones are tried — cancel this change and start again to get a new one.'
     : errorCopy[code];
 }
+
+/**
+ * PASSWORD-RESET surface (M20 PR3), the third mailed-code form and the third
+ * remedy for one refused code. The shared INVALID_VERIFICATION_CODE sentence
+ * ends "send yourself a new one" (the verification panel's resend button);
+ * the address change's says "cancel this change and start again"; here the
+ * remedy is the request form sitting on the SAME page, so the copy points at
+ * it. One server refusal, three surfaces, three next steps — which is exactly
+ * why the resolver is per-surface rather than the sentence being shared.
+ *
+ * INVALID_REQUEST is worth its own words too: on this form it almost always
+ * means the new password was refused by identity's minimum (the code's shape
+ * check is deliberately generous), and the shared "review your request" names
+ * neither field. The local pre-flight makes this rare, not impossible — the
+ * two rules live in different repositories and the local one is advisory (the
+ * M12 rule: identity's schema is the gate).
+ */
+export function resetMessageFor(code: GqlFailureCode): string {
+  if (code === 'INVALID_VERIFICATION_CODE') {
+    return 'That code wasn’t accepted. Codes are single-use and expire after a short while — ask for a new one above and try again.';
+  }
+  if (code === 'INVALID_REQUEST') {
+    return 'That didn’t work — most likely the new password is too short. Nothing has been changed.';
+  }
+  return errorCopy[code];
+}

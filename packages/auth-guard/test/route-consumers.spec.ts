@@ -342,12 +342,13 @@ const EXEMPT_PLAID_UI =
 const EXEMPT_EXTERNAL_WEBHOOK =
   'Called by Plaid itself, never by product code: the ES256-verified webhook ingress ' +
   '(decision log 2026-07-22 — alg pinned, kid via gateway, constant-time body hash).';
-const EXEMPT_RECOVERY_SURFACE =
-  'M17 shipped the password-change/reset and email-change ceremonies service-side with their ' +
-  'copy decisions taken, but the account-recovery/address-change frontend slice never landed — ' +
-  'found by this fence’s first run (M19 PR1). M20 is that slice: PR1 flipped the password ' +
-  'change and PR2 the three address-change legs, leaving only the two RESET legs here, which ' +
-  'need a signed-out route group of their own (M20 PR3).';
+// EXEMPT_RECOVERY_SURFACE is GONE (M20 PR3): the six recovery routes this
+// fence's first run found unreachable (M19 PR1) all have product consumers
+// now — the password change (M20 PR1), the three address-change legs (PR2)
+// and the two reset legs (PR3), each flipped in the same change as its own
+// client. Deleting the constant rather than leaving it for the next milestone
+// is deliberate: an unused exemption reason is a sentence about the world that
+// has stopped being true, sitting where the next person will reach for it.
 
 const BFF = 'apps/bff/src';
 const AI = 'apps/services/ai-assistant/src/clients';
@@ -463,14 +464,12 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     `${VW}/server.ts`,
     `${VX}/session.ts`,
   ),
-  // M20 PR1 flipped the FIRST of the six (the password change) and PR2 the
-  // three address-change legs, each in the same change as its own client — the
-  // M9 PR2 rule. The two reset legs follow in PR3; they are the ones that need
-  // a route group of their own, being the only ceremony a signed-OUT caller
-  // drives.
+  // M17's six recovery routes, all consumed as of M20 PR3 — password change
+  // (PR1), the three address-change legs (PR2), the two reset legs (PR3) —
+  // each flipped in the same change as its own client, the M9 PR2 rule.
   'identity POST /v1/auth/password': consumed(`${BFF}/identity-client.ts`),
-  'identity POST /v1/auth/password/reset': { exempt: EXEMPT_RECOVERY_SURFACE },
-  'identity POST /v1/auth/password/reset/request': { exempt: EXEMPT_RECOVERY_SURFACE },
+  'identity POST /v1/auth/password/reset': consumed(`${BFF}/identity-client.ts`),
+  'identity POST /v1/auth/password/reset/request': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/email/change': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/email/change/request': consumed(`${BFF}/identity-client.ts`),
   'identity DELETE /v1/auth/email/change': consumed(`${BFF}/identity-client.ts`),

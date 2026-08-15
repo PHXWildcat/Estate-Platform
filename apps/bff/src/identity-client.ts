@@ -198,6 +198,39 @@ export interface IdentityClient {
    * than the permissive one.
    */
   cancelEmailChange(accessToken: string): Promise<void>;
+
+  /**
+   * "Mail me a reset code" (M17 PR3's route; M20 PR3 is its first consumer).
+   * UNAUTHENTICATED — the caller has forgotten the credential that would
+   * authenticate them, so there is no token parameter at all.
+   *
+   * RESOLVING SAYS ALMOST NOTHING, and callers must render it that way:
+   * identity answers 202 for EVERY well-formed input, and an unknown address,
+   * the 30-minute re-issue floor and the per-destination bound are all
+   * deliberately silent — a hit on this route tells an attacker where to point
+   * a mailbox compromise, so an address with an account must be
+   * indistinguishable from a stranger's. The only honest success copy is
+   * conditional on all three.
+   */
+  requestPasswordReset(email: string): Promise<void>;
+
+  /**
+   * Redeem the mailed code and set a new password. UNAUTHENTICATED: the code
+   * is the authority, and there is no field in the request that could name an
+   * account.
+   *
+   * Throws INVALID_VERIFICATION_CODE for every dead-code reason (one
+   * `invalid_code` covers unknown, expired, spent, revoked — the uniformity is
+   * the control) and INVALID_REQUEST for a malformed body, which in practice
+   * means a new password under identity's minimum.
+   *
+   * ON SUCCESS THE CALLER IS SIGNED IN NOWHERE: identity revokes EVERY session
+   * and mints nothing — no tokens in the response, so the resolver sets no
+   * cookie and the user signs in with what they just chose. The absence is a
+   * control (the M15 PR4 lesson), pinned on identity's side by
+   * `mint-paths.spec.ts`.
+   */
+  completePasswordReset(code: string, newPassword: string): Promise<void>;
 }
 
 export interface Passkey {
@@ -929,9 +962,55 @@ export class FetchIdentityClient implements IdentityClient {
       body: { code },
     });
     if (!res.ok) {
-      throw await this.mapChangeCompleteError(res);
+      throw await this.mapCodeRedemptionError(res);
     }
     // 204 No Content — not parsed, for `changePassword`'s reason.
+  }
+
+  async requestPasswordReset(email: string): Promise<void> {
+    // NO BEARER, by construction: the caller has forgotten the credential that
+    // would authenticate them, and this method's signature has no token
+    // parameter to leak one through.
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/password/reset/request',
+      body: { email },
+    });
+    if (!res.ok) {
+      // The SHARED mapper is correct on this route, unlike the email change's
+      // request leg, and the difference is worth stating: identity answers 202
+      // for EVERY well-formed input — an unknown address, the re-issue floor
+      // and the destination bound are all deliberately silent — so the only
+      // 400 this route can produce is a malformed body, which is exactly what
+      // the status-keyed INVALID_REQUEST branch means.
+      throw await this.mapError(res);
+    }
+    // 202 Accepted, body `{status:'ok'}` — deliberately not read. It reports
+    // that the request was TAKEN, never that a mail was sent, refused by the
+    // floor, or had nowhere to go. The caller is never told which, and that is
+    // the route's own design (the account-existence timing control): there is
+    // no field here a caller could mistake for a delivery receipt.
+  }
+
+  async completePasswordReset(code: string, newPassword: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/password/reset',
+      // The code passes through UNCHANGED (the canonical fold lives in
+      // identity), and the new password is not re-validated (identity's schema
+      // is the gate — the M12 upload-client rule, as on `changePassword`).
+      body: { code, newPassword },
+    });
+    if (!res.ok) {
+      throw await this.mapCodeRedemptionError(res);
+    }
+    // 204 No Content — not parsed, for `changePassword`'s reason. IDENTITY
+    // MINTS NOTHING HERE: no tokens in the response, no session to attach, so
+    // completing a reset signs the caller in nowhere and the resolver sets no
+    // cookie. That absence is a control (the M15 PR4 lesson — an
+    // unauthenticated redeem route that granted authority let a stolen code
+    // reach a Zone A crypto-shred), and identity's own `mint-paths.spec.ts`
+    // pins it from the other side.
   }
 
   async cancelEmailChange(accessToken: string): Promise<void> {
@@ -973,14 +1052,21 @@ export class FetchIdentityClient implements IdentityClient {
   }
 
   /**
-   * Same reason, other leg: identity answers **400** `invalid_code`, and the
-   * shared mapper's 400 branch would flatten the one uniform refusal this
-   * ceremony has into INVALID_REQUEST. (Its 401 branch already maps
+   * Same reason, redemption legs: identity answers **400** `invalid_code`, and
+   * the shared mapper's 400 branch would flatten the one uniform refusal these
+   * ceremonies have into INVALID_REQUEST. (Its 401 branch already maps
    * `invalid_code` to INVALID_CREDENTIALS, which is the login vocabulary and
    * equally wrong on a form whose only field is a mailed code — the M12
    * collision.)
+   *
+   * ONE mapper for BOTH mailed-code redemptions (the email change and the
+   * password reset), because the two routes genuinely share the mapping —
+   * one `invalid_code` for every dead reason, `invalid_request` for a
+   * malformed body — and one behaviour with two spellings grows one bug per
+   * copy (the M8 PR2 rule). What differs per surface is the COPY, which lives
+   * in the app's per-surface message resolvers, not here.
    */
-  private async mapChangeCompleteError(res: Response): Promise<Error> {
+  private async mapCodeRedemptionError(res: Response): Promise<Error> {
     if (res.status === 400) {
       const token = await readErrorToken(res.clone());
       return token === 'invalid_code'

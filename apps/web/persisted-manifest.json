@@ -1,5 +1,6 @@
 {
   "087cbfc519ac0be38f84ca4f0a20bfd32496a26acd907d938ed61851d9b575d6": "mutation StepUp($code: String!) {\n  stepUp(code: $code) {\n    ok\n  }\n}",
+  "0c7a63b724e37a12fe0d8d0d1642250a697f06107dd3a01ddb7efb6e74275fda": "mutation RequestPasswordReset($email: String!) {\n  requestPasswordReset(email: $email) {\n    ok\n  }\n}",
   "101f6000e7f7ab11d612870c0e3df03db74580d1e13d9510f1de2ecd7ce9816e": "query DocumentContent($documentId: ID!, $version: Int!) {\n  documentContent(documentId: $documentId, version: $version) {\n    documentId\n    version\n    mime\n    contentSha256\n    encoding\n    content\n  }\n}",
   "16a7e6d7a78dedfcb6c121f93decef33e0d152b54a1b3f1f376f3b3e41cab583": "mutation UnlinkContact($contactId: ID!) {\n  unlinkContact(contactId: $contactId) {\n    ok\n  }\n}",
   "173359df62ebf7b6dd0be3264b33f7bf5f42cbb1ef554837408c937509701992": "mutation RevokeRolePermission($roleAssignmentId: ID!, $grantId: ID!) {\n  revokeRolePermission(roleAssignmentId: $roleAssignmentId, grantId: $grantId) {\n    id\n    resource\n    action\n    createdAt\n  }\n}",
@@ -36,6 +37,7 @@
   "6c3ecc3b181eeb97e5c5c88aa590ccf29e0c66f3ce72eb56fe2c12b016aba105": "mutation DeleteConversation($conversationId: ID!) {\n  deleteConversation(conversationId: $conversationId) {\n    ok\n  }\n}",
   "777a7fee7b0cb85e58ebe11efc2aac7af6864b2dbb66fb760fec6215e19f8819": "query Contact($contactId: ID!) {\n  contact(contactId: $contactId) {\n    id\n    name\n    email\n    phone\n    address\n    relationship\n    professionalKind\n    notes\n  }\n}",
   "7a6cada893d077fbc6e7635377ae3e75de302a98f992cf7ba59df73df680389d": "mutation DeleteDocument($documentId: ID!) {\n  deleteDocument(documentId: $documentId) {\n    ok\n  }\n}",
+  "7be6109a7d1d1532054d984ee84887ef1bc2c391edc7e1d41c72fd6fd2585078": "mutation CompletePasswordReset($code: String!, $newPassword: String!) {\n  completePasswordReset(code: $code, newPassword: $newPassword) {\n    ok\n  }\n}",
   "80f5e2680e3853e498a14117396b5f6aa6d698fb3b55b685fca090538c1f12e1": "query Profile {\n  profile {\n    userId\n    legalName\n    dob\n    ssnLast4\n    address\n    phone\n    occupation\n    maritalStatus\n    stateOfResidence\n  }\n}",
   "81fc028a349091f2793e74d15e03fc19bab31f11eb0c587cb63f293f66e8060c": "query DocumentTemplates($state: String!) {\n  documentTemplates(state: $state) {\n    templateId\n    docType\n    state\n    version\n    legalReviewAt\n    executionRequirements {\n      witnesses\n      notarization\n      selfProvingAffidavit\n    }\n    variables {\n      name\n      kind\n      label\n      required\n      maxLength\n      options\n    }\n  }\n}",
   "85452574de4198ac3a6367f2dac5c7fc3cada7d646638ce16b2d500f5c4a0487": "query Conversation($conversationId: ID!) {\n  conversation(conversationId: $conversationId) {\n    conversationId\n    messages {\n      messageId\n      seq\n      role\n      text\n      createdAt\n    }\n  }\n}",
