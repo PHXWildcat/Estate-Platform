@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { parseCookies, serializeSessionCookie } from '../src/cookies';
+import { bffError } from '../src/identity-client';
 import {
   FakeIdentityClient,
   gql,
@@ -103,6 +104,41 @@ describe('login/refresh cookie behavior (dev-configured instance)', () => {
     expect(gqlBody(res).data).toBeNull();
     expect(gqlBody(res).errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
     expect(identity.refreshCalls).toHaveLength(0);
+  });
+
+  // SESSION CONTINUITY (M20 PR4): the two refresh failures clear cookies in
+  // OPPOSITE directions, and each direction is a rule with a name.
+  it('a refresh credential identity refuses as dead CLEARS both cookies', async () => {
+    // What the real client throws for identity's 401 invalid_token. The pair
+    // in the jar is dead server-side, so clearing is tidying, not stranding —
+    // and without it every later page load repeats the session → refresh →
+    // refusal dance against a credential that can never work again.
+    identity.refreshError = bffError('UNAUTHENTICATED');
+    const res = await gql(
+      app,
+      { query: 'mutation Refresh { refresh { ok } }' },
+      { cookie: 'estate_refresh=rotated-away-or-revoked' },
+    );
+    expect(gqlBody(res).errors?.[0]?.extensions?.code).toBe('UNAUTHENTICATED');
+    const cookies = setCookieHeaders(res);
+    const access = cookies.find((c) => c.startsWith('estate_access='));
+    const refresh = cookies.find((c) => c.startsWith('estate_refresh='));
+    expect(access).toContain('Max-Age=0');
+    expect(refresh).toContain('Max-Age=0');
+  });
+
+  it('an identity OUTAGE during refresh clears NOTHING', async () => {
+    // An outage must not wear the face of a revocation (M16 PR2a): the pair
+    // may be perfectly good, and clearing it would sign out a healthy browser
+    // because a service hiccuped.
+    identity.refreshError = new Error('identity service unreachable');
+    const res = await gql(
+      app,
+      { query: 'mutation Refresh { refresh { ok } }' },
+      { cookie: 'estate_refresh=perfectly-good' },
+    );
+    expect(gqlBody(res).errors?.[0]?.extensions?.code).not.toBe('UNAUTHENTICATED');
+    expect(setCookieHeaders(res)).toHaveLength(0);
   });
 });
 

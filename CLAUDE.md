@@ -6550,3 +6550,83 @@ deviating from them, stop and propose the change with rationale — do not silen
   six M17 recovery routes now have product consumers. Ten mutations, ten red:
   the belt-vs-control survivor of PR1/PR2 has no analogue here, because a
   signed-out surface has no step-up prompt to carry an attempt through.
+- 2026-08-15 — M20 PR4, SESSION CONTINUITY, and the constraint that shaped the
+  whole client design: identity's rotation-reuse detection (M16) treats an
+  already-rotated refresh token as THEFT and revokes the session — the right
+  answer to a thief, and a SELF-revocation if two of the owner's own requests
+  refresh concurrently, because every tab shares one cookie jar. So
+  single-flight is a CORRECTNESS requirement, not an optimization: an in-tab
+  promise latch plus a cross-tab Web Lock (`estate.session.refresh`), and the
+  tab that waited still sends its own Refresh afterwards — by then the jar
+  holds the winner's NEW token, so that is an ordinary second rotation.
+  Measured live: an assets page racing several queries into an expired access
+  token produced EXACTLY one rotation (`refresh_token_prev_h` still held the
+  pre-drive hash). The retry itself cannot repeat a side effect —
+  UNAUTHENTICATED means a guard refused before any handler ran, and a token
+  dying BETWEEN two downstream hops re-runs a resolver whose asset commands
+  carry payload-keyed eventIds (M19), making even a genuinely raced commit an
+  idempotent replay. RESIDUAL, recorded not closed (docs/03 §6x): a LOST
+  Set-Cookie response leaves the browser holding the rotated-away token, and
+  its next refresh reads as theft — one session revoked, a false
+  `rotation_reuse_detected` in the ledger, unclosable client-side because
+  cookies ARE the response, and deliberately not weakened server-side since a
+  grace window for the previous token is precisely the replay the detection
+  refuses.
+- 2026-08-15 — NULL AND "REFRESHABLE" ARE DIFFERENT FACTS, and flattening them
+  is what made the app read signed-out at every 15-minute expiry while a
+  30-day refresh token sat in the jar. `Query.session` answered null for "no
+  credentials at all" and for "dead access token with a refresh cookie behind
+  it" alike; it now throws UNAUTHENTICATED for the second — the client's
+  refresh-once-and-retry trigger — so an anonymous visitor still costs no
+  identity call, and "Your session has ended" is TRUE when a surface renders
+  it, because reaching a caller now means the refresh itself was refused
+  (expired-vs-revoked, materialized on screen at last). Cookies clear in ONE
+  failure direction: identity refusing the credential as dead clears the pair
+  (dead server-side — the M8 rule protects LIVE sessions, and without the
+  clear every page load repeats the session → refresh → refusal dance), while
+  an identity OUTAGE clears nothing (M16 PR2a: an outage must not wear the
+  face of a revocation). And the `Refresh` operation itself — at every layer
+  since M8, called by nothing for twelve milestones — is the reason
+  `operation-consumers.test.ts` now exists: every GraphQL operation must have
+  a product caller, with NO exemption mechanism (the PR3 rule), the reverse
+  direction being the compiler's since `OperationName` is a closed union. Its
+  first run named exactly one uncalled operation, and this PR is its caller.
+- 2026-08-15 — "THE RETRY CANNOT REPEAT A SIDE EFFECT" WAS TRUE OF ONE HOP AND
+  FALSE OF THE PRODUCT, caught by reviewing PR4's own claim before pushing it
+  — the repo's recurring class (a milestone asserting something about itself
+  that the code does not do), this time in the same commit that wrote the
+  sentence. UNAUTHENTICATED does mean a guard refused before any handler ran,
+  so a single-hop retry is safe; but ELEVEN BFF resolvers WRITE AND THEN READ
+  BACK (`addContact` → `contacts`, `addFamilyMember` → `family`, `saveProfile`
+  → `profile`, the grant/revoke pairs), and if the write lands while the
+  read-back is refused, re-running the resolver re-runs the write.
+  `createContact` and `createFamilyMember` carry NO idempotency key, and two
+  contacts of one name are legitimate so no unique index catches it either —
+  one click, two rows, silently. The asset commands are safe (payload-keyed
+  `eventId`, M19) and the profile grants are safe (M13's unique indexes answer
+  409), which is exactly the trap: safety is a PER-RESOLVER fact the transport
+  cannot see, so a transport that retries "because most things are idempotent"
+  is guessing. Only QUERIES retry now, decided by reading each operation's own
+  document rather than from a hand-kept list that goes stale at the
+  fifty-seventh mutation, with the fence asserting the classification is TOTAL
+  so a third document kind cannot appear unnoticed (unrecognized ⇒ treated as
+  a mutation ⇒ not retried, the safe default made explicit). A refused
+  mutation reports its own `SESSION_RENEWED` — renewed, nothing performed, try
+  again — because reporting the original UNAUTHENTICATED would render "your
+  session has ended" over a session just successfully renewed, which is the
+  false sentence the whole PR exists to delete, one case over. Recorded as the
+  cost (docs/03 §6x): a refused mutation costs one repeated click, and what
+  would buy the retry back is an idempotency key on profile's creates — a
+  profile-service change, not a transport one.
+- 2026-08-15 — A FAN-OUT REVIEW THAT DIES ON CREDITS PRODUCES NOTHING, AND
+  "NOTHING" IS NOT "CLEAN". PR4's three-lens adversarial workflow burned 4.2M
+  subagent tokens over 147 tool uses and returned `{raw: 0, confirmed: []}` —
+  all three lenses errored out of usage credits mid-run, which the result
+  object alone does not distinguish from three lenses finding nothing. The
+  `<failures>` block and the journal are where that shows. Re-running the same
+  fan-out would have re-spent the tokens; instead the lens PROMPTS were used
+  as a checklist and worked by hand, which found the write-then-read-back
+  defect above in a fraction of the cost. Two rules: read the failure block
+  before believing an empty result (a killed run and a clean run look
+  identical in the return value), and a review's VALUE is in the questions it
+  poses — those survive the harness dying and can be answered directly.

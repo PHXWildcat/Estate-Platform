@@ -3155,6 +3155,113 @@ the chain carried `reset_requested {"delivered":"delivered"}` and
   cap on redemption (the redeemer is anonymous; the bound is 160 bits, the
   TTL and burn-on-attempt), and a reset does not clear PR1's login bound.
 
+## 6x. Threat-model delta — M20 PR4, session continuity (2026-08-15)
+
+**The access TTL was the whole usable session, and the refresh machinery had
+existed unreached since M8.** The `Refresh` operation shipped at every layer —
+SDL, BFF resolver, identity client, operations.ts, the persisted manifest —
+with no caller anywhere, so a signed-in browser rendered "Your session has
+ended" at the 15-minute access expiry while its session row was live and its
+30-day refresh token sat unused in the jar (measured in the M20 PR1 drive).
+Worse for the copy than for the security: the sentence was FALSE every time it
+rendered, and the two states it now distinguishes — expired and revoked — were
+indistinguishable on screen.
+
+**The design is one reactive refresh at the client's single chokepoint.**
+`gqlRequest` retries once after an UNAUTHENTICATED, behind one silent Refresh;
+there is no timer, no proactive renewal, and no per-surface wiring. Two
+resolver changes make the trigger coherent: `Query.session` now answers null
+ONLY when there is nothing to authenticate with, and throws UNAUTHENTICATED
+when a dead access token has a refresh cookie behind it — "no session" and
+"refreshable" are different facts, and flattening them to null is exactly what
+made the app read signed-out at every expiry. A consequence worth naming:
+"Your session has ended" is now TRUE whenever a surface renders it, because
+the code only reaches a caller after the refresh itself was refused.
+
+**Single-flight is a correctness requirement, not an optimization.** Identity's
+rotation-reuse detection (M16) treats an already-rotated refresh token as theft
+and revokes the whole session — the right behavior against an actual thief, and
+a self-revocation if two of the owner's own requests refresh concurrently with
+the one shared cookie jar. Concurrency is therefore removed BY CONSTRUCTION at
+both scopes: an in-tab promise latch, and a cross-tab Web Lock
+(`estate.session.refresh`), since every tab of the origin shares the jar. A tab
+that waited on the lock still sends its own Refresh afterwards; by then the jar
+holds the winner's NEW token, so that is an ordinary second rotation, not a
+reuse. Proven live: an assets page racing several queries into an expired token
+produced EXACTLY one rotation (`refresh_token_prev_h` still held the pre-drive
+hash afterwards).
+
+**Only QUERIES are retried, and the first draft of this section got that
+wrong.** The tempting claim — that a retry can never repeat a side effect,
+because UNAUTHENTICATED means a guard refused before any handler ran — is true
+of a SINGLE hop and false of the ELEVEN BFF resolvers that write and then read
+back (`addContact` → `contacts`, `addFamilyMember` → `family`, `saveProfile`
+→ `profile`, the grant/revoke pairs, …). If the write lands and the read-back
+is refused, re-running the resolver re-runs the write, and
+`createContact`/`createFamilyMember` carry no idempotency key — two contacts
+of one name are legitimate, so no constraint catches the duplicate either. One
+click, two rows, silently. The asset commands ARE safe (payload-keyed
+`eventId`, M19) and the profile grants ARE safe (M13's unique indexes answer
+409), but per-resolver safety is a fact the transport cannot see, so it does
+not guess: the operation's own document says whether it is a `query`, and only
+those repeat. A refused mutation reports `SESSION_RENEWED` — the session was
+renewed, nothing was performed, the next attempt will work — because rendering
+"your session has ended" there would be the false sentence this PR exists to
+delete, one case over. The classification is total (every document begins
+`query` or `mutation`, asserted in `operation-consumers.test.ts`) and its
+default direction is the safe one: anything unrecognized is treated as a
+mutation and not retried. The retry runs once whatever it answers; a second
+UNAUTHENTICATED is returned as-is, because looping would hammer a dead
+credential.
+
+**Cookies are cleared in exactly one failure direction.** When identity refuses
+the refresh credential as dead (its 401 → the mapped UNAUTHENTICATED), the BFF
+clears both cookies: the pair is dead SERVER-SIDE, so clearing is tidying, not
+stranding — the M8 rule protects live sessions, and identity just said this one
+is not. Without the clear, every later page load would repeat the
+session → refresh → refusal dance against a credential that can never work
+again. An identity OUTAGE clears nothing — an outage must not wear the face of
+a revocation (M16 PR2a) — and the pair survives for when the service returns.
+
+**The fence: every GraphQL operation has a product caller**
+(`operation-consumers.test.ts`), the route↔consumer fence's shape one layer up.
+Deliberately NO exemption mechanism (the M20 PR3 rule — a named empty
+exemption invites reuse): an operation lands in the same change as its first
+caller, and the reverse direction (every caller names a real operation) is the
+compiler's, `OperationName` being a closed union.
+
+### Residuals
+
+- *A lost Set-Cookie response becomes a false theft signal.* If the browser
+  never receives the response that carried the rotated pair (a network blip at
+  exactly that moment), it retains the rotated-away token, and its next refresh
+  trips rotation-reuse detection: that one session is revoked and the ledger
+  records `rotation_reuse_detected` about an owner's own connection hiccup.
+  Unclosable client-side — cookies ARE the response — and deliberately not
+  weakened server-side, because a grace window for the previous token is
+  precisely the replay the detection exists to refuse. The M16 extension
+  recorded the same trade (persist-before-use is impossible when the browser
+  owns the store); the cost is a re-login, and the other devices survive.
+- *Browsers without Web Locks (Safari < 15.4) keep the cross-TAB race.* The
+  in-tab latch still holds there; two tabs refreshing in the same instant can
+  still self-revoke. Every evergreen browser has the API.
+- *A signed-out page whose queries are authenticated-only costs one refused
+  Refresh round trip.* The client cannot see the (httpOnly) jar, so an
+  UNAUTHENTICATED from, say, the verification banner triggers one Refresh that
+  the BFF refuses before any identity call. Pages that only ask `session` cost
+  zero — the resolver answers null for a cookie-less caller and the client
+  never escalates a null.
+- *A refused mutation costs the user one repeated click.* The transport
+  refuses to guess which mutations are replay-safe, so it renews the session
+  and asks. Making the write-then-read-back resolvers individually safe — an
+  idempotency key on `createContact`/`createFamilyMember`, the M19 asset-command
+  shape applied to profile — is what would let mutations retry too, and it is
+  a profile-service change rather than a transport one.
+- *The 30-day session lifetime is a hard ceiling, unchanged.* `rotateTokens`
+  deliberately never writes `expires_at` (M16), so refresh extends nothing and
+  a month-old browser re-authenticates. That is the designed bound on a stolen
+  jar, not a gap in this feature.
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).
