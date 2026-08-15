@@ -69,5 +69,5 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // proven without a database, so the number the PR3 exception traded away
   // comes back with interest. The remaining no-DB gap is exactly the two
   // SQL-only repo files, which the int suites execute for real.
-  coverageThreshold: { global: { statements: 70, branches: 67, functions: 43, lines: 69 } },
+  coverageThreshold: { global: { statements: 70, branches: 67, functions: 44, lines: 69 } },
 });

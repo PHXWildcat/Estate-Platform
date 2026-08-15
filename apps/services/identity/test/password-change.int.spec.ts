@@ -36,6 +36,7 @@ import type { IdentityConfig } from '../src/config';
 import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import { SessionsRepo } from '../src/sessions.repo';
 import { hashToken } from '../src/tokens';
@@ -163,6 +164,9 @@ describeIfPg('password change (auth cluster)', () => {
         assertMayAddFactor: (): Promise<void> => Promise.resolve(),
         holdsVerifiedFactor: (): Promise<boolean> => Promise.resolve(holdsFactor),
       } as unknown as SecondFactorGate,
+      {
+        assertAttemptsAvailable: (): Promise<void> => Promise.resolve(),
+      } as unknown as AccountPasswordGate,
       db,
     );
   });

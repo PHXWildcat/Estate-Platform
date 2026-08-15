@@ -565,6 +565,11 @@ describe('email change', () => {
     [400, 'too_soon', 'CODE_REQUESTED_RECENTLY'],
     [400, 'invalid_request', 'INVALID_REQUEST'],
     [403, 'stepup_required', 'STEPUP_REQUIRED'],
+    // M20 PR5: newly REACHABLE. This route carries the account-password
+    // guessing bound now, so it answers 429 — and the shared 429 branch must
+    // keep catching it through the route-specific mapper's fall-through, or a
+    // control firing renders as an outage (the M9 rule).
+    [429, 'too_many_attempts', 'TOO_MANY_ATTEMPTS'],
     [401, '', 'UNAUTHENTICATED'],
   ] as const)('maps request %s %s to %s', async (status, token, code) => {
     // THREE OF THESE SHARE ONE STATUS. The shared mapper answers 400 by status

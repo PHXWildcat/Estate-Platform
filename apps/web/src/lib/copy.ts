@@ -112,13 +112,23 @@ export const errorCopy: Record<GqlFailureCode, string> = {
     'minutes before asking again.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
-  // M20 PR4. NOT an outage and NOT a dead session: the sign-in had expired,
-  // we renewed it, and nothing was submitted. Only mutations reach this —
-  // queries are simply retried — so the honest instruction is to repeat the
-  // action, and the reassurance that it did not half-happen is the part the
-  // user needs.
+  // M20 PR4, CORRECTED BY THE PR5 REVIEW, which found this sentence claiming
+  // the one thing the code beside it says cannot be claimed.
+  //
+  // Only mutations reach this, and a mutation refused with UNAUTHENTICATED has
+  // two possible histories the client cannot tell apart: a guard refused before
+  // any handler ran (nothing happened), or a resolver wrote and was refused on
+  // a later hop (something happened). That second case is the whole reason
+  // `gqlRequest` refuses to retry mutations — and "Nothing was changed — please
+  // try that again" invited exactly the retry the no-retry rule exists to
+  // prevent, which on `createContact` is a duplicate row with no idempotency
+  // key to collapse it.
+  //
+  // So the copy names the uncertainty and sends the reader to LOOK rather than
+  // to repeat. Vaguer, and true.
   SESSION_RENEWED:
-    'Your sign-in was renewed because it had expired. Nothing was changed — please try that again.',
+    'Your sign-in had expired and has been renewed. We couldn’t confirm whether that last ' +
+    'action went through — reload and check before trying it again.',
 };
 
 export function messageFor(code: GqlFailureCode): string {

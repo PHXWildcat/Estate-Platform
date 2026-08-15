@@ -1048,6 +1048,13 @@ export class FetchIdentityClient implements IdentityClient {
       // neither can this.
       return bffError('INVALID_REQUEST');
     }
+    // Everything else falls through to the shared mapper, and one of those
+    // fall-throughs became REACHABLE in M20 PR5: this route now carries the
+    // account-password guessing bound it shipped without, so it can answer 429.
+    // The shared 429 branch is status-keyed, so the refusal already surfaces as
+    // TOO_MANY_ATTEMPTS rather than as an outage — no new branch, but the
+    // reachability is worth stating, because "this cannot happen here" is how a
+    // mapper falls behind the route it maps.
     return this.mapError(res);
   }
 

@@ -984,7 +984,7 @@ async function send<Name extends OperationName>(
  * Set-Cookie landed before the lock released), so that is an ordinary second
  * rotation, not a reuse.
  */
-let inflightRefresh: Promise<boolean> | null = null;
+let inflightRefresh: Promise<RefreshOutcome> | null = null;
 
 function withCrossTabLock<T>(fn: () => Promise<T>): Promise<T> {
   // jsdom and pre-15.4 Safari have no Web Locks; the in-tab latch still holds
@@ -997,20 +997,51 @@ function withCrossTabLock<T>(fn: () => Promise<T>): Promise<T> {
   return fn();
 }
 
-function refreshSession(): Promise<boolean> {
-  inflightRefresh ??= withCrossTabLock(async () => {
+/**
+ * WHAT HAPPENED TO THE REFRESH — three answers, not two, because the M20 PR5
+ * review found the boolean collapsing the two that matter most.
+ *
+ * `refused` means identity answered and said no: the session is genuinely gone,
+ * revoked from the owner's paired-devices list or expired past its 30 days. The
+ * BFF has already cleared the cookies. "Your session has ended" is TRUE.
+ *
+ * `unavailable` means the refresh never COMPLETED — a connection that dropped
+ * between the first call and this one, an identity outage the BFF rethrows
+ * without touching cookies, or a response whose shape this build does not
+ * recognise. The session may be perfectly alive. Reporting the original
+ * UNAUTHENTICATED here is what made an outage wear the face of a revocation,
+ * which is the M16 PR2a rule the surrounding code cites and the boolean broke.
+ */
+type RefreshOutcome =
+  { status: 'renewed' } | { status: 'refused' } | { status: 'unavailable'; code: GqlFailureCode };
+
+function refreshSession(): Promise<RefreshOutcome> {
+  inflightRefresh ??= withCrossTabLock(async (): Promise<RefreshOutcome> => {
     // Through gqlRequest, NOT send: the Refresh short-circuit below is what
     // makes this non-recursive, and going through the public entry keeps
     // `operation-consumers.test.ts` honest — the fence counts gqlRequest
     // callers, and this is the Refresh operation's one product caller.
     const result = await gqlRequest('Refresh', {});
-    // A missing field is NO DATA, never data (M11): a BFF predating the
-    // mutation must read as "not refreshed", not as success.
-    return result.ok && result.data.refresh?.ok === true;
+    if (!result.ok) {
+      // UNAUTHENTICATED from the refresh itself is the one refusal that means
+      // the credential is dead. Everything else — NETWORK, UNKNOWN, a code this
+      // build has not learned — is the platform failing to answer, and is
+      // reported as itself so the copy names the right remedy.
+      return result.code === 'UNAUTHENTICATED'
+        ? { status: 'refused' }
+        : { status: 'unavailable', code: result.code };
+    }
+    // A missing field is NO DATA, never data (M11) — and NOT a refusal: a BFF
+    // predating the mutation is a version skew, so it says nothing whatever
+    // about whether this session is alive.
+    return result.data.refresh?.ok === true
+      ? { status: 'renewed' }
+      : { status: 'unavailable', code: 'UNKNOWN' };
   })
     // `gqlRequest` never rejects; this guards the lock API itself, because
-    // the never-throws contract must survive a misbehaving LockManager.
-    .catch(() => false)
+    // the never-throws contract must survive a misbehaving LockManager. A lock
+    // that throws is this process failing, not identity refusing.
+    .catch((): RefreshOutcome => ({ status: 'unavailable', code: 'UNKNOWN' }))
     .finally(() => {
       inflightRefresh = null;
     });
@@ -1061,8 +1092,17 @@ export async function gqlRequest<Name extends OperationName>(
     return first;
   }
   const refreshed = await refreshSession();
-  if (!refreshed) {
+  if (refreshed.status === 'refused') {
+    // Genuinely signed out. The original UNAUTHENTICATED is the honest answer
+    // and the surfaces already render it as "your session has ended".
     return first;
+  }
+  if (refreshed.status === 'unavailable') {
+    // The refresh could not be COMPLETED, so nothing is known about the
+    // session — reporting UNAUTHENTICATED here would tell a user with a live
+    // 30-day credential that they had been signed out, during an outage, on
+    // cookies the BFF deliberately left in place.
+    return { ok: false, code: refreshed.code };
   }
   if (!isQuery(operation)) {
     return { ok: false, code: 'SESSION_RENEWED' };

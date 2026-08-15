@@ -253,12 +253,19 @@ describe('gqlRequest session continuity', () => {
     expect(operationNames(requests)).toEqual(['AddContact', 'Refresh']);
   });
 
-  it('SESSION_RENEWED says nothing was changed, and is not the session-ended sentence', () => {
+  it('SESSION_RENEWED does NOT claim nothing was changed, and is not the session-ended sentence', () => {
     // Reporting the original UNAUTHENTICATED here would render "Your session
     // has ended" over a session that was just successfully renewed — the
     // false sentence this PR exists to delete, one case over.
-    expect(errorCopy.SESSION_RENEWED).toContain('Nothing was changed');
     expect(errorCopy.SESSION_RENEWED).not.toEqual(errorCopy.UNAUTHENTICATED);
+    // …and it must not claim the OTHER thing the client cannot know (M20 PR5).
+    // A mutation refused with UNAUTHENTICATED may have written on its first hop
+    // and been refused on a later one, which is the whole reason mutations are
+    // not retried; "Nothing was changed — please try that again" invited the
+    // retry the no-retry rule exists to prevent. The copy names the uncertainty
+    // and sends the reader to look.
+    expect(errorCopy.SESSION_RENEWED).not.toContain('Nothing was changed');
+    expect(errorCopy.SESSION_RENEWED).toMatch(/reload/i);
   });
 
   it('never refreshes for a non-UNAUTHENTICATED failure', async () => {
@@ -286,12 +293,51 @@ describe('gqlRequest session continuity', () => {
     expect(operationNames(requests)).toEqual(['Refresh']);
   });
 
-  it('reads a version-skewed Refresh answering {data:{}} as NOT refreshed', async () => {
+  it('reads a version-skewed Refresh answering {data:{}} as NOT refreshed — and NOT as signed out', async () => {
     // A missing field is NO DATA, never data (M11): a BFF predating the
-    // mutation must not be read as a successful refresh.
+    // mutation must not be read as a successful refresh. And it must not be
+    // read as a REFUSED one either (M20 PR5) — a version skew says nothing
+    // whatever about whether this session is alive, so answering
+    // UNAUTHENTICATED would put "your session has ended" in front of a user
+    // whose 30-day credential is untouched.
     const { requests } = installGraphqlFetchMock({
       Session: () => graphqlError('UNAUTHENTICATED'),
       Refresh: () => jsonResponse({ data: {} }),
+    });
+
+    const result = await gqlRequest('Session', {});
+
+    expect(result).toEqual({ ok: false, code: 'UNKNOWN' });
+    expect(operationNames(requests)).toEqual(['Session', 'Refresh']);
+  });
+
+  it('AN OUTAGE DOES NOT WEAR THE FACE OF A REVOCATION — the M20 PR5 finding', async () => {
+    // The boolean this replaced collapsed "identity refused the credential as
+    // dead" and "the refresh never completed" into one `false`, so both
+    // returned the original UNAUTHENTICATED. A connection that drops between
+    // the two calls, or an identity outage the BFF rethrows WITHOUT clearing
+    // cookies, therefore rendered "Your session has ended. Please sign in
+    // again." over a live session — the M16 PR2a rule the surrounding code
+    // cites, broken by the code citing it.
+    const { requests } = installGraphqlFetchMock({
+      Session: () => graphqlError('UNAUTHENTICATED'),
+      Refresh: () => graphqlError('UNKNOWN'),
+    });
+
+    const result = await gqlRequest('Session', {});
+
+    expect(result).toEqual({ ok: false, code: 'UNKNOWN' });
+    expect(operationNames(requests)).toEqual(['Session', 'Refresh']);
+  });
+
+  it('…while a refresh identity REFUSES still reports the session as ended', async () => {
+    // The other half, and the reason the distinction is three-valued rather
+    // than inverted: when identity answers UNAUTHENTICATED to the refresh
+    // itself, the credential really is gone and the BFF has already cleared the
+    // cookies. "Your session has ended" is TRUE, and must still be said.
+    const { requests } = installGraphqlFetchMock({
+      Session: () => graphqlError('UNAUTHENTICATED'),
+      Refresh: () => graphqlError('UNAUTHENTICATED'),
     });
 
     const result = await gqlRequest('Session', {});
@@ -347,9 +393,11 @@ describe('gqlRequest session continuity', () => {
 
       const result = await gqlRequest('Session', {});
 
-      // The refresh evaporated with the lock; the original failure survives
-      // and the never-throws contract holds.
-      expect(result).toEqual({ ok: false, code: 'UNAUTHENTICATED' });
+      // The refresh evaporated with the lock, which is THIS PROCESS failing
+      // rather than identity refusing — so the answer is the platform-failed
+      // code, not the session-ended one (M20 PR5). The never-throws contract
+      // holds either way.
+      expect(result).toEqual({ ok: false, code: 'UNKNOWN' });
     } finally {
       delete (globalThis.navigator as { locks?: unknown }).locks;
     }

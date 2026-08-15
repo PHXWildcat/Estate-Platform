@@ -33,8 +33,9 @@ import type { IdentityConfig } from '../src/config';
 import type { EventsService } from '../src/events.service';
 import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
-import { PASSWORD_CHANGE_BOUND } from '../src/rate-bounds';
+import { ACCOUNT_PASSWORD_BOUND } from '../src/rate-bounds';
 import { SessionsRepo } from '../src/sessions.repo';
+import { AccountPasswordGate } from '../src/account-password-gate';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import { hashToken } from '../src/tokens';
 import { UsersRepo } from '../src/users.repo';
@@ -45,7 +46,7 @@ const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
 const NOW = new Date('2026-08-13T12:00:00.000Z');
 const RECENT = new Date(NOW.getTime() - 60_000);
-const STALE = new Date(NOW.getTime() - PASSWORD_CHANGE_BOUND.windowMs - 60_000);
+const STALE = new Date(NOW.getTime() - ACCOUNT_PASSWORD_BOUND.windowMs - 60_000);
 const EMAIL_KEY = Buffer.alloc(32, 23);
 const EMAIL = 'owner@example.com';
 
@@ -69,6 +70,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
   let db: Db;
   let events: AuthEventsRepo;
   let service: AuthService;
+  let accountPassword: AccountPasswordGate;
   let rateLimited: Array<{ sessionId: string; attempts: number }>;
   let passwordIsCorrect: boolean;
 
@@ -117,6 +119,23 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
     rateLimited = [];
     passwordIsCorrect = false;
 
+    const fakeEvents = {
+      passwordChanged: (): Promise<void> => Promise.resolve(),
+      passwordChangeRateLimited: (
+        _userId: string,
+        sessionId: string,
+        attempts: number,
+      ): Promise<void> => {
+        rateLimited.push({ sessionId, attempts });
+        return Promise.resolve();
+      },
+    } as unknown as EventsService;
+
+    // THE REAL GATE, shared by both routes since M20 PR5. Stubbing it would
+    // leave this suite proving a decision nothing in production makes: the
+    // whole point of the fix is that ONE object answers for both callers.
+    accountPassword = new AccountPasswordGate(events, fakeEvents, () => NOW);
+
     service = new AuthService(
       new UsersRepo(db),
       new SessionsRepo(db),
@@ -130,17 +149,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
         hashPassword: (): Promise<string> => Promise.resolve('argon2-NEW'),
         dummyVerify: (): Promise<void> => Promise.resolve(),
       } as unknown as PasswordHasher,
-      {
-        passwordChanged: (): Promise<void> => Promise.resolve(),
-        passwordChangeRateLimited: (
-          _userId: string,
-          sessionId: string,
-          attempts: number,
-        ): Promise<void> => {
-          rateLimited.push({ sessionId, attempts });
-          return Promise.resolve();
-        },
-      } as unknown as EventsService,
+      fakeEvents,
       {} as unknown as FieldCrypto,
       {} as unknown as DekRepository,
       { emailIndexKey: EMAIL_KEY } as unknown as IdentityConfig,
@@ -150,6 +159,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
       // The factorless bootstrap: the gate returns without demanding step-up,
       // which is exactly the account class the review's exploit targeted.
       { assertMayAddFactor: (): Promise<void> => Promise.resolve() } as unknown as SecondFactorGate,
+      accountPassword,
       db,
     );
   });
@@ -168,7 +178,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
   });
 
   it('REFUSES a stolen session at its own cap, and the refusal is 429 with its own token', async () => {
-    for (let i = 0; i < PASSWORD_CHANGE_BOUND.maxPerScope!; i += 1) {
+    for (let i = 0; i < ACCOUNT_PASSWORD_BOUND.maxPerScope!; i += 1) {
       const refused = await refusalFrom(guess(STOLEN));
       // Every attempt below the cap is the ordinary uniform refusal.
       expect(refused.getResponse()).toEqual({ error: 'invalid_credentials' });
@@ -179,9 +189,45 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
     expect(rateLimited).toHaveLength(1);
   });
 
+  it('ONE BUDGET ACROSS BOTH ROUTES — the M20 PR5 fix, and the whole point of sharing it', async () => {
+    // The defect: `POST /v1/auth/email/change/request` checks the same account
+    // password and shipped with no bound at all. The fix could have given it a
+    // bound of its own, and that would have been worth almost nothing — two
+    // budgets of five are a budget of ten to anyone willing to alternate. So
+    // the two routes share ONE, which is only observable by spending it from
+    // one route and finding it spent from the other.
+    //
+    // Failures are written directly here because this suite deliberately holds
+    // no `EmailChangeService`: what is under test is the SHARED BUDGET, and the
+    // ledger kind is the whole interface between the two routes. That the
+    // address-change route really writes this kind, attributed to its session,
+    // is pinned in `email-change-decisions.spec.ts` against the source.
+    for (let i = 0; i < ACCOUNT_PASSWORD_BOUND.maxPerScope!; i += 1) {
+      await events.insert({
+        userId: user,
+        sessionId: STOLEN,
+        kind: 'email_change.denied',
+        decision: 'password',
+      });
+    }
+    // Nothing was spent on the password-change route, and it refuses anyway.
+    const capped = await refusalFrom(guess(STOLEN));
+    expect(capped.getStatus()).toBe(429);
+
+    // …and the gate answers the same way for the other route's caller, from
+    // the one object both of them hold.
+    await expect(accountPassword.assertAttemptsAvailable(user, STOLEN)).rejects.toMatchObject({
+      status: 429,
+    });
+
+    // The budget is per SESSION, so the owner's own is untouched — the escape
+    // that keeps a shared bound from becoming a shared lockout.
+    await expect(accountPassword.assertAttemptsAvailable(user, OWNERS)).resolves.toBeUndefined();
+  });
+
   it('THE OWNER IS NOT LOCKED OUT — the per-session escape, which is the whole design', async () => {
     // The stolen session grinds to its cap…
-    for (let i = 0; i <= PASSWORD_CHANGE_BOUND.maxPerScope!; i += 1) {
+    for (let i = 0; i <= ACCOUNT_PASSWORD_BOUND.maxPerScope!; i += 1) {
       await refusalFrom(guess(STOLEN));
     }
     // …and the owner, from THEIR session, is refused for the ordinary reason
@@ -199,7 +245,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
 
   it('the ACCOUNT ceiling still bounds somebody holding several stolen sessions', async () => {
     // Spread across many sessions so no single one reaches its own cap…
-    for (let i = 0; i < PASSWORD_CHANGE_BOUND.maxPerAccount; i += 1) {
+    for (let i = 0; i < ACCOUNT_PASSWORD_BOUND.maxPerAccount; i += 1) {
       await ledger('password.change_failed', RECENT, randomUUID());
     }
     // …and a fresh session is refused anyway, by the account ceiling.
@@ -210,20 +256,20 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
   it('the REFUSAL is not counted by its own bound — a retrying client cannot wedge the account', async () => {
     // The M16 lesson: a cap-refusal that feeds its own counter locks a user out
     // for as long as anything keeps retrying.
-    for (let i = 0; i <= PASSWORD_CHANGE_BOUND.maxPerScope!; i += 1) {
+    for (let i = 0; i <= ACCOUNT_PASSWORD_BOUND.maxPerScope!; i += 1) {
       await refusalFrom(guess(STOLEN));
     }
     const before = await events.failedAttempts(user, STALE, {
-      failures: PASSWORD_CHANGE_BOUND.failures,
-      successes: PASSWORD_CHANGE_BOUND.successes,
+      failures: ACCOUNT_PASSWORD_BOUND.failures,
+      successes: ACCOUNT_PASSWORD_BOUND.successes,
     });
     // Ten more refusals, all past the cap.
     for (let i = 0; i < 10; i += 1) {
       await refusalFrom(guess(STOLEN));
     }
     const after = await events.failedAttempts(user, STALE, {
-      failures: PASSWORD_CHANGE_BOUND.failures,
-      successes: PASSWORD_CHANGE_BOUND.successes,
+      failures: ACCOUNT_PASSWORD_BOUND.failures,
+      successes: ACCOUNT_PASSWORD_BOUND.successes,
     });
     expect(after).toBe(before);
   });
@@ -243,8 +289,8 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
     await ledger('password.change_failed', RECENT, STOLEN);
 
     const counted = {
-      failures: PASSWORD_CHANGE_BOUND.failures,
-      successes: PASSWORD_CHANGE_BOUND.successes,
+      failures: ACCOUNT_PASSWORD_BOUND.failures,
+      successes: ACCOUNT_PASSWORD_BOUND.successes,
       sessionId: STOLEN,
     };
     // Only the one AFTER the success: proving the current password once is the
@@ -252,14 +298,14 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
     expect(
       await events.failedAttempts(
         user,
-        new Date(NOW.getTime() - PASSWORD_CHANGE_BOUND.windowMs),
+        new Date(NOW.getTime() - ACCOUNT_PASSWORD_BOUND.windowMs),
         counted,
       ),
     ).toBe(1);
   });
 
   it('the CAP RUNS BEFORE the verification — a capped caller never has their guess scored', async () => {
-    for (let i = 0; i <= PASSWORD_CHANGE_BOUND.maxPerScope!; i += 1) {
+    for (let i = 0; i <= ACCOUNT_PASSWORD_BOUND.maxPerScope!; i += 1) {
       await refusalFrom(guess(STOLEN));
     }
     // The right password, from the capped session: still 429, never 204. A
@@ -285,7 +331,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
   });
 
   it('ignores failures older than the window', async () => {
-    for (let i = 0; i < PASSWORD_CHANGE_BOUND.maxPerAccount + 5; i += 1) {
+    for (let i = 0; i < ACCOUNT_PASSWORD_BOUND.maxPerAccount + 5; i += 1) {
       await ledger('password.change_failed', STALE, randomUUID());
     }
     // All stale: the caller is refused for the ordinary reason, not the cap.
@@ -306,7 +352,7 @@ describeIfPg('password-change attempt bound (auth cluster)', () => {
       expiresAt: new Date(NOW.getTime() + 30 * 86_400_000),
       audience: 'account',
     });
-    for (let i = 0; i <= PASSWORD_CHANGE_BOUND.maxPerScope!; i += 1) {
+    for (let i = 0; i <= ACCOUNT_PASSWORD_BOUND.maxPerScope!; i += 1) {
       await refusalFrom(guess(STOLEN));
     }
     expect(await sessions.findLiveByAccessHash(hashToken('a'), NOW)).not.toBeNull();

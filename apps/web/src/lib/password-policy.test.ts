@@ -53,21 +53,62 @@ function code(): string {
 }
 
 interface Declared {
+  readonly schema: string;
   readonly field: string;
   readonly min: number;
 }
 
-/** Every `<something>assword: z.string().min(N)` identity declares. */
+/**
+ * Every `<something>assword: z.string().min(N)` identity declares, WITH THE
+ * SCHEMA IT BELONGS TO.
+ *
+ * The schema is not decoration — it is the M20 PR5 finding. Two of identity's
+ * password fields are both literally named `password`: `RegisterSchema`'s,
+ * where the value is about to be STORED and the minimum is a strength rule, and
+ * `LoginSchema`'s, where it is about to be compared against a hash and the
+ * minimum is a presence check. Keyed on the field name alone the two are
+ * indistinguishable, so `RegisterSchema.password` dropping from `min(12)` to
+ * `min(1)` was excused as a presence check and satisfied every assertion in
+ * this file — including the one whose comment promised it stopped "a future
+ * edit satisfying the rule above by making everything `min(1)`", and the
+ * header's claim that the assertion is TOTAL.
+ */
 function declaredMinimums(): Declared[] {
+  const text = code();
   const found: Declared[] = [];
-  for (const m of code().matchAll(/(\w*[Pp]assword)\s*:\s*z\s*\.string\(\)\s*\.min\((\d+)\)/g)) {
-    found.push({ field: m[1] as string, min: Number(m[2]) });
+  for (const m of text.matchAll(/(\w*[Pp]assword)\s*:\s*z\s*\.string\(\)\s*\.min\((\d+)\)/g)) {
+    const before = text.slice(0, m.index);
+    const schema = [...before.matchAll(/const (\w+)\s*=\s*z\s*\.object\(/g)].pop();
+    found.push({
+      schema: schema ? (schema[1] as string) : '<none>',
+      field: m[1] as string,
+      min: Number(m[2]),
+    });
   }
   return found;
 }
 
 /** A presence check — "did you type anything" — not a strength rule. */
 const PRESENCE = 1;
+
+/**
+ * WHICH KIND EACH DECLARATION IS, as data, keyed on the pair rather than on the
+ * field. `strength` means the value is about to be STORED, so it must equal
+ * this app's minimum; `presence` means it is about to be checked against
+ * something already stored, where measuring the length of an existing
+ * credential is not the route's business.
+ *
+ * TOTAL: a declaration missing from this table fails, so identity cannot grow a
+ * password field that nobody classified.
+ */
+const KIND: Readonly<Record<string, 'strength' | 'presence'>> = {
+  'RegisterSchema.password': 'strength',
+  'LoginSchema.password': 'presence',
+  'CompleteResetSchema.newPassword': 'strength',
+  'ChangePasswordSchema.currentPassword': 'presence',
+  'ChangePasswordSchema.newPassword': 'strength',
+  'EmailChangeRequestSchema.currentPassword': 'presence',
+};
 
 describe('the password minimum agrees with identity', () => {
   it('finds identity’s password schemas at all (anti-vacuity)', () => {
@@ -79,27 +120,34 @@ describe('the password minimum agrees with identity', () => {
     expect(declared.some((d) => d.field === 'currentPassword')).toBe(true);
   });
 
-  it('every strength-carrying minimum equals PASSWORD_MIN_LENGTH', () => {
+  it('every declaration is CLASSIFIED — neither list may drift from the other', () => {
+    // Both directions, so identity cannot grow a password field nobody
+    // classified, and a classification cannot outlive the field it describes.
+    const keys = declaredMinimums().map((d) => `${d.schema}.${d.field}`);
+    expect([...new Set(keys)].sort()).toEqual(Object.keys(KIND).sort());
+  });
+
+  it('every STORED password must be exactly PASSWORD_MIN_LENGTH, and every checked one min(1)', () => {
+    // Keyed on the SCHEMA and the field together, which is the whole fix: two
+    // of these are named `password`, one stores and one compares, and a
+    // field-keyed rule could only ever be right about one of them. Dropping
+    // `RegisterSchema.password` to `min(1)` used to satisfy this file.
     const wrong = declaredMinimums()
-      .filter((d) => d.min !== PRESENCE && d.min !== PASSWORD_MIN_LENGTH)
-      .map((d) => `${d.field}: identity says min(${d.min}), this app says ${PASSWORD_MIN_LENGTH}`);
+      .map((d) => ({ ...d, key: `${d.schema}.${d.field}`, kind: KIND[`${d.schema}.${d.field}`] }))
+      .filter((d) => (d.kind === 'strength' ? d.min !== PASSWORD_MIN_LENGTH : d.min !== PRESENCE))
+      .map(
+        (d) =>
+          `${d.key} is a ${String(d.kind)} rule but identity says min(${d.min}) ` +
+          `(expected ${d.kind === 'strength' ? PASSWORD_MIN_LENGTH : PRESENCE})`,
+      );
     expect(wrong).toEqual([]);
   });
 
-  it('the CURRENT password is a presence check, and the NEW one is not', () => {
-    // Names which is which, so a future edit cannot satisfy the rule above by
-    // making everything `min(1)`. Identity must not start measuring the length
-    // of a password it is about to verify against a stored hash (the length of
-    // an existing credential is not the change route's business), and it must
-    // not stop measuring the one it is about to store.
-    const declared = declaredMinimums();
-    for (const d of declared.filter((x) => x.field === 'currentPassword')) {
-      expect(d.min).toBe(PRESENCE);
-    }
-    const news = declared.filter((x) => x.field === 'newPassword');
-    expect(news.length).toBeGreaterThanOrEqual(2); // the change AND the reset
-    for (const d of news) {
-      expect(d.min).toBe(PASSWORD_MIN_LENGTH);
-    }
+  it('at least two schemas STORE a password, and at least two only check one', () => {
+    // The floor under the table itself: if every entry drifted to one kind, the
+    // rule above would still pass while measuring almost nothing.
+    const kinds = Object.values(KIND);
+    expect(kinds.filter((k) => k === 'strength').length).toBeGreaterThanOrEqual(2);
+    expect(kinds.filter((k) => k === 'presence').length).toBeGreaterThanOrEqual(2);
   });
 });

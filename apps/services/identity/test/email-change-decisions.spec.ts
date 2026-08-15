@@ -22,6 +22,7 @@ import type { EmailVerificationRepo } from '../src/email-verification.repo';
 import type { EventsService } from '../src/events.service';
 import type { PasswordHasher } from '../src/password';
 import type { PasswordResetRepo } from '../src/password-reset.repo';
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import type { SessionsRepo } from '../src/sessions.repo';
 import type { UsersRepo } from '../src/users.repo';
@@ -29,6 +30,7 @@ import { DELIVERED, DELIVERED_UNVERIFIED, UNREACHABLE } from './notifications-do
 
 const NOW = new Date('2026-08-13T12:00:00.000Z');
 const USER = 'b6c9a1de-0000-4000-8000-000000000042';
+const SESSION = 'b6c9a1de-0000-4000-8000-0000000000a7';
 const CALLER = { mfaLevel: 'stepup' as const, stepupExpiresAt: new Date(NOW.getTime() + 60_000) };
 
 function code(file: string): string {
@@ -40,6 +42,7 @@ function code(file: string): string {
 interface Fakes {
   service: EmailChangeService;
   gateAsks: number;
+  boundAsks: number;
   passwordChecks: number;
   finds: number;
   attempts: number;
@@ -53,6 +56,7 @@ interface Fakes {
 function makeService(opts?: {
   liveRow?: unknown;
   gateRefuses?: boolean;
+  boundRefuses?: boolean;
   destinationTaken?: boolean;
   sendAccepted?: boolean;
   insertRaces?: boolean;
@@ -63,6 +67,7 @@ function makeService(opts?: {
 }): Fakes {
   const state = {
     gateAsks: 0,
+    boundAsks: 0,
     passwordChecks: 0,
     finds: 0,
     attempts: 0,
@@ -161,6 +166,16 @@ function makeService(opts?: {
       },
     } as unknown as SecondFactorGate,
     {
+      assertAttemptsAvailable: (): Promise<void> => {
+        state.boundAsks += 1;
+        order.push('bound');
+        if (opts?.boundRefuses) {
+          throw new HttpException({ error: 'too_many_attempts' }, 429);
+        }
+        return Promise.resolve();
+      },
+    } as unknown as AccountPasswordGate,
+    {
       emailChangeRequested: (): Promise<void> => Promise.resolve(),
       emailChangeCompleted: (): Promise<void> => Promise.resolve(),
       emailChangeCancelled: (): Promise<void> => Promise.resolve(),
@@ -200,6 +215,9 @@ function makeService(opts?: {
     get gateAsks() {
       return state.gateAsks;
     },
+    get boundAsks() {
+      return state.boundAsks;
+    },
     get passwordChecks() {
       return state.passwordChecks;
     },
@@ -232,7 +250,7 @@ describe('the request gate', () => {
     const f = makeService({ gateRefuses: true });
     let refused: unknown;
     try {
-      await f.service.requestChange(USER, CALLER, 'any-guess', 'new@example.com');
+      await f.service.requestChange(USER, SESSION, CALLER, 'any-guess', 'new@example.com');
     } catch (err) {
       refused = err;
     }
@@ -244,16 +262,52 @@ describe('the request gate', () => {
     expect(f.passwordChecks).toBe(0);
   });
 
-  it('THE ORDER IS PINNED AT THE SOURCE — gate, then password, in the method body', () => {
-    // A runtime test proves the refusing case above; only the source can prove
-    // the ORDER when both pass (the M17 PR1 rule). Comments are stripped so
+  it('BOUNDS THE GUESS — the M20 PR5 finding, which this route shipped without', () => {
+    // The whole defect in one assertion: before the fix this route ran the
+    // factor gate and then the verification with nothing between them, so on a
+    // factorless account (which the gate deliberately admits) it was an
+    // unlimited oracle for the account password one hop from the bounded route.
+    const f = makeService({ boundRefuses: true });
+    return f.service.requestChange(USER, SESSION, CALLER, 'any-guess', 'new@example.com').then(
+      () => {
+        throw new Error('expected the bound to refuse');
+      },
+      (err: unknown) => {
+        expect(err).toBeInstanceOf(HttpException);
+        expect((err as HttpException).getStatus()).toBe(429);
+        // And the guess was never scored: a bound evaluated after the
+        // verification is not a bound, and the refusal's timing must not vary
+        // with whether the password happened to be right.
+        expect(f.boundAsks).toBe(1);
+        expect(f.passwordChecks).toBe(0);
+      },
+    );
+  });
+
+  it('THE ORDER IS PINNED AT THE SOURCE — gate, then bound, then password', () => {
+    // A runtime test proves the refusing cases above; only the source can prove
+    // the ORDER when all three pass (the M17 PR1 rule). Comments are stripped so
     // prose cannot satisfy it.
     const body = code('email-change.service.ts');
     const gateAt = body.indexOf('assertMayAddFactor');
+    const boundAt = body.indexOf('assertAttemptsAvailable');
     const passwordAt = body.indexOf('verifyPassword');
     expect(gateAt).toBeGreaterThan(-1);
+    expect(boundAt).toBeGreaterThan(-1);
     expect(passwordAt).toBeGreaterThan(-1);
-    expect(gateAt).toBeLessThan(passwordAt);
+    expect(gateAt).toBeLessThan(boundAt);
+    expect(boundAt).toBeLessThan(passwordAt);
+  });
+
+  it('ATTRIBUTES THE FAILED GUESS TO THE SESSION, or the per-session half is blind', () => {
+    // The shared bound's session budget counts rows carrying a session id.
+    // Unattributed, this route's failures would only ever meet the ACCOUNT
+    // ceiling — so one stolen session could spend the whole account's budget
+    // here while its own stayed untouched, which is four times the guesses the
+    // per-session cap is meant to allow it.
+    const body = code('email-change.service.ts');
+    const denial = body.slice(body.indexOf("kind: 'email_change.denied'") - 200);
+    expect(denial.slice(0, 200)).toContain('sessionId');
   });
 
   it('THE ROUTE DOES NOT AWAIT THE STAGED HALF — pinned at the source, where it lives', () => {
@@ -273,7 +327,7 @@ describe('the request gate', () => {
     const f = makeService({ passwordOk: false });
     let refused: unknown;
     try {
-      await f.service.requestChange(USER, CALLER, 'wrong', 'new@example.com');
+      await f.service.requestChange(USER, SESSION, CALLER, 'wrong', 'new@example.com');
     } catch (err) {
       refused = err;
     }
@@ -288,7 +342,7 @@ describe('the request gate', () => {
     });
     let refused: unknown;
     try {
-      await f.service.requestChange(USER, CALLER, 'pw', 'same@example.com');
+      await f.service.requestChange(USER, SESSION, CALLER, 'pw', 'same@example.com');
     } catch (err) {
       refused = err;
     }
@@ -299,7 +353,7 @@ describe('the request gate', () => {
     const f = makeService({ lastMinted: new Date(NOW.getTime() - 60_000) });
     let refused: unknown;
     try {
-      await f.service.requestChange(USER, CALLER, 'pw', 'new@example.com');
+      await f.service.requestChange(USER, SESSION, CALLER, 'pw', 'new@example.com');
     } catch (err) {
       refused = err;
     }
@@ -309,19 +363,25 @@ describe('the request gate', () => {
   it('the destination bound refuses the request past its cap, per address', async () => {
     const f = makeService();
     for (let i = 0; i < CHANGE_ADDRESS_BOUND.max; i += 1) {
-      const { staged } = await f.service.requestChange(USER, CALLER, 'pw', 'hot@example.com');
+      const { staged } = await f.service.requestChange(
+        USER,
+        SESSION,
+        CALLER,
+        'pw',
+        'hot@example.com',
+      );
       await staged();
     }
     let refused: unknown;
     try {
-      await f.service.requestChange(USER, CALLER, 'pw', 'hot@example.com');
+      await f.service.requestChange(USER, SESSION, CALLER, 'pw', 'hot@example.com');
     } catch (err) {
       refused = err;
     }
     expect((refused as HttpException).getResponse()).toEqual({ error: 'too_soon' });
     // …while a different destination is untouched.
     await expect(
-      f.service.requestChange(USER, CALLER, 'pw', 'cold@example.com'),
+      f.service.requestChange(USER, SESSION, CALLER, 'pw', 'cold@example.com'),
     ).resolves.toBeDefined();
   });
 
@@ -333,7 +393,7 @@ describe('the request gate', () => {
 
 describe('the staged half', () => {
   async function drive(f: Fakes, target = 'new@example.com'): Promise<void> {
-    const { staged } = await f.service.requestChange(USER, CALLER, 'pw', target);
+    const { staged } = await f.service.requestChange(USER, SESSION, CALLER, 'pw', target);
     await staged();
   }
 

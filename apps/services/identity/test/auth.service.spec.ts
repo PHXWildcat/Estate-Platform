@@ -2,6 +2,7 @@ import { ForbiddenException, HttpException, UnauthorizedException } from '@nestj
 import type { DekRepository, FieldCrypto } from '@estate/crypto';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import { AuthService } from '../src/auth.service';
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import type { EmailVerificationService } from '../src/email-verification.service';
 import type { IdentityConfig } from '../src/config';
@@ -68,6 +69,7 @@ function makeFakes(): {
   };
   authEvents: { insert: jest.Mock; failedAttempts: jest.Mock };
   factors: { assertMayAddFactor: jest.Mock; holdsVerifiedFactor: jest.Mock };
+  accountPassword: { assertAttemptsAvailable: jest.Mock };
   hasher: { hashPassword: jest.Mock; verifyPassword: jest.Mock; dummyVerify: jest.Mock };
   events: {
     userRegistered: jest.Mock;
@@ -126,6 +128,10 @@ function makeFakes(): {
       assertMayAddFactor: jest.fn().mockResolvedValue(undefined),
       holdsVerifiedFactor: jest.fn().mockResolvedValue(false),
     },
+    // Admits by default: the bound's own decision is proven against real
+    // Postgres in `password-change-bound.int.spec.ts`, and these cases are
+    // about what runs once it lets a caller through.
+    accountPassword: { assertAttemptsAvailable: jest.fn().mockResolvedValue(undefined) },
     hasher: {
       hashPassword: jest.fn().mockResolvedValue('argon2-hash'),
       verifyPassword: jest.fn().mockResolvedValue(false),
@@ -218,6 +224,7 @@ function makeService(fakes: ReturnType<typeof makeFakes>): AuthService {
     fakes.notifications,
     fakes.emailVerification as unknown as EmailVerificationService,
     fakes.factors as unknown as SecondFactorGate,
+    fakes.accountPassword as unknown as AccountPasswordGate,
     fakes.db as unknown as Db,
   );
 }

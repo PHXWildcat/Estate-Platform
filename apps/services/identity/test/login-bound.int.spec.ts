@@ -40,6 +40,7 @@ import type { MfaRepo } from '../src/mfa.repo';
 import type { PasswordHasher } from '../src/password';
 import { LOGIN_BOUND, STEP_UP_BOUND } from '../src/rate-bounds';
 import { SessionsRepo } from '../src/sessions.repo';
+import type { AccountPasswordGate } from '../src/account-password-gate';
 import type { SecondFactorGate } from '../src/second-factor-gate';
 import { hashToken } from '../src/tokens';
 import { UsersRepo } from '../src/users.repo';
@@ -156,6 +157,9 @@ describeIfPg('login attempt bound (auth cluster)', () => {
       } as never,
       {} as unknown as EmailVerificationService,
       {} as unknown as SecondFactorGate,
+      {
+        assertAttemptsAvailable: (): Promise<void> => Promise.resolve(),
+      } as unknown as AccountPasswordGate,
       db,
     );
   });
