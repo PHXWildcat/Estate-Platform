@@ -96,7 +96,18 @@ export class SettlementAuthz {
    * same defect M19 PR1 closed in assets one milestone earlier, in the service
    * whose ids name death cases.
    *
-   * Use this wherever the resource was located BY the id under authorization.
+   * THIS METHOD IS THE MECHANISM ON EXACTLY ONE OF THOSE FIVE ROUTES.
+   * `getCase` calls it; `assertCaseVisible` (`admin.service.ts`) takes no
+   * Cedar decision at all — that controller has no PEP, which docs/03 §6aa
+   * records as owned and open — so it reaches the same uniform 404 by
+   * throwing `NotFoundException` directly. The PROPERTY holds on all five and
+   * was measured live on all five; the MECHANISM is two, and an earlier
+   * version of this docstring credited this one method with the lot, which
+   * would send a reader to `admin.service.ts` looking for a call that is not
+   * there.
+   *
+   * Use this wherever the resource was located BY the id under authorization
+   * AND a policy decides the answer.
    * Keep `assertCan` where the id is one the caller already holds by other
    * means and the refusal reveals nothing new — the operator write paths, where
    * a non-operator is refused BEFORE any lookup and so learns nothing either

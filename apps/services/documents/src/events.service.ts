@@ -123,6 +123,17 @@ export class EventsService {
    * evidence. Unlike every other document event the actor is NOT the owner,
    * so onBehalfOf carries the document owner (the reporter who uploaded the
    * evidence) and the detail ties the read to its settlement case.
+   *
+   * `actorType: 'operator'`, and the same reasoning as the decrypt nine lines
+   * above its call site: `checkEvidenceRead` only answers for an allowlisted
+   * operator, so by construction this actor is one. M18 PR1 corrected the
+   * DECRYPT event and left this one on the wrapper's `'user'` default, so a
+   * single operator evidence read emitted two audit events DISAGREEING about
+   * the actor class — in the trail kept for exactly the docs/03 §5.1
+   * investigations, and in a method whose own docstring says the actor is not
+   * the owner. Fixing where the failure HAPPENS rather than where it was
+   * convenient to catch is the M17 PR6 lesson; a class applied to one member
+   * of a category is a class half-applied.
    */
   async evidenceAccessed(
     actorId: string,
@@ -133,7 +144,7 @@ export class EventsService {
     await this.audit.emit({
       action: 'document.evidence.accessed',
       actorId,
-      actorType: 'user',
+      actorType: 'operator',
       onBehalfOf: ownerUserId,
       resourceType: 'document',
       resourceId: documentId,

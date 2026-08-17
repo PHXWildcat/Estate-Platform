@@ -44,14 +44,23 @@ vulnerability, so every control below is deliberate friction.
 - `IDENTITY_INTERNAL_TOKEN` unset (dev default) ⇒ identity's guard fails
   closed and the lock-touching transitions 503 until both sides are
   provisioned.
-- **Two credentials, opposite directions, never the same value.** Each is named
-  for the service whose internal routes it OPENS:
-  `SETTLEMENT_INTERNAL_TOKEN` is what vault presents to
-  *this* service's read-only gate route; `IDENTITY_INTERNAL_TOKEN` is what
-  *this* service presents to identity's account-lock API. Production refuses to
-  boot if they are equal. The M7 security review found them collapsed into one
-  field, which meant the value provisioned to vault — the most exposed service
-  in the product — was also accepted by `PUT /internal/v1/settlement-lock/:userId`,
+- **One credential per edge, per direction, never the same value.** Each is
+  named for the service whose internal routes it OPENS. This service touches
+  four: `SETTLEMENT_INTERNAL_TOKEN` INBOUND (what vault presents to *this*
+  service's read-only gate route), and three OUTBOUND —
+  `IDENTITY_INTERNAL_TOKEN` (identity's account-lock API),
+  `DOCUMENTS_INTERNAL_TOKEN` (documents' legal-hold route, M9 PR2) and
+  `NOTIFICATIONS_INTERNAL_TOKEN` (the notifications SEND route, and only that
+  one — the M9 review split recipient-upsert onto its own credential that
+  settlement does not hold). Production refuses to boot if any two are equal,
+  as a full pairwise loop rather than a hand-written `if` per pair.
+  `packages/auth-guard/src/credential-graph.ts` is the inventory and
+  `test/config.spec.ts` asserts this service absorbs exactly the granted set;
+  this paragraph said "two" from M7 until M21, having been written when there
+  were two.
+  The M7 security review found the first pair collapsed into one field, which
+  meant the value provisioned to vault — the most exposed service in the
+  product — was also accepted by `PUT /internal/v1/settlement-lock/:userId`,
   enough to irreversibly mark any living user deceased with no case, no
   operator and no waiting period.
 
@@ -63,9 +72,13 @@ vulnerability, so every control below is deliberate friction.
 | `PORT` | no | default 3007 |
 | `IDENTITY_URL` | prod | session verification + settlement-lock API; dev default `http://localhost:3001` |
 | `SETTLEMENT_INTERNAL_TOKEN` | prod (≥32 chars) | INBOUND: what vault presents to this service's gate route (the only holder — see `packages/auth-guard/src/credential-graph.ts`) |
-| `IDENTITY_INTERNAL_TOKEN` | prod (≥32 chars) | OUTBOUND: presented to identity's internal routes; must match identity's value, and must differ from the inbound one |
+| `IDENTITY_INTERNAL_TOKEN` | prod (≥32 chars) | OUTBOUND: presented to identity's internal routes; must match identity's value, and must differ from every other credential here |
+| `DOCUMENTS_URL` | prod | legal-hold client (M9 PR2); dev default `http://localhost:3005` |
+| `DOCUMENTS_INTERNAL_TOKEN` | prod (≥32 chars) | OUTBOUND: presented to documents' internal legal-hold route |
+| `NOTIFICATIONS_URL` | when `NOTIFY_MODE=http` | notifications service base URL |
+| `NOTIFICATIONS_INTERNAL_TOKEN` | prod (≥32 chars) | OUTBOUND: opens the notifications SEND route and nothing else |
 | `KAFKA_BROKERS` | prod | audit emission |
-| `NOTIFY_MODE` | no | `stub` only until the notifications milestone |
+| `NOTIFY_MODE` | **prod: pinned `http`** | `stub` in dev. Production REFUSES TO BOOT on the stub (`config.ts` `superRefine`) — a waiting period nobody can be told about is not a control. This row read "no / `stub` only until the notifications milestone" from M7 until M21; M9 shipped that milestone and pinned it. |
 | `DRIVER_INTERVAL_MS` | no | contact-sweep interval, default 60000; driver disabled under NODE_ENV=test |
 
 ## Local development

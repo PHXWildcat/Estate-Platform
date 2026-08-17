@@ -28,13 +28,22 @@ const EnvSchema = z
     // API (account lock + owner-liveness re-check). Required IN production;
     // dev defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
-    // TWO credentials, deliberately distinct — one per direction. The M7
-    // security review found that using a single value for both collapsed four
-    // services onto one secret: because settlement's inbound-expected value
-    // and its outbound-presented value were the same string, vault's copy was
-    // necessarily identical to identity's expected value, handing the Zone A
-    // service (and documents) a working key to identity's irreversible
-    // account-lock API. Each secret now opens exactly one callee's routes.
+    // EVERY CREDENTIAL BELOW IS DELIBERATELY DISTINCT — one per edge, per
+    // direction. The M7 security review found that using a single value for
+    // both directions collapsed four services onto one secret: because
+    // settlement's inbound-expected value and its outbound-presented value
+    // were the same string, vault's copy was necessarily identical to
+    // identity's expected value, handing the Zone A service (and documents) a
+    // working key to identity's irreversible account-lock API. Each secret now
+    // opens exactly one callee's routes, and `superRefine` below refuses to
+    // boot in production when any two are equal.
+    //
+    // NO COUNT IS STATED HERE ON PURPOSE. This comment said "TWO credentials"
+    // while two others below it called themselves the THIRD and the FOURTH —
+    // three claims, none of them checked, in a file sitting beside a
+    // machine-verified table. `credential-graph.ts` is the inventory and
+    // `test/config.spec.ts` asserts this service absorbs exactly the granted
+    // set, so the number belongs there and the reasoning belongs here.
     //
     // INBOUND: what THIS service expects on its own internal routes (the
     // docs/03 §6a vault-release gate). Held by vault. Opens a read-only
@@ -54,9 +63,9 @@ const EnvSchema = z
     // localhost.
     DOCUMENTS_URL: z.string().url().optional(),
     // OUTBOUND: presented to documents' internal legal-hold route (M9 PR2 —
-    // the caller that closes the M4 zero-callers gap). The FOURTH credential
-    // this service touches; like the others it opens exactly one callee's
-    // routes and must never equal any of the other three. Optional in
+    // the caller that closes the M4 zero-callers gap). Like every other
+    // credential here it opens exactly one callee's routes and must never
+    // equal any of the others. Optional in
     // dev/test — documents' guard fails closed while unset, so the
     // hold-touching transitions 503 until both sides are provisioned.
     // REQUIRED in production: an estate entering administration must not
@@ -72,10 +81,16 @@ const EnvSchema = z
     // Base URL of the notifications service; required whenever NOTIFY_MODE is
     // 'http'.
     NOTIFICATIONS_URL: z.string().url().optional(),
-    // OUTBOUND: presented to the notifications service's internal routes
-    // (send + recipient-upsert and nothing else; credential-graph.ts). The
-    // THIRD credential this service touches — distinct from both its own
-    // inbound value and the identity account-lock value it presents.
+    // OUTBOUND: presented to the notifications service. It opens exactly ONE
+    // route — `POST /internal/v1/notifications/send` — and this comment used
+    // to say "send + recipient-upsert", which the M9 security review made
+    // false in the change that split them: repointing an owner's address is a
+    // different capability class from mailing them, and settlement holds only
+    // the second (`credential-graph.ts`, holders profile+settlement+vault).
+    // Settlement is likewise NOT a holder of the STATUS credential, by M14's
+    // classification — this service SENDS and never asks whether an address is
+    // verified; it takes `recipientVerified` off the send response and records
+    // it, so it needs no read of its own.
     NOTIFICATIONS_INTERNAL_TOKEN: z.string().optional(),
     // Interval for the in-process workflow driver's contact-attempt sweep.
     // The driver never transitions case state — it only records/sends due
