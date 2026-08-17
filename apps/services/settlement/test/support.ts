@@ -20,6 +20,7 @@ import {
   type LockState,
 } from '../src/identity-lock';
 import { StubNotifier } from '../src/notifications';
+import { OperatorGate } from '../src/operator-gate';
 import type { OperatorsRepo } from '../src/operators.repo';
 import type { TasksRepo } from '../src/tasks.repo';
 import { SettlementService } from '../src/settlement.service';
@@ -504,7 +505,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     fakeDb(),
     cases,
     attempts as unknown as ContactAttemptsRepo,
-    operators as unknown as OperatorsRepo,
+    new OperatorGate(operators as unknown as OperatorsRepo),
     settings,
     tasks as unknown as TasksRepo,
     coreReads as unknown as CoreReadsRepo,
@@ -746,7 +747,7 @@ export function buildAdminHarness(): AdminHarness {
     stages,
     tasks as unknown as TasksRepo,
     distributions,
-    operators as unknown as OperatorsRepo,
+    new OperatorGate(operators as unknown as OperatorsRepo),
     coreReads as unknown as CoreReadsRepo,
     events,
     crypto as unknown as FieldCrypto,

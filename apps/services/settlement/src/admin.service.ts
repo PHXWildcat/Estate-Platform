@@ -16,7 +16,7 @@ import {
   type DistributionStatus,
 } from './distributions.repo';
 import { EventsService } from './events.service';
-import { OperatorsRepo } from './operators.repo';
+import { OperatorGate } from './operator-gate';
 import { ACCESS_STAGES, StagesRepo, type AccessStage, type StageRow } from './stages.repo';
 import { TasksRepo, type TaskRow } from './tasks.repo';
 import { generateTasks } from './task-template';
@@ -151,7 +151,7 @@ export class SettlementAdminService {
     private readonly stages: StagesRepo,
     private readonly tasks: TasksRepo,
     private readonly distributions: DistributionsRepo,
-    private readonly operators: OperatorsRepo,
+    private readonly gate: OperatorGate,
     private readonly coreReads: CoreReadsRepo,
     private readonly events: EventsService,
     @Inject(FIELD_CRYPTO) private readonly fieldCrypto: FieldCrypto,
@@ -204,9 +204,12 @@ export class SettlementAdminService {
     stageId: string,
     decision: 'approve' | 'deny',
   ): Promise<StageDto> {
-    await this.assertOperator(operator);
     const now = this.clock();
     const outcome = await this.db.withTransaction(operator, async (tx) => {
+      // First, and on `tx`: refused before the stage is looked up (so a
+      // non-operator learns nothing about the id) and on the same handle as
+      // the write it authorizes — see OperatorGate.is.
+      await this.gate.assertIn(tx, operator);
       const locked = await this.stages.lockById(tx, stageId);
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
@@ -260,10 +263,10 @@ export class SettlementAdminService {
    * this gap. Refused up front, with the DDL as the backstop it is meant to be.
    */
   async revokeStage(operator: string, sessionId: string, stageId: string): Promise<StageDto> {
-    await this.assertOperator(operator);
     const now = this.clock();
     const row = await this.db
       .withTransaction(operator, async (tx) => {
+        await this.gate.assertIn(tx, operator);
         const locked = await this.stages.lockById(tx, stageId);
         if (!locked) {
           throw new NotFoundException({ error: 'not_found' });
@@ -405,9 +408,9 @@ export class SettlementAdminService {
     sessionId: string,
     distributionId: string,
   ): Promise<DistributionDto> {
-    await this.assertOperator(operator);
     const now = this.clock();
     const row = await this.db.withTransaction(operator, async (tx) => {
+      await this.gate.assertIn(tx, operator);
       const locked = await this.distributions.lockById(tx, distributionId);
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
@@ -438,7 +441,7 @@ export class SettlementAdminService {
         throw new NotFoundException({ error: 'not_found' });
       }
       const kase = await this.requireAdministrableCase(tx, locked.case_id);
-      const isOperator = await this.operators.isOperator(tx, actor);
+      const isOperator = await this.gate.is(tx, actor);
       if (!isOperator && !(await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))) {
         throw new ForbiddenException({ error: 'forbidden' });
       }
@@ -474,8 +477,8 @@ export class SettlementAdminService {
     sessionId: string,
     caseId: string,
   ): Promise<{ status: string }> {
-    await this.assertOperator(operator);
     const decedent = await this.db.withTransaction(operator, async (tx) => {
+      await this.gate.assertIn(tx, operator);
       const locked = await this.cases.lockById(tx, caseId);
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
@@ -642,12 +645,6 @@ export class SettlementAdminService {
     }
   }
 
-  private async assertOperator(userId: string): Promise<void> {
-    if (!(await this.operators.isOperator(this.db, userId))) {
-      throw new ForbiddenException({ error: 'forbidden' });
-    }
-  }
-
   /** Case reads: the subject, the reporter, its executor, or an operator. */
   private async assertCaseVisible(actor: string, caseId: string): Promise<CaseRow> {
     const kase = await this.cases.findById(this.db, caseId);
@@ -657,7 +654,7 @@ export class SettlementAdminService {
     if (kase.decedent_user_id === actor || kase.reported_by === actor) {
       return kase;
     }
-    if (await this.operators.isOperator(this.db, actor)) {
+    if (await this.gate.is(this.db, actor)) {
       return kase;
     }
     if (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor)) {

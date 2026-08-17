@@ -51,6 +51,7 @@ import { HttpIdentityLock, type IdentityLockPort } from './identity-lock';
 import { HttpNotificationsClient } from '@estate/notifications-client';
 import { HttpNotifier, StubNotifier, type NotificationPort } from './notifications';
 import { OperatorController } from './operator.controller';
+import { OperatorGate } from './operator-gate';
 import { OperatorsRepo } from './operators.repo';
 import { SettingsRepo } from './settings.repo';
 import { SettlementController } from './settlement.controller';
@@ -229,6 +230,7 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
     CasesRepo,
     ContactAttemptsRepo,
     OperatorsRepo,
+    OperatorGate,
     SettingsRepo,
     StagesRepo,
     TasksRepo,

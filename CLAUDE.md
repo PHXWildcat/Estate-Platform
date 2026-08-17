@@ -6924,3 +6924,85 @@ deviating from them, stop and propose the change with rationale — do not silen
   the fail-closed broker gate exists to prevent, arriving from the other end.
   Measured after rebuilding the consumer first: six events in the verified
   chain, every one attributed, zero rejections.
+- 2026-08-17 — M21 PR2 IS NOT THE OPERATOR SESSION AUDIENCE, and the scope
+  change came from measuring the machinery before building on it (approved).
+  Three facts read out of shipped code. (1) THE AUDIENCE CANNOT NARROW
+  ADMISSION: `AllowSessionAudiences` is typed
+  `(...audiences: Exclude<SessionAudience, 'account'>[])` — the default is
+  unconditionally prepended and cannot even be NAMED at a call site — and
+  `CallerGuard.audiencesFor` returns `[...new Set([...serviceWide,
+  ...perRoute])]`, so decorating an operator route yields
+  `['account','operator']`: every ordinary account session, admitted exactly as
+  today. (2) NOTHING CAN MINT ONE: `auth_handoffs` carries
+  `CHECK (audience = 'vault')`, a single value rather than a list, and a new
+  ceremony at identity cannot be operator-gated — identity holds no settlement
+  credential, there is no dblink between the auth and core clusters, and
+  identity has no concept of a role. (3) ITS VALUE IS SUBTRACTIVE — what `vault`
+  and `extension` buy is that every service which has NOT opted in refuses the
+  session — and that is worth exactly nothing until something mints one and an
+  operator has a reason to hold it. So the audience ships in PR3 alongside the
+  surface that is its only consumer, and PR2 hardens the enforcement it would
+  have sat on top of. Recorded as a scope change in docs/04 rather than
+  silently absorbed: a plan that quietly re-aims is a plan nobody can audit.
+- 2026-08-17 — ONE SERVICE HELD FOUR ANSWERS TO ONE QUESTION AND THEY HAD
+  DRIFTED. "Is this caller an operator?" was asked in `settlement.service.
+  assertOperator` (private, throws), `admin.service.assertOperator`
+  (byte-identical, separately declared), a bare `isOperator` branch inside
+  `assertCaseVisible` (returns the case instead of throwing), and an inline
+  `isOperator || isExecutorOf` in `setDistributionStatus` — WHICH WAS THE ONLY
+  ONE OF THE FOUR THAT READ THE ALLOWLIST ON THE TRANSACTION HANDLE. The two
+  §5.1 routes that begin and end a death case (`startReview`,
+  `confirmVerification`) resolved it on the POOL and only then opened the
+  transaction they were guarding. The M8 PR2 seven-audit-producers shape, in the
+  code that decides who may approve a death case. `OperatorGate` is the one
+  spelling now: no default handle (a write passes its own `tx`, a read with
+  nothing to be consistent with passes the pool) with THE FIVE POOL SITES
+  DECLARED AS DATA and every other call fenced to `tx` — the handle being the
+  thing that had already drifted, so it is checked rather than conventional —
+  and the gate is consulted BEFORE the case row is locked so a non-operator is refused without learning
+  whether the case id names anything — the uniform-404 rule, preserved rather
+  than newly added and now visible in one ordering instead of implied by four.
+  WHAT THE TX HANDLE BUYS IS STATED EXACTLY, because the tempting claim is
+  wrong and I nearly shipped it: these transactions are READ COMMITTED, so each
+  statement takes a fresh snapshot and a revoke committing after the gate's read
+  is still unseen at commit time. Moving the read inside NARROWS the window and
+  DOES NOT CLOSE IT; closing it needs a share lock on the allowlist row, which
+  is real contention on every operator action bought to serialize against an
+  adversary who must be an operator being revoked in that exact instant. Not
+  taken, recorded in docs/03 §6aa. The property secured is CONSISTENCY, not
+  atomicity.
+- 2026-08-17 — A PEP WHOSE INPUT IS A LITERAL CANNOT DENY ANYTHING. `assertCan`'s
+  second argument IS the `isSettlementOperator` attribute `settlement.cedar`
+  matches on, and three call sites — `startReview`, `decideReview`,
+  `confirmVerification` — passed the literal `true`. It was SOUND, and sound for
+  a reason nothing enforced: an assertion had run a few lines above. Delete that
+  line in a refactor and the route opens to any authenticated caller while the
+  policy goes on evaluating happily against a constant asserting the very thing
+  nobody checked — a POSITIONAL dependency between two adjacent statements, with
+  nothing making them adjacent. `assertIn` RETURNS the measured answer now, so
+  removing the check removes the argument and the compiler enforces what
+  proximity used to. The two remaining literals are `false` at the owner's `void`
+  and `manage` paths and are CORRECT: measuring the allowlist there would WIDEN
+  the decision for an owner who is also an operator, which is the direction
+  settlement.cedar deliberately avoids by never carrying an `owner` attribute —
+  declared as data with a reason per entry, so a third one is a visible decision.
+  Fenced in both directions (never `true`; `false` only at declared sites;
+  everything else the resolved variable), with the corpus recursive and asserted
+  equal to the platform's own recursive read.
+- 2026-08-17 — THE EIGHTH WAY A MUTATION HARNESS HAS LIED HERE, and it is the
+  first that corrupted the tree rather than the conclusion. The script saved a
+  backup of each target at the top of EVERY invocation — including `restore` —
+  so each restore copied the MUTATED file over its own backup and then restored
+  that. Every restore was a no-op and the mutations ACCUMULATED: the failure
+  count climbed 1 → 2 → 3 → 9 → 11 across runs while each individual mutation
+  read as correctly red. It was caught not by the harness but by an editor
+  notification showing a line still mutated after a "restore", and repaired with
+  an explicit undo before re-running. THE RULE, now that the list is long enough
+  to generalize: pristine copies are taken ONCE, by the caller, before any
+  mutation; the harness NEVER re-derives a baseline from the working tree; and
+  restore VERIFIES byte-for-byte against the pristine copy and fails loudly if
+  it differs. Same family as `git checkout --` on uncommitted work, `node -e`
+  losing `$1` to shell expansion, grepping for `✕` outside verbose mode,
+  length-instead-of-content no-op checks, and anchoring on a non-unique string —
+  every one of them produces a conclusion about a test drawn from a measurement
+  that did not happen.

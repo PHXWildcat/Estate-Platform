@@ -109,8 +109,31 @@ DATABASE_URL=… pnpm --filter @estate/service-settlement operators list
 - **Repeats are no-ops, not second grants** (`already granted:` / `no active
   grant:`), and each records its own outcome. A revoked operator can be granted
   again; the index that makes the repeat a no-op is partial on the active row.
-- **Revocation takes effect on the next request**, because `isOperator` is read
+- **Revocation takes effect on the next request**, because the allowlist is read
   per action rather than cached, and it notifies nobody — see docs/03 §6z.
+
+## Where the allowlist is consulted (`OperatorGate`)
+
+`OperatorGate` is the ONLY reader of `settlement_operators`. Before M21 PR2 this
+service asked "is this caller an operator?" in four separate places — two
+byte-identical private methods, a bare branch inside `assertCaseVisible`, and an
+inline disjunction in `setDistributionStatus` — and they had already drifted
+about which database handle to ask on. Two source fences keep it one
+(`test/operator-gate-fence.spec.ts`): nothing else may call
+`OperatorsRepo.isOperator`, and Cedar is never handed a hardcoded `true`.
+
+Two things about it are decisions rather than details:
+
+- **The handle is a parameter with no default.** A write passes its own `tx`, so
+  the allowlist answer belongs to the same transaction as the row it authorizes;
+  a read with nothing to be consistent with passes the pool. The five pool sites
+  are declared with a reason each in the fence, and everything else must pass
+  `tx`. This NARROWS the window in which a concurrent revoke is invisible and
+  does not close it — these transactions are READ COMMITTED (docs/03 §6aa).
+- **`assertIn` returns the measured answer**, which is what `assertCan` is
+  handed. Three call sites used to pass a literal `true`, sound only because a
+  check had run above them; binding the result makes the dependency structural.
+
 
 The service shares the core cluster with profile: disjoint tables, its own
 migrations dir, shared `schema_migrations` (Plaid precedent), plus READ-ONLY
