@@ -87,13 +87,20 @@ IAM roles and remains **E1**.
 
 *Operator identity — the interim, and its one real safety property.*
 `settlement_operators` is an append+revoke allowlist whose rows are the history,
-consulted by `assertOperator`. The property that matters, stated in
-`operators.repo.ts`'s own docstring, is that **no runtime session can mint an
-operator**: there is deliberately no grant API, so a stolen operator session
-cannot widen the allowlist. M21 PR1 keeps that property and gives the allowlist a
-real ceremony with a non-null `granted_by` — today its only sanctioned write path
-is a 93-line CLI with no package script and no compose entry, and the only
-exercised path is a raw `INSERT` in the e2e.
+consulted by `assertOperator`. The property that matters is that **no runtime
+session can mint an operator**: there is deliberately no grant API, so a stolen
+operator session cannot widen the allowlist. Until M21 PR1 that property lived
+only in three docstrings and was checked nowhere, and one of them was wrong about
+its own mechanism — `operators.repo.ts` called its write methods "the CLI-only
+write path" while the CLI reimplemented both in raw SQL and called neither, so
+the repo's write methods had no caller in the repository at all. **M21 PR1 keeps
+the property and makes it checkable** (§6z): the CLI drives the repo, a source
+fence asserts in both directions that nothing else does, and the ceremony now
+audits — `settlement.operator.granted` / `.revoked`, which is the first entry the
+append-only trail has ever carried for the act of granting the authority to
+approve a death case. It also **refuses to write when it cannot record**, and
+demands a `--by` that fills the `granted_by` column M7 declared and nothing had
+ever written.
 
 *Operator authentication — **M21 PR2**.* There is no operator session audience;
 an operator is an ordinary account session that happens to appear in a table. M21
@@ -3538,6 +3545,125 @@ block comment as code.
   single file while claiming to cover a service; nothing has since asked the
   same question of the repo's other source-scanning fences, and a fence whose
   input is narrower than its claim goes green for the same reason it is wrong.
+
+
+## 6z. Threat-model delta — M21 PR1, the operator grant ceremony (2026-08-17)
+
+**The act that creates an operator was the one privileged act in the product
+with no entry in the append-only trail.** `settlement_operators` decides who may
+run §5.1's mandatory human review — approve a death case, lock an account,
+confirm a verification, approve a distribution, approve a stage of access to a
+dead person's estate. Every one of those actions emits an audit event. Granting
+somebody the authority to perform them emitted nothing, in either direction:
+there was no `settlement.operator.granted`, no `.revoked`, and no action in
+`AUDIT_ACTIONS` that could have carried one. The trail could show what an
+operator did and could not show that they had ever been made one.
+
+**And the mechanism was two implementations of one behaviour, one of them
+dead.** `OperatorsRepo.grant`/`.revoke` carried a docstring calling them "the
+CLI-only write path"; `operator-cli.ts` reimplemented both in raw SQL and called
+neither, so the repo's write methods had ZERO CALLERS anywhere in the
+repository. The two had already drifted in the way this shape always drifts —
+the repo handled a duplicate grant through `isUniqueViolation(err)`, the CLI
+through an inline `err.code === '23505'` check. This is the M8 PR2 shape (seven
+byte-identical audit producers sharing one bug) in the allowlist that decides
+who may approve a death case.
+
+**`granted_by` has been declared since M7 and written by nothing.** Every row in
+the table said only that somebody holding the database made a grant.
+
+### What PR1 changes
+
+- **The ceremony audits, and REFUSES TO WRITE WHEN IT CANNOT.** A broker is
+  required for `grant` and `revoke`; `list`, which changes nothing, does not
+  need one and is handed a producer that THROWS if anything tries to emit
+  through it — an assertion that the read path is silent rather than a stub for
+  it. The template-publish CLI's precedent (fall back to an in-memory producer
+  when no broker is configured) is right for a template and wrong here: it would
+  make an unaudited grant the quiet default on every machine without
+  `KAFKA_BROKERS`, which is every developer laptop.
+- **Attribution is required.** `--by <authorizingUserId>` fills `granted_by`.
+  It is ATTRIBUTION, NOT AUTHENTICATION — whoever runs this already holds the
+  database connection and could write the row by hand. What it buys is that the
+  sanctioned path produces a record naming a human, so a row with `granted_by
+  IS NULL` is visibly one that did not come through here. The e2e's seeding
+  `INSERT` is exactly such a row, and its comment now says so instead of
+  claiming to be the CLI's write path.
+- **One write path, asserted in both directions.**
+  `test/operator-write-path.spec.ts` scans the service's own source: only the
+  ceremony may call the repo's write methods, only the repo may write the table
+  in SQL (the method-name scan alone is evadable by the inline statement that
+  was there before), the ceremony really does call them (without which the
+  fence passes vacuously the day somebody reverts to raw SQL), and no
+  controller mentions the table or the repo at all. A source scan rather than a
+  runtime guard because there is no runtime seam: the CLI and the service share
+  one class by design, so the difference between a sanctioned and an
+  unsanctioned call is WHERE IT IS WRITTEN.
+- **Ordering inside the transaction: the reversible step first.** The INSERT
+  rolls back and the Kafka emit does not, so the row is written first and the
+  event emitted second, and a failed emit rolls the grant back rather than
+  leaving it unrecorded.
+- **A REPEAT GRANT DID NOT WORK, and only the live drive found it.** `grant`
+  recovered from the partial index's unique violation by re-reading the existing
+  row — which is fine against a connection POOL, where each statement gets its
+  own implicit transaction, and impossible inside the CLI's own `BEGIN`/`COMMIT`,
+  because Postgres aborts a transaction on a failed statement and refuses every
+  command until rollback. So the second grant died with `current transaction is
+  aborted` while three green specs called it a clean no-op: every one of them
+  drove a pooled handle, so **the harness was more permissive than the only path
+  that ever really runs**. Fixed by never raising the error at all — `ON CONFLICT
+  (user_id) WHERE revoked_at IS NULL DO NOTHING`, naming the index's own
+  predicate so a revoked row is not a conflict — which makes the two contexts
+  agree rather than making the recovery cleverer, and the int spec now runs the
+  ceremony inside a real transaction. Checked for the same shape elsewhere: the
+  service's three other unique-violation catches all `return` or `throw`
+  immediately and issue no follow-up statement, so none of them has it.
+- **The CLI became testable at all.** It had no exports, no `require.main`
+  guard, no package script and 0% coverage while sitting inside the coverage
+  denominator — no test in the repository had ever executed it. Its argv
+  contract, its broker gate and each of its emit branches are now unit-proven,
+  and `operator-cli.int.spec.ts` drives the whole ceremony against real
+  Postgres, because `grant`'s idempotence rides a PARTIAL unique index and a
+  fake repo has no index to violate.
+
+### Residuals
+
+- **[ACCEPTED]** *`--by` is attribution and not authentication, and the fence
+  bounds source rather than the database.* Whoever holds `DATABASE_URL` can
+  write the row by hand, unattributed and unaudited. Nothing in a CLI can
+  change that: the authority here IS possession of the connection. What the
+  ceremony buys is that the sanctioned path leaves a record, and that a row
+  which did not come through it is visibly different (`granted_by IS NULL`, no
+  audit event) rather than indistinguishable. Closing it properly is the
+  operator platform with real IAM — **E1**.
+- **[ACCEPTED]** *`settlement_operators.user_id` has no foreign key and cannot
+  have one.* `users` lives in the AUTH cluster and settlement is a co-tenant on
+  CORE, and docs/02 §8 forbids cross-cluster foreign keys — so a mistyped UUID
+  becomes a live allowlist row naming no account. It grants nothing (no session
+  can ever present that subject) and it is invisible in `list` beyond being a
+  UUID nobody recognises. The check that would catch it is a user-existence
+  lookup against identity, which would mean giving settlement a credential it
+  deliberately does not hold, to catch a typo whose only consequence is a row
+  that does nothing.
+- **[ACCEPTED]** *An event may land for a commit that then fails.* This is the
+  ordinary residual every emit-inside-a-transaction carries in this repository,
+  and the ordering above chooses which way it falls: a phantom grant record is
+  investigable, a silent real grant is not.
+- **[OWNER: M21]** *An operator is still an ordinary account session that
+  happens to appear in a table.* PR1 changes who can get into the table and not
+  what being in it authenticates as. The session audience is PR2, and
+  `assertOperator` remains the control there too — see §4 TB7.
+- **[OWNER: M21]** *Revocation takes effect on the next request and
+  notifies nobody.* `isOperator` is read per action against the database, so a
+  revoked operator loses authority at their next call rather than
+  retroactively — which is the correct behaviour and is stated here because
+  nothing announces it. No notification is sent to the revoked operator or to
+  anyone else, because the audience for such a message is an operator surface
+  that does not exist.
+- **[OWNER: M21]** *Nothing surfaces the allowlist to a human but `list` on
+  a terminal.* An operator cannot see who else is an operator, and no periodic
+  review of the allowlist exists — which is the control the ceremony's record
+  is FOR. The record is now there to be read; the reader is PR3.
 
 
 ## 7. Validation program

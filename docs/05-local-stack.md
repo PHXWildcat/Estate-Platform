@@ -57,6 +57,56 @@ exits 0 for a suite that skipped everything.
 images** in a separate job — stack.yml proves the code integrates, that job
 proves the artifact does.
 
+### Granting yourself an operator
+
+Nothing in the product can make an operator, deliberately: `settlement_operators`
+decides who runs docs/03 §5.1's mandatory human review, and the whole safety
+argument for the interim allowlist is that **no runtime session can mint one**.
+So on the stack it is a terminal ceremony, and this is the only place a running
+system gets an operator.
+
+```bash
+# the CLI runs on the HOST against the stack's core cluster and its Redpanda
+pnpm --filter @estate/service-settlement build
+DATABASE_URL=postgres://estate:estate_dev@localhost:5434/core \
+KAFKA_BROKERS=localhost:9092 \
+  pnpm --filter @estate/service-settlement operators grant <userId> --by <yourUserId>
+
+# read it back — no broker needed, because the read emits nothing
+DATABASE_URL=postgres://estate:estate_dev@localhost:5434/core \
+  pnpm --filter @estate/service-settlement operators list
+```
+
+Two things about that command are controls rather than ergonomics. **It refuses
+to run without `KAFKA_BROKERS`**, because a grant it cannot record is exactly
+what the append-only trail exists to prevent — so on a machine with no broker the
+answer is a refusal, not a silent unaudited write. And **`--by` is required**:
+it fills `granted_by`, which M7 declared and nothing wrote until M21 PR1, so
+every row in an older database says only that somebody with the database made a
+grant. It is attribution and not authentication — whoever runs this holds
+`DATABASE_URL` — and its value is that a row *without* it is visibly one that
+bypassed the ceremony.
+
+Verify it landed in the trail rather than only in the table:
+
+```bash
+# --env-file is REQUIRED even for `exec`: compose resolves the whole project
+# first, and without it the file's own variables are blank and it refuses with
+# "invalid compose project".
+docker compose -f docker-compose.stack.yml --env-file .env.stack exec -T pg-audit \
+  psql -U estate -d audit -c \
+  "SELECT action, actor_id, detail FROM audit_events
+    WHERE action LIKE 'settlement.operator.%' ORDER BY seq DESC LIMIT 5"
+```
+
+**Deploy the consumer first.** `AUDIT_ACTIONS` is a closed vocabulary, so an
+`audit` container older than these two actions treats every one of them as a
+`schema_violation` — indistinguishable from malformed input — and drops it. The
+grant still happens and the trail silently does not record it, which is the one
+outcome the ceremony's fail-closed broker gate exists to prevent, arriving from
+the other end. Rebuild `audit` before running the ceremony against a stack that
+predates M21 PR1.
+
 ### Host mode
 
 CI's fast gate and the local inner loop run the node processes on the host

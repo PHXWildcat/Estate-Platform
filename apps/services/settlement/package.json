@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
-    "dev": "node dist/main.js"
+    "dev": "node dist/main.js",
+    "operators": "node dist/operator-cli.js"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "catalog:",

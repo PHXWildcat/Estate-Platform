@@ -394,8 +394,12 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     const reporter = await registerAndLogin('reporter');
     const operator = await registerAndLogin('operator');
     await seedEstate(owner, reporter);
-    // The operator allowlist has no runtime grant API; this INSERT is the
-    // ops-CLI write path.
+    // The operator allowlist has no runtime grant API — that is the property,
+    // not an omission. This INSERT is a SEED that deliberately bypasses the
+    // ceremony, which is why the row it writes carries `granted_by IS NULL`:
+    // exactly the shape M21 PR1's `operator-cli` makes visible for anything
+    // that did not come through it. It is NOT "the ops-CLI write path", which
+    // is what this comment used to claim and never was true of it.
     await admin.query(`INSERT INTO ${coreSchema}.settlement_operators (user_id) VALUES ($1)`, [
       operator.userId,
     ]);
