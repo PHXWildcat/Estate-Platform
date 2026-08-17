@@ -658,24 +658,45 @@ describe('evidence reads (M7 settlement authority)', () => {
     expect(audit.detail).toEqual({ version: 1, caseId: CASE_ID });
   });
 
-  it('audits the evidence DECRYPT as an operator, never as a user (M18 PR1)', async () => {
-    // The decrypt-rate baseline (docs/03 §4 TB4) keys on actor class, and
-    // this is the one operator-driven decrypt in the product — before M18 it
-    // rode ContentCipher's 'user' default and misclassified. The owner read
-    // beside it proves the fix did not reclassify ordinary reads.
+  it('audits BOTH events of one evidence read as the same actor class — operator', async () => {
+    /*
+     * ONE ACTION, TWO EVENTS, AND THEY MUST AGREE. The decrypt-rate baseline
+     * (docs/03 §4 TB4) keys on actor class, and this is the one
+     * operator-driven decrypt in the product; M18 PR1 corrected the DECRYPT
+     * and left `document.evidence.accessed` on the wrapper's 'user' default,
+     * so a single operator read of somebody's death-case evidence emitted two
+     * audit events disagreeing about who did it. Neither event alone could
+     * show that — which is why this asserts the PAIR, the same reasoning M21
+     * PR2's uniform-404 test had to adopt after two tests each asserted half
+     * of a leak and called it the opposite.
+     *
+     * The owner read beside it is the control: it proves neither fix
+     * reclassified an ordinary read.
+     */
     const h = await build({ settlement: allowingSettlement(OWNER) });
     const documentId = await generate(h);
     await h.service.getContent(OWNER, documentId, 1);
     await h.service.getEvidenceContent(OPERATOR, 'op-token', documentId, 1);
-    const decrypts = h.producer.messages
+    const events = h.producer.messages
       .filter((m) => m.topic === 'estate.audit.events.v1')
-      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
-      .filter((e) => e.action === 'crypto.field.decrypted');
+      .map((m) => AuditEventSchema.parse(JSON.parse(m.value)));
+
+    const decrypts = events.filter((e) => e.action === 'crypto.field.decrypted');
     const ownerRead = decrypts.find((e) => e.actorId === OWNER);
     const operatorRead = decrypts.find((e) => e.actorId === OPERATOR);
     expect(ownerRead?.actorType).toBe('user');
     expect(operatorRead?.actorType).toBe('operator');
     expect(operatorRead?.detail.purpose).toBe('evidence_content_read');
+
+    const accessed = events.find((e) => e.action === 'document.evidence.accessed');
+    expect(accessed?.actorType).toBe('operator');
+    // Stated as the pair, not as two facts that happen to match: an
+    // investigator reading this trail must never see one action attributed to
+    // two different classes of actor.
+    expect({
+      decrypt: operatorRead?.actorType,
+      accessed: accessed?.actorType,
+    }).toEqual({ decrypt: 'operator', accessed: 'operator' });
   });
 
   it('404s when settlement refuses (fail closed, no oracle)', async () => {

@@ -15,6 +15,18 @@
  *
  * Anchored on the DI TOKEN NAME, not on a service name or a comment, because a
  * binding is the only thing that actually widens the guard.
+ *
+ * THIS FILE IS THE SPEC `004_session_audience_and_handoffs.sql` PROMISES —
+ * "a spec reads this file to pin the first to the second" — and it names
+ * `@estate/auth-guard` as where `SESSION_AUDIENCES` lives. That was the
+ * definition site when 004 was written; M16 PR1 moved the vocabulary to
+ * `@estate/contracts` so the BFF could label sessions without depending on a
+ * NestJS guard package, and auth-guard re-exports it (`src/session.ts`), which
+ * is why the citation still resolves and why the import below reads
+ * `../src/session`. The migration is deliberately NOT corrected: the migrator
+ * checksums every applied file and raises `MigrationDriftError` on a mismatch,
+ * so a comment edit blocks the next migration on every database that has run
+ * it. A migration records what was true when it ran; the live fact lives here.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -346,7 +358,29 @@ describe('the SQL audience vocabulary matches the TypeScript union', () => {
     readonly values?: string[];
     /** Present when this statement decides the DEFAULT; null means DROP DEFAULT. */
     readonly defaultValue?: string | null;
+    /**
+     * True when the statement carries a CHECK that MENTIONS `audience` in a
+     * form this parser could not read. See `refuses an audience CHECK it
+     * cannot parse` below — this is the difference between a fence that fails
+     * and a fence that goes quietly blind.
+     */
+    readonly unparseableCheck?: true;
   }
+
+  /**
+   * A CHECK clause that constrains `audience` AT ALL, in any syntax.
+   *
+   * Deliberately broader than the parser below it. `CHECK (audience = 'x')`
+   * and `CHECK (audience IN ('x'))` mean the same thing to Postgres and only
+   * the second is readable here, so without this detector a migration written
+   * the first way would be INVISIBLE: `effectiveCheck` would return the
+   * previous constraint and every assertion in this file would silently
+   * measure the wrong statement. That is not hypothetical — `docs/04` and the
+   * decision log both misquote the shipped `auth_handoffs` DDL as
+   * `CHECK (audience = 'vault')`, so somebody "correcting" the SQL to match
+   * the prose is the likeliest way this fence ever goes blind.
+   */
+  const AUDIENCE_CHECK_ANY = /CHECK\s*\(\s*[^)]*\baudience\b/i;
 
   /**
    * Every audience CHECK in identity's migrations, in application order.
@@ -368,7 +402,11 @@ describe('the SQL audience vocabulary matches the TypeScript union', () => {
         const check = /CHECK\s*\(\s*audience\s+IN\s*\(([^)]*)\)\s*\)/i.exec(statement);
         const setsDefault = /audience[^;]*?DEFAULT\s+'([^']+)'/i.exec(statement);
         const dropsDefault = /ALTER\s+COLUMN\s+audience\s+DROP\s+DEFAULT/i.test(statement);
-        if (!check && !setsDefault && !dropsDefault) continue;
+        // A CHECK that constrains `audience` in a shape the reader above
+        // cannot parse is RECORDED rather than skipped, so the assertion that
+        // names the property can fail on it.
+        const unreadableCheck = !check && AUDIENCE_CHECK_ANY.test(statement);
+        if (!check && !setsDefault && !dropsDefault && !unreadableCheck) continue;
         const target =
           /(?:ALTER|CREATE)\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)/i.exec(statement);
         found.push({
@@ -382,6 +420,7 @@ describe('the SQL audience vocabulary matches the TypeScript union', () => {
             : setsDefault
               ? { defaultValue: setsDefault[1] as string }
               : {}),
+          ...(unreadableCheck ? { unparseableCheck: true as const } : {}),
         });
       }
     }
@@ -412,6 +451,28 @@ describe('the SQL audience vocabulary matches the TypeScript union', () => {
     expect(all.map((c) => c.table)).toContain('auth_handoffs');
   });
 
+  it('REFUSES an audience CHECK it cannot parse, rather than reading past it', () => {
+    /*
+     * THE DIFFERENCE BETWEEN A FENCE THAT FAILS AND ONE THAT GOES BLIND.
+     *
+     * Every assertion below reads `effectiveCheck`, which is "the LAST
+     * statement to define a CHECK" — so a statement this parser cannot read is
+     * not merely unmeasured, it hands the assertions an OLDER constraint and
+     * they pass against a database that no longer matches. `CHECK (audience =
+     * 'x')` is exactly that shape, is valid SQL, means the same thing to
+     * Postgres, and is how both `docs/04` and the decision log misquote the
+     * shipped `auth_handoffs` DDL — so the likeliest route to blindness here is
+     * somebody making the SQL agree with the prose.
+     *
+     * The M21 PR1 rule, restated for a second parser: a scan that meets a shape
+     * it does not understand must say so. This is what lets every other test in
+     * this describe be trusted, and it is why M21 PR3's operator migration must
+     * be written in the `IN (...)` form or turn this red.
+     */
+    const unparseable = audienceConstraints().filter((c) => c.unparseableCheck);
+    expect(unparseable.map((c) => `${c.file}: audience CHECK in an unreadable form`)).toEqual([]);
+  });
+
   it('sessions.audience admits EXACTLY the declared union', () => {
     // Both directions in one assertion. A value in the union and not the CHECK
     // means identity cannot mint what its own types say exists — a runtime
@@ -430,9 +491,14 @@ describe('the SQL audience vocabulary matches the TypeScript union', () => {
   });
 
   it('a handoff can never mint the DEFAULT audience', () => {
-    // `HandoffService.mint` types its `audience` parameter as the FULL union,
-    // so `mint(user, session, 'account')` type-checks and this CHECK is the only
-    // thing stopping it. Whoever widens it for a future audience trips this test
+    // THE RISK MOVED AND THE CHECK DID NOT. This said `HandoffService.mint`
+    // types its `audience` PARAMETER as the full union — true until M16 PR1,
+    // which deleted the parameter precisely because a knob nobody turns is one
+    // a later milestone finds and assumes the database agrees with. What
+    // replaced it is `const HANDOFF_AUDIENCE: SessionAudience = 'vault'`
+    // (`handoff.service.ts`), annotated with the SAME full union — so
+    // reassigning it to `'account'` still type-checks and this CHECK is still
+    // the only thing stopping it. Whoever widens either one trips this test
     // rather than discovering the consequence.
     const handoffs = effectiveCheck('auth_handoffs');
     expect(handoffs?.length).toBeGreaterThan(0);

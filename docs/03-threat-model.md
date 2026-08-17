@@ -69,9 +69,35 @@ between deploy, data, and key administration" — describing a system that has
 never had an operator, a production environment, or an operator platform. M21
 rewrote it into what is TRUE, what M21 SHIPS, and what is DEFERRED WITH AN
 OWNER, because a control asserted in the present tense is what stops the next
-person looking. Twelve separate deferrals across §§6a–6y point at "the TB7
-operator platform"; the reason they accumulated invisibly is that TB7 appeared
-in no milestone list and had therefore never been sized.
+person looking. The reason they accumulated invisibly is that TB7 appeared in
+no milestone list and had therefore never been sized.
+
+**How many, and how to count them again.** M21's own residual sweep is the
+answer: every §6 bullet now carries a leading disposition tag, so the deferrals
+owned by this milestone are `grep -c '\[OWNER: M21\]' docs/03-threat-model.md`
+— **18** at the time of writing, spread across ten subsections, with a further
+15 lines naming TB7 or "the operator platform" across eleven.
+
+The figure has moved four times and never downward — five, twelve, fourteen,
+eighteen — and each move was somebody actually measuring, which is the argument
+restated rather than an embarrassment. This paragraph first said "twelve
+separate deferrals across §§6a–6y" and both halves were wrong in the same
+direction as the defect the milestone exists to fix: twelve was a hand count
+taken before the sweep tagged anything, and §§6a–6y stops short of §6z and
+§6aa — M21's own deltas — so a range written down before the sections exist
+undercounts by construction.
+
+Fourteen became eighteen because PR2.5 found the SWEEP under-collecting. The
+fence's corpus is bullets, and five declared residual regions (§6b twice, §6f,
+§6s, §6t) stood over PROSE PARAGRAPHS — recognized markers, opened blocks, zero
+bullets collected, every assertion passing over content it never saw. §6b's two
+were TB7 deferrals, so the milestone scoped from this count had not counted its
+own. `packages/contracts/test/threat-model-residuals.spec.ts` now fails on a
+declared region that collects nothing, which is the narrower and worse case than
+the bound PR0 stated: not "outside a declared region and unmarked", but INSIDE
+one and still invisible. The tag is the count; a number in prose beside a
+greppable mark is a second copy free to drift, and this one drifted while the
+fence that was supposed to hold it green went green.
 
 *True today, and cheaply so.* There is no standing production access because
 there is no production (E1, the cloud half, is blocked on a business decision).
@@ -117,9 +143,14 @@ that has not opted in, which is what `vault` and `extension` buy — and that va
 is unrealized until an operator has a surface giving them a reason to hold one.
 Shipping it earlier would be machinery whose consumer arrives later, which is the
 gap this milestone exists to close. It also needs a mint path that does not
-exist: `auth_handoffs` carries `CHECK (audience = 'vault')`, a single value rather
-than a list, so no existing ceremony can produce one. `OperatorGate` stays the
-control in every case.
+exist: `auth_handoffs` carries `CHECK (audience IN ('vault'))` — a list with
+exactly one member, not an equality — so no existing ceremony can produce one.
+The form matters as much as the value: `packages/auth-guard/test/session-audience.spec.ts`
+parses the `IN (…)` shape and now REFUSES any audience CHECK it cannot read, so
+rewriting this constraint as `audience = 'vault'` would mean the same thing to
+Postgres and blind the fence that guards the whole vocabulary. An earlier
+version of this paragraph quoted the equality form, which is precisely the
+"correction" that would do it. `OperatorGate` stays the control in every case.
 
 *Operator actions are audited but NOT rate-limited* — **M21 PR3** for the
 surface, and the bound itself is deferred to the milestone that gives it a
@@ -380,33 +411,42 @@ told about is not a control.
   through a service-credential internal route, closing the M4 gap where the
   hold was enforced but had no writer.
 
-**Residual added by PR2.** A settlement operator can approve every stage of a
-case they did not report, so an insider operator plus a colluding "executor"
-designation is a two-party path to an estate. Bounded by: the executor
-designation must already exist in the decedent's own contact records (made
-before the death), the reporter≠reviewer and requester≠approver rules, the
-waiting period and owner-void that precede any of it, and a fully audited
-trail. Reducing it further needs M-of-N operator approval, which belongs to
-the TB7 operator-platform milestone alongside JIT elevation.
+**Residual added by PR2.**
 
-**Residuals accepted.** The liveness interlock narrows the lockout race to a
-single statement but cannot erase it: a step-up committing inside that
-statement's window is still missed. The blast radius is bounded — after the
-transition, sessions are revoked and the status allowlist blocks every session
-lookup, so the step-up buys nothing and the attempt is preserved in
-`auth_events` for after-the-fact review — and closing it completely would
-require the step-up path to take the users row lock, which is the right shape
-for the operator-platform milestone rather than a settlement-side fix. A
-settlement operator is a high-value target; the
-interim allowlist has no JIT elevation or peer approval (TB7 milestone), and
-one operator both approves and confirms a case (two actions, one human) —
-bounded by reviewer≠reporter, the liveness re-check, the owner's void, and
-the append-only audit trail; PR2's stage approvals add multi-party depth.
-Rate limiting on intake is STILL OPEN, and M17 PR1 did not close it: that change
-bounds identity's own login and register routes (§6k), not settlement's intake,
-which authenticates its callers and would need a per-reporter bound of its own.
-Per-reporter noise remains bounded by the linked-contact gate and the
-one-open-case index.
+- **[OWNER: M21]** *An insider operator plus a colluding executor is a
+  two-party path to an estate.* A settlement operator can approve every stage
+  of a case they did not report. Bounded by: the executor designation must
+  already exist in the decedent's own contact records (made before the death),
+  the reporter≠reviewer and requester≠approver rules, the waiting period and
+  owner-void that precede any of it, and a fully audited trail. Reducing it
+  further needs M-of-N operator approval, which belongs to the TB7
+  operator-platform milestone alongside JIT elevation.
+
+**Residuals accepted.**
+
+- **[OWNER: M21]** *The liveness interlock narrows the lockout race to a single
+  statement and cannot erase it.* A step-up committing inside that statement's
+  window is still missed. The blast radius is bounded — after the transition,
+  sessions are revoked and the status allowlist blocks every session lookup, so
+  the step-up buys nothing and the attempt is preserved in `auth_events` for
+  after-the-fact review — and closing it completely would require the step-up
+  path to take the users row lock, which is the right shape for the
+  operator-platform milestone rather than a settlement-side fix.
+- **[OWNER: M21]** *The interim allowlist has no JIT elevation and no peer
+  approval, and one operator both approves and confirms a case* — two actions,
+  one human, on the docs/03 §5.1 chain. A settlement operator is a high-value
+  target. Bounded by reviewer≠reporter, the liveness re-check, the owner's
+  void, and the append-only audit trail; PR2's stage approvals add multi-party
+  depth. M21 PR1 gave the allowlist an audited ceremony, which is attribution
+  rather than elevation — the two controls named here are still owed.
+- **[OWNER: M21]** *Rate limiting on settlement intake is still open, and M17
+  PR1 did not close it.* That change bounds identity's own login and register
+  routes (§6k); settlement's intake authenticates its callers and would need a
+  per-reporter bound of its own. Noise remains bounded by the linked-contact
+  gate and the one-open-case index. Filed against the same owner as §6z's
+  unbounded operator actions because both are the same absent machinery in the
+  same service, and splitting them across milestones is how one of them gets
+  built and the other keeps its exemption.
 
 **Service-credential scoping (added by the M7 security review, 2026-07-28).**
 The internal service credentials introduced for the account lock and the §6a
@@ -830,25 +870,27 @@ nothing. A row whose `dek_id` is no longer the owner's active DEK (crypto-shred)
 is refused rather than re-stamped, so an erased record cannot be made to look
 intact.
 
-**RECORDED, OWED BY PR2 (§4 TB4).** Contact and family-member reads decrypt
-every field, one audited `crypto.field.decrypted` each, so a list view is a
-bulk-decrypt surface: twenty contacts is roughly a hundred events on the owner's
-own trail per page load, and it blunts the per-principal decrypt-rate baseline
-this document calls the single most important insider control. The DEK cache
-means it is not a hundred KMS operations, which is the weaker half of the
-control. PR1 does not change it; PR2 owes a narrowed list projection under M12's
-audited-decrypt-volume rule, and this paragraph is the requirement, not an
-observation.
+**RECORDED, OWED BY PR2 (§4 TB4).**
 
-*DISCHARGED FOR CONTACTS, DELIBERATELY NOT FOR FAMILY (PR2).* The contact list
-now spends one audited decrypt per row and the values have no field on the wire
-at all. The FAMILY list still decrypts every field it stores, and that is a
-scope-down with a reason rather than an oversight: the household panel RENDERS
-name, date of birth, minority and notes, so there is nothing to narrow — four of
-five contact fields were unused by a list, and zero of four family fields are.
-The volume differs by an order of magnitude too (a household is a handful of
-rows; an address book is not). If a future surface lists family members without
-showing them, it inherits this requirement.
+- **[CLOSED: §6f]** *A list view was a bulk-decrypt surface.* Contact and
+  family-member reads decrypt every field, one audited
+  `crypto.field.decrypted` each, so twenty contacts was roughly a hundred
+  events on the owner's own trail per page load — blunting the per-principal
+  decrypt-rate baseline this document calls the single most important insider
+  control. The DEK cache means it was never a hundred KMS operations, which is
+  the weaker half of the control. PR1 did not change it; PR2 owed a narrowed
+  list projection under M12's audited-decrypt-volume rule, and that paragraph
+  was the requirement rather than an observation. **Discharged for contacts by
+  PR2**: the contact list now spends one audited decrypt per row and the values
+  have no field on the wire at all.
+- **[ACCEPTED]** *Deliberately NOT discharged for family.* The family list
+  still decrypts every field it stores, and that is a scope-down with a reason
+  rather than an oversight: the household panel RENDERS name, date of birth,
+  minority and notes, so there is nothing to narrow — four of five contact
+  fields were unused by a list, and zero of four family fields are. The volume
+  differs by an order of magnitude too (a household is a handful of rows; an
+  address book is not). If a future surface lists family members without
+  showing them, it inherits the PR2 requirement above.
 
 ## 6g. Threat-model delta — M13 the contact link ceremony (2026-08-06)
 
@@ -2833,13 +2875,16 @@ separate clusters and hold no profile credential), so it belongs to a milestone
 that can take that decision; a new enforced pair arrives in the same change as
 the code that reads it, which is what the fence forces.
 
-**Two residuals.** Rows written before the vocabulary closed are inert and remain
-in the table: they render with their label and stay withdrawable rather than
-being hidden or degraded to a bare token, because an owner must be able to see
-and remove a permission that exists. And the DDL keeps its open `TEXT` column
-deliberately — `permission_grants` is docs/02 §2 verbatim, migrations are
-append-only, and narrowing it would need a pre-flight over exactly those inert
-rows; the API is the enforcement point and the reader ignores everything else.
+**Two residuals.**
+
+- **[ACCEPTED]** *Rows written before the vocabulary closed are inert and remain
+  in the table.* They render with their label and stay withdrawable rather than
+  being hidden or degraded to a bare token, because an owner must be able to
+  see and remove a permission that exists.
+- **[ACCEPTED]** *The DDL keeps its open `TEXT` column deliberately.*
+  `permission_grants` is docs/02 §2 verbatim, migrations are append-only, and
+  narrowing it would need a pre-flight over exactly those inert rows; the API
+  is the enforcement point and the reader ignores everything else.
 
 ## 6t. Threat-model delta — a mail the carrier refused was recorded as delivered (2026-08-14)
 
@@ -2919,11 +2964,17 @@ started deriving a delivery fact any other way turns it red. The same fence
 forbids hand-rolled `accepted:` literals in identity's test directory, where
 four named constants typed as `SendOutcome` now carry the outcomes.
 
-**Residuals, stated.** The scan is on the identifier, so a destructure is caught
-and `Object.values(outcome)[0]` is not; closing that wants the TypeScript AST,
-which is more than a fence should carry. The constants' `SendOutcome` annotation
-is the real shape check — it is the one place no cast intervenes — and it is a
-convention the fence enforces rather than something the compiler can.
+**Residuals, stated.**
+
+- **[ACCEPTED]** *The scan is on the identifier, so a destructure is caught and
+  `Object.values(outcome)[0]` is not.* Closing that wants the TypeScript AST,
+  which is more than a fence should carry. The constants' `SendOutcome`
+  annotation is the real shape check — it is the one place no cast intervenes —
+  and it is a convention the fence enforces rather than something the compiler
+  can.
+- **[ACCEPTED]** *Two of the three wire translations have no test of their own.*
+  See the paragraph below: the fence bounds them (they may only narrow) and
+  does not close them.
 
 The three adapters are left as they are, but the reason is narrower than an
 earlier draft claimed. Only VAULT doubles the client port faithfully

@@ -2886,22 +2886,37 @@ deviating from them, stop and propose the change with rationale — do not silen
   routes (`reset`, `createKeyset`, `configure`, `rearm`, `revoke`,
   `publishRecoveryKey`) AND the two SRP legs an extension cannot function
   without. ADMITTED: vault's `keysetStatus`, `startUnlock`, `finishUnlock`,
-  `listItems`, `lock`, plus identity's `session`, `stepUp`, `logout`,
-  `refresh`; PR4 adds `createItem` and `updateItem` in the same change as the
-  callers. `getItem` is deliberately OUT — `listItems` already returns full
+  `listItems`, `lock`, plus identity's `session`, `stepUp` and `logout`; PR4
+  adds `createItem` and `updateItem` in the same change as the callers.
+  `refresh` WAS LISTED HERE AS A FOURTH IDENTITY ADMISSION AND IS NOT ONE —
+  `AUDIENCE_ROUTE_ADMITTERS.extension` names three identity routes, and
+  `POST /v1/auth/refresh` carries no guard at all, being unauthenticated by
+  construction (the refresh token in the body IS the credential). The
+  extension reaches it, and the reason is a different security argument
+  entirely: there is no audience to admit, and a refreshed credential cannot
+  become something more powerful only because `rotateTokens` is an in-place
+  `UPDATE` whose SET list omits `audience` — an implementation accident this
+  log records separately and M16 PR1 pinned with a test. Conflating "the
+  extension may call it" with "an audience decision admits it" hides exactly
+  that distinction. `getItem` is deliberately OUT — `listItems` already returns full
   ciphertext blobs, so it buys nothing an autofill client needs and every
   handler left out is authority not granted. The extension must NOT be added to
   vault's `ALLOWED_SESSION_AUDIENCES`: `CallerGuard.audiencesFor` returns
   `[...new Set([...serviceWide, ...perRoute])]`, a union that widens and can
   never narrow, so a service-wide grant would hand it all 23 routes including
   `release` (the one moment the platform half of a recovery key leaves the
-  service) and `request` (which starts a §5.2 waiting period). EIGHTEEN vault
-  routes are refused — corrected from the "sixteen" first written here, which
-  came from a hand-listed set that silently omitted `createItem`, `getItem` and
-  `updateItem`; `apps/services/vault/test/session-audience.spec.ts` DERIVES the
-  refused set from the controller prototypes and asserts the count, so the
-  number is measured rather than remembered, with the worst fourteen also named
-  individually on the `mintHandoff` precedent.
+  service) and `request` (which starts a §5.2 waiting period). EVERY OTHER
+  VAULT ROUTE IS REFUSED, and this sentence deliberately no longer says how
+  many: `apps/services/vault/test/session-audience.spec.ts` DERIVES the refused
+  set from the controller prototypes and asserts the count, with the worst of
+  them also named individually in `MUST_REFUSE` on the `mintHandoff`
+  precedent — so the numbers live where they are measured. Both figures this
+  entry used to carry were wrong by M21: it said EIGHTEEN refused, true when
+  written and made false two PRs later by its own next sentence (PR4a moved
+  `createItem` and `updateItem` into the admitted set, so the spec asserts
+  sixteen), and it said the worst FOURTEEN were named when `MUST_REFUSE` holds
+  twelve. A count in prose beside a fence that derives one is a second copy
+  free to drift, and this one drifted in both directions at once.
 - 2026-08-10 — M16 credential model, TAKEN AGAINST THE RECOMMENDATION AND
   RECORDED AS SUCH: pairing yields a refresh-capable `extension`-audience
   session rather than a device credential exchanged per unlock. Verified in
@@ -6745,12 +6760,20 @@ deviating from them, stop and propose the change with rationale — do not silen
   the mechanism, not a typo: TB7 looked small, so deferring to it looked cheap,
   so more work was deferred to it, which made it look smaller relative to what
   it owed. THE ENABLING MEASUREMENT, which I verified myself rather than
-  accepting: the route↔consumer fence's `EXEMPT_SETTLEMENT_REPORTING` group is
-  mislabelled — 25 zero-consumer routes, but twelve of them sit in
+  accepting: settlement carries 25 zero-consumer routes, and the group holding
+  most of them is MISLABELLED — twelve of `EXEMPT_TB7_OPERATOR`'s sit in
   `admin.controller.ts`, whose own header says a grieving executor should not
   face an MFA prompt to look at a checklist. Those are EXECUTOR routes. The
   true operator-only surface is ~10, which is what makes a minimum slice
   possible at all and what splits M21 from M23.
+  CORRECTED, and the correction is the same class of defect the entry is
+  about: this first named `EXEMPT_SETTLEMENT_REPORTING` as the group holding
+  the 25 and the twelve. It holds NEITHER. Measured — 8 routes in
+  `EXEMPT_SETTLEMENT_REPORTING` (reporter/owner-facing) and 17 settlement
+  routes in `EXEMPT_TB7_OPERATOR`; 25 is their SUM across two groups, and the
+  twelve admin-controller routes are all in the second. Citing the wrong
+  constant sends the next reader to a group of eight looking for twenty-five,
+  which is exactly how an item stays uncosted.
 - 2026-08-17 — M21 PR0 IS DOCS AND A FENCE AND NO PRODUCT CODE, which is the
   M13 "order is the point" precedent: the milestone that exists because prose
   hid twelve deferrals does not begin by writing more prose. THE §4 TB7 BLOCK
@@ -6934,8 +6957,12 @@ deviating from them, stop and propose the change with rationale — do not silen
   ...perRoute])]`, so decorating an operator route yields
   `['account','operator']`: every ordinary account session, admitted exactly as
   today. (2) NOTHING CAN MINT ONE: `auth_handoffs` carries
-  `CHECK (audience = 'vault')`, a single value rather than a list, and a new
-  ceremony at identity cannot be operator-gated — identity holds no settlement
+  `CHECK (audience IN ('vault'))` — a list with exactly one member, and NOT the
+  `= 'vault'` equality this entry first quoted, a misquote that matters because
+  the session-audience fence parses the `IN (…)` shape and rewriting the DDL to
+  match the prose would blind it (M21 PR2.5 added a refusal for any audience
+  CHECK it cannot read, precisely so that rewrite turns red instead of quiet) —
+  and a new ceremony at identity cannot be operator-gated — identity holds no settlement
   credential, there is no dblink between the auth and core clusters, and
   identity has no concept of a role. (3) ITS VALUE IS SUBTRACTIVE — what `vault`
   and `extension` buy is that every service which has NOT opted in refuses the
@@ -7085,3 +7112,99 @@ deviating from them, stop and propose the change with rationale — do not silen
   gate's own spec, docs/03 §6aa, docs/04's table and the commit message. The
   four shapes were real and the count of paths was not, which is the harm — a
   wrong measurement in shipped prose is what stops the next person taking it.
+- 2026-08-17 — M21 PR2.5 IS A COUNT SWEEP WITH ONE REAL DEFECT IN IT, split out
+  of PR3 on the M14 PR0 rule that a live defect must not hide inside a feature
+  branch. THE DEFECT: a single operator evidence read emitted TWO audit events
+  DISAGREEING ABOUT THE ACTOR CLASS. M18 PR1 corrected the `crypto.field.decrypted`
+  side to `actorType: 'operator'` and left `document.evidence.accessed` nine
+  lines away on the audit wrapper's `'user'` default — in the trail kept for
+  exactly the docs/03 §5.1 investigations, in a method whose own docstring says
+  the actor is not the owner. The M17 PR6 shape verbatim (a correction applied
+  where the failure was convenient to catch rather than everywhere it happens),
+  and the test covering it asserted only the decrypt event, so the suite was
+  green over a pair that contradicted each other. It asserts the PAIR now, which
+  is the only assertion that can see the property — the same lesson as M21 PR2's
+  two settlement tests that between them asserted a 403/404 oracle and called it
+  the opposite.
+- 2026-08-17 — THE AUDIENCE FENCE COULD BE BLINDED BY VALID SQL, closed before
+  M21 PR3 writes the migration that would have done it. `session-audience.spec.ts`
+  parses `CHECK (audience IN (…))` and every assertion in the file reads
+  `effectiveCheck` = "the LAST statement to define a CHECK" — so a migration
+  written `CHECK (audience = 'operator')` is not merely unmeasured, it hands
+  every assertion an OLDER constraint and they pass against a database that no
+  longer matches. Proven by planting `999_mutation_probe.sql` in that form: the
+  new refusal went red and the other sixteen tests stayed GREEN, which is the
+  blindness demonstrated rather than argued. The fence now detects any CHECK
+  constraining `audience` in a shape it cannot read and fails naming the file.
+  SHARPEST PART: docs/03 and this log both MISQUOTED the shipped
+  `auth_handoffs` DDL as `CHECK (audience = 'vault')` when it is
+  `CHECK (audience IN ('vault'))` — so the likeliest route to blinding the fence
+  was somebody "correcting" the SQL to match the prose. Both corrected; a
+  misquote of a security constraint is an instruction to reintroduce it.
+- 2026-08-17 — AND THE RESIDUAL FENCE PR0 SHIPPED WAS UNDER-COLLECTING, found by
+  adding one anti-vacuity check to it. Its corpus is `- ` bullets, and FIVE
+  declared residual regions (§6b twice, §6f, §6s, §6t) stand over PROSE
+  PARAGRAPHS: the marker is recognized, the block opens, zero bullets are
+  collected, and every assertion in the file passes over content it never saw.
+  §6b's two were TB7 deferrals, so THE MILESTONE SCOPED FROM THAT COUNT HAD NOT
+  COUNTED ITS OWN — the `[OWNER: M21]` total went 14 → 18 once they were tagged,
+  the fourth upward move of a figure that has never once been revised down
+  (five → twelve → fourteen → eighteen). PR0 stated its bound as "a residual
+  outside a declared region and using none of the marker phrases is invisible";
+  this is narrower and worse — INSIDE a declared region and still invisible. A
+  region that collects nothing is now an error naming the file, line and label.
+  THE GENERAL RULE, which this repo keeps arriving at from new directions: an
+  anti-vacuity check belongs on every LEVEL of a scan, not just its total. This
+  fence already asserted that the corpus was non-empty overall, which is exactly
+  why five empty regions inside it were invisible.
+- 2026-08-17 — THE REST OF PR2.5 IS TEN COUNTS AND CITATIONS THAT ROTTED, and
+  the reason they are worth a commit is that every one of them is a MEASUREMENT
+  a reader would take on trust. A fence test named "the five" iterating seven
+  (M16 PR4a widened `EXTENSION_ROUTES` and the name kept the old number); this
+  log claiming EIGHTEEN refused vault routes where the deriving spec asserts
+  sixteen, and "the worst fourteen" where `MUST_REFUSE` holds twelve; the same
+  entry listing `identity:refresh` as a fourth admitted route when it carries no
+  guard at all and is unauthenticated by construction — a conflation that hides
+  a completely different security argument (nothing to admit; the audience
+  survives refresh only because `rotateTokens` omits the column); my own M21
+  entry naming `EXEMPT_SETTLEMENT_REPORTING` as the group holding 25 routes and
+  the twelve admin-controller ones when it holds NEITHER (8 there, 17 in
+  `EXEMPT_TB7_OPERATOR`, and 25 is their sum); settlement's `config.ts` calling
+  itself "TWO credentials" beside comments numbered THIRD and FOURTH; its README
+  crediting `NOTIFY_MODE` to a milestone that shipped twelve milestones ago; and
+  my own PR2 `assertCanOrNotFound` docstring crediting one method with five
+  routes when four of them reach the uniform 404 through `admin.service.ts`
+  throwing directly, because that controller has no PEP at all. THE PATTERN IS
+  ONE PATTERN: a number or a name in prose beside a mechanism that derives one
+  is a second copy free to drift, and it drifts silently because nothing
+  compares them. Where a count had a deriving spec the prose now points at it
+  and states none; where the count IS the point it is measured and the
+  measurement is named.
+- 2026-08-17 — MIGRATION 004's STALE CITATION IS DELIBERATELY NOT FIXED, and
+  saying so is the fix. It names `@estate/auth-guard` as where `SESSION_AUDIENCES`
+  lives; M16 PR1 moved the definition to `@estate/contracts` so the BFF could
+  label sessions without depending on a NestJS guard package. The citation still
+  RESOLVES — auth-guard re-exports — and the migrator checksums every applied
+  file, so editing a comment there raises `MigrationDriftError` on every database
+  that has run it and blocks the next migration until it is restored. The M16
+  PR4a precedent (`006_extension_audience.sql` still says "five vault routes")
+  applied to a second case: a migration records what was true when it ran, and
+  the live fact goes in the spec the migration points at — which is where the
+  correction now is, in `session-audience.spec.ts`'s own header.
+- 2026-08-17 — THE NINTH WAY A MUTATION HARNESS HAS LIED HERE, and it is the
+  first that made every GOOD run look broken. JEST WRITES ITS SUMMARY LINE TO
+  STDERR, INCLUDING ON SUCCESS, and the harness read `execFileSync`'s return
+  value — stdout only — so every passing run reported `NO SUMMARY LINE` and all
+  five cases printed FAIL while their mutations were behaving perfectly. The
+  failure direction was the harmless one this time (RED read as unknown, not
+  GREEN read as proven), but the mechanism is identical to the 2026-08-10 case
+  of grepping for `✕` outside verbose mode: A CONCLUSION ABOUT A TEST DRAWN FROM
+  A MEASUREMENT THAT NEVER HAPPENED. Merge the streams (`sh -c '… 2>&1'`) and
+  assert on the summary line. Also adopted here and worth keeping: A CHECK ON AN
+  ALREADY-CORRECT TREE CANNOT BE TESTED BY DELETING THE CHECK — that goes green
+  for want of a defect rather than for want of a checker — so each fence is
+  probed TWICE, once with the defect planted (expect red) and once with the
+  defect planted AND the check neutered (expect green), which is the pair that
+  identifies the check as the thing that saw it. The second probe is what proved
+  §6b-back-to-prose is invisible to a residual fence with no empty-region check:
+  9 of 9 green over two untagged TB7 deferrals.

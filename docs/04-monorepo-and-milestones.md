@@ -5507,13 +5507,26 @@ corpus narrowed back to one file, and `RegisterSchema.password` dropped to
 
 ### M21 — TB7 operator platform, minimum slice (approved 2026-08-17)
 
-**TB7 was named as the owner of twelve separate deferrals and appeared in no
-milestone list.** That is the whole argument. `docs/04`'s own "Later milestones"
-paragraph said it was "named as owning milestone in five places"; the real count
-is twelve distinct deferred items across nineteen lines of `docs/03` and
-`docs/04`, growing by roughly one per milestone since M14. The mechanism is not
-carelessness — it is that an item nobody has costed is an item everything can
-defer to, and each individual deferral reads as diligence in isolation.
+**TB7 was named as the owner of a dozen-plus separate deferrals and appeared in
+no milestone list.** That is the whole argument. `docs/04`'s own "Later
+milestones" paragraph said it was "named as owning milestone in five places";
+a hand count taken while scoping put it at twelve, and PR0's residual sweep —
+which tags every §6 bullet with its disposition — put it at 14; PR2.5, having
+fixed the sweep, settles it at **18** `[OWNER: M21]` residuals across ten
+subsections of `docs/03`, with TB7 or "the operator platform" named on 15 more
+lines across eleven. It has grown by roughly one per milestone since M14. The
+mechanism is not carelessness — it is that an item nobody has costed is an item
+everything can defer to, and each individual deferral reads as diligence in
+isolation.
+
+Note the count itself moved four times (five → twelve → fourteen → eighteen) and
+never downward, which is the argument restated: the number rose each time
+somebody actually measured, so every figure taken on trust was an undercount.
+The last move was the sweep's own fence under-collecting — five declared
+residual regions stood over prose paragraphs rather than bullets, so they opened
+and collected nothing, and two of the four residuals that surfaced were TB7's
+own. The tag is now the count — `grep -c '\[OWNER: M21\]'` — and this paragraph
+names a figure only because the figure is the point.
 
 **Chosen by a structured selection**, on the M17 precedent: six file-scoped
 evidence lenses measuring the repo rather than its prose, then three judges

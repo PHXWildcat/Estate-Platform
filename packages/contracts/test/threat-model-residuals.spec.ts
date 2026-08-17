@@ -209,7 +209,36 @@ const MENTIONS_RESIDUAL =
  * `every delta declares a residual region` assertion below, which forces the
  * NEXT milestone's residuals to land somewhere the region rule already sees.
  */
-function residuals(): { items: Residual[]; sections: Set<string>; declared: Set<string> } {
+/**
+ * A region marker that opened, and how many bullets it went on to collect.
+ *
+ * A DECLARED REGION THAT COLLECTS NOTHING IS THIS FENCE'S SILENT FAILURE. The
+ * marker is recognized, the block opens, the parser reads on — and if the
+ * residuals under it are written as PROSE PARAGRAPHS rather than as `- `
+ * bullets, every one of them is invisible while the file stays green. That is
+ * not hypothetical: §6b's `Residual added by PR2.` and `Residuals accepted.`
+ * are both declared markers standing over paragraphs, so M21 PR0's sweep
+ * tagged nothing in §6b at all, and the two TB7 deferrals it holds — M-of-N
+ * operator approval, and the users-row-lock fix for the liveness race — were
+ * left out of the count the milestone was scoped from.
+ *
+ * The bound PR0 stated was "a residual outside a declared region and using
+ * none of the marker phrases is invisible". This is narrower and worse: INSIDE
+ * a declared region, and still invisible.
+ */
+interface Region {
+  readonly section: string;
+  readonly line: number;
+  readonly label: string;
+  count: number;
+}
+
+function residuals(): {
+  items: Residual[];
+  sections: Set<string>;
+  declared: Set<string>;
+  regions: Region[];
+} {
   const lines = readFileSync(DOC, 'utf8').split('\n');
   const blockHeading = (line: string): boolean =>
     /^#{3,4}\s/.test(line) && MENTIONS_RESIDUAL.test(line);
@@ -218,8 +247,19 @@ function residuals(): { items: Residual[]; sections: Set<string>; declared: Set<
   const items: Residual[] = [];
   const sections = new Set<string>();
   const declared = new Set<string>();
+  const regions: Region[] = [];
   let section: string | null = null;
   let inBlock = false;
+  let region: Region | null = null;
+
+  /** Open a region, or close the one in force. Both paths run for every line. */
+  const setBlock = (open: boolean, line: number, label: string): void => {
+    if (region !== null && (!open || region.line !== line)) region = null;
+    if (open && section !== null) {
+      region = { section, line, label, count: 0 };
+      regions.push(region);
+    }
+  };
 
   lines.forEach((line, index) => {
     const delta = /^## (6[a-z]?)\./.exec(line);
@@ -227,9 +267,11 @@ function residuals(): { items: Residual[]; sections: Set<string>; declared: Set<
       section = delta[1] as string;
       sections.add(section);
       inBlock = false;
+      region = null;
     }
     if (/^#{2,4}\s/.test(line)) {
       inBlock = blockHeading(line);
+      setBlock(inBlock, index + 1, line.trim());
       if (inBlock && section !== null) declared.add(section);
     } else if (line.startsWith('**')) {
       // A NEW BOLDED LEAD-IN CLOSES THE BLOCK, and this line is load-bearing.
@@ -239,6 +281,7 @@ function residuals(): { items: Residual[]; sections: Set<string>; declared: Set<
       // corpus disagreed with this parser about two bullets.
       const label = boldLabel(line);
       inBlock = label !== null && REGION_MARKERS.includes(label);
+      setBlock(inBlock, index + 1, label ?? line.trim());
       if (inBlock && section !== null) declared.add(section);
     }
 
@@ -254,18 +297,40 @@ function residuals(): { items: Residual[]; sections: Set<string>; declared: Set<
       const text = buf.map((l) => l.trim()).join(' ');
       if (inBlock || residualLanguage.test(text)) {
         items.push({ section, line: index + 1, text });
+        if (region !== null) region.count += 1;
       }
     }
   });
 
-  return { items, sections, declared };
+  return { items, sections, declared, regions };
 }
 
 /** The one tag a bullet may open with. */
 const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]?)\]\*\*/;
 
 describe('docs/03 §6 — every residual declares a disposition', () => {
-  const { items, sections, declared } = residuals();
+  const { items, sections, declared, regions } = residuals();
+
+  it('every DECLARED region actually collects a residual', () => {
+    /*
+     * A REGION THAT OPENS OVER PROSE COLLECTS NOTHING AND SAYS NOTHING.
+     *
+     * The corpus is bullets, so a marker standing over paragraphs is
+     * recognized, opens a block, and yields zero — indistinguishable from a
+     * region whose residuals are all tagged. Every other assertion in this
+     * file then passes over content it never saw, which is the shape M21 PR2.5
+     * found in §6b: two declared markers, two TB7 deferrals underneath them,
+     * and no tag on either, so the milestone scoped from those deferrals
+     * counted neither of its own.
+     *
+     * The remedy in the doc is to write a residual as a bullet. The remedy
+     * here is to refuse to be silent about the difference.
+     */
+    const empty = regions.filter((r) => r.count === 0);
+    expect(
+      empty.map((r) => `docs/03 §${r.section} line ${r.line}: "${r.label}" collected no bullet`),
+    ).toEqual([]);
+  });
 
   it('finds the residual bullets at all (anti-vacuity)', () => {
     // Without this the whole file passes when the parser breaks, which is the

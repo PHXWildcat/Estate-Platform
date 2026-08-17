@@ -193,7 +193,13 @@ describe('vault route audiences match the declaration', () => {
     }
   });
 
-  it('the five admit account and extension, and NOT a bare extension grant', () => {
+  it('the admitted routes admit account AND extension, never extension alone', () => {
+    // NO COUNT IN THE NAME. This read "the five" from M16 PR2 until M21, while
+    // `EXTENSION_ROUTES` held seven — PR4a added createItem and updateItem and
+    // the name kept the old number, which is the shape M16 PR4a already refused
+    // to correct in `006_extension_audience.sql` (a checksummed migration
+    // records what was true when it ran). A test name is not checksummed and
+    // has no such excuse, so it names the property and the list is the count.
     // `AllowSessionAudiences` always prepends the default, and that is what
     // stops a route-level grant from NARROWING: without `account` in the list a
     // decorated route would be reachable from the extension and nowhere else,
