@@ -192,6 +192,38 @@ describe('intake (docs/03 §5.1: reports only OPEN a case)', () => {
 });
 
 describe('review (docs/03 §5.1 control 2: mandatory human review)', () => {
+  it('asks the allowlist on the TRANSACTION handle, not the pool', async () => {
+    // The BEHAVIOURAL half of OperatorGate's handle contract. Until M21 PR2's
+    // review, `InMemoryOperators` discarded its first argument, so nothing
+    // outside the source fence could tell `assertIn(tx, u)` from
+    // `assertIn(this.db, u)` — a double more permissive than the real thing,
+    // which is this repository's recurring shape one layer beneath the
+    // fixtures. `fakeDb()` hands the callback a DISTINCT object, which is what
+    // makes the question answerable at all.
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    h.operators.asked.length = 0;
+
+    await h.service.startReview(OPERATOR, SESSION, caseId);
+
+    expect(h.operators.asked).toHaveLength(1);
+    const [ask] = h.operators.asked;
+    expect(ask?.userId).toBe(OPERATOR);
+    expect(ask?.handle).not.toBe(h.db);
+  });
+
+  it('asks the pool where the caller owns no transaction (queue)', async () => {
+    // The other side of the same contract, so the assertion above is a
+    // statement about WHICH handle rather than about "not the db, ever".
+    const h = linkedHarness();
+    h.operators.asked.length = 0;
+
+    await h.service.queue(OPERATOR);
+
+    expect(h.operators.asked).toHaveLength(1);
+    expect(h.operators.asked[0]?.handle).toBe(h.db);
+  });
+
   it('start requires the operator allowlist; approval starts the wait and locks the account', async () => {
     const h = linkedHarness();
     const caseId = await reportCase(h);
@@ -576,13 +608,30 @@ describe('the estate-wide legal hold (M9 PR2: settlement → documents)', () => 
 });
 
 describe('reads and the operator queue', () => {
-  it('subject, reporter, and operators can read; strangers cannot', async () => {
+  it('subject, reporter, and operators can read; strangers get the SAME not-found an unknown id gets', async () => {
+    // The refusal is NOT_FOUND, and that is the control rather than a detail:
+    // a 403 for a real case beside a 404 for an unknown one tells any
+    // authenticated caller holding an id whether a death case exists for it.
+    // Both answers are compared here, in one test, because the property is
+    // that they are INDISTINGUISHABLE — asserting either alone would pass
+    // while the pair still leaked.
     const h = linkedHarness();
     const caseId = await reportCase(h);
     await expect(h.service.getCase(DECEDENT, caseId)).resolves.toMatchObject({ caseId });
     await expect(h.service.getCase(REPORTER, caseId)).resolves.toMatchObject({ caseId });
     await expect(h.service.getCase(OPERATOR, caseId)).resolves.toMatchObject({ caseId });
-    await expect(h.service.getCase(STRANGER, caseId)).rejects.toThrow(ForbiddenException);
+
+    const real = await h.service.getCase(STRANGER, caseId).catch((e: unknown) => e);
+    const unknown = await h.service
+      .getCase(STRANGER, '00000000-0000-4000-8000-0000000000ff')
+      .catch((e: unknown) => e);
+    expect(real).toBeInstanceOf(NotFoundException);
+    expect((real as NotFoundException).getStatus()).toBe(
+      (unknown as NotFoundException).getStatus(),
+    );
+    expect((real as NotFoundException).getResponse()).toEqual(
+      (unknown as NotFoundException).getResponse(),
+    );
   });
 
   it('the queue is operator-only and lists pre-verification cases', async () => {

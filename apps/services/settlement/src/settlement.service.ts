@@ -26,7 +26,7 @@ import { DocumentsHoldError, type DocumentsHoldPort } from './documents-hold';
 import { EventsService } from './events.service';
 import { IdentityLockError, OwnerAliveError, type IdentityLockPort } from './identity-lock';
 import type { NotificationPort, NotifyOutcome } from './notifications';
-import { OperatorsRepo } from './operators.repo';
+import { OperatorGate } from './operator-gate';
 import { SettingsRepo, DEFAULT_WAITING_PERIOD_DAYS } from './settings.repo';
 import { TasksRepo } from './tasks.repo';
 import { generateTasks } from './task-template';
@@ -136,7 +136,7 @@ export class SettlementService {
     private readonly db: Db,
     private readonly cases: CasesRepo,
     private readonly attempts: ContactAttemptsRepo,
-    private readonly operators: OperatorsRepo,
+    private readonly gate: OperatorGate,
     private readonly settings: SettingsRepo,
     private readonly tasks: TasksRepo,
     private readonly coreReads: CoreReadsRepo,
@@ -197,7 +197,12 @@ export class SettlementService {
     input: ProviderReportInput,
   ): Promise<CaseDto> {
     await this.assertNotificationsUsable();
-    await this.assertOperator(operator);
+    // On the POOL, and that is the correct handle here: this route owns no
+    // transaction — `insertCase` opens its own, and it is shared with the
+    // trusted-contact path, whose gate is the linked-contact check rather than
+    // the allowlist. A caller that owns a transaction asks inside it; one that
+    // does not asks the pool (OperatorGate.is).
+    await this.gate.assertIn(this.db, operator);
     if (input.decedentUserId === operator) {
       throw new BadRequestException({ error: 'invalid_request' });
     }
@@ -232,9 +237,14 @@ export class SettlementService {
     caseId: string,
     input: EvidenceInput,
   ): Promise<CaseDto> {
-    const isOperator = await this.operators.isOperator(this.db, actor);
     const now = this.clock();
+    let isOperator = false;
     const row = await this.db.withTransaction(actor, async (tx) => {
+      // Resolved on `tx`, not the pool: the answer that authorizes this write
+      // belongs to the transaction that performs it (OperatorGate.is). It is
+      // hoisted out because the audit event below reports the capacity the
+      // caller acted in.
+      isOperator = await this.gate.is(tx, actor);
       const locked = await this.cases.lockById(tx, caseId);
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
@@ -265,16 +275,20 @@ export class SettlementService {
   // ------------------------------------------------------------------- review
 
   async startReview(operator: string, sessionId: string, caseId: string): Promise<CaseDto> {
-    await this.assertOperator(operator);
     const now = this.clock();
     const row = await this.db.withTransaction(operator, async (tx) => {
+      // BEFORE lockById, deliberately: a non-operator must be refused without
+      // learning whether the case id names anything (the uniform-404 rule).
+      // INSIDE the transaction, so the allowlist answer and the row it
+      // authorizes come from one handle — see OperatorGate.is.
+      const isOperator = await this.gate.assertIn(tx, operator);
       const locked = await this.cases.lockById(tx, caseId);
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
       }
       this.authz.assertCan(
         operator,
-        true,
+        isOperator,
         'review',
         caseResource(locked.id, locked.decedent_user_id, locked.reported_by),
       );
@@ -300,18 +314,18 @@ export class SettlementService {
     caseId: string,
     input: ReviewDecisionInput,
   ): Promise<CaseDto> {
-    await this.assertOperator(operator);
     const now = this.clock();
     let outcome: { row: CaseRow; waitingPeriodEnds: Date | null; restored: boolean };
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
+        const isOperator = await this.gate.assertIn(tx, operator);
         const locked = await this.cases.lockById(tx, caseId);
         if (!locked) {
           throw new NotFoundException({ error: 'not_found' });
         }
         this.authz.assertCan(
           operator,
-          true,
+          isOperator,
           'review',
           caseResource(locked.id, locked.decedent_user_id, locked.reported_by),
         );
@@ -406,6 +420,11 @@ export class SettlementService {
         if (!locked) {
           throw new NotFoundException({ error: 'not_found' });
         }
+        // `false` is DELIBERATE and is not the literal M21 PR2 removed. This
+        // is the OWNER's kill switch, and the owner is evaluated purely as the
+        // decedent: measuring the allowlist here would WIDEN the decision for
+        // an owner who happens also to be an operator, which is the wrong
+        // direction on the one route a subject uses against their own case.
         this.authz.assertCan(
           owner,
           false,
@@ -459,19 +478,19 @@ export class SettlementService {
    * confirmation attempt becomes the void, audited as such.
    */
   async confirmVerification(operator: string, sessionId: string, caseId: string): Promise<CaseDto> {
-    await this.assertOperator(operator);
     const now = this.clock();
     let outcome: { row: CaseRow; voided: boolean };
     let taskCount = 0;
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
+        const isOperator = await this.gate.assertIn(tx, operator);
         const locked = await this.cases.lockById(tx, caseId);
         if (!locked) {
           throw new NotFoundException({ error: 'not_found' });
         }
         this.authz.assertCan(
           operator,
-          true,
+          isOperator,
           'verify',
           caseResource(locked.id, locked.decedent_user_id, locked.reported_by),
         );
@@ -589,8 +608,11 @@ export class SettlementService {
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    const isOperator = await this.operators.isOperator(this.db, actor);
-    this.authz.assertCan(
+    const isOperator = await this.gate.is(this.db, actor);
+    // NOT-FOUND on a deny: the row was located BY the id under authorization,
+    // so a 403 here would confirm that a guessed case id names a real death
+    // case while an unknown one answered 404 (see assertCanOrNotFound).
+    this.authz.assertCanOrNotFound(
       actor,
       isOperator,
       'read',
@@ -608,7 +630,7 @@ export class SettlementService {
 
   /** The operator review queue (documented row check: allowlist is the gate). */
   async queue(operator: string): Promise<CaseDto[]> {
-    await this.assertOperator(operator);
+    await this.gate.assertIn(this.db, operator);
     const now = this.clock();
     const rows = await this.cases.listOpenForReview(this.db);
     return rows.map((r) => toDto(r, now));
@@ -631,6 +653,7 @@ export class SettlementService {
     sessionId: string,
     input: SettingsInput,
   ): Promise<{ waitingPeriodDays: number }> {
+    // `false` deliberately, on the owner's own settings — see voidCase.
     this.authz.assertCan(owner, false, 'manage', settingsResource(owner));
     const days = await this.db.withTransaction(owner, async (tx) => {
       const open = await this.cases.findNonTerminalByDecedent(tx, owner);
@@ -661,7 +684,7 @@ export class SettlementService {
     version: number,
   ): Promise<EvidenceReadAnswer> {
     const refused: EvidenceReadAnswer = { allowed: false, caseId: null, ownerUserId: null };
-    if (!(await this.operators.isOperator(this.db, actor))) {
+    if (!(await this.gate.is(this.db, actor))) {
       return refused;
     }
     const row = await this.cases.findByDocumentEvidence(this.db, documentId, version);
@@ -765,12 +788,6 @@ export class SettlementService {
         throw new ConflictException({ error: 'case_exists' });
       }
       throw err;
-    }
-  }
-
-  private async assertOperator(userId: string): Promise<void> {
-    if (!(await this.operators.isOperator(this.db, userId))) {
-      throw new ForbiddenException({ error: 'forbidden' });
     }
   }
 

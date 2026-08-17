@@ -5578,15 +5578,25 @@ because at that point the value lens becomes the one with real inputs.
   what M21 ships and what is deferred with an owner; tag every residual in §6
   with a disposition from a closed vocabulary; ship the fence that keeps it true.
 - **PR1 — the operator grant ceremony. SHIPPED** (see the record below).
-- **PR2 — the operator session audience.** The known trap is not hypothetical:
-  `AllowSessionAudiences` unconditionally prepends `account` and
-  `CallerGuard.audiencesFor` returns a union that widens and can never narrow, so
-  a route decorated with a new audience would ALSO admit every ordinary account
-  session. `assertOperator` stays the control; the audience is defence in depth,
-  and the code says which is which.
-- **PR3 — the operator surface.** Queue, review, verify, close, stage decisions,
-  distribution approval. Flip the exemptions to `consumed()` in the same change,
-  because M20 PR1's stale-exemption check fires the moment a consumer appears.
+- **PR2 — hardening the enforcement that already ships. SHIPPED, and it is NOT
+  what this line said.** It said "the operator session audience", and measuring
+  the machinery before building it showed that shipping the audience here buys
+  nothing and shipping it in PR3 buys the same thing at the moment it has a
+  consumer — so PR2 became the hardening the audience was going to sit on top
+  of. The measurement is recorded below; the scope change is recorded here
+  rather than silently absorbed, because a plan that quietly re-aims is a plan
+  nobody can audit.
+- **PR3 — the operator surface, WITH the session audience.** Queue, review,
+  verify, close, stage decisions, distribution approval. Flip the exemptions to
+  `consumed()` in the same change, because M20 PR1's stale-exemption check fires
+  the moment a consumer appears. The audience ships here because this is where
+  an operator first has a reason to hold one, and because its value is
+  SUBTRACTIVE — every service that has not opted in refuses it — which is
+  unmeasurable until something mints one. The known trap stands and the code
+  must say which control is which: `AllowSessionAudiences` unconditionally
+  prepends `account` and `CallerGuard.audiencesFor` returns a union that widens
+  and can never narrow, so decorating a settlement route ALSO admits every
+  ordinary account session. `OperatorGate` stays the control.
 - **PR4 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7.
@@ -5657,6 +5667,155 @@ the catch, which reproduces the live failure verbatim.
 Threat-model delta and residuals: `docs/03` §6z. §4 TB7's operator-identity
 paragraph is rewritten in the same PR — it described the pre-PR1 state and would
 otherwise have shipped contradicting the code beneath it.
+
+#### M21 PR2 — hardening the enforcement, and why it is not the audience (shipped)
+
+**The scope change came from measuring the machinery before building on it.**
+The plan said PR2 ships the operator session audience as defence in depth. Three
+facts, each read out of the shipped code rather than reasoned about, say it
+cannot be that here:
+
+1. **It cannot narrow admission.** `AllowSessionAudiences` is typed
+   `(...audiences: Exclude<SessionAudience, 'account'>[])` — the default is
+   unconditionally prepended and cannot even be NAMED at a call site — and
+   `CallerGuard.audiencesFor` returns `[...new Set([...serviceWide,
+   ...perRoute])]`. Decorating an operator route yields `['account',
+   'operator']`: every ordinary account session, admitted exactly as today. The
+   guard is a union by construction and there is no narrowing form of it.
+2. **Nothing can mint one.** `auth_handoffs` carries `CHECK (audience =
+   'vault')` — a single value rather than a list — so no existing ceremony
+   produces an operator session, and a new one at identity cannot be
+   operator-gated: identity holds no settlement credential, there is no dblink
+   between the auth and core clusters, and identity has no concept of a role.
+   The mint path is its own piece of work.
+3. **Its value is SUBTRACTIVE and unrealized.** What `vault` and `extension`
+   buy is that every service which has not opted in REFUSES the session. That
+   is real and it is worth having — and it is worth exactly nothing until
+   something mints one and an operator has a reason to hold it. Shipping it now
+   is machinery whose consumer arrives a PR later, which is the zero-callers
+   shape this milestone exists to close.
+
+So the audience moves to PR3, where the surface that is its only consumer
+lives, and PR2 hardens the enforcement it would have sat on top of.
+
+**What PR2 found in the shipped enforcement.** One service, SEVEN reads of the
+allowlist in four distinct shapes, and they had already drifted:
+
+| where | shape | handle |
+| --- | --- | --- |
+| `settlement.service.assertOperator` | private method, throws | pool |
+| `admin.service.assertOperator` | byte-identical private method | pool |
+| `admin.service.assertCaseVisible` | bare `isOperator` branch, returns the case | pool |
+| `setDistributionStatus` | inline `isOperator \|\| isExecutorOf` | **transaction** |
+| `addEvidence`, `getCase`, `evidenceReadAuthority` | direct reads feeding a value | pool |
+
+Six on the pool, one on a transaction. (This table first listed four rows and
+described them as the whole inventory; `git grep 'operators.isOperator('
+56c8fbd` returns seven. Corrected here rather than silently — a count in
+shipped documentation is a measurement, and a wrong one is what stops the next
+person taking it.)
+
+The drift is in the last column. `startReview` and `confirmVerification` — the
+two §5.1 routes that begin and end a death case — resolved the allowlist on the
+POOL and only then opened the transaction they were guarding, while the
+distribution route asked inside its own. One service disagreeing with itself
+about WHEN operator status is decided, in four places, is the M8 PR2
+seven-audit-producers shape in the code that guards a death case.
+
+**And three call sites handed Cedar a hardcoded `true`.** `assertCan`'s second
+argument IS the `isSettlementOperator` attribute the policy matches on, and at
+`startReview`, `decideReview` and `confirmVerification` it was the literal
+`true` — correct only because an assertion had run a few lines above. Delete
+that line and the route opens to anyone while the policy goes on evaluating
+happily against a constant asserting the very thing nobody checked. That is a
+POSITIONAL dependency: two statements that must stay adjacent, with nothing
+making them.
+
+**What it ships.** `OperatorGate` — one class, one question, no default handle
+(a write passes its own `tx`, a read with nothing to be consistent with passes
+the pool), with the five pool sites DECLARED with a reason each and every other
+call fenced to `tx` — the handle being exactly what the four paths had drifted
+about, so it is data rather than a habit. `assertIn` RETURNS the measured answer, which is what Cedar is handed
+now, so removing the check removes the argument and the positional dependency
+becomes structural. Two fences and the gate's first direct tests, because
+unifying N copies is only safe if the unified one is tested harder than the
+copies were — the blast radius is now every caller, and none of the four had a
+test of its own.
+
+**What the transaction handle actually buys, stated exactly**, because the
+tempting claim is wrong and shipping it would have been the fifth "a milestone
+asserting something about itself the code does not do" in a row. These
+transactions are READ COMMITTED: each statement takes a fresh snapshot, so a
+revoke committing after the gate's read is still unseen at commit time. Moving
+the read inside NARROWS the window and does not close it. Closing it means a
+share lock on the allowlist row so a revoke has to wait — real contention on
+every operator action, to serialize against an adversary who must be an
+operator being revoked in that exact instant. Not taken; recorded in `docs/03`
+§6aa. The property the argument secures is CONSISTENCY, not atomicity.
+
+**The fence's corpus is recursive and asserted equal to the platform's own
+recursive read**, on the same reasoning PR1's was: `src/` is flat today, so a
+non-recursive walk satisfies every other assertion in the file and quietly stops
+covering the service the day somebody adds a subdirectory.
+
+**The pre-merge adversarial pass found the fence I had just written breaking
+three rules this repository had already written down**, and that is the most
+useful thing in the PR. Five file-scoped lenses in pinned worktrees, then two
+refute-by-default verifiers per candidate. What survived:
+
+- **The Cedar check asserted a NAME, not provenance.** `expect(c.arg).toMatch(
+  /^isOperator$/)` says the argument is spelled `isOperator`; it says nothing
+  about where the value came from. Both bypasses were executed and both were
+  green: `const isOperator = true` beside a discarded gate call, and a
+  brand-new route with no gate call at all. The fence built to stop a literal
+  reaching Cedar admitted one. It checks BINDING now — the argument must be
+  assigned by a `gate.is`/`gate.assertIn` call in the same method — which is
+  what makes removing the check remove the argument.
+- **Two of its three blocks did not use the recursive corpus** the file's own
+  header claimed, and that this record and `docs/03` §6aa both repeated: one
+  read a single hardcoded filename, the other iterated a hardcoded two-file
+  list. A third service file reading the allowlist on the pool before a
+  transactional write was invisible. It is ONE corpus now, split into methods
+  once, with every block running over it.
+- **The reader check was keyed on the property name** `operators` — the exact
+  anchoring mistake the credential graph made twice and the route-audience
+  fence made once. It derives the field from whatever is DECLARED as an
+  `OperatorsRepo` now, and adds the raw-SQL `SELECT` scan its PR1 sibling has
+  for writes, since a method that skips the repo entirely is invisible to any
+  method-name scan.
+- **The double discarded the handle.** `InMemoryOperators.isOperator(_q2, …)`
+  threw its first argument away, so NO behavioural test — unit or
+  Postgres-backed — could tell `assertIn(tx, u)` from `assertIn(this.db, u)`,
+  and the source fence was the only thing in the repository that could. It
+  records now, and two service tests assert the handle on both sides of the
+  rule.
+- **A case-existence oracle on five routes**, pre-existing and measured live
+  before it was believed (`docs/03` §6aa).
+- **The admission-path count was wrong** in four places, corrected above.
+
+Eight mutations, eight red, including both bypasses the review executed.
+
+The oracle fix is the one change here with a CONTRACT consequence, and it
+surfaced the way a contract change should: `apps/e2e/test/settlement.e2e.spec.ts`
+went red, because the §5.1 end-to-end spec had pinned the leak
+(`expect(403, { error: 'forbidden' })` for a stranger reading a real case). It
+asserts the two answers are byte-identical now. The whole surface was then
+driven against a settlement image rebuilt from this branch: `getCase` and all
+four `assertCaseVisible` reads answer a byte-identical `404 {"error":
+"not_found"}` for a stranger on a REAL case and on an invented id, while the
+subject, the reporter and an operator still read them; `review/start` refuses a
+non-operator with `403 forbidden` identically for a real and an invented id
+(the gate precedes the lookup); and the four admin writes refuse at both layers
+— `stepup_required` from the controller guard un-elevated, then `forbidden`
+from `OperatorGate` once elevated, again indistinguishable between a real case
+and an invented one. Twenty-three assertions, and the trail carried
+`settlement.operator.granted` from PR1's ceremony followed by
+`settlement.case.review_started | operator | {}` with zero ingest rejections.
+
+Threat-model delta and residuals: `docs/03` §6aa. §4 TB7's operator-identity and
+operator-authentication paragraphs are rewritten in the same PR — the first named
+`assertOperator`, and the second said M21 PR2 adds the audience, which this PR's
+own measurement makes false.
 
 #### Two findings from the selection that hand-verification OVERTURNED
 

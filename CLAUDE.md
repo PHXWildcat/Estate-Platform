@@ -6924,3 +6924,164 @@ deviating from them, stop and propose the change with rationale — do not silen
   the fail-closed broker gate exists to prevent, arriving from the other end.
   Measured after rebuilding the consumer first: six events in the verified
   chain, every one attributed, zero rejections.
+- 2026-08-17 — M21 PR2 IS NOT THE OPERATOR SESSION AUDIENCE, and the scope
+  change came from measuring the machinery before building on it (approved).
+  Three facts read out of shipped code. (1) THE AUDIENCE CANNOT NARROW
+  ADMISSION: `AllowSessionAudiences` is typed
+  `(...audiences: Exclude<SessionAudience, 'account'>[])` — the default is
+  unconditionally prepended and cannot even be NAMED at a call site — and
+  `CallerGuard.audiencesFor` returns `[...new Set([...serviceWide,
+  ...perRoute])]`, so decorating an operator route yields
+  `['account','operator']`: every ordinary account session, admitted exactly as
+  today. (2) NOTHING CAN MINT ONE: `auth_handoffs` carries
+  `CHECK (audience = 'vault')`, a single value rather than a list, and a new
+  ceremony at identity cannot be operator-gated — identity holds no settlement
+  credential, there is no dblink between the auth and core clusters, and
+  identity has no concept of a role. (3) ITS VALUE IS SUBTRACTIVE — what `vault`
+  and `extension` buy is that every service which has NOT opted in refuses the
+  session — and that is worth exactly nothing until something mints one and an
+  operator has a reason to hold it. So the audience ships in PR3 alongside the
+  surface that is its only consumer, and PR2 hardens the enforcement it would
+  have sat on top of. Recorded as a scope change in docs/04 rather than
+  silently absorbed: a plan that quietly re-aims is a plan nobody can audit.
+- 2026-08-17 — ONE SERVICE HELD FOUR ANSWERS TO ONE QUESTION AND THEY HAD
+  DRIFTED. "Is this caller an operator?" was asked in `settlement.service.
+  assertOperator` (private, throws), `admin.service.assertOperator`
+  (byte-identical, separately declared), a bare `isOperator` branch inside
+  `assertCaseVisible` (returns the case instead of throwing), and an inline
+  `isOperator || isExecutorOf` in `setDistributionStatus` — WHICH WAS THE ONLY
+  ONE OF THE FOUR THAT READ THE ALLOWLIST ON THE TRANSACTION HANDLE. The two
+  §5.1 routes that begin and end a death case (`startReview`,
+  `confirmVerification`) resolved it on the POOL and only then opened the
+  transaction they were guarding. The M8 PR2 seven-audit-producers shape, in the
+  code that decides who may approve a death case. `OperatorGate` is the one
+  spelling now: no default handle (a write passes its own `tx`, a read with
+  nothing to be consistent with passes the pool) with THE FIVE POOL SITES
+  DECLARED AS DATA and every other call fenced to `tx` — the handle being the
+  thing that had already drifted, so it is checked rather than conventional —
+  and the gate is consulted BEFORE the case row is locked so a non-operator is refused without learning
+  whether the case id names anything — the uniform-404 rule, preserved rather
+  than newly added and now visible in one ordering instead of implied by four.
+  WHAT THE TX HANDLE BUYS IS STATED EXACTLY, because the tempting claim is
+  wrong and I nearly shipped it: these transactions are READ COMMITTED, so each
+  statement takes a fresh snapshot and a revoke committing after the gate's read
+  is still unseen at commit time. Moving the read inside NARROWS the window and
+  DOES NOT CLOSE IT; closing it needs a share lock on the allowlist row, which
+  is real contention on every operator action bought to serialize against an
+  adversary who must be an operator being revoked in that exact instant. Not
+  taken, recorded in docs/03 §6aa. The property secured is CONSISTENCY, not
+  atomicity.
+- 2026-08-17 — A PEP WHOSE INPUT IS A LITERAL CANNOT DENY ANYTHING. `assertCan`'s
+  second argument IS the `isSettlementOperator` attribute `settlement.cedar`
+  matches on, and three call sites — `startReview`, `decideReview`,
+  `confirmVerification` — passed the literal `true`. It was SOUND, and sound for
+  a reason nothing enforced: an assertion had run a few lines above. Delete that
+  line in a refactor and the route opens to any authenticated caller while the
+  policy goes on evaluating happily against a constant asserting the very thing
+  nobody checked — a POSITIONAL dependency between two adjacent statements, with
+  nothing making them adjacent. `assertIn` RETURNS the measured answer now, so
+  removing the check removes the argument and the compiler enforces what
+  proximity used to. The two remaining literals are `false` at the owner's `void`
+  and `manage` paths and are CORRECT: measuring the allowlist there would WIDEN
+  the decision for an owner who is also an operator, which is the direction
+  settlement.cedar deliberately avoids by never carrying an `owner` attribute —
+  declared as data with a reason per entry, so a third one is a visible decision.
+  Fenced in both directions (never `true`; `false` only at declared sites;
+  everything else the resolved variable), with the corpus recursive and asserted
+  equal to the platform's own recursive read.
+- 2026-08-17 — THE EIGHTH WAY A MUTATION HARNESS HAS LIED HERE, and it is the
+  first that corrupted the tree rather than the conclusion. The script saved a
+  backup of each target at the top of EVERY invocation — including `restore` —
+  so each restore copied the MUTATED file over its own backup and then restored
+  that. Every restore was a no-op and the mutations ACCUMULATED: the failure
+  count climbed 1 → 2 → 3 → 9 → 11 across runs while each individual mutation
+  read as correctly red. It was caught not by the harness but by an editor
+  notification showing a line still mutated after a "restore", and repaired with
+  an explicit undo before re-running. THE RULE, now that the list is long enough
+  to generalize: pristine copies are taken ONCE, by the caller, before any
+  mutation; the harness NEVER re-derives a baseline from the working tree; and
+  restore VERIFIES byte-for-byte against the pristine copy and fails loudly if
+  it differs. Same family as `git checkout --` on uncommitted work, `node -e`
+  losing `$1` to shell expansion, grepping for `✕` outside verbose mode,
+  length-instead-of-content no-op checks, and anchoring on a non-unique string —
+  every one of them produces a conclusion about a test drawn from a measurement
+  that did not happen.
+- 2026-08-17 — THE PRE-MERGE PASS FOUND THE FENCE I HAD JUST WRITTEN BREAKING
+  THREE RULES THIS REPO ALREADY HAD WRITTEN DOWN, which is the M21 PR2 entry
+  worth keeping. (1) THE CEDAR CHECK ASSERTED A NAME, NOT PROVENANCE:
+  `expect(c.arg).toMatch(/^isOperator$/)` says the argument is SPELLED
+  `isOperator` and says nothing about where the value came from — so
+  `const isOperator = true` beside a discarded gate call passed GREEN, and so
+  did a brand-new route with no gate call at all, both executed rather than
+  argued. The fence written to stop a literal reaching Cedar admitted one. It
+  checks BINDING now (the argument must be assigned by a `gate.is`/
+  `gate.assertIn` call in the same method), which is what makes removing the
+  check remove the argument rather than leaving a constant behind. (2) TWO OF
+  ITS THREE BLOCKS DID NOT USE THE RECURSIVE CORPUS its own header claimed —
+  one read a single hardcoded filename, the other a hardcoded two-file list —
+  so a third service file reading the allowlist on the pool before a
+  transactional write was invisible; the same false claim had been copied into
+  the commit message, docs/03 §6aa and docs/04. (3) THE READER CHECK WAS KEYED
+  ON THE PROPERTY NAME `operators`, the exact anchoring mistake the credential
+  graph made twice (2026-07-28, 2026-08-07) and the route-audience fence made
+  once (2026-08-12): it derives the field from whatever is DECLARED as an
+  `OperatorsRepo` now, and adds the raw-SQL SELECT scan its PR1 sibling already
+  had for writes. THE LESSON IS NOT "FENCES ARE HARD": it is that a fence
+  written in the same sitting as the fix it protects inherits the author's
+  model of the defect, so it tends to check the SHAPE the defect happened to
+  take rather than the property. Eight mutations, eight red.
+- 2026-08-17 — AND MY OWN ANTI-VACUITY COUNT CAUGHT A COORDINATE BUG IN THE
+  REWRITE, which is the argument for having one. The new fence slices two views
+  of each file at one set of offsets — calls come from the view with string
+  literals blanked, the Cedar ACTION from the view that still has them — and
+  the first version SHORTENED one view and not the other, so every offset past
+  the first string literal was wrong: it silently lost an `assertCan` call and
+  credited another to the wrong method. Both masks are LENGTH-PRESERVING now
+  (comments and literals become spaces, newlines kept), so there is one
+  coordinate system. A fence that mis-attributes is worse than one that finds
+  nothing, because it still goes green.
+- 2026-08-17 — A DOUBLE DISCARDED THE PARAMETER THAT WAS THE SECURITY PROPERTY.
+  `InMemoryOperators.isOperator(_q2, userId)` threw its handle away, so NO
+  behavioural test — unit or Postgres-backed — could tell `assertIn(tx, u)`
+  from `assertIn(this.db, u)`, and the source fence was the only thing in the
+  repository that could see the rule the gate's docstring calls its contract.
+  The double is more permissive than the real thing, one layer beneath the
+  fixtures (the M16 PR2b `chrome-double.ts` shape). It records now, `fakeDb()`
+  hands the callback a DISTINCT object which is what makes the question
+  answerable at all, and two service tests assert BOTH sides of the rule — a
+  transactional caller does not ask the pool, and `queue` does. Mutating
+  `startReview` to the pool handle turns the first red.
+- 2026-08-17 — EVERY CASE-SCOPED READ IN SETTLEMENT WAS A CASE-EXISTENCE
+  ORACLE, found by the same pass, measured live before it was believed, and
+  PRE-EXISTING rather than introduced by M21 PR2. `getCase` and the four admin
+  reads that funnel through `assertCaseVisible` (timeline, stages, tasks,
+  distributions) answered 404 for an unknown case id and 403 for a real one, so
+  any authenticated caller holding an id learned whether a death case exists
+  for it — the same defect M19 PR1 closed in assets one milestone earlier, in
+  the service whose ids name death cases. It is fixed here because PR2's own
+  §6aa was about to claim this service preserved the uniform-404 rule, which on
+  those five routes it did not: a milestone that states a property owes the
+  property. `assertCanOrNotFound` is the assets precedent applied, deliberately
+  NOT used on the operator write paths, where a non-operator is refused before
+  any lookup and so learns nothing either way. THE TWO TESTS COVERING THIS WERE
+  THEMSELVES THE LESSON: one asserted a stranger got 403 and the next, named
+  "404s an unknown case rather than leaking its absence differently", asserted
+  an unknown id got 404 — together they asserted the leak and called it the
+  opposite. One test now, comparing the two answers, because neither alone can
+  see the property. A THIRD WITNESS SAT ONE LAYER UP, and it is how the fix
+  actually presented: `apps/e2e/test/settlement.e2e.spec.ts` pinned
+  `expect(403, { error: 'forbidden' })` for a stranger reading a real case, so
+  the leak was written into the file whose whole subject is the §5.1 chain, and
+  the repair showed up as a RED E2E rather than as a red unit test. The general
+  shape is that a defect asserted at three layers is not a coverage gap — every
+  layer was covered — it is three copies of one wrong belief, and the only test
+  that can see it is the one comparing the two answers rather than checking
+  either alone.
+- 2026-08-17 — A COUNT IN A SHIPPED COMMENT IS A MEASUREMENT, AND MINE WAS
+  WRONG. The gate's docstring said the service had "FOUR independent
+  operator-admission paths" and enumerated four shapes as though that were the
+  inventory; `git grep 'operators.isOperator(' 56c8fbd` returns SEVEN, six on
+  the pool and one on a transaction. The same figure had been copied into the
+  gate's own spec, docs/03 §6aa, docs/04's table and the commit message. The
+  four shapes were real and the count of paths was not, which is the harm — a
+  wrong measurement in shipped prose is what stops the next person taking it.

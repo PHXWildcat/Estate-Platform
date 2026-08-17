@@ -87,7 +87,8 @@ IAM roles and remains **E1**.
 
 *Operator identity — the interim, and its one real safety property.*
 `settlement_operators` is an append+revoke allowlist whose rows are the history,
-consulted by `assertOperator`. The property that matters is that **no runtime
+consulted through `OperatorGate` (M21 PR2 — before it, four separate admission
+paths in one service, disagreeing about which database handle to ask on). The property that matters is that **no runtime
 session can mint an operator**: there is deliberately no grant API, so a stolen
 operator session cannot widen the allowlist. Until M21 PR1 that property lived
 only in three docstrings and was checked nowhere, and one of them was wrong about
@@ -102,13 +103,23 @@ approve a death case. It also **refuses to write when it cannot record**, and
 demands a `--by` that fills the `granted_by` column M7 declared and nothing had
 ever written.
 
-*Operator authentication — **M21 PR2**.* There is no operator session audience;
-an operator is an ordinary account session that happens to appear in a table. M21
-adds the audience as defence in depth and says in the code which of the two is
-the control, because `AllowSessionAudiences` unconditionally prepends `account`
-and `CallerGuard.audiencesFor` returns a union that widens and can never narrow —
-so a route decorated with a new audience would ALSO admit every ordinary account
-session. `assertOperator` stays the control.
+*Operator authentication — **M21 PR3**, moved there from PR2 on measurement.*
+There is no operator session audience; an operator is an ordinary account session
+that happens to appear in a table. The audience was scoped for PR2 and moved,
+because measuring the machinery showed it cannot do the thing the ordering
+assumed. `AllowSessionAudiences` takes `Exclude<SessionAudience, 'account'>` — the
+default is unconditionally prepended and cannot even be named — and
+`CallerGuard.audiencesFor` returns `[...new Set([...serviceWide, ...perRoute])]`,
+a union that widens and can never narrow. So decorating a settlement route would
+admit `['account', 'operator']`: every ordinary session, exactly as today. What an
+audience buys is SUBTRACTIVE — a session carrying it is refused by every service
+that has not opted in, which is what `vault` and `extension` buy — and that value
+is unrealized until an operator has a surface giving them a reason to hold one.
+Shipping it earlier would be machinery whose consumer arrives later, which is the
+gap this milestone exists to close. It also needs a mint path that does not
+exist: `auth_handoffs` carries `CHECK (audience = 'vault')`, a single value rather
+than a list, so no existing ceremony can produce one. `OperatorGate` stays the
+control in every case.
 
 *Operator actions are audited but NOT rate-limited* — **M21 PR3** for the
 surface, and the bound itself is deferred to the milestone that gives it a
@@ -3651,10 +3662,11 @@ the table said only that somebody holding the database made a grant.
   investigable, a silent real grant is not.
 - **[OWNER: M21]** *An operator is still an ordinary account session that
   happens to appear in a table.* PR1 changes who can get into the table and not
-  what being in it authenticates as. The session audience is PR2, and
-  `assertOperator` remains the control there too — see §4 TB7.
+  what being in it authenticates as. The session audience is PR3 (moved there
+  from PR2 on measurement — §6aa), and the allowlist remains the control there
+  too — see §4 TB7.
 - **[OWNER: M21]** *Revocation takes effect on the next request and
-  notifies nobody.* `isOperator` is read per action against the database, so a
+  notifies nobody.* The allowlist is read per action against the database, so a
   revoked operator loses authority at their next call rather than
   retroactively — which is the correct behaviour and is stated here because
   nothing announces it. No notification is sent to the revoked operator or to
@@ -3664,6 +3676,162 @@ the table said only that somebody holding the database made a grant.
   a terminal.* An operator cannot see who else is an operator, and no periodic
   review of the allowlist exists — which is the control the ceremony's record
   is FOR. The record is now there to be read; the reader is PR3.
+
+
+## 6aa. Threat-model delta — M21 PR2, one operator gate (2026-08-17)
+
+**One service read the allowlist at SEVEN call sites in four distinct shapes,
+and they had already drifted about when the question is asked.** Two
+byte-identical private `assertOperator` methods (one in `settlement.service.ts`,
+one in `admin.service.ts`), a bare `isOperator` branch inside
+`assertCaseVisible` that returns the case rather than throwing, an inline
+`isOperator || isExecutorOf` disjunction in `setDistributionStatus`, and three
+more direct reads feeding a value (`addEvidence`, `getCase`,
+`evidenceReadAuthority`). The disjunction was the only one of the seven that
+read the allowlist on the TRANSACTION handle; `startReview` and `confirmVerification` — the two §5.1
+routes that begin and end a death case — resolved it on the pool and only then
+opened the transaction they were guarding. Four spellings of one question is the
+M8 PR2 shape, in the code that decides who may approve a death case.
+
+**And three call sites asserted operator-ness to Cedar rather than measuring
+it.** `assertCan`'s second argument IS the `isSettlementOperator` attribute
+`settlement.cedar` matches on, and at `startReview`, `decideReview` and
+`confirmVerification` it was the literal `true`. That was SOUND, and sound for a
+reason nothing enforced: an assertion had run a few lines above. Delete that
+line — a refactor, a merge, an extracted helper — and the route opens to any
+authenticated caller while the policy goes on evaluating happily against a
+constant asserting the very thing nobody checked. A PEP whose input is a literal
+cannot deny anything, and it is the layer this repo relies on to deny by
+default.
+
+### What PR2 changes
+
+- **`OperatorGate` is the only reader of the allowlist.** One class, one
+  question. `is()` answers, `assertIn()` refuses AND RETURNS the measured
+  answer — which is what Cedar is handed now, so removing the check removes the
+  argument. The positional dependency between two adjacent statements becomes a
+  structural one the compiler enforces.
+- **The handle is a parameter with no default**, because which one a caller
+  passes is a decision rather than a detail: a write passes its own `tx` so the
+  allowlist answer belongs to the same transaction as the row it authorizes; a
+  read with no transaction to be consistent with passes the pool. **The five
+  pool sites are DECLARED with a reason each and everything else must pass
+  `tx`**, checked by the same fence — because the handle is precisely what the
+  four replaced paths had already drifted about, and a convention nobody checks
+  is how it drifts again.
+- **The gate is read BEFORE the case row is locked**, deliberately. A
+  non-operator is refused without learning whether the case id names anything —
+  the uniform-404 rule, preserved rather than newly added, and now visible in
+  one ordering instead of implied by four.
+- **EVERY CASE-SCOPED READ NOW ANSWERS ONE REFUSAL.** Found by the pre-merge
+  adversarial pass and measured live before it was believed: `getCase` and the
+  four admin reads that funnel through `assertCaseVisible` (timeline, stages,
+  tasks, distributions) answered 404 for an unknown case id and 403 for a real
+  one, so any authenticated caller holding an id learned whether a death case
+  exists for it. Pre-existing rather than introduced here, and the same defect
+  M19 PR1 closed in assets one milestone earlier — but §6aa was about to claim
+  this service preserved the uniform-404 rule, which on those five routes it did
+  not. `SettlementAuthz.assertCanOrNotFound` is the assets precedent applied:
+  used wherever the resource was located BY the id under authorization, and NOT
+  on the operator write paths, where a non-operator is refused before any lookup
+  and so learns nothing either way. The two tests that covered this were
+  themselves the lesson — one asserted a stranger got 403 and the next, named
+  *"404s an unknown case rather than leaking its absence differently"*, asserted
+  an unknown id got 404. Together they asserted the leak and called it the
+  opposite. One test now, comparing the two answers, because neither alone can
+  see the property. A THIRD witness said the same thing at a higher layer: the
+  §5.1 end-to-end spec pinned `expect(403, { error: 'forbidden' })` for a
+  stranger reading a real case, so the leak was written into the file that
+  exists to prove this chain — which is how the fix presented, as a red e2e
+  rather than as a red unit test. It compares the two answers now too.
+- **Two fences, both source scans, because there is no runtime seam.** A
+  sanctioned read of the allowlist and an unsanctioned one call the same method
+  on the same class, so the difference is WHERE IT IS WRITTEN. The first asserts
+  the gate is the only caller of `OperatorsRepo.isOperator`, that the gate really
+  does call it (without which the first assertion is satisfied by a gate that
+  calls nothing, and every caller would be admitting on a hardcoded answer), and
+  that no service declares its own `assertOperator` again. The second asserts
+  Cedar is never handed `true`, that `false` appears only at DECLARED owner-path
+  sites each carrying its reason, that every other call passes the resolved
+  variable, and that every gate call passes `tx` unless its method is a declared
+  pool read. It RESOLVES each call to its enclosing method and REFUSES a shape
+  it cannot resolve, because an unattributed call would silently satisfy every
+  assertion in the block. Both corpora are recursive and asserted equal to the platform's own
+  recursive read — §6y's M21 item discharged for two more fences rather than
+  restated.
+- **The gate has direct tests, which none of the four copies had.** Unifying N
+  copies of a guard is only safe if the unified one is tested harder than the
+  copies were, because the blast radius becomes every caller: making `assertIn`
+  return without throwing now opens four admission paths at once. Including that
+  a repo FAILURE propagates as an error rather than collapsing into `forbidden`
+  — telling an operator they are not one is a different and actionable fact from
+  a database outage (the M9 rule, pointed the other way).
+
+### Residuals
+
+- **[ACCEPTED]** *Moving the read inside the transaction NARROWS the
+  revoke-during-action window and does not close it.* These transactions are
+  READ COMMITTED, so each statement takes a fresh snapshot and a revoke
+  committing after the gate's read is still unseen at commit time. Closing it
+  means taking a share lock on the allowlist row so a revoke has to wait — real
+  contention on every operator action, bought to serialize against an adversary
+  who must be an operator being revoked in that exact instant, on a path where
+  the losing outcome is one further action by somebody who was an operator
+  moments earlier and whose action is audited under their name. The property the
+  handle secures is CONSISTENCY — one question, one handle, the service no
+  longer disagreeing with itself — not atomicity, and the code says so rather
+  than implying the stronger claim.
+- **[ACCEPTED]** *Two sites hand Cedar a literal `false`, and that is the
+  correct value.* `void` (the owner's kill switch) and `manage` (the owner's own
+  settings) evaluate the caller purely as the decedent. Measuring the allowlist
+  there would WIDEN the decision for an owner who is also an operator, which is
+  the direction `settlement.cedar` deliberately avoids by never carrying an
+  `owner` attribute. Declared as data with a reason per entry and fenced, so a
+  third one is a visible decision.
+- **[ACCEPTED]** *An entitled caller still learns an unknown case id is
+  unknown.* The uniform answer is about what someone with NO relationship to a
+  case learns; a decedent, reporter, executor or operator is told the id is
+  wrong, because a surface that answered "not found" to the people it is for
+  would be unusable. The oracle it closes is the one available to everybody
+  else.
+- **[OWNER: M21]** *`admin.service.ts` has no PEP at all — the gate is the whole
+  authorization on those routes.* `settlement.cedar`'s permits are scoped
+  `resource is SettlementCase` and the admin routes act on tasks, stages and
+  distributions, so there is no policy for them to consult and adding one means
+  new resource types with their own attributes. Until then the allowlist
+  membership IS the decision on that controller, which is exactly why PR2 made
+  it one gate rather than three shapes. The operator surface (PR3) is what makes
+  those routes reachable from the product at all.
+- **[OWNER: M21]** *The BFF's SDL enums and its own hand-written payload unions
+  are two copies in one file with nothing comparing them.* Found by PR2's review
+  and recorded rather than fixed, because it lives outside this PR's subject —
+  but MEASURED, not assumed: widening `enum SessionAudience` in
+  `apps/bff/src/schema.ts` and nothing else leaves `@estate/bff` green on both
+  typecheck and its 399 tests. What catches it today is one layer over,
+  `apps/web/src/graphql/enum-parity.test.ts` (M20 PR1), which reads that SDL and
+  goes red on the app mirror — confirmed by running the mutation. So the SDL→app
+  direction is fenced and the SDL→BFF-payload direction is not; the exhaustive
+  `AUDIENCE_GQL` Record couples the payload union to `SessionAudience` in
+  `@estate/contracts` rather than to the SDL beside it. The failure mode is a
+  value the BFF's TypeScript admits and its own schema rejects at serialization
+  — a runtime error rather than a build one. PR3 adds the `operator` audience and
+  is therefore the change that first exercises this, which is why it owns it.
+- **[OWNER: M21]** *An allowlist row has no expiry, no case scoping and no
+  session binding.* Any live row grants authority over EVERY case, forever, from
+  any session that user holds. None of the three is a defect in the gate — the
+  gate faithfully answers the question the table can answer — and all three are
+  properties of an interim allowlist that M7 shipped as the stand-in for the
+  operator platform. Case scoping is what separation of duties would need beyond
+  the row-local DDL CHECKs (reviewer ≠ reporter, requester ≠ approver); session
+  binding is PR3's audience; expiry and just-in-time elevation are **E1**, since
+  they need the IAM the deployment does not have.
+- **[OWNER: M21]** *The gate answers a question about a PERSON and every caller
+  then asks it about an ACTION.* There is one operator role and it carries every
+  operator verb: approve a death case, lock an account, decide a stage of access
+  to a dead person's estate, approve a distribution. Nothing in the interim
+  allowlist can express "may review, may not approve distributions". A real role
+  vocabulary is the operator platform's, and the gate is the seam it would go
+  behind.
 
 
 ## 7. Validation program

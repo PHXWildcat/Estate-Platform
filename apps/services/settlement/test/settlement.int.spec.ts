@@ -10,6 +10,7 @@ import { ContactAttemptsRepo } from '../src/contact-attempts.repo';
 import { CoreReadsRepo } from '../src/core-reads.repo';
 import { Db } from '../src/db';
 import { EventsService } from '../src/events.service';
+import { OperatorGate } from '../src/operator-gate';
 import { OperatorsRepo } from '../src/operators.repo';
 import { SettingsRepo } from '../src/settings.repo';
 import { SettlementService } from '../src/settlement.service';
@@ -81,7 +82,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       db,
       new CasesRepo(),
       new ContactAttemptsRepo(),
-      new OperatorsRepo(),
+      new OperatorGate(new OperatorsRepo()),
       new SettingsRepo(),
       new TasksRepo(),
       new CoreReadsRepo(db),
