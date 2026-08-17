@@ -14,5 +14,8 @@
 // M14 PR2 (the verified-recipient gates) re-measured at 62.18/47.51/57.32/61.94;
 // ratcheted UP to match. Never lower this floor.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 62, branches: 47, functions: 57, lines: 61 } },
+  // Ratcheted UP by M21 PR1: `operator-cli.ts` went from 0% — no test in the
+  // repository had ever executed it — to 53%, its remainder being `main()` and
+  // the `require.main` guard, which are the wiring the platform calls.
+  coverageThreshold: { global: { statements: 64, branches: 50, functions: 58, lines: 64 } },
 });

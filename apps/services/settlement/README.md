@@ -13,7 +13,8 @@ vulnerability, so every control below is deliberate friction.
   provider matches are operator-filed signals (`data_provider`), never
   triggers. One OPEN case per decedent (partial unique index).
 - **Mandatory human review** by allowlisted operators (`settlement_operators`,
-  managed ONLY by `operator-cli` — no runtime grant API). Reviewer ≠ reporter
+  managed ONLY by `operator-cli` — no runtime grant API, asserted by
+  `test/operator-write-path.spec.ts` rather than by this sentence). Reviewer ≠ reporter
   (DDL CHECK + row check). Approval starts the waiting period and locks the
   account to `deceased_pending` via identity's internal settlement-lock API —
   inside the case transaction, so an unconfirmable lock rolls the approval
@@ -72,9 +73,44 @@ vulnerability, so every control below is deliberate friction.
 ```
 docker compose -f ../../../docker-compose.dev.yml up -d pg-core
 DATABASE_URL=postgres://estate:estate_dev@localhost:5434/core node dist/migrate-cli.js
-DATABASE_URL=postgres://estate:estate_dev@localhost:5434/core node dist/operator-cli.js grant <userId>
 PG_TEST_URL=postgres://estate:estate_dev@localhost:5434/core pnpm test
 ```
+
+## The operator ceremony (`operator-cli`)
+
+`settlement_operators` is the interim allowlist that decides who may run
+docs/03 §5.1's mandatory human review. **There is no runtime grant API, and that
+absence is the safety property**: a compromised operator session can act as the
+operator it already is and cannot create another.
+`test/operator-write-path.spec.ts` asserts it against the service's own source
+in both directions, so it is checked rather than claimed.
+
+```
+pnpm --filter @estate/service-settlement build
+DATABASE_URL=… KAFKA_BROKERS=localhost:19092 \
+  pnpm --filter @estate/service-settlement operators grant  <userId> --by <authorizingUserId>
+DATABASE_URL=… KAFKA_BROKERS=localhost:19092 \
+  pnpm --filter @estate/service-settlement operators revoke <userId> --by <authorizingUserId>
+DATABASE_URL=… pnpm --filter @estate/service-settlement operators list
+```
+
+- **A write REFUSES without `KAFKA_BROKERS`.** Granting the authority to
+  approve a death case is not something this ceremony will do unrecorded, so it
+  fails closed rather than falling back to an in-memory producer the way the
+  template-publish CLI does. `list` changes nothing and needs no broker.
+- **`--by` is required, and it is ATTRIBUTION rather than authentication.**
+  Whoever runs this holds `DATABASE_URL` and could write the row by hand. What
+  the flag buys is that the sanctioned path names a human in `granted_by`, so a
+  row with `granted_by IS NULL` is visibly one that did not come through here.
+- **Both writes emit** `settlement.operator.granted` / `.revoked` into the
+  append-only trail, naming the authorizer as actor and the subject in `detail`.
+  The row is written first and the event second, because the INSERT rolls back
+  and the emit does not — so a failed emit rolls the grant back.
+- **Repeats are no-ops, not second grants** (`already granted:` / `no active
+  grant:`), and each records its own outcome. A revoked operator can be granted
+  again; the index that makes the repeat a no-op is partial on the active row.
+- **Revocation takes effect on the next request**, because `isOperator` is read
+  per action rather than cached, and it notifies nobody — see docs/03 §6z.
 
 The service shares the core cluster with profile: disjoint tables, its own
 migrations dir, shared `schema_migrations` (Plaid precedent), plus READ-ONLY

@@ -6836,3 +6836,91 @@ deviating from them, stop and propose the change with rationale — do not silen
   its own owner — A REMAINDER RIDING A CLOSURE is the shape this sweep exists to
   surface, and the closure's own framing ("a row identifies a credential by what
   it can REACH rather than by where it is") is what made it read as settled.
+
+- 2026-08-17 — M21 PR1 GAVE THE OPERATOR ALLOWLIST A CEREMONY, and the reason it
+  needed one is that CREATING an operator was the only privileged act in the
+  product with no entry in the append-only trail. `settlement_operators` decides
+  who runs docs/03 §5.1's mandatory human review — approve a death case, lock an
+  account, confirm a verification, approve a distribution, approve a stage of
+  access to a dead person's estate — and every one of those ACTIONS emits an
+  audit event while BECOMING able to perform them emitted nothing, in either
+  direction, with no action in `AUDIT_ACTIONS` that could have carried one.
+  Three more measured facts underneath it: `OperatorsRepo.grant`/`.revoke` had
+  ZERO CALLERS while their docstring called them "the CLI-only write path", the
+  CLI having reimplemented both in raw SQL — and the two had ALREADY DRIFTED
+  (`isUniqueViolation(err)` in the repo, an inline `err.code === '23505'` in the
+  CLI), which is the M8 PR2 seven-audit-producers shape arriving in the table
+  that decides who may approve a death case; `granted_by` has been declared
+  since M7 and written by nothing, so every row said only that somebody holding
+  the database made a grant; and NO TEST HAD EVER EXECUTED THE CLI, which had no
+  exports, no `require.main` guard and no package script, so it was structurally
+  untestable while sitting inside the coverage denominator at 0%.
+- 2026-08-17 — THE CEREMONY REFUSES TO WRITE WHAT IT CANNOT RECORD. A broker is
+  REQUIRED for `grant` and `revoke`; `list` changes nothing, needs none, and is
+  handed a producer that THROWS — an assertion that the read path is silent
+  rather than a stub for it. The template-publish CLI's precedent (fall back to
+  an in-memory producer when no broker is configured) is right for a template
+  and wrong here: it would make an UNAUDITED GRANT THE QUIET DEFAULT on every
+  machine without `KAFKA_BROKERS`, which is every developer laptop. `--by` is
+  required and is ATTRIBUTION, NOT AUTHENTICATION — whoever runs this holds the
+  connection and could write the row by hand — so what it buys is that a row
+  with `granted_by IS NULL` is VISIBLY one that did not come through the
+  ceremony, which is exactly what the settlement e2e's seeding INSERT produces
+  and what its comment now says instead of claiming to BE the write path.
+  Ordering inside the transaction is the M9 rule: the INSERT rolls back and the
+  Kafka emit does not, so the row goes first and a failed emit rolls the grant
+  back rather than leaving it unrecorded.
+- 2026-08-17 — A REPEAT GRANT DID NOT WORK, AND THREE GREEN SPECS SAID IT DID —
+  found by driving the live stack, which is the eleventh milestone running where
+  that is what found it. `grant` recovered from the partial index's unique
+  violation by RE-READING the existing row, which is fine against a connection
+  POOL (each statement gets its own implicit transaction) and IMPOSSIBLE inside
+  the CLI's own `BEGIN`/`COMMIT`, because Postgres aborts a transaction on a
+  failed statement and refuses every command until rollback. So the second grant
+  died with `current transaction is aborted` while the unit spec (fake repo, no
+  transaction), the int spec (pooled `Db`) and the fence all passed: **THE
+  HARNESS WAS MORE PERMISSIVE THAN THE ONLY PATH THAT EVER REALLY RUNS**, the
+  `chrome-double.ts` shape one layer beneath the fixtures. Fixed by NEVER
+  RAISING THE ERROR — `ON CONFLICT (user_id) WHERE revoked_at IS NULL DO
+  NOTHING`, naming the index's own predicate so a revoked row is not a conflict
+  — which makes the pooled and transactional contexts agree rather than making
+  the recovery cleverer; the int spec gained an `inTransaction` helper that runs
+  a command the way `main()` does, and reverting the fix reproduces the live
+  failure verbatim. THE GENERALIZATION WAS CHECKED RATHER THAN ASSUMED: the
+  service's three other unique-violation catches (`contact-attempts.repo`,
+  `dek.repository`, `settlement.service`) all `return` or `throw` immediately
+  and issue no follow-up statement, so none of them has it — which is also the
+  rule for the next one, since the defect is not "catching a unique violation"
+  but "issuing another statement afterwards on the same connection".
+- 2026-08-17 — THE PROPERTY IS CHECKED RATHER THAN ASSERTED.
+  `operator-write-path.spec.ts` scans the settlement service's own source in
+  both directions: only the ceremony may call the repo's write methods, only the
+  repo may write the table in SQL (the method-name scan alone is evadable by the
+  inline statement that was there before), THE CEREMONY REALLY DOES CALL THEM
+  (without which the fence passes vacuously the day somebody reverts to raw SQL,
+  which is the state PR1 found the repo in), and no controller mentions either.
+  A source scan rather than a runtime guard because there is no runtime seam —
+  the CLI and the service share one class by design, so the difference between a
+  sanctioned and an unsanctioned call is WHERE IT IS WRITTEN. Its corpus is
+  RECURSIVE and asserted equal to the PLATFORM's own recursive read, an oracle
+  the file did not write: the tree is flat today, so a non-recursive walk passes
+  every other assertion in the file and would stop covering the service the day
+  somebody adds `src/operators/`. That is docs/03 §6y's M21 item — a fence whose
+  input is narrower than its claim goes green for the same reason it is wrong —
+  discharged for this fence rather than restated, and mutation-tested by
+  planting a nested file and reverting the walk.
+- 2026-08-17 — A RUNBOOK COMMAND THAT HAS NOT BEEN RUN IS A GUESS. docs/05's new
+  operator section verifies the grant reached the trail with `docker compose …
+  exec -T pg-audit psql`, and the obvious spelling of it FAILS: compose resolves
+  the whole project before `exec`, so without `--env-file .env.stack` the file's
+  own variables are blank and it refuses with `invalid compose project`. The
+  failure was masked twice over — piping to `tail` gave `EXIT=0`, which is the
+  standing zsh trap in this repo — and was only visible by reading the message.
+  Every command in that section was run against the live stack before it was
+  written down. The section also states the deploy-order requirement, because
+  `AUDIT_ACTIONS` is a closed vocabulary and an `audit` container older than the
+  two new actions treats each as a `schema_violation` and drops it: the grant
+  happens and the trail silently does not record it, which is the exact outcome
+  the fail-closed broker gate exists to prevent, arriving from the other end.
+  Measured after rebuilding the consumer first: six events in the verified
+  chain, every one attributed, zero rejections.

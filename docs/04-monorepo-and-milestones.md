@@ -5577,13 +5577,7 @@ because at that point the value lens becomes the one with real inputs.
   fence, no runtime code). Rewrite `docs/03` §4's TB7 block into what is true,
   what M21 ships and what is deferred with an owner; tag every residual in §6
   with a disposition from a closed vocabulary; ship the fence that keeps it true.
-- **PR1 — the operator grant ceremony.** `settlement_operators`' only sanctioned
-  write path is a 93-line CLI with no package script and no compose entry, and
-  its only exercised path is a raw `INSERT` in the e2e. The property that must
-  survive: **no runtime session may mint an operator** — `operators.repo.ts`
-  states it in its own docstring and it is the whole safety argument for the
-  interim allowlist, so the ceremony stays CLI-or-migration-authored rather than
-  becoming a route.
+- **PR1 — the operator grant ceremony. SHIPPED** (see the record below).
 - **PR2 — the operator session audience.** The known trap is not hypothetical:
   `AllowSessionAudiences` unconditionally prepends `account` and
   `CallerGuard.audiencesFor` returns a union that widens and can never narrow, so
@@ -5597,6 +5591,72 @@ because at that point the value lens becomes the one with real inputs.
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7.
 - **PR5 — the security review.**
+
+#### M21 PR1 — the operator grant ceremony (shipped)
+
+**What it found before it changed anything**, all four measured rather than
+inferred:
+
+1. **Granting an operator emitted NOTHING.** No `settlement.operator.granted`,
+   no `.revoked`, and no action in `AUDIT_ACTIONS` that could have carried one —
+   in the one table that decides who may approve a death case. Every action an
+   operator then performs is audited; becoming one was not.
+2. **`OperatorsRepo.grant`/`.revoke` had ZERO CALLERS** while their docstring
+   called them "the CLI-only write path". `operator-cli.ts` reimplemented both
+   in raw SQL. The two had already drifted — `isUniqueViolation(err)` in the
+   repo, an inline `err.code === '23505'` in the CLI — which is the M8 PR2
+   seven-audit-producers shape arriving in the allowlist.
+3. **`granted_by` has been declared since M7 and written by nothing.**
+4. **No test in the repository had ever executed the CLI.** It had no exports,
+   no `require.main` guard and no package script, so it was structurally
+   untestable while sitting inside the coverage denominator at 0%.
+
+**What it ships.** `grant|revoke <userId> --by <authorizingUserId>` and `list`,
+driving `OperatorsRepo` rather than raw SQL; two new audit actions; a `granted_by`
+that is now written; a package script (`pnpm --filter @estate/service-settlement
+operators`); and three specs — the argv/decision layer with the repo faked, the
+whole ceremony against real Postgres (because idempotence rides a PARTIAL unique
+index and a fake repo has no index to violate), and a source fence.
+
+**Three decisions worth the record.**
+
+- **It refuses to write what it cannot record.** A broker is REQUIRED for a
+  write. The template-publish CLI falls back to an in-memory producer when none
+  is configured, which is right for a template and wrong here: it would make an
+  unaudited grant the quiet default on every machine without `KAFKA_BROKERS`.
+  `list` needs no broker and is handed a producer that THROWS — an assertion
+  that the read path is silent, not a stub for it.
+- **`--by` is attribution, not authentication**, and the docstring says so. The
+  caller already holds the database. What it buys is that a row with
+  `granted_by IS NULL` is visibly one that did not come through the ceremony —
+  which is exactly what the settlement e2e's seeding `INSERT` produces, and its
+  comment now says that instead of claiming to BE the write path.
+- **The property is checked rather than asserted.**
+  `test/operator-write-path.spec.ts` scans the service's source in both
+  directions: only the ceremony calls the write methods, only the repo writes
+  the table in SQL, the ceremony really does call them (or the fence passes
+  vacuously the day somebody reverts to raw SQL), and no controller mentions
+  either. Its corpus is RECURSIVE and asserted equal to the platform's own
+  recursive read — the tree is flat today, so nothing else in the file would
+  notice a `src/operators/` appearing, which is docs/03 §6y's M21 item ("a fence
+  whose input is narrower than its claim goes green for the same reason it is
+  wrong") discharged for this fence rather than restated.
+
+**And driving it live found the defect the tests could not.** A repeat grant
+failed with `current transaction is aborted`: the recovery re-read after a caught
+unique violation cannot run inside the CLI's `BEGIN`/`COMMIT`, and every spec had
+driven a pooled handle where each statement carries its own implicit transaction.
+Three green tests, one broken path, and the harness was the more permissive of
+the two — the shape this repo keeps finding one layer beneath its fixtures. The
+fix removes the error rather than recovering from it (`ON CONFLICT … DO NOTHING`
+on the index's own predicate), so the behaviour no longer depends on whether
+there is an enclosing transaction, and the int spec gained an `inTransaction`
+helper that runs commands the way `main()` does. Mutation-tested by reverting to
+the catch, which reproduces the live failure verbatim.
+
+Threat-model delta and residuals: `docs/03` §6z. §4 TB7's operator-identity
+paragraph is rewritten in the same PR — it described the pre-PR1 state and would
+otherwise have shipped contradicting the code beneath it.
 
 #### Two findings from the selection that hand-verification OVERTURNED
 

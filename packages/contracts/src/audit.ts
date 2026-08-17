@@ -136,6 +136,17 @@ export const AUDIT_ACTIONS = [
   'settlement.case.closed',
   'settlement.contact.attempted',
   'settlement.settings.updated',
+  // The operator allowlist itself (M21 PR1). Until this milestone, granting
+  // the authority to approve a death case — the most privileged act in the
+  // settlement domain — emitted NOTHING, so the one row that decides who may
+  // run §5.1's human review was the only privileged change in the product
+  // with no entry in the append-only trail. `actorId` is the human named by
+  // the ceremony's `--by`, which is ATTRIBUTION and not authentication:
+  // whoever runs the CLI already holds the database. What it buys is that a
+  // row arriving through the sanctioned path names somebody, so a
+  // `granted_by IS NULL` row is visibly one that did not.
+  'settlement.operator.granted',
+  'settlement.operator.revoked',
   // Staged executor access (docs/03 §5.1 control 5). Each stage is requested
   // by the executor and separately approved by an operator, so both halves are
   // recorded — a stage that was approved by whom, and when, is the audit
