@@ -269,7 +269,20 @@ export class InMemoryAttempts {
 export class InMemoryOperators {
   readonly active = new Set<string>();
 
-  isOperator(_q2: unknown, userId: string): Promise<boolean> {
+  /**
+   * RECORDS THE HANDLE, because discarding it made a security property
+   * unobservable. `OperatorGate`'s whole contract is that a caller which owns a
+   * transaction asks inside it; the first version of this double named the
+   * parameter `_q2` and threw it away, so NO behavioural test — unit or
+   * Postgres-backed — could tell `assertIn(tx, u)` from `assertIn(this.db, u)`,
+   * and the source fence was the only thing in the repository that could. A
+   * double more permissive than the real thing is this repo's recurring shape
+   * one layer beneath the fixtures.
+   */
+  readonly asked: Array<{ handle: unknown; userId: string }> = [];
+
+  isOperator(handle: unknown, userId: string): Promise<boolean> {
+    this.asked.push({ handle, userId });
     return Promise.resolve(this.active.has(userId));
   }
 }
@@ -474,6 +487,10 @@ export function testConfig(over: Partial<SettlementConfig> = {}): SettlementConf
 
 export interface Harness {
   service: SettlementService;
+  /** The same Db the service was built with, so a test can ask WHICH handle a
+   *  gate read was made on — `fakeDb()`'s transaction handle is a distinct
+   *  object, which is what makes the question answerable at all. */
+  db: Db;
   cases: InMemoryCases;
   attempts: InMemoryAttempts;
   operators: InMemoryOperators;
@@ -489,6 +506,7 @@ export interface Harness {
 export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}): Harness {
   const clock: ClockHolder = { value: NOW };
   const clockFn = (): Date => clock.value;
+  const db = fakeDb();
   const cases = new InMemoryCases(clockFn);
   const attempts = new InMemoryAttempts();
   const operators = new InMemoryOperators();
@@ -502,7 +520,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
   const events = new EventsService(producer, clockFn);
   const authz = new SettlementAuthz(new PolicyDecisionPoint(loadBundledPolicies()));
   const service = new SettlementService(
-    fakeDb(),
+    db,
     cases,
     attempts as unknown as ContactAttemptsRepo,
     new OperatorGate(operators as unknown as OperatorsRepo),
@@ -519,6 +537,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
   );
   return {
     service,
+    db,
     cases,
     attempts,
     operators,

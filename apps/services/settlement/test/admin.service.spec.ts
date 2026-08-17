@@ -395,17 +395,43 @@ describe('case close', () => {
 });
 
 describe('case visibility for administration reads', () => {
-  it('subject, reporter, executor, and operators can read; strangers cannot', async () => {
+  it('subject, reporter, executor, and operators can read', async () => {
     const h = buildAdminHarness();
     const caseId = await verifiedCase(h);
     await expect(h.admin.listStages(DECEDENT, caseId)).resolves.toEqual([]);
     await expect(h.admin.listStages(REPORTER, caseId)).resolves.toEqual([]);
     await expect(h.admin.listStages(EXECUTOR, caseId)).resolves.toEqual([]);
     await expect(h.admin.listStages(OPERATOR, caseId)).resolves.toEqual([]);
-    await expect(h.admin.listStages(STRANGER, caseId)).rejects.toThrow(ForbiddenException);
   });
 
-  it('404s an unknown case rather than leaking its absence differently', async () => {
+  it("a stranger's refusal is INDISTINGUISHABLE from an unknown case", async () => {
+    // These used to be two tests: one asserting a stranger got Forbidden and
+    // one, named "404s an unknown case rather than leaking its absence
+    // differently", asserting an unknown id got NotFound. Together they
+    // asserted the leak and called it the opposite — a case-existence oracle
+    // on every read that funnels through `assertCaseVisible` (stages, tasks,
+    // distributions, timeline). One test now, because the property is that the
+    // two answers are the same and neither alone can see it.
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+
+    const real = await h.admin.listStages(STRANGER, caseId).catch((e: unknown) => e);
+    const unknown = await h.admin.listStages(STRANGER, randomUUID()).catch((e: unknown) => e);
+
+    expect(real).toBeInstanceOf(NotFoundException);
+    expect(unknown).toBeInstanceOf(NotFoundException);
+    expect((real as NotFoundException).getStatus()).toBe(
+      (unknown as NotFoundException).getStatus(),
+    );
+    expect((real as NotFoundException).getResponse()).toEqual(
+      (unknown as NotFoundException).getResponse(),
+    );
+  });
+
+  it('an OPERATOR still learns an unknown case is unknown', async () => {
+    // The uniform answer is about what a caller with no relationship learns.
+    // Someone entitled to read the case must still be told the id is wrong,
+    // or the fix would make the surface unusable for the people it is for.
     const h = buildAdminHarness();
     await expect(h.admin.listStages(OPERATOR, randomUUID())).rejects.toThrow(NotFoundException);
   });

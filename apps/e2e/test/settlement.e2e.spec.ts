@@ -434,14 +434,22 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       expect.objectContaining({ kind: 'case_opened', ownerUserId: owner.userId, caseId }),
     );
 
-    // The subject and the reporter can read the case; a stranger cannot.
+    // The subject and the reporter can read the case; a stranger cannot — and
+    // a stranger's refusal is BYTE-IDENTICAL to reading an id that names
+    // nothing (M21 PR2). A 403 here would have told any authenticated caller
+    // holding a case id that a death case exists for it.
     await settlement.get(`/v1/settlement/cases/${caseId}`).set(owner.bearer).expect(200);
     await settlement.get(`/v1/settlement/cases/${caseId}`).set(reporter.bearer).expect(200);
     const stranger = await registerAndLogin('stranger');
-    await settlement
+    const strangerOnReal = await settlement
       .get(`/v1/settlement/cases/${caseId}`)
       .set(stranger.bearer)
-      .expect(403, { error: 'forbidden' });
+      .expect(404, { error: 'not_found' });
+    const strangerOnUnknown = await settlement
+      .get(`/v1/settlement/cases/${randomUUID()}`)
+      .set(stranger.bearer)
+      .expect(404, { error: 'not_found' });
+    expect(strangerOnReal.body).toEqual(strangerOnUnknown.body);
 
     // Before the lock: the reporter's contact-read grant works.
     await profile.get(`/v1/profiles/${owner.userId}/contacts`).set(reporter.bearer).expect(200);

@@ -1,4 +1,4 @@
-import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { ForbiddenException, NotFoundException, Inject, Injectable } from '@nestjs/common';
 import { ref, type EntityInput, type PolicyDecisionPoint } from '@estate/authz';
 import { POLICY_DECISION_POINT } from './di-tokens';
 
@@ -81,6 +81,35 @@ export class SettlementAuthz {
     if (!this.can(principalUserId, isOperator, action, resource)) {
       // Never echo principal, resource, or reason.
       throw new ForbiddenException({ error: 'forbidden' });
+    }
+  }
+
+  /**
+   * Like `assertCan`, but a deny answers the SAME 404 a missing case does.
+   *
+   * ON A PATH SCOPED BY A CASE ID, "exists but is not yours" MUST BE
+   * INDISTINGUISHABLE FROM "DOES NOT EXIST". Every case-scoped read here used
+   * to answer 404 for an unknown id and 403 for a real one, which tells any
+   * authenticated caller holding an id whether a death case exists for it —
+   * measured live across `getCase`, and the four admin reads that go through
+   * `assertCaseVisible` (timeline, stages, tasks, distributions). It is the
+   * same defect M19 PR1 closed in assets one milestone earlier, in the service
+   * whose ids name death cases.
+   *
+   * Use this wherever the resource was located BY the id under authorization.
+   * Keep `assertCan` where the id is one the caller already holds by other
+   * means and the refusal reveals nothing new — the operator write paths, where
+   * a non-operator is refused BEFORE any lookup and so learns nothing either
+   * way, and the owner's own `manage`/`void`.
+   */
+  assertCanOrNotFound(
+    principalUserId: string,
+    isOperator: boolean,
+    action: SettlementAction | 'manage',
+    resource: EntityInput,
+  ): void {
+    if (!this.can(principalUserId, isOperator, action, resource)) {
+      throw new NotFoundException({ error: 'not_found' });
     }
   }
 }

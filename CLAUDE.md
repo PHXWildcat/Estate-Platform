@@ -7006,3 +7006,82 @@ deviating from them, stop and propose the change with rationale — do not silen
   length-instead-of-content no-op checks, and anchoring on a non-unique string —
   every one of them produces a conclusion about a test drawn from a measurement
   that did not happen.
+- 2026-08-17 — THE PRE-MERGE PASS FOUND THE FENCE I HAD JUST WRITTEN BREAKING
+  THREE RULES THIS REPO ALREADY HAD WRITTEN DOWN, which is the M21 PR2 entry
+  worth keeping. (1) THE CEDAR CHECK ASSERTED A NAME, NOT PROVENANCE:
+  `expect(c.arg).toMatch(/^isOperator$/)` says the argument is SPELLED
+  `isOperator` and says nothing about where the value came from — so
+  `const isOperator = true` beside a discarded gate call passed GREEN, and so
+  did a brand-new route with no gate call at all, both executed rather than
+  argued. The fence written to stop a literal reaching Cedar admitted one. It
+  checks BINDING now (the argument must be assigned by a `gate.is`/
+  `gate.assertIn` call in the same method), which is what makes removing the
+  check remove the argument rather than leaving a constant behind. (2) TWO OF
+  ITS THREE BLOCKS DID NOT USE THE RECURSIVE CORPUS its own header claimed —
+  one read a single hardcoded filename, the other a hardcoded two-file list —
+  so a third service file reading the allowlist on the pool before a
+  transactional write was invisible; the same false claim had been copied into
+  the commit message, docs/03 §6aa and docs/04. (3) THE READER CHECK WAS KEYED
+  ON THE PROPERTY NAME `operators`, the exact anchoring mistake the credential
+  graph made twice (2026-07-28, 2026-08-07) and the route-audience fence made
+  once (2026-08-12): it derives the field from whatever is DECLARED as an
+  `OperatorsRepo` now, and adds the raw-SQL SELECT scan its PR1 sibling already
+  had for writes. THE LESSON IS NOT "FENCES ARE HARD": it is that a fence
+  written in the same sitting as the fix it protects inherits the author's
+  model of the defect, so it tends to check the SHAPE the defect happened to
+  take rather than the property. Eight mutations, eight red.
+- 2026-08-17 — AND MY OWN ANTI-VACUITY COUNT CAUGHT A COORDINATE BUG IN THE
+  REWRITE, which is the argument for having one. The new fence slices two views
+  of each file at one set of offsets — calls come from the view with string
+  literals blanked, the Cedar ACTION from the view that still has them — and
+  the first version SHORTENED one view and not the other, so every offset past
+  the first string literal was wrong: it silently lost an `assertCan` call and
+  credited another to the wrong method. Both masks are LENGTH-PRESERVING now
+  (comments and literals become spaces, newlines kept), so there is one
+  coordinate system. A fence that mis-attributes is worse than one that finds
+  nothing, because it still goes green.
+- 2026-08-17 — A DOUBLE DISCARDED THE PARAMETER THAT WAS THE SECURITY PROPERTY.
+  `InMemoryOperators.isOperator(_q2, userId)` threw its handle away, so NO
+  behavioural test — unit or Postgres-backed — could tell `assertIn(tx, u)`
+  from `assertIn(this.db, u)`, and the source fence was the only thing in the
+  repository that could see the rule the gate's docstring calls its contract.
+  The double is more permissive than the real thing, one layer beneath the
+  fixtures (the M16 PR2b `chrome-double.ts` shape). It records now, `fakeDb()`
+  hands the callback a DISTINCT object which is what makes the question
+  answerable at all, and two service tests assert BOTH sides of the rule — a
+  transactional caller does not ask the pool, and `queue` does. Mutating
+  `startReview` to the pool handle turns the first red.
+- 2026-08-17 — EVERY CASE-SCOPED READ IN SETTLEMENT WAS A CASE-EXISTENCE
+  ORACLE, found by the same pass, measured live before it was believed, and
+  PRE-EXISTING rather than introduced by M21 PR2. `getCase` and the four admin
+  reads that funnel through `assertCaseVisible` (timeline, stages, tasks,
+  distributions) answered 404 for an unknown case id and 403 for a real one, so
+  any authenticated caller holding an id learned whether a death case exists
+  for it — the same defect M19 PR1 closed in assets one milestone earlier, in
+  the service whose ids name death cases. It is fixed here because PR2's own
+  §6aa was about to claim this service preserved the uniform-404 rule, which on
+  those five routes it did not: a milestone that states a property owes the
+  property. `assertCanOrNotFound` is the assets precedent applied, deliberately
+  NOT used on the operator write paths, where a non-operator is refused before
+  any lookup and so learns nothing either way. THE TWO TESTS COVERING THIS WERE
+  THEMSELVES THE LESSON: one asserted a stranger got 403 and the next, named
+  "404s an unknown case rather than leaking its absence differently", asserted
+  an unknown id got 404 — together they asserted the leak and called it the
+  opposite. One test now, comparing the two answers, because neither alone can
+  see the property. A THIRD WITNESS SAT ONE LAYER UP, and it is how the fix
+  actually presented: `apps/e2e/test/settlement.e2e.spec.ts` pinned
+  `expect(403, { error: 'forbidden' })` for a stranger reading a real case, so
+  the leak was written into the file whose whole subject is the §5.1 chain, and
+  the repair showed up as a RED E2E rather than as a red unit test. The general
+  shape is that a defect asserted at three layers is not a coverage gap — every
+  layer was covered — it is three copies of one wrong belief, and the only test
+  that can see it is the one comparing the two answers rather than checking
+  either alone.
+- 2026-08-17 — A COUNT IN A SHIPPED COMMENT IS A MEASUREMENT, AND MINE WAS
+  WRONG. The gate's docstring said the service had "FOUR independent
+  operator-admission paths" and enumerated four shapes as though that were the
+  inventory; `git grep 'operators.isOperator(' 56c8fbd` returns SEVEN, six on
+  the pool and one on a transaction. The same figure had been copied into the
+  gate's own spec, docs/03 §6aa, docs/04's table and the commit message. The
+  four shapes were real and the count of paths was not, which is the harm — a
+  wrong measurement in shipped prose is what stops the next person taking it.

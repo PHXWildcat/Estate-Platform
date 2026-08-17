@@ -609,7 +609,10 @@ export class SettlementService {
       throw new NotFoundException({ error: 'not_found' });
     }
     const isOperator = await this.gate.is(this.db, actor);
-    this.authz.assertCan(
+    // NOT-FOUND on a deny: the row was located BY the id under authorization,
+    // so a 403 here would confirm that a guessed case id names a real death
+    // case while an unknown one answered 404 (see assertCanOrNotFound).
+    this.authz.assertCanOrNotFound(
       actor,
       isOperator,
       'read',

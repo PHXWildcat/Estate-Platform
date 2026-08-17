@@ -115,12 +115,15 @@ DATABASE_URL=… pnpm --filter @estate/service-settlement operators list
 ## Where the allowlist is consulted (`OperatorGate`)
 
 `OperatorGate` is the ONLY reader of `settlement_operators`. Before M21 PR2 this
-service asked "is this caller an operator?" in four separate places — two
-byte-identical private methods, a bare branch inside `assertCaseVisible`, and an
-inline disjunction in `setDistributionStatus` — and they had already drifted
-about which database handle to ask on. Two source fences keep it one
-(`test/operator-gate-fence.spec.ts`): nothing else may call
-`OperatorsRepo.isOperator`, and Cedar is never handed a hardcoded `true`.
+service read the allowlist at seven call sites in four shapes — two
+byte-identical private methods, a bare branch inside `assertCaseVisible`, an
+inline disjunction in `setDistributionStatus`, and three direct reads feeding a
+value — six of them on the pool and one on a transaction. Source fences keep it
+one (`test/operator-gate-fence.spec.ts`): nothing else may call
+`OperatorsRepo.isOperator` (anchored on the TYPE, so renaming the field does not
+evade it) or read the table in raw SQL, every PEP call must receive a value
+BOUND BY a gate call in the same method, and the handle must be `tx` unless the
+method is a declared pool read.
 
 Two things about it are decisions rather than details:
 

@@ -5,18 +5,28 @@ import type { Db, Queryable } from './db';
 /**
  * THE ONE PLACE THE OPERATOR ALLOWLIST IS CONSULTED.
  *
- * Before M21 PR2 the settlement service had FOUR independent operator-admission
- * paths and they did not agree with each other:
+ * Before M21 PR2 the settlement service read the allowlist at SEVEN call
+ * sites, in four distinct shapes, and they did not agree with each other:
  *
  *   1. `settlement.service.assertOperator` — pool read, throws.
  *   2. `admin.service.assertOperator` — byte-identical, separately declared.
  *   3. `admin.service.assertCaseVisible` — a bare `isOperator` branch that
  *      returns the case instead of throwing.
  *   4. `setDistributionStatus` — an inline `isOperator || isExecutorOf`
- *      disjunction, and the ONLY site that read the allowlist on the
- *      TRANSACTION handle rather than the pool.
+ *      disjunction, and the ONLY one of the seven that read the allowlist on
+ *      the TRANSACTION handle rather than the pool.
  *
- * Four spellings of one question is the M8 PR2 shape, and here the drift had
+ * plus three more direct reads feeding a value rather than a refusal
+ * (`addEvidence`, `getCase`, `evidenceReadAuthority`) — six on the pool, one on
+ * a transaction.
+ *
+ * (An earlier version of this comment said "FOUR independent paths" and
+ * enumerated the four shapes as though that were the whole inventory. It was
+ * not: `git grep 'operators.isOperator(' 56c8fbd` returns seven. The count is
+ * corrected here rather than quietly, because a shipped comment stating a
+ * measurement that is wrong is what stops the next person measuring.)
+ *
+ * Several spellings of one question is the M8 PR2 shape, and here the drift had
  * already produced a real disagreement about WHEN operator status is decided —
  * see `assertIn`.
  *

@@ -4,10 +4,11 @@
  * WHY THIS FILE HAD TO EXIST BEFORE THE UNIFICATION WAS SAFE. This repo's rule
  * is that unifying N copies of a guard is only safe if the unified one is
  * tested harder than the copies were, because the blast radius becomes every
- * caller: making `assertIn` return without throwing now opens FOUR admission
- * paths at once rather than one. The four copies M21 PR2 replaced had no direct
- * test of their own — they were exercised only incidentally, through whichever
- * route happened to call them.
+ * caller: making `assertIn` return without throwing now opens EVERY admission
+ * path at once rather than one — seven call sites in four shapes before the
+ * unification, and fourteen gate calls after it. None of the replaced copies
+ * had a direct test of its own; they were exercised only incidentally, through
+ * whichever route happened to call them.
  *
  * What is proven here is the DECISION. That the SQL predicate is right is
  * `operator-cli.int.spec.ts`'s and `settlement.int.spec.ts`' job, against real

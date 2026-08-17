@@ -5698,8 +5698,8 @@ cannot be that here:
 So the audience moves to PR3, where the surface that is its only consumer
 lives, and PR2 hardens the enforcement it would have sat on top of.
 
-**What PR2 found in the shipped enforcement.** One service, FOUR independent
-answers to "is this caller an operator?", and they had already drifted:
+**What PR2 found in the shipped enforcement.** One service, SEVEN reads of the
+allowlist in four distinct shapes, and they had already drifted:
 
 | where | shape | handle |
 | --- | --- | --- |
@@ -5707,6 +5707,13 @@ answers to "is this caller an operator?", and they had already drifted:
 | `admin.service.assertOperator` | byte-identical private method | pool |
 | `admin.service.assertCaseVisible` | bare `isOperator` branch, returns the case | pool |
 | `setDistributionStatus` | inline `isOperator \|\| isExecutorOf` | **transaction** |
+| `addEvidence`, `getCase`, `evidenceReadAuthority` | direct reads feeding a value | pool |
+
+Six on the pool, one on a transaction. (This table first listed four rows and
+described them as the whole inventory; `git grep 'operators.isOperator('
+56c8fbd` returns seven. Corrected here rather than silently — a count in
+shipped documentation is a measurement, and a wrong one is what stops the next
+person taking it.)
 
 The drift is in the last column. `startReview` and `confirmVerification` — the
 two §5.1 routes that begin and end a death case — resolved the allowlist on the
@@ -5750,6 +5757,60 @@ operator being revoked in that exact instant. Not taken; recorded in `docs/03`
 recursive read**, on the same reasoning PR1's was: `src/` is flat today, so a
 non-recursive walk satisfies every other assertion in the file and quietly stops
 covering the service the day somebody adds a subdirectory.
+
+**The pre-merge adversarial pass found the fence I had just written breaking
+three rules this repository had already written down**, and that is the most
+useful thing in the PR. Five file-scoped lenses in pinned worktrees, then two
+refute-by-default verifiers per candidate. What survived:
+
+- **The Cedar check asserted a NAME, not provenance.** `expect(c.arg).toMatch(
+  /^isOperator$/)` says the argument is spelled `isOperator`; it says nothing
+  about where the value came from. Both bypasses were executed and both were
+  green: `const isOperator = true` beside a discarded gate call, and a
+  brand-new route with no gate call at all. The fence built to stop a literal
+  reaching Cedar admitted one. It checks BINDING now — the argument must be
+  assigned by a `gate.is`/`gate.assertIn` call in the same method — which is
+  what makes removing the check remove the argument.
+- **Two of its three blocks did not use the recursive corpus** the file's own
+  header claimed, and that this record and `docs/03` §6aa both repeated: one
+  read a single hardcoded filename, the other iterated a hardcoded two-file
+  list. A third service file reading the allowlist on the pool before a
+  transactional write was invisible. It is ONE corpus now, split into methods
+  once, with every block running over it.
+- **The reader check was keyed on the property name** `operators` — the exact
+  anchoring mistake the credential graph made twice and the route-audience
+  fence made once. It derives the field from whatever is DECLARED as an
+  `OperatorsRepo` now, and adds the raw-SQL `SELECT` scan its PR1 sibling has
+  for writes, since a method that skips the repo entirely is invisible to any
+  method-name scan.
+- **The double discarded the handle.** `InMemoryOperators.isOperator(_q2, …)`
+  threw its first argument away, so NO behavioural test — unit or
+  Postgres-backed — could tell `assertIn(tx, u)` from `assertIn(this.db, u)`,
+  and the source fence was the only thing in the repository that could. It
+  records now, and two service tests assert the handle on both sides of the
+  rule.
+- **A case-existence oracle on five routes**, pre-existing and measured live
+  before it was believed (`docs/03` §6aa).
+- **The admission-path count was wrong** in four places, corrected above.
+
+Eight mutations, eight red, including both bypasses the review executed.
+
+The oracle fix is the one change here with a CONTRACT consequence, and it
+surfaced the way a contract change should: `apps/e2e/test/settlement.e2e.spec.ts`
+went red, because the §5.1 end-to-end spec had pinned the leak
+(`expect(403, { error: 'forbidden' })` for a stranger reading a real case). It
+asserts the two answers are byte-identical now. The whole surface was then
+driven against a settlement image rebuilt from this branch: `getCase` and all
+four `assertCaseVisible` reads answer a byte-identical `404 {"error":
+"not_found"}` for a stranger on a REAL case and on an invented id, while the
+subject, the reporter and an operator still read them; `review/start` refuses a
+non-operator with `403 forbidden` identically for a real and an invented id
+(the gate precedes the lookup); and the four admin writes refuse at both layers
+— `stepup_required` from the controller guard un-elevated, then `forbidden`
+from `OperatorGate` once elevated, again indistinguishable between a real case
+and an invented one. Twenty-three assertions, and the trail carried
+`settlement.operator.granted` from PR1's ceremony followed by
+`settlement.case.review_started | operator | {}` with zero ingest rejections.
 
 Threat-model delta and residuals: `docs/03` §6aa. §4 TB7's operator-identity and
 operator-authentication paragraphs are rewritten in the same PR — the first named

@@ -3680,14 +3680,15 @@ the table said only that somebody holding the database made a grant.
 
 ## 6aa. Threat-model delta — M21 PR2, one operator gate (2026-08-17)
 
-**One service held FOUR independent answers to "is this caller an operator?",
+**One service read the allowlist at SEVEN call sites in four distinct shapes,
 and they had already drifted about when the question is asked.** Two
 byte-identical private `assertOperator` methods (one in `settlement.service.ts`,
 one in `admin.service.ts`), a bare `isOperator` branch inside
-`assertCaseVisible` that returns the case rather than throwing, and an inline
-`isOperator || isExecutorOf` disjunction in `setDistributionStatus`. The
-disjunction was the only one of the four that read the allowlist on the
-TRANSACTION handle; `startReview` and `confirmVerification` — the two §5.1
+`assertCaseVisible` that returns the case rather than throwing, an inline
+`isOperator || isExecutorOf` disjunction in `setDistributionStatus`, and three
+more direct reads feeding a value (`addEvidence`, `getCase`,
+`evidenceReadAuthority`). The disjunction was the only one of the seven that
+read the allowlist on the TRANSACTION handle; `startReview` and `confirmVerification` — the two §5.1
 routes that begin and end a death case — resolved it on the pool and only then
 opened the transaction they were guarding. Four spellings of one question is the
 M8 PR2 shape, in the code that decides who may approve a death case.
@@ -3722,6 +3723,27 @@ default.
   non-operator is refused without learning whether the case id names anything —
   the uniform-404 rule, preserved rather than newly added, and now visible in
   one ordering instead of implied by four.
+- **EVERY CASE-SCOPED READ NOW ANSWERS ONE REFUSAL.** Found by the pre-merge
+  adversarial pass and measured live before it was believed: `getCase` and the
+  four admin reads that funnel through `assertCaseVisible` (timeline, stages,
+  tasks, distributions) answered 404 for an unknown case id and 403 for a real
+  one, so any authenticated caller holding an id learned whether a death case
+  exists for it. Pre-existing rather than introduced here, and the same defect
+  M19 PR1 closed in assets one milestone earlier — but §6aa was about to claim
+  this service preserved the uniform-404 rule, which on those five routes it did
+  not. `SettlementAuthz.assertCanOrNotFound` is the assets precedent applied:
+  used wherever the resource was located BY the id under authorization, and NOT
+  on the operator write paths, where a non-operator is refused before any lookup
+  and so learns nothing either way. The two tests that covered this were
+  themselves the lesson — one asserted a stranger got 403 and the next, named
+  *"404s an unknown case rather than leaking its absence differently"*, asserted
+  an unknown id got 404. Together they asserted the leak and called it the
+  opposite. One test now, comparing the two answers, because neither alone can
+  see the property. A THIRD witness said the same thing at a higher layer: the
+  §5.1 end-to-end spec pinned `expect(403, { error: 'forbidden' })` for a
+  stranger reading a real case, so the leak was written into the file that
+  exists to prove this chain — which is how the fix presented, as a red e2e
+  rather than as a red unit test. It compares the two answers now too.
 - **Two fences, both source scans, because there is no runtime seam.** A
   sanctioned read of the allowlist and an unsanctioned one call the same method
   on the same class, so the difference is WHERE IT IS WRITTEN. The first asserts
@@ -3766,6 +3788,12 @@ default.
   the direction `settlement.cedar` deliberately avoids by never carrying an
   `owner` attribute. Declared as data with a reason per entry and fenced, so a
   third one is a visible decision.
+- **[ACCEPTED]** *An entitled caller still learns an unknown case id is
+  unknown.* The uniform answer is about what someone with NO relationship to a
+  case learns; a decedent, reporter, executor or operator is told the id is
+  wrong, because a surface that answered "not found" to the people it is for
+  would be unusable. The oracle it closes is the one available to everybody
+  else.
 - **[OWNER: M21]** *`admin.service.ts` has no PEP at all — the gate is the whole
   authorization on those routes.* `settlement.cedar`'s permits are scoped
   `resource is SettlementCase` and the admin routes act on tasks, stages and

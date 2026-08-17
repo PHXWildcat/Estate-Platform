@@ -660,6 +660,9 @@ export class SettlementAdminService {
     if (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor)) {
       return kase;
     }
-    throw new ForbiddenException({ error: 'forbidden' });
+    // The SAME answer the missing case above gives. Every read that funnels
+    // through here is scoped by a case id, so a 403 would tell an unrelated
+    // caller that the id names a real case (see SettlementAuthz.assertCanOrNotFound).
+    throw new NotFoundException({ error: 'not_found' });
   }
 }
