@@ -3802,6 +3802,20 @@ default.
   membership IS the decision on that controller, which is exactly why PR2 made
   it one gate rather than three shapes. The operator surface (PR3) is what makes
   those routes reachable from the product at all.
+- **[OWNER: M21]** *The BFF's SDL enums and its own hand-written payload unions
+  are two copies in one file with nothing comparing them.* Found by PR2's review
+  and recorded rather than fixed, because it lives outside this PR's subject —
+  but MEASURED, not assumed: widening `enum SessionAudience` in
+  `apps/bff/src/schema.ts` and nothing else leaves `@estate/bff` green on both
+  typecheck and its 399 tests. What catches it today is one layer over,
+  `apps/web/src/graphql/enum-parity.test.ts` (M20 PR1), which reads that SDL and
+  goes red on the app mirror — confirmed by running the mutation. So the SDL→app
+  direction is fenced and the SDL→BFF-payload direction is not; the exhaustive
+  `AUDIENCE_GQL` Record couples the payload union to `SessionAudience` in
+  `@estate/contracts` rather than to the SDL beside it. The failure mode is a
+  value the BFF's TypeScript admits and its own schema rejects at serialization
+  — a runtime error rather than a build one. PR3 adds the `operator` audience and
+  is therefore the change that first exercises this, which is why it owns it.
 - **[OWNER: M21]** *An allowlist row has no expiry, no case scoping and no
   session binding.* Any live row grants authority over EVERY case, forever, from
   any session that user holds. None of the three is a defect in the gate — the
