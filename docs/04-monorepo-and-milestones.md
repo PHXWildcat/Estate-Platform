@@ -5505,7 +5505,119 @@ Seventeen mutations, seventeen red — the two that matter most being the fence
 corpus narrowed back to one file, and `RegisterSchema.password` dropped to
 `min(1)`. Full record in docs/03 §6y.
 
-### M21 — Subscription manager (planned; re-sequenced 2026-08-12, displaced again by M20)
+### M21 — TB7 operator platform, minimum slice (approved 2026-08-17)
+
+**TB7 was named as the owner of twelve separate deferrals and appeared in no
+milestone list.** That is the whole argument. `docs/04`'s own "Later milestones"
+paragraph said it was "named as owning milestone in five places"; the real count
+is twelve distinct deferred items across nineteen lines of `docs/03` and
+`docs/04`, growing by roughly one per milestone since M14. The mechanism is not
+carelessness — it is that an item nobody has costed is an item everything can
+defer to, and each individual deferral reads as diligence in isolation.
+
+**Chosen by a structured selection**, on the M17 precedent: six file-scoped
+evidence lenses measuring the repo rather than its prose, then three judges
+ranking from deliberately conflicting priorities (risk-first, user-value-first,
+dependency-first), then one synthesis forbidden from averaging them. Every
+load-bearing claim was re-derived by hand afterwards, because a verdict is not
+evidence — and that re-derivation overturned two findings (below).
+
+**Why the dependency lens governs at this moment**, which is the crux of the
+disagreement rather than a compromise between the judges. The risk lens prices
+reachable harm *when live*; the value lens prices what a *paying customer* can
+finish. Pre-launch, with no deployment and no users, both are reasoning about a
+world that does not exist yet — their top items are contingent on an event
+nobody has scheduled. The dependency lens is the only one whose inputs are facts
+today. That is not a claim that build order outranks security in general; it is
+a claim about which lens has measurements right now.
+
+All three judges nonetheless placed the settlement program in their top third,
+consecutively, for three *different* reasons: 18 of 36 unreachable routes plus a
+promise `ContactLinkControls` has made owners since M13 (risk); it is what the
+product is *for* (value); and it is the fastest-compounding debt in the repo
+(dependency).
+
+**THE SIZING CORRECTION THAT MAKES A MINIMUM SLICE POSSIBLE.** The
+route↔consumer fence labels `EXEMPT_TB7_OPERATOR` "Operator-facing" and it is
+MISLABELLED: 12 of its 17 settlement routes live in `admin.controller.ts`, whose
+own docstring says *"a grieving executor should not face an MFA prompt to look at
+a checklist"*. That controller is post-verification administration with a MIXED
+executor/operator actor set — requesting a stage and ticking a task are the
+executor; deciding a stage, approving a distribution and closing the case are the
+operator. The genuinely operator-only surface is about **ten routes**, not
+eighteen: five in `operator.controller.ts`, roughly four operator decisions in the
+admin controller, and one documents evidence read. The rest are M23's.
+
+**Scope: the minimum, with everything else deferred IN WRITING and with an
+owner.** M21 ships an operator grant ceremony, an operator session audience, a
+surface over the operator-only routes, and the legal-hold lift ceremony. It does
+NOT ship JIT elevation, peer approval, session recording, KMS grant suspension
+(all E1 — they need real IAM), operator-assisted account recovery, or the
+reporter and executor surfaces (M22, M23). Each of those is named with its owner
+in the rewritten `docs/03` §4 TB7 block, which until this milestone asserted four
+of them **in the present tense** for a system that has never had an operator.
+
+**Committed as one budget with M22 (reporter/owner surface) and M23 (executor
+surface).** TB7 alone is staff tooling for staff who do not exist — the
+user-value judge refuses it on exactly that ground and is right to. What makes
+this defensible is that the alternative orderings are worse on that judge's own
+lens: the reporter surface first hands a real user a way to file a death report
+against a living person with no in-product reviewer *and* no in-product void,
+and the executor surface first renders a UI whose precondition (an
+operator-approved stage, requester ≠ approver as a DDL CHECK) nobody in the
+product can produce.
+
+**Flip-trigger, written down rather than left as a sentiment:** the dashboard
+(M24) jumps ahead of this the moment a demo date or a signed customer exists,
+because at that point the value lens becomes the one with real inputs.
+
+#### The PR split
+
+- **PR0 — the design delta and the residual ownership sweep** (docs plus one
+  fence, no runtime code). Rewrite `docs/03` §4's TB7 block into what is true,
+  what M21 ships and what is deferred with an owner; tag every residual in §6
+  with a disposition from a closed vocabulary; ship the fence that keeps it true.
+- **PR1 — the operator grant ceremony.** `settlement_operators`' only sanctioned
+  write path is a 93-line CLI with no package script and no compose entry, and
+  its only exercised path is a raw `INSERT` in the e2e. The property that must
+  survive: **no runtime session may mint an operator** — `operators.repo.ts`
+  states it in its own docstring and it is the whole safety argument for the
+  interim allowlist, so the ceremony stays CLI-or-migration-authored rather than
+  becoming a route.
+- **PR2 — the operator session audience.** The known trap is not hypothetical:
+  `AllowSessionAudiences` unconditionally prepends `account` and
+  `CallerGuard.audiencesFor` returns a union that widens and can never narrow, so
+  a route decorated with a new audience would ALSO admit every ordinary account
+  session. `assertOperator` stays the control; the audience is defence in depth,
+  and the code says which is which.
+- **PR3 — the operator surface.** Queue, review, verify, close, stage decisions,
+  distribution approval. Flip the exemptions to `consumed()` in the same change,
+  because M20 PR1's stale-exemption check fires the moment a consumer appears.
+- **PR4 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
+  shipped the hold noting it outlives case close with no lift surface and
+  assigned that to TB7. This is TB7.
+- **PR5 — the security review.**
+
+#### Two findings from the selection that hand-verification OVERTURNED
+
+Recorded because the refutations are worth as much as the findings, and because
+the selection's own verify phase produced none — which was treated as a reason
+for more hand-checking rather than less.
+
+- *"`apps/bff/src/app.ts:23` cites a README that does not mention rate limiting
+  or depth limits."* **False.** The lens read the ROOT `README.md` (55 lines).
+  `apps/bff/README.md` exists, is 124 lines, and covers both at lines 113–116.
+- *"`identity/auth.controller.ts:755` cites a README that does not mention
+  passwordless."* **False.** `apps/services/identity/README.md` covers
+  passwordless discovery login at lines 47 and 110.
+
+The third member of that "citations pointing at things that do not exist" group
+IS real and survives: four comments cite a "retention job" and an "operator" that
+do not exist, and `destroyDek` has one definition and one test caller — **no
+production caller at all**. That is M25's, and it is why no new encrypted data
+class should ship before it.
+
+### M32 — Subscription manager (planned; re-sequenced 2026-08-12, displaced by M20, re-numbered 2026-08-17 when M21 became the TB7 operator platform)
 
 **The estate keeps paying until somebody stops it.** Recurring charges — streaming,
 SaaS, gym, storage, insurance, domains — continue debiting after death, and every
@@ -5614,44 +5726,78 @@ otherwise be discovered in this milestone's own review:
 after death, and every month before cancellation is money out of the estate.
 That is genuine and unusual user value, and it is why this is a re-sequence.
 
-### Later milestones (rough order, one per bounded context)
+### The remaining sequence (selected 2026-08-17, verified against the repo)
 
-**PROPOSED after M17, not yet approved** — recorded so the ordering argument
-survives, since the 2026-08-12 selection found that the largest remaining gaps
-are SURFACES over shipped backends rather than new domains:
+Replaces the earlier "Later milestones" list, which the M21 selection
+invalidated in three specific ways recorded below. Method: six file-scoped
+evidence lenses, three judges on conflicting priorities, one synthesis, then
+hand-verification of every load-bearing claim.
 
-- *The assets surface.* Approved 2026-08-13 as M19 (section above), carrying
-  the route↔consumer fence as its PR1. (The sweep's "`CreateAssetInput`
-  carries no `inTrust`" was true only of the BFF layer — corrected in the
-  M19 section.)
-- *The settlement surface.* The largest zero-callers gap by route count (28
-  across three controllers, no client in the BFF), and `ContactLinkControls`
-  already tells owners a linked contact can report a death — a promise with no
-  surface behind it. **It dead-ends without the TB7 operator platform**, which is
-  named as owning milestone in five places across docs/03 and docs/04 and
-  appears in no milestone list: ship a reporter path alone and a death report
-  lands in a queue no human can open. Absorb TB7's minimum or do not start.
-- *The Plaid link surface.* Six routes, a guarded isolate, no written deferral
-  anywhere. Gated on obtaining sandbox credentials — a procurement dependency,
-  which is why it is its own milestone rather than hidden inside M20.
-- *The subscription manager (M20).* Re-sequenced above.
-- *Referral · search · the M5 cloud half*, reduced by what M8 took over and
-  by M18's local decrypt-rate detection.
+**Escalations — blocked outside engineering. No queue position, because a
+decision booked as progress is how a queue stays untouched.**
+
+| | Item | Blocker |
+|---|---|---|
+| E1 | The M5 cloud half — AWS org, billing, CI OIDC role | Money |
+| E2 | Legal + tax reference review | Procurement — **two** datasets, two reviewers |
+| E3 | Plaid sandbox credentials | Procurement; gates *production*, not building |
+| E4 | SMS carrier + 10DLC; APNs/FCM | Procurement, multi-week lead |
+| E5 | Penetration-test firm | Procurement + a deployed target (rides E1) |
+
+**The queue.** Numbering is proposed except M21, which is approved.
+
+| # | Milestone | Status |
+|---|---|---|
+| M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
+| M22 | Settlement reporter/owner surface | 8 routes, complete backend, zero consumers |
+| M23 | Executor surface | 3 routes; §5.1 control 5 has never executed outside a test |
+| M24 | Dashboard, computable subset | **Flip-trigger: jumps to the front on a demo date or a signed customer** |
+| M25 | Crypto-shredding execution path | `destroyDek` has no production caller; must precede any new encrypted data class |
+| M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
+| M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
+| M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
+| M29 | Passkey sign-in / passwordless discovery | Both authenticate routes carry `SessionGuard` |
+| M30 | In-app notification feed + channel preferences | Additive only; must never satisfy `deliversToRealChannels` |
+| M31 | Plaid link surface | Needs E3 |
+| M32 | Subscription manager, manual half | After M25 |
+| M33 | Global search | After M25 — the index must purge with the DEK |
+| M34 | Operability instrumentation | Zero of six named tools present; precedes load testing |
+| M35 | Load / chaos / DR / penetration | Needs E1 + E5 |
+| M36 | Plaid-assisted subscription detection | Three stacked prerequisites, **middle one absent** — no transaction data path exists |
+| M37 | Passkey provisioning (Estate as authenticator) | Reverses M16's central control |
+| M38 | Referral marketplace | Zero code, zero DDL, regulatory surface |
+
+**Three corrections to the list this replaces**, each measured rather than
+argued:
+
+- *"TB7 … named as owning milestone in five places."* Twelve distinct deferred
+  items across nineteen lines. The undercount is the mechanism, not a typo: TB7
+  looked small, so deferring to it looked cheap.
+- *"The settlement surface … 28 across three controllers."* 28 is the raw
+  decorator count. The zero-consumer count is **25**, and 12 of those sit in a
+  controller whose actors are executors as much as operators — which is what
+  splits M21 from M23 and makes a minimum slice possible at all.
+- *"A meaningful share of docs/03's open residuals are structurally blocked
+  behind [M5]."* Only one open residual bullet names M5. The cloud-gated
+  material is real but is a different structure — roughly fourteen present-tense
+  control commitments in §§4–7, not residual bullets.
 
 **The M5 cloud half is blocked on a business decision, not on engineering**
-(AWS org, ~$420–1,100/mo dev tier, a CI OIDC role). A meaningful share of
-docs/03's open residuals are structurally blocked behind it — the KMS circuit
-breaker, the ENFORCEMENT half of TB4's insider control (M18 shipped the
-detection half locally: the baseline itself is no longer on this list);
-§5.3 canaries; §5.6 Vault-Locked backups; and the audit chain's
-S3 Object Lock anchor, an M1 open item now sixteen milestones old. It should
-jump the queue the moment billing exists. Two things to know before it does: the
-cost of delay is mechanical, since the topology already encoded in
+(AWS org, ~$420–1,100/mo dev tier, a CI OIDC role). It gates the KMS circuit
+breaker and the ENFORCEMENT half of TB4's insider control (M18 shipped the
+DETECTION half locally); §5.3 canaries; §5.6 Vault-Locked backups; and the audit
+chain's S3 Object Lock anchor, an M1 open item now twenty milestones old. It
+should jump the queue the moment billing exists. Two things to know before it
+does: the cost of delay is mechanical, since the topology already encoded in
 `docker-compose.stack.yml` and `apps/stack/src/generate-env.ts` must be encoded
-a second time in Terraform and ten services is cheaper than thirteen; and the M4
-publish CLI refuses placeholder-`legalReview` templates under
-`NODE_ENV=production`, so a production environment has NO ACTIVE TEMPLATES and
-generation returns `template_not_found` until that is resolved.
+a second time in Terraform — and at the M5 deferral commit the repo had six
+services, eight images and no compose stack at all, against ten services and an
+853-line compose file now. And the M4 publish CLI refuses
+placeholder-`legalReview` templates under `NODE_ENV=production`, so a production
+environment has NO ACTIVE TEMPLATES and generation returns `template_not_found`
+until E2 resolves — a SEPARATE procurement blocker that needs no AWS account and
+can start today, which the earlier framing buried inside the money one.
+
 
 Settlement came late deliberately: highest-risk domains land on mature
 primitives. (Notifications moved up and shipped as M9; the AI assistant is M10.

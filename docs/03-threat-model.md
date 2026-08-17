@@ -61,7 +61,71 @@ section originally described, and the narrowing is the result of measuring the p
 - *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and shipped for the web app in M17 PR5 (§6o; the vault origin and extension remain TOTP-only); the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
 
 **TB7 — Operators**
-- No standing prod access; JIT elevation with peer approval and session recording; all operator reads of user data are themselves audit events surfaced to the user ("Anthropic-style" transparency: users can see that support accessed X on date Y); separation of duties between deploy, data, and key administration.
+
+This block was one sentence in the present tense — "No standing prod access; JIT
+elevation with peer approval and session recording; all operator reads of user
+data are themselves audit events surfaced to the user; separation of duties
+between deploy, data, and key administration" — describing a system that has
+never had an operator, a production environment, or an operator platform. M21
+rewrote it into what is TRUE, what M21 SHIPS, and what is DEFERRED WITH AN
+OWNER, because a control asserted in the present tense is what stops the next
+person looking. Twelve separate deferrals across §§6a–6y point at "the TB7
+operator platform"; the reason they accumulated invisibly is that TB7 appeared
+in no milestone list and had therefore never been sized.
+
+*True today, and cheaply so.* There is no standing production access because
+there is no production (E1, the cloud half, is blocked on a business decision).
+That sentence costs nothing and proves nothing; it is recorded here so it is not
+mistaken for a control.
+
+*Separation of duties — PARTIALLY REAL, at the row rather than the role.* The
+§5.1 chain enforces reviewer ≠ reporter and, for staged access, requester ≠
+approver, both as DDL CHECKs rather than as convention, and distributions carry a
+row-local dual-control CHECK (§6b). That is genuine separation of duties over the
+DECISION. Separation between deploy, data and key administration is a property of
+IAM roles and remains **E1**.
+
+*Operator identity — the interim, and its one real safety property.*
+`settlement_operators` is an append+revoke allowlist whose rows are the history,
+consulted by `assertOperator`. The property that matters, stated in
+`operators.repo.ts`'s own docstring, is that **no runtime session can mint an
+operator**: there is deliberately no grant API, so a stolen operator session
+cannot widen the allowlist. M21 PR1 keeps that property and gives the allowlist a
+real ceremony with a non-null `granted_by` — today its only sanctioned write path
+is a 93-line CLI with no package script and no compose entry, and the only
+exercised path is a raw `INSERT` in the e2e.
+
+*Operator authentication — **M21 PR2**.* There is no operator session audience;
+an operator is an ordinary account session that happens to appear in a table. M21
+adds the audience as defence in depth and says in the code which of the two is
+the control, because `AllowSessionAudiences` unconditionally prepends `account`
+and `CallerGuard.audiencesFor` returns a union that widens and can never narrow —
+so a route decorated with a new audience would ALSO admit every ordinary account
+session. `assertOperator` stays the control.
+
+*Operator actions are audited but NOT rate-limited* — **M21 PR3** for the
+surface, and the bound itself is deferred to the milestone that gives it a
+consumer, on the rule that a control ships with its caller.
+
+*Operator reads of user data are audit events, but they are NOT "surfaced to the
+user".* The events exist — settlement and documents emit them, and an executor
+inventory read carries `estate.viewed` with an `onBehalfOf` attribution (§6r). No
+mechanism anywhere shows a user that support accessed their data on a date, and
+none is planned before a notification or in-app surface exists. **Owner: M30**
+(in-app feed). The "Anthropic-style transparency" phrasing is kept as the goal
+and no longer stated as a fact.
+
+*Deferred, each with an owner, NOT shipping in M21's minimum slice:* JIT
+elevation (**E1** — it needs real IAM); peer approval of an operator action, as
+distinct from the reviewer ≠ reporter CHECK that already exists (**M21 follow-on,
+not the minimum slice**); session recording (**E1**); KMS grant suspension and
+paging on a decrypt-rate anomaly, which is the RESPONSE half of TB4's insider
+control whose DETECTION shipped in M18 (**E1**); a human-facing surface for that
+M18 alarm, whose reader is an operator who does not exist (**M21 PR3**);
+operator-assisted account recovery, which §§6h/6m/6o each name as the remedy that
+does not exist (**M21 follow-on**); and the legal-hold lift ceremony, which M9 PR2
+shipped noting that a hold outlives case close with no way to release it
+(**M21 PR4**).
 
 ## 5. Platform-specific attack scenarios (the ones generic checklists miss)
 
@@ -133,17 +197,17 @@ compromise, Critical) described something that did not exist yet.
   architecture doc.
 
 **Residuals accepted, and why.**
-- *JS `bigint` is not constant-time.* True of every JavaScript SRP; bounded by
+- **[ACCEPTED]** *JS `bigint` is not constant-time.* True of every JavaScript SRP; bounded by
   network jitter, and no code path branches early on a secret comparison.
-- *Full-history rollback.* A server that serves an old blob AND claims its old
+- **[OWNER: M27]** *Full-history rollback.* A server that serves an old blob AND claims its old
   version is detectable only by client-side last-seen state. Same class as every
   hosted zero-knowledge store. Per-version AAD binding stops the easier attack:
   replaying a blob at a *different* version fails to decrypt.
-- *Reset is token-gated.* A forgotten password cannot be proven, so the reset
+- **[OWNER: M27]** *Reset is token-gated.* A forgotten password cannot be proven, so the reset
   route is the one place step-up-fresh stolen tokens can destroy — never read —
   a vault. Compensating: distinct audit action, step-up freshness, and owner
   notification when the notification port lands.
-- *No rate limiting on failed SRP proofs yet.* PARTIALLY closed twice over and
+- **[OWNER: M27]** *No rate limiting on failed SRP proofs yet.* PARTIALLY closed twice over and
   the remainder is named precisely. M16 capped step-up, which bounds both SRP
   legs transitively because both are step-up gated (§6j); M17 PR1 delivered the
   login bound this bullet was tracked against (§6k). What is still open is
@@ -401,21 +465,21 @@ rest on. Controls shipped, each mapped to what this document demanded:
 
 **Residuals, accepted and recorded:**
 
-- *Email is the only live channel.* §5.2's "multi-channel" and §5.1's
+- **[OWNER: E4]** *Email is the only live channel.* §5.2's "multi-channel" and §5.1's
   "every channel including hardware-key challenge" remain aspirational;
   the contact trail records channel INTENT (push/sms/voice) while delivery is
   email. SMS/push arrive with their own carriers and their own review.
-- *No one-tap deny token yet.* Deny remains an in-app action ("open your
+- **[OWNER: M27]** *No one-tap deny token yet.* Deny remains an in-app action ("open your
   Estate app"); an email-borne deny capability needs the vault UI's isolated
   origin to exist and its own token design + review. Until then the
   notification shortens discovery time but not the deny path.
-- *Repointing an EXISTING user's address needs identity's credential.* Since
+- **[ACCEPTED]** *Repointing an EXISTING user's address needs identity's credential.* Since
   the M9 review's split this is true as written: only
   `NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN`, held by identity alone, can
   change where a user's alerts go. (Before the split it was false — vault's
   and settlement's copies sufficed, and this document said otherwise.)
   Recipient changes are versioned and audited, but see the next residual.
-- *The recipient-change audit cannot ATTRIBUTE.* `notification.recipient.updated`
+- **[OWNER: E1]** *The recipient-change audit cannot ATTRIBUTE.* `notification.recipient.updated`
   carries `actorId: null`, `actorType: 'service'` and an empty detail, the
   versions trigger stamps the system sentinel, and identity emits the same
   event on EVERY successful login — so the trail proves that an address
@@ -424,14 +488,14 @@ rest on. Controls shipped, each mapped to what this document demanded:
   after-the-fact recovery, NOT a detection control, and should not be cited
   as one. Closing it means recording the calling service, which the static
   shared-secret model cannot do — it arrives with the mesh's peer identity.
-- *Users' addresses are UNVERIFIED.* **CLOSED by M14** — see §6h. The residual
+- **[CLOSED: §6h]** *Users' addresses are UNVERIFIED.* **CLOSED by M14** — see §6h. The residual
   as it stood: registration performed no ownership proof, identity fed whatever
   the user typed into the delivery store, and `users.email_verified_at` was
   never written or read, so "identity's word" meant the address was TYPED, not
   OWNED. `users.email_verified_at` remains dead schema deliberately; the
   verified bit lives on `notification_recipients`, in the store that would have
   to do the reaching.
-- *The carrier sees addresses, timing, AND the event class (TB5).* Inherent
+- **[OWNER: M30]** *The carrier sees addresses, timing, AND the event class (TB5).* Inherent
   to email, and wider than previously recorded here: the body names which
   control is running, so SES and the receiving provider get a per-address
   labelled event stream ("this account is in a death-review period"). The
@@ -440,7 +504,7 @@ rest on. Controls shipped, each mapped to what this document demanded:
   not eliminate it. Closing it fully needs an out-of-band or encrypted push
   channel, i.e. the vault UI's isolated origin. SES supply-chain posture
   rides the existing AWS SDK pinning.
-- *`emergency.reminder` is declared but never emitted* (vault has no
+- **[OWNER: M27]** *`emergency.reminder` is declared but never emitted* (vault has no
   scheduler); the sweep-driven reminder belongs with Temporal or a later
   driver.
 
@@ -540,17 +604,17 @@ step-up gated because it widens third-party egress (export-class under docs/01
 harder than the permissive one.
 
 **Recorded, not fixed.**
-- *Uploaded-document text remains unreadable by anything.* M4's OCR artifact has
+- **[OWNER: M33]** *Uploaded-document text remains unreadable by anything.* M4's OCR artifact has
   no decrypt counterpart and M10 does not add one, so the assistant cannot
   discuss anything a user uploaded. That is a capability gap, not a control —
   closing it means building a bulk-readable text path, which is what §5.3
   exists to prevent, and it needs its own PR, consent scope and delta.
-- *Conversations are outside staged settlement access (§6a).* An executor gets
+- **[OWNER: M23]** *Conversations are outside staged settlement access (§6a).* An executor gets
   inventory, then documents, then vault; conversations are in none of those
   rungs and `assistant.cedar` grants no role-holder verb. A transcript ranges
   over the whole estate and may contain content the owner never intended anyone
   to read, so admitting it would need its own milestone and its own decision.
-- *The egress assertion is narrow on purpose.* It refuses separated SSNs and
+- **[ACCEPTED]** *The egress assertion is narrow on purpose.* It refuses separated SSNs and
   Luhn-valid card numbers and deliberately passes names, emails and phone
   numbers, which are the PR2 tokenizer's job. A gate that fires on ordinary
   estate traffic is one people route around.
@@ -621,16 +685,16 @@ read invisible. Proven live against the stack — two Read presses produced
 exactly two decrypt pairs, and loading the list and detail pages produced none.
 
 **Recorded, not fixed.**
-- *The 404-vs-403 oracle is narrowed at the edge, not closed.* The BFF answers
+- **[OWNER: M21]** *The 404-vs-403 oracle is narrowed at the edge, not closed.* The BFF answers
   the uniform not-found for a plain downstream 403, so browser traffic cannot
   tell "no such document" from "someone else's". The service still
   distinguishes them for any other caller — the M4 review's open follow-up,
   unchanged, and the real fix belongs there.
-- *`documents.title` remains plaintext* (the M4 decision, on the
+- **[ACCEPTED]** *`documents.title` remains plaintext* (the M4 decision, on the
   `assets_view.title` precedent). The generate form now says so where the field
   is, rather than leaving users to infer that the title is protected like the
   contents.
-- *`script-src` is still not locked down*, exactly as §6d states. The sandbox
+- **[OWNER: M35]** *`script-src` is still not locked down*, exactly as §6d states. The sandbox
   does not depend on it: `sandbox=""` blocks script execution inside the frame
   whatever the page policy permits outside it.
 
@@ -845,23 +909,26 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
 
 **ACCEPTED RESIDUALS, stated rather than implied.**
 
-- *The owner's channel is the trust anchor.* An owner who sends the code to the
+- **[ACCEPTED]** *The owner's channel is the trust anchor.* An owner who sends the code to the
   wrong person links the wrong person. Detected rather than prevented: audited on
   both sides with the redeemer as actor, notified to the owner, visible in their
   contact list, and removable in one click. Identical in kind to M6's
   grantee-fingerprint confirmation.
-- *The attempt cap bounds an online attack on a REAL code only.* An unknown code
+- **[OWNER: E1]** *The attempt cap bounds an online attack on a REAL code only.* An unknown code
   leaves no row to count against, by construction. 160 bits is what makes
   guessing infeasible; the counter is what an alert would watch. General
-  per-caller rate limiting on the redeem route is edge work (§4 TB1) and is
+  per-caller rate limiting on the redeem route is edge work (§4 TB1 — i.e. the
+  WAF, and therefore **E1**, the AWS half; the owner is named here rather than
+  left one hop away, because a pointer to a category is how a deferral goes
+  uncosted) and is
   UNCHANGED by M17 PR1, whose two bounds key on an account and on a submitted
   address — a redeem request carries neither, which is the same "nothing to
   attribute a count to" that makes the row-keyed cap weak here (§6k).
-- *A code lives in the owner's session response and wherever they put it next.*
+- **[ACCEPTED]** *A code lives in the owner's session response and wherever they put it next.*
   It is not stored recoverably server-side, but it is a secret in a browser for
   as long as that page is open, and in whatever channel the owner chooses. That
   is inherent to an out-of-band ceremony.
-- *Unlinking does not revoke what the link already enabled.* A settlement case
+- **[OWNER: M22]** *Unlinking does not revoke what the link already enabled.* A settlement case
   the linked contact opened before being unlinked stays open — cases are evidence
   and have no soft delete (§5.1 c6) — and is stopped by the owner's own
   step-up-gated void route, not by unlinking.
@@ -932,7 +999,7 @@ settlement, profile — cannot fire it.
 
 ### Residuals
 
-- *A user who mistypes their address at registration cannot fix it.* There is no
+- **[CLOSED: §6n]** *A user who mistypes their address at registration cannot fix it.* There is no
   address-change route anywhere in the platform, and verification can only ever
   target the address already on file. In production such a user is permanently
   refused escrow `configure`, `rearm` and link-code `invite`, with no
@@ -948,7 +1015,7 @@ settlement, profile — cannot fire it.
   asked: no unproven address ever reaches the delivery store, so the bit is
   stamped by replacement rather than cleared, and outstanding codes die in the
   same transaction as the switch.
-- *A SEND-credential holder can read any user's verified bit* by firing one
+- **[ACCEPTED]** *A SEND-credential holder can read any user's verified bit* by firing one
   notification at them, because the send response carries `recipientVerified` —
   deliberately, so settlement can record the fact without holding the STATUS
   credential. What the STATUS edge still withholds is the SILENT read: a send
@@ -956,14 +1023,14 @@ settlement, profile — cannot fire it.
   event. A weaker oracle, not none. The M14 security review found the credential
   graph claiming the send edge exposed no delivery state at all; that sentence
   is corrected rather than the field removed.
-- *An unreachable status route refuses every arming action.* The gates fail
+- **[ACCEPTED]** *An unreachable status route refuses every arming action.* The gates fail
   closed on an unanswerable query, so a notifications outage suspends escrow
   configuration, re-arming and link-code minting entirely. That is the intended
   direction — blocking delays a legitimate owner by minutes where the other
   direction hands an attacker a whole waiting period — but it is a total outage
   of those paths, not a degradation, and it is the first network round trip
   those gates have ever made.
-- *An authenticated attacker can sustain one mail per five minutes to an
+- **[OWNER: E1]** *An authenticated attacker can sustain one mail per five minutes to an
   address they typed into their own registration.* The re-issue floor is
   per-account, with no per-address, per-IP or global cap, so a single arbitrary
   address can be sent roughly 288 content-free "confirm this address" messages a
@@ -972,7 +1039,7 @@ settlement, profile — cannot fire it.
   floor. "Rate limiting is absent platform-wide" was true when written and is
   now narrower — the platform has three bounds (step-up, login, register) and
   this route is behind none of them.
-- *Registration's fixed-shape, fixed-time response is still owed.* M14 closed
+- **[OWNER: M29]** *Registration's fixed-shape, fixed-time response is still owed.* M14 closed
   the address-ownership half of §5.3's enumeration residual and did NOT close
   the timing half: `register` still awaits KMS, inserts and Kafka publishes on
   the new-email path only. Recorded in `auth.service.ts` and unchanged here.
@@ -1035,25 +1102,25 @@ vault service and nothing else — measured across every service. A vault sessio
 cannot mint another handoff, so a leak cannot chain forward.
 
 **Residuals accepted, and why.**
-- *The handoff is a bearer capability for 60 seconds.* Anyone holding it can
+- **[ACCEPTED]** *The handoff is a bearer capability for 60 seconds.* Anyone holding it can
   redeem it, because the redeem route takes no other selector — which is
   deliberate, since a route that could name an account would be an enumeration
   oracle (§6g's rule). Bounded by the window, single use, TLS in production, and
   by the fact that redemption yields a session that decrypts nothing.
-- *The vault origin sees contact NAMES* (from PR3's grantee picker, projected at
+- **[ACCEPTED]** *The vault origin sees contact NAMES* (from PR3's grantee picker, projected at
   the edge to `{contactId, linkedUserId, name}` and filtered to linked contacts).
   Unavoidable rather than accepted lightly: an owner confirming a key
   fingerprint out of band must know whose key it is. No other Zone B field can
   cross.
-- *A subdomain shares a registrable domain with the app.* `__Host-` makes the
+- **[OWNER: E1]** *A subdomain shares a registrable domain with the app.* `__Host-` makes the
   cookie host-only at the browser, so the practical exposure is a cookie set
   with an explicit `Domain=` on the parent — which nothing in this repo does. A
   separate registrable domain closes it entirely and is a deployment choice.
-- *`script-src 'self'` trusts this origin's own served files.* A CSP is a
+- **[ACCEPTED]** *`script-src 'self'` trusts this origin's own served files.* A CSP is a
   browser-side control and cannot defend against a compromised BUILD; the
   supply-chain half is the empty dependency tree and the absence of a bundler,
   not this header.
-- *No rate limiting on handoff minting.* The cross-reference is corrected rather
+- **[OWNER: E1]** *No rate limiting on handoff minting.* The cross-reference is corrected rather
   than the residual closed: identity's login bound shipped in M17 PR1 (§6k) and
   does not reach this route, which is authenticated and step-up gated — so the
   M16 attempt cap already stands in front of it, and what remains unbounded is a
@@ -1201,7 +1268,7 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **What M16 closes that predates it.**
 
-- *§6a's rate-limiting residual, in part.* Step-up now carries an attempt cap
+- **[OWNER: M27]** *§6a's rate-limiting residual, in part.* Step-up now carries an attempt cap
   derived from the append-only `auth_events` ledger, which bounds the vault's SRP
   legs TRANSITIVELY because both are step-up gated. The half that remains open is
   a caller with a genuine step-up burning handshakes.
@@ -1233,17 +1300,30 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **Residuals carried, not closed.**
 
-- *A compromised store update is undetectable by the platform.* Reproducible
+- **[OWNER: M26]** *A paired-devices row cannot identify a device.* The
+  headline residual it sits under — "no user-reachable session revocation" — is
+  genuinely closed by PR1's list with per-row revoke, and by §6l and §6m for
+  the change and reset halves. Its LAST sentences are not: `sessions.ip_ct` and
+  `sessions.device_id` are declared in `001_auth_schema.sql` and the only
+  mention of either identifier anywhere in identity's `src` is the comment in
+  `sessions.repo.ts` explaining that nothing writes them, so `listLiveForUser`
+  returns an audience and two timestamps. An owner with two browser sessions,
+  or two paired extensions, sees rows they cannot tell apart, on the one screen
+  whose purpose is to end the compromised one. Split out here because a
+  remainder riding a closure is exactly what this sweep exists to surface, and
+  the closure's own framing — "a row identifies a credential by what it can
+  REACH rather than by where it is" — is what made it read as settled.
+- **[ACCEPTED]** *A compromised store update is undetectable by the platform.* Reproducible
   builds and published provenance make it discoverable by a third party.
-- *Autofill does not resist phishing.*
-- *App-origin script can read a pairing code out of the DOM*, buying a paired
+- **[ACCEPTED]** *Autofill does not resist phishing.*
+- **[ACCEPTED]** *App-origin script can read a pairing code out of the DOM*, buying a paired
   extension that reaches ciphertext only and appears in the owner's device list.
   PR1's surface displays the code in a `<code>` text node, deliberately behind a
   step-up and shown once, which is the shape M13's link code already takes; what
   it does not do — and cannot, on an origin whose `script-src` M11 recorded as
   not locked down — is keep script on that origin from reading it. The device
   list is what makes the result VISIBLE rather than silent.
-- *An older audit consumer drops an action it does not know.* A rolling deploy
+- **[OWNER: E1]** *An older audit consumer drops an action it does not know.* A rolling deploy
   where identity is ahead of the audit service loses those events: an
   unrecognised action is a `schema_violation` to the consumer, indistinguishable
   from malformed input. Observed as absence during PR1's live drive (the mint
@@ -1251,9 +1331,9 @@ CLAUDE.md decision log; the security-relevant shape is:
   `audit_events`); the rejection itself was read from `ingestor.ts` rather than
   seen, because the container's logs did not survive its restart. Deploy order —
   contracts consumers first — is the mitigation, and it is not enforced anywhere.
-- *Rotation-reuse detection can self-revoke* an extension whose service worker
+- **[ACCEPTED]** *Rotation-reuse detection can self-revoke* an extension whose service worker
   died mid-rotation. The behaviour is correct; the cost is a re-pair.
-- *REVOKING A PAIRED DEVICE IS NOT INSTANT DOWNSTREAM.* Identity revokes the row
+- **[ACCEPTED]** *REVOKING A PAIRED DEVICE IS NOT INSTANT DOWNSTREAM.* Identity revokes the row
   synchronously and answers 401 immediately, but every other service resolves a
   caller through `HttpSessionVerifier`, whose positive cache is keyed by
   sha256(token) with `DEFAULT_CACHE_TTL_MS` of 30 seconds (2026-07-23). So a
@@ -1472,7 +1552,7 @@ milestone running where every confirmed finding sits in machinery the milestone
 introduced, with one exception that is the most serious thing in the list and is
 older than M16.
 
-- *AND THE FIRST FIX WAS TOO NARROW — the same escalation was still open through
+- **[OWNER: M29]** *AND THE FIRST FIX WAS TOO NARROW — the same escalation was still open through
   WEBAUTHN, found by verifying it.* `POST /v1/auth/webauthn/register/verify` was
   `SessionGuard`-only and `WebAuthnService` grants step-up on a successful
   assertion, so a caller holding nothing but a session could bind an
@@ -1512,7 +1592,7 @@ older than M16.
   genuine error in its own declaration table on its first run, and a name
   collision on its second (`EmailVerificationRepo` also has a `markVerified`),
   which is what drove the type anchoring.
-- *THE WORST FINDING IS PRE-EXISTING AND M16 IS WHAT MADE IT MATTER: a stolen
+- **[OWNER: M29]** *THE WORST FINDING IS PRE-EXISTING AND M16 IS WHAT MADE IT MATTER: a stolen
   session could ENROL ITS OWN SECOND FACTOR.* `POST /v1/auth/totp/enroll` had
   been `SessionGuard`-only since M2. `revokeUnverifiedTotp` spares a VERIFIED
   method while `findActiveTotp` takes the NEWEST one, so a caller holding
@@ -1551,7 +1631,7 @@ older than M16.
   elevated at `stepup` on the first try, spending none of the five.
   `stepup.ts`'s own "one chokepoint covers both" was wrong by one route.
   **Closed** — the failure and success kinds are SETS, both routes pass one
-  gate, and `test/second-factor-kinds.spec.ts` scans the service so a third
+  gate, and `test/rate-bounds.spec.ts` scans the service so a third
   checker of the secret arrives declared or turns red.
 
 - *THE CAP WAS A RENEWABLE LOCKOUT AGAINST THE OWNER, which its own docstring
@@ -1719,7 +1799,7 @@ one closes the channel.
 
 ### Residuals, stated rather than implied
 
-- *The account bound has NO per-credential scope, so a sustained attack denies
+- **[OWNER: E1]** *The account bound has NO per-credential scope, so a sustained attack denies
   NEW logins for that account.* M16's escape from the renewable-lockout trap was
   a per-session scope; login has no credential at the point of failure, and no
   restructuring invents one. Anyone who knows an address can submit wrong
@@ -1735,7 +1815,7 @@ one closes the channel.
   than a support ticket. Proven, not asserted:
   `test/login-bound.int.spec.ts` drives an attacker to the ceiling and shows the
   owner's live session and refresh token still resolving.
-- *The address bound is per PROCESS and evadable three ways.* It survives no
+- **[OWNER: E1]** *The address bound is per PROCESS and evadable three ways.* It survives no
   restart, is not shared between replicas (so the effective limit is N × the cap
   across N of them), and its map is capacity-bounded, which means a caller can
   evict their own counter by spraying unrelated addresses until it turns over.
@@ -1743,7 +1823,7 @@ one closes the channel.
   deny logins to every user in the product, which is worse than the spraying it
   would be trying to stop. The account half is the durable ceiling precisely
   because this half is evadable.
-- *PER-IP LIMITING IS NOT SHIPPED AND §4 TB1 IS CORRECTED RATHER THAN SATISFIED.*
+- **[OWNER: E1]** *PER-IP LIMITING IS NOT SHIPPED AND §4 TB1 IS CORRECTED RATHER THAN SATISFIED.*
   That section has claimed "per-IP+per-account rate limits" as an existing
   control since the document was written. There is no client IP anywhere in
   identity — no `X-Forwarded-For` read, no `req.ip`, and `sessions.ip_ct` /
@@ -1751,15 +1831,15 @@ one closes the channel.
   edge forwards one. Per-IP limiting belongs at the WAF, which is blocked on the
   M5 cloud half (an AWS org and billing, not an engineering decision). §4 now
   marks the per-IP half as unbuilt instead of asserting it.
-- *`login.failed` rows remain unattributed on the unknown-address path.* The
+- **[OWNER: M26]** *`login.failed` rows remain unattributed on the unknown-address path.* The
   append-only ledger is evidence about accounts that exist, and is not — and
   cannot be — the counter for the rest. Pinned as a known property by an int
   case rather than left to be rediscovered.
-- *Registration's enumeration channel is a TIMING one and a bound does not close
+- **[OWNER: M29]** *Registration's enumeration channel is a TIMING one and a bound does not close
   it.* The duplicate path returns early having done less work; the fix its own
   docstring names is a fixed-shape, fixed-time response, which is a separate
   change. What the bound closes is the cost, not the leak.
-- *The other unauthenticated routes are deliberately unbounded.* `POST
+- **[OWNER: E1]** *The other unauthenticated routes are deliberately unbounded.* `POST
   /v1/auth/handoff/redeem` and `POST /v1/auth/extension/pairing/redeem` check a
   guessable secret with no attempt cap by construction — a wrong guess resolves
   no row, so there is nothing to attribute a count to, which is the shape M14's
@@ -1767,20 +1847,22 @@ one closes the channel.
   entropy, a short TTL and burn-on-attempt. `POST /v1/auth/refresh` and `POST
   /v1/auth/logout/refresh` are likewise unbounded; both resolve a 256-bit token
   or nothing.
-- *The authenticated routes that check a secret were NOT considered here, and
+- **[CLOSED: §6y]** *The authenticated routes that check a secret were NOT considered here, and
   one of them needed a bound.* This delta's list above enumerates only
   UNAUTHENTICATED routes, which is how `POST /v1/auth/password` — whose whole
   purpose is to defend against a stolen session — went unbounded until the PR6
-  review measured it (§6p). The list is now: login, register and password
-  change are bounded; handoff/pairing redeem and the two refresh routes are
-  deliberately not.
-- *The bounds are per-service-instance for the address half and per-account for
+  review measured it (§6p). The list is now: login, register, password change
+  AND the address-change request are bounded — the last two share one
+  `ACCOUNT_PASSWORD_BOUND`, because two budgets of five are a budget of ten to
+  anyone willing to alternate (§6y); handoff/pairing redeem and the two refresh
+  routes are deliberately not.
+- **[OWNER: E1]** *The bounds are per-service-instance for the address half and per-account for
   the ledger half; neither is a global quota.* §4 TB1's "per-tenant load
   shedding" is unrelated infrastructure work and is not delivered here.
 
 ### What M17 PR1 closes that predates it
 
-- *§6a's SRP rate-limiting residual — still only in part, and NOT by this change.*
+- **[OWNER: M27]** *§6a's SRP rate-limiting residual — still only in part, and NOT by this change.*
   M16 closed the step-up half transitively. Login now has its own bound, which is
   what §6a's sentence pointed at, but a caller holding a genuine step-up can
   still burn vault SRP handshakes. That half stays open and is tracked in §6a.
@@ -1788,7 +1870,7 @@ one closes the channel.
   step-up gated and therefore already sits behind the M16 cap; the standing
   follow-up it named was login's, which is now delivered, so its cross-reference
   is corrected rather than its residual closed.
-- *§6g's redeem-route residual is UNCHANGED and is edge work.* A per-caller
+- **[OWNER: E1]** *§6g's redeem-route residual is UNCHANGED and is edge work.* A per-caller
   bound there needs a caller identity this platform does not have; the 160-bit
   code is the control.
 
@@ -1872,31 +1954,31 @@ wire carries one, a holder chooses part of what the user reads.
 
 ### Residuals, stated rather than implied
 
-- *The notice is best-effort and its failure is recorded, not retried.* The
+- **[OWNER: M21]** *The notice is best-effort and its failure is recorded, not retried.* The
   change commits first; a notification that cannot be delivered leaves
   `notified: failed` on the audit event (the M13 `ownerNotified` shape) for an
   operator to re-drive. Sending first would risk telling someone their password
   changed when it had not.
-- *An attacker who has BOTH the password and a fresh step-up can change it.* That
+- **[ACCEPTED]** *An attacker who has BOTH the password and a fresh step-up can change it.* That
   is not a gap this route can close — it is the definition of holding the
   account — and what bounds it is the notice, the audit event, and the fact that
   every other session dies in the same transaction, so the owner's own client
   discovers it at once.
-- *A password change does not touch the VAULT.* The Zone A master key derives
+- **[ACCEPTED]** *A password change does not touch the VAULT.* The Zone A master key derives
   from the vault password and Secret Key under 2SKD, never from the account
   password. Nothing here re-keys, re-wraps or invalidates anything in Zone A,
   and no surface says otherwise (PR3 owes the same statement, more loudly,
   because a RESET is where a user is most likely to assume it).
-- *`auth_events` gains `password.changed` and `password.change_failed`, and
+- **[ACCEPTED]** *`auth_events` gains `password.changed` and `password.change_failed`, and
   deliberately NOT `stepup.granted`.* That literal is hardcoded in the
   owner-liveness interlock, so emitting it would silently void an open §5.1 death
   case as a side effect — a policy decision taken by accident and a capability
   handed to whoever completed the change.
-- *The route is account-audience only.* A vault or extension session cannot
+- **[ACCEPTED]** *The route is account-audience only.* A vault or extension session cannot
   replace the credential that mints it; a leaked derived credential must not be
   able to chain itself into permanent control, which survives revoking the
   credential that did it.
-- *Still no reset.* A user who has FORGOTTEN their password cannot use this
+- **[CLOSED: §6m]** *Still no reset.* A user who has FORGOTTEN their password cannot use this
   route, by construction — it requires the current one. That is PR3.
 
 ## 6m. Threat-model delta — M17 PR3, the password reset (2026-08-13)
@@ -1960,7 +2042,7 @@ be read as such.
 
 ### The rest of the shape
 
-- **The request route is enumeration-safe by CONSTRUCTION, not by policy.** It
+- **[OWNER: M29]** **The request route is enumeration-safe by CONSTRUCTION, not by policy.** It
   answers `202` for every input and does the work off the response path — the
   mint-and-send is fired without being awaited — so an address with an account
   cannot answer measurably later than a stranger's. Register's own docstring
@@ -1993,27 +2075,27 @@ be read as such.
 
 ### Residuals
 
-- *The reset does not clear PR1's login bound.* A user locked out of NEW logins
+- **[ACCEPTED]** *The reset does not clear PR1's login bound.* A user locked out of NEW logins
   by a sustained wrong-password attack can reset successfully and still be
   refused at login until that window lapses (15 minutes). Emitting a
   `login.succeeded` to clear it would be a lie in the ledger, and the window is
   short enough that waiting is the honest remedy.
-- *There is no reset SURFACE.* PR3 ships the routes; no BFF resolver and no
+- **[CLOSED: §6w]** *There is no reset SURFACE.* PR3 ships the routes; no BFF resolver and no
   screen call them, so this is a zero-callers gap of exactly the kind this repo
   keeps closing — recorded here rather than discovered later. The same is true
   of PR2's change route. **CLOSED**: the change route by M20 PR1 (§6u), the
   address change by M20 PR2 (§6v), the reset by M20 PR3 (§6w).
-- *An unauthenticated route now causes mail.* §6h refused to fire a notification
+- **[OWNER: E1]** *An unauthenticated route now causes mail.* §6h refused to fire a notification
   kind at registration for that reason, and PR1 narrowed only half of that
   refusal. The deviation is argued rather than inherited: the bound above is
   per-process and best-effort, so what actually keeps this route from being a
   mail-bomb primitive is the per-account floor of one code per thirty minutes,
   which applies to the address being mailed rather than to the caller.
-- *No attempt cap on redemption*, deliberately: the redeemer is unauthenticated
+- **[OWNER: E1]** *No attempt cap on redemption*, deliberately: the redeemer is unauthenticated
   and a wrong guess resolves no row, so a counter keyed on a resolved row would
   be the decorative cap the M14 round-2 review found. The bound is 160 bits, a
   30-minute TTL, and burn-on-attempt.
-- *The address-change lockout §6h records is NOT closed by this.* A reset mails
+- **[CLOSED: §6n]** *The address-change lockout §6h records is NOT closed by this.* A reset mails
   to the address already on file, so for a user who mistyped their address at
   registration it changes nothing. CLOSED by PR4 — see §6n.
 
@@ -2134,7 +2216,7 @@ retired UNCONDITIONALLY before every mint (the M14-review wedge).
 
 ### Residuals
 
-- *A stale login re-feed can transiently repoint the store to the just-left
+- **[ACCEPTED]** *A stale login re-feed can transiently repoint the store to the just-left
   address.* Login (old address) resolves before the switch commits; its
   fire-and-forget recipient upsert lands after the switch's replacement; the
   store then holds the old address until the next login. Self-healing (the next
@@ -2143,13 +2225,13 @@ retired UNCONDITIONALLY before every mint (the M14-review wedge).
   upsert's preserved bit stays sound through this: every address that can
   reach the store is either one the user just signed in with or one the
   ceremony just proved.
-- *An honest user typing a TAKEN address waits for a mail that never comes.*
+- **[ACCEPTED]** *An honest user typing a TAKEN address waits for a mail that never comes.*
   The cost of register's uniform answer, paid here too; the floor is not burned
   for it, so retrying with a corrected address is free.
-- ~~*The routes ship with no surface* — no BFF resolver, no screen.~~
+- **[CLOSED: §6v]** ~~*The routes ship with no surface* — no BFF resolver, no screen.~~
   **CLOSED by M20 PR2 (§6v)**: all three legs now have a product consumer end
   to end, on the M14 PR3 settings page exactly as this line predicted.
-- *`identity.email_changed`'s reader has no self-service response.* The notice
+- **[OWNER: M21]** *`identity.email_changed`'s reader has no self-service response.* The notice
   reaches the old mailbox, but a hijacked owner cannot sign in (the address
   changed) and cannot reset (the reset mails the NEW address). Their remedy is
   support, which until TB7 means the operator runbook. Recorded plainly: the
@@ -2193,7 +2275,7 @@ and counting it would let a flaky authenticator lock out its own owner.
 
 ### Residuals
 
-- **THE VAULT ORIGIN AND THE EXTENSION ARE TOTP-ONLY FOR STEP-UP**, and a
+- **[OWNER: M29]** **THE VAULT ORIGIN AND THE EXTENSION ARE TOTP-ONLY FOR STEP-UP**, and a
   passkey-only account therefore cannot complete any Zone A step-up-gated
   ceremony (vault setup, reset, item delete, escrow configure/rearm/revoke,
   recovery-key publish). Three facts stack: vault-web and the extension prove
@@ -2205,17 +2287,17 @@ and counting it would let a flaky authenticator lock out its own owner.
   not a client patch. The web surface says this ON SCREEN ("keep an
   authenticator app enrolled — the vault currently accepts only authenticator
   codes"), the M16 honesty pattern rather than a docs-only footnote.
-- **The reset path is re-declined, explicitly** (§6m question 8, owed by this
+- **[OWNER: M21]** **The reset path is re-declined, explicitly** (§6m question 8, owed by this
   PR): a reset still requires the mailed code and nothing else, even for an
   account holding a passkey. Requiring a passkey assertion at reset would turn
   lost-passkey-plus-forgotten-password into a permanent lockout with no
   recovery codes and no TB7 — the same nobody-locked-out-forever reasoning the
   user chose at PR3, unchanged by the surface existing.
-- **No passwordless login.** The authenticate routes are session-scoped by
+- **[OWNER: M29]** **No passwordless login.** The authenticate routes are session-scoped by
   design (M2's deferral, still deliberate): a passkey here is a step-up factor,
   never a login replacement, and discovery-credential login is its own
   milestone with its own enumeration surface.
-- **Browser-side ceremony failures are invisible to the platform.** A user
+- **[OWNER: M34]** **Browser-side ceremony failures are invisible to the platform.** A user
   whose sheet keeps failing generates no ledger events until an assertion
   actually reaches identity; only the device knows. Accepted: the alternative
   is client-side telemetry, which this product does not do. **Corrected scope
@@ -2279,7 +2361,7 @@ trail gains detail the caller does not.
 
 Ten candidates were refuted, and two of the refutations are load-bearing:
 
-- *"The account-cap refusal skips the in-memory address record, defeating the
+- **[OWNER: E1]** *"The account-cap refusal skips the in-memory address record, defeating the
   Argon2-cost bound"* — refuted as ALREADY RECORDED. The address bound is
   documented in §6k as per-process, best-effort and evadable; the account bound
   is a durable new-login ceiling, not an Argon2-cost bound, and its one-hash
@@ -2293,7 +2375,7 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
 
 ### Residuals
 
-- **One novel-but-unreachable candidate is recorded rather than fixed.** A
+- **[OWNER: M25]** **One novel-but-unreachable candidate is recorded rather than fixed.** A
   crypto-shredded DEK at email-change completion would surface as a 500 rather
   than the uniform `invalid_code` — no code path destroys a DEK today
   (`destroyDek` still has zero callers). It is NOT fixed here on purpose:
@@ -2305,7 +2387,7 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
   A wrong answer pinned by a test is harder to displace than an absent one, so
   this is filed as a PRECONDITION on the erasure milestone rather than a
   floating residual.
-- **Clone detection was the review's other recorded item and is now ANSWERED,
+- **[OWNER: M26]** **Clone detection was the review's other recorded item and is now ANSWERED,
   differently from how it was proposed.** The suggested fix was to revoke the
   credential; the fix taken is to NOTIFY THE OWNER and keep rejecting. The
   counter check is a heuristic: synced passkeys report counter 0 and never
@@ -2340,7 +2422,7 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
   acts, so a later higher-counter assertion from either copy still succeeds.
   That is the deliberate cost of not acting on a heuristic, and the thing that
   would change it is a second signal — not a lower threshold on this one.
-- **The password-change bound is per-account durable plus per-session durable**,
+- **[ACCEPTED]** **The password-change bound is per-account durable plus per-session durable**,
   both ledger-derived, so unlike the address bound it survives a restart and is
   shared across replicas. It is NOT a global quota and does not bound an
   attacker who can mint sessions — but minting one requires the password, which
@@ -2379,11 +2461,11 @@ signal) over an advisory neighbour inverts the M9 rule twice. Losing the
 detector degrades alerting, never safety.
 
 **Episode semantics and the honest residuals.**
-- A sustained breach emits ONCE per episode and re-arms when its window
+- **[ACCEPTED]** A sustained breach emits ONCE per episode and re-arms when its window
   clears. The episode memory is per-process, so a RESTART may re-emit one
   duplicate for a still-breaching principal, and a failed emit is retried
   next tick — in both cases the fail direction is an EXTRA event.
-- CORRECTED BY THE M18 PR3 REVIEW, which found the unqualified
+- **[CLOSED: §6q]** CORRECTED BY THE M18 PR3 REVIEW, which found the unqualified
   "never a lost one" false twice over. (a) The reconciliation that ends
   episodes ran after the emit loop inside the same try, so one failed emit
   skipped it: a principal whose episode had cleared stayed marked announced
@@ -2393,21 +2475,21 @@ detector degrades alerting, never safety.
   (per-emit catch; reconciliation moved ahead of anything that can fail —
   and the mutation harness showed the catch is the load-bearing half and the
   ordering the belt, which is recorded in the code rather than assumed).
-- STILL TRUE AND NOT FIXABLE HERE: an emit outage lasting longer than the
+- **[OWNER: M26]** STILL TRUE AND NOT FIXABLE HERE: an emit outage lasting longer than the
   300s window loses the anomalies raised inside it, because the retry is
   bounded by the window that produced them. Closing it means persisting an
   anomaly before emitting it — a different design, not a patch.
-- Bounds for classes the M18 PR1 measurement did not exercise (family,
+- **[OWNER: E1]** Bounds for classes the M18 PR1 measurement did not exercise (family,
   asset_event, plaid_item, account, assistant_tool_call, users) are
   PROVISIONAL — sized from neighbouring measured economics and marked as such
   in the table; live traffic is what re-calibrates them, by reviewed commit.
-- A full asset-projection rebuild of a large estate TRIPS the sentinel's
+- **[ACCEPTED]** A full asset-projection rebuild of a large estate TRIPS the sentinel's
   asset_event bound BY DESIGN: a mass decrypt is the detected class, and the
   operator running one expects the alarm. One event per episode keeps that
   honest rather than noisy.
-- Detection latency is bounded by tick cadence (60s) plus the broker hop;
+- **[ACCEPTED]** Detection latency is bounded by tick cadence (60s) plus the broker hop;
   the window (300s) exceeds both, so nothing legitimate hides between ticks.
-- The stack e2e's gate pairs a POSITIVE control with the false-positive
+- **[ACCEPTED]** The stack e2e's gate pairs a POSITIVE control with the false-positive
   assertion: a deliberate burst past the smallest bound must produce exactly
   its own anomaly, and every anomaly in the store must name that deliberate
   bound. A bare zero-events assertion would be vacuously green over a dead
@@ -2523,16 +2605,16 @@ Merging the sentinel's two actor types SUMS distinct counts, which over-counts
 direction a suppressing condition may fail in.
 
 **Residuals, stated rather than implied.**
-- An estate with MORE than 1500 distinct assets still trips on a single page
+- **[ACCEPTED]** An estate with MORE than 1500 distinct assets still trips on a single page
   load. That is the detection threshold doing its job at the size where the two
   readings genuinely converge, and it is the honest cost of a constant: the
   detector runs in the audit cluster and cannot know how large an estate
   legitimately is without a cross-cluster read its fenced zero-credential
   posture forbids. Re-calibration is a reviewed commit, as for every other row.
-- A principal who has already read a set may now re-read it without limit. That
+- **[ACCEPTED]** A principal who has already read a set may now re-read it without limit. That
   was true of any count bound sitting above the set's size; what changed is
   that it is now true by construction rather than by luck.
-- The distinct count is only as good as the declaration. A prefix whose id tail
+- **[ACCEPTED]** The distinct count is only as good as the declaration. A prefix whose id tail
   is not per-row must never be declared, and the fence above is what keeps that
   from being a matter of memory.
 
@@ -2656,6 +2738,31 @@ precisely why it must not borrow the credential code's "enter the current
 code" wording. The copy deliberately does not state the window in minutes:
 that number is a reviewed constant in a service the web app cannot import, and
 a figure people plan around must not be a second copy free to drift.
+
+### Residuals
+
+- **[OWNER: M21]** *The route-gate fence covers the assets service only.* The
+  other eight services have no equivalent, so their step-up coverage is still
+  whatever their controllers happen to say. Generalising it is a change to
+  eight services; the operator platform is the next milestone that touches a
+  service's guard surface across the repo, and the fence's own §6r paragraph
+  says the assignment was left to "whichever milestone next touches them",
+  which is how an item goes uncosted.
+- **[OWNER: M28]** *docs/00 §5.5's "beneficiaries see only assets naming them"
+  remains UNBUILT.* `namedBeneficiaries` is a default parameter every
+  `assetResource` call site takes by omission, so `beneficiary.cedar` is loaded
+  and structurally unmatchable. M13's ceremony supplies the contact link; no
+  milestone has yet joined it to designations. Same residual as §6s's, reached
+  from the other end.
+- **[ACCEPTED]** *An unlucky reader is told to reload when nothing was wrong.*
+  The version read fails closed, which costs a spurious 409 in one race window
+  and is the only side of that trade which cannot silently discard an edit.
+- **[ACCEPTED]** *The step-up retry loop's decrypt spend scales with the
+  contact book.* Self-inflicted, on the owner's own session and their own
+  trail, only while retrying a step-up they initiated — so the M18 bound
+  firing there is a true positive worth seeing rather than a false alarm to
+  design around.
+
 
 ## 6s. Threat-model delta — permission grants confer only what something reads (2026-08-14)
 
@@ -2960,6 +3067,21 @@ refreshes an access token, so a signed-in browser reports "Your session has
 ended" after 15 minutes while its session row is live for 30 days — the gap M20
 PR4 is scoped to close, now observed rather than inferred.
 
+### Residuals
+
+- **[OWNER: M29]** *No breach-corpus check on a chosen password.* §4 TB1 lists
+  it as a control and nothing implements it; it needs a corpus source and a
+  privacy-preserving lookup, which is a change to the sign-in surface rather
+  than to this page.
+- **[OWNER: E1]** *No per-IP bound.* Identity has no client IP and neither
+  public edge forwards one, so this is the same edge work §6k defers to the
+  WAF — blocked on the AWS half, not on an engineering decision.
+- **[CLOSED: §6x]** *The web app never refreshed an access token*, so a
+  signed-in browser reported "Your session has ended" after 15 minutes while
+  its session row was live for 30 days. Measured while driving this surface;
+  M20 PR4 closed it.
+
+
 ## 6v. Threat-model delta — M20 PR2, the address-change surface (2026-08-15)
 
 **§6n's own residual, closed by the PR that line predicted.** M17 PR4 shipped
@@ -3043,19 +3165,19 @@ SERVER rather than a boolean passed between siblings.
 
 ### Residuals
 
-- *The app-shell `UnverifiedAddressBanner` goes stale until the next
+- **[OWNER: M24]** *The app-shell `UnverifiedAddressBanner` goes stale until the next
   navigation.* It lives outside the page's tree and re-reads on `pathname`
   change only, so after a completed change it can keep asking for a
   confirmation that has just happened. The harmless direction — it nags about
   something already done rather than hiding a real gap — and closing it
   properly needs a shared client cache this app does not have.
-- *No surface shows the address currently on file.* Neither `session` nor the
+- **[OWNER: M24]** *No surface shows the address currently on file.* Neither `session` nor the
   verification query returns it, so the "if it's the one you already sign in
   with" reading of identity's conflated `invalid_request` cannot be pre-empted
   by the UI. Identity genuinely does not distinguish a malformed address from
   the account's own, so the copy names the actionable possibility without
   asserting which applied.
-- *§6n's own remaining residuals are untouched:* an honest user typing a taken
+- **[OWNER: M21]** *§6n's own remaining residuals are untouched:* an honest user typing a taken
   address still waits for a mail that never comes, and
   `identity.email_changed`'s reader still has no self-service response — the
   notice is a detection control, and until TB7 the remedy is support.
@@ -3143,18 +3265,18 @@ the chain carried `reset_requested {"delivered":"delivered"}` and
 
 ### Residuals
 
-- *The request form is an anonymous mail trigger, with no client-side bound —
+- **[ACCEPTED]** *The request form is an anonymous mail trigger, with no client-side bound —
   deliberately.* Identity's per-address bound and the 30-minute per-account
   floor are the gate (§6m), and a browser-side limiter would be the M12
   second-opinion shape: a copy of a rate rule free to disagree with the one
   that decides. The surface widens REACH (a UI where there was curl), not
   capability.
-- *A signed-in browser elsewhere still looks signed in after the revocation*,
+- **[OWNER: M30]** *A signed-in browser elsewhere still looks signed in after the revocation*,
   until its next request fails and renders the session-ended state. That is
   the access-token-TTL shape measured in PR1's drive (≤15 minutes), pointed
   the other way; there is no push channel, and PR4's session-continuity work
   is where the client's relationship to session lifetime gets rebuilt.
-- *§6m's remaining residuals are unchanged by having a surface*: no attempt
+- **[OWNER: E1]** *§6m's remaining residuals are unchanged by having a surface*: no attempt
   cap on redemption (the redeemer is anonymous; the bound is 160 bits, the
   TTL and burn-on-attempt), and a reset does not clear PR1's login bound.
 
@@ -3235,7 +3357,7 @@ compiler's, `OperationName` being a closed union.
 
 ### Residuals
 
-- *A lost Set-Cookie response becomes a false theft signal.* If the browser
+- **[ACCEPTED]** *A lost Set-Cookie response becomes a false theft signal.* If the browser
   never receives the response that carried the rotated pair (a network blip at
   exactly that moment), it retains the rotated-away token, and its next refresh
   trips rotation-reuse detection: that one session is revoked and the ledger
@@ -3245,22 +3367,22 @@ compiler's, `OperationName` being a closed union.
   precisely the replay the detection exists to refuse. The M16 extension
   recorded the same trade (persist-before-use is impossible when the browser
   owns the store); the cost is a re-login, and the other devices survive.
-- *Browsers without Web Locks (Safari < 15.4) keep the cross-TAB race.* The
+- **[ACCEPTED]** *Browsers without Web Locks (Safari < 15.4) keep the cross-TAB race.* The
   in-tab latch still holds there; two tabs refreshing in the same instant can
   still self-revoke. Every evergreen browser has the API.
-- *A signed-out page whose queries are authenticated-only costs one refused
+- **[ACCEPTED]** *A signed-out page whose queries are authenticated-only costs one refused
   Refresh round trip.* The client cannot see the (httpOnly) jar, so an
   UNAUTHENTICATED from, say, the verification banner triggers one Refresh that
   the BFF refuses before any identity call. Pages that only ask `session` cost
   zero — the resolver answers null for a cookie-less caller and the client
   never escalates a null.
-- *A refused mutation costs the user one repeated click.* The transport
+- **[OWNER: M28]** *A refused mutation costs the user one repeated click.* The transport
   refuses to guess which mutations are replay-safe, so it renews the session
   and asks. Making the write-then-read-back resolvers individually safe — an
   idempotency key on `createContact`/`createFamilyMember`, the M19 asset-command
   shape applied to profile — is what would let mutations retry too, and it is
   a profile-service change rather than a transport one.
-- *A retried QUERY is not quite free either, and the reason it is harmless is
+- **[ACCEPTED]** *A retried QUERY is not quite free either, and the reason it is harmless is
   worth stating rather than assumed.* For a single-hop query the retry IS the
   only execution — UNAUTHENTICATED means a guard refused before any handler
   ran. `assetBeneficiaries` is the one multi-hop query resolver of the
@@ -3272,7 +3394,7 @@ compiler's, `OperationName` being a closed union.
   (2026-08-14), and a retry re-reads the SAME subjects — the count moves, the
   distinct count does not. Nothing is disclosed to anybody new; it is the
   owner's own trail, doubled.
-- *The 30-day session lifetime is a hard ceiling, unchanged.* `rotateTokens`
+- **[ACCEPTED]** *The 30-day session lifetime is a hard ceiling, unchanged.* `rotateTokens`
   deliberately never writes `expires_at` (M16), so refresh extends nothing and
   a month-old browser re-authenticates. That is the designed bound on a stolen
   jar, not a gap in this feature.
@@ -3399,6 +3521,24 @@ different counts of the step-up targets in three files (only the union was
 right, and the prose no longer carries a number), and a line-based
 comment-stripper in `operation-consumers.test.ts` that read whole paragraphs of
 block comment as code.
+
+### Residuals
+
+- **[ACCEPTED]** *This delta opens nothing new, and says so rather than
+  leaving a reader to infer it from an absent section.* All eleven findings
+  were fixed in the same PR and each fix was mutation-tested; what the review
+  did NOT do is re-open a settled trade-off, which is what the
+  is-it-already-a-decision verifier exists to prevent.
+- **[OWNER: E1]** *§6k's bounds are unchanged by widening one of them to a
+  second route.* `ACCOUNT_PASSWORD_BOUND` now spans both routes that read the
+  account password, and it is still account-keyed with a per-process address
+  half. Per-caller limiting remains edge work.
+- **[OWNER: M21]** *The corpus lesson was applied to one fence and not swept
+  across the others.* The defect was that `rate-bounds.spec.ts` scanned a
+  single file while claiming to cover a service; nothing has since asked the
+  same question of the repo's other source-scanning fences, and a fence whose
+  input is narrower than its claim goes green for the same reason it is wrong.
+
 
 ## 7. Validation program
 

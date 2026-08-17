@@ -13,8 +13,18 @@ export type AssetAction = 'read' | 'create' | 'update' | 'delete' | 'manage';
  * always present but ALWAYS EMPTY for now: mapping asset_beneficiaries rows
  * to platform users requires contacts.linked_user_id from the core cluster,
  * which this service can only learn from a contact-link projection over core
- * domain events (tracked follow-up). Deny-by-default makes the empty set
- * safe: beneficiary principals simply match no permit yet.
+ * domain events. Deny-by-default makes the empty set safe: beneficiary
+ * principals simply match no permit yet.
+ *
+ * OWNER: the owner-initiated sharing milestone (docs/03 §5.5 / §6s). This said
+ * "(tracked follow-up)" from M3 until M21 PR0, and nothing tracked it — the
+ * defect class that whole PR exists to close. Note what the empty set means
+ * precisely: `beneficiary.cedar` ships in the shared bundle and is LOADED, and
+ * the attribute it matches on arrives from the default parameter below, which
+ * all seven `assetResource` call sites take by omission. So the policy is live
+ * and structurally unmatchable — a stronger statement than "beneficiary
+ * visibility is unwired", and the reason no beneficiary can read anything
+ * today. Closing it is a projection, not a policy change.
  */
 export function assetResource(
   assetId: string,

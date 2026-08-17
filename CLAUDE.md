@@ -48,7 +48,14 @@ deviating from them, stop and propose the change with rationale — do not silen
   where an equality-search use case exists (never for SSN).
 - All IDs are UUIDs; never expose sequential IDs.
 - Secrets never in code or env files committed to git — Secrets Manager/Vault only.
-- Tests accompany every PR: unit + integration; target 95% backend / 90% frontend.
+- Tests accompany every PR: unit + integration. docs/00's stated target is 95%
+  backend / 90% frontend; the ENFORCED rule is each package's own
+  `coverageThreshold`, which ratchets UP and never down. Those two are not the
+  same number and the difference is stated rather than implied: 17 of 24 backend
+  packages sit below 95 on statements (`packages/db` 25, audit 57, assets 60,
+  plaid 60, settlement 62), and `apps/e2e` and `packages/config` carry no floor
+  at all. Treat 95/90 as the aspiration and the ratchet as the gate — a bar
+  nothing measures is a bar nobody meets.
 - Every external integration (Plaid, death-data providers, LLM providers) goes
   through an isolating service; third-party tokens decrypt only inside that service.
 - Treat all user-uploaded content (documents, OCR text) as untrusted input,
@@ -6725,3 +6732,107 @@ deviating from them, stop and propose the change with rationale — do not silen
   right, so the prose no longer carries a number; and a LINE-BASED
   comment-stripper reading whole paragraphs of block comment as code). A dropped
   finding is a finding nobody looked at, not a finding somebody ranked low.
+- 2026-08-17 — M21 IS THE TB7 OPERATOR PLATFORM, MINIMUM SLICE (approved), and
+  what selected it is a defect in the selection process itself rather than a
+  ranking. Six file-scoped evidence lenses, three judges on deliberately
+  conflicting priorities (risk, user value, dependency order), one synthesis —
+  and then every load-bearing claim re-verified by hand, because a verdict is
+  not evidence. The dependency lens governed and the reason generalizes: AN ITEM
+  NOBODY HAS COSTED IS AN ITEM EVERYTHING CAN DEFER TO. docs/03 named TB7 as the
+  owning milestone for TWELVE distinct deferred items across nineteen lines
+  while the doc's own summary said "five places", and TB7 appeared in no
+  milestone list, carried no size, and had never been scoped. The undercount is
+  the mechanism, not a typo: TB7 looked small, so deferring to it looked cheap,
+  so more work was deferred to it, which made it look smaller relative to what
+  it owed. THE ENABLING MEASUREMENT, which I verified myself rather than
+  accepting: the route↔consumer fence's `EXEMPT_SETTLEMENT_REPORTING` group is
+  mislabelled — 25 zero-consumer routes, but twelve of them sit in
+  `admin.controller.ts`, whose own header says a grieving executor should not
+  face an MFA prompt to look at a checklist. Those are EXECUTOR routes. The
+  true operator-only surface is ~10, which is what makes a minimum slice
+  possible at all and what splits M21 from M23.
+- 2026-08-17 — M21 PR0 IS DOCS AND A FENCE AND NO PRODUCT CODE, which is the
+  M13 "order is the point" precedent: the milestone that exists because prose
+  hid twelve deferrals does not begin by writing more prose. THE §4 TB7 BLOCK
+  ASSERTED FOUR CONTROLS IN THE PRESENT TENSE — just-in-time elevation, peer
+  approval, session recording, separation of duties — and one sentence carried
+  all four. Rewritten into what is TRUE TODAY AND CHEAPLY SO (no standing
+  production access, because there is no production), what is PARTIALLY REAL
+  (separation of duties exists at the ROW rather than the role: reviewer ≠
+  reporter and requester ≠ approver are DDL CHECKs, which is a stronger
+  mechanism over a much narrower surface), and what is DEFERRED WITH AN OWNER
+  NAMED. Also corrected in the same pass: CLAUDE.md's own coverage line said
+  "target 95% backend / 90% frontend" while the ENFORCED rule is each package's
+  ratcheting `coverageThreshold`, and 17 of 24 backend packages sit below 95 on
+  statements (`packages/db` 25, audit 57, assets 60). A bar nothing measures is
+  a bar nobody meets, so the line now states both numbers and which one is the
+  gate.
+- 2026-08-17 — THE RESIDUAL SWEEP: 107 bullets in docs/03 §6, each now opening
+  with exactly one of `**[ACCEPTED]**`, `**[OWNER: M25]**`/`**[OWNER: E1]**`, or
+  `**[CLOSED: §6n]**`. The result is a fact about the programme that nobody
+  could read off the prose: 40 permanent trade-offs, 60 owned, and NINETEEN of
+  the sixty owned by ONE owner — E1, the AWS half — so the largest single block
+  of outstanding security work in this repo is blocked on money rather than on
+  engineering. THE TAG LEADS THE BULLET because the failure being fixed is that
+  you could not SEE the deferrals: a trailing tag is greppable, a leading one is
+  scannable, and scanning is what nobody could do before. Rejected as the
+  cheaper fence: "the bullet must mention a milestone somewhere" — which goes
+  green on `M4's decision`, a CITATION rather than an assignment, and on dozens
+  of incidental references. Anchor on a mark a human put there on purpose, which
+  is this repo's rule (the credential graph keyed on a property name, the
+  route-audience fence on a decorator identifier, the password-policy fence on a
+  field name) arriving in a document instead of in source.
+- 2026-08-17 — THE PARSER TOOK THREE ITERATIONS AND EACH WRONG ONE WAS WRONG IN
+  A DIFFERENT DIRECTION, which is the entry worth keeping. (1) BY REGION alone
+  over-collected: a block that ended only at a heading swallowed
+  `**§5.2 emergency-access controls, now shipped**` — five bullets describing
+  controls that SHIPPED, which a disposition tag would be actively wrong about.
+  Caught because an independent classification of the corpus disagreed with the
+  parser about two bullets. (2) Ending a block at any bolded lead-in then
+  UNDER-collected, 108 → 72, because §6j organises by PR and mixes decisions
+  with residuals under one lead-in. (3) BY LANGUAGE alone is far worse (18 of
+  107), because most residuals simply DESCRIBE the residual — "*Autofill does
+  not resist phishing.*" — and name no marker word at all. The union is what
+  ships: 89 by region, 18 by language, and the disposition of a long bullet is
+  usually in its LAST sentence, so the whole bullet including continuations is
+  the unit. THE BOUND IS STATED RATHER THAN DISCOVERED LATER: a residual written
+  as prose, outside a declared region and using none of the marker phrases, is
+  invisible — not closable by a better regex, because the doc's structure
+  genuinely does not distinguish those bullets. What closes it is the forcing
+  function: EVERY §6 DELTA MUST DECLARE A RESIDUAL REGION, so the next
+  milestone's residuals land somewhere the region rule already sees. Three
+  deltas had none and now do (§6r, §6u, §6y).
+- 2026-08-17 — THE MARKER SET IS DATA AND ITS COMPLETENESS IS ASSERTED, because
+  under-collecting is this fence's silent failure and a delta opening its
+  residuals with a sixteenth idiom would contribute ZERO bullets while the file
+  stayed green. A regex over "any bold label mentioning residual" both
+  over- and under-matches — it swallows `**§6l's residual was a promise the code
+  did not keep.**` (a FINDING) while missing `**Two residuals.**` (a region) — so
+  `REGION_MARKERS` is twelve exact strings, `NON_REGION_LABELS` is four exact
+  strings each with a reason, and every bolded lead-in in §6 that mentions a
+  residual must be in one list or the other. The OWNER vocabulary is DERIVED
+  from docs/04's own two tables rather than held as a second copy: renumber M27
+  in the plan and a free-standing list would keep blessing an id nothing plans
+  to build. Eight mutations, eight red — including one that reported a NO-OP
+  because I wrote a curly apostrophe where the doc has a straight one, which is
+  the ninth way this repo has now caught a mutation harness lying and the reason
+  every harness here asserts the bytes changed before drawing a conclusion.
+- 2026-08-17 — THE SWEEP FOUND FOUR THINGS THE CLASSIFICATION AGENTS DID NOT,
+  and all four are citations rather than controls. (1) docs/03 §6j cited
+  `test/second-factor-kinds.spec.ts` as the fence closing the attempt-cap
+  bypass; M17 renamed it to `rate-bounds.spec.ts` and the file does not exist —
+  the control is real and the citation is DEAD, which is exactly what stops the
+  next person looking. (2) §6k's own list of bounded routes ("login, register
+  and password change") predates §6y and omits the address-change request route
+  that now shares `ACCOUNT_PASSWORD_BOUND`. (3) §6g pointed at "edge work (§4
+  TB1)" for the redeem-route cap, which resolves to an owner only because M17
+  PR1 later amended TB1 — a pointer to a CATEGORY is how a deferral goes
+  uncosted, so E1 is named in the bullet itself. (4) §6j's "no user-reachable
+  session revocation" is genuinely CLOSED in its headline and carries an unowned
+  REMAINDER in its last sentences: `sessions.ip_ct` and `sessions.device_id` are
+  declared in `001_auth_schema.sql` and written by nothing, so an owner with two
+  browser sessions or two paired extensions sees rows they cannot tell apart, on
+  the one screen whose purpose is to end the compromised one. Split out under
+  its own owner — A REMAINDER RIDING A CLOSURE is the shape this sweep exists to
+  surface, and the closure's own framing ("a row identifies a credential by what
+  it can REACH rather than by where it is") is what made it read as settled.
