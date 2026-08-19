@@ -7502,6 +7502,95 @@ deviating from them, stop and propose the change with rationale — do not silen
   EXPIRY, so it must either be labelled as one or be measured before it ships —
   here it was labelled, the measurement arrived hours later, and the label is the
   only reason the correction is an addendum instead of a retraction.
+- 2026-08-19 — AN APOSTROPHE UNHOOKED A BLOCKING GATE, AND IT HAD BEEN INERT FOR
+  EVERY RUN SINCE. `images.yml`'s exact-count step wrapped its assertion in
+  `node -e '...'` with twenty lines of prose INSIDE the single quotes; M21 PR3b
+  added the word `console's`. Nothing escapes inside single quotes — that is the
+  whole point of them — so the apostrophe CLOSED the string, bash parsed the
+  remainder as shell, and hit what looked like a redirection. MEASURED by
+  extracting the step verbatim from the YAML and running it against a fabricated
+  result file with deliberately wrong counts (99 passed / 7 pending): identical
+  CI error, and `passed=…` NEVER PRINTED. Bash sets up redirections BEFORE
+  executing a command, so node never ran at all. The gate did not mis-assert; it
+  did not execute. It went red, which is the safe direction, but only by
+  accident — the shell error is what failed the step, and a quoting mistake that
+  still parsed would have gone green over an unevaluated assertion. The counts
+  themselves were fine: `stack.yml`'s twin passed, so the numbers were verified
+  by the other gate the whole time.
+  THE TWIN WAS BALANCED ONLY BECAUSE SOMEBODY HAD ALREADY BEEN BITTEN: line 226
+  of stack.yml read `profile'"'"'s block`, the close-reopen dance that is the
+  only way to put an apostrophe inside single quotes. An unreadable workaround
+  in one copy and the defect in the other is the same finding twice, so the fix
+  is not "escape it properly".
+  FIXED BY MOVING THE PROSE OUT OF THE SHELL, not by escaping it. The prose is
+  worth keeping — this repo records why every number is what it is — so it is a
+  YAML `#` comment now, which no shell ever parses, and the LOGIC is
+  `.github/scripts/assert-stack-counts.mjs`. The two call sites still pass their
+  OWN numbers as arguments: images.yml runs the stack from BUILT IMAGES and
+  stack.yml from `dist`, so a number derived from the other would stop being a
+  measurement, and only the MECHANISM is shared. Proven by extracting both new
+  steps verbatim and driving eight cases through them — matching counts exit 0
+  and print `passed=…`, a moved count and a failing suite each exit 1 with
+  distinct messages, an absent file says "the suite did not run", and neither
+  profile's numbers satisfy the other's expectation.
+- 2026-08-19 — THE TEST HAD TO DRIVE A SUBPROCESS, BECAUSE THE DEFECT WAS THAT
+  NOTHING RAN. A unit test of the comparison would have been green throughout
+  the entire inert period — the arithmetic was never wrong. So
+  `assert-stack-counts.test.mjs` invokes the SCRIPT the way a workflow does and
+  asserts on its exit status and output, with the `passed=…` line as the
+  evidence it evaluated at all rather than merely exited. The pure-function
+  cases sit underneath, for the messages. `node --test` on the
+  `.github/scripts/*.test.mjs` glob already runs in ci.yml, whose own comment
+  says "there is no excuse for the next one either" — so this arrived covered
+  without new wiring.
+  AND MY SURVEY OF THAT WIRING WAS WRONG, in the direction that would have added
+  work: I reported `notify-failure.test.mjs` as a test nobody runs. It runs.
+  ci.yml invokes it through a GLOB, so the filename appears nowhere in the
+  repository and a grep for it returns nothing. A GREP IS NOT A PARSE — the rule
+  this repo wrote down eight days earlier, committed by me while investigating a
+  defect of the same family, and it survived long enough to be seeded into a
+  review agent's prompt as a false premise.
+- 2026-08-19 — THE FENCE PARSES THE QUOTING, BECAUSE NOTHING CHEAPER CAN.
+  `workflow-shell.mjs` extracts every `run:` block from every workflow and
+  tracks shell quoting state across the whole body. A grep cannot answer this in
+  either direction: `grep "'"` matches every workflow in the repo, counting
+  apostrophes per line calls `"don't"` inside double quotes a defect, and a
+  quote legitimately opened on one line closes many lines later — the property
+  belongs to the whole script, so answering it is a parse. It deliberately is
+  NOT a shell parser: it tracks the states that decide whether a quote is open
+  at the end (bare / single / double, with backslash escapes where they apply,
+  and `#` comments, without which every `# don't` in the repo is a false
+  positive and the next real finding is ignored). No YAML parser resolves from
+  the repo root with bare node — measured, MODULE_NOT_FOUND for both `yaml` and
+  `js-yaml` — so the extractor is hand-written and REFUSES a `run:` shape it
+  cannot read, naming file and line, rather than skipping it.
+  WRITTEN BEFORE THE FIX, so the mutation test is the genuine historical defect:
+  against the still-broken tree it reported exactly one finding across 47 blocks
+  with zero refusals, and it was the real one. Its first version mis-attributed
+  by one line — a block scalar's body starts AFTER the `run:` key while a
+  single-line body sits on it, and collapsing the two sent the reader one line
+  early. A fence that mis-attributes still goes red, and still points at the
+  wrong place.
+  Six probes, each confirmed: the apostrophe defect reintroduced (red), an
+  unterminated double quote elsewhere (red), the extractor broken so it scans
+  nothing (red on the anti-vacuity floor, "saw 0"), a `run:` written as a quoted
+  YAML scalar (red on the refusal path, not skipped), the count decision
+  neutered (red in its own suite), and THE SECOND PROBE OF THE PAIR — the defect
+  planted AND the quoting checker neutered — GREEN, which is what identifies the
+  checker as the thing that saw it rather than some incidental assertion.
+- 2026-08-19 — TWO MORE WAYS THE HARNESS TRIED TO LIE, both caught by guards
+  this repo already had. `$M mutate …` ran nothing, because zsh does not
+  word-split an unquoted variable, so the whole string became one command name —
+  the recorded zsh trap, inside the harness built to avoid this class; it
+  reported HARNESS REFUSED rather than a green, which is the direction that
+  costs a minute instead of a wrong conclusion. And a restore of `ci.yml`
+  ABORTED because I had never taken a pristine copy of it: the harness compares
+  its restore byte-for-byte against a copy the CALLER took once, before any
+  mutation, so a file it was never given cannot be silently overwritten with
+  whatever the tree happened to hold. That is the 2026-08-17
+  accumulating-mutation defect closed by construction. Its diff was then read
+  before restoring, rather than trusting `git checkout --` on a tree with
+  uncommitted work.
 - 2026-08-19 — THE APP'S `form-action` ORIGINS NEVER REACHED THE BUILD, in
   either of the two layers that carry them, and it was found by a discovery
   sweep for M21 PR3b rather than by any gate. `docker-compose.stack.yml` has

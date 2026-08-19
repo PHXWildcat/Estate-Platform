@@ -6146,6 +6146,67 @@ Threat-model delta and residuals: `docs/03` §6cc. §4 TB7's operator-reads
 paragraph is closed for settlement by this PR, and §6bb's read-event residual
 with it.
 
+#### M21 PR3b — the gate that had stopped running
+
+Pushing the review round turned `Images` red with `line 5: 33/4.: No such file
+or directory` and nothing else. The failing step is the stack suite's
+exact-count gate, and the cause was in the change that had just been made to it:
+its assertion lived in `node -e '...'` with twenty lines of prose INSIDE the
+single quotes, and PR3b's own update added the word `console's`. Nothing escapes
+inside single quotes, so the apostrophe closed the string; bash parsed the
+remainder as shell and found what looked like a redirection.
+
+**It had not merely mis-asserted — it had not run.** Measured by extracting the
+step verbatim from the YAML and driving it against a fabricated result file with
+deliberately wrong counts (99 passed / 7 pending): the same CI error, and the
+`passed=…` line never printed. Bash sets up redirections *before* executing a
+command, so node was never reached. The step went red only by accident: the
+shell error is what failed it, and a quoting mistake that still parsed would have
+gone green over an assertion nobody evaluated. The counts were never in doubt —
+the twin gate in `stack.yml` passed throughout, which is what verified them.
+
+That twin was balanced only because someone had already been bitten by this:
+`stack.yml` line 226 read ``profile'"'"'s block``, the close-and-reopen dance
+that is the only way to write an apostrophe inside single quotes. An unreadable
+workaround in one copy and the live defect in the other is the same finding
+twice, so the repair is not "escape it properly".
+
+**The prose moved out of the shell.** It is worth keeping — this repo records
+why every number is what it is — so it is now a YAML `#` comment, which no shell
+parses, and the logic is `.github/scripts/assert-stack-counts.mjs`. Both call
+sites still pass their **own** numbers as arguments: `images.yml` runs the stack
+from built images and `stack.yml` from `dist`, so a number derived from the
+other would stop being a measurement. Only the mechanism is shared. Eight cases
+were driven through both extracted steps — matching counts exit 0 and print
+`passed=…`, a moved count and a failing suite exit 1 with distinct messages, an
+absent file reports that the suite did not run, and neither profile's numbers
+satisfy the other's expectation.
+
+**The test drives a subprocess**, because the defect was that nothing ran: a unit
+test of the comparison would have been green for the whole inert period. The
+`node --test .github/scripts/*.test.mjs` step already in `ci.yml` runs it, so it
+arrived covered without new wiring — and the survey that reported
+`notify-failure.test.mjs` as "a test nobody runs" was wrong, because that step
+invokes it through a glob and the filename appears nowhere in the repo. A grep is
+not a parse.
+
+**And the class is fenced.** `workflow-shell.mjs` extracts every `run:` block
+from every workflow and tracks shell quoting across each body, because the
+property belongs to the whole script: `grep "'"` matches every workflow here,
+and counting apostrophes per line calls `"don't"` a defect while missing a quote
+that opens on one line and closes twenty later. No YAML parser resolves from the
+repo root with bare node, so the extractor is hand-written and **refuses** a
+`run:` shape it cannot read rather than skipping it. It was written *before* the
+fix: against the still-broken tree it reported exactly one finding across 47
+blocks with zero refusals, and it was the real one.
+
+Six probes, all confirmed — the apostrophe reintroduced, an unterminated double
+quote elsewhere, the extractor broken so it scans nothing (red on the
+anti-vacuity floor at "saw 0"), a `run:` written as a quoted YAML scalar (red on
+the refusal path), the count decision neutered, and the second probe of the pair:
+the defect planted *and* the quoting checker neutered, which goes **green** and
+is what identifies the checker as the thing that saw it.
+
 #### M21 PR3b — the review round, and the drive that proved it
 
 Three file-scoped lenses, each in its own worktree pinned with

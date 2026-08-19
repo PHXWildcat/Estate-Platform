@@ -210,86 +210,80 @@ jobs:
       # Jest exits 0 for a suite whose every test SKIPPED. The gate variable
       # above makes ci-guard fail in that case, but only for the variable it
       # can see — this closes the general case by asserting work was done.
+      # EXACT counts, not floors. The original floors sat two tests below the
+      # real numbers, and the slack was exactly the size of the two most
+      # environment-sensitive assertions (the clamd FOUND path and the
+      # OCR->encrypted-search path) — .skip both and the gate still went green.
+      # Pending is also exact rather than zero, because profile gating
+      # legitimately skips the other profile's block.
+      #
+      # M9 PR2 added the dev-journey legal-hold round trip: dev gains a pass,
+      # production gains its skip. M10 PR3 added the estate-analysis round trip
+      # the same way — the assistant container is absent from the production
+      # profile (LLM_MODE=anthropic, no credential), so that test can only ever
+      # run in dev. M13 added the people-surface round trip (step-up on a role,
+      # and a profile edit that keeps the SSN) in the same dev block: 16/4 ->
+      # 17/4 and 9/11 -> 9/12. M14 added the address-verification ceremony — a
+      # code read out of a REAL delivered SES message and typed back in — to the
+      # same dev block: 17/4 -> 18/4 and 9/12 -> 9/13.
+      #
+      # M15 added SIX for the isolated vault origin: the CSP and Trusted-Types
+      # posture on the wire, the client bundle really being served from the
+      # image, the arrival Origin check, the audience boundary across every
+      # service, burn-on-attempt with a uniform refusal, and an audit trail that
+      # records the ceremony without recording which refusal fired. They sit
+      # OUTSIDE the profile split, unlike the plaid and assistant cases: the
+      # vault origin runs in BOTH profiles because nothing about it needs a
+      # third-party credential. So both legs gain all six: 18/4 -> 24/4 and
+      # 9/13 -> 15/13.
+      #
+      # M15 PR3 adds ONE more to each leg (24/4 -> 25/4, 15/13 -> 16/13): the
+      # grantee-candidate projection, which is the only profile response a
+      # `vault`-audience session may read. It runs in both profiles because it
+      # drives the M14 address ceremony first — minting a contact link code is
+      # an ARMING action, so a production stack refuses an owner nobody proved.
+      #
+      # BOTH NUMBERS MEASURED, on a stack brought up in each profile. Deriving
+      # one from the other would have been wrong here for an instructive reason:
+      # run the production assertions against a DEVELOPMENT stack and the M14
+      # arming gate legitimately answers 201 instead of 503, because
+      # `assertOwnerReachable` is production-scoped. A derived number would have
+      # encoded that as a pass.
+      #
+      # M18 PR2: +1 dev pass (the decrypt-rate baseline gate — a deliberate
+      # burst proves the deployed detector fires, then every anomaly event in
+      # the store must name the deliberate bound, so journey traffic proving the
+      # false-positive half is the same test that proves detector liveness). It
+      # is describeDev, so the production leg gains it as +1 pending.
+      #
+      # M21 PR3b: +1 in BOTH profiles (the operator console reaching settlement
+      # through its own edge). It sits in the unsplit `describe`, like the rest
+      # of the isolated-origin tests, because nothing about this origin needs a
+      # third-party credential — so it is +1 passed in each rather than +1
+      # passed / +1 pending.
+      #
+      # NOTE: images.yml carries a TWIN of the development number, for the
+      # stack-from-images job. Separate on purpose (that job runs built images,
+      # this one runs `dist`), so a new stack test has to be recorded in both —
+      # forgetting the second is how that gate went red once, with the suite
+      # itself passing.
+      #
+      # THE ASSERTION ITSELF is .github/scripts/assert-stack-counts.mjs. All of
+      # this prose used to live INSIDE a single-quoted `node -e '...'` body,
+      # which is why line 226 of this file once read `profile'"'"'s block`: an
+      # apostrophe cannot be written inside single quotes, so it had to be
+      # escaped by closing and reopening them. The twin in images.yml did not
+      # escape one, and node silently stopped running there. YAML comments are
+      # not shell.
       - name: Assert the suite actually ran
         if: always()
         run: |
-          if [ ! -f stack-results.json ]; then
-            echo "::error::no jest result file — the stack test did not run"
-            exit 1
+          if [ "$MATRIX_PROFILE" = production ]; then
+            passed=23; pending=14
+          else
+            passed=33; pending=4
           fi
-          node -e '
-            const r = require("./stack-results.json");
-            // EXACT counts, not floors. The original floors sat two tests below
-            // the real numbers, and the slack was exactly the size of the two
-            // most environment-sensitive assertions (the clamd FOUND path and
-            // the OCR->encrypted-search path) — .skip both and the gate still
-            // went green. Pending is also exact rather than zero, because
-            // profile gating legitimately skips the OTHER profile'"'"'s block.
-            const production = process.env.MATRIX_PROFILE === "production";
-            // M9 PR2 added the dev-journey legal-hold round trip: dev gains a
-            // pass, production gains its skip. M10 PR3 added the estate-analysis
-            // round trip the same way — the assistant container is absent from
-            // the production profile (LLM_MODE=anthropic, no credential), so
-            // that test can only ever run in dev. M13 added the people-surface
-            // round trip (step-up on a role, and a profile edit that keeps the
-            // SSN) in the same dev block, so dev gains a pass and production a
-            // skip: 16/4 -> 17/4 and 9/11 -> 9/12. M14 added the
-            // address-verification ceremony — a code read out of a REAL
-            // delivered SES message and typed back in — to the same dev block:
-            // 17/4 -> 18/4 and 9/12 -> 9/13. M15 added SIX tests for the
-            // isolated vault origin — the CSP and Trusted-Types posture on the
-            // wire, the client bundle really being served from the image, the
-            // arrival Origin check, the audience boundary across every service,
-            // burn-on-attempt with a uniform refusal, and an audit trail that
-            // records the ceremony without recording which refusal fired.
-            //
-            // They sit OUTSIDE the profile split, unlike the plaid and
-            // assistant cases: the vault origin runs in BOTH profiles because
-            // nothing about it needs a third-party credential. So both legs
-            // gain all six: 18/4 -> 24/4 and 9/13 -> 15/13.
-            //
-            // NOTE: images.yml carries a TWIN of the development number, for
-            // the stack-from-images job. Separate on purpose (that job runs
-            // built images, this one runs `dist`), so a new stack test has to
-            // be recorded in both — forgetting the second is how that gate went
-            // red once, with the suite itself passing.
-            //
-            // M15 PR3 adds ONE more to each leg (24/4 -> 25/4, 15/13 -> 16/13):
-            // the grantee-candidate projection, which is the only profile
-            // response a `vault`-audience session may read. It runs in both
-            // profiles because it drives the M14 address ceremony first —
-            // minting a contact link code is an ARMING action, so a production
-            // stack refuses an owner nobody proved.
-            //
-            // BOTH NUMBERS MEASURED, on a stack brought up in each profile.
-            // Deriving one from the other would have been wrong here for an
-            // instructive reason: run the production assertions against a
-            // DEVELOPMENT stack and the M14 arming gate legitimately answers
-            // 201 instead of 503, because `assertOwnerReachable` is
-            // production-scoped. A derived number would have encoded that as a
-            // pass.
-            //
-            // M18 PR2: +1 dev pass (the decrypt-rate baseline gate — a
-            // deliberate burst proves the deployed detector fires, then every
-            // anomaly event in the store must name the deliberate bound, so
-            // journey traffic proving the false-positive half is the same
-            // test that proves detector liveness). It is describeDev, so the
-            // production leg gains it as +1 pending.
-            //
-            // M21 PR3b: +1 in BOTH profiles (the operator console reaching
-            // settlement through its own edge). It sits in the unsplit
-            // `describe`, like the rest of the isolated-origin tests, because
-            // nothing about this origin needs a third-party credential —
-            // so it is +1 passed in each rather than +1 passed / +1 pending.
-            const expectedPassed = production ? 23 : 33;
-            const expectedPending = production ? 14 : 4;
-            console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
-            if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
-            if (r.numPassedTests !== expectedPassed || r.numPendingTests !== expectedPending) {
-              console.error(`::error::expected exactly ${expectedPassed} passed / ${expectedPending} pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate`);
-              process.exit(1);
-            }
-          '
+          node .github/scripts/assert-stack-counts.mjs stack-results.json "$passed" "$pending"
         env:
           MATRIX_PROFILE: ${{ matrix.profile }}
 
