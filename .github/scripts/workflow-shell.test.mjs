@@ -66,6 +66,12 @@ test('THE SILENT HALF — an EVEN number of prose apostrophes re-balances the qu
   assert.equal(accidental.length, 1, 'and the accidental close is what catches it anyway');
   assert.equal(accidental[0].line, 3);
   assert.equal(accidental[0].after, 's');
+
+  // BOTH apostrophes here are followed by a word character, so this is the
+  // even-parity case the NARROW rule happens to catch. The general one must
+  // catch it too, or the class is only covered where the prose cooperates —
+  // the possessive-plural test below is the same class where it does not.
+  assert.equal(shortBodies(script).length, 1, 'the structural rule is the general one');
 });
 
 test('THE EVASION THE WORD-CHARACTER RULE MISSES — a possessive PLURAL', () => {
@@ -293,10 +299,21 @@ test('REFUSES a quoted YAML scalar rather than guessing at its shell', () => {
   assert.match(unreadable[0].reason, /quoted YAML scalar/);
 });
 
-test('the word `run:` inside a script body is not mistaken for a key', () => {
-  const yaml = ['        run: |', '          echo "how to run: this"'].join('\n');
-  const { scripts } = extractRunBlocks(yaml);
+test('a `run:` inside a script body is not mistaken for a key', () => {
+  // The mid-line version (`echo "how to run: this"`) is rejected trivially by
+  // the anchored regex and proves nothing. The case that matters is a body
+  // line that STARTS with the key — which the broad detector would match if
+  // body lines were examined at all. They are not: the extractor consumes the
+  // block and resumes after it.
+  const yaml = [
+    '        run: |',
+    '          run: not a key, just shell text',
+    '          echo "how to run: this"',
+  ].join('\n');
+  const { scripts, unreadable, seen } = extractRunBlocks(yaml);
   assert.equal(scripts.length, 1);
+  assert.deepEqual(unreadable, []);
+  assert.equal(seen, 1, 'exactly one run key — the body is not re-scanned');
 });
 
 test('THE REPO ITSELF — every embedded body is delimited the way its author meant', () => {

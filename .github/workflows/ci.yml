@@ -110,13 +110,44 @@ jobs:
       # copy free to drift, and this comment had already drifted (it said 34
       # while the suite ran 38) within two commits of being written.
       - name: Test the CI helper scripts
+        # PER FILE, not in aggregate. An aggregate floor cannot see one file go
+        # blank: emptying assert-stack-counts.test.mjs left 31 of 41 tests, over
+        # a floor of 30, and the step stayed green — the same defect the fence
+        # this step runs was written to catch, one level up. Measured, not
+        # feared. The file-count floor only catches a file being DELETED.
+        #
+        # awk takes the FIRST match and exits. Without that, a second `# pass`
+        # line anywhere in the output makes the comparison an integer-expression
+        # error, which is not a failure: the `if` takes its else branch and the
+        # step exits 0 with the floor never evaluated. Also measured.
         run: |
+          set -uo pipefail
           shopt -s nullglob
           files=(.github/scripts/*.test.mjs)
           if [ "${#files[@]}" -lt 3 ]; then
             echo "::error::found ${#files[@]} helper test files, expected at least 3 — a rename, a move or a pattern edit has disarmed this gate"
             exit 1
           fi
+          total=0
+          for f in "${files[@]}"; do
+            log=$(mktemp)
+            if ! node --test "$f" > "$log" 2>&1; then
+              cat "$log"
+              exit 1
+            fi
+            cat "$log"
+            passed=$(awk '/^# pass /{print $3; exit}' "$log")
+            if [ -z "$passed" ] || [ "$passed" -lt 5 ]; then
+              echo "::error::$f reported ${passed:-no} passing tests, expected at least 5 — it ran but is not testing what it claims"
+              exit 1
+            fi
+            total=$((total + passed))
+          done
+          if [ "$total" -lt 30 ]; then
+            echo "::error::helper tests reported $total passing tests overall, expected at least 30"
+            exit 1
+          fi
+          echo "helper tests: $total passing across ${#files[@]} files"
           # mktemp rather than the workspace: a CI step that drops a file in
           # the repo root is one somebody eventually commits.
           log=$(mktemp)

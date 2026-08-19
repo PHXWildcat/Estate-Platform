@@ -8,13 +8,16 @@
  * NEVER EXECUTED, because an apostrophe in a prose comment closed the
  * single-quoted shell string wrapping it and bash failed on a redirection
  * before running node. A unit test of `decide()` would have been green
- * throughout. So the cases below drive the SCRIPT AS A SUBPROCESS, exactly as
- * a workflow does, and assert on its exit status and output — the layer that
- * actually failed. The pure-function cases are underneath, for the messages.
+ * throughout. So the cases below drive the SCRIPT AS A SUBPROCESS and assert
+ * on its exit status and output. `execFileSync` spawns node directly, with NO
+ * SHELL — and the shell is precisely the layer that failed, so that alone
+ * would leave the real defect uncovered. The last case therefore takes the
+ * `run:` line out of the workflow itself and executes it through bash. The
+ * pure-function cases are underneath, for the messages.
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +27,7 @@ import { decide, parseExpected } from './assert-stack-counts.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, 'assert-stack-counts.mjs');
+const WORKFLOWS = join(HERE, '..', 'workflows');
 const DIR = mkdtempSync(join(tmpdir(), 'stack-counts-'));
 
 /** Run the gate the way a workflow does, and report what the shell would see. */
@@ -124,4 +128,49 @@ test('parseExpected refuses what would become a silent expectation', () => {
   assert.throws(() => parseExpected(undefined, 'x'), /must be a non-negative integer/);
   assert.throws(() => parseExpected('-1', 'x'), /must be a non-negative integer/);
   assert.throws(() => parseExpected('3.5', 'x'), /must be a non-negative integer/);
+});
+
+test('THE WORKFLOWS INVOKE IT THROUGH A SHELL, and that line still works', () => {
+  // The defect was in the SHELL, so a test that never starts one cannot see
+  // its class. This takes each workflow's own `run:` line and executes it
+  // through bash against a fabricated result file — the only case here that
+  // exercises the layer that actually broke.
+  const dir = mkdtempSync(join(tmpdir(), 'stackgate-'));
+  mkdirSync(join(dir, '.github', 'scripts'), { recursive: true });
+  copyFileSync(SCRIPT, join(dir, '.github', 'scripts', 'assert-stack-counts.mjs'));
+  writeFileSync(
+    join(dir, 'stack-results.json'),
+    JSON.stringify({ numPassedTests: 33, numFailedTests: 0, numPendingTests: 4 }),
+  );
+
+  const images = readFileSync(join(WORKFLOWS, 'images.yml'), 'utf8');
+  const line = /^\s*run: (node \.github\/scripts\/assert-stack-counts\.mjs [^\n]*)$/m.exec(images);
+  assert.ok(line, 'images.yml no longer invokes the gate on one line — update this test');
+
+  const out = execFileSync('bash', ['-c', line[1]], { cwd: dir, encoding: 'utf8' });
+  assert.match(out, /passed=33 failed=0 pending=4/, 'the gate must PRINT, not merely exit 0');
+});
+
+test('EACH WORKFLOW PASSES ITS OWN LITERAL NUMBERS — they are not derived', () => {
+  // The sibling case proves the two profiles are not interchangeable, but it
+  // never READ either workflow, so it could not tell whether the call sites
+  // still carry their own numbers. images.yml runs the stack from BUILT IMAGES
+  // and stack.yml from `dist`; a number derived from the other would stop
+  // being a measurement.
+  const images = readFileSync(join(WORKFLOWS, 'images.yml'), 'utf8');
+  const stack = readFileSync(join(WORKFLOWS, 'stack.yml'), 'utf8');
+
+  assert.match(
+    images,
+    /assert-stack-counts\.mjs stack-results\.json \d+ \d+/,
+    'images.yml must pass literal counts',
+  );
+  const devPair = /assert-stack-counts\.mjs stack-results\.json (\d+) (\d+)/.exec(images);
+  const prodPair = /passed=(\d+); pending=(\d+)/.exec(stack);
+  assert.ok(prodPair, 'stack.yml must carry its own literal counts');
+  assert.notDeepEqual(
+    [devPair[1], devPair[2]],
+    [prodPair[1], prodPair[2]],
+    'the two profiles must not share one pair of numbers',
+  );
 });
