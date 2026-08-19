@@ -6165,6 +6165,15 @@ shell error is what failed it, and a quoting mistake that still parsed would hav
 gone green over an assertion nobody evaluated. The counts were never in doubt —
 the twin gate in `stack.yml` passed throughout, which is what verified them.
 
+The reconstruction above is a fabricated result file; the pipeline itself
+supplies the same answer in three real runs, which is the stronger evidence and
+was only assembled afterwards. On `main` at `7664d87` — the last Images run
+before this branch — the inline gate printed `passed=32 failed=0 pending=4`. On
+`f4c1391`, the first run carrying slice 5's apostrophe, it printed nothing and
+the step died on the shell error. On `4bd732e`, with the logic extracted, the
+step prints `passed=33 failed=0 pending=4` again. Working, inert, working: the
+middle term is the one no gate would have reported had the parity been even.
+
 That twin was balanced only because someone had already been bitten by this:
 `stack.yml` line 226 read ``profile'"'"'s block``, the close-and-reopen dance
 that is the only way to write an apostrophe inside single quotes. An unreadable

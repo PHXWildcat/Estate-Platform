@@ -7517,6 +7517,13 @@ deviating from them, stop and propose the change with rationale — do not silen
   still parsed would have gone green over an unevaluated assertion. The counts
   themselves were fine: `stack.yml`'s twin passed, so the numbers were verified
   by the other gate the whole time.
+  THE PIPELINE ITSELF SUPPLIES THE SAME ANSWER IN THREE REAL RUNS, assembled
+  only afterwards and stronger than the reconstruction: `main` at `7664d87`
+  (the last Images run before this branch) printed `passed=32 failed=0
+  pending=4`; `f4c1391`, the first run carrying the apostrophe, printed nothing
+  and died on the shell error; `4bd732e`, with the logic extracted, prints
+  `passed=33 failed=0 pending=4`. Working, inert, working — and the middle term
+  is the one NO gate would have reported had the parity been even.
   THE TWIN WAS BALANCED ONLY BECAUSE SOMEBODY HAD ALREADY BEEN BITTEN: line 226
   of stack.yml read `profile'"'"'s block`, the close-reopen dance that is the
   only way to put an apostrophe inside single quotes. An unreadable workaround
