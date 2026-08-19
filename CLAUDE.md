@@ -7378,3 +7378,88 @@ deviating from them, stop and propose the change with rationale — do not silen
   reported `ANCHOR NOT UNIQUE: 0 occurrences`. Both would previously have read as
   "the test does not catch this". That is the accumulating-mutation defect closed by
   construction rather than by care.
+- 2026-08-19 - THE HEAVIEST GATE IN THE REPO HAD NO LEVER, discovered by needing
+  one. The post-merge Stack run for `388d22b` sat in `queued` for over seventy
+  minutes having created ZERO jobs. It was not capacity and not an incident: two
+  LATER runs of the same workflow on the same repo started and finished normally
+  while it sat there, the Actions status page read operational throughout, and
+  Stack had completed on twelve previous pushes to `main`. It simply could not be
+  recovered — `cancel` and `force-cancel` both answered HTTP 500, `rerun` was
+  refused as "already running", and with only `push` and `pull_request` declared
+  there was no way to ask for a fresh one. The only available resolution was to
+  wait for somebody to push to `main` again, which the `concurrency` group is
+  documented to use to cancel the wedge — STATED AS THE MECHANISM RATHER THAN AS
+  AN OBSERVATION, since a run that refuses `cancel` and `force-cancel` with HTTP
+  500 has not been watched accepting a concurrency cancellation either.
+  `workflow_dispatch` is that manoeuvre made available on purpose: security.yml's own comment already records the same
+  lesson from the other direction, where a trigger that could only fire at 06:00
+  UTC is how a sweep failed seventeen consecutive runs unnoticed. A GATE YOU
+  CANNOT INVOKE IS A GATE YOU CAN ONLY OBSERVE.
+  ADDED TO `ci.yml` IN THE SAME CHANGE, for the category rather than the
+  instance — the wedge was a Stack run, so fixing Stack alone was the tempting
+  move, and this repo's own M17 PR6 rule is that a rule applied to one member of
+  a category is a rule half-applied. Nothing about the failure mode is specific
+  to Stack. `notify-failure.yml` is DELIBERATELY still without it and that is not
+  an omission: it is `workflow_call`-only, and a reusable workflow is invoked by
+  its callers rather than by events.
+  MEASURED WHILE WIRING IT, because the obvious assumption is wrong in the
+  direction that matters: a dispatch reads the workflow file AT THE REF IT IS
+  GIVEN, not from the default branch. `gh workflow run stack.yml --ref
+  <this-branch>` created a run, while `--ref main` answered HTTP 422 "Workflow
+  does not have 'workflow_dispatch' trigger" — so the lever can be rehearsed on
+  the branch that adds it, and exists ON `main` only once merged there, which is
+  precisely why it could not be tried against the wedge that motivated it.
+  AND THE SURVEY THAT JUSTIFIED IT WAS WRONG THE FIRST TIME, which is the part
+  worth keeping. `grep -q workflow_dispatch` over each file reported FOUR of six
+  already carrying the trigger; one of those four was `notify-failure.yml`, where
+  the string occurs only inside a comment. Parsed as YAML it is three of six. A
+  GREP IS NOT A PARSE, and I had written the grep's number into a shipped comment
+  before checking it — the same class as the counts PR2.5 spent a whole PR
+  correcting, committed two PRs later while citing them.
+- 2026-08-19 - A COUNT OF WHAT EXISTS CANNOT DETECT WHAT WAS NEVER CREATED, and
+  the CI watcher I wrote for that merge reported success over a check set missing
+  the two jobs that mattered. It gated on `total >= 20 && completed == total`;
+  when the Stack workflow wedged, its two jobs were never registered as check
+  runs at all, so twenty-one OTHER checks satisfied a floor that had been
+  calibrated against a number which assumed they were present, and the watcher
+  printed `ALL COMPLETE / failing: none`. Both halves of the predicate were true
+  and the conclusion was false. This is the 2026-08-12 entry's own lesson - a
+  watcher that exits on `pending == 0`, which is also true before anything has
+  started - arriving in a watcher written hours after reading it, which is why it
+  is recorded again rather than treated as already learned. THE FIX IS TO BIND TO
+  THE EXPECTED SET, NOT TO A COUNT: enumerate the WORKFLOWS a sha should run and
+  assert each reached a conclusion, because a workflow that produced no jobs is
+  invisible to any predicate phrased over the jobs that exist. The same shape as
+  the M21 PR3a residual-fence finding one day earlier - where a scan's REACH had
+  to be compared as a set because mis-attribution preserves totals - and the
+  same remedy.
+  What `main` actually had, measured rather than assumed once the mistake was
+  caught: `stack-from-images` DID run at `388d22b` and asserted
+  `passed=32 failed=0 pending=4` against the SHIPPED IMAGES, which is the
+  higher-fidelity half of the two stack gates (stack.yml runs services from
+  `dist` on the runner). So the development profile was verified on `main` by the
+  stronger gate; the production rehearsal was verified on the PR against an
+  identical tree and not on `main`. Stating that split precisely is the point -
+  "all green" was the claim that was wrong, not the underlying evidence.
+- 2026-08-19 - AND THEN THE REPLACEMENT WATCHER WAS WRONG TWICE MORE, within
+  minutes of the entry above, which is why the progression rather than any one
+  instance is the lesson: THREE SUCCESSIVE SURVEYS OF THE SAME QUESTION WERE
+  EACH WRONG ONE LEVEL DOWN. (a) `gh run list --commit 4c7fc88` — an ABBREVIATED
+  sha — exits 0 with `[]`, so the set-bound watcher written to fix the count
+  defect reported all five workflows MISSING while four were running and one had
+  already passed. An empty result and a filter that matches nothing are
+  indistinguishable, which is the standing zsh lesson arriving through `gh`: the
+  sha is resolved with `git rev-parse` now, and a filter that has matched NOTHING
+  after a grace period reports MISCONFIGURED OBSERVER rather than a missing gate,
+  because those are different facts with different remedies. (b) The expected set
+  was hand-listed as five workflows from parsing each file's `on:` KEYS —
+  and `Extension` declares `paths:` filters it does not match on a PR touching
+  two workflow files and CLAUDE.md, so it was legitimately absent and would have
+  been reported missing forever. PARSING THE EVENT KEYS IS NOT PARSING THE
+  EVENT'S PREDICATE. The expected set is DERIVED now, by evaluating each
+  workflow's `paths`/`paths-ignore` against the commit's own changed files (four
+  expected here, not five). The general shape: grep → parse-the-keys →
+  parse-the-predicate, each step correcting the last, and each intermediate
+  answer confident enough to be written down. Neither of these was a CI defect;
+  both times the thing observed was fine and the observer was broken, which is
+  the direction that wastes the most time because there is nothing to find.
