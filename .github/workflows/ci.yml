@@ -4,6 +4,20 @@ on:
   push:
     branches: [main, 'claude/**']
   pull_request:
+  # Added in the SAME CHANGE as stack.yml's, and for the category rather than
+  # the instance. The wedge that motivated this was a Stack run, so fixing only
+  # Stack was the tempting move — but this repo's own rule is that a rule
+  # applied to one member of a category is a rule half-applied, and the way to
+  # tell is to ask what ELSE is in the category before calling the fix done.
+  # Surveyed BY PARSING the workflows rather than grepping them, because the
+  # first pass got this wrong: a substring grep reported four of six carrying
+  # the trigger, and one of those four was `notify-failure.yml`, where the
+  # string occurs only in a comment. Parsed, it is three of six — plus
+  # `notify-failure.yml`, which is `workflow_call`-only and cannot carry a
+  # dispatch at all — leaving `stack.yml` and this one. Nothing about the
+  # failure mode is specific to Stack: any run can wedge, and a queued run
+  # cannot be cancelled, rerun, or re-requested.
+  workflow_dispatch:
 
 permissions:
   contents: read

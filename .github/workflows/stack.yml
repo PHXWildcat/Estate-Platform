@@ -32,6 +32,30 @@ on:
   push:
     branches: [main, 'claude/**']
   pull_request:
+  # A LEVER FOR A GATE THAT OTHERWISE HAS NONE, and the reason is measured
+  # rather than hypothetical. On 2026-08-19 the post-merge run for `388d22b`
+  # sat in `queued` for over seventy minutes having created ZERO jobs, while
+  # two LATER runs of this same workflow on the same repo started and finished
+  # normally — so it was that run, not runner capacity, and not an Actions
+  # incident (the status page read operational throughout). It could not be
+  # recovered: `cancel` and `force-cancel` both answered HTTP 500, `rerun` was
+  # refused as "already running", and with only `push` and `pull_request`
+  # declared there was no way to ask for a fresh one. The heaviest gate in the
+  # repo had no lever at all, and the only resolution available was to wait for
+  # somebody to push to `main` again.
+  #
+  # That is security.yml's lesson in a different costume: a gate you cannot
+  # INVOKE is a gate you can only OBSERVE, and the latency of waiting for an
+  # external trigger is how a gate's failures go unnoticed. Measured across the
+  # six workflows here: THREE already carried it, `notify-failure.yml` is
+  # `workflow_call`-only and cannot carry it (a reusable workflow is invoked by
+  # its callers, not by events), and the two that could and did not were this
+  # one and `ci.yml` — the two heaviest gates in the repo.
+  #
+  # HOW IT RECOVERS A WEDGED RUN: `concurrency` below groups on the ref with
+  # `cancel-in-progress`, so a dispatch on `main` cancels a stuck `main` run and
+  # starts a clean one — which is exactly the manoeuvre that was unavailable.
+  workflow_dispatch:
 
 permissions:
   contents: read
