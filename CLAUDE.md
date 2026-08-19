@@ -2470,6 +2470,14 @@ deviating from them, stop and propose the change with rationale — do not silen
   (`form-action`), so that value IS a build arg, and a parity spec asserts it
   equals the one the BFF hands the browser — a disagreement is a refused form
   post rather than a silent downgrade.
+  CORRECTED 2026-08-19, and BOTH halves of that last sentence were false when
+  written. Compose PASSED a build arg; `web.Dockerfile` declared no `ARG` to
+  receive it and `turbo.json`'s strict `env` stripped it, so the value never
+  reached `next build` and the config fell through to its localhost default.
+  And the parity spec asserts that compose's literal equals `topology.ts`'s
+  constant — two DECLARATIONS agreeing — never that the value the build
+  received equals the one the BFF serves, which it could not, there being no
+  received value. See the 2026-08-19 entry below.
 - 2026-08-08 — M15 PR1 stack counts MEASURED IN BOTH PROFILES, not derived, and
   the reason is instructive: run the production assertions against a DEVELOPMENT
   stack and the M14 arming gate legitimately answers 201 instead of 503, because
@@ -7494,3 +7502,54 @@ deviating from them, stop and propose the change with rationale — do not silen
   EXPIRY, so it must either be labelled as one or be measured before it ships —
   here it was labelled, the measurement arrived hours later, and the label is the
   only reason the correction is an addendum instead of a retraction.
+- 2026-08-19 — THE APP'S `form-action` ORIGINS NEVER REACHED THE BUILD, in
+  either of the two layers that carry them, and it was found by a discovery
+  sweep for M21 PR3b rather than by any gate. `docker-compose.stack.yml` has
+  passed `VAULT_ORIGIN` (M15) and `OPERATOR_ORIGIN` (M21 PR3a) as build args to
+  `infra/docker/web.Dockerfile`, which declared `ARG BFF_URL` and no ARG for
+  either — `grep -c ORIGIN` returned 0 — so Docker warned about unconsumed args
+  and carried on; and `turbo.json`'s build task declared
+  `env: ["BFF_URL", "NEXT_STANDALONE"]`, so Turbo 2's STRICT env mode would have
+  stripped them even with an ARG. MEASURED WITH A CONTROL, which is what makes
+  it a fact rather than a reading: one `turbo run build --filter=@estate/web
+  --force` with the two origins set to probe values left ZERO files under
+  `.next` containing either, while the same command with
+  `BFF_URL=http://probe-bff.example:9999` — the one variable that WAS declared —
+  put it straight into `routes-manifest.json`. Same build, same mechanism, one
+  declaration apart.
+  WHAT IT COST: `form-action 'self' ${vaultOrigin} ${operatorOrigin}` is the
+  only directive permitting the top-level form POST that opens the vault origin
+  and the operator console, so any deployment whose origins are not literally
+  the localhost defaults ships an app whose own browser refuses BOTH handoffs —
+  M15's Zone A entry and M21 PR3a's operator entry, which is also PR3b's only
+  entry path. Latent solely because nothing is deployed and the compose values
+  happen to equal the fallbacks; it arms on the first real hostname.
+  THE M8 PR5 DEFECT VERBATIM, in the same `turbo.json`, whose own comment
+  describes it ("omitting it here is exactly how the web image silently proxied
+  to itself"). M16 PR4b hit it a second time for the extension and shipped
+  `turbo-env.spec.ts` — a DERIVED fence over that package's build inputs. The
+  app, where the defect actually was, had nothing: `csp.test.ts` pins that
+  `next.config.ts` READS `process.env.VAULT_ORIGIN`, and pinning a read is blind
+  to whether the value arrives. THREE FENCES EACH CHECKED THEIR OWN LAYER AND
+  NOTHING CHECKED THE CHAIN — compose-parity compared compose's literal to
+  `topology.ts`, csp.test compared next.config's source to a pattern, and the
+  images workflow proved liveness and `public/` assets. Every one green.
+  FIXED IN ALL THREE PLACES plus two new checks, one cheap and one decisive.
+  `apps/web/src/lib/build-inputs.test.ts` DERIVES the variable set from
+  `next.config.ts` and requires each to carry a classification —
+  `deployment` (must be an ARG so a deployment can set it), `fixed` (the image
+  decides it and it must NOT be an ARG), `ambient` (the toolchain sets it) —
+  with a reason per entry, then checks turbo's declaration, the Dockerfile's ARG
+  and ENV, and that compose passes it at all. Seven mutations red, including the
+  anti-vacuity one where the env-read scan itself stops matching. And
+  `images.yml` now BUILDS THE WEB IMAGE WITH NON-DEFAULT ORIGINS
+  (`*.probe.invalid`, RFC 2606 reserved so it can never resolve) and asserts the
+  SERVED `Content-Security-Policy` names them AND does not name the fallbacks —
+  the assertion that was missing, because a value that arrived and a value that
+  fell through are indistinguishable until you make them differ. Both directions
+  were driven against a real standalone server before shipping: the fixed build
+  passes all four checks, the pre-fix build fails all four.
+  THE RULE: A FENCE PER LAYER IS NOT A FENCE ON THE CHAIN. Where a value crosses
+  N boundaries, N green fences prove nothing about the artifact; only reading the
+  value back out of the artifact does, and it must be a value that could not have
+  arrived by accident.

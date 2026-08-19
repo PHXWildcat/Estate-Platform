@@ -96,6 +96,21 @@ jobs:
             pkg: '@estate/web'
             dockerfile: infra/docker/web.Dockerfile
             kind: web
+            # BUILT WITH NON-DEFAULT ORIGINS ON PURPOSE, because the only way to
+            # tell a value that arrived from a value that fell through to its
+            # default is to make them differ. `.invalid` is reserved by RFC 2606
+            # and can never resolve, so nothing here can accidentally reach a
+            # real host — these exist to be READ BACK OUT of the served header,
+            # never to be contacted. The image is loaded locally and never
+            # pushed, so no artifact carries them.
+            #
+            # This is the assertion that was missing when compose passed both of
+            # these to a Dockerfile with no ARG to receive them: every layer had
+            # a fence checking its own half, and nothing checked that the value
+            # survived the whole chain into the artifact.
+            extraBuildArgs: |
+              VAULT_ORIGIN=https://vault.probe.invalid
+              OPERATOR_ORIGIN=https://operator.probe.invalid
     steps:
       - uses: actions/checkout@v4
 
@@ -106,7 +121,9 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile || 'infra/docker/node-service.Dockerfile' }}
-          build-args: PKG=${{ matrix.pkg }}
+          build-args: |
+            PKG=${{ matrix.pkg }}
+            ${{ matrix.extraBuildArgs }}
           tags: estate/${{ matrix.app }}:ci
           # Load into the local daemon so the smoke test can run it; never push.
           load: true
@@ -195,7 +212,45 @@ jobs:
             echo "public${asset} -> ${code}"
             [ "$code" = 200 ] || missing="${missing} ${asset}(${code})"
           done
+
+          # THE BUILD ARGS REACHED THE ARTIFACT, asserted in the shipped image
+          # rather than in the three files that are supposed to carry them.
+          #
+          # `next.config.ts` bakes `form-action 'self' ${VAULT_ORIGIN}
+          # ${OPERATOR_ORIGIN}` into the routes manifest at build time, and that
+          # directive is the ONLY thing permitting the top-level form POST that
+          # opens the vault origin (M15) and the operator console (M21 PR3a).
+          # Both values were being dropped — web.Dockerfile declared no ARG for
+          # either and turbo.json's strict `env` stripped them — so an image
+          # built for real origins would have named the localhost ones and had
+          # the browser refuse both handoffs. Nothing was red, because each
+          # layer's own fence only ever checked that layer.
+          #
+          # The probe values differ from the defaults precisely so a value that
+          # fell through is distinguishable from a value that arrived; asserting
+          # the DEFAULTS are absent is the half that catches a silent fallback.
+          csp=$(curl -sI http://localhost:3000 | tr -d '\r' \
+                | grep -i '^content-security-policy:' || true)
           docker rm -f web >/dev/null
+          if [ -z "$csp" ]; then
+            echo "::error::the image served no Content-Security-Policy header at all"
+            exit 1
+          fi
+          echo "$csp"
+          for origin in https://vault.probe.invalid https://operator.probe.invalid; do
+            case "$csp" in
+              *"$origin"*) ;;
+              *) echo "::error::build arg did not reach the artifact: ${origin} absent from form-action"
+                 exit 1;;
+            esac
+          done
+          for fallback in http://vault.localhost:3010 http://operator.localhost:3011; do
+            case "$csp" in
+              *"$fallback"*) echo "::error::next.config.ts fell through to ${fallback} — the build arg was dropped"
+                             exit 1;;
+            esac
+          done
+
           if [ -n "$missing" ]; then
             echo "::error::the image does not serve public/ assets:${missing}"
             exit 1

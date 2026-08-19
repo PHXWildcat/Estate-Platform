@@ -5,13 +5,33 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
       // Turbo 2 runs tasks in STRICT env mode: anything not listed here is
-      // stripped from the task's environment. Both of these are consumed by
+      // stripped from the task's environment. All four are consumed by
       // `next build` (next.config.ts) — BFF_URL is serialised into the routes
       // manifest as the /graphql rewrite target, and omitting it here is
       // exactly how the web image silently proxied to itself (found by the
       // M8 PR5 browser verification). Declaring them also makes them part of
-      // the task hash, so a changed BFF_URL correctly busts the cache.
-      "env": ["BFF_URL", "NEXT_STANDALONE"]
+      // the task hash, so a changed value correctly busts the cache.
+      //
+      // THE TWO ORIGINS WERE MISSING AND THE DEFECT WAS THE SAME ONE, one
+      // milestone after the extension hit it and in this same file.
+      // next.config.ts bakes `form-action 'self' ${vaultOrigin}
+      // ${operatorOrigin}` into the routes manifest, and that directive is the
+      // only thing permitting the top-level form POST that opens the vault
+      // origin (M15) and the operator console (M21 PR3a). Measured with a
+      // control: building web with `BFF_URL=http://probe-bff.example:9999`
+      // put that value in the manifest, while the same build with
+      // `VAULT_ORIGIN`/`OPERATOR_ORIGIN` set to probe values left ZERO files
+      // under `.next` containing either — stripped here, so next.config.ts fell
+      // through to its localhost defaults and exited 0. Any deployment whose
+      // origins are not literally the localhost ones would have shipped an app
+      // whose browser refuses both handoffs.
+      //
+      // Declared on the BASE task rather than an `@estate/web#build` key
+      // deliberately: a `pkg#task` entry OVERRIDES rather than merges, so a
+      // package-specific key would have to restate BFF_URL and NEXT_STANDALONE
+      // — a second copy of this list, free to drift from it. BFF_URL is
+      // web-only and already lives here for the same reason.
+      "env": ["BFF_URL", "NEXT_STANDALONE", "VAULT_ORIGIN", "OPERATOR_ORIGIN"]
     },
     "typecheck": {
       "dependsOn": ["^build"]

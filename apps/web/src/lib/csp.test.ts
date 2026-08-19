@@ -64,6 +64,16 @@ describe('the Content-Security-Policy', () => {
       // Build-time, like BFF_URL, and for the same reason — headers() is
       // serialised into the routes manifest. Stated here so the M8 PR5 defect's
       // shape stays visible to whoever changes this next.
+      //
+      // THIS CASE PINS THE READ AND IS BLIND TO WHETHER THE VALUE ARRIVES, and
+      // for a long time it did not: web.Dockerfile had no ARG for either origin
+      // and turbo.json's strict `env` stripped both, so the config fell through
+      // to the defaults below in every build. `build-inputs.test.ts` is the
+      // other half — it derives the variable set from next.config.ts and checks
+      // the whole chain — and images.yml reads the values back out of the
+      // shipped artifact. Neither replaces this one: what is asserted here is
+      // that a default EXISTS and what it is, which is what makes a dev build
+      // work without configuration.
       expect(source).toMatch(/process\.env\.VAULT_ORIGIN \?\? 'http:\/\/vault\.localhost:3010'/);
       expect(source).toMatch(
         /process\.env\.OPERATOR_ORIGIN \?\? 'http:\/\/operator\.localhost:3011'/,
