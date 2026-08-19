@@ -34,13 +34,34 @@ ARG PKG
 # running container therefore has NO effect — the image would keep proxying
 # /graphql to localhost:4000, i.e. to itself. It has to be an ARG.
 ARG BFF_URL=http://localhost:4000
+# THE ISOLATED ORIGINS ARE BUILD-TIME FOR THE IDENTICAL REASON, and they were
+# MISSING here — docker-compose.stack.yml has passed both as build args since
+# M15 and M21 PR3a respectively, to a Dockerfile with no ARG to receive them, so
+# Docker warned about unconsumed args and dropped them. `next.config.ts` bakes
+# `form-action 'self' ${VAULT_ORIGIN} ${OPERATOR_ORIGIN}` into the routes
+# manifest, and that directive is the only thing permitting the top-level form
+# POST that opens the vault origin and the operator console. An image built with
+# real origins would have named the localhost ones and had the browser refuse
+# both handoffs. turbo.json's `build.env` is the second half of the same chain
+# and was missing them too; both are fixed together, since either alone still
+# leaves the value stranded.
+ARG VAULT_ORIGIN=http://vault.localhost:3010
+ARG OPERATOR_ORIGIN=http://operator.localhost:3011
 # Telemetry is an outbound call from a build machine — off by default.
 # NEXT_STANDALONE opts into the traced server bundle; it is gated behind this
 # flag because emitting it needs symlinks, which Windows workstations refuse
 # (see apps/web/next.config.ts). Linux builders have no such problem.
+#
+# The three build args are re-stated as ENV rather than relied on implicitly.
+# An ARG is visible to RUN in the same stage, so `pnpm turbo run build` would
+# see them either way; naming them here makes the build inputs one readable list
+# instead of a rule about Docker scoping, which is what
+# apps/web/src/lib/build-inputs.test.ts asserts against.
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NEXT_STANDALONE=1 \
-    BFF_URL=${BFF_URL}
+    BFF_URL=${BFF_URL} \
+    VAULT_ORIGIN=${VAULT_ORIGIN} \
+    OPERATOR_ORIGIN=${OPERATOR_ORIGIN}
 COPY --from=pruner /app/out/json/ ./
 RUN pnpm install --frozen-lockfile
 COPY --from=pruner /app/out/full/ ./
