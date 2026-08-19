@@ -57,10 +57,14 @@ export const AUDIENCE_COPY: Record<SessionAudience, AudienceCopy> = {
    *
    * The EXTENSION row's shape is the one to copy here: it says what the
    * credential CANNOT do, because an audience is a restriction on where a
-   * credential may be spent and never a claim about who is spending it. The
-   * console's own screen carries the same sentence, and `sessions.test.ts`
-   * asserts the absolute is gone rather than merely that the new words are
-   * present.
+   * credential may be spent and never a claim about who is spending it.
+   *
+   * THE SAME SENTENCE APPEARS IN TWO OTHER PLACES and all three are rewritten:
+   * the console's own screen (`operator-web`), and `OperatorLaunch` — the
+   * interstitial, which is where a user reads it FIRST and which this change
+   * missed until the review round. Each spec asserts the absolute is GONE
+   * rather than that the new words are present, because the regression to guard
+   * against is a rewrite back rather than a deletion.
    */
   OPERATOR: {
     label: 'Operator console',

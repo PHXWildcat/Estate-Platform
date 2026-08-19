@@ -107,9 +107,25 @@ export function OperatorLaunch(): ReactElement {
         when you try, against a list only a platform administrator can change — so if you are not on
         it, the console will open and every action will be refused.
       </p>
+      {/*
+        STATED AS A RESTRICTION, and REWRITTEN by M21 PR3b's review round.
+
+        This is the FIRST place a user reads what an operator session is, and it
+        carried "reaches none of your own estate" — an absolute PR3b made false
+        and then corrected in `sessions.ts` and on the console's own screen
+        while leaving this copy, the earliest one, standing. Its own test pinned
+        the false sentence, so the suite was green over it.
+
+        Four of the thirteen settlement routes reach a case through
+        `assertCaseVisible`, which admits the decedent, the reporter and the
+        estate's executor as well as an operator — so a console session CAN see
+        a case its holder is party to. What is true is the restriction: an
+        audience says where a credential may be spent, never who is spending it.
+      */}
       <p className="panel-note">
         You will be asked to confirm your identity first. The session you arrive with lasts fifteen
-        minutes, cannot be renewed, and reaches none of your own estate.
+        minutes and cannot be renewed. It cannot reach your assets, documents, people or vault, and
+        it cannot change your account.
       </p>
 
       {/*

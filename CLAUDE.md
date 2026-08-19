@@ -7740,3 +7740,105 @@ deviating from them, stop and propose the change with rationale — do not silen
   `(prototype, key)`: the first version read the wrong place, reported every route
   ungated, and was caught by its own anti-vacuity floor (`gated > 0`) within
   minutes of being written — a floor earning its place on the day it was added.
+- 2026-08-19 — M21 PR3b REVIEW ROUND: A STEP-UP PROMPT HAD THREE DOORS AND
+  ABORTED ON TWO. Pressing "Back to worklists" while a ceremony was polling
+  removed the form and CLOSED THE CASE two seconds later — measured before it
+  was believed, and again live against the running stack. The back controls
+  cleared the module's `pending` reference, which forgets the ELEMENT and not
+  the CEREMONY: the polling loop lives in a closure that outlives it, so it kept
+  retrying and landed an irreversible verb on a death case after consent was
+  withdrawn, with nothing on screen to say so. This is the M13 review round 3
+  finding ("Cancel did not cancel") arriving through the one door this console
+  has and the main app does not — and `step-up.ts` ALREADY HAD THE RIGHT
+  MECHANISM, an ownership counter re-checked after every await and every sleep.
+  The back path never bumped it because `stepUpPrompt` RETURNED AN ELEMENT and
+  there was nothing to bump it with. It returns a handle now (`{form, abort}`),
+  `abort()` takes a ceremony out of play without pretending the parent
+  cancelled, and one `dismissPrompt()` is the single door for everything outside
+  the loop. THE GENERAL SHAPE: when a module owns a lifecycle and hands its
+  caller only a rendering of it, every caller that discards the rendering
+  silently keeps the lifecycle.
+- 2026-08-19 — AND THE FENCE IS THE PART THAT GENERALISES, because the scenario
+  test cannot cover the next screen. `console.spec.ts` pins the back control on
+  the CASE screen; the case-unavailable screen already has a second one, and the
+  next screen with a way out will be a third. So a source scan asserts the
+  assignment to `pending` lives in exactly three functions — the one door, the
+  LOOP clearing its own prompt on a terminal outcome, and the opener. Attribution
+  is by top-level function span, so a nested callback is credited to the function
+  that declares it, which is the point: the defect was an assignment inside a
+  callback in `renderCase`. Mutation runs: 5/5 red for the fence and 3/5 for the
+  behavioural tests — AND THE TWO GREENS ARE WHY THE FENCE EXISTS, since one of
+  them was the second back control that no scenario reached. A surviving mutation
+  is a question about coverage, not a verdict on the fix.
+- 2026-08-19 — "ABORTS" IS NARROWED RATHER THAN OVERCLAIMED, in the same commit
+  that made it stronger. Aborting stops the LOOP: no further attempt is issued
+  and no result acted on. It cannot recall a request ALREADY ON THE WIRE, whose
+  transaction may commit at settlement while the client has stopped observing —
+  bounded to one action, one the operator consented to by submitting a code,
+  inside the ~100ms of a retry in flight. Recorded [ACCEPTED] in docs/03 §6cc,
+  because closing it means making the outcome conditional on something the client
+  can still withdraw, which is a settlement change and not a browser one. A claim
+  nobody can keep is worse than a narrower one, and this is the third M21 entry
+  turning that rule on my own prose.
+- 2026-08-19 — A SENTENCE CORRECTED TWICE WAS STILL FALSE IN THE PLACE IT IS
+  READ FIRST. PR3b widened the operator audience to thirteen settlement routes,
+  four of which reach a case through `assertCaseVisible` — which admits the
+  decedent, the reporter and the executor — so "it reaches none of your own
+  estate" became an absolute the platform does not keep. It was rewritten in
+  `sessions.ts` and on the console's own screen, and LEFT STANDING in
+  `OperatorLaunch`, the interstitial, where a user meets it before either. Its
+  own test PINNED the false version, so the suite was green over it; and the
+  comment in the file that WAS corrected names the console screen as the other
+  copy without mentioning this one. All three specs now assert the ABSOLUTE IS
+  GONE rather than that the new words are present, because the regression to
+  guard against is a rewrite back rather than a deletion.
+- 2026-08-19 — TWO EDGE FINDINGS, both LOW, both a claim the code did not keep.
+  `/open` answered 500 on a malformed percent-escape — `decodeURIComponent`
+  throws on `%zz`, on a bare `%`, and on a truncated multi-byte sequence — where
+  every other refusal gets a uniform 303, on the endpoint whose own comment says
+  it distinguishes nothing. And the route-table validator's paragraph forecloses
+  "the literal `:caseId` travels upstream" while testing `startsWith(':')`, THE
+  SAME TEST THE REWRITER USES, so a parameter written MID-segment was invisible
+  to both; it also admitted a row under no reachable prefix, a dead entry that
+  reads as a granted capability. The validator is EXPORTED and its refusals
+  DRIVEN now, replacing a source scan for its own error string plus a
+  `[\s\S]{0,400}` bridge — the exact mechanism this repo recorded as a mistake
+  in 2026-08-08. A scan for a thrown string cannot tell a check that fires from
+  one that cannot.
+- 2026-08-19 — MEASURED BEFORE BELIEVED, closing the one link a file-scoped lens
+  could not reach: a `%2F` captured by a `:name` segment survives
+  `fetch(base + path)` to the upstream as ONE segment (probed against a real
+  `node:http` server, which saw `/cases/a%2Fb/timeline`). The lens's whole
+  verdict that parameters cannot span a separator rested on the edge not
+  decoding-then-re-serialising, and it said so rather than assuming — which is
+  what made the assumption cheap to close.
+- 2026-08-19 — THE LIVE DRIVE TOOK THREE ATTEMPTS TO REACH THE RACE, and each
+  failure is the lesson. First: the prompt had already closed before Back was
+  pressed (`submitLabel: null` at 1.4s), because more than 30 seconds of
+  introspection cache had lapsed while I generated the TOTP code — so the
+  approve was the HAPPY PATH completing, not the race, and reading the case as
+  `waiting_period` afterwards would have looked exactly like the fix failing.
+  Second: no prompt opened at all, the session still being step-up fresh from
+  the first, which is `guarded()`'s try-bare-first decision working. Only a
+  FRESH console session — un-elevated by construction, since redemption grants
+  no step-up — puts a cold cache and a live refusal in the same window. With
+  that, the submit button read "Applying…" at the moment Back was pressed, and
+  afterwards the case was still `verifying` with `human_review_by` NULL, no
+  `settlement.case.approved` anywhere, and `auth.stepup.granted` on that session
+  eighteen seconds earlier in the same trail. THE RULE: when a live probe of a
+  race produces the outcome you feared, check whether the race was open at all
+  before concluding anything — a timing artifact and a broken fix look identical
+  in the result row.
+- 2026-08-19 — THE DEPLOY-ORDER HAZARD, THIRD RECORDING AND FIRST TIME IT COST A
+  CONTROL. The console's four `settlement.case.viewed` events were missing from
+  the trail entirely while the audit consumer logged `audit_event_rejected
+  reason=schema_violation` with `rejectedTotal` at 52: a consumer predating a new
+  `AUDIT_ACTIONS` member treats every instance as malformed input, silently.
+  Previously this had swallowed convenience events; here it swallowed the read
+  events that are PR3b's whole answer to docs/03 §4 TB7's operator-reads
+  paragraph — so "the reads are recorded" would have been a documented claim with
+  an empty table behind it. Rebuilt consumer first, re-opened the case, all four
+  land (one per surface, `actor_type: operator`) with zero rejections after.
+  Nothing enforces the ordering. The tell is cheap and worth knowing: an expected
+  event missing from `audit_events` should send you to the CONSUMER's log before
+  the producer's code.

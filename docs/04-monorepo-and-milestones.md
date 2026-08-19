@@ -6146,6 +6146,97 @@ Threat-model delta and residuals: `docs/03` §6cc. §4 TB7's operator-reads
 paragraph is closed for settlement by this PR, and §6bb's read-event residual
 with it.
 
+#### M21 PR3b — the review round, and the drive that proved it
+
+Three file-scoped lenses, each in its own worktree pinned with
+`git checkout --detach`. One died of context exhaustion on its first attempt and
+was re-run with a tighter file budget — recorded rather than quietly retried,
+because a lens that dies and a lens that finds nothing return the same empty
+result. Every finding was re-derived by hand before anything changed, and every
+fix mutation-tested from saved pristine copies.
+
+THE ONE THAT MATTERED WAS A CONSENT DEFECT. Pressing "Back to worklists" while a
+step-up ceremony was polling removed the form and CLOSED THE CASE two seconds
+later: the back controls cleared the module's `pending` reference, which forgets
+the ELEMENT and not the CEREMONY. `step-up.ts` already had the right mechanism —
+an ownership counter re-checked after every await and every sleep — and the back
+path simply never bumped it, because `stepUpPrompt` returned an element and
+there was nothing to bump it WITH. It returns a handle now, and one
+`dismissPrompt()` is the single door for every discard outside the loop.
+
+The fence beside the two behavioural pins is the part that generalises: a scan
+asserting the assignment lives in exactly three functions. `console.spec.ts` can
+pin the back control on the case screen; it cannot pin every screen, and the
+case-unavailable screen already has a second one. Both mutation runs are in the
+record — 5/5 for the fence, 3/5 for the tests, and the two GREENs there are what
+sent me to write the fence.
+
+Also fixed: `/open` answered 500 on a malformed percent-escape where every other
+refusal gets a uniform 303 (`decodeURIComponent` throws on `%zz`), on the
+endpoint whose own comment says it distinguishes nothing; and the route-table
+validator's paragraph forecloses "the literal `:caseId` travels upstream" while
+testing `startsWith(':')` — the same test the rewriter uses — so a parameter
+written MID-segment was invisible to both. That validator is EXPORTED and its
+refusals DRIVEN now, replacing a source scan for its own error string that could
+not tell a check that fires from one that cannot.
+
+And one copy of a sentence this milestone had already corrected twice was still
+standing in the place a user reads it FIRST: `OperatorLaunch`, the interstitial,
+still said an operator session "reaches none of your own estate" — with its own
+test pinning the false version. The comment in the file that WAS corrected even
+names the console's screen as the other copy and does not mention this one.
+
+MEASURED, NOT REASONED ABOUT, before the edge findings were accepted: a `%2F`
+captured by a `:name` segment survives `fetch(base + path)` to the upstream as
+ONE segment. That was the link the edge lens could not reach from its own file,
+and the whole basis for its verdict that parameters cannot span a separator.
+
+#### The live drive
+
+Driven in a real browser against the running stack, on images rebuilt from the
+branch and verified by their `Created` timestamps rather than by what compose
+said about the containers.
+
+The ceremony end to end: sign in, the interstitial (and the rail carries no
+operator entry — discoverability is M23's question), a genuine TOTP step-up, a
+top-level form POST across the origin boundary, landing on
+`http://operator.localhost:3011` reading `Session type: operator` and
+`Identity check: Not recently confirmed` — M15 PR4's rule, since redemption
+grants no step-up. Both worklists render, and the empty one says so in a
+sentence rather than showing nothing.
+
+`Start review` ran with NO prompt, which is the one deliberate ungated verb, and
+set the claim marker in the same UPDATE that moves the status — migration 004's
+invariant satisfied by construction rather than by a second statement. `Approve
+review` was refused, prompted, and applied after a real elevation; a second case
+approved with no prompt at all, because the session was still step-up fresh,
+which is the "try bare first" decision working.
+
+THE FIX WAS PROVEN IN THE RACE IT LIVES IN, and getting there took three
+attempts, each failing for a reason worth keeping. The first: the prompt had
+already closed before Back was pressed (`submitLabel: null` at 1.4s) — the
+elevation propagated instantly because more than 30 seconds of introspection
+cache had lapsed while I generated the code, so the approve was the happy path
+and not the race. The second: no prompt opened at all, the session still being
+elevated from the first. Only a FRESH console session — un-elevated by
+construction — puts a cold cache and a live refusal in the same window. With
+that, at the moment Back was pressed the submit button read "Applying…", and
+afterwards the case was still `verifying` with `human_review_by` NULL, no
+`settlement.case.approved` anywhere, and `auth.stepup.granted` on that session
+eighteen seconds earlier in the same trail. A genuine elevation, a real poll in
+flight, and nothing applied.
+
+THE DEPLOY-ORDER HAZARD SHOWED ITSELF AGAIN, and the reads are what surfaced it:
+the case screen's four `settlement.case.viewed` events were missing from the
+trail entirely, while the audit consumer logged `audit_event_rejected
+reason=schema_violation` with `rejectedTotal` climbing to 52. A consumer that
+predates a new action treats every instance of it as malformed input. Rebuilt
+consumer first, re-opened the case, and all four land — one per surface (`case`,
+`timeline`, `stages`, `distributions`), `actor_type: operator` — with zero
+rejections after. Nothing enforces this ordering; it is the third time this repo
+has recorded it, and the first time the missing events were a control rather
+than a convenience.
+
 #### Two findings from the selection that hand-verification OVERTURNED
 
 Recorded because the refutations are worth as much as the findings, and because
