@@ -7524,6 +7524,43 @@ deviating from them, stop and propose the change with rationale — do not silen
   and died on the shell error; `4bd732e`, with the logic extracted, prints
   `passed=33 failed=0 pending=4`. Working, inert, working — and the middle term
   is the one NO gate would have reported had the parity been even.
+- 2026-08-19 — AND THE FENCE I WROTE FOR THAT DEFECT HAD SIX SILENT SKIPS OF ITS
+  OWN, found by an adversarial review of it (sixteen agents, seven lenses; nine
+  confirmed, every one re-derived here by execution before anything changed).
+  Its header promised "REFUSES what it cannot read … never a skip" and the
+  sentence was false in six ways, each a `run` key DROPPED ON THE FLOOR rather
+  than refused: `run :` with a space before the colon, a quoted `"run":` key, a
+  flow mapping `- {run: ...}`, a plain scalar folded across lines (truncated to
+  its first line), `defaults.run` (a MAPPING, read as a script), and a
+  double-quoted body, which had no structural rule of any kind — `node -e "…"`
+  needs no apostrophe at all to be cut short by prose scare quotes. All six were
+  LATENT (47 blocks, 0 refusals, 0 findings on the real workflows before and
+  after), so they arm the moment somebody writes one of those shapes.
+  THE STRUCTURAL FINDING IS WHY THEY WERE ALL SILENT: the anti-vacuity floors
+  were GLOBAL (`blocks >= 30`), and a global floor cannot see ONE workflow going
+  blank — forty-six blocks from the other five satisfy it while the sixth is
+  scanned not at all. The sweep reports PER FILE now, with `seen === scripts +
+  refusals` as an invariant. This repo has written that rule down twice already
+  (2026-08-17, 2026-08-18: an anti-vacuity check belongs on every LEVEL of a
+  scan, and where a scan has a REACH the check is a set comparison, not a
+  count), and this is the third place it was needed — the second being the
+  helper-test CI step, which had the identical aggregate-floor defect one level
+  up: emptying one of three test files left 31 of 41 tests over a floor of 30
+  and the gate stayed green.
+  MY OWN "NO SILENT SKIP" TEST, committed three hours earlier FOR THIS EXACT
+  PROPERTY, walked a hand-written list of block-scalar HEADERS — the author's
+  model of the defect rather than the property, for the third time in one
+  milestone. It is a matrix over fourteen shapes now, and each pins its
+  DISPOSITION rather than merely that something happened: asking "was it
+  dropped?" is still too weak, because deleting the `defaults.run` guard yields
+  a SCRIPT — the wrong outcome, reached without being dropped.
+  THE PAIRED PROBE EARNED ITS PLACE TWICE. Blanking two files trips the global
+  count instead of the per-file check, and blanking one file whose block scalars
+  merely fall through trips the REFUSALS assertion — so the first two attempts
+  to isolate the per-file floor were caught by something else entirely and
+  proved nothing about it. Only a single small file going wholly blank isolates
+  it: red naming the file, and GREEN with that one check neutered, which is what
+  identifies it as the thing that saw it.
   THE TWIN WAS BALANCED ONLY BECAUSE SOMEBODY HAD ALREADY BEEN BITTEN: line 226
   of stack.yml read `profile'"'"'s block`, the close-reopen dance that is the
   only way to put an apostrophe inside single quotes. An unreadable workaround

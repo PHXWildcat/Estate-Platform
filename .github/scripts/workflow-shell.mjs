@@ -23,14 +23,25 @@
  * assertion has simply vanished. The step passes. So an unterminated-quote check
  * alone would have been blind to the worse half of the class it was written for.
  *
- * The second check is on the CAUSE rather than on the symptom, which is what
- * lets one rule cover both: a `'` that CLOSES a single-quoted string and is
- * immediately followed by a word character is an accidental close. That is
- * exactly `console's` — the quote shuts at `console` and `s` runs on. A
- * deliberate close is followed by whitespace, a newline, `)`, `;`, `|`, `&`, or
- * another quote — including `'"'"'`, the escape dance, whose close is followed
- * by `"`. It fires at the FIRST accidental close, so it does not care whether
- * the count is odd or even.
+ * TWO RULES, AND THE NARROW ONE IS NOT THE LOAD-BEARING ONE. The first keys on
+ * a `'` that closes a single-quoted string and is immediately followed by a
+ * WORD character — exactly `console's`, where the quote shuts at `console` and
+ * `s` runs on. This header used to justify that by asserting a deliberate close
+ * is followed by whitespace, `)`, `;`, `|`, `&`, or another quote. THAT IS A
+ * CLAIM ABOUT ENGLISH AND IT IS FALSE: a possessive plural ends with an
+ * apostrophe and a SPACE, so `the gates' numbers` closes the string just as
+ * thoroughly and the narrow rule never sees it.
+ *
+ * So the load-bearing rule is STRUCTURAL and does not read the prose at all.
+ * Every embedded script here has one shape — the opening quote is the last
+ * thing on its line, the closing quote the first thing on its — so a body that
+ * opens at end-of-line and closes anywhere else was cut short, by an
+ * apostrophe, a stray quote or anything else, at any parity. `shortBodies`
+ * applies it to single- AND double-quoted bodies; a `node -e "..."` needs no
+ * apostrophe to be cut short by prose scare quotes, and had no rule of any kind
+ * until it was measured. The escape dance `'"'"'` is exempt because its close
+ * is followed by another quote: the shell is CONCATENATING, not ending the
+ * body, and a fence must flag what is broken rather than what is merely ugly.
  *
  * WHAT IT DELIBERATELY DOES NOT DO. This is not a shell parser. It tracks the
  * states that decide whether a quote is open at the end of a script (bare,
@@ -49,6 +60,15 @@
  * REFUSES WHAT IT CANNOT READ. A `run:` written in a shape the extractor does
  * not recognise is an ERROR naming the file and line, never a skip — a scan
  * that quietly matches nothing goes green for the same reason it is wrong.
+ * THAT SENTENCE WAS FALSE IN SIX WAYS when it was written, and each was a
+ * `run` key dropped on the floor: `run :` with a space before the colon, a
+ * quoted `"run":` key, a flow mapping `- {run: ...}`, a plain scalar folded
+ * across lines (truncated to its first line), `defaults.run` (a MAPPING, read
+ * as a script), and the double-quoted body above. Every line that looks like a
+ * run key is counted in `seen` now, and `seen === scripts + refusals` is an
+ * invariant the sweep reports PER FILE — because a global floor cannot see one
+ * workflow going blank while the others satisfy it, which is what made all six
+ * silent rather than loud.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';

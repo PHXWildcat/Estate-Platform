@@ -6174,6 +6174,51 @@ the step died on the shell error. On `4bd732e`, with the logic extracted, the
 step prints `passed=33 failed=0 pending=4` again. Working, inert, working: the
 middle term is the one no gate would have reported had the parity been even.
 
+#### M21 PR3b — reviewing the fence that reviewed the gate, again
+
+An adversarial review of that fence — sixteen agents over seven lenses, each in
+its own worktree pinned to the reviewed commit — returned nine confirmed
+defects in machinery written hours earlier. Every one was re-derived here by
+execution before anything changed, and the fifteen the fan-out dropped were
+hand-checked, three of them real.
+
+Six of the nine are one defect wearing different YAML. The module's header
+promised *"REFUSES what it cannot read … never a skip"*, and that sentence was
+false six ways — a `run` key in each of these shapes was dropped on the floor,
+neither read nor refused:
+
+| shape | before |
+| --- | --- |
+| `run :` (space before the colon) | skipped |
+| `"run":` (quoted key) | skipped |
+| `- {run: ...}` (flow mapping) | skipped |
+| `run: a && b` folded across lines | truncated to its first line |
+| `defaults.run` (a mapping) | read as a script, inflating the floor |
+| `node -e "..."` (double-quoted body) | no structural rule at all |
+
+All six were latent: the real workflows produce 47 blocks, 0 refusals and 0
+findings both before and after, so nothing was being missed today — they arm
+the moment somebody writes one of those shapes.
+
+**The structural finding is why every one of them was silent.** The
+anti-vacuity floors were global (`blocks >= 30`), and a global floor cannot see
+one workflow going blank — forty-six blocks from the other five satisfy it
+while the sixth is scanned not at all. The sweep reports per file now, with
+`seen === scripts + refusals` as an invariant. The same defect was found one
+level up in the CI step that runs these tests: emptying one of three test files
+left 31 of 41 tests over a floor of 30, and the gate stayed green. Both floors
+are per-file.
+
+This is the third place that rule has been needed, having been written down
+twice already. It is also the third time in this milestone that a fence
+inherited its author's model of the defect rather than the property: the
+`NO SILENT SKIP` test committed three hours earlier walked a hand-written list
+of block-scalar *headers*. It is a matrix over fourteen shapes now, and each
+pins its **disposition** — asking merely "was it dropped?" is still too weak,
+because deleting the `defaults.run` guard yields a *script*, which is the wrong
+outcome reached without being dropped.
+
+
 That twin was balanced only because someone had already been bitten by this:
 `stack.yml` line 226 read ``profile'"'"'s block``, the close-and-reopen dance
 that is the only way to write an apostrophe inside single quotes. An unreadable
