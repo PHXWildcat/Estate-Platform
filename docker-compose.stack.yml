@@ -775,6 +775,10 @@ services:
       # M15: NOT a downstream. This is the address the BFF hands the browser
       # in startVaultHandoff, so the app can submit its top-level form there.
       VAULT_ORIGIN: http://vault.localhost:3010
+      # M21 PR3a: not a downstream either. The address the BFF hands the browser
+      # in startOperatorHandoff — a SECOND isolated origin, a second host, and
+      # deliberately a second route rather than an audience field on the first.
+      OPERATOR_ORIGIN: http://operator.localhost:3011
       PERSISTED_MANIFEST_PATH: /app/persisted-manifest.json
     volumes:
       # The web bundle sends hash-only GraphQL bodies (its client inlines
@@ -815,6 +819,30 @@ services:
       vault: { condition: service_healthy }
       identity: { condition: service_healthy }
 
+  # The ISOLATED OPERATOR ORIGIN (M21 PR3a, docs/03 TB7). A separate deployable
+  # on a separate HOST — operator.localhost, not a third port on localhost,
+  # because cookie scope ignores the port and the app's session would otherwise
+  # be sent here on every request (measured in a real browser for the vault
+  # origin, and the same fact).
+  #
+  # It holds NO service credential in either direction, which is why its
+  # environment block is TWO URLs and nothing else — shorter even than the
+  # vault's, and asserted to be exactly that by
+  # apps/operator-web/test/config.spec.ts.
+  operator-web:
+    build: { <<: *node-build, args: { PKG: '@estate/operator-web' } }
+    profiles: ['edge']
+    restart: unless-stopped
+    ports: ['3011:3011']
+    environment:
+      NODE_ENV: ${STACK_MODE}
+      PORT: '3011'
+      IDENTITY_URL: http://identity:3001
+      APP_ORIGIN: http://localhost:3000
+    healthcheck: *tcp-healthcheck
+    depends_on:
+      identity: { condition: service_healthy }
+
   web:
     build:
       context: .
@@ -828,6 +856,9 @@ services:
         # the same reason BFF_URL is a build arg (M8 PR5 found the runtime
         # version of this baked wrong).
         VAULT_ORIGIN: 'http://vault.localhost:3010'
+        # M21 PR3a: the second cross-origin form destination, for the same
+        # build-time reason.
+        OPERATOR_ORIGIN: 'http://operator.localhost:3011'
     profiles: ['edge']
     restart: unless-stopped
     # ADDRESS THE STACK AS http://localhost:3000. The BFF sets Secure on its

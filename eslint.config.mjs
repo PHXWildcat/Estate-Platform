@@ -33,6 +33,11 @@ export default tseslint.config(
       // the edge serves; it is still build output, and linting it reports the
       // compiler's own JS back as untyped source.
       'apps/vault-web/public/app/**',
+      // The operator origin's browser bundle (M21 PR3a), same status. It has no
+      // `public/lib/**` counterpart: this origin imports no vault-crypto, which
+      // is the point of it being a separate deployable rather than a route on
+      // the vault edge.
+      'apps/operator-web/public/app/**',
       // vault-crypto's browser build, copied in by the same package's build
       // step. Emitted JavaScript, linted at its source in packages/.
       'apps/vault-web/public/lib/**',

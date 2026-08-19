@@ -69,6 +69,13 @@ const VAULT = process.env['STACK_VAULT_URL'] ?? 'http://localhost:3006';
 const VAULT_WEB = process.env['STACK_VAULT_WEB_URL'] ?? 'http://vault.localhost:3010';
 /** The origin the vault edge accepts an arrival POST from, and only that one. */
 const APP_ORIGIN_FOR_VAULT = process.env['STACK_WEB_URL'] ?? 'http://localhost:3000';
+/**
+ * The ISOLATED OPERATOR ORIGIN (M21 PR3a, docs/03 TB7). A SECOND separate host
+ * for the same measured reason as the vault's — cookie scope ignores the port —
+ * and deliberately a second host rather than a second path on the vault's,
+ * because the two origins must not be able to read each other's cookie.
+ */
+const OPERATOR_WEB = process.env['STACK_OPERATOR_WEB_URL'] ?? 'http://operator.localhost:3011';
 const SETTLEMENT = process.env['STACK_SETTLEMENT_URL'] ?? 'http://localhost:3007';
 // M10: the AI assistant runs in the DEVELOPMENT profile only — production pins
 // LLM_MODE=anthropic and no provider credential exists in this project, so the
@@ -1608,6 +1615,309 @@ describeIfStack('the running stack', () => {
       ]) {
         const refused = await api(PROFILE_URL, 'GET', path, { token: vaultToken });
         expect(`${path}:${refused.status}`).toBe(`${path}:401`);
+      }
+    });
+  });
+
+  /**
+   * THE ISOLATED OPERATOR ORIGIN (M21 PR3a), end to end on the real deployment.
+   *
+   * OUTSIDE the profile split for the vault origin's reason: nothing here needs
+   * a third-party credential, so both profiles should exercise it.
+   *
+   * WHAT THIS MILESTONE SHIPS IS A BOUNDARY AND NOTHING BEHIND IT, and these
+   * assertions are chosen to say exactly that. A redeemed operator session is
+   * admitted by identity's three per-route widenings and refused EVERYWHERE
+   * ELSE — including by settlement, whose operator queue is the surface PR3b
+   * will put here. So the ceremony is real, the origin is real, and reaching it
+   * still confers nothing: the operator allowlist M21 PR1 gave a ceremony and
+   * M21 PR2 gave one gate is what decides authority, and it is not consulted
+   * here at all.
+   */
+  describe('the isolated operator origin', () => {
+    it("serves the shell under a CSP at least as strict as the vault origin's", async () => {
+      /*
+       * THIS TEST IS NAMED FOR A COMPARISON, SO IT MAKES ONE. Its first version
+       * asserted a list of fixed strings and carried a comment claiming this
+       * origin was "stricter than the vault's" in `img-src` — which measurement
+       * refuted: the two policies are byte-identical, twelve directives each.
+       * The name promised a relation and the body checked a constant, which is
+       * the shape this repo keeps finding (a test named for a property it never
+       * touched), with the added harm that the false half had been copied into
+       * docs/03 and docs/04 before anybody compared the two headers. (An
+       * earlier draft of this comment said the PR body carried it too; it did
+       * not — the claim lived in exactly these three places, and overstating
+       * its spread was the same defect one layer up.)
+       *
+       * What is worth gating is the RELATION rather than either constant: a
+       * second isolated origin must never drift WEAKER than the first, and the
+       * realistic regression is somebody relaxing this one for a charting
+       * library on an operator console. So both live headers are fetched and
+       * compared directive by directive — for these allowlist-shaped policies,
+       * "no weaker" means: omit nothing the vault names, and for each directive
+       * allow no source the vault does not.
+       */
+      const [operator, vault] = await Promise.all([
+        fetch(`${OPERATOR_WEB}/`),
+        fetch(`${VAULT_WEB}/`),
+      ]);
+      expect(operator.status).toBe(200);
+      expect(vault.status).toBe(200);
+      const csp = operator.headers.get('content-security-policy') ?? '';
+
+      const directives = (policy: string): Map<string, Set<string>> => {
+        const parsed = new Map<string, Set<string>>();
+        for (const part of policy.split(';')) {
+          const [name, ...sources] = part.trim().split(/\s+/);
+          if (name) parsed.set(name, new Set(sources));
+        }
+        return parsed;
+      };
+      const here = directives(csp);
+      const there = directives(vault.headers.get('content-security-policy') ?? '');
+      // Anti-vacuity: two empty maps compare equal perfectly.
+      expect(there.size).toBeGreaterThanOrEqual(10);
+      for (const [name, allowed] of there) {
+        const ours = here.get(name);
+        expect(ours).toBeDefined();
+        for (const source of ours ?? []) {
+          expect([...allowed]).toContain(source);
+        }
+      }
+
+      // And the absolutes this origin owes on its own account, whatever the
+      // vault does — the two directives the main app cannot honestly claim
+      // (M11), and the reason this origin is framework-free.
+      expect(csp).toContain("script-src 'self'");
+      expect(csp).toContain("require-trusted-types-for 'script'");
+      expect(csp).toContain("trusted-types 'none'");
+      expect(csp).not.toContain('unsafe-inline');
+      expect(csp).not.toContain('unsafe-eval');
+      expect(csp).toContain("frame-ancestors 'none'");
+      // No `data:` in `img-src` — stricter than the MAIN APP, which needs it
+      // for M12's document viewer. The vault origin does not allow it either;
+      // what is distinctive here is only the contrast with the app.
+      expect(csp).toContain("img-src 'self'");
+      expect(csp).not.toContain('data:');
+      expect(operator.headers.get('cross-origin-resource-policy')).toBe('same-origin');
+    });
+
+    it('actually SERVES its client bundle from the shipped image', async () => {
+      // The 2026-08-06 web.Dockerfile lesson again: this client is build output
+      // under `public/` and gitignored, so its absence is a shell that loads
+      // and a page that never renders. Liveness is not the check.
+      const module = await fetch(`${OPERATOR_WEB}/app/main.js`);
+      expect(module.status).toBe(200);
+      expect(module.headers.get('content-type')).toContain('javascript');
+      expect(await module.text()).toContain('render');
+
+      const config = await fetch(`${OPERATOR_WEB}/app/config.js`);
+      expect(config.status).toBe(200);
+      expect(await config.text()).toContain('ESTATE_APP_ORIGIN');
+    });
+
+    it('refuses an arrival POST from any origin but the app', async () => {
+      const response = await fetch(`${OPERATOR_WEB}/open`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'http://attacker.example',
+        },
+        body: 'code=stolen',
+      });
+      expect(response.status).toBe(403);
+    });
+
+    it("mints, redeems, and yields a session worth NOTHING but identity's three routes", async () => {
+      const session = await registerAndLogin();
+      await stepUp(session);
+
+      // THE MINT IS ROLE-BLIND, and this probe user is not an operator. That
+      // is the design: identity holds no settlement credential and there is no
+      // dblink between the auth and core clusters, so it cannot ask. What
+      // stands between this session and an operator action is the allowlist,
+      // consulted by settlement — which is why every settlement probe below
+      // must refuse.
+      const minted = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/operator', { token: session.token }),
+        201,
+        'mint operator handoff',
+      ) as { code: string; expiresAt: string };
+      expect(minted.code.length).toBeGreaterThan(20);
+
+      const redeemed = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', { body: { code: minted.code } }),
+        200,
+        'redeem operator handoff',
+      ) as Record<string, unknown>;
+      // REDEMPTION IS AUDIENCE-BLIND: one route, one response shape, and the
+      // audience travels on the `auth_handoffs` row rather than on the wire.
+      // No refresh token here either.
+      expect(Object.keys(redeemed).sort()).toEqual(
+        ['accessToken', 'expiresAt', 'sessionId', 'userId'].sort(),
+      );
+      const operatorToken = redeemed['accessToken'] as string;
+
+      // Identity's per-route widenings: introspection, step-up, logout.
+      expect(
+        (await api(IDENTITY, 'GET', '/v1/auth/session', { token: operatorToken })).status,
+      ).toBe(200);
+      // …and the session says what it is, which is what lets the browser
+      // client display the audience rather than the edge re-deriving it.
+      expect(
+        (
+          (await api(IDENTITY, 'GET', '/v1/auth/session', { token: operatorToken })).body as Record<
+            string,
+            unknown
+          >
+        )['audience'],
+      ).toBe('operator');
+
+      // EVERY SERVICE REFUSES IT, without any of them having changed a line —
+      // `AUDIENCE_ADMITTERS.operator` is empty, so `CallerGuard` admits
+      // `account` alone. SETTLEMENT IS THE ONE THAT MATTERS: its operator queue
+      // is the surface PR3b puts on this origin, and today the boundary exists
+      // with nothing behind it.
+      for (const [name, base, path] of [
+        ['settlement-queue', SETTLEMENT, '/v1/settlement/queue'],
+        ['settlement-cases', SETTLEMENT, '/v1/settlement/cases'],
+        ['vault', VAULT, '/v1/vault/keyset'],
+        ['assets', ASSETS, '/v1/assets'],
+        ['documents', DOCUMENTS, '/v1/documents'],
+        ['profile', PROFILE_URL, '/v1/profile'],
+      ] as const) {
+        const refused = await api(base, 'GET', path, { token: operatorToken });
+        expect(`${name}:${refused.status}`).toBe(`${name}:401`);
+      }
+
+      // AND IT CANNOT CHAIN ITSELF FORWARD, in either direction: neither mint
+      // route admits a non-account audience, so a leaked operator code cannot
+      // become a vault session and cannot mint a second operator one.
+      expect(
+        (await api(IDENTITY, 'POST', '/v1/auth/handoff', { token: operatorToken })).status,
+      ).toBe(401);
+      expect(
+        (await api(IDENTITY, 'POST', '/v1/auth/handoff/operator', { token: operatorToken })).status,
+      ).toBe(401);
+      // Nor enrol a factor of its own (the M17 PR6 escalation, refused here by
+      // audience before `SecondFactorGate` is even reached).
+      expect(
+        (await api(IDENTITY, 'POST', '/v1/auth/totp/enroll', { token: operatorToken })).status,
+      ).toBe(401);
+    });
+
+    it('crosses the origin the way a browser does, and sets a __Host- cookie of its own', async () => {
+      const session = await registerAndLogin();
+      await stepUp(session);
+      const minted = expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/operator', { token: session.token }),
+        201,
+        'mint operator handoff',
+      ) as { code: string };
+
+      const arrival = await fetch(`${OPERATOR_WEB}/open`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: APP_ORIGIN_FOR_VAULT,
+        },
+        body: `code=${encodeURIComponent(minted.code)}`,
+      });
+      expect(arrival.status).toBe(303);
+      const setCookie = arrival.headers.get('set-cookie') ?? '';
+      // A DIFFERENT COOKIE NAME FROM THE VAULT'S, which is what keeps the two
+      // origins' sessions apart even though both carry the `__Host-` prefix.
+      expect(setCookie).toContain('__Host-estate_operator=');
+      expect(setCookie).not.toContain('estate_vault');
+      expect(setCookie).toContain('HttpOnly');
+      expect(setCookie).toContain('Secure');
+      const cookie = setCookie.split(';')[0] as string;
+
+      // The edge proxies identity on that cookie, and REQUIRES the custom
+      // header — the CSRF control, which works because this edge answers no
+      // preflight, so no cross-site page can set it.
+      const withHeader = await fetch(`${OPERATOR_WEB}/api/auth/session`, {
+        headers: { cookie, 'x-estate-operator-csrf': '1' },
+      });
+      expect(withHeader.status).toBe(200);
+      expect(((await withHeader.json()) as Record<string, unknown>)['audience']).toBe('operator');
+
+      const withoutHeader = await fetch(`${OPERATOR_WEB}/api/auth/session`, {
+        headers: { cookie },
+      });
+      expect(withoutHeader.status).toBe(403);
+
+      // AND THE VAULT ORIGIN'S COOKIE BUYS NOTHING HERE. Two hosts, two
+      // cookies, and neither is sent to the other by the browser — this is the
+      // server-side half of that, which holds even for a caller that sets the
+      // header by hand.
+      const foreign = await fetch(`${OPERATOR_WEB}/api/auth/session`, {
+        headers: {
+          cookie: `__Host-estate_vault=${cookie.split('=')[1] as string}`,
+          'x-estate-operator-csrf': '1',
+        },
+      });
+      expect(foreign.status).toBe(401);
+
+      // The proxy is an exact-match ALLOWLIST, not a prefix rewrite — a proxy
+      // forwarding whatever path it is handed, carrying a live bearer, is an
+      // SSRF primitive.
+      for (const path of [
+        '/api/auth/handoff',
+        '/api/auth/logout/refresh',
+        '/api/auth/totp/enroll',
+        '/api/settlement/queue',
+      ]) {
+        const refused = await fetch(`${OPERATOR_WEB}${path}`, {
+          method: 'POST',
+          headers: { cookie, 'x-estate-operator-csrf': '1' },
+        });
+        expect(`${path}:${refused.status}`).toBe(`${path}:404`);
+      }
+    });
+
+    it('records the mint with its audience, and a refusal with neither actor nor reason', async () => {
+      const session = await registerAndLogin();
+      await stepUp(session);
+      expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/operator', { token: session.token }),
+        201,
+        'mint operator handoff',
+      );
+      expectStatus(
+        await api(IDENTITY, 'POST', '/v1/auth/handoff/redeem', {
+          body: { code: 'never-minted-operator-code' },
+        }),
+        401,
+        'unknown code',
+      );
+
+      const db = new Client({ connectionString: AUDIT_DB });
+      await db.connect();
+      try {
+        const minted = await pollUntil('operator handoff mint event', async () => {
+          const found = await db.query<{ detail: Record<string, unknown> }>(
+            `SELECT detail FROM audit_events
+              WHERE action = 'auth.handoff.minted' AND detail->>'audience' = 'operator'`,
+          );
+          return found.rows.length > 0 ? found.rows : null;
+        });
+        expect(minted[0]?.detail).toMatchObject({ audience: 'operator' });
+
+        // The refusal is still ONE answer in the trail as well as on the wire:
+        // an event naming which of unknown/expired/spent/raced fired would
+        // re-create the oracle the uniform reply removes.
+        const failed = await db.query<{ actor_id: string | null; detail: unknown }>(
+          `SELECT actor_id, detail FROM audit_events WHERE action = 'auth.handoff.failed'`,
+        );
+        for (const row of failed.rows) {
+          expect(row.actor_id).toBeNull();
+          expect(row.detail ?? {}).toEqual({});
+        }
+      } finally {
+        await db.end();
       }
     });
   });

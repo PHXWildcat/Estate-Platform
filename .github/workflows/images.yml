@@ -86,6 +86,12 @@ jobs:
           - app: vault-web
             pkg: '@estate/vault-web'
             smokeProduction: true
+          # M21 PR3a's isolated operator origin. Same shape again, and its
+          # environment is shorter still — two URLs, both with development
+          # defaults, so production is the only posture where the guard fires.
+          - app: operator-web
+            pkg: '@estate/operator-web'
+            smokeProduction: true
           - app: web
             pkg: '@estate/web'
             dockerfile: infra/docker/web.Dockerfile
@@ -360,8 +366,8 @@ jobs:
             // second is exactly how this gate went red once: the suite passed
             // 25/4 and only the stale copy of the number failed. If a third
             // consumer of this count ever appears, derive it.
-            if (r.numPassedTests !== 26 || r.numPendingTests !== 4) {
-              console.error(`::error::expected exactly 26 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate (and its twin in stack.yml)`);
+            if (r.numPassedTests !== 32 || r.numPendingTests !== 4) {
+              console.error(`::error::expected exactly 32 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate (and its twin in stack.yml)`);
               process.exit(1);
             }
           '

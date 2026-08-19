@@ -1,0 +1,26 @@
+{
+  "name": "@estate/operator-web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The ISOLATED OPERATOR ORIGIN (docs/03 TB7). A small node:http edge that redeems the cross-origin handoff, holds a __Host- session cookie scoped to this origin alone, and forwards the caller's own bearer to an exact allowlist — plus a FRAMEWORK-FREE browser client, so the surface that will run docs/03 §5.1's mandatory human review has no dependency tree and runs under a CSP with no unsafe-inline and enforced Trusted Types.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.client.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "jest",
+    "dev": "node dist/main.js"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@estate/auth-guard": "workspace:*",
+    "@estate/config": "workspace:*",
+    "@types/jest": "catalog:",
+    "@types/node": "catalog:",
+    "jest": "catalog:",
+    "jest-environment-jsdom": "catalog:",
+    "ts-jest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

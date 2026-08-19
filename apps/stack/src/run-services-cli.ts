@@ -3,12 +3,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { parseEnvFile } from './doctor';
-import { VAULT_WEB_PORT } from './topology';
+import { OPERATOR_WEB_PORT, VAULT_WEB_PORT } from './topology';
 import {
   bffProcessEnv,
   plannedServices,
   scrubbedBaseEnv,
   serviceProcessEnv,
+  operatorWebProcessEnv,
   vaultWebProcessEnv,
 } from './service-env';
 
@@ -141,11 +142,16 @@ async function main(argv: readonly string[]): Promise<number> {
     // out of that directory is what keeps it out of `SERVICE_NAMES` and the
     // credential graph, where a service is presumed to hold a secret.
     launch('vault-web', 'apps/vault-web/dist/main.js', vaultWebProcessEnv(env, options));
+    // The ISOLATED OPERATOR ORIGIN (M21 PR3a) rides the same flag for the same
+    // reasons: edge tier, no cluster, no migration, no credential, and
+    // deliberately outside `apps/services/` so `SERVICE_NAMES` and the
+    // credential graph never absorb it.
+    launch('operator-web', 'apps/operator-web/dist/main.js', operatorWebProcessEnv(env, options));
   }
 
   const ports = [
     ...services.filter((s) => s.port !== null).map((s) => s.port as number),
-    ...(withBff ? [4000, VAULT_WEB_PORT] : []),
+    ...(withBff ? [4000, VAULT_WEB_PORT, OPERATOR_WEB_PORT] : []),
   ];
   try {
     await Promise.all(ports.map((port) => waitForPort(port, PORT_DEADLINE_MS)));
@@ -158,7 +164,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
   process.stdout.write(
-    `stack up: ${services.map((s) => s.name).join(', ')}${withBff ? ', bff, vault-web' : ''}\n`,
+    `stack up: ${services.map((s) => s.name).join(', ')}${withBff ? ', bff, vault-web, operator-web' : ''}\n`,
   );
 
   // Stay resident until a signal or a child death.

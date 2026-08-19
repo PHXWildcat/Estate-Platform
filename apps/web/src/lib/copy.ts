@@ -89,6 +89,12 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // wondering whether a stranger now holds it.
   PAIRING_UNAVAILABLE:
     'We couldn’t create a pairing code just now. No code was created — try again in a moment.',
+  // M21 PR3a. ITS OWN SENTENCE rather than VAULT_UNAVAILABLE's, which reassures
+  // the reader that "nothing about your vault has changed" — on a screen where
+  // nothing was opening a vault. One code changing meaning with the surface is
+  // the M12 finding, and this is the third surface to meet it.
+  OPERATOR_UNAVAILABLE:
+    'We couldn’t open the operator console just now. Nothing was opened — try again in a moment.',
   WEBAUTHN_FAILED:
     'That passkey wasn\u2019t accepted. Try again — and if it keeps failing, the passkey may be ' +
     'registered to a different account, or it may have been removed from this one.',

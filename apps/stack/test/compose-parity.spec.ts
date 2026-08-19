@@ -3,8 +3,13 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnvFile } from '../src/doctor';
 import { generateEnv, renderEnvFile } from '../src/generate-env';
-import { bffProcessEnv, serviceProcessEnv, vaultWebProcessEnv } from '../src/service-env';
-import { SERVICES, VAULT_ORIGIN } from '../src/topology';
+import {
+  bffProcessEnv,
+  operatorWebProcessEnv,
+  serviceProcessEnv,
+  vaultWebProcessEnv,
+} from '../src/service-env';
+import { OPERATOR_ORIGIN, SERVICES, VAULT_ORIGIN } from '../src/topology';
 
 /**
  * THE TWO MAPPINGS MUST AGREE. docker-compose.stack.yml maps the flat
@@ -128,6 +133,47 @@ describe('compose/supervisor mapping parity', () => {
         credentialShaped: false,
       });
     }
+  });
+
+  /**
+   * The OPERATOR origin (M21 PR3a). Held to the same stricter standard as the
+   * vault's, and its block is shorter still: two URLs, because it has ONE
+   * upstream rather than three.
+   */
+  it('operator-web: the compose block and operatorWebProcessEnv agree exactly', () => {
+    const composeEnv = composeEnvironmentBlock(compose, 'operator-web');
+    const resolved = new Map([...composeEnv].map(([key, value]) => [key, resolve(value, file)]));
+    const mapped = operatorWebProcessEnv(file, { addressing: 'compose' });
+    expect(Object.fromEntries([...resolved].sort())).toEqual(
+      Object.fromEntries(Object.entries(mapped).sort()),
+    );
+  });
+
+  it('operator-web carries NO credential of any kind, in either direction', () => {
+    // The DEPLOYMENT half of the claim, exactly as for vault-web. This origin
+    // reaches identity on the caller's own redeemed cookie and holds nothing
+    // that would let it reach settlement at all — which is also why there is no
+    // SETTLEMENT_URL here yet: the surface that needs one is PR3b.
+    const composeEnv = composeEnvironmentBlock(compose, 'operator-web');
+    for (const key of composeEnv.keys()) {
+      expect({ key, credentialShaped: /_INTERNAL_TOKEN$|KEY|SECRET/.test(key) }).toEqual({
+        key,
+        credentialShaped: false,
+      });
+    }
+  });
+
+  it('the BFF hands the browser the same operator origin the operator container serves', () => {
+    // Same reasoning as the vault pair above, and the same failure if they
+    // disagree: a form POST the browser refuses because the app's CSP names one
+    // origin and the mutation returns another.
+    const bff = composeEnvironmentBlock(compose, 'bff');
+    expect(bff.get('OPERATOR_ORIGIN')).toBe(OPERATOR_ORIGIN);
+    const webBuildArg = /^ {8}OPERATOR_ORIGIN:\s*'([^']+)'$/m.exec(compose);
+    expect(webBuildArg?.[1]).toBe(OPERATOR_ORIGIN);
+    // ...and the container really does listen where both of them point.
+    const operator = composeEnvironmentBlock(compose, 'operator-web');
+    expect(`http://operator.localhost:${operator.get('PORT')}`).toBe(OPERATOR_ORIGIN);
   });
 
   it('the BFF hands the browser the same vault origin the vault container serves', () => {

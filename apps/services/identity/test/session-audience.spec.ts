@@ -84,10 +84,27 @@ describe('identity route audiences match the declaration', () => {
   it('MINTING A HANDOFF is account-only, so NO non-account session can chain one', () => {
     // Stated by name as well as covered by the sweep above: this single fact is
     // what stops the audience from being a speed bump, and a regression in it
-    // should fail a test that says so. With two non-account audiences it also
-    // stops one from being reachable from the other.
+    // should fail a test that says so. With three non-account audiences it also
+    // stops any one of them from being reachable from another.
+    expect(routeNames()).toContain('mintHandoff');
     expect(IDENTITY_AUDIENCE_ROUTES.has('mintHandoff')).toBe(false);
     expect(admittedAudiences('mintHandoff')).toBeUndefined();
+  });
+
+  it('MINTING AN OPERATOR HANDOFF is account-only, and self-re-minting is the point', () => {
+    // M21 PR3a adds a SECOND mint route to the same ceremony, so the property
+    // has to be restated for it rather than inherited — the sweep above would
+    // cover it, but the sweep is what a reader checks last.
+    //
+    // It matters more here than for the vault route. An operator session lives
+    // 15 minutes and has no refresh token by construction, so the only way to
+    // extend an operator's stay is to go back to the app origin and mint again
+    // under a fresh step-up. If this route admitted `operator`, the origin
+    // could re-mint itself indefinitely without the user ever re-proving a
+    // factor, and the 15-minute bound would become decoration.
+    expect(routeNames()).toContain('mintOperatorHandoff');
+    expect(IDENTITY_AUDIENCE_ROUTES.has('mintOperatorHandoff')).toBe(false);
+    expect(admittedAudiences('mintOperatorHandoff')).toBeUndefined();
   });
 
   it('MINTING AN EXTENSION PAIRING is account-only, like minting a handoff', () => {

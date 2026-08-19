@@ -52,6 +52,14 @@ const EnvSchema = z
      */
     VAULT_ORIGIN: z.string().url().default('http://vault.localhost:3010'),
     /**
+     * The ISOLATED OPERATOR ORIGIN (M21 PR3a, docs/03 TB7). Same shape and
+     * same reason as VAULT_ORIGIN: it reaches the browser at REQUEST time
+     * rather than baked into the web bundle, because Next serialises
+     * build-time values into its routes manifest and the M8 PR5 review found
+     * exactly that shipping a wrong one.
+     */
+    OPERATOR_ORIGIN: z.string().url().default('http://operator.localhost:3011'),
+    /**
      * Path to the persisted-operations manifest (JSON: sha256 hex → GraphQL
      * document). Optional in dev/test (empty manifest ⇒ arbitrary operations
      * are still allowed there); REQUIRED in production, where only manifest
@@ -81,6 +89,7 @@ export interface BffConfig {
   readonly profileUrl: string;
   /** Browser-facing origin of the isolated vault surface (M15). */
   readonly vaultOrigin: string;
+  readonly operatorOrigin: string;
   /** null means "no manifest" (never allowed in production). */
   readonly persistedManifestPath: string | null;
 }
@@ -110,6 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BffConfig {
     documentsUrl: e.DOCUMENTS_URL.replace(/\/+$/, ''),
     profileUrl: e.PROFILE_URL.replace(/\/+$/, ''),
     vaultOrigin: e.VAULT_ORIGIN.replace(/\/+$/, ''),
+    operatorOrigin: e.OPERATOR_ORIGIN.replace(/\/+$/, ''),
     persistedManifestPath: e.PERSISTED_MANIFEST_PATH ?? null,
   };
 }

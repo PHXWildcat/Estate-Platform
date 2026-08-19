@@ -243,7 +243,7 @@ export class AuthController {
   @Get('session')
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  @AllowSessionAudiences('vault', 'extension')
+  @AllowSessionAudiences('vault', 'extension', 'operator')
   session(@Req() request: AuthedRequest): {
     userId: string;
     sessionId: string;
@@ -272,7 +272,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  @AllowSessionAudiences('vault', 'extension')
+  @AllowSessionAudiences('vault', 'extension', 'operator')
   async logout(@Req() request: AuthedRequest): Promise<{ status: string }> {
     const auth = requireAuth(request);
     await this.auth.logout(auth.userId, auth.sessionId);
@@ -556,7 +556,7 @@ export class AuthController {
   @Post('stepup')
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  @AllowSessionAudiences('vault', 'extension')
+  @AllowSessionAudiences('vault', 'extension', 'operator')
   async stepUp(@Req() request: AuthedRequest, @Body() body: unknown): Promise<StepUpResult> {
     const auth = requireAuth(request);
     const { code } = parseBody(CodeSchema, body);
@@ -583,7 +583,48 @@ export class AuthController {
   @UseGuards(SessionGuard, StepUpGuard)
   async mintHandoff(@Req() request: AuthedRequest): Promise<{ code: string; expiresAt: string }> {
     const auth = requireAuth(request);
-    const minted: MintedHandoff = await this.handoff.mint(auth.userId, auth.sessionId);
+    const minted: MintedHandoff = await this.handoff.mint(auth.userId, auth.sessionId, 'vault');
+    return { code: minted.code, expiresAt: minted.expiresAt.toISOString() };
+  }
+
+  /**
+   * Mint a single-use code for the ISOLATED OPERATOR ORIGIN (M21 PR3a).
+   *
+   * A SEPARATE ROUTE RATHER THAN AN `audience` FIELD ON THE ONE ABOVE, and the
+   * difference is the security property. A body field would put an audience
+   * SELECTOR on the wire, so a caller would name what it wants and this service
+   * would validate the name — which is the knob M16 deleted at the function
+   * level, moved somewhere strictly worse. Here the ROUTE is the selector:
+   * there is no field to parse, nothing to validate, and each route hardcodes
+   * one audience. The M14 rule that a new capability gets its own route rather
+   * than a widened schema, applied to a mint instead of a send.
+   *
+   * MINTING THIS IS ROLE-BLIND AND THAT IS DELIBERATE, not a gap. Identity
+   * cannot ask whether the caller is a settlement operator — it holds no
+   * settlement credential, there is no dblink between the auth and core
+   * clusters, and it has no concept of a role. So any account holder may mint
+   * one, and nothing is granted by doing so: an `operator` session reaches
+   * identity's three self-referential routes and NOTHING else in the product
+   * (`AUDIENCE_ROUTE_ADMITTERS`). Minting one is a DE-ESCALATION — strictly
+   * less than the account session it came from. `settlement_operators`, read
+   * through `OperatorGate`, remains the only thing that decides who may act on
+   * a death case, exactly as before this route existed.
+   *
+   * Everything else is the vault route's reasoning verbatim, because it is the
+   * same ceremony: account-audience only (undecorated = deny by default), so an
+   * operator session cannot mint another and a leaked one cannot chain itself
+   * forward; step-up gated; the code returned IN THE BODY for a hidden field
+   * and a top-level form POST, never a URL; and NO step-up carried into the
+   * redeemed session (the M15 PR4 finding).
+   */
+  @Post('handoff/operator')
+  @HttpCode(201)
+  @UseGuards(SessionGuard, StepUpGuard)
+  async mintOperatorHandoff(
+    @Req() request: AuthedRequest,
+  ): Promise<{ code: string; expiresAt: string }> {
+    const auth = requireAuth(request);
+    const minted: MintedHandoff = await this.handoff.mint(auth.userId, auth.sessionId, 'operator');
     return { code: minted.code, expiresAt: minted.expiresAt.toISOString() };
   }
 

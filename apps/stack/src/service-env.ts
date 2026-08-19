@@ -11,6 +11,8 @@ import {
   serviceUrl,
   VAULT_ORIGIN,
   VAULT_WEB_PORT,
+  OPERATOR_ORIGIN,
+  OPERATOR_WEB_PORT,
   type Addressing,
   type StackService,
 } from './topology';
@@ -267,6 +269,34 @@ export function vaultWebProcessEnv(
   };
 }
 
+/**
+ * The ISOLATED OPERATOR ORIGIN (M21 PR3a). Not a StackService either, and for
+ * the same three reasons the vault origin is not: no cluster, no KMS key, and
+ * NO CREDENTIAL in either direction.
+ *
+ * SHORTER STILL than the vault's, because it has one upstream rather than
+ * three — it proxies identity's three routes and nothing else until PR3b puts
+ * the settlement surface on it. The shortness is asserted rather than admired:
+ * `apps/operator-web/test/config.spec.ts` loads the real config with EVERY
+ * credential in the graph present and requires it to absorb none, and the
+ * compose-parity spec requires this map and the YAML block to agree key for
+ * key.
+ */
+export function operatorWebProcessEnv(
+  env: ReadonlyMap<string, string>,
+  options: ServiceEnvOptions,
+): Record<string, string> {
+  return {
+    NODE_ENV: fromFile(env, 'STACK_MODE'),
+    PORT: String(OPERATOR_WEB_PORT),
+    // The one upstream it may proxy to, reached on the CALLER's bearer.
+    IDENTITY_URL: serviceUrl('identity', options.addressing),
+    // An exact ORIGIN, never a pattern: it is what the handoff POST's `Origin`
+    // header is compared against, and what "back to Estate" navigates to.
+    APP_ORIGIN,
+  };
+}
+
 /** The BFF is not a StackService (no cluster, no credentials); mapped here. */
 export function bffProcessEnv(
   env: ReadonlyMap<string, string>,
@@ -308,6 +338,13 @@ export function bffProcessEnv(
      * request cannot be baked wrong.
      */
     VAULT_ORIGIN,
+    /*
+     * M21 PR3a. The same shape and the same reason: not a downstream, but the
+     * address the BFF HANDS THE BROWSER in `startOperatorHandoff`, so the app
+     * can submit its top-level form there. Runtime rather than baked, for the
+     * M8 PR5 reason above.
+     */
+    OPERATOR_ORIGIN,
   };
   if (options.manifestPath) {
     out['PERSISTED_MANIFEST_PATH'] = options.manifestPath;

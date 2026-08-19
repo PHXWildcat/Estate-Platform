@@ -295,7 +295,7 @@ describeIfPg('auth_handoffs against Postgres (auth cluster)', () => {
     };
     const service = new HandoffService(repo, sessions, events as never, () => NOW);
     // `minted_from` is a FK to sessions, so the mint must come from a real one.
-    const minted = await service.mint(user, accountSession);
+    const minted = await service.mint(user, accountSession, 'vault');
     const redeemed = await service.redeem(minted.code);
 
     const rows = await admin.query<{ stepup_expires_at: Date | null; mfa_level: string }>(
@@ -306,6 +306,78 @@ describeIfPg('auth_handoffs against Postgres (auth cluster)', () => {
     // And `isStepUpFresh` — the one shared definition every guard reads — says
     // so too, which is what a StepUpGuard downstream will actually consult.
     expect(isStepUpFresh(rows.rows[0]?.mfa_level as MfaLevel, null, NOW)).toBe(false);
+  });
+
+  it('MINTS AN OPERATOR SESSION through the same ceremony, and the row says so', async () => {
+    /*
+     * M21 PR3a — the second audience this ceremony serves, pinned end to end.
+     *
+     * The audience is a property of the ROW rather than of the redemption:
+     * `mint` writes it and `redeem` reads it back off the claimed handoff, so
+     * there is no place in the unauthenticated redeem path where an audience
+     * could be chosen. That is what this asserts — not that the service can be
+     * asked for an operator session, but that the one it produces IS one, and
+     * that redemption never had a say.
+     *
+     * Against a real database because migration 012's widened CHECK is half the
+     * property: before it, this exact call raises 23514 and the ceremony's
+     * uniform refusal would report it as `invalid_code`.
+     */
+    const events = {
+      handoffMinted: () => Promise.resolve(),
+      handoffRedeemed: () => Promise.resolve(),
+      handoffFailed: () => Promise.resolve(),
+    };
+    const service = new HandoffService(repo, sessions, events as never, () => NOW);
+    const minted = await service.mint(user, accountSession, 'operator');
+    const redeemed = await service.redeem(minted.code);
+
+    const rows = await admin.query<{
+      audience: string;
+      stepup_expires_at: Date | null;
+      refresh_token_h: Buffer | string | null;
+    }>(
+      `SELECT audience, stepup_expires_at, refresh_token_h
+         FROM ${schema}.sessions WHERE id = $1`,
+      [redeemed.sessionId],
+    );
+    expect(rows.rows[0]?.audience).toBe('operator');
+    // Everything the vault audience gets, the operator audience gets: no
+    // step-up carried in (the M15 PR4 finding), and a refresh digest of a token
+    // that was dropped on the floor — so `POST /v1/auth/refresh` cannot extend
+    // an operator session past its 15 minutes. Both are asserted rather than
+    // assumed to follow from sharing a code path, because sharing a code path
+    // is exactly what a later refactor stops doing.
+    expect(rows.rows[0]?.stepup_expires_at).toBeNull();
+    expect(rows.rows[0]?.refresh_token_h).not.toBeNull();
+  });
+
+  it('a handoff minted for one origin cannot be redeemed as the other', async () => {
+    // The audience travels ON THE ROW, so this is a property of the schema
+    // rather than of the caller: there is no argument to `redeem`, and the two
+    // ceremonies differ only in what `mint` wrote. Asserted because "the route
+    // is the selector" is PR3a's whole reason for two routes instead of one
+    // body field, and a redemption that could re-choose would undo it.
+    const events = {
+      handoffMinted: () => Promise.resolve(),
+      handoffRedeemed: () => Promise.resolve(),
+      handoffFailed: () => Promise.resolve(),
+    };
+    const service = new HandoffService(repo, sessions, events as never, () => NOW);
+    const vaultCode = await service.mint(user, accountSession, 'vault');
+    const vaultSession = await service.redeem(vaultCode.code);
+    const operatorCode = await service.mint(user, accountSession, 'operator');
+    const operatorSession = await service.redeem(operatorCode.code);
+
+    const rows = await admin.query<{ id: string; audience: string }>(
+      `SELECT id, audience FROM ${schema}.sessions WHERE id = ANY($1)`,
+      [[vaultSession.sessionId, operatorSession.sessionId]],
+    );
+    const byId = new Map(rows.rows.map((r) => [r.id, r.audience]));
+    expect({
+      vault: byId.get(vaultSession.sessionId),
+      operator: byId.get(operatorSession.sessionId),
+    }).toEqual({ vault: 'vault', operator: 'operator' });
   });
 
   it('refuses an audience the CHECK does not know', async () => {

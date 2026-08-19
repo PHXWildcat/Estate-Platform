@@ -100,6 +100,12 @@ export interface IdentityClient {
    * identity, so a stale session raises STEPUP_REQUIRED and the UI prompts.
    */
   mintVaultHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }>;
+  /**
+   * M21 PR3a. A SEPARATE METHOD FOR A SEPARATE ROUTE, not a parameter on the
+   * one above: nothing on the wire names an audience, so there is no field a
+   * caller could set and no argument a later edit could widen.
+   */
+  mintOperatorHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }>;
   /** The caller's live sessions — the paired-devices surface (M16). */
   sessions(accessToken: string): Promise<LiveSession[]>;
   /** Revoke ONE of the caller's own sessions. 404 ⇒ unknown OR not theirs. */
@@ -417,6 +423,17 @@ export type BffErrorCode =
    */
   | 'PAIRING_UNAVAILABLE'
   /**
+   * M21 PR3a. The operator handoff code could not be minted — identity
+   * answered something this client could not read.
+   *
+   * ITS OWN CODE for the reason `PAIRING_UNAVAILABLE` is: `VAULT_UNAVAILABLE`'s
+   * copy is about a vault, and nothing on the operator surface is opening one.
+   * One code changing meaning with the surface is the M12 finding, and this
+   * repo has now met it three times — so a third surface gets a third sentence
+   * rather than borrowing one that is nearly right.
+   */
+  | 'OPERATOR_UNAVAILABLE'
+  /**
    * M17 PR5. A passkey ceremony was refused — identity answers one generic
    * `webauthn_failed` for every reason (bad attestation, consumed challenge,
    * clone detection, an authenticator already bound to another account),
@@ -499,6 +516,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   VERIFICATION_UNAVAILABLE: 'We could not confirm that address right now',
   VAULT_UNAVAILABLE: 'We could not open the vault right now',
   PAIRING_UNAVAILABLE: 'We could not create a pairing code right now',
+  OPERATOR_UNAVAILABLE: 'We could not open the operator console right now',
   WEBAUTHN_FAILED: 'The passkey ceremony was not accepted',
   TOO_MANY_ATTEMPTS: 'Too many attempts — wait a few minutes before trying again',
   CODE_REQUESTED_RECENTLY: 'A change was requested recently — wait before asking for another',
@@ -769,6 +787,37 @@ export class FetchIdentityClient implements IdentityClient {
     const parsed = MintedCodeSchema.safeParse(await res.json());
     if (!parsed.success) {
       throw bffError('VAULT_UNAVAILABLE');
+    }
+    return parsed.data;
+  }
+
+  /**
+   * Mint a single-use handoff code for the ISOLATED OPERATOR ORIGIN (M21 PR3a).
+   *
+   * A SEPARATE ROUTE from the vault's, not a body field naming an audience, and
+   * that is the whole design: the route is the selector, so no client can ask
+   * for an audience and identity's own `HANDOFF_AUDIENCES` is the only place
+   * the vocabulary exists. Step-up gated and account-audience only at identity,
+   * so a vault or operator session cannot mint another credential.
+   *
+   * MINTING IS ROLE-BLIND, deliberately. An `operator` audience is a
+   * RESTRICTION on where a credential may be spent, never a claim about who is
+   * holding it — whether the caller may act on a settlement case is decided by
+   * `settlement_operators`, inside the transaction that would act. The BFF
+   * holds no settlement credential and could not ask even if it should.
+   */
+  async mintOperatorHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/v1/auth/handoff/operator',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    const parsed = MintedCodeSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      throw bffError('OPERATOR_UNAVAILABLE');
     }
     return parsed.data;
   }

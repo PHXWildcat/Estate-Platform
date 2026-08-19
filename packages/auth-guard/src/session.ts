@@ -83,6 +83,27 @@ export const AUDIENCE_ADMITTERS: Readonly<
    * accepts.
    */
   extension: [],
+  /**
+   * ALSO EMPTY, and for a reason that is nearly the opposite of `extension`'s
+   * (M21 PR3a).
+   *
+   * `extension` is empty because a service-wide grant at the vault would be too
+   * WIDE. `operator` is empty because no service admits it AT ALL — not even
+   * the one whose surface it exists for. Settlement is where the operator
+   * routes live, and binding `operator` there service-wide would union with
+   * every route it has, including the reporter- and owner-facing ones: the
+   * decedent's own `void`, the owner's waiting-period settings, a reporter's
+   * case reads. An operator session must reach the operator surface, and the
+   * operator surface is a SUBSET of settlement rather than the whole of it, so
+   * the grant has to be per handler — and PR3a decorates none, because PR3a
+   * ships the boundary and PR3b ships the surface.
+   *
+   * The consequence is the point rather than a gap: an `operator` session
+   * reaches identity's three self-referential routes below and NOTHING else in
+   * the product. It is strictly less powerful than the account session it was
+   * minted from, which is what makes a role-blind mint safe.
+   */
+  operator: [],
 };
 
 /**
@@ -200,6 +221,33 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
     'identity:stepUp',
     'identity:logout',
   ],
+  /**
+   * THE OPERATOR ORIGIN'S ENTIRE REACH IN PR3a — identity's three, and nothing
+   * else in the product.
+   *
+   * The same three as `vault`, admitted for the same three reasons, which are
+   * worth restating rather than cross-referencing because each is a different
+   * argument: `session` is introspection and MUST admit every audience or the
+   * audience cannot be used at all; `stepUp` STRENGTHENS the session presenting
+   * it and confers nothing else, so an operator session that steps up is still
+   * an operator session; `logout` revokes the credential you presented, which
+   * can only reduce authority (the M6 rule that the protective action must
+   * never be harder than the permissive one).
+   *
+   * ABSENT AND LOAD-BEARING, exactly as for `vault`: `mintHandoff`. An operator
+   * session cannot mint another, so a leaked one cannot chain itself forward —
+   * and since the operator handoff is minted by the same ceremony, this is what
+   * stops an operator credential from re-minting itself past its 15 minutes.
+   * `session-audience.spec.ts` names that absence in a test of its own.
+   *
+   * NOT A SETTLEMENT ROUTE IN SIGHT, deliberately. PR3a's whole claim is that
+   * the boundary works before anything is behind it: mint, redeem, land on the
+   * origin, read your own session — and get 401 from settlement, assets,
+   * documents, profile and the rest. PR3b adds the operator routes here in the
+   * same change as the surface that calls them, which is the rule the
+   * credential graph's own comment sets for a new capability.
+   */
+  operator: ['identity:session', 'identity:stepUp', 'identity:logout'],
 };
 
 /** Metadata key carrying a route's admitted audiences. See AllowSessionAudiences. */

@@ -138,6 +138,20 @@ export const APP_ORIGIN = 'http://localhost:3000' as const;
 export const VAULT_ORIGIN = 'http://vault.localhost:3010' as const;
 export const VAULT_WEB_PORT = 3010;
 
+/**
+ * The ISOLATED OPERATOR ORIGIN (M21 PR3a, docs/03 TB7). The same reasoning as
+ * the vault's, applied to a second surface: a separate HOST rather than a
+ * second port, because cookie scope ignores the port — a fact MEASURED in a
+ * browser before the vault origin relied on it, and the reason a port-only
+ * split would have handed each origin the app's whole session.
+ *
+ * Production addressing is `operator.<domain>` beside `app.<domain>` and
+ * `vault.<domain>`; the same registrable-domain residual applies, and the same
+ * `__Host-` prefix is what makes host-only a property the browser enforces.
+ */
+export const OPERATOR_ORIGIN = 'http://operator.localhost:3011' as const;
+export const OPERATOR_WEB_PORT = 3011;
+
 /** The six physical clusters (docs/02). Separate containers, never one server
  *  with six databases: no code may assume clusters are co-located. */
 export const CLUSTERS = {

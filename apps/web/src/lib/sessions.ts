@@ -43,6 +43,11 @@ export const AUDIENCE_COPY: Record<SessionAudience, AudienceCopy> = {
     detail:
       'A paired browser extension. It can look up and unlock vault items, and nothing else: it cannot reset your vault, change your emergency contacts, delete an item, or reach the rest of your estate.',
   },
+  OPERATOR: {
+    label: 'Operator console',
+    detail:
+      'Opened from Estate to reach the operator console. It expires on its own after 15 minutes and cannot be renewed. It reaches none of your estate — not your assets, documents, people or vault — and holding one grants no authority on its own.',
+  },
 };
 
 /**

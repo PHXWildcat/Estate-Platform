@@ -7208,3 +7208,173 @@ deviating from them, stop and propose the change with rationale — do not silen
   identifies the check as the thing that saw it. The second probe is what proved
   §6b-back-to-prose is invisible to a residual fence with no empty-region check:
   9 of 9 green over two untagged TB7 deferrals.
+
+- 2026-08-18 — M21 PR3a IS A BOUNDARY WITH NOTHING BEHIND IT, and the split from
+  PR3b is the whole point: an audience is worth exactly what the services that
+  REFUSE it make it worth, so the boundary is reviewable on its own and the
+  screens are reviewable on their own (the M15 PR1->PR2 precedent, where the vault
+  origin proved its boundary before any key material stood behind it). Three
+  decisions, each a rejection as much as a choice. (1) AN AUDIENCE IS A
+  RESTRICTION, NEVER A CLAIM ABOUT ITS HOLDER - `operator` says only that this
+  credential may be spent in fewer places than an ordinary session - so THE MINT
+  IS ROLE-BLIND and that is not a gap. Identity holds no settlement credential,
+  there is no dblink between the auth and core clusters, and identity has no
+  concept of a role, so a mint that checked would need a new trust edge to answer
+  a question the audience is not asking; `OperatorGate` against
+  `settlement_operators` remains the one answer to "may this person act", exactly
+  as PR2 left it, and what an operator GAINS by minting is a credential worth LESS
+  than the account session they already held. (2) THE ROUTE IS THE SELECTOR, NOT A
+  FIELD: two mint routes rather than one taking `{audience}`, so nothing on the
+  wire names an audience - no field for a caller to set, no parameter for a schema
+  to widen by accident, two separately guarded and separately audited ceremonies -
+  while REDEMPTION STAYS AUDIENCE-BLIND, one route and one response shape, with the
+  audience travelling on the `auth_handoffs` row only the mint could write. M16 PR1
+  is the precedent pointing the other way: `HandoffService.mint`'s audience
+  parameter was typed as the full union with only a DDL CHECK behind it, and it was
+  DELETED rather than narrowed. (3) A SECOND ISOLATED ORIGIN, NOT A SECOND PATH ON
+  THE FIRST - `operator.localhost` is a different HOST because cookie scope ignores
+  the port, and reusing the vault origin would put an operator credential in reach
+  of the code holding Zone A key material. `AUDIENCE_ADMITTERS.operator` is EMPTY
+  and exactly three identity handlers are widened per route (`session`, `stepUp`,
+  `logout`), so a redeemed operator session is refused by every service in the
+  product INCLUDING settlement, whose queue it exists to reach; `handoff` and
+  `handoff/operator` are absent, so a leaked code cannot chain itself forward in
+  either direction. Migration `012_operator_audience.sql` WIDENS the
+  `auth_handoffs` CHECK to `IN ('vault', 'operator')` rather than rewriting its
+  shape, which is the form PR2.5 taught the audience fence to require.
+- 2026-08-18 - THE EDGE DOES NOT RE-CHECK THE AUDIENCE IT REDEEMS, and the reason
+  is the same one that makes a second copy of any decision wrong. It could not
+  usefully: the redeem response deliberately does not carry an audience, and the
+  callees enforce it in both directions already (vault refuses `operator`,
+  settlement will refuse `vault`). What makes the absence safe is that the browser
+  client DISPLAYS the audience it reads back from `/api/auth/session`, so a session
+  of the wrong kind is visible rather than silently tolerated. The operator
+  interstitial also gets its own route with NO NAV ENTRY: minting is role-blind so
+  the page works for everybody, which is correct, and a product for 10M users
+  should not put "open the operator console" in an estate's own navigation.
+  Discoverability is PR3b's question, once there is a surface behind it.
+- 2026-08-18 - A FENCE THAT DERIVES FROM ONE FILE CANNOT SEE THE SECOND EDGE, and
+  it would have gone green WRONGLY rather than merely gone quiet.
+  `route-consumers.spec.ts` derives each edge's rewrites from its `server.ts` so a
+  browser client's `/api/...` literals resolve to the upstream routes they really
+  reach - and it read `apps/vault-web/src/server.ts` alone. A second edge whose
+  route table has a different shape contributes ZERO rewrites, and the operator
+  origin's `/api/auth/session` then resolves through the VAULT's table BY
+  COINCIDENCE, satisfying the fence while proving nothing about the edge under
+  test. That is docs/03 section 6y's "a fence whose input is narrower than its
+  claim goes green for the same reason it is wrong" arriving in a fence written two
+  PRs after the rule. Closed with a declared `EDGE_SERVERS` list, dual-shape
+  matching, a PER-EDGE anti-vacuity floor, and an exact assertion of the operator
+  edge's three rewrites.
+- 2026-08-18 - AND THE RESIDUAL FENCE HAD STOPPED MATCHING AT SECTION 6aa, found
+  while adding 6bb to it. Three patterns were written `6[a-z]?`, which needs a
+  literal `.` after one optional letter and therefore fails on `## 6aa.`. TWO
+  MIS-ATTRIBUTED - a two-letter section's bullets were reported under 6z, the last
+  single-letter heading that matched, so a failure would have sent the reader to
+  the wrong section - and THE THIRD WAS BLIND: `## 6aa.` failed its first test and
+  passed the fallback `^## `, so the lead-in classification scan turned OFF at 6aa
+  and left 6aa and 6bb outside it entirely. A residual lead-in written there with
+  an unrecognised idiom would have been unclassified and unreported. Nothing went
+  red, because every bullet in those sections happened to be tagged. BOTH ARE
+  CLOSED BY COMPARISON RATHER THAN BY A FLOOR: the parser's own section set is
+  compared against an independently permissive read of the file, and the
+  classification scan's REACHED sections are compared against the parser's. A count
+  could not do it - mis-attribution preserves totals, which is exactly why the
+  existing floor (`seen >= REGION_MARKERS.length`) was satisfied throughout. The
+  general rule this repo already has, restated for a new level: AN ANTI-VACUITY
+  CHECK BELONGS ON EVERY LEVEL OF A SCAN, and where the scan has a reach, the check
+  is a SET COMPARISON and not a count.
+- 2026-08-18 - TB7's OPERATOR-READS SENTENCE WAS WRONG IN BOTH HALVES, and the
+  correction is prose rather than a route. It said "the events exist - settlement
+  and documents emit them, and an executor inventory read carries `estate.viewed`".
+  MEASURED: `AUDIT_ACTIONS` carries 23 `settlement.*` actions and EVERY ONE IS A
+  WRITE, so the queue an operator works from, the case they open and the timeline
+  they read leave no trace that they were read; documents emits exactly one
+  operator read (`document.evidence.accessed`, whose actor class disagreed with its
+  own paired decrypt event until M21 PR2.5); and `estate.viewed` is
+  `asset.estate.viewed`, an ASSETS event describing an EXECUTOR's inventory read -
+  a different actor class entirely, cited in a paragraph about operators. The read
+  events land in PR3b with the screens that make the reads, because adding them now
+  would be a routeless event, which is the zero-callers shape this milestone exists
+  to close; correcting the claim rather than adding the route is the M18 PR1
+  precedent, where settlement's "decrypted only on explicit read" comment described
+  a read route that did not exist. The harm in a wrong claim of this kind is not
+  the sentence - it is that a reader who believes it stops looking.
+- 2026-08-18 - M21 PR3a DRIVEN LIVE, and the CSP had to be measured TWICE because
+  the first measurement was of the wrong world. The whole ceremony ran in a real
+  browser against the running stack: sign in, `/operator`, the step-up prompt
+  (`#operator-launch-code`, labelled "Confirm it's you"), a genuine TOTP code, a
+  top-level form POST across the origin boundary, landing on
+  `http://operator.localhost:3011/` reading "Session type: operator", "Identity
+  check: Not recently confirmed" - the M15 PR4 rule holding, since redemption
+  grants no step-up - and `document.cookie` EMPTY, the `__Host-` cookie being
+  `HttpOnly` on an origin whose client never needs to read it. The app's nav
+  carries no `/operator` entry (`hasOperatorLink: false`), which is the decision
+  above made observable rather than asserted. THE CSP PROBE FIRST REPORTED `eval`
+  AND `new Function` AS ALLOWED, which would have been a false claim in the
+  reassuring direction: the browser tool evaluates in an ISOLATED WORLD whose CSP
+  is not the page's (the M15 PR1 finding, met again). Chased rather than reported -
+  a probe module was served from the origin's own tree, and direct `<script>`
+  injection was itself refused by Trusted Types, so the probe had to arrive through
+  a modified shell. From the PAGE world: `trustedTypes.createPolicy` TypeError,
+  `innerHTML` TypeError leaving ZERO child nodes, `eval` EvalError, `new Function`
+  EvalError, and a cross-origin `fetch` at the app's BFF refused by
+  `connect-src 'self'`. The container was then RECREATED rather than edited back,
+  because a restore that leaves the artifact byte-identical is the only restore
+  worth trusting (probe 404, zero references in the served shell).
+- 2026-08-18 - THE STACK COUNTS WERE MEASURED IN BOTH PROFILES, and the production
+  half came with its own control. Development moved 26 -> 32 passed with pending
+  unchanged at 4; the six operator-origin tests sit OUTSIDE the profile split (a
+  plain `describe`, the M15 vault-origin precedent) because nothing about this
+  origin needs a third-party credential. My own summary had said five, and the
+  measurement said six - which is why the number comes from `--json` rather than
+  from counting `it(` blocks. The PRODUCTION count was measured STRUCTURALLY, by
+  running the suite under `STACK_PROFILE=production` against the development stack
+  and reading which tests EXECUTE versus skip: 22 executed, 14 pending, all six
+  operator tests passing. Exactly ONE test failed, and it is the control rather
+  than a defect - `production rehearsal: arms an emergency-access escrow` failed
+  because M14's arming gate is production-scoped and legitimately answers 201
+  instead of 503 on a development stack. That is verbatim the reason the M15 PR1
+  entry gives for never DERIVING these numbers, reproduced as evidence that the
+  profile switch is real. Stated rather than implied: what was measured locally is
+  the COUNTS, which is what the two workflow twins assert; a full production
+  rehearsal is what CI's own blocking production leg runs.
+- 2026-08-18 - A TEST NAMED FOR A COMPARISON THAT CHECKED A CONSTANT, found by a
+  hand adversarial pass over PR3a's own new machinery before merging it - which is
+  this repo's standing expectation that new trust machinery is defective, met for
+  the fifteenth milestone running. `stack.e2e.spec.ts`'s "serves the shell under a
+  CSP at least as strict as the vault origin's" asserted a list of FIXED STRINGS
+  and never fetched the vault's policy at all, while a comment beside it claimed
+  this origin was "STRICTER than the vault's in one directive: no `data:` in
+  img-src". MEASURED, from the two live origins rather than from the source: the
+  policies are BYTE-IDENTICAL, twelve directives each, and the vault's `img-src` is
+  `'self'` with no `data:` too. The distinctive strictness is against the MAIN APP,
+  which needs `data:` for M12's document viewer - a true sentence about the wrong
+  neighbour. THE HARM IS THE COPYING: the false half had reached docs/03 §6bb,
+  docs/04's PR3a section before the two headers were ever compared - THREE places,
+  and my first write-up of this correction said four, adding "and the PR body" to a
+  body that never carried it, which is the 2026-08-06 rule (a doc claiming evidence
+  it does not have is a defect even when the fix it justifies is sound) turned on
+  the correction itself -
+  which is exactly PR2.5's subject arriving one PR later in the milestone that
+  wrote it. THE FIX IS TO MAKE THE NAME TRUE rather than to correct the comment:
+  the test fetches BOTH live headers and compares them directive by directive - for
+  these allowlist-shaped policies, "no weaker" means omit nothing the vault names
+  and, per directive, allow no source the vault does not - with an anti-vacuity
+  floor, because two empty maps compare equal perfectly. That converts a false
+  claim into a real gate on the property worth having: a second isolated origin
+  must never drift weaker than the first, and the realistic regression is somebody
+  relaxing this one for a charting library on an operator console.
+  Probed THREE ways against a mutated edge run as a host process on a spare port
+  (cheap enough that the mutation did not need an image rebuild). Widening
+  `connect-src` - A DIRECTIVE THE OLD TEST NEVER ASSERTED AT ALL - turns it red
+  naming the offending source; dropping `object-src` entirely turns it red on the
+  omitted-directive branch; and the SECOND PROBE of the 2026-08-17 pair - the same
+  mutation with the comparison loop neutered - goes green, which is what identifies
+  the loop as the thing that saw it rather than some incidental assertion.
+  The harness also earned its keep by REFUSING two bad operations of mine rather
+  than silently no-op'ing: a restore whose pristine path landed in the wrong argv
+  slot died with ENOENT, and an anchor carrying a `\n` through a shell argument
+  reported `ANCHOR NOT UNIQUE: 0 occurrences`. Both would previously have read as
+  "the test does not catch this". That is the accumulating-mutation defect closed by
+  construction rather than by care.
