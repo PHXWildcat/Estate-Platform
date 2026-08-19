@@ -410,7 +410,9 @@ jobs:
             // the address-verification ceremony: 17/4 -> 18/4. M15 added six
             // for the isolated vault origin: 18/4 -> 24/4. M15 PR3 added the
             // grantee-candidate projection: 24/4 -> 25/4. M18 PR2 added the
-            // decrypt-rate baseline gate: 25/4 -> 26/4. Measured on a
+            // decrypt-rate baseline gate: 25/4 -> 26/4. M21 PR3a added six for
+            // the isolated operator origin: 26/4 -> 32/4. M21 PR3b added the
+            // console's settlement round trip: 32/4 -> 33/4. Measured on a
             // development-profile stack, which is what this job runs.
             //
             // THIS NUMBER HAS A TWIN in stack.yml, which gates both profiles.
@@ -421,8 +423,8 @@ jobs:
             // second is exactly how this gate went red once: the suite passed
             // 25/4 and only the stale copy of the number failed. If a third
             // consumer of this count ever appears, derive it.
-            if (r.numPassedTests !== 32 || r.numPendingTests !== 4) {
-              console.error(`::error::expected exactly 32 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate (and its twin in stack.yml)`);
+            if (r.numPassedTests !== 33 || r.numPendingTests !== 4) {
+              console.error(`::error::expected exactly 33 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate (and its twin in stack.yml)`);
               process.exit(1);
             }
           '

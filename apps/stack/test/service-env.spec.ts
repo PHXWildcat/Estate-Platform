@@ -225,14 +225,16 @@ describe('scrubbedBaseEnv', () => {
 });
 
 describe('operatorWebProcessEnv', () => {
-  it('maps TWO urls and nothing else', () => {
-    // The shortest environment in the stack, and deliberately so: this origin
-    // has ONE upstream (identity) and one origin it accepts an arriving form
-    // from. A third URL here would be a third thing it can reach.
+  it('maps TWO upstreams, one arrival origin, and nothing else', () => {
+    // Still the shortest service environment in the stack. M21 PR3b added the
+    // SECOND upstream in the same change as the thirteen routes that reach it
+    // and the screens that call them; a THIRD would be a third thing this
+    // origin can reach, which is a trust decision rather than a variable.
     expect(operatorWebProcessEnv(generated(), { addressing: 'host' })).toEqual({
       NODE_ENV: 'development',
       PORT: '3011',
       IDENTITY_URL: 'http://localhost:3001',
+      SETTLEMENT_URL: 'http://localhost:3007',
       APP_ORIGIN: 'http://localhost:3000',
     });
   });
@@ -244,10 +246,10 @@ describe('operatorWebProcessEnv', () => {
     }
   });
 
-  it('addresses identity by container name under compose addressing', () => {
-    expect(operatorWebProcessEnv(generated(), { addressing: 'compose' })['IDENTITY_URL']).toBe(
-      'http://identity:3001',
-    );
+  it('addresses BOTH upstreams by container name under compose addressing', () => {
+    const env = operatorWebProcessEnv(generated(), { addressing: 'compose' });
+    expect(env['IDENTITY_URL']).toBe('http://identity:3001');
+    expect(env['SETTLEMENT_URL']).toBe('http://settlement:3007');
   });
 });
 

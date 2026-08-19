@@ -275,7 +275,13 @@ jobs:
             // journey traffic proving the false-positive half is the same
             // test that proves detector liveness). It is describeDev, so the
             // production leg gains it as +1 pending.
-            const expectedPassed = production ? 22 : 32;
+            //
+            // M21 PR3b: +1 in BOTH profiles (the operator console reaching
+            // settlement through its own edge). It sits in the unsplit
+            // `describe`, like the rest of the isolated-origin tests, because
+            // nothing about this origin needs a third-party credential —
+            // so it is +1 passed in each rather than +1 passed / +1 pending.
+            const expectedPassed = production ? 23 : 33;
             const expectedPending = production ? 14 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }

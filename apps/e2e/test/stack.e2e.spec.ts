@@ -1774,14 +1774,12 @@ describeIfStack('the running stack', () => {
         )['audience'],
       ).toBe('operator');
 
-      // EVERY SERVICE REFUSES IT, without any of them having changed a line —
-      // `AUDIENCE_ADMITTERS.operator` is empty, so `CallerGuard` admits
-      // `account` alone. SETTLEMENT IS THE ONE THAT MATTERS: its operator queue
-      // is the surface PR3b puts on this origin, and today the boundary exists
-      // with nothing behind it.
+      /*
+       * EVERY OTHER SERVICE REFUSES IT, without any of them having changed a
+       * line — `AUDIENCE_ADMITTERS.operator` names settlement's handlers alone,
+       * so every service that did not opt in admits `account` only.
+       */
       for (const [name, base, path] of [
-        ['settlement-queue', SETTLEMENT, '/v1/settlement/queue'],
-        ['settlement-cases', SETTLEMENT, '/v1/settlement/cases'],
         ['vault', VAULT, '/v1/vault/keyset'],
         ['assets', ASSETS, '/v1/assets'],
         ['documents', DOCUMENTS, '/v1/documents'],
@@ -1790,6 +1788,39 @@ describeIfStack('the running stack', () => {
         const refused = await api(base, 'GET', path, { token: operatorToken });
         expect(`${name}:${refused.status}`).toBe(`${name}:401`);
       }
+
+      /*
+       * AND SETTLEMENT REFUSES IT TWO DIFFERENT WAYS, which is the whole point
+       * of the audience and is why this list is SPLIT rather than shortened.
+       *
+       * 401 means the AUDIENCE was not admitted: the handler carries no
+       * `@AllowSessionAudiences('operator')` and `CallerGuard` never let the
+       * request reach it. `GET /v1/settlement/cases` is an OWNER-facing route
+       * and stays that way — the console does not proxy it and the audience
+       * does not admit it.
+       *
+       * 403 means the audience WAS admitted and the NEXT control stopped it.
+       * This probe user is not on `settlement_operators`, so `OperatorGate`
+       * refuses inside the transaction that would have acted. That is the
+       * milestone's central claim made observable: arriving on the operator
+       * origin proves NOTHING, because minting the handoff is role-blind by
+       * design and the allowlist is what decides.
+       *
+       * Collapsing the two into "it is refused" would hide the boundary moving:
+       * a route silently losing its decoration, or the allowlist silently
+       * ceasing to be consulted, both still refuse — with different numbers.
+       */
+      for (const [name, path] of [
+        ['queue', '/v1/settlement/queue'],
+        ['administrable', '/v1/settlement/administrable'],
+      ] as const) {
+        const admitted = await api(SETTLEMENT, 'GET', path, { token: operatorToken });
+        expect(`${name}:${admitted.status}`).toBe(`${name}:403`);
+      }
+      const undecorated = await api(SETTLEMENT, 'GET', '/v1/settlement/cases', {
+        token: operatorToken,
+      });
+      expect(`cases:${undecorated.status}`).toBe('cases:401');
 
       // AND IT CANNOT CHAIN ITSELF FORWARD, in either direction: neither mint
       // route admits a non-account audience, so a leaked operator code cannot
@@ -1868,6 +1899,8 @@ describeIfStack('the running stack', () => {
         '/api/auth/handoff',
         '/api/auth/logout/refresh',
         '/api/auth/totp/enroll',
+        // THE METHOD IS PART OF THE ROW (M21 PR3b): the queue is a GET row, so
+        // a POST to the same path matches nothing and never reaches settlement.
         '/api/settlement/queue',
       ]) {
         const refused = await fetch(`${OPERATOR_WEB}${path}`, {
@@ -1876,6 +1909,80 @@ describeIfStack('the running stack', () => {
         });
         expect(`${path}:${refused.status}`).toBe(`${path}:404`);
       }
+    });
+
+    it('reaches settlement THROUGH the edge, on the operator’s own bearer', async () => {
+      /*
+       * THE PR3b CLAIM, END TO END: the console's worklists really do reach
+       * settlement, through this origin, carrying nothing but the credential
+       * the operator arrived with.
+       *
+       * Two answers are asserted, from two users, because the difference
+       * between them IS the milestone. An allowlisted operator gets 200. A
+       * console session belonging to somebody who is NOT on
+       * `settlement_operators` gets 403 — admitted by audience, refused by the
+       * gate, inside the transaction that would have acted. Minting the handoff
+       * is role-blind by design, so arriving here proves nothing, and this is
+       * where that stops being a sentence in a docstring.
+       */
+      const operator = await registerAndLogin();
+      const bystander = await registerAndLogin();
+      const core = new Client({ connectionString: CORE_DB });
+      await core.connect();
+      try {
+        // The CLI ceremony is the write path (M21 PR1); a seed row is
+        // deliberately distinguishable from one, carrying no `granted_by`.
+        await core.query(`INSERT INTO settlement_operators (user_id) VALUES ($1)`, [
+          operator.userId,
+        ]);
+      } finally {
+        await core.end();
+      }
+
+      const consoleCookie = async (who: Session): Promise<string> => {
+        await stepUp(who);
+        const minted = expectStatus(
+          await api(IDENTITY, 'POST', '/v1/auth/handoff/operator', { token: who.token }),
+          201,
+          'mint operator handoff',
+        ) as { code: string };
+        const arrival = await fetch(`${OPERATOR_WEB}/open`, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            origin: APP_ORIGIN_FOR_VAULT,
+          },
+          body: `code=${encodeURIComponent(minted.code)}`,
+        });
+        expect(arrival.status).toBe(303);
+        return (arrival.headers.get('set-cookie') ?? '').split(';')[0] as string;
+      };
+
+      const through = (cookie: string, path: string): Promise<Response> =>
+        fetch(`${OPERATOR_WEB}${path}`, {
+          headers: { cookie, 'x-estate-operator-csrf': '1' },
+        });
+
+      const operatorCookie = await consoleCookie(operator);
+      for (const path of ['/api/settlement/queue', '/api/settlement/administrable']) {
+        const answered = await through(operatorCookie, path);
+        expect(`${path}:${answered.status}`).toBe(`${path}:200`);
+        expect(Array.isArray(await answered.json())).toBe(true);
+      }
+
+      const bystanderCookie = await consoleCookie(bystander);
+      const refused = await through(bystanderCookie, '/api/settlement/queue');
+      expect(refused.status).toBe(403);
+
+      /*
+       * AND THE ALLOWLIST IS THE EDGE'S OWN, not a prefix. `settings` is a real
+       * settlement route this origin deliberately does not carry — a proxy that
+       * forwarded whatever it was handed, holding a live bearer, is an SSRF
+       * primitive — so it dies here, at 404, without a request leaving the box.
+       */
+      const notCarried = await through(operatorCookie, '/api/settlement/settings');
+      expect(notCarried.status).toBe(404);
     });
 
     it('records the mint with its audience, and a refusal with neither actor nor reason', async () => {
