@@ -30,7 +30,10 @@
  * never the executor's writes.
  */
 import 'reflect-metadata';
-import { ExecutionContext } from '@nestjs/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ExecutionContext, RequestMethod } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import {
   CallerGuard,
@@ -70,6 +73,16 @@ function admittedAudiences(controller: Ctor, route: string): readonly string[] |
 
 function admits(controller: Ctor, route: string): boolean {
   return (admittedAudiences(controller, route) ?? []).includes('operator');
+}
+
+/** `GET /v1/settlement/cases/:caseId/timeline`, from the same metadata Nest routes on. */
+function routeSignature(controller: Ctor, route: string): string {
+  const handler = (controller.prototype as unknown as Record<string, object>)[route] as object;
+  const prefix = Reflect.getMetadata(PATH_METADATA, controller) as string;
+  const path = Reflect.getMetadata(PATH_METADATA, handler) as string;
+  const method = Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod;
+  const suffix = path === undefined || path === '' || path === '/' ? '' : `/${path}`;
+  return `${RequestMethod[method]} /${prefix}${suffix}`;
 }
 
 /** The console's whole reach at this service. */
@@ -321,5 +334,105 @@ describe('the guard actually READS the declaration', () => {
     const guard = new CallerGuard(accountVerifier, undefined, new Reflector());
     await expect(guard.canActivate(contextFor(OperatorController, 'queue'))).resolves.toBe(true);
     await expect(guard.canActivate(contextFor(SettlementController, 'void'))).resolves.toBe(true);
+  });
+});
+
+describe('the operator edge proxies exactly what this service admits', () => {
+  /**
+   * THE SET, NOT A COUNT, AND FROM THE RUNTIME RATHER THAN FROM TEXT.
+   *
+   * `apps/operator-web/src/server.ts` decides which settlement routes an
+   * operator console can address at all; this file decides which ones a
+   * `operator`-audience session is admitted to. They are two tables in two
+   * packages and nothing compared them, which is the drift class this repo
+   * keeps finding — the `GQL_ERROR_CODES` shape, one hop over.
+   *
+   * IT LIVES HERE, in the service, because only here is the answer available
+   * as METADATA rather than as source text: the same `PATH_METADATA` and
+   * `METHOD_METADATA` Nest routes on, read off the real controller
+   * prototypes. The auth-guard fence checks the DECLARATION against the
+   * decorators; this checks the EDGE against the runtime. The edge's own file
+   * is read as text, which is the compose-parity mechanism — an app cannot
+   * import a NestJS package, and this service has no business importing an
+   * app.
+   *
+   * BOTH DIRECTIONS, deliberately. An edge row with no admission is a route
+   * the console would call and be refused on — a console that looks broken for
+   * a reason no error names. An admission with no edge row is the zero-callers
+   * shape this milestone exists to close: a capability granted ahead of
+   * anything reaching it. Neither is a vulnerability; both are the two tables
+   * disagreeing, and the point of the fence is that they cannot.
+   */
+  const EDGE_SERVER = join(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    '..',
+    'apps',
+    'operator-web',
+    'src',
+    'server.ts',
+  );
+
+  function edgeSettlementRows(): string[] {
+    const source = readFileSync(EDGE_SERVER, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    const rows: string[] = [];
+    for (const block of source.matchAll(/\{[^{}]*\}/g)) {
+      const text = block[0];
+      if (!/\bupstream:\s*'settlement'/.test(text)) continue;
+      const method = /\bmethod:\s*'([A-Z]+)'/.exec(text)?.[1];
+      const to = /\brewriteTo:\s*'([^']+)'/.exec(text)?.[1];
+      // A row this scan can SEE but cannot READ must fail rather than be
+      // skipped: a silently-narrowed corpus is the failure both halves of this
+      // suite are written against. OVER-DETERMINED with the count below, and
+      // kept for the MESSAGE rather than for the coverage — this one names the
+      // offending row, where the count says only that two numbers differ.
+      expect({ text, readable: method !== undefined && to !== undefined }).toEqual({
+        text,
+        readable: true,
+      });
+      rows.push(`${method as string} ${to as string}`);
+    }
+    /*
+     * …AND A ROW THE SCAN CANNOT SEE AT ALL, which the assertion above cannot
+     * reach and which a pair probe found before this shipped. `{[^{}]*}` does
+     * not span a NESTED brace, so a row written with an object spread is not
+     * "unreadable" to it — it is invisible, and an invisible EXTRA row leaves
+     * the set comparison below passing while the edge proxies a route this
+     * service refuses. (A missing row is caught by the comparison itself; only
+     * an extra one hides.)
+     *
+     * The count is a second, deliberately dumber reading of the same file —
+     * the compose-parity mechanism. Two readings that must agree.
+     */
+    const declared = (source.match(/\bupstream:\s*'settlement'/g) ?? []).length;
+    expect({ declared, parsed: rows.length }).toEqual({ declared, parsed: declared });
+    return rows.sort();
+  }
+
+  it('finds the edge table it is meant to be checking (anti-vacuity)', () => {
+    const rows = edgeSettlementRows();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).toMatch(/^(GET|POST) \/v1\/settlement\//);
+    }
+  });
+
+  it('the edge’s settlement rows are EXACTLY the routes that admit an operator', () => {
+    const admitted = OPERATOR_ROUTES.map(({ controller, route }) =>
+      routeSignature(controller, route),
+    ).sort();
+    expect(edgeSettlementRows()).toEqual(admitted);
+  });
+
+  it('and every one of those routes really carries the decorator', () => {
+    // Without this the equality above could hold between two lists that agree
+    // with each other and with nothing the guard reads.
+    for (const { controller, route } of OPERATOR_ROUTES) {
+      expect({ route, admits: admits(controller, route) }).toEqual({ route, admits: true });
+    }
   });
 });

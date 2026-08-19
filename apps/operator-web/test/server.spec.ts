@@ -49,6 +49,7 @@ async function start(fetchImpl: FetchLike): Promise<{ server: Server; base: stri
   const config = loadConfig({
     NODE_ENV: 'test',
     IDENTITY_URL: 'http://identity:3001',
+    SETTLEMENT_URL: 'http://settlement:3007',
     APP_ORIGIN,
   });
   const server = createOperatorWebServer({
@@ -212,9 +213,14 @@ describe('the operator edge', () => {
         // An operator session has no refresh token by construction, so there is
         // nothing here to refresh.
         '/api/auth/refresh',
-        // Not on this origin: PR3b adds settlement, in the same change as its
-        // screens.
+        // Settlement routes this origin proxies neighbours of, and does not
+        // proxy: `cases` is the REPORTER's listing (one segment short of
+        // `cases/:caseId`), and the other two are the executor and
+        // owner-facing halves of the surface.
         '/api/settlement/cases',
+        '/api/settlement/cases/case-1/tasks',
+        '/api/settlement/settings',
+        '/api/settlement/cases/case-1/void',
         // Other people's estates, reachable from nowhere here.
         '/api/vault/items',
         '/api/contacts',
@@ -228,6 +234,120 @@ describe('the operator edge', () => {
         expect({ path, status: res.status }).toEqual({ path, status: 404 });
       }
       expect(calls).toHaveLength(0);
+    });
+
+    it('reaches SETTLEMENT for its own routes, and identity for identity’s', async () => {
+      // Two upstreams, one credential. The row names which base URL a path
+      // resolves against, so a settlement path can never be answered by
+      // identity or the reverse.
+      await boot(() => ({ status: 200, body: '[]' }));
+      await fetch(`${base}/api/settlement/queue`, {
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+      await fetch(`${base}/api/auth/session`, {
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+
+      expect(calls.map((c) => c.url)).toEqual([
+        'http://settlement:3007/v1/settlement/queue',
+        'http://identity:3001/v1/auth/session',
+      ]);
+      // Still the caller's own bearer, and still nothing else.
+      expect(Object.keys(calls[0]?.headers ?? {})).toEqual(['authorization']);
+      expect(calls[0]?.headers['authorization']).toBe('Bearer caller-token');
+    });
+
+    it('SUBSTITUTES A CAPTURED SEGMENT into the template, and nothing else', async () => {
+      await boot(() => ({ status: 200, body: '{}' }));
+      const caseId = '11111111-2222-3333-4444-555555555555';
+      await fetch(`${base}/api/settlement/cases/${caseId}/timeline`, {
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+      expect(calls[0]?.url).toBe(`http://settlement:3007/v1/settlement/cases/${caseId}/timeline`);
+    });
+
+    it('THE METHOD IS PART OF THE ROW: a shared path grants one verb, not both', async () => {
+      /*
+       * `GET cases/:caseId/stages` is the operator's read and is proxied;
+       * `POST cases/:caseId/stages` is the EXECUTOR's request and is not. The
+       * audience table would refuse the POST anyway — this asserts the edge
+       * does not claim a capability it has not been given, so the table says
+       * what it grants without a reader reconstructing the audience list.
+       */
+      await boot(() => ({ status: 200, body: '[]' }));
+      const stages = `${base}/api/settlement/cases/case-1/stages`;
+      const read = await fetch(stages, {
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+      const write = await fetch(stages, {
+        method: 'POST',
+        headers: {
+          ...CSRF,
+          cookie: cookieHeader('caller-token'),
+          'content-type': 'application/json',
+        },
+        body: '{"stage":"vault"}',
+      });
+
+      expect({ read: read.status, write: write.status }).toEqual({ read: 200, write: 404 });
+      expect(calls).toHaveLength(1);
+      // The same shape at the other colliding pair.
+      const distributions = `${base}/api/settlement/cases/case-1/distributions`;
+      const recorded = await fetch(distributions, {
+        method: 'POST',
+        headers: {
+          ...CSRF,
+          cookie: cookieHeader('caller-token'),
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      });
+      expect(recorded.status).toBe(404);
+      // …and a method this edge proxies nowhere is refused on a path it does
+      // proxy, with the same answer an unknown path gets.
+      const deleted = await fetch(`${base}/api/settlement/queue`, {
+        method: 'DELETE',
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+      expect(deleted.status).toBe(404);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('A PARAMETER CANNOT SPAN A SEPARATOR, and an empty one is not a parameter', async () => {
+      await boot(() => ({ status: 200, body: '{}' }));
+      // `%2F` survives `URL.pathname` percent-encoded, so it arrives as ONE
+      // opaque segment and is forwarded still encoded — it never becomes a
+      // separator, here or at the callee.
+      await fetch(`${base}/api/settlement/cases/a%2Fb/timeline`, {
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+      expect(calls[0]?.url).toBe('http://settlement:3007/v1/settlement/cases/a%2Fb/timeline');
+
+      // `..` and `%2e%2e` are collapsed by the WHATWG parse BEFORE the table is
+      // consulted, so neither can reach a parameter at all — measured here
+      // rather than assumed, because the whole traversal argument rests on it.
+      for (const smuggled of [
+        '/api/settlement/cases/../../v1/auth/handoff',
+        '/api/settlement/cases/%2e%2e/%2e%2e/v1/auth/handoff',
+        // An empty parameter would otherwise forward `cases//timeline`.
+        '/api/settlement/cases//timeline',
+      ]) {
+        const res = await fetch(`${base}${smuggled}`, {
+          headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+        });
+        expect({ smuggled, status: res.status }).toEqual({ smuggled, status: 404 });
+      }
+      expect(calls).toHaveLength(1);
+    });
+
+    it('DROPS THE QUERY STRING rather than forwarding it', async () => {
+      // None of the sixteen routes takes one, so forwarding would only be a way
+      // to smuggle a parameter into an internal service.
+      await boot(() => ({ status: 200, body: '[]' }));
+      await fetch(`${base}/api/settlement/queue?status=verified&limit=9999`, {
+        headers: { ...CSRF, cookie: cookieHeader('caller-token') },
+      });
+      expect(calls[0]?.url).toBe('http://settlement:3007/v1/settlement/queue');
     });
 
     it('READS THE COOKIE AND ONLY THE COOKIE — a bearer header is not a credential here', async () => {

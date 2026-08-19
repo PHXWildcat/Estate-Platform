@@ -271,7 +271,7 @@ describe('the edge holds no credential', () => {
  * it lands in the same change as the screens that call it — that is the point
  * of this fence failing now rather than approving in advance.
  */
-describe('the proxy allowlist reaches identity, exactly and only', () => {
+describe('the proxy allowlist reaches identity and settlement, exactly and only', () => {
   const server = code(join(SRC, 'server.ts'));
 
   it('finds the route table it is meant to be checking', () => {
@@ -296,6 +296,17 @@ describe('the proxy allowlist reaches identity, exactly and only', () => {
     return server.slice(start, end);
   }
 
+  /** One named function's body, sliced on CODE the same way. */
+  function fnBody(signature: string): string {
+    const start = server.indexOf(signature);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = server.indexOf('\n}', start);
+    expect(end).toBeGreaterThan(start);
+    return server.slice(start, end);
+  }
+
+  const matcherBody = (): string => fnBody('function matchRoute');
+
   it('slices the route table and nothing else (so the scan is really scoped)', () => {
     const table = proxyRouteTable();
     expect(table).toContain("upstream: 'identity'");
@@ -306,9 +317,14 @@ describe('the proxy allowlist reaches identity, exactly and only', () => {
     expect(table.length).toBeLessThan(server.length / 2);
   });
 
-  it('routes to identity and to no other upstream', () => {
+  it('routes to identity and settlement, and to no other upstream', () => {
     const table = proxyRouteTable();
-    for (const upstream of ['vault', 'profile', 'settlement', 'assets', 'documents']) {
+    expect(table).toContain("upstream: 'identity'");
+    expect(table).toContain("upstream: 'settlement'");
+    // The two this origin holds a URL for. Everything else in the product is
+    // out of reach by construction, because `upstreamUrl` has no key for it —
+    // a row naming one would not compile.
+    for (const upstream of ['vault', 'profile', 'assets', 'documents', 'plaid', 'notifications']) {
       expect({ upstream, routed: table.includes(`upstream: '${upstream}'`) }).toEqual({
         upstream,
         routed: false,
@@ -316,21 +332,105 @@ describe('the proxy allowlist reaches identity, exactly and only', () => {
     }
   });
 
-  it('names exactly the three routes an operator session is admitted to', () => {
-    const table = proxyRouteTable();
-    const paths = [...table.matchAll(/path: '([^']+)'/g)].map((m) => m[1]);
-    expect(paths).toEqual(['/api/auth/session', '/api/auth/stepup', '/api/auth/logout']);
+  it('names identity’s three routes and nothing else under /api/auth/', () => {
+    // The settlement half is checked as a SET against the audience table by
+    // `apps/services/settlement/test/session-audience.spec.ts`, which reads
+    // real handler metadata rather than source text. Pinning a count here as
+    // well would be a second copy of a number, free to drift from the one that
+    // derives it (M21 PR2.5). What is pinned here is the half no other fence
+    // can see: which IDENTITY routes this origin may address.
+    const paths = [...proxyRouteTable().matchAll(/path: '([^']+)'/g)].map((m) => m[1]);
+    expect(paths.filter((p) => (p as string).startsWith('/api/auth/'))).toEqual([
+      '/api/auth/session',
+      '/api/auth/stepup',
+      '/api/auth/logout',
+    ]);
+    // …and every other row is settlement's. A row under a third prefix would
+    // be a surface nobody decided on.
+    for (const path of paths) {
+      expect({
+        path,
+        known:
+          (path as string).startsWith('/api/auth/') ||
+          (path as string).startsWith('/api/settlement/'),
+      }).toEqual({ path, known: true });
+    }
   });
 
-  it('matches paths EXACTLY, with no prefix or tree entry anywhere in the table', () => {
+  it('EVERY ROW NAMES A METHOD, so a path never grants both verbs', () => {
+    /*
+     * Two settlement routes share a path and differ only by verb, and the
+     * audience admits one of each pair: `GET cases/:caseId/stages` (an
+     * operator's read) is in, `POST cases/:caseId/stages` (the EXECUTOR's
+     * request) is not; same for `distributions`. A path-only table would
+     * forward both and lean on `CallerGuard` to refuse the second — which it
+     * would — but the edge would be claiming a capability it does not have.
+     */
+    const table = proxyRouteTable();
+    const rows = [...table.matchAll(/\{[^{}]*\}/g)].map((m) => m[0]);
+    expect(rows.length).toBeGreaterThanOrEqual(16);
+    for (const row of rows) {
+      expect({ row, method: /method: '(GET|POST)'/.test(row) }).toEqual({ row, method: true });
+    }
+    // And the matcher really consults it: dropping the method comparison would
+    // make every row grant both verbs while the table went on naming one.
+    expect(matcherBody()).toContain('route.method !== method');
+  });
+
+  it('matches SEGMENT-WISE, with no prefix or tree entry anywhere in the table', () => {
     const table = proxyRouteTable();
     expect(table).not.toContain('prefix');
     expect(table).not.toContain('tree');
-    // And the matcher itself: a `startsWith` would make every entry a tree
-    // regardless of what the table says.
-    const matcher = server.slice(server.indexOf('PROXY_ROUTES.find'));
-    expect(matcher.slice(0, 120)).toContain('r.path === pathname');
-    expect(matcher.slice(0, 120)).not.toContain('startsWith');
+    // And the matcher itself: a `startsWith` on the whole pathname would make
+    // every row a tree regardless of what the table says. The only
+    // `startsWith` the matcher may contain is the one that recognises a `:`
+    // parameter SEGMENT.
+    const matcher = matcherBody();
+    expect(matcher).toContain('expected.length !== actual.length');
+    for (const m of matcher.matchAll(/\.startsWith\(([^)]*)\)/g)) {
+      expect({ arg: m[1], allowed: m[1] === "':'" }).toEqual({ arg: m[1], allowed: true });
+    }
+  });
+
+  it('a PARAMETER captures one non-empty segment and can never span a separator', () => {
+    // The property is measured in `server.spec.ts` against a live server; this
+    // asserts the two lines it rests on are still there, because both are one
+    // character from being wrong. `received.length > 0` refuses `//`, and the
+    // split is on the literal separator, which `URL.pathname` never produces
+    // from a `%2F`.
+    const matcher = matcherBody();
+    expect(matcher).toContain("pathname.split('/')");
+    expect(matcher).toContain('received.length > 0');
+  });
+
+  it('BUILDS THE UPSTREAM PATH FROM THE TEMPLATE, never by surgery on what arrived', () => {
+    const rewriter = fnBody('function rewritePath');
+    // Every literal segment of the result comes from `rewriteTo`, a constant in
+    // this file. A rewriter that sliced the incoming pathname instead would let
+    // a caller contribute literal segments to an internal request.
+    expect(rewriter).toContain('route.rewriteTo');
+    expect(rewriter).not.toContain('pathname.slice');
+    expect(rewriter).not.toContain('replace(');
+  });
+
+  it('NEVER FORWARDS THE QUERY STRING', () => {
+    // `url.search` is dropped by never being read: the proxy path is built from
+    // the template plus the captured segments. None of the sixteen routes takes
+    // a query parameter, and one that later does arrives with a decision.
+    expect(server).not.toContain('url.search');
+    expect(server).not.toContain('searchParams');
+    // Anti-vacuity: the handler really does parse a URL, so the absence above
+    // is a fact about what it forwards rather than about a file with no URL in
+    // it at all.
+    expect(server).toContain('new URL(req.url');
+  });
+
+  it('REFUSES TO START on a row whose rewrite names an uncaptured parameter', () => {
+    // A boot-time check rather than a request-time surprise: the literal
+    // `:caseId` would otherwise travel upstream as a path segment and read to
+    // the operator as an outage.
+    expect(server).toContain('rewrites to an uncaptured parameter');
+    expect(server).toMatch(/for \(const route of PROXY_ROUTES\) \{[\s\S]{0,400}throw new Error\(/);
   });
 
   it('READS ONE CREDENTIAL FROM ONE PLACE — no bearer header path exists', () => {

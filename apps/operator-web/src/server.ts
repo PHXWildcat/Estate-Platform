@@ -22,34 +22,219 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
  * An allowlist rather than a prefix rewrite, because a proxy that forwards
  * whatever path it is given is an SSRF primitive pointed at the internal
  * network — and this one carries a live bearer token. Each entry names the
- * service and the exact route; anything unmatched is a 404 that never leaves
- * the process.
+ * service, the METHOD and the exact route shape; anything unmatched is a 404
+ * that never leaves the process.
  *
- * TODAY THAT IS IDENTITY'S THREE ROUTES AND NOTHING ELSE — the three an
- * `operator`-audience session is admitted to at all
- * (`AUDIENCE_ROUTE_ADMITTERS.operator`). Settlement's operator surface joins
- * this table in M21 PR3b, in the same change as the screens that call it: an
+ * SIXTEEN ROWS: identity's three, plus the thirteen settlement handlers that
+ * admit the `operator` audience. Both halves grew together on purpose — an
  * upstream reachable before anything reaches it is the zero-callers shape this
  * milestone exists to close, and an allowlist entry is a capability like any
  * other.
  *
- * EXACT MATCHES, no tree, and that distinction is load-bearing rather than
- * tidy: a `startsWith('/api/auth/logout')` rule also matches
- * `/api/auth/logout/refresh`, which is identity's UNAUTHENTICATED
- * refresh-token revocation route, and nothing on this origin has any business
- * reaching it. `/v1/auth/` as a prefix would be worse still — it contains
- * `handoff`, and this edge must not be able to help an operator session mint
- * another credential.
+ * THE METHOD IS PART OF THE ROW, not a detail. Two settlement routes share a
+ * path and differ only by verb: `GET cases/:caseId/stages` lists an operator's
+ * staged grants and is admitted, while `POST cases/:caseId/stages` is the
+ * EXECUTOR's request and is not. A path-only table would forward both and lean
+ * on `CallerGuard` to refuse the second — which it would, since the audience
+ * table admits neither the executor route nor a `void` — but the edge would
+ * then be claiming a capability it does not have, and the next reader would
+ * have to reconstruct the audience table to know what this one means. The row
+ * says what it grants.
+ *
+ * TEMPLATES, NOT PREFIXES, and the distinction is the whole safety argument.
+ * A `:name` segment matches exactly ONE non-empty path segment: it cannot span
+ * a `/`, because `URL.pathname` leaves `%2F` percent-encoded and this matcher
+ * splits on the literal separator, so a smuggled separator arrives as one
+ * opaque segment that settlement will refuse. `startsWith` would be a tree —
+ * and a tree under `/api/auth/` reaches `/v1/auth/handoff`, which is precisely
+ * the credential this origin must never be able to help mint. `..` and
+ * `%2e%2e` never arrive at all: the WHATWG `URL` parse in the request handler
+ * collapses both before this table is consulted (measured, not assumed).
+ *
+ * WHAT A ROW DOES NOT CARRY IS THE QUERY STRING. None of the sixteen takes
+ * one, and the rewritten path is built from the template plus the captured
+ * segments only — so this edge cannot be used to smuggle a parameter into an
+ * upstream, and a route that later needs one arrives with a decision rather
+ * than by inheritance.
  */
-const PROXY_ROUTES: ReadonlyArray<{
+interface ProxyRoute {
+  readonly method: 'GET' | 'POST';
   readonly path: string;
-  readonly upstream: 'identity';
+  readonly upstream: 'identity' | 'settlement';
   readonly rewriteTo: string;
-}> = [
-  { path: '/api/auth/session', upstream: 'identity', rewriteTo: '/v1/auth/session' },
-  { path: '/api/auth/stepup', upstream: 'identity', rewriteTo: '/v1/auth/stepup' },
-  { path: '/api/auth/logout', upstream: 'identity', rewriteTo: '/v1/auth/logout' },
+}
+
+const PROXY_ROUTES: readonly ProxyRoute[] = [
+  // identity — the three routes an `operator` session is admitted to at all.
+  { method: 'GET', path: '/api/auth/session', upstream: 'identity', rewriteTo: '/v1/auth/session' },
+  { method: 'POST', path: '/api/auth/stepup', upstream: 'identity', rewriteTo: '/v1/auth/stepup' },
+  { method: 'POST', path: '/api/auth/logout', upstream: 'identity', rewriteTo: '/v1/auth/logout' },
+
+  // settlement — the two worklists.
+  {
+    method: 'GET',
+    path: '/api/settlement/queue',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/queue',
+  },
+  {
+    method: 'GET',
+    path: '/api/settlement/administrable',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/administrable',
+  },
+
+  // settlement — the four reads that open a case.
+  {
+    method: 'GET',
+    path: '/api/settlement/cases/:caseId',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId',
+  },
+  {
+    method: 'GET',
+    path: '/api/settlement/cases/:caseId/timeline',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/timeline',
+  },
+  {
+    method: 'GET',
+    path: '/api/settlement/cases/:caseId/stages',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/stages',
+  },
+  {
+    method: 'GET',
+    path: '/api/settlement/cases/:caseId/distributions',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/distributions',
+  },
+
+  // settlement — the three review verbs (docs/03 §5.1's mandatory human review).
+  {
+    method: 'POST',
+    path: '/api/settlement/cases/:caseId/review/start',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/review/start',
+  },
+  {
+    method: 'POST',
+    path: '/api/settlement/cases/:caseId/review',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/review',
+  },
+  {
+    method: 'POST',
+    path: '/api/settlement/cases/:caseId/verify',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/verify',
+  },
+
+  // settlement — the four post-verification ones.
+  {
+    method: 'POST',
+    path: '/api/settlement/cases/:caseId/close',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/cases/:caseId/close',
+  },
+  {
+    method: 'POST',
+    path: '/api/settlement/stages/:stageId/decision',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/stages/:stageId/decision',
+  },
+  {
+    method: 'POST',
+    path: '/api/settlement/stages/:stageId/revoke',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/stages/:stageId/revoke',
+  },
+  {
+    method: 'POST',
+    path: '/api/settlement/distributions/:distributionId/approval',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/distributions/:distributionId/approval',
+  },
 ];
+
+/**
+ * A TABLE DEFECT IS A PROCESS THAT WILL NOT START, checked here at module load
+ * rather than discovered as a malformed upstream path at request time.
+ *
+ * The failure it forecloses is quiet: a `rewriteTo` naming a parameter the
+ * `path` does not capture would substitute nothing, and the literal `:caseId`
+ * would travel upstream as a path segment — a request that reaches settlement,
+ * is refused, and reads to the console user as an outage. The
+ * `assertSubjectFree` precedent (M10): a registry that cannot be built is
+ * better than one that can be built wrong.
+ */
+for (const route of PROXY_ROUTES) {
+  const captured = new Set(route.path.split('/').filter((segment) => segment.startsWith(':')));
+  for (const segment of route.rewriteTo.split('/')) {
+    if (segment.startsWith(':') && !captured.has(segment)) {
+      throw new Error(
+        `operator-web: PROXY_ROUTES row ${route.method} ${route.path} rewrites to an uncaptured parameter ${segment}`,
+      );
+    }
+  }
+}
+
+/**
+ * Segment-wise match against the table, method first.
+ *
+ * A `:name` segment accepts exactly one NON-EMPTY segment. Refusing the empty
+ * one is about building a well-formed upstream URL rather than about what a
+ * valid id looks like: `/api/settlement/cases//timeline` would otherwise
+ * forward `/v1/settlement/cases//timeline`. What a caseId may CONTAIN is
+ * deliberately not re-checked here — that is settlement's own gate, and a
+ * second opinion at the edge is one free to disagree with the one that decides
+ * (the M12 upload-client rule).
+ */
+function matchRoute(method: string, pathname: string): ProxyRoute | null {
+  const actual = pathname.split('/');
+  for (const route of PROXY_ROUTES) {
+    if (route.method !== method) {
+      continue;
+    }
+    const expected = route.path.split('/');
+    if (expected.length !== actual.length) {
+      continue;
+    }
+    const matched = expected.every((segment, index) => {
+      const received = actual[index] as string;
+      return segment.startsWith(':') ? received.length > 0 : segment === received;
+    });
+    if (matched) {
+      return route;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build the upstream path from the ROUTE'S OWN TEMPLATE plus the captured
+ * segments — never by string surgery on what arrived.
+ *
+ * Every literal segment of the result comes from `rewriteTo`, which is a
+ * constant in this file, so the only caller-controlled bytes in an upstream
+ * request are the parameters the template declared. The captured segments are
+ * re-inserted exactly as `URL.pathname` produced them: still
+ * percent-encoded, never decoded and re-encoded, so nothing this edge does can
+ * turn `%2F` into a separator.
+ */
+function rewritePath(route: ProxyRoute, pathname: string): string {
+  const actual = pathname.split('/');
+  const captured = new Map<string, string>();
+  route.path.split('/').forEach((segment, index) => {
+    if (segment.startsWith(':')) {
+      captured.set(segment, actual[index] as string);
+    }
+  });
+  return route.rewriteTo
+    .split('/')
+    .map((segment) => (segment.startsWith(':') ? (captured.get(segment) as string) : segment))
+    .join('/');
+}
 
 /**
  * WHICH CREDENTIAL A PROXIED REQUEST TRAVELS ON: the cookie, and only the
@@ -149,6 +334,7 @@ export function createOperatorWebServer(options: OperatorWebServerOptions): Serv
   const publicDir = options.publicDir ?? join(__dirname, '..', 'public');
   const upstreamUrl = {
     identity: config.identityUrl,
+    settlement: config.settlementUrl,
   } as const;
 
   async function serveStatic(res: ServerResponse, pathname: string): Promise<void> {
@@ -238,8 +424,12 @@ export function createOperatorWebServer(options: OperatorWebServerOptions): Serv
     res: ServerResponse,
     pathname: string,
   ): Promise<void> {
-    const route = PROXY_ROUTES.find((r) => r.path === pathname);
+    const method = req.method ?? 'GET';
+    const route = matchRoute(method, pathname);
     if (!route) {
+      // One answer for an unknown path AND for a known path under a method
+      // this edge does not proxy. Distinguishing them would tell whoever is
+      // probing which halves of the settlement surface exist here.
       sendJson(res, 404, { error: 'not_found' });
       return;
     }
@@ -254,7 +444,7 @@ export function createOperatorWebServer(options: OperatorWebServerOptions): Serv
       sendJson(res, 401, { error: 'unauthorized' });
       return;
     }
-    const raw = req.method === 'GET' || req.method === 'DELETE' ? undefined : await readBody(req);
+    const raw = method === 'GET' ? undefined : await readBody(req);
     if (raw === null) {
       sendJson(res, 413, { error: 'payload_too_large' });
       return;
@@ -265,8 +455,10 @@ export function createOperatorWebServer(options: OperatorWebServerOptions): Serv
     const body = raw === undefined || raw.length === 0 ? undefined : raw;
     const result = await upstream.proxy({
       baseUrl: upstreamUrl[route.upstream],
-      path: route.rewriteTo,
-      method: req.method ?? 'GET',
+      // The template plus the captured segments — and NOT `url.search`, which
+      // is dropped on the floor by never being read. See the table's docstring.
+      path: rewritePath(route, pathname),
+      method: route.method,
       bearer,
       body,
     });
