@@ -55,6 +55,16 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** `run:` values that introduce a YAML block scalar. */
+// A `run` KEY in any spelling a YAML parser would accept: canonical, a space
+// before the colon, a quoted key, or the first key of a flow mapping.
+// DELIBERATELY OVER-EAGER — its only job is to notice that a line is ABOUT a
+// run key, so an unrecognised spelling becomes a refusal instead of vanishing.
+const RUN_KEY_ANYWHERE = /(?:^|[\s{,])(["']?)run\1\s*:/;
+
+// The one spelling this module reads: `run:` at the start of a line, optionally
+// as the first key of a sequence item.
+const RUN_KEY_CANONICAL = /^(\s*)(?:-\s+)?run:(.*)$/;
+
 const BLOCK = /^[|>][+-]?\d*$|^\d*[+-]?$/;
 
 /**
@@ -67,17 +77,47 @@ export function extractRunBlocks(source) {
   const lines = source.split('\n');
   const scripts = [];
   const unreadable = [];
+  // Every RUN_KEY_ANYWHERE match must leave as a script or a refusal. `seen`
+  // is what makes that checkable rather than asserted.
+  let seen = 0;
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     // A `run:` KEY, not the word appearing inside someone's script. Anchored on
     // the indentation so a `run:` nested inside a block scalar (which is script
     // text, already covered by its own block) is not re-extracted.
-    const m = /^(\s*)(?:-\s+)?run:(.*)$/.exec(line);
-    if (!m) continue;
+    const m = RUN_KEY_CANONICAL.exec(line);
+    if (!m) {
+      // SEEN BUT NOT READ IS A REFUSAL, NEVER A SKIP. `run :` with a space
+      // before the colon, `"run":` with a quoted key, and a flow mapping
+      // `- {run: ...}` are all valid YAML that the canonical regex rejects.
+      // Before this, each of them vanished: no script, no refusal, and a
+      // defect inside one invisible to a fence reporting zero findings.
+      if (RUN_KEY_ANYWHERE.test(line)) {
+        seen += 1;
+        unreadable.push({
+          line: i + 1,
+          reason: `a \`run\` key in a spelling this module cannot read: ${JSON.stringify(line.trim())}`,
+        });
+      }
+      continue;
+    }
+    seen += 1;
 
     const indent = m[1].length + (/^\s*-\s+/.test(line) ? 2 : 0);
     const rest = m[2].trim();
+
+    // `defaults.run` is a MAPPING (`shell:`, `working-directory:`), not a
+    // script. Reading it as one scans YAML as shell and inflates the block
+    // count with a non-script, so the floor rises while coverage does not.
+    // No workflow here uses it; refusing keeps it visible if one starts.
+    if (parentKeyOf(lines, i, indent) === 'defaults') {
+      unreadable.push({
+        line: i + 1,
+        reason: '`defaults.run` is a mapping of shell settings, not a script',
+      });
+      continue;
+    }
 
     if (rest === '' || BLOCK.test(rest)) {
       // Block scalar: every following line indented deeper than the key.
@@ -93,12 +133,9 @@ export function extractRunBlocks(source) {
         if (nextIndent <= indent) break;
         body.push(next);
       }
-      if (rest !== '' && !BLOCK.test(rest)) {
-        unreadable.push({
-          line: i + 1,
-          reason: `unrecognised block scalar header ${JSON.stringify(rest)}`,
-        });
-      }
+      // (No refusal here: the enclosing condition already guarantees `rest`
+      // is either empty or a header BLOCK accepts. A branch that cannot fire
+      // is a branch nobody has read.)
       scripts.push({ line: i + 1, bodyLine: i + 2, body: body.join('\n') });
       i = j - 1;
       continue;
@@ -122,10 +159,42 @@ export function extractRunBlocks(source) {
       });
       continue;
     }
+    // A PLAIN SCALAR MAY FOLD ACROSS LINES. `run: echo one` followed by a
+    // deeper-indented line is one YAML string, and taking only the first line
+    // silently drops the rest — a defect on a continuation line disappears
+    // while the block still counts toward the floor.
+    const cont = lines[i + 1];
+    if (
+      cont !== undefined &&
+      cont.trim() !== '' &&
+      cont.length - cont.trimStart().length > indent
+    ) {
+      unreadable.push({
+        line: i + 1,
+        reason: 'a plain scalar folded across lines — cannot judge its shell without folding it',
+      });
+      continue;
+    }
     scripts.push({ line: i + 1, bodyLine: i + 1, body: rest });
   }
 
-  return { scripts, unreadable };
+  return { scripts, unreadable, seen };
+}
+
+/**
+ * The key one level above `lines[i]`, or null. Used only to tell a step's
+ * `run:` (a script) from `defaults.run` (a mapping of shell settings).
+ */
+function parentKeyOf(lines, i, indent) {
+  for (let j = i - 1; j >= 0; j -= 1) {
+    const l = lines[j];
+    if (l.trim() === '' || /^\s*#/.test(l)) continue;
+    if (l.length - l.trimStart().length < indent) {
+      const k = /^\s*([A-Za-z_][\w-]*)\s*:/.exec(l);
+      return k ? k[1] : null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -186,17 +255,43 @@ export function scanQuoting(script) {
 
     if (state === 'double') {
       if (ch === '\\') {
+        // A backslash-escaped NEWLINE still ends a line. Skipping it without
+        // counting it reported every later finding N lines early.
+        if (script[i + 1] === '\n') {
+          line += 1;
+          column = 0;
+        } else {
+          column += 1;
+        }
         i += 1;
-        column += 1;
         continue;
       }
-      if (ch === '"') state = 'bare';
+      if (ch === '"') {
+        state = 'bare';
+        // A DOUBLE-quoted body is cut short the same way a single-quoted one
+        // is — by prose. `node -e "... the \"exact\" count ..."` needs no
+        // apostrophe at all, and before this it had no rule of any kind.
+        regions.push({
+          kind: 'double',
+          line: openedAt.line,
+          column: openedAt.column,
+          closeLine: line,
+          openAtEol,
+          closeAtBol: /^\s*$/.test(script.slice(script.lastIndexOf('\n', i - 1) + 1, i)),
+          concatenated: script[i + 1] === '"' || script[i + 1] === "'",
+        });
+      }
       continue;
     }
 
     if (ch === '\\') {
+      if (script[i + 1] === '\n') {
+        line += 1;
+        column = 0;
+      } else {
+        column += 1;
+      }
       i += 1;
-      column += 1;
       continue;
     }
     if (ch === '#' && (i === 0 || /\s/.test(script[i - 1]))) {
@@ -218,6 +313,8 @@ export function scanQuoting(script) {
     if (ch === '"') {
       state = 'double';
       openedAt = { line, column };
+      const eolD = script.indexOf('\n', i + 1);
+      openAtEol = eolD !== -1 && /^\s*$/.test(script.slice(i + 1, eolD));
     }
   }
 
@@ -252,9 +349,7 @@ export function scanQuoting(script) {
  * SHAPE rather than of the prose, which is why it does not need to guess.
  */
 export function shortBodies(script) {
-  return scanQuoting(script).regions.filter(
-    (r) => r.kind === 'single' && r.openAtEol && !r.closeAtBol && !r.concatenated,
-  );
+  return scanQuoting(script).regions.filter((r) => r.openAtEol && !r.closeAtBol && !r.concatenated);
 }
 
 /**
@@ -278,10 +373,24 @@ export function workflowFiles(dir) {
 export function sweep(dir) {
   const findings = [];
   const refusals = [];
+  // PER FILE, because a global count cannot see a file the extractor read
+  // NOTHING from. That is what made every miss above silent instead of loud:
+  // one workflow going blank is invisible under a total that 46 other blocks
+  // already satisfy. An anti-vacuity check belongs on every LEVEL of a scan.
+  const perFile = [];
   let blocks = 0;
 
   for (const file of workflowFiles(dir)) {
-    const { scripts, unreadable } = extractRunBlocks(readFileSync(file.path, 'utf8'));
+    const { scripts, unreadable, seen } = extractRunBlocks(readFileSync(file.path, 'utf8'));
+    perFile.push({
+      file: file.name,
+      seen,
+      scripts: scripts.length,
+      refusals: unreadable.length,
+      // THE INVARIANT: every line that looked like a run key left as one or
+      // the other. False here means the extractor dropped one on the floor.
+      accounted: seen === scripts.length + unreadable.length,
+    });
     for (const r of unreadable) refusals.push({ file: file.name, ...r });
     for (const script of scripts) {
       blocks += 1;
@@ -292,7 +401,7 @@ export function sweep(dir) {
           line: script.bodyLine + r.line - 1,
           column: r.column,
           kind: 'body-cut-short',
-          detail: `a multi-line single-quoted body opened here closes mid-line on line ${script.bodyLine + r.closeLine - 1} — something in the body ended it early`,
+          detail: `a multi-line ${r.kind}-quoted body opened here closes mid-line on line ${script.bodyLine + r.closeLine - 1} — something in the body ended it early`,
         });
       }
       for (const a of accidental) {
@@ -321,5 +430,5 @@ export function sweep(dir) {
     }
   }
 
-  return { findings, refusals, blocks };
+  return { findings, refusals, blocks, perFile };
 }

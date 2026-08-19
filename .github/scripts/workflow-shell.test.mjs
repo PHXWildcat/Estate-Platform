@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -117,9 +118,16 @@ test('the ESCAPE DANCE is not a false positive', () => {
   assert.deepEqual(shortBodies(script), []);
 });
 
-test('a deliberate close followed by punctuation or space is not flagged', () => {
+test('SHELL IDIOMS that close a quote are not flagged by either rule', () => {
+  // The title used to say "followed by punctuation or SPACE", which encoded a
+  // false claim about English: a possessive plural ends with an apostrophe and
+  // a space, and closes the string just as thoroughly. These are shell idioms,
+  // and what makes them safe is that each is a SINGLE LINE — no body to cut
+  // short — not the character that follows the quote. `shortBodies` is
+  // asserted alongside so the distinction is pinned rather than implied.
   for (const script of ["echo 'a' 'b'", "echo 'a';", "echo 'a')", "grep 'x' | wc -l", "echo 'a'"]) {
     assert.deepEqual(scanQuoting(script).accidental, [], script);
+    assert.deepEqual(shortBodies(script), [], script);
   }
 });
 
@@ -212,44 +220,70 @@ test('a block scalar ENDS at the next key, so a later step is not swallowed', ()
   assert.doesNotMatch(scripts[0].body, /other/);
 });
 
-test('NO SILENT SKIP — every run: header form is either read or refused', () => {
-  // The whole fence is worth exactly what the extractor sees, so the property
-  // that matters is not "it parses every form" but "it never quietly ignores
-  // one". A refusal fails the fence and is the design; a silent skip is a hole.
+test('NO SILENT SKIP — every `run` key shape has a PINNED disposition', () => {
+  // The first version of this test walked a hand-written list of block-scalar
+  // HEADERS — the author's model of the defect rather than the property. It
+  // passed while `run :`, a quoted key, a flow mapping, a folded plain scalar
+  // and `defaults.run` were each dropped on the floor.
+  //
+  // The second version asked only "did SOMETHING happen", which is still too
+  // weak: drop the `defaults.run` guard and that form yields a script — the
+  // wrong outcome, reached without being dropped. So each form declares what
+  // it must BE, and a form that changes disposition turns this red.
   const q = String.fromCharCode(39);
-  // A body that IS defective, so "read" means "would be caught".
   const body = [
     `          node -e ${q}`,
-    `            // the gates${q} and the twins${q} numbers`,
+    `            // the gates${q} numbers and the twins${q} numbers`,
     `          ${q}`,
   ];
-
-  const headers = [
-    '|',
-    '|-',
-    '|+',
-    '>',
-    '>-',
-    '|2',
-    '|2-',
-    '',
-    '2',
-    'echo inline',
-    '"echo quoted"',
-    `${q}echo sq${q}`,
+  const forms = [
+    ['block |', ['        run: |', ...body], 'read'],
+    ['block |-', ['        run: |-', ...body], 'read'],
+    ['block >', ['        run: >', ...body], 'read'],
+    ['bare key', ['        run:', ...body], 'read'],
+    ['indent indicator', ['        run: |2', ...body], 'read'],
+    ['single line', ['        run: echo hi'], 'read'],
+    ['bad indicator', ['        run: |2-', ...body], 'refused'],
+    ['quoted scalar', ['        run: "echo hi"'], 'refused'],
+    ['sq scalar', [`        run: ${q}echo hi${q}`], 'refused'],
+    ['spaced colon', ['        run : |', ...body], 'refused'],
+    ['quoted key', ['        "run": |', ...body], 'refused'],
+    ['flow mapping', ['      - {name: t, run: "echo hi"}'], 'refused'],
+    ['folded plain', ['        run: echo one', '          && echo two'], 'refused'],
+    ['defaults mapping', ['defaults:', '  run:', '    shell: bash'], 'refused'],
   ];
-  const skipped = [];
-  for (const hdr of headers) {
-    const yaml = ['      - name: t', `        run: ${hdr}`, ...body].join('\n');
-    const { scripts, unreadable } = extractRunBlocks(yaml);
-    if (unreadable.length > 0) continue; // refused — fails the fence, which is fine
-    if (scripts.length === 0) skipped.push(`${hdr} -> no script at all`);
+
+  const wrong = [];
+  for (const [name, lines, expected] of forms) {
+    const prefix = name === 'defaults mapping' ? [] : ['      - name: t'];
+    const { scripts, unreadable, seen } = extractRunBlocks([...prefix, ...lines].join('\n'));
+    const got = unreadable.length > 0 ? 'refused' : scripts.length > 0 ? 'read' : 'DROPPED';
+    if (got !== expected) wrong.push(`${name}: expected ${expected}, got ${got}`);
+    if (seen !== scripts.length + unreadable.length) {
+      wrong.push(`${name}: seen=${seen} but accounted ${scripts.length + unreadable.length}`);
+    }
   }
-  assert.deepEqual(
-    skipped,
-    [],
-    'a run: form that is neither read nor refused is a hole in the fence',
-  );
+  assert.deepEqual(wrong, [], 'a run key changed disposition — read, refused, or dropped');
+});
+
+test('a DOUBLE-quoted body is cut short by prose too, and has its own rule', () => {
+  // `node -e "... the "exact" count ..."` needs no apostrophe at all. Before
+  // this there was no rule of any kind for double quotes, so the whole class
+  // was silent-green.
+  const d = String.fromCharCode(34);
+  const script = [`node -e ${d}`, `  console.log('the ${d}exact${d} count');`, `${d}`].join('\n');
+  const cut = shortBodies(script);
+  assert.equal(cut.length, 1, 'the double-quoted body closes mid-line');
+  assert.equal(cut[0].kind, 'double');
+});
+
+test('a BACKSLASH-continued line still counts as a line', () => {
+  // The escape skipped the newline without counting it, so every finding after
+  // one was reported N lines early. A fence that mis-attributes still goes red
+  // and still sends the reader to the wrong place.
+  const q = String.fromCharCode(39);
+  const script = ['echo one \\', 'echo two \\', 'echo three', `node -e ${q}oops`].join('\n');
+  assert.equal(scanQuoting(script).unterminated.line, 4);
 });
 
 test('REFUSES a quoted YAML scalar rather than guessing at its shell', () => {
@@ -267,13 +301,26 @@ test('the word `run:` inside a script body is not mistaken for a key', () => {
 
 test('THE REPO ITSELF — every embedded body is delimited the way its author meant', () => {
   const files = workflowFiles(WORKFLOWS);
-  const { findings, refusals, blocks } = sweep(WORKFLOWS);
+  const { findings, refusals, blocks, perFile } = sweep(WORKFLOWS);
 
   // ANTI-VACUITY. A broken extractor scans nothing and passes perfectly; these
   // floors are what turn that into a failure. They are deliberately well under
   // the real numbers so ordinary additions do not trip them.
   assert.ok(files.length >= 5, `expected to find the workflows, saw ${files.length}`);
   assert.ok(blocks >= 30, `expected to scan the run blocks, saw ${blocks}`);
+
+  // PER FILE. The two floors above are GLOBAL, and a global floor cannot see
+  // one workflow going blank — 46 blocks from the other five satisfy it while
+  // the sixth is scanned not at all. Every file must account for every line
+  // that looked like a run key, and a file that HAS run keys must yield some.
+  const unaccounted = perFile.filter((f) => !f.accounted);
+  assert.deepEqual(unaccounted, [], 'a run key was seen and then dropped on the floor');
+  for (const f of perFile) {
+    const src = readFileSync(join(WORKFLOWS, f.file), 'utf8');
+    if (/^\s*(?:-\s+)?["']?run["']?\s*:/m.test(src)) {
+      assert.ok(f.scripts + f.refusals > 0, `${f.file} has run keys but the extractor saw none`);
+    }
+  }
 
   // A shape the extractor cannot read is a FAILURE, not a skip.
   assert.deepEqual(
