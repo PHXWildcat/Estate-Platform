@@ -17,7 +17,14 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,4 +180,78 @@ test('EACH WORKFLOW PASSES ITS OWN LITERAL NUMBERS — they are not derived', ()
     [prodPair[1], prodPair[2]],
     'the two profiles must not share one pair of numbers',
   );
+});
+
+test('IT ASSERTS THROUGH A SYMLINKED PATH — the guard compares resolved paths', () => {
+  // The main-module guard decides whether this script asserts anything at all,
+  // so a guard that quietly fails to fire turns both exact-count gates into
+  // steps that exit 0 without comparing. Two distortions can make the two
+  // sides disagree, and only one of them is the famous one.
+  //
+  // `import.meta.url` reports the REAL path; `process.argv[1]` reports the
+  // path as typed. Invoke the script through a symlinked directory and an
+  // unresolved comparison sees file:///private/tmp/... against
+  // file:///tmp/... — no output, exit 0, on input that must exit 1. macOS
+  // reaches this by default, /tmp being a symlink to /private/tmp.
+  const real = mkdtempSync(join(tmpdir(), 'assert-real-'));
+  const link = join(mkdtempSync(join(tmpdir(), 'assert-link-')), 'via');
+  symlinkSync(real, link);
+
+  copyFileSync(SCRIPT, join(real, 'assert-stack-counts.mjs'));
+  const results = join(real, 'stack-results.json');
+  writeFileSync(
+    results,
+    JSON.stringify({ numPassedTests: 99, numFailedTests: 0, numPendingTests: 7 }),
+  );
+
+  let status = 0;
+  let output = '';
+  try {
+    output = execFileSync(
+      process.execPath,
+      [join(link, 'assert-stack-counts.mjs'), results, '33', '4'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch (err) {
+    status = err.status;
+    output = `${err.stdout ?? ''}${err.stderr ?? ''}`;
+  }
+
+  assert.equal(status, 1, 'a mismatch reached through a symlink must still exit 1');
+  assert.match(output, /expected exactly 33 passed \/ 4 pending/);
+});
+
+test('IT ASSERTS UNDER A DIFFERENT FILENAME — the guard is not name-keyed', () => {
+  // The rename that breaks a name-keyed guard is a coordinated edit: move the
+  // file, update both workflow call sites, and miss the `endsWith` three lines
+  // from the bottom. Then main never runs and both exact-count gates exit 0
+  // without comparing — measured on a renamed copy, which answered exit 0 for
+  // 99 passed / 7 pending against an expected 33 / 4.
+  //
+  // This is the assertion that makes reverting to the name-keyed form fail.
+  // Every other case in this file invokes the script under its own name, where
+  // the two guards are indistinguishable.
+  const dir = mkdtempSync(join(tmpdir(), 'assert-renamed-'));
+  const renamed = join(dir, 'check-stack-counts.mjs');
+  copyFileSync(SCRIPT, renamed);
+  const results = join(dir, 'stack-results.json');
+  writeFileSync(
+    results,
+    JSON.stringify({ numPassedTests: 99, numFailedTests: 0, numPendingTests: 7 }),
+  );
+
+  let status = 0;
+  let output = '';
+  try {
+    output = execFileSync(process.execPath, [renamed, results, '33', '4'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    status = err.status;
+    output = `${err.stdout ?? ''}${err.stderr ?? ''}`;
+  }
+
+  assert.equal(status, 1, 'a renamed copy must still assert');
+  assert.match(output, /expected exactly 33 passed \/ 4 pending/);
 });

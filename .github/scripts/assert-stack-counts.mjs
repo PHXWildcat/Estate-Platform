@@ -31,7 +31,8 @@
  * EQUALITY and not `>=`.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 /**
  * The whole decision, as a pure function of the jest `--json` summary and the
@@ -105,8 +106,27 @@ function main(argv) {
   }
 }
 
-// `process.argv[1]` is this file when run directly and something else when
-// imported by the test.
-if (process.argv[1] && process.argv[1].endsWith('assert-stack-counts.mjs')) {
+// Run main only when this file IS the entry point, so importing it from the
+// test does not assert anything.
+//
+// Compared as URLs rather than by FILENAME. A name-keyed guard
+// (`endsWith('assert-stack-counts.mjs')`) is silently wrong after a rename
+// that updates the call sites and misses it: main never runs, node exits 0,
+// and both exact-count gates pass without comparing anything. Measured — a
+// renamed copy answered exit 0 for 99 passed / 7 pending against an expected
+// 33 / 4. The test suite catches it (8 of 12 red), which is why it is a
+// hardening rather than a hole; this makes the rename need no edit at all.
+//
+// Both sides are resolved before comparing, because each carries a different
+// distortion. pathToFileURL handles the space that broke the extension
+// packer's `file://` template. realpathSync handles the SYMLINK, which the
+// packer's version still does not: node reports the real path in
+// `import.meta.url` and the literal one in `process.argv[1]`, so invoking
+// this file through /tmp on macOS (a symlink to /private/tmp) compared
+// file:///private/tmp/... against file:///tmp/... and main never ran —
+// measured, exit 0 and no output, on a mismatch that should have exited 1.
+const entryPoint =
+  process.argv[1] === undefined ? undefined : pathToFileURL(realpathSync(process.argv[1])).href;
+if (import.meta.url === entryPoint) {
   main(process.argv.slice(2));
 }
