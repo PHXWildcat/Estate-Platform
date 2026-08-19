@@ -41,17 +41,61 @@
 # something a verifier has to match.
 name: Extension
 
+# THE TRIGGER IS DERIVED FROM THE BUILD GRAPH, NOT REMEMBERED.
+#
+# This list decides whether the artifact's reproducibility is ever checked and
+# whether an attestation is minted, so a path missing from it is a commit that
+# changes the signed bytes with none of the above happening — the last
+# attestation on `main` silently stops describing `main`.
+#
+# It was hand-written and it had drifted, in three places at once. `turbo.json`
+# declares the build task's `env`, and Turbo 2 runs tasks in STRICT env mode:
+# measured, deleting `VAULT_ORIGIN` from that list makes the variable invisible
+# to the build, `build-package.mjs` falls through to its localhost default, the
+# build exits 0 and the packed digest moves — the M8 PR5 / M16 PR4b defect, in
+# the same `turbo.json` whose own comment describes it. `pnpm-lock.yaml` pins
+# the compiler, and a TypeScript bump moves the compiled bytes. And
+# `packages/config/**` holds `tsconfig.base.json`, which `tsconfig.build.json`
+# extends transitively — an input nobody had noticed at all.
+#
+# So the list is no longer maintained by memory. `test/workflow-inputs.spec.ts`
+# asks turbo for the task graph, adds the inputs turbo does not model as
+# DECLARED entries with a reason each, and asserts this list covers the union in
+# both directions — the same remedy this repo applied to stack.yml's migrate
+# list, `web.Dockerfile`'s `public/` and images.yml's diagnostics containers:
+# derive from the project rather than delete the list. A new dependency arrives
+# covered here or `ci.yml` goes red.
+#
+# BOTH EVENT LISTS ARE THE SAME LIST, and the fence requires that: a `push`
+# filter narrower than the `pull_request` one means `main` checks less than the
+# PR that produced it, which is the direction nobody would notice. They are
+# written out TWICE rather than shared by a YAML anchor, deliberately — GitHub
+# does not document anchor support in workflow files, this would be the repo's
+# first, and the failure mode if its parser resolves one to nothing is a paths
+# filter that matches nothing and a workflow that silently never runs, which is
+# the very defect being fixed here. Duplication a fence checks beats cleverness
+# a fence cannot.
 on:
   push:
     branches: [main]
     paths:
       - 'apps/vault-extension/**'
       - 'packages/vault-crypto/**'
+      - 'packages/config/**'
+      - 'turbo.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.gitattributes'
       - '.github/workflows/extension.yml'
   pull_request:
     paths:
       - 'apps/vault-extension/**'
       - 'packages/vault-crypto/**'
+      - 'packages/config/**'
+      - 'turbo.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.gitattributes'
       - '.github/workflows/extension.yml'
   workflow_dispatch:
 
@@ -70,6 +114,7 @@ jobs:
       contents: read
     outputs:
       sha256: ${{ steps.digest.outputs.sha256 }}
+      origin: ${{ steps.digest.outputs.origin }}
     env:
       # The origin is baked into the manifest AND `origin.js` at build time, so
       # a package is only meaningful for one deployment. No production origin
@@ -89,6 +134,47 @@ jobs:
 
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+
+      # THE VARIABLE MUST BE PROVED TO ARRIVE, AND ONLY A VALUE THAT COULD NOT
+      # HAVE ARRIVED BY ACCIDENT PROVES IT. `VAULT_ORIGIN` above falls back to
+      # the packager's own `DEFAULT_ORIGIN`, so a build that received it and a
+      # build where Turbo's strict env mode stripped it are today BYTE-IDENTICAL
+      # — the state PR #116 found the web image in, whose lesson was that a
+      # value that arrived and a value that fell through are indistinguishable
+      # until you make them differ. So one throwaway build runs with an origin
+      # the default can never equal, and the check reads it back OUT OF THE
+      # PACKED ARCHIVE rather than out of the environment that set it.
+      #
+      # A FENCE PER LAYER IS NOT A FENCE ON THE CHAIN, which is why the two that
+      # exist are not enough: `test/turbo-env.spec.ts` proves the DECLARATION
+      # and never runs a build, and `test/manifest.spec.ts` spawns
+      # `build-package.mjs` directly, so turbo is not in its path either.
+      # Neither can see turbo strip a variable. This step is the only place the
+      # whole chain — job env, turbo, tsc, packer, archive — is exercised end to
+      # end on the artifact that gets signed.
+      #
+      # `.invalid` is reserved by RFC 2606 and can never resolve, matching the
+      # probe origins images.yml uses for the same purpose.
+      - name: The build must receive VAULT_ORIGIN rather than fall through
+        env:
+          VAULT_ORIGIN: https://vault.probe.invalid
+          PACK_OUT: ${{ runner.temp }}/probe.zip
+        run: |
+          set -euo pipefail
+          pnpm build --filter=@estate/vault-extension --force
+          node apps/vault-extension/scripts/pack-extension.mjs > /dev/null
+          baked=$(unzip -p "${PACK_OUT}" manifest.json \
+            | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).host_permissions.join(",")')
+          if [ "$baked" != "${VAULT_ORIGIN}/*" ]; then
+            echo "::error::VAULT_ORIGIN never reached the build — the package permits ${baked}, not ${VAULT_ORIGIN}/*" && exit 1
+          fi
+          # Both places, because the offscreen document cannot read the manifest
+          # back and reads `origin.js` instead — a package where only one of them
+          # took the value is a package that loads and cannot reach its vault.
+          if ! unzip -p "${PACK_OUT}" origin.js | grep -qF "'${VAULT_ORIGIN}'"; then
+            echo "::error::origin.js does not carry ${VAULT_ORIGIN}" && exit 1
+          fi
+          rm -rf apps/vault-extension/dist
 
       # `--force` on BOTH builds, so neither is served from turbo's cache. A
       # cache hit restores outputs without running the compile, which would make
@@ -146,6 +232,19 @@ jobs:
           for d in "$first" "$second" "$third"; do
             if [ ${#d} -ne 64 ]; then echo "::error::missing digest: '${d}'" && exit 1; fi
           done
+          # THE ORIGIN IS READ OUT OF THE ARCHIVE, NEVER OFF THE ENVIRONMENT.
+          # VERIFYING.md tells a third party to rebuild with the origin from the
+          # digest file, and to reject a package whose baked origin is not their
+          # deployment's — so that line has to be a statement ABOUT THE BYTES.
+          # Echoing `$VAULT_ORIGIN` made it a statement about this job's intent,
+          # which is the one thing a provenance record must not be: the two
+          # differ in exactly the case the record exists to catch.
+          baked=$(unzip -p "${RUNNER_TEMP}/first.zip" manifest.json \
+            | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).host_permissions.join(",")')
+          baked="${baked%/\*}"
+          if [ "$baked" != "$VAULT_ORIGIN" ]; then
+            echo "::error::the package permits ${baked} but was built for ${VAULT_ORIGIN}" && exit 1
+          fi
           {
             echo "### Extension package"
             echo
@@ -154,7 +253,7 @@ jobs:
             echo "| build 1 | \`${first}\` |"
             echo "| build 2 | \`${second}\` |"
             echo "| foreign identity | \`${third}\` |"
-            echo "| origin | \`${VAULT_ORIGIN}\` |"
+            echo "| origin (read from the archive) | \`${baked}\` |"
             echo "| node | \`$(node --version)\` |"
             echo "| size | $(stat -c%s "${RUNNER_TEMP}/first.zip") bytes |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -165,6 +264,7 @@ jobs:
             echo "::error::the archive depends on who built it — ${first} as the runner, ${third} as uid 4321" && exit 1
           fi
           echo "sha256=${first}" >> "$GITHUB_OUTPUT"
+          echo "origin=${baked}" >> "$GITHUB_OUTPUT"
           cp "${RUNNER_TEMP}/first.zip" "${RUNNER_TEMP}/vault-extension.zip"
 
       # The digest and every input that decides it travel WITH the archive, so a
@@ -177,7 +277,7 @@ jobs:
             echo "${{ steps.digest.outputs.sha256 }}  vault-extension.zip"
             echo "# commit  ${GITHUB_SHA}"
             echo "# node    $(node --version)"
-            echo "# origin  ${VAULT_ORIGIN}"
+            echo "# origin  ${{ steps.digest.outputs.origin }}"
           } > "${RUNNER_TEMP}/vault-extension.zip.sha256"
 
       - uses: actions/upload-artifact@v4
@@ -213,6 +313,14 @@ jobs:
 
       # Re-derived, not trusted: this job signs the bytes it can see, and the
       # only thing tying them to the build is this comparison.
+      #
+      # AND THAT IS WHY THE ORIGIN IS NOT RE-CHECKED HERE, which is otherwise
+      # the obvious place for it. `package` refuses to continue unless the
+      # origin read out of the archive is the one it was built for; this step
+      # then proves these bytes ARE that archive. A digest match is not evidence
+      # about most properties, but it is total: identical bytes cannot hold a
+      # different manifest. A second origin check here would be a second copy of
+      # a decision, free to drift from the one that gates the build.
       - name: The artifact must be the one that was built
         run: |
           set -euo pipefail
