@@ -23,6 +23,10 @@ describe('loadConfig', () => {
       profileUrl: 'http://localhost:3002',
       // M15: handed to the browser, never called by the BFF.
       vaultOrigin: 'http://vault.localhost:3010',
+      // M21 PR3a: the operator console's origin (3011). Handed to the browser
+      // in startOperatorHandoff, never called by the BFF — and, like the vault
+      // origin, holding no credential for it.
+      operatorOrigin: 'http://operator.localhost:3011',
       persistedManifestPath: null,
     });
   });

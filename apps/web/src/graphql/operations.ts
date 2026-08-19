@@ -54,6 +54,24 @@ export const START_VAULT_HANDOFF_MUTATION = `mutation StartVaultHandoff {
   }
 }`;
 
+/**
+ * Mint a single-use code for the ISOLATED OPERATOR ORIGIN (M21 PR3a, docs/03
+ * TB7).
+ *
+ * A SEPARATE OPERATION from StartVaultHandoff, mirroring the two mint routes at
+ * identity: the operation is the selector, so nothing on the wire names an
+ * audience and no client can ask for the wrong one. Same handling as the vault
+ * code — sixty seconds, burned on the attempt, into a hidden field and never a
+ * URL.
+ */
+export const START_OPERATOR_HANDOFF_MUTATION = `mutation StartOperatorHandoff {
+  startOperatorHandoff {
+    code
+    expiresAt
+    operatorOrigin
+  }
+}`;
+
 export const STEP_UP_MUTATION = `mutation StepUp($code: String!) {
   stepUp(code: $code) {
     ok
@@ -789,6 +807,7 @@ export const operations = {
   TotpVerify: TOTP_VERIFY_MUTATION,
   StepUp: STEP_UP_MUTATION,
   StartVaultHandoff: START_VAULT_HANDOFF_MUTATION,
+  StartOperatorHandoff: START_OPERATOR_HANDOFF_MUTATION,
   ExportDemo: EXPORT_DEMO_MUTATION,
   EmailVerification: EMAIL_VERIFICATION_QUERY,
   ResendEmailVerification: RESEND_EMAIL_VERIFICATION_MUTATION,

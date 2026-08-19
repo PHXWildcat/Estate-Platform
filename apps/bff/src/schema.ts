@@ -715,6 +715,21 @@ export const typeDefs = /* GraphQL */ `
     vaultOrigin: String!
   }
 
+  """
+  What the app needs to hand a user to the ISOLATED OPERATOR ORIGIN (M21 PR3a).
+
+  A SEPARATE TYPE from VaultHandoff rather than one carrying an audience field,
+  for the same reason there are two mint routes at identity: the operation is
+  the selector, so no client can name an audience, and a shared type would
+  invite one. 'operatorOrigin' comes from the BFF's configuration at REQUEST
+  time — the M8 PR5 lesson about baking a value into the web bundle.
+  """
+  type OperatorHandoff {
+    code: String!
+    expiresAt: String!
+    operatorOrigin: String!
+  }
+
   "One live credential on this account (M16). The current one is the session you are using."
   type UserSession {
     sessionId: ID!
@@ -772,6 +787,23 @@ export const typeDefs = /* GraphQL */ `
     Sixty seconds, single use, burned on the attempt.
     """
     startVaultHandoff: VaultHandoff!
+    """
+    Mint a single-use code for the ISOLATED OPERATOR ORIGIN (M21 PR3a,
+    docs/03 TB7).
+
+    Step-up gated and account-audience only at identity, so a vault or operator
+    session cannot mint another credential. The code is returned in the response
+    BODY so the app can put it in a hidden field and submit a top-level POST to
+    'operatorOrigin' — it must never reach a URL, a Referer or a history entry.
+    Sixty seconds, single use, burned on the attempt.
+
+    MINTING IS ROLE-BLIND. The audience restricts where the credential may be
+    spent; it asserts nothing about who is holding it. Whether the caller may
+    act on a settlement case is decided by the operator allowlist, in
+    settlement, inside the transaction that would act — this edge holds no
+    settlement credential and cannot ask.
+    """
+    startOperatorHandoff: OperatorHandoff!
     """
     Mint a pairing code for the browser extension. Step-up gated at identity and
     account-audience only: a non-account session cannot mint one, or a
@@ -1216,6 +1248,13 @@ export interface SchemaDeps {
    * credential for it.
    */
   vaultOrigin: string;
+  /**
+   * The ISOLATED OPERATOR ORIGIN (M21 PR3a). Same shape and same reason as
+   * `vaultOrigin`: a value only the deployment knows, handed to the client in
+   * `startOperatorHandoff`. The BFF never calls it and holds no credential for
+   * it.
+   */
+  operatorOrigin: string;
   /** Clock override for tests. */
   now?: () => number;
 }
@@ -1464,7 +1503,16 @@ function familyInput(args: FamilyMemberArgs): FamilyMemberInput {
 }
 
 export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
-  const { identity, assets, assistant, documents, profile, secureCookies, vaultOrigin } = deps;
+  const {
+    identity,
+    assets,
+    assistant,
+    documents,
+    profile,
+    secureCookies,
+    vaultOrigin,
+    operatorOrigin,
+  } = deps;
   const now = deps.now ?? ((): number => Date.now());
 
   return createSchema<RequestContext>({
@@ -2345,6 +2393,19 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           // What it contributes is the ORIGIN, which only the deployment knows.
           const minted = await identity.mintVaultHandoff(requireAccessToken(ctx));
           return { ...minted, vaultOrigin };
+        },
+        startOperatorHandoff: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<{ code: string; expiresAt: string; operatorOrigin: string }> => {
+          // Identical in shape to `startVaultHandoff` and deliberately not
+          // merged with it: one resolver taking an audience argument would put
+          // the audience vocabulary on the wire, where a client could name it.
+          // The BFF adds no authority here either — identity's own SessionGuard
+          // and StepUpGuard decide, and this forwards the caller's bearer.
+          const minted = await identity.mintOperatorHandoff(requireAccessToken(ctx));
+          return { ...minted, operatorOrigin };
         },
         exportDemo: async (
           _parent: unknown,

@@ -2,6 +2,7 @@ import { parseEnvFile } from '../src/doctor';
 import { generateEnv, renderEnvFile } from '../src/generate-env';
 import {
   bffProcessEnv,
+  operatorWebProcessEnv,
   plannedServices,
   scrubbedBaseEnv,
   serviceProcessEnv,
@@ -223,6 +224,33 @@ describe('scrubbedBaseEnv', () => {
   });
 });
 
+describe('operatorWebProcessEnv', () => {
+  it('maps TWO urls and nothing else', () => {
+    // The shortest environment in the stack, and deliberately so: this origin
+    // has ONE upstream (identity) and one origin it accepts an arriving form
+    // from. A third URL here would be a third thing it can reach.
+    expect(operatorWebProcessEnv(generated(), { addressing: 'host' })).toEqual({
+      NODE_ENV: 'development',
+      PORT: '3011',
+      IDENTITY_URL: 'http://localhost:3001',
+      APP_ORIGIN: 'http://localhost:3000',
+    });
+  });
+
+  it('gives the operator origin no credential of any kind', () => {
+    const env = operatorWebProcessEnv(generated(), { addressing: 'host' });
+    for (const key of Object.keys(env)) {
+      expect(key).not.toMatch(/_INTERNAL_TOKEN$|SECRET|_KEY$/);
+    }
+  });
+
+  it('addresses identity by container name under compose addressing', () => {
+    expect(operatorWebProcessEnv(generated(), { addressing: 'compose' })['IDENTITY_URL']).toBe(
+      'http://identity:3001',
+    );
+  });
+});
+
 describe('bffProcessEnv', () => {
   it('maps the BFF with a host manifest path', () => {
     const env = bffProcessEnv(generated(), { addressing: 'host', manifestPath: '/repo/m.json' });
@@ -240,6 +268,8 @@ describe('bffProcessEnv', () => {
       PROFILE_URL: 'http://localhost:3002',
       // M15: NOT a downstream — the address the BFF hands the browser.
       VAULT_ORIGIN: 'http://vault.localhost:3010',
+      // M21 PR3a: the second one, for the second isolated origin.
+      OPERATOR_ORIGIN: 'http://operator.localhost:3011',
       PERSISTED_MANIFEST_PATH: '/repo/m.json',
     });
   });

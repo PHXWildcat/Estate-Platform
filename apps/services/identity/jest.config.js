@@ -69,5 +69,14 @@ module.exports = require('@estate/config/jest')(__dirname, {
   // proven without a database, so the number the PR3 exception traded away
   // comes back with interest. The remaining no-DB gap is exactly the two
   // SQL-only repo files, which the int suites execute for real.
-  coverageThreshold: { global: { statements: 70, branches: 67, functions: 44, lines: 69 } },
+  // M21 PR3a ratchets again, measured 72.21/67.4/45.16/71.03 on the
+  // database-free run. `handoff.service.ts` went 36.84 -> 100 statements and
+  // 0 -> 100 functions: the two handoff files were the last decision layer in
+  // this service that only a Postgres-backed suite ever executed, so adding
+  // the operator mint route meant the audience threading, the audience-blind
+  // redemption and the three subtractions that make a stolen code cheap were
+  // asserted only where a PG_TEST_URL happened to be set. `handoffs.repo.ts`
+  // stays SQL-only and int-covered, which is the split this floor exists to
+  // accommodate. Never lowered.
+  coverageThreshold: { global: { statements: 72, branches: 67, functions: 45, lines: 71 } },
 });

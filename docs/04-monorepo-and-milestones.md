@@ -5599,17 +5599,21 @@ because at that point the value lens becomes the one with real inputs.
   of. The measurement is recorded below; the scope change is recorded here
   rather than silently absorbed, because a plan that quietly re-aims is a plan
   nobody can audit.
-- **PR3 — the operator surface, WITH the session audience.** Queue, review,
-  verify, close, stage decisions, distribution approval. Flip the exemptions to
-  `consumed()` in the same change, because M20 PR1's stale-exemption check fires
-  the moment a consumer appears. The audience ships here because this is where
-  an operator first has a reason to hold one, and because its value is
-  SUBTRACTIVE — every service that has not opted in refuses it — which is
-  unmeasurable until something mints one. The known trap stands and the code
-  must say which control is which: `AllowSessionAudiences` unconditionally
-  prepends `account` and `CallerGuard.audiencesFor` returns a union that widens
-  and can never narrow, so decorating a settlement route ALSO admits every
-  ordinary account session. `OperatorGate` stays the control.
+- **PR3 — the operator surface, WITH the session audience. SPLIT IN TWO
+  (approved), making the milestone six PRs.** PR3a is the BOUNDARY — the fourth
+  audience, a role-blind mint ceremony at identity, and a second isolated origin
+  — with nothing behind it; PR3b is the SURFACE (queue, review, verify, close,
+  stage decisions, distribution approval) and flips the route↔consumer
+  exemptions to `consumed()` in the same change, because M20 PR1's
+  stale-exemption check fires the moment a consumer appears. The split is the
+  M15 PR1→PR2 precedent: an audience is worth exactly what the services refusing
+  it make it worth, so the boundary is reviewable on its own and the screens are
+  reviewable on their own. The known trap stands and the code must say which
+  control is which: `AllowSessionAudiences` unconditionally prepends `account`
+  and `CallerGuard.audiencesFor` returns a union that widens and can never
+  narrow, so decorating a settlement route ALSO admits every ordinary account
+  session. `OperatorGate` stays the control. **PR3a SHIPPED** (see the record
+  below).
 - **PR4 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7.
@@ -5829,6 +5833,97 @@ Threat-model delta and residuals: `docs/03` §6aa. §4 TB7's operator-identity a
 operator-authentication paragraphs are rewritten in the same PR — the first named
 `assertOperator`, and the second said M21 PR2 adds the audience, which this PR's
 own measurement makes false.
+
+#### M21 PR3a — the operator boundary (shipped)
+
+**Three decisions, and each one is a rejection as much as a choice.**
+
+- *An audience is a RESTRICTION, never a claim about its holder,* so the mint is
+  ROLE-BLIND and that is not a gap. Identity holds no settlement credential,
+  there is no dblink between the auth and core clusters, and identity has no
+  concept of a role — so a mint that checked would need a new trust edge to
+  answer a question the audience is not asking. `OperatorGate` against
+  `settlement_operators` remains the one answer to "may this person act", exactly
+  as PR2 left it. What an operator gains by minting is a credential worth LESS
+  than the account session they already held.
+- *The ROUTE is the selector, not a field.* Two mint routes
+  (`POST /v1/auth/handoff` and `POST /v1/auth/handoff/operator`) rather than one
+  taking `{audience}`, so nothing on the wire names an audience: no field for a
+  caller to set, no parameter for a schema to widen by accident, and two
+  separately guarded, separately audited ceremonies. Redemption stays
+  audience-BLIND — one route, one response shape — and the audience travels on
+  the `auth_handoffs` row only the mint could write. M16 PR1 is the precedent
+  pointing the other way: `HandoffService.mint`'s audience parameter was typed as
+  the full union with only a DDL CHECK behind it, and it was DELETED rather than
+  narrowed.
+- *A SECOND isolated origin, not a second path on the first.*
+  `operator.localhost` is a different HOST from `vault.localhost` because cookie
+  scope ignores the port — measured in a real browser before M15 relied on it.
+  Reusing the vault origin was rejected outright: it would put an operator
+  credential in reach of the code holding Zone A key material.
+
+**What ships.** `SESSION_AUDIENCES` gains `operator`, closed in the TypeScript
+union and in `auth_handoffs`' CHECK, which migration `012_operator_audience.sql`
+WIDENS (`IN ('vault', 'operator')`) rather than rewriting — the shape
+`session-audience.spec.ts` parses and, since PR2.5, refuses to accept any other.
+`AUDIENCE_ADMITTERS.operator` is EMPTY and three identity handlers are widened
+per route: `session`, `stepUp` and `logout`, each for the reason M15 recorded
+(introspection must admit every audience or no isolated origin can exist; an
+origin must re-prove a factor without crossing back; revoking your own credential
+only reduces authority). `handoff` and `handoff/operator` are deliberately
+absent, so a leaked operator code cannot chain itself forward in either
+direction. `apps/operator-web` is the origin: framework-free, no dependency tree
+in the browser, `default-src 'none'` / `script-src 'self'` with no `unsafe-*` in
+ANY environment, Trusted Types enforced with no policy, and — stricter than the
+vault's — no `data:` in `img-src`, because nothing here renders an inline image.
+It holds no credential in either direction, asserted by a source fence, by a
+runtime assertion that its config's credential holding is both equal to the
+granted set and explicitly EMPTY (the ai-assistant precedent, where the second
+assertion is what stops the first passing vacuously), and by a compose-parity
+assertion over its deployment block. Its proxy is an exact-match allowlist of
+three identity routes, not a prefix rewrite — a proxy forwarding whatever path it
+is handed while carrying a live bearer is an SSRF primitive, and `startsWith` is
+not enough because `/api/auth/logout` is a prefix of identity's unauthenticated
+`/v1/auth/logout/refresh`.
+
+**The fence that had to grow, and would otherwise have gone green wrongly.**
+`route-consumers.spec.ts` derives each edge's rewrites from its `server.ts` so
+that `/api/…` literals in a browser client resolve to the upstream routes they
+really reach. It read ONE file. A second edge whose route table has a different
+shape would have contributed ZERO rewrites, and this origin's `/api/auth/session`
+would then have resolved through the VAULT's table by coincidence — a fence whose
+input is narrower than its claim, going green for the same reason it is wrong
+(docs/03 §6y). It walks a declared `EDGE_SERVERS` list now, matches both table
+shapes, and carries a PER-EDGE anti-vacuity floor plus an exact assertion of the
+operator edge's three rewrites.
+
+**And a fence that had already stopped matching, found while adding to it.**
+Three patterns in `threat-model-residuals.spec.ts` were written `6[a-z]?` and
+stopped matching the day the doc reached §6aa (M21 PR2). Two mis-attributed — a
+two-letter section's bullets were reported under §6z, the last single-letter
+heading that matched — and the third turned its scan OFF at §6aa and left §6aa
+and §6bb outside it entirely, so a residual lead-in written there with an
+unrecognised idiom would have been unclassified and unreported. Nothing went red,
+because every bullet in those sections happened to be tagged. Both are closed by
+comparison rather than by a floor: the parser's own section set is compared
+against an independently permissive read of the file, and the classification
+scan's REACHED sections are compared against the parser's. A count would not do —
+mis-attribution preserves totals. Both mutations turn it red.
+
+**What PR3a deliberately does NOT ship.** No settlement surface, no settlement
+read audit events, and no operator rate limit. The read events in particular were
+scoped here and moved: TB7 claimed "settlement and documents emit them", and
+measurement says settlement carries 23 audit actions and every one is a WRITE, so
+adding `settlement.case.viewed` now would be a routeless event — the zero-callers
+shape this milestone exists to close. The prose is corrected in this PR and the
+events land in PR3b with the screens that make the reads, which is the M18 PR1
+precedent (correct the claim, do not add the route). `estate.viewed` was also
+mis-cited: it is `asset.estate.viewed`, an ASSETS event describing an EXECUTOR's
+inventory read, in a paragraph about operators.
+
+Threat-model delta and residuals: `docs/03` §6bb. §4 TB7's operator-authentication
+and operator-reads paragraphs are rewritten in the same PR — the first said the
+audience does not exist, and the second was wrong in both halves.
 
 #### Two findings from the selection that hand-verification OVERTURNED
 

@@ -86,6 +86,12 @@ jobs:
           - app: vault-web
             pkg: '@estate/vault-web'
             smokeProduction: true
+          # M21 PR3a's isolated operator origin. Same shape again, and its
+          # environment is shorter still — two URLs, both with development
+          # defaults, so production is the only posture where the guard fires.
+          - app: operator-web
+            pkg: '@estate/operator-web'
+            smokeProduction: true
           - app: web
             pkg: '@estate/web'
             dockerfile: infra/docker/web.Dockerfile

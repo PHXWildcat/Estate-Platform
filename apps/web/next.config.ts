@@ -27,6 +27,20 @@ const bffUrl = process.env.BFF_URL ?? 'http://localhost:4000';
 const vaultOrigin = process.env.VAULT_ORIGIN ?? 'http://vault.localhost:3010';
 
 /**
+ * The ISOLATED OPERATOR ORIGIN (M21 PR3a, docs/03 TB7). A SECOND destination for
+ * exactly the same reason as the vault's: `/operator` hands a platform operator
+ * over by top-level form POST, and `form-action` must name that origin or the
+ * browser refuses the submission.
+ *
+ * BUILD TIME, like the vault's and like BFF_URL — `headers()` is serialised into
+ * the routes manifest exactly as `rewrites()` is, which is the M8 PR5 defect's
+ * shape. `compose-parity.spec.ts` asserts this value matches the one the BFF
+ * hands the browser at runtime, so a disagreement is a refused form post rather
+ * than a silent downgrade.
+ */
+const operatorOrigin = process.env.OPERATOR_ORIGIN ?? 'http://operator.localhost:3011';
+
+/**
  * Content-Security-Policy, added with the conversation surface (M11) as DEFENCE
  * IN DEPTH BEHIND THE RENDERER, not instead of it.
  *
@@ -70,10 +84,11 @@ const csp = [
     ? "script-src 'self' 'unsafe-inline'"
     : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "frame-ancestors 'none'",
-  // 'self' plus exactly the vault origin — not a wildcard, and not the whole
-  // scheme. This is the only cross-origin destination any form in this app is
-  // permitted to reach.
-  `form-action 'self' ${vaultOrigin}`,
+  // 'self' plus exactly the two isolated origins — not a wildcard, and not the
+  // whole scheme. These are the only cross-origin destinations any form in this
+  // app is permitted to reach, and each one is there because a handoff ceremony
+  // posts to it.
+  `form-action 'self' ${vaultOrigin} ${operatorOrigin}`,
   "base-uri 'self'",
   "object-src 'none'",
 ].join('; ');

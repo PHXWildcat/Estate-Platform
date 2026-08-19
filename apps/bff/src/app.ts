@@ -106,6 +106,7 @@ export async function createBffApp(options: BffAppOptions): Promise<INestApplica
       profile,
       secureCookies: production,
       vaultOrigin: config.vaultOrigin,
+      operatorOrigin: config.operatorOrigin,
     }),
     graphqlEndpoint: '/graphql',
     // POST-only mount + no GraphiQL/landing page: nothing to render in a browser.

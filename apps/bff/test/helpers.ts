@@ -77,6 +77,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     documentsUrl: 'http://documents.test',
     profileUrl: 'http://profile.test',
     vaultOrigin: 'http://vault.localhost:3010',
+    operatorOrigin: 'http://operator.localhost:3011',
     persistedManifestPath: null,
     ...overrides,
   };
@@ -199,6 +200,23 @@ export class FakeIdentityClient implements IdentityClient {
     return this.vaultHandoffError
       ? Promise.reject(this.vaultHandoffError)
       : Promise.resolve(this.vaultHandoff);
+  }
+
+  // M21 PR3a. A SEPARATE recorder from the vault's, so a spec can assert the
+  // two ceremonies do not share a call path — a fake that folded them would
+  // make "the route is the selector" untestable at this layer.
+  operatorHandoff: { code: string; expiresAt: string } = {
+    code: 'operator-handoff-code',
+    expiresAt: '2026-08-08T00:01:00.000Z',
+  };
+  operatorHandoffError: Error | null = null;
+  mintOperatorHandoffCalls: string[] = [];
+
+  mintOperatorHandoff(accessToken: string): Promise<{ code: string; expiresAt: string }> {
+    this.mintOperatorHandoffCalls.push(accessToken);
+    return this.operatorHandoffError
+      ? Promise.reject(this.operatorHandoffError)
+      : Promise.resolve(this.operatorHandoff);
   }
 
   // M16 paired devices + extension pairing. Same convention as above: a calls

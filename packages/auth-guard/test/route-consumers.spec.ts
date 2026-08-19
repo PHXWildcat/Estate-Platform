@@ -210,14 +210,41 @@ function templateMatchesPath(template: string, path: string, enumerated = false)
   });
 }
 
+interface EdgeRewrite {
+  readonly edge: string;
+  readonly from: string;
+  readonly to: string;
+}
+
 /**
- * The vault origin's edge is a consumer whose literals are `/api/…` paths;
- * server.ts maps them to service paths (M15's allowlist + the vault tree
- * rewrite). Templates are additionally tried under these rewrites, and a
- * dedicated test below asserts each pair really exists in server.ts source —
- * so a rewritten match is never a free-text claim.
+ * The isolated origins, each named by the source its rewrites are read out of.
+ * DECLARED as data so a third one arrives with an entry or contributes nothing
+ * and trips the per-edge floor below — rather than being silently absent, which
+ * is the failure this list exists to stop.
  */
-const EDGE_REWRITES: ReadonlyArray<{ from: string; to: string }> = deriveEdgeRewrites();
+const EDGE_SERVERS: ReadonlyArray<{ edge: string; source: string }> = [
+  { edge: 'vault-web', source: 'apps/vault-web/src/server.ts' },
+  { edge: 'operator-web', source: 'apps/operator-web/src/server.ts' },
+];
+
+/**
+ * An isolated origin's edge is a consumer whose literals are `/api/…` paths;
+ * its `server.ts` maps them to service paths. Templates are additionally tried
+ * under these rewrites, and a dedicated test below asserts each pair really
+ * exists in that source — so a rewritten match is never a free-text claim.
+ *
+ * TWO EDGES NOW (M21 PR3a), and the second is why this is a list rather than a
+ * constant. Deriving from the vault edge alone was faithful while it was the
+ * only one, and would have gone green over the operator edge for a reason that
+ * has nothing to do with correctness: the operator edge happens to map
+ * `/api/auth/session` to the same place the vault edge does, so a template
+ * scraped from it would resolve through the WRONG EDGE'S table and land on the
+ * right answer by coincidence. The moment the two disagreed about a path — or
+ * the operator edge grew a route the vault edge does not have — the fence would
+ * be certifying a call the edge would answer 404. A fence whose input is
+ * narrower than its claim goes green for the same reason it is wrong.
+ */
+const EDGE_REWRITES: ReadonlyArray<EdgeRewrite> = deriveEdgeRewrites();
 
 /**
  * DERIVED FROM THE EDGE'S OWN TABLES, never hand-written (M19 PR4 review).
@@ -237,23 +264,41 @@ const EDGE_REWRITES: ReadonlyArray<{ from: string; to: string }> = deriveEdgeRew
  * `tree` decides prefix-versus-exact, and the assertions below pin that the
  * scrape found real tables rather than silently nothing.
  */
-function deriveEdgeRewrites(): ReadonlyArray<{ from: string; to: string }> {
-  const server = read(join(REPO_ROOT, 'apps/vault-web/src/server.ts'));
-  const rewrites: Array<{ from: string; to: string }> = [];
-  // PROXY_ROUTES: tree entries rewrite a prefix, exact entries a whole path.
-  for (const m of server.matchAll(
-    /\{\s*prefix:\s*'([^']+)',[^}]*rewriteTo:\s*'([^']+)',\s*tree:\s*(true|false)\s*\}/g,
-  )) {
-    rewrites.push({ from: m[1] as string, to: m[2] as string });
-  }
-  // PASS_THROUGH_ROUTES: the two credential-free identity calls.
-  for (const m of server.matchAll(/\{\s*path:\s*'([^']+)',\s*upstreamPath:\s*'([^']+)'\s*\}/g)) {
-    rewrites.push({ from: m[1] as string, to: m[2] as string });
-  }
-  // The one projection with its own constant rather than a table row.
-  const grantee = /GRANTEE_CANDIDATES_PATH\s*=\s*'([^']+)'/.exec(server)?.[1];
-  if (grantee !== undefined && server.includes("'/v1/contacts/grantee-candidates'")) {
-    rewrites.push({ from: grantee, to: '/v1/contacts/grantee-candidates' });
+function deriveEdgeRewrites(): ReadonlyArray<EdgeRewrite> {
+  const rewrites: EdgeRewrite[] = [];
+  for (const { edge, source } of EDGE_SERVERS) {
+    const server = read(join(REPO_ROOT, source));
+    /*
+     * TWO TABLE SHAPES, because the two edges genuinely have two.
+     *
+     * The vault edge's rows carry `tree`, since one of them IS a tree (the
+     * vault's `/items/:id`). The operator edge's carry none, because every one
+     * of its routes is an exact match and the absence of the field is asserted
+     * by its own fence. Matching both shapes here rather than normalising one
+     * of them keeps this scan a reader of what is written, not a claim about
+     * what ought to be.
+     */
+    for (const m of server.matchAll(
+      /\{\s*prefix:\s*'([^']+)',[^}]*rewriteTo:\s*'([^']+)',\s*tree:\s*(true|false)\s*\}/g,
+    )) {
+      rewrites.push({ edge, from: m[1] as string, to: m[2] as string });
+    }
+    for (const m of server.matchAll(
+      /\{\s*path:\s*'([^']+)',\s*upstream:\s*'[^']+',\s*rewriteTo:\s*'([^']+)'\s*\}/g,
+    )) {
+      rewrites.push({ edge, from: m[1] as string, to: m[2] as string });
+    }
+    // PASS_THROUGH_ROUTES: credential-free upstream calls. The vault edge has
+    // two (extension pairing redemption, refresh); the operator edge has none,
+    // and its own fence asserts that absence.
+    for (const m of server.matchAll(/\{\s*path:\s*'([^']+)',\s*upstreamPath:\s*'([^']+)'\s*\}/g)) {
+      rewrites.push({ edge, from: m[1] as string, to: m[2] as string });
+    }
+    // The one projection with its own constant rather than a table row.
+    const grantee = /GRANTEE_CANDIDATES_PATH\s*=\s*'([^']+)'/.exec(server)?.[1];
+    if (grantee !== undefined && server.includes("'/v1/contacts/grantee-candidates'")) {
+      rewrites.push({ edge, from: grantee, to: '/v1/contacts/grantee-candidates' });
+    }
   }
   return rewrites;
 }
@@ -354,13 +399,14 @@ const BFF = 'apps/bff/src';
 const AI = 'apps/services/ai-assistant/src/clients';
 const VW = 'apps/vault-web/src';
 const VX = 'apps/vault-extension/src';
+const OW = 'apps/operator-web/src';
 
 /**
  * Where a consumer of a service route can live. Used by the stale-exemption
  * check to sweep the TREE rather than the declarations — see the comment there
  * for why that direction matters.
  */
-const CONSUMER_ROOTS = [BFF, AI, VW, VX];
+const CONSUMER_ROOTS = [BFF, AI, VW, VX, OW];
 
 /** Every `.ts` under a root, recursively, excluding tests and build output. */
 function sweepTs(root: string): string[] {
@@ -483,7 +529,14 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'identity POST /v1/auth/email/verification/verify': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/export-demo': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/handoff': consumed(`${BFF}/identity-client.ts`),
-  'identity POST /v1/auth/handoff/redeem': consumed(`${VW}/upstream.ts`),
+  // M21 PR3a. A SECOND mint route rather than an audience argument on the
+  // first, so the route is the selector and nothing on the wire could name an
+  // audience. Its consumer is the same BFF client, one method over.
+  'identity POST /v1/auth/handoff/operator': consumed(`${BFF}/identity-client.ts`),
+  // Redemption is audience-blind by construction — the audience travels on the
+  // `auth_handoffs` row, written by whichever mint route was called — so BOTH
+  // isolated origins spend a code through this one route.
+  'identity POST /v1/auth/handoff/redeem': consumed(`${VW}/upstream.ts`, `${OW}/upstream.ts`),
   'identity POST /v1/auth/extension/pairing': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/extension/pairing/redeem': consumed(
     `${VW}/server.ts`,
@@ -763,14 +816,14 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     expect(swept.length).toBeGreaterThanOrEqual(10);
   });
 
-  it('the edge rewrites are DERIVED from server.ts, and the scrape really found them', () => {
+  it('the edge rewrites are DERIVED from each server.ts, and the scrape really found them', () => {
     // Anti-vacuity: a regex that stops matching would empty this table and
     // silently narrow the fence rather than fail it. The pairs are asserted by
     // SHAPE (each is a real /api/… → /v1/… mapping) and by count, and the one
     // pair the hand-written table invented — the `/api/auth/` PREFIX — is
-    // asserted ABSENT, because the edge enumerates three exact identity routes
-    // so that `/v1/auth/handoff` cannot be reached from this origin.
-    expect(EDGE_REWRITES.length).toBeGreaterThanOrEqual(6);
+    // asserted ABSENT, because both edges enumerate exact identity routes so
+    // that `/v1/auth/handoff` cannot be reached from either origin.
+    expect(EDGE_REWRITES.length).toBeGreaterThanOrEqual(9);
     for (const { from, to } of EDGE_REWRITES) {
       expect(from.startsWith('/api/')).toBe(true);
       expect(to.startsWith('/v1/')).toBe(true);
@@ -780,10 +833,44 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     expect(froms).toContain('/api/auth/session');
     expect(froms).toContain('/api/grantee-candidates');
     expect(froms).not.toContain('/api/auth/');
-    // And no derived pair may reach identity's handoff mint.
+    // And NO derived pair reaches any handoff route from either edge — not the
+    // two mints, and not redemption either. Redemption happens server-side in
+    // `upstream.redeemHandoff`, which is not a proxy entry at all: a browser on
+    // an isolated origin never speaks to identity's handoff surface, in either
+    // direction.
     for (const { to } of EDGE_REWRITES) {
       expect(to.startsWith('/v1/auth/handoff')).toBe(false);
     }
+  });
+
+  it('EVERY declared edge contributed rewrites — no edge is silently unscanned', () => {
+    /*
+     * THE PER-EDGE FLOOR, and it is the point of the list existing.
+     *
+     * A total count cannot see a second edge going missing: the vault edge
+     * alone clears any global floor, so a shape the scan cannot read — a table
+     * written `{ path, upstream, rewriteTo }` where the regex wants
+     * `{ prefix, rewriteTo, tree }` — would contribute ZERO and the fence would
+     * stay green while knowing nothing about that origin. Then its `/api/…`
+     * literals resolve through the OTHER edge's table, which is how a fence
+     * certifies a call that would be answered 404.
+     *
+     * Asserting per edge is the same anti-vacuity habit applied one level down,
+     * which is the 2026-08-17 lesson: a check on a total is not a check on each
+     * of its parts.
+     */
+    for (const { edge, source } of EDGE_SERVERS) {
+      const derived = EDGE_REWRITES.filter((r) => r.edge === edge);
+      expect({ edge, source, count: derived.length > 0 }).toEqual({
+        edge,
+        source,
+        count: true,
+      });
+    }
+    // And each one really maps its own identity routes, so the operator edge is
+    // not passing on the vault edge's table by coincidence.
+    const operator = EDGE_REWRITES.filter((r) => r.edge === 'operator-web').map((r) => r.from);
+    expect(operator).toEqual(['/api/auth/session', '/api/auth/stepup', '/api/auth/logout']);
   });
 
   it('template extraction sees a real corpus (anti-vacuity)', () => {

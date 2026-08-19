@@ -196,6 +196,66 @@ describe('FetchIdentityClient.mintVaultHandoff', () => {
 });
 
 /**
+ * The OPERATOR mint (M21 PR3a). Same firewall, and one thing that is only
+ * visible from here.
+ *
+ * THE ROUTE IS THE SELECTOR. There is no `audience` in the request body, on
+ * this client or on the wire, so these cases assert what the request IS rather
+ * than only what it returns: a different path from the vault's, nothing
+ * audience-shaped in the body, and the same bearer. A body field would be a
+ * field a later edit could widen; a route cannot be widened by accident.
+ *
+ * And its malformed-body refusal is `OPERATOR_UNAVAILABLE`, not
+ * `VAULT_UNAVAILABLE` — the M16 finding applied before it could recur, since
+ * that code carries copy reassuring the reader "nothing about your vault has
+ * changed" on a screen where nothing was opening a vault.
+ */
+describe('FetchIdentityClient.mintOperatorHandoff', () => {
+  const MINTED = { code: 'an-operator-single-use-code', expiresAt: '2026-08-18T00:01:00.000Z' };
+
+  it('posts to its OWN route, naming no audience anywhere in the request', async () => {
+    const { client, calls } = clientWith(() => response(201, MINTED));
+    await expect(client.mintOperatorHandoff(TOKEN)).resolves.toEqual(MINTED);
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/handoff/operator`);
+    expect(calls[0]?.init.method).toBe('POST');
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    // The two ceremonies are two routes, and this one is not the other.
+    expect(calls[0]?.url).not.toBe(`${BASE}/v1/auth/handoff`);
+    // NOTHING AUDIENCE-SHAPED CROSSES THE WIRE. A body would mean a field a
+    // caller could set; identity's `HANDOFF_AUDIENCES` stays the only place
+    // the vocabulary exists.
+    expect(JSON.stringify(calls[0]?.init.body ?? null)).not.toMatch(/audience/i);
+    // …and there is no body at all, which is the stronger form of the same
+    // claim: a POST that sends nothing has nothing an audience could ride on.
+    expect(calls[0]?.init.body).toBeUndefined();
+    expect(calls[0]?.url).not.toContain(MINTED.code);
+  });
+
+  it('surfaces STEPUP_REQUIRED so the surface can prompt rather than fail', async () => {
+    const { client } = clientWith(() => response(403, { error: 'stepup_required' }));
+    await expect(client.mintOperatorHandoff(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+  });
+
+  it('refuses a malformed body with its OWN code, not the vault’s', async () => {
+    const { client } = clientWith(() => response(201, { expiresAt: MINTED.expiresAt }));
+    await expect(client.mintOperatorHandoff(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'OPERATOR_UNAVAILABLE' },
+    });
+  });
+
+  it('never lets identity’s own error text reach a GraphQL client', async () => {
+    const { client } = clientWith(() => response(500, { error: 'pg: relation does not exist' }));
+    await expect(client.mintOperatorHandoff(TOKEN)).rejects.toThrow(/status 500/);
+    await expect(client.mintOperatorHandoff(TOKEN)).rejects.not.toThrow(/relation does not exist/);
+  });
+});
+
+/**
  * The paired-devices client (M16). Same firewall, and one thing more.
  *
  * A MALFORMED PAIRING RESPONSE IS NOT A VAULT FAILURE. This path first reused

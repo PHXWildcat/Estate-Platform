@@ -84,6 +84,7 @@ export const GQL_ERROR_CODES = [
    * sentence with nothing to do with the screen this refusal appears on.
    */
   'PAIRING_UNAVAILABLE',
+  'OPERATOR_UNAVAILABLE',
   'WEBAUTHN_FAILED',
   /**
    * A rate bound refused it — identity's step-up cap today (M17 PR6). The one
@@ -579,6 +580,15 @@ interface OperationSignatures {
   StartVaultHandoff: {
     variables: EmptyVariables;
     data: { startVaultHandoff: { code: string; expiresAt: string; vaultOrigin: string } };
+  };
+  /**
+   * M21 PR3a. A SEPARATE ENTRY for a separate operation, mirroring the two mint
+   * routes at identity — there is no `audience` variable here for the same
+   * reason there is none on the wire.
+   */
+  StartOperatorHandoff: {
+    variables: EmptyVariables;
+    data: { startOperatorHandoff: { code: string; expiresAt: string; operatorOrigin: string } };
   };
   ExportDemo: { variables: EmptyVariables; data: { exportDemo: { ok: boolean } } };
   Session: { variables: EmptyVariables; data: { session: SessionInfo } };

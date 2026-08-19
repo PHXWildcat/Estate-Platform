@@ -56,6 +56,15 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", "public/app/**", "public/lib/**"]
     },
+    // The operator origin has the same shape as `vault-web`, minus the copied
+    // crypto: one package emitting an edge into `dist` and a browser client
+    // into `public/app`. Declared for the reason above rather than for caching
+    // — an undeclared output makes a cache HIT serve the origin with no client
+    // at all, which boots, renders the shell, and answers 200 at `/`.
+    "@estate/operator-web#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "public/app/**"]
+    },
 
     /*
      * AND THE EXTENSION BAKES AN ORIGIN, so strict env mode was silently

@@ -262,7 +262,14 @@ function residuals(): {
   };
 
   lines.forEach((line, index) => {
-    const delta = /^## (6[a-z]?)\./.exec(line);
+    // TWO-LETTER SECTIONS ARE REAL. `^## (6[a-z]?)\.` stopped matching at §6aa
+    // (M21 PR2) — it needs a literal `.` after one optional letter and finds a
+    // second letter instead — so §6aa and §6bb were attributed to §6z, the last
+    // heading that DID match. Mis-attribution, not blindness: every bullet was
+    // still collected and still tagged, but the failure message named the wrong
+    // section, which is the wrong file for whoever goes looking. Found by §6bb
+    // reporting itself as §6z.
+    const delta = /^## (6[a-z]{0,2})\./.exec(line);
     if (delta !== null) {
       section = delta[1] as string;
       sections.add(section);
@@ -305,8 +312,16 @@ function residuals(): {
   return { items, sections, declared, regions };
 }
 
-/** The one tag a bullet may open with. */
-const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]?)\]\*\*/;
+/**
+ * The one tag a bullet may open with.
+ *
+ * The section suffix is `[a-z]{0,2}` rather than `[a-z]?` for the same reason
+ * the delta regex below is: the doc reached §6aa in M21 PR2 and a one-letter
+ * pattern silently stops matching there — a `CLOSED: §6aa` tag would read as
+ * untagged, and a delta heading would be attributed to whichever single-letter
+ * section preceded it.
+ */
+const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,2})\]\*\*/;
 
 describe('docs/03 §6 — every residual declares a disposition', () => {
   const { items, sections, declared, regions } = residuals();
@@ -380,7 +395,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // stops the next reader looking and offers them nowhere to look.
     const bad = items
       .filter((r) => /^- \*\*\[CLOSED/.test(r.text))
-      .filter((r) => !/^- \*\*\[CLOSED: §6[a-z]?\]\*\*/.test(r.text))
+      .filter((r) => !/^- \*\*\[CLOSED: §6[a-z]{0,2}\]\*\*/.test(r.text))
       .map((r) => `docs/03-threat-model.md:${r.line} is CLOSED without naming a §`);
     expect(bad).toEqual([]);
   });
@@ -394,20 +409,61 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // one fails HERE, naming itself.
     const lines = readFileSync(DOC, 'utf8').split('\n');
     const known = new Set(NON_REGION_LABELS.map((n) => n.label));
-    let inSix = false;
+    let inSix: string | null = null;
     const unclassified: string[] = [];
+    const reached = new Set<string>();
     let seen = 0;
     lines.forEach((line) => {
-      if (/^## 6[a-z]?\./.test(line)) inSix = true;
-      else if (/^## /.test(line)) inSix = false;
-      if (!inSix) return;
+      // `6[a-z]{0,2}` — and this is the occurrence where the one-letter
+      // version was not merely mis-attributing but BLIND. `## 6aa.` failed the
+      // first test and passed the second (`^## `), so `inSix` went FALSE at
+      // §6aa and stayed false: §6aa and §6bb were outside this scan entirely,
+      // and a residual lead-in written there with an unrecognised idiom would
+      // have been unclassified and unreported. A fence that stops matching goes
+      // green, which is the failure this file exists to make loud.
+      const heading = /^## (6[a-z]{0,2})\./.exec(line);
+      if (heading !== null) inSix = heading[1] as string;
+      else if (/^## /.test(line)) inSix = null;
+      if (inSix === null) return;
+      reached.add(inSix);
       const label = boldLabel(line);
       if (label === null || !MENTIONS_RESIDUAL.test(label)) return;
       seen += 1;
       if (!REGION_MARKERS.includes(label) && !known.has(label)) unclassified.push(label);
     });
+    // ANTI-VACUITY ON EVERY LEVEL OF THE SCAN, not only on its total. A floor
+    // over the whole file passes happily while two entire sections are skipped
+    // — which is exactly what the one-letter regex did — so the SET of sections
+    // this scan reached is compared against the set the parser found. A count
+    // preserves totals under mis-attribution; a set does not.
+    expect([...reached].sort()).toEqual([...sections].sort());
     expect(seen).toBeGreaterThanOrEqual(REGION_MARKERS.length);
     expect(unclassified).toEqual([]);
+  });
+
+  it('the parser sees every §6 delta the FILE contains — no heading shape escapes it', () => {
+    /*
+     * THE ASSERTION THAT WOULD HAVE CAUGHT THE ONE-LETTER REGEX, and the
+     * reason it is written as a comparison rather than as a floor.
+     *
+     * Three patterns in this file matched `## 6[a-z]?\.`, which stopped
+     * matching the day the doc reached §6aa. Two of them mis-attributed (a
+     * two-letter section's bullets were reported under the last single-letter
+     * heading); the third turned its scan OFF at §6aa and left two whole
+     * deltas unexamined. Nothing went red, because every bullet in them
+     * happened to be tagged.
+     *
+     * So the parser's own view of which sections exist is compared against an
+     * independently permissive read of the file. A count would not do: it
+     * passes as long as the totals agree, and mis-attribution preserves totals.
+     */
+    const headings = readFileSync(DOC, 'utf8')
+      .split('\n')
+      .map((line) => /^## (6[a-z]*)\. /.exec(line))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => m[1] as string);
+    expect(headings.length).toBeGreaterThanOrEqual(MIN_SECTIONS);
+    expect([...sections].sort()).toEqual([...new Set(headings)].sort());
   });
 
   it('every §6 DELTA declares a residual region, so the next one lands where the fence looks', () => {

@@ -1,0 +1,45 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "public/app",
+    "rootDir": "src/client",
+
+    /*
+     * NATIVE ES MODULES, SERVED AS WRITTEN — no bundler, on purpose.
+     *
+     * The vault origin's argument transfers verbatim: what ships to the browser
+     * is exactly what a reviewer reads, file for file. It matters here for a
+     * different reason than Zone A key material. This origin will carry docs/03
+     * §5.1's mandatory human review — approving a death case, locking an
+     * account, approving a stage of access to a dead person's estate — so the
+     * screen an operator reads before they approve must be reviewable without
+     * unwinding a build-time code generator's output.
+     *
+     * The cost is that relative imports need explicit `.js` extensions, since a
+     * browser will not guess them. That is a rule, not a hazard: it fails at
+     * load time, loudly, on the first navigation.
+     */
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "target": "ES2023",
+
+    // A BROWSER's surface, not Node's. `types: []` is the load-bearing half:
+    // without it, @types/node's globals would let `process.env` or `Buffer`
+    // compile here and fail at runtime.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+
+    "declaration": false,
+    "declarationMap": false,
+
+    /*
+     * NO SOURCE MAPS, and the reason is not size: the static server's extension
+     * allowlist does not include `.map`, so an emitted map would 404 on every
+     * load — a permanent console error on an origin whose console nobody should
+     * learn to ignore. The client is unminified anyway, so what devtools shows
+     * IS the source.
+     */
+    "sourceMap": false
+  },
+  "include": ["src/client"]
+}

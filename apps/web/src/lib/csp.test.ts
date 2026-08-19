@@ -45,22 +45,29 @@ describe('the Content-Security-Policy', () => {
     expect(source).toContain('"base-uri \'self\'"');
   });
 
-  describe('form-action and the vault origin (M15)', () => {
-    it('permits exactly one cross-origin form destination', () => {
-      // Opening the vault is a top-level form POST to the isolated origin, so
-      // 'self' alone would have the browser refuse it. What must NOT appear is
-      // a wildcard or a bare scheme: this is the one destination any form in
-      // this app may reach, and naming it exactly is the whole control.
-      expect(source).toMatch(/form-action 'self' \$\{vaultOrigin\}/);
+  describe('form-action and the isolated origins (M15, M21 PR3a)', () => {
+    it('permits exactly two cross-origin form destinations, both named exactly', () => {
+      // Opening the vault, and opening the operator console, are each a
+      // top-level form POST to an isolated origin — so 'self' alone would have
+      // the browser refuse them. What must NOT appear is a wildcard or a bare
+      // scheme: these are the only destinations any form in this app may reach,
+      // and naming each one exactly is the whole control.
+      expect(source).toMatch(/form-action 'self' \$\{vaultOrigin\} \$\{operatorOrigin\}/);
       expect(source).not.toMatch(/form-action[^;`"]*\*/);
       expect(source).not.toMatch(/form-action[^;`"]*https:(?!\/\/)/);
+      // TWO, and no more. A third destination is a third trust decision and
+      // must be argued for rather than appearing in an interpolation.
+      expect(source.match(/form-action[^`]*\$\{/g)?.[0].match(/\$\{/g)).toHaveLength(2);
     });
 
-    it('takes the origin from the environment with a localhost default', () => {
+    it('takes both origins from the environment with localhost defaults', () => {
       // Build-time, like BFF_URL, and for the same reason — headers() is
       // serialised into the routes manifest. Stated here so the M8 PR5 defect's
       // shape stays visible to whoever changes this next.
       expect(source).toMatch(/process\.env\.VAULT_ORIGIN \?\? 'http:\/\/vault\.localhost:3010'/);
+      expect(source).toMatch(
+        /process\.env\.OPERATOR_ORIGIN \?\? 'http:\/\/operator\.localhost:3011'/,
+      );
     });
   });
 });

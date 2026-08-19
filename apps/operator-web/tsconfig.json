@@ -1,0 +1,15 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // BOTH platform surfaces, because this one config also drives ts-jest and
+    // the suite covers the edge (Node) and the client (DOM). It is deliberately
+    // NOT the fence: `tsconfig.client.json`, which actually emits the browser
+    // bundle, sets `types: []` so a client file reaching for `process` or
+    // `Buffer` fails the build. The vault origin's split, for the same reason —
+    // a permissive config for tests, a strict one for the artifact that ships.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "jest"]
+  },
+  "include": ["src", "test", "jest.config.js"]
+}

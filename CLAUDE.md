@@ -7208,3 +7208,95 @@ deviating from them, stop and propose the change with rationale — do not silen
   identifies the check as the thing that saw it. The second probe is what proved
   §6b-back-to-prose is invisible to a residual fence with no empty-region check:
   9 of 9 green over two untagged TB7 deferrals.
+
+- 2026-08-18 — M21 PR3a IS A BOUNDARY WITH NOTHING BEHIND IT, and the split from
+  PR3b is the whole point: an audience is worth exactly what the services that
+  REFUSE it make it worth, so the boundary is reviewable on its own and the
+  screens are reviewable on their own (the M15 PR1->PR2 precedent, where the vault
+  origin proved its boundary before any key material stood behind it). Three
+  decisions, each a rejection as much as a choice. (1) AN AUDIENCE IS A
+  RESTRICTION, NEVER A CLAIM ABOUT ITS HOLDER - `operator` says only that this
+  credential may be spent in fewer places than an ordinary session - so THE MINT
+  IS ROLE-BLIND and that is not a gap. Identity holds no settlement credential,
+  there is no dblink between the auth and core clusters, and identity has no
+  concept of a role, so a mint that checked would need a new trust edge to answer
+  a question the audience is not asking; `OperatorGate` against
+  `settlement_operators` remains the one answer to "may this person act", exactly
+  as PR2 left it, and what an operator GAINS by minting is a credential worth LESS
+  than the account session they already held. (2) THE ROUTE IS THE SELECTOR, NOT A
+  FIELD: two mint routes rather than one taking `{audience}`, so nothing on the
+  wire names an audience - no field for a caller to set, no parameter for a schema
+  to widen by accident, two separately guarded and separately audited ceremonies -
+  while REDEMPTION STAYS AUDIENCE-BLIND, one route and one response shape, with the
+  audience travelling on the `auth_handoffs` row only the mint could write. M16 PR1
+  is the precedent pointing the other way: `HandoffService.mint`'s audience
+  parameter was typed as the full union with only a DDL CHECK behind it, and it was
+  DELETED rather than narrowed. (3) A SECOND ISOLATED ORIGIN, NOT A SECOND PATH ON
+  THE FIRST - `operator.localhost` is a different HOST because cookie scope ignores
+  the port, and reusing the vault origin would put an operator credential in reach
+  of the code holding Zone A key material. `AUDIENCE_ADMITTERS.operator` is EMPTY
+  and exactly three identity handlers are widened per route (`session`, `stepUp`,
+  `logout`), so a redeemed operator session is refused by every service in the
+  product INCLUDING settlement, whose queue it exists to reach; `handoff` and
+  `handoff/operator` are absent, so a leaked code cannot chain itself forward in
+  either direction. Migration `012_operator_audience.sql` WIDENS the
+  `auth_handoffs` CHECK to `IN ('vault', 'operator')` rather than rewriting its
+  shape, which is the form PR2.5 taught the audience fence to require.
+- 2026-08-18 - THE EDGE DOES NOT RE-CHECK THE AUDIENCE IT REDEEMS, and the reason
+  is the same one that makes a second copy of any decision wrong. It could not
+  usefully: the redeem response deliberately does not carry an audience, and the
+  callees enforce it in both directions already (vault refuses `operator`,
+  settlement will refuse `vault`). What makes the absence safe is that the browser
+  client DISPLAYS the audience it reads back from `/api/auth/session`, so a session
+  of the wrong kind is visible rather than silently tolerated. The operator
+  interstitial also gets its own route with NO NAV ENTRY: minting is role-blind so
+  the page works for everybody, which is correct, and a product for 10M users
+  should not put "open the operator console" in an estate's own navigation.
+  Discoverability is PR3b's question, once there is a surface behind it.
+- 2026-08-18 - A FENCE THAT DERIVES FROM ONE FILE CANNOT SEE THE SECOND EDGE, and
+  it would have gone green WRONGLY rather than merely gone quiet.
+  `route-consumers.spec.ts` derives each edge's rewrites from its `server.ts` so a
+  browser client's `/api/...` literals resolve to the upstream routes they really
+  reach - and it read `apps/vault-web/src/server.ts` alone. A second edge whose
+  route table has a different shape contributes ZERO rewrites, and the operator
+  origin's `/api/auth/session` then resolves through the VAULT's table BY
+  COINCIDENCE, satisfying the fence while proving nothing about the edge under
+  test. That is docs/03 section 6y's "a fence whose input is narrower than its
+  claim goes green for the same reason it is wrong" arriving in a fence written two
+  PRs after the rule. Closed with a declared `EDGE_SERVERS` list, dual-shape
+  matching, a PER-EDGE anti-vacuity floor, and an exact assertion of the operator
+  edge's three rewrites.
+- 2026-08-18 - AND THE RESIDUAL FENCE HAD STOPPED MATCHING AT SECTION 6aa, found
+  while adding 6bb to it. Three patterns were written `6[a-z]?`, which needs a
+  literal `.` after one optional letter and therefore fails on `## 6aa.`. TWO
+  MIS-ATTRIBUTED - a two-letter section's bullets were reported under 6z, the last
+  single-letter heading that matched, so a failure would have sent the reader to
+  the wrong section - and THE THIRD WAS BLIND: `## 6aa.` failed its first test and
+  passed the fallback `^## `, so the lead-in classification scan turned OFF at 6aa
+  and left 6aa and 6bb outside it entirely. A residual lead-in written there with
+  an unrecognised idiom would have been unclassified and unreported. Nothing went
+  red, because every bullet in those sections happened to be tagged. BOTH ARE
+  CLOSED BY COMPARISON RATHER THAN BY A FLOOR: the parser's own section set is
+  compared against an independently permissive read of the file, and the
+  classification scan's REACHED sections are compared against the parser's. A count
+  could not do it - mis-attribution preserves totals, which is exactly why the
+  existing floor (`seen >= REGION_MARKERS.length`) was satisfied throughout. The
+  general rule this repo already has, restated for a new level: AN ANTI-VACUITY
+  CHECK BELONGS ON EVERY LEVEL OF A SCAN, and where the scan has a reach, the check
+  is a SET COMPARISON and not a count.
+- 2026-08-18 - TB7's OPERATOR-READS SENTENCE WAS WRONG IN BOTH HALVES, and the
+  correction is prose rather than a route. It said "the events exist - settlement
+  and documents emit them, and an executor inventory read carries `estate.viewed`".
+  MEASURED: `AUDIT_ACTIONS` carries 23 `settlement.*` actions and EVERY ONE IS A
+  WRITE, so the queue an operator works from, the case they open and the timeline
+  they read leave no trace that they were read; documents emits exactly one
+  operator read (`document.evidence.accessed`, whose actor class disagreed with its
+  own paired decrypt event until M21 PR2.5); and `estate.viewed` is
+  `asset.estate.viewed`, an ASSETS event describing an EXECUTOR's inventory read -
+  a different actor class entirely, cited in a paragraph about operators. The read
+  events land in PR3b with the screens that make the reads, because adding them now
+  would be a routeless event, which is the zero-callers shape this milestone exists
+  to close; correcting the claim rather than adding the route is the M18 PR1
+  precedent, where settlement's "decrypted only on explicit read" comment described
+  a read route that did not exist. The harm in a wrong claim of this kind is not
+  the sentence - it is that a reader who believes it stops looking.
