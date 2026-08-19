@@ -221,10 +221,12 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
     'identity:logout',
   ],
   /**
-   * THE OPERATOR ORIGIN'S ENTIRE REACH IN PR3a — identity's three, and nothing
-   * else in the product.
+   * THE OPERATOR ORIGIN'S ENTIRE REACH. PR3a shipped identity's three and
+   * nothing else in the product, deliberately — an audience is worth what the
+   * services refusing it make it worth, and there was no surface yet. PR3b
+   * added the settlement console's thirteen.
    *
-   * The same three as `vault`, admitted for the same three reasons, which are
+   * IDENTITY'S THREE, the same three as `vault`, admitted for the same three reasons, which are
    * worth restating rather than cross-referencing because each is a different
    * argument: `session` is introspection and MUST admit every audience or the
    * audience cannot be used at all; `stepUp` STRENGTHENS the session presenting
@@ -258,20 +260,39 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    *   · THE POST-VERIFICATION VERBS: close, stage decisions, distribution
    *     approval.
    *
-   * ABSENT AND DELIBERATE, each for its own reason rather than by omission:
-   * `report` and `listMyCases` (a reporter's surface, M22); `void` and both
-   * `settings` routes (the OWNER's controls — an operator credential must
-   * never reach the decedent's own kill switch); `reportProvider` (operator
-   * intake, but the console does not file signals and a capability with no
-   * caller is exactly what this table exists to prevent); `evidenceRead` and
-   * `stageAccess` (peer-service authority questions asked on somebody else's
-   * forwarded bearer); `requestStage`, `completeTask` and `recordDistribution`
-   * (executor-only — they refuse an operator outright, M23); `listTasks` (the
-   * executor's checklist, M23).
+   * ABSENT AND DELIBERATE — every one of the other settlement handlers, each
+   * for its own reason rather than by omission. The enumeration is TOTAL and
+   * `apps/services/settlement/test/session-audience.spec.ts` asserts it is,
+   * against the refused set it derives from the real decorators: an
+   * enumeration that silently stops covering its subject is how a name here
+   * rots into a reason nobody re-reads.
    *
-   * ABSENT AND LOAD-BEARING, exactly as for `vault`: `mintHandoff`. An
-   * operator session cannot mint another, so a leaked one cannot chain itself
-   * forward past its 15 minutes.
+   *   · `reportableEstates`, `report`, `listMine`, `addEvidence` — the
+   *     REPORTER's surface (M22). Filing and tracking a death report is a
+   *     linked contact's act, not an operator's.
+   *   · `void`, `getSettings`, `updateSettings` — the OWNER's controls. An
+   *     operator credential must never reach the decedent's own kill switch
+   *     or their waiting-period setting.
+   *   · `reportProvider` — operator intake, but the console files no provider
+   *     signals, and a capability with no caller is exactly what this table
+   *     exists to prevent.
+   *   · `evidenceRead`, `stageAccess`, `vaultRelease` — peer-service
+   *     authority questions, asked by documents, assets and vault on somebody
+   *     else's forwarded bearer or their own service credential. A human
+   *     session has no business answering them.
+   *   · `requestStage`, `completeTask`, `recordDistribution` — EXECUTOR-ONLY
+   *     at the service: each refuses an operator outright (M23).
+   *     `recordDistribution` is also the recording half of the distribution
+   *     dual control, whose approving half IS admitted here — the row-local
+   *     CHECK refuses the same actor either way, and a console offering both
+   *     halves is not a shape to build and then rely on a constraint to save.
+   *   · `listTasks`, `setDistributionStatus` — the service DOES admit an
+   *     operator on both (`listTasks` through `assertCaseVisible`,
+   *     `setDistributionStatus` through the gate), and they are absent because
+   *     the CONSOLE does not offer them: the executor's checklist and the
+   *     payment-progress ladder are M23's surface. This is the one group whose
+   *     absence is a product decision rather than an authorization one, which
+   *     is worth saying rather than letting the list imply otherwise.
    */
   operator: [
     'identity:session',

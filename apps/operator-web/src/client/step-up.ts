@@ -1,10 +1,17 @@
 /**
  * THE STEP-UP CEREMONY ON THE OPERATOR ORIGIN.
  *
- * Eight of this console's thirteen routes are `StepUpGuard`-ed — every review
- * decision, every verification, every stage decision, every distribution
- * approval, every close — so a console without this is a console that can read
- * a death case and do nothing about it. `POST /api/auth/stepup` is one of the
+ * SIX of this console's thirteen routes are `StepUpGuard`-ed — the review
+ * decision, the verification, both stage decisions, the distribution approval
+ * and the close — so a console without this is a console that can read a death
+ * case and do nothing about it. Seven of the eight on-screen actions go
+ * through the ceremony (approve and reject are two buttons over one route);
+ * `startReview` is the one that does not, and that is a decision rather than
+ * an omission — claiming a case commits to nothing, is undone by rejecting,
+ * and the decision that follows it IS gated, so gating the claim would put a
+ * factor in front of picking up work. The split is pinned against the real
+ * decorators by `apps/services/settlement/test/session-audience.spec.ts`,
+ * where it is measured, so these numbers are not a second copy. `POST /api/auth/stepup` is one of the
  * three identity routes the `operator` audience is admitted to, widened in
  * PR3a for exactly this: the vault origin's precedent is that an isolated
  * origin re-proves a factor WITHOUT a round trip back across the boundary,

@@ -7553,3 +7553,190 @@ deviating from them, stop and propose the change with rationale — do not silen
   N boundaries, N green fences prove nothing about the artifact; only reading the
   value back out of the artifact does, and it must be a value that could not have
   arrived by accident.
+- 2026-08-19 — M21 PR3b IS THE OPERATOR SCREENS, and the first thing it found is
+  that THE QUEUE COULD NOT REACH A CLOSEABLE CASE. `listOpenForReview` selects
+  `('reported','verifying','waiting_period')` and the post-verification verbs act
+  on `('verified','active','distributing')` — disjoint, measured, and no document
+  named it — so `close`, stage decisions and distribution approvals were reachable
+  only by an operator who already held a case id from somewhere else: three of the
+  six verbs this milestone names had a surface that could not reach them. `GET
+  /v1/settlement/administrable` is the second worklist (chosen over widening the
+  first), and the two status sets are declared together and pinned disjoint
+  against the DDL's own CHECK rather than against a list retyped in a spec. A
+  SIBLING of `queue` and not `cases/administrable`, because the latter is a
+  literal segment competing with `cases/:caseId` in a different controller, which
+  Nest resolves in module-registration order — a path that cannot collide beats a
+  path whose correctness is a property of a list. Also found before any screen
+  existed: `markReviewStarted` moved a case to `verifying` and recorded the
+  claiming operator NOWHERE (`human_review_by` is first written at approval), so a
+  shared work queue had no claim marker and two operators could independently run
+  one §5.1 review, which the reviewer-≠-reporter CHECK does not prevent; and ALL
+  23 SETTLEMENT AUDIT ACTIONS WERE WRITES, so an operator working the queue or
+  reading a death case left no trace of having looked, in the service whose whole
+  subject is a §5.1 investigation. TWO read actions, not one per route —
+  `settlement.queue.viewed` and `settlement.case.viewed` with `detail.surface`
+  naming which of the five reads — and the gate is consulted UNCONDITIONALLY
+  rather than as the second arm of the visibility chain, so an operator who is
+  also the reporter is still recorded and the claim does not turn on the order of
+  an `if`.
+- 2026-08-19 — THE AUDIENCE IS DECORATED PER HANDLER AND NEVER SERVICE-WIDE, for
+  a mechanical reason rather than a stylistic one: `CallerGuard.audiencesFor`
+  returns the UNION of the service-wide list and the per-route one, so binding
+  `operator` in settlement's `ALLOWED_SESSION_AUDIENCES` could never be narrowed
+  by a decorator and would hand a console credential the decedent's own `void`,
+  the owner's waiting-period settings and a reporter's case listing. FOUR OF THE
+  THIRTEEN ARE A REAL WIDENING AND ARE RECORDED AS ONE: `getCase`, `timeline`,
+  `listStages` and `listDistributions` authorize through the Cedar `read` permit
+  and `assertCaseVisible`, which admit the decedent, the reporter and the estate's
+  executor as well as an operator, so a console credential reaches those people's
+  own cases too. The alternative — four operator-only read projections — is a
+  second copy of an authorization decision, which is how two copies drift apart.
+  Decided by the user: decorate all twelve reads and REWRITE THE COPY, so PR3a's
+  claim that the credential "reaches none of your estate" is replaced in the
+  change that made it false, restated in the EXTENSION shape (what the credential
+  CANNOT do), with the executor overlap an `[ACCEPTED]` residual in docs/03 §6cc.
+  AN AUDIENCE IS A RESTRICTION ON WHERE A CREDENTIAL MAY BE SPENT, NEVER A CLAIM
+  ABOUT ITS HOLDER — `OperatorGate` against `settlement_operators` remains the
+  only answer to "may this person act".
+- 2026-08-19 — THE SERVICE-LOCAL AUDIENCE SPEC IS THE PIECE NEITHER EXISTING
+  FENCE COULD BE. @estate/auth-guard's fence checks the TABLE against this
+  service's decorators and a prototype scan checks the metadata; neither can see
+  that `CallerGuard`'s reflector is `@Optional()` and `audiencesFor` falls back to
+  the service-wide list when it is absent — so a perfectly decorated route on a
+  container where `Reflector` does not resolve is SILENTLY INERT: 401, no error,
+  no log, every source fence green. The new spec drives a REAL guard, admits an
+  operator session on `queue`, refuses it on `void` with the same generic 401 an
+  invalid token gets, and reproduces the inert case with no reflector — which is
+  what proves the first assertion measures the reflector rather than a default
+  that happens to agree. It also pins that an ACCOUNT session still reaches the
+  console routes, because a decorator must never take authority away.
+- 2026-08-19 — THE EDGE LEARNED A PATH SHAPE, AND THE SHAPE IS WHERE THE SAFETY
+  ARGUMENT LIVES. PR3a matched `r.path === pathname`, which cannot express
+  `cases/:caseId`, and nine of the thirteen handlers carry a parameter. TEMPLATES,
+  NOT PREFIXES: a `:name` segment matches exactly ONE non-empty path segment and
+  can never span a `/` — `URL.pathname` leaves `%2F` percent-encoded and the
+  matcher splits on the literal separator, so a smuggled separator arrives as one
+  opaque segment settlement refuses, while `..` and `%2e%2e` never arrive at all
+  because the WHATWG parse collapses both before the table is consulted (measured,
+  not assumed). `startsWith` would make every row a tree, and a tree under
+  `/api/auth/` reaches `/v1/auth/handoff`, the credential this origin must never
+  help mint. THE METHOD IS PART OF THE ROW, because two settlement routes share a
+  path and differ only by verb: `GET cases/:caseId/stages` is the operator's read
+  and is admitted, `POST` on the same path is the EXECUTOR's request and is not —
+  a path-only table would forward both and lean on `CallerGuard` to refuse the
+  second, which it would, but the edge would be claiming a capability it does not
+  have. THE QUERY STRING IS DROPPED BY NEVER BEING READ: the upstream path is
+  built from the template plus the captured segments, and a row naming an
+  uncaptured parameter is a process that will not start (the `assertSubjectFree`
+  precedent), because a literal `:caseId` travelling upstream reads to the
+  operator as an outage.
+- 2026-08-19 — TWO DERIVATION HOLES IN THE ROUTE↔CONSUMER FENCE, one of which
+  PR3b would itself have opened. The operator-shape regex required a row to close
+  immediately after `rewriteTo`, so giving each row a `method` would have made it
+  read ZERO of sixteen — while the per-edge floor stayed green on the vault edge's
+  rows and the operator edge's three unchanged identity ones. A FLOOR CANNOT SEE A
+  PARTIAL READ, so rows are parsed as blocks and a completeness assertion counts
+  `rewriteTo:` occurrences as a second, deliberately dumber reading of the same
+  file. The other hole is the block regex itself: `{[^{}]*}` does not span a
+  nested brace, so a row written with an object spread is not unreadable, it is
+  INVISIBLE — and an invisible EXTRA row leaves a set comparison passing. The
+  fence also could not see a path built from a file-local constant
+  (`${CASES}/${id}/timeline` collapsed to `:p/:p/timeline`), so it resolves
+  same-file `const X = '…'` before collapsing interpolations; that direction
+  failed safe, but a fence going red for a reason that is not its property is how
+  an escape hatch gets widened. TWO EXEMPTIONS HONESTLY DO NOT FLIP: `POST
+  cases/:caseId/stages` and `POST cases/:caseId/distributions` are executor writes
+  whose PATHS are addressed by the console's GET rows, and this fence matches by
+  path — its header always said so and nothing had exercised the imprecision.
+  `consumed()` would claim a caller that does not exist and `{ exempt }` would be
+  flagged stale, so the collision is DECLARED (`pathSharedWith`, the
+  `consumedByName` precedent) with four assertions making it checkable, including
+  that no edge table names this method on this path.
+- 2026-08-19 — THE CONSOLE'S CEREMONY POLLS, IT DOES NOT POLL THE CASE, AND THE
+  CASE ID NEVER ENTERS THE URL — three decisions that are not UI preferences.
+  (1) Identity grants the elevation; settlement learns of it by introspecting the
+  token through `HttpSessionVerifier`'s short-TTL positive cache, so for up to one
+  TTL after a genuine step-up the peer still answers from a cached un-elevated
+  session and a SINGLE-SHOT retry leaves the prompt doing nothing for someone
+  whose code was accepted — the M13 review's finding against the main app, whose
+  polling shape this ports rather than the vault origin's single-shot one (the
+  vault re-proves a factor to VAULT, which identity's own session state reaches
+  first-hand). CANCEL ABORTS THE LOOP and so does starting a fresh attempt: a
+  step-up prompt is a CONSENT ceremony, and here the stakes are a death case,
+  where a surviving retry could confirm a verification and revoke every session a
+  living person holds. The ownership marker is a COUNTER rather than a boolean
+  because Cancel restores the form, so a second attempt can begin while the first
+  is in flight and a boolean cannot tell "nobody owns this" from "somebody else
+  does". (2) Each case read emits an operator read event on that estate's own
+  death-case trail, so a console that refreshed itself would turn one screen,
+  abandoned over lunch, into hundreds of recorded reads — M12's
+  audited-volume-is-a-UI-constraint rule arriving where the subject of the trail
+  is a dead person's estate; a case is re-read when somebody acts on it, pinned by
+  a test that opens a case, counts exactly four reads, and then waits. (3) Which
+  screen the console is on is module state and nowhere else: a hash route would
+  accumulate death-case references in an operator's browser history and put one in
+  the address bar, which is the part a screen-share catches. The cost is that a
+  refresh returns to the worklists.
+- 2026-08-19 — A REFUSED LIST COSTS ITS OWN PANEL AND NEVER READS AS AN EMPTY
+  ONE, because a short worklist of death reports is indistinguishable from a quiet
+  week — which is also why ONE unparseable row fails the whole list rather than
+  being dropped. Three smaller copy decisions with the same shape: `UNAUTHENTICATED`
+  gained a sentence of its own, having fallen through to "something went wrong"
+  while a console session lasts fifteen minutes and cannot be renewed, so an
+  expired credential read as a fault; `UNAVAILABLE` says BOTH true things (the
+  session survives an outage AND nothing was committed) because that one code
+  reaches two surfaces; and a timeline detail is SCALARS ONLY, because
+  `String({})` is `'[object Object]'`, which on an audit surface is a sentence
+  that looks like a value and is not one.
+- 2026-08-19 — THE E2E REFUSAL LIST IS SPLIT, NEVER SHORTENED, and the split is
+  the milestone. Until PR3b every service answered a redeemed operator session
+  with 401 and one loop said so. Settlement now answers two ways: **401** means
+  the AUDIENCE was not admitted and `CallerGuard` never let the request reach the
+  handler (`GET /v1/settlement/cases` is owner-facing and stays that way), and
+  **403** means the audience WAS admitted and the NEXT control stopped it — the
+  probe user is not on `settlement_operators`, so `OperatorGate` refuses inside
+  the transaction that would have acted. Collapsing those into "it is refused"
+  would hide the boundary moving: a route silently losing its decoration, and the
+  allowlist silently ceasing to be consulted, both still refuse, with different
+  numbers. A new test drives the claim THROUGH the edge, which nothing had done —
+  an allowlisted operator gets 200 on both worklists carrying nothing but the
+  cookie they arrived with, a console session belonging to a non-operator gets 403
+  on the same path, and `/api/settlement/settings` (a real settlement route this
+  origin deliberately does not carry) dies at the edge with 404 and no request
+  leaving the box. Minting an operator handoff is role-blind by design, so
+  ARRIVING proves nothing; this is where that stops being a sentence in a
+  docstring and becomes two status codes from two users.
+- 2026-08-19 — A PARAGRAPH OF REASONS HAS NO MECHANISM BEHIND IT, which is how
+  the audience declaration's own enumeration of the absences rotted inside two
+  PRs of PR2.5 — the milestone spent entirely on counts that rotted. The
+  `operator` docblock named `listMyCases`, WHICH IS NOT A HANDLER IN THIS PRODUCT
+  (`listMine` is), omitted four refusals outright (`reportableEstates`,
+  `addEvidence`, `setDistributionStatus`, `vaultRelease`), mis-grouped two more as
+  executor-only when the SERVICE admits an operator on both — `listTasks` through
+  `assertCaseVisible` and `setDistributionStatus` through the gate, so their
+  absence is a PRODUCT decision rather than an authorization one, which is worth
+  saying rather than letting the list imply otherwise — and carried a duplicated
+  paragraph and a heading still describing PR3a's contents. The fix is not a
+  better paragraph: `session-audience.spec.ts` now asserts the enumeration is
+  TOTAL in BOTH directions against the refused set it derives from the real
+  decorators. A refused handler missing from the prose is an absence nobody
+  decided; a NAME in the prose that is not a handler is a reason pointing at
+  nothing, which is worse, because it reads as covered.
+- 2026-08-19 — AND THE STEP-UP COUNT HAD ROTTED THE SAME WAY, in code shipped
+  four days earlier. `step-up.ts` said "Eight of this console's thirteen routes
+  are `StepUpGuard`-ed"; SIX carry the guard. The eight was a count of on-screen
+  BUTTONS (approve and reject are two of them over one route), and the sentence
+  then travelled verbatim into a commit message and the docs/04 record. Corrected
+  by MEASURING it and by moving it to where it is measured: a declared table pins
+  which console routes need a fresh factor, checked against the real
+  `@UseGuards(StepUpGuard)` decorators in both directions, and the client's
+  comment points at that spec instead of restating a number. Two things fell out
+  of writing it. `startReview` is the one console verb with no guard, and stating
+  that forced the reason to be written down rather than inherited — claiming a
+  case commits to nothing, is undone by rejecting, and the DECISION that follows
+  IS gated, so gating the claim would put a factor in front of picking up work,
+  the M6 rule that the protective action must never be harder than the permissive
+  one. And Nest stores method-level `@UseGuards` ON THE HANDLER FUNCTION, not at
+  `(prototype, key)`: the first version read the wrong place, reported every route
+  ungated, and was caught by its own anti-vacuity floor (`gated > 0`) within
+  minutes of being written — a floor earning its place on the day it was added.

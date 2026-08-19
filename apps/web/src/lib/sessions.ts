@@ -43,10 +43,29 @@ export const AUDIENCE_COPY: Record<SessionAudience, AudienceCopy> = {
     detail:
       'A paired browser extension. It can look up and unlock vault items, and nothing else: it cannot reset your vault, change your emergency contacts, delete an item, or reach the rest of your estate.',
   },
+  /*
+   * STATED AS A RESTRICTION, and REWRITTEN by M21 PR3b in the change that made
+   * the previous wording false.
+   *
+   * PR3a said "it reaches none of your estate", which was true while an
+   * operator credential reached three identity routes and nothing else. PR3b
+   * admitted it to thirteen settlement routes, and four of those reach a case
+   * through `assertCaseVisible` — which admits the decedent, the reporter and
+   * the estate's executor as well as an operator. So a console session CAN see
+   * a case the holder is party to, and the old sentence was an absolute the
+   * platform no longer keeps.
+   *
+   * The EXTENSION row's shape is the one to copy here: it says what the
+   * credential CANNOT do, because an audience is a restriction on where a
+   * credential may be spent and never a claim about who is spending it. The
+   * console's own screen carries the same sentence, and `sessions.test.ts`
+   * asserts the absolute is gone rather than merely that the new words are
+   * present.
+   */
   OPERATOR: {
     label: 'Operator console',
     detail:
-      'Opened from Estate to reach the operator console. It expires on its own after 15 minutes and cannot be renewed. It reaches none of your estate — not your assets, documents, people or vault — and holding one grants no authority on its own.',
+      'Opened from Estate to reach the operator console: the review queue and settlement cases. It expires on its own after 15 minutes and cannot be renewed. It cannot reach your assets, documents, people or vault, and it cannot change your account — and holding one grants no authority on its own.',
   },
 };
 

@@ -236,6 +236,197 @@ describe('settlement route audiences match the declaration', () => {
     }
   });
 
+  /**
+   * WHICH CONSOLE ROUTES NEED A FRESH FACTOR, declared with the reason and
+   * checked against the real `@UseGuards(StepUpGuard)` decorators.
+   *
+   * The console's step-up ceremony is written against this split, and the
+   * number had ALREADY rotted before this was added: `step-up.ts` said eight
+   * of thirteen where six carry the guard, having counted on-screen BUTTONS
+   * (approve and reject are two of them over one route). A number in prose
+   * beside a mechanism that derives one is a second copy free to drift, so it
+   * lives here now and the client's comment points at it.
+   *
+   * `startReview` is the one console verb with no guard, and that is a
+   * decision rather than an omission: claiming a case commits to nothing, is
+   * undone by rejecting, and the DECISION that follows is gated — so gating
+   * the claim would put a factor in front of picking up work, which is the M6
+   * rule that the protective action must never be harder than the permissive
+   * one. Every route that CHANGES the §5.1 chain's outcome is gated.
+   */
+  describe('the console verbs that need a fresh factor', () => {
+    const UNGATED: Readonly<Record<string, string>> = {
+      queue: 'a read',
+      administrable: 'a read',
+      getCase: 'a read',
+      timeline: 'a read',
+      listStages: 'a read',
+      listDistributions: 'a read',
+      startReview:
+        'claiming a case commits to nothing and the decision after it is gated — see this block',
+    };
+
+    /**
+     * ON THE HANDLER FUNCTION, not on `(prototype, key)`. Nest's method-level
+     * `@UseGuards` writes to the descriptor's value, which is what
+     * `getAllAndOverride([handler, class])` reads at request time — the same
+     * place `admittedAudiences` above looks, and the reason this reads the
+     * runtime metadata rather than scanning for the decorator's text.
+     */
+    function stepUpGuarded(controller: Ctor, route: string): boolean {
+      const handler = (controller.prototype as unknown as Record<string, object | undefined>)[
+        route
+      ];
+      if (handler === undefined) return false;
+      const guards: unknown = Reflect.getMetadata('__guards__', handler);
+      return (
+        Array.isArray(guards) &&
+        guards.some(
+          (g) => typeof g === 'function' && (g as { name?: string }).name === 'StepUpGuard',
+        )
+      );
+    }
+
+    it('every console route is either step-up gated or declared ungated with a reason', () => {
+      const surprises: string[] = [];
+      let gated = 0;
+      for (const { ctor } of CONTROLLERS) {
+        for (const route of routeNames(ctor)) {
+          if (!OPERATOR_ROUTES.some((r) => r.route === route)) continue;
+          if (stepUpGuarded(ctor, route)) {
+            gated += 1;
+            // A declared-ungated route that GAINS the guard is fine for
+            // safety and still a drift: the declaration would be describing a
+            // world that no longer exists.
+            if (route in UNGATED) surprises.push(`${route} is gated but declared ungated`);
+          } else if (!(route in UNGATED)) {
+            surprises.push(`${route} carries no StepUpGuard and no declared reason`);
+          }
+        }
+      }
+      expect(surprises).toEqual([]);
+      // Anti-vacuity: a metadata key that stops resolving would report zero
+      // gated routes and satisfy every assertion above.
+      expect(gated).toBeGreaterThan(0);
+      expect(gated).toBe(OPERATOR_ROUTES.filter((r) => r.route in UNGATED === false).length);
+    });
+
+    it('the destructive verbs are gated, one at a time', () => {
+      // Named as well as derived, because a failure saying `verify` must need a
+      // factor tells the next person WHY — confirming a verification locks an
+      // account and revokes every session a living person holds.
+      const must = [
+        'decideReview',
+        'verify',
+        'closeCase',
+        'decideStage',
+        'revokeStage',
+        'approveDistribution',
+      ];
+      for (const route of must) {
+        const owner = CONTROLLERS.find(({ ctor }) => routeNames(ctor).includes(route));
+        expect({ route, found: owner !== undefined }).toEqual({ route, found: true });
+        expect({ route, gated: stepUpGuarded((owner as { ctor: Ctor }).ctor, route) }).toEqual({
+          route,
+          gated: true,
+        });
+      }
+    });
+  });
+
+  /**
+   * THE DECLARATION'S OWN ENUMERATION OF THE ABSENCES IS TOTAL.
+   *
+   * `AUDIENCE_ROUTE_ADMITTERS.operator` is a list of what IS admitted, and the
+   * derived check above proves everything else is refused. Neither says WHY a
+   * particular handler is absent, and that reason is the part a reviewer needs
+   * — so the declaration's docblock enumerates the refused set with a reason
+   * apiece, and this asserts the enumeration has not stopped covering it.
+   *
+   * IT HAD ALREADY ROTTED WHEN THIS WAS WRITTEN: the docblock named
+   * `listMyCases`, which is not a handler in this product (`listMine` is), and
+   * omitted four refusals outright. Nothing could see it, because a paragraph
+   * of reasons has no mechanism behind it — which is the whole subject of M21
+   * PR2.5, committed one PR earlier.
+   *
+   * BOTH DIRECTIONS. A refused handler missing from the prose is an absence
+   * nobody decided; a NAME in the prose that is not a handler is a reason
+   * pointing at nothing, which is worse, because it reads as covered.
+   */
+  describe('the declaration explains every absence', () => {
+    const SESSION_SOURCE = join(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      '..',
+      'packages',
+      'auth-guard',
+      'src',
+      'session.ts',
+    );
+
+    /**
+     * Backticked bare identifiers that are legitimately NOT settlement
+     * handlers, declared with the reason each appears. Anything else the prose
+     * names has to be a real route.
+     */
+    const NOT_A_SETTLEMENT_HANDLER: Readonly<Record<string, string>> = {
+      vault: 'the audience whose treatment this paragraph is compared against',
+      mintHandoff: "identity's handler, absent from every non-account audience",
+      assertCaseVisible: 'the service method the four reads authorize through',
+    };
+
+    /** The docblock immediately above `operator: [` in the admitters table. */
+    function operatorDocblock(): string {
+      const source = readFileSync(SESSION_SOURCE, 'utf8');
+      const table = source.indexOf('export const AUDIENCE_ROUTE_ADMITTERS');
+      expect(table).toBeGreaterThan(-1);
+      const list = source.indexOf('operator: [', table);
+      expect(list).toBeGreaterThan(-1);
+      const open = source.lastIndexOf('/**', list);
+      const close = source.indexOf('*/', open);
+      expect(open).toBeGreaterThan(table);
+      expect(close).toBeGreaterThan(open);
+      expect(close).toBeLessThan(list);
+      return source.slice(open, close);
+    }
+
+    /** Only the absence paragraphs — the admitted groups name handlers too. */
+    function absenceProse(): string {
+      const doc = operatorDocblock();
+      const start = doc.indexOf('ABSENT AND DELIBERATE');
+      expect(start).toBeGreaterThan(-1);
+      const prose = doc.slice(start);
+      // A floor, because two empty strings agree perfectly and a heading that
+      // is renamed would otherwise slice to nothing and pass.
+      expect(prose.length).toBeGreaterThan(600);
+      return prose;
+    }
+
+    function namedIdentifiers(prose: string): string[] {
+      return [...prose.matchAll(/`([A-Za-z][A-Za-z0-9]*)`/g)].map((m) => m[1] as string);
+    }
+
+    it('names every refused handler', () => {
+      const allowed = new Set(OPERATOR_ROUTES.map((r) => r.route));
+      const refused = CONTROLLERS.flatMap(({ ctor }) =>
+        routeNames(ctor).filter((route) => !allowed.has(route)),
+      ).sort();
+      expect(refused.length).toBeGreaterThan(0);
+      const named = new Set(namedIdentifiers(absenceProse()));
+      expect(refused.filter((route) => !named.has(route))).toEqual([]);
+    });
+
+    it('names nothing that is not a handler', () => {
+      const routes = new Set(CONTROLLERS.flatMap(({ ctor }) => routeNames(ctor)));
+      const phantom = namedIdentifiers(absenceProse()).filter(
+        (name) => !routes.has(name) && !(name in NOT_A_SETTLEMENT_HANDLER),
+      );
+      expect(phantom).toEqual([]);
+    });
+  });
+
   it('NO route admits `vault` or `extension`, and every decoration keeps `account`', () => {
     // Settlement is a callee of the vault (the §6a gate) and has nothing to do
     // with a browser extension. Swept rather than assumed, because the

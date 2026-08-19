@@ -175,10 +175,12 @@ trace that they were read. Documents emits exactly one operator read,
 `document.evidence.accessed` (whose actor class disagreed with its own paired
 decrypt event until M21 PR2.5). And `estate.viewed` is `asset.estate.viewed`, an
 ASSETS event describing an EXECUTOR's inventory read (§6r) — a different actor
-class entirely, cited in a paragraph about operators. **Owner: M21 PR3b** for the
-settlement read events, which land in the same change as the console screens that
-make the reads, on the rule that a control ships with its caller; correcting the
-prose rather than adding a routeless event is the M18 PR1 precedent. **Owner:
+class entirely, cited in a paragraph about operators. **CLOSED for settlement by
+M21 PR3b** (§6cc): `settlement.queue.viewed` and `settlement.case.viewed` ship
+with the console screens that make the reads, on the rule that a control ships
+with its caller — correcting the prose first, rather than adding a routeless
+event, was the M18 PR1 precedent. The paragraph's opening sentence describes what
+was true before that change and is kept as the record of it. **Owner:
 M30** (in-app feed) for showing a user that support accessed their data on a
 date, which no mechanism anywhere does. The "Anthropic-style transparency"
 phrasing is kept as the goal and no longer stated as a fact.
@@ -4010,21 +4012,21 @@ material stood behind it.
   why the app origin's own CSP weakness (M11: `script-src` is not locked down,
   because Next's inline bootstrap needs nonces) bounds this rather than the
   operator origin's strength.
-- **[OWNER: M21]** *Settlement emits no read event of any kind — PR3b.* All 23 of
-  its audit actions are writes, so an operator opening a case, reading its
-  timeline or working the queue leaves no trace of the read. The events land in
-  the same change as the screens that make the reads; adding them now would be a
-  routeless event, which is the zero-callers shape this milestone exists to
-  close. The TB7 paragraph claiming these events already exist is corrected in
-  the same PR that found it false.
-- **[OWNER: M21]** *Operator actions remain unbounded — PR3b.* There is no rate
-  limit on any operator verb, and PR3a does not add one, because a bound whose
+- **[CLOSED: §6cc]** *Settlement emits no read event of any kind — PR3b.* All 23
+  of its audit actions were writes, so an operator opening a case, reading its
+  timeline or working the queue left no trace of the read. PR3b's first slice
+  adds them, in the same change as the screens that make the reads — adding them
+  earlier would have been a routeless event, which is the zero-callers shape this
+  milestone exists to close. The TB7 paragraph claiming these events already
+  existed was corrected in the same PR that found it false.
+- **[OWNER: M23]** *Operator actions remain unbounded.* There is no rate
+  limit on any operator verb, and neither PR3a nor PR3b adds one, because a bound whose
   only caller is a surface that does not exist is a control nobody exercises
   (`ACCOUNT_PASSWORD_BOUND`'s history in §6y is what the alternative looks like).
   The mint route inherits the step-up path's existing cap transitively, which
   bounds the CEREMONY and says nothing about the actions behind it.
-- **[OWNER: M21]** *The operator interstitial is reachable only by typing
-  its URL — PR3b.* `/operator` is deliberately not in the app's navigation: minting is
+- **[OWNER: M23]** *The operator interstitial is reachable only by typing
+  its URL.* `/operator` is deliberately not in the app's navigation: minting is
   role-blind, so the page works for everybody, and a product for 10M users should
   not put "open the operator console" in an estate's own navigation. How an
   operator finds it is a question with a real answer only once there is something
@@ -4033,6 +4035,104 @@ material stood behind it.
   with no expiry policy of its own, and no way for an operator's employer to
   revoke it centrally.* Just-in-time elevation and session recording both need
   the IAM the deployment does not have, exactly as TB7's deferral list records.
+
+
+## 6cc. Threat-model delta — M21 PR3b, the operator screens (2026-08-19)
+
+**The surface behind the boundary, and the first read events settlement has ever
+emitted.** PR3a shipped an audience, a role-blind mint and an isolated origin
+with deliberately nothing on it. PR3b puts the review queue, the post-verification
+worklist and the case surface there, wires thirteen settlement routes through the
+edge, and gives an operator's READS a trail of their own.
+
+### What PR3b changes
+
+- **Thirteen settlement handlers gain `@AllowSessionAudiences('operator')`**, per
+  handler and never service-wide. `CallerGuard.audiencesFor` returns a UNION that
+  widens and can never narrow, so a service-wide grant would hand an operator
+  session every route settlement declares — including the owner-facing intake and
+  void routes. The set is derived and asserted in
+  `apps/services/settlement/test/session-audience.spec.ts`, in both directions.
+- **The edge gains a second upstream and a table with a METHOD in every row.**
+  `GET cases/:caseId/stages` is the operator's list; `POST` on the same path is
+  the EXECUTOR's stage request, which the console does not carry and the audience
+  does not admit. A path-keyed allowlist could not express that difference, so
+  the row is `(method, path, upstream, rewriteTo)` and the upstream path is BUILT
+  from the template rather than produced by surgery on what arrived. The query
+  string is dropped: a settlement path already names a case, and a query string
+  is the part intermediaries log by default (the M12 document-search rule).
+- **Every operator read is audited**, and until PR3b all 23 of settlement's
+  audit actions were writes. TWO actions rather than six: loading one case opens
+  four reads (the case, its timeline, its stages, its distributions), so one
+  action per route would be four events per screen — noisier without being more
+  informative — and the route travels in `detail.surface`.
+  `settlement.queue.viewed` is cross-case reconnaissance with no resource id;
+  `settlement.case.viewed` names exactly one estate and belongs on that case's
+  own trail. They answer different questions, which is why they are two.
+- **The console does NOT poll**, and the reason is that trail rather than the
+  network. Each case read is an audit event on a dead person's estate, so a
+  console that refreshed itself would turn one screen, abandoned over lunch, into
+  hundreds of recorded reads — the audited-volume-is-a-UI-constraint rule M12
+  applied to document decrypts, arriving where the subject is a settlement case.
+  A case is re-read when somebody acts on it, and a stack test opens a case,
+  counts exactly four reads, and then waits.
+- **The step-up ceremony POLLS.** Identity grants the elevation; settlement
+  learns of it by introspecting the token through `HttpSessionVerifier`'s
+  short-TTL positive cache, so for up to one TTL a peer still answers from a
+  cached un-elevated session and a single-shot retry leaves the prompt doing
+  nothing (the M13 review's finding against the main app). Cancel ABORTS the
+  loop, and the ownership marker is a counter rather than a boolean, because
+  Cancel restores the form and a second attempt can begin while the first is in
+  flight. The stakes here are a death case: a retry surviving Cancel could
+  confirm a verification, which locks a living person's account and revokes every
+  session they hold.
+- **The PR3a claim that an operator credential "reaches none of your estate" is
+  REPLACED, in the change that made it false** — on the console's own screen and
+  in the app's paired-devices list, with a test asserting the absolute is gone
+  rather than merely that the new words are present.
+
+### Residuals
+
+- **[ACCEPTED]** *An operator console session can see a case its holder is party
+  to.* Four of the thirteen routes reach a case through `assertCaseVisible`, and
+  that predicate admits the DECEDENT, the REPORTER and the estate's EXECUTOR as
+  well as an operator — deliberately, because those are the people a case is
+  about and the alternative is four routes with two authorization models. So a
+  console session really can read a case the holder reported, or is executor of.
+  It is accepted rather than closed for three reasons: the credential reaches
+  nothing the holder's ORDINARY account session could not already reach through
+  the same routes, so no authority is gained; narrowing `assertCaseVisible` for
+  the operator audience would put a second copy of a §5.1 visibility rule in the
+  code path, which is how two answers start to disagree; and the honest fix is
+  the audience copy, which now states a RESTRICTION ("it cannot reach your
+  assets, documents, people or vault") rather than an absolute the platform does
+  not keep.
+- **[ACCEPTED]** *A console session's reads are indistinguishable, in the audit
+  trail, from an operator's legitimate work.* The read events carry the actor and
+  the case and nothing about WHY, because settlement has no concept of an
+  assignment or a ticket. Reading a case one is party to therefore looks exactly
+  like reading it as an operator. What bounds it is that the events EXIST at all
+  — before PR3b there was nothing to correlate — and the correlation an
+  investigator would run (an operator reading cases they are also the reporter
+  of) is answerable from the case rows already recorded.
+- **[ACCEPTED]** *The case id lives in module state and not in the URL.* A refresh
+  returns to the worklists, which is a real cost paid deliberately: a hash route
+  would accumulate death-case references in an operator's browser history and put
+  one in the address bar, which is the part a screen-share or a screenshot
+  catches.
+- **[OWNER: M23]** *A stale console screen can offer a verb the case no longer
+  admits.* The console reads a case, renders the verbs its status allows, and
+  does not re-read until somebody acts — so a case another operator advanced in
+  the meantime is refused by settlement's own transition table with
+  `invalid_transition`, which the screen reports as "this case has moved on;
+  reload it". That is the correct failure and it is still a failure the operator
+  meets rather than avoids. Closing it wants a change feed, which is the operator
+  platform's problem rather than this surface's.
+- **[OWNER: M23]** *There is no second-person review of an operator's own reads.*
+  Separation of duties exists at the ROW — reviewer ≠ reporter, approver ≠
+  requester, approver ≠ recorder, all DDL CHECKs — and nothing anywhere reviews
+  who READ what. That is the same deferral TB7 records for session recording, and
+  it needs the operator platform's own surfaces rather than this console's.
 
 
 ## 7. Validation program
