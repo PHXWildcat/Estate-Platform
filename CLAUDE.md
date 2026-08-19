@@ -7390,7 +7390,9 @@ deviating from them, stop and propose the change with rationale — do not silen
   wait for somebody to push to `main` again, which the `concurrency` group is
   documented to use to cancel the wedge — STATED AS THE MECHANISM RATHER THAN AS
   AN OBSERVATION, since a run that refuses `cancel` and `force-cancel` with HTTP
-  500 has not been watched accepting a concurrency cancellation either.
+  500 has not been watched accepting a concurrency cancellation either. IT WAS
+  WATCHED AT THE MERGE AND IT DID NOT (see the entry below); the scoping is the
+  only reason the shipped sentence was not simply wrong.
   `workflow_dispatch` is that manoeuvre made available on purpose: security.yml's own comment already records the same
   lesson from the other direction, where a trigger that could only fire at 06:00
   UTC is how a sweep failed seventeen consecutive runs unnoticed. A GATE YOU
@@ -7463,3 +7465,32 @@ deviating from them, stop and propose the change with rationale — do not silen
   answer confident enough to be written down. Neither of these was a CI defect;
   both times the thing observed was fine and the observer was broken, which is
   the direction that wastes the most time because there is nothing to find.
+- 2026-08-19 - AND THE PREDICTION WAS MEASURED AT THE MERGE AND WAS FALSE, which
+  is the entire argument for scoping a claim you have not observed. The
+  expectation, written into a shipped comment and into the entry above, was that
+  `concurrency` grouping on the ref with `cancel-in-progress` would let a new
+  `main` run clear the wedge. HALF OF IT HELD. Cancellation in that group WORKS:
+  a dispatch created 19 seconds after the merge's own push run superseded it, and
+  that run reached `completed/cancelled` about seventy seconds later. What it does
+  NOT do is reach a WEDGED run — two fresh runs arrived in the 05:24 run's own
+  group and its `updatedAt` still equalled its `createdAt` eleven hours on, so
+  nothing has ever touched it. The control is what makes that conclusive rather
+  than suggestive: at the same moment, `gh run cancel` was ACCEPTED on an ordinary
+  pending run and answered HTTP 500 on the wedge, so unreachability is a property
+  of THAT RUN and not of queued runs, and the tempting reading ("you cannot cancel
+  something that has not started") is ruled out. A healthy run creates its jobs
+  within a minute — the restored one had 2 jobs in 44s — where the wedge has
+  created zero, ever, which is also the cheapest way to tell a slow start from a
+  dead run.
+  THE LEVER IS STILL THE FIX AND THE REASON CHANGED: it cannot evict the corpse,
+  it buys a FRESH VERDICT, which is what was actually missing. And it is a
+  FOOT-GUN — dispatching on a ref that already has a live run in the same group
+  CANCELS that run, which is how the first half above got measured: my probe
+  superseded the merge's own Stack run, I then cancelled the probe, and `main`
+  briefly had no `stack.yml` verdict at all until it was restored by dispatching
+  again with the group idle. Both facts are now in the workflow's own comment.
+  The general shape, and the reason this is a decision-log entry rather than a
+  commit message: A PREDICTION IN SHIPPED PROSE IS A LIABILITY WITH A KNOWN
+  EXPIRY, so it must either be labelled as one or be measured before it ships —
+  here it was labelled, the measurement arrived hours later, and the label is the
+  only reason the correction is an addendum instead of a retraction.
