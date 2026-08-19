@@ -125,6 +125,17 @@ async function freshLoad(): Promise<void> {
 }
 const copy = (): string => app().textContent ?? '';
 
+/**
+ * Settle every promise that is already resolvable, WITHOUT the event loop.
+ *
+ * `until()` cannot serve the one test that installs fake timers — it waits on a
+ * `setTimeout` that will not fire while they are — and that test needs fake
+ * timers precisely because the thing it is measuring is a two-second sleep.
+ */
+async function drain(): Promise<void> {
+  for (let i = 0; i < 60; i += 1) await Promise.resolve();
+}
+
 async function until(condition: () => boolean): Promise<void> {
   for (let i = 0; i < 200; i += 1) {
     if (condition()) return;
@@ -606,6 +617,71 @@ describe('every verb reaches its own route, and the gated ones ask first', () =>
     await until(() => document.getElementById('distribution-stepup-code') !== null);
     // The hint names the dual control, because that is what a refusal here means.
     expect(copy()).toMatch(/cannot be the one who approves it/i);
+  });
+
+  it('BACK TO WORKLISTS WITHDRAWS CONSENT — the loop stops and the case stays open', async () => {
+    /*
+     * MEASURED BEFORE THIS WAS FIXED, and it is the reason `stepUpPrompt`
+     * returns a handle rather than an element. The back control cleared the
+     * module's `pending` reference, which forgets the FORM and not the
+     * CEREMONY: the polling loop lived on in its closure, and two seconds after
+     * the operator navigated away it landed the third POST and CLOSED THE CASE
+     * — an irreversible verb on a death case, applied after consent was
+     * withdrawn, with nothing on screen to say it had happened.
+     *
+     * The M13 review's finding against the main app ("Cancel did not cancel"),
+     * arriving through the one door this console has and that one did not.
+     *
+     * The route answers `stepup_required` twice and then 200: so a surviving
+     * loop does not merely retry, it SUCCEEDS, which is the outcome worth
+     * asserting against.
+     */
+    await freshLoad();
+    try {
+      const kase = { ...REPORTED, status: 'active' };
+      const path = `/api/settlement/cases/${CASE_ID}/close`;
+      let closes = 0;
+      transport({
+        ...WORKLISTS([], [kase]),
+        ...CASE_ROUTES(kase),
+        'POST /api/auth/stepup': { status: 200, body: { ok: true } },
+        [`POST ${path}`]: () => {
+          closes += 1;
+          return closes < 3
+            ? { status: 403, body: { error: 'stepup_required' } }
+            : { status: 200, body: { status: 'closed' } };
+        },
+      });
+      await render();
+      await openCase();
+      await pressing('Close case');
+      await until(() => document.getElementById('close-stepup-code') !== null);
+      expect(closes).toBe(1);
+
+      // FAKE TIMERS FROM HERE, so the loop's two-second sleep is under our
+      // control; everything above needs real ones and none of it sleeps.
+      jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+      // A genuine code: identity accepts it and the loop starts polling.
+      const field = document.getElementById('close-stepup-code') as HTMLInputElement;
+      field.value = '123456';
+      field.form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await drain();
+      expect(closes).toBe(2);
+
+      const back = [...app().querySelectorAll('button')].find(
+        (b) => b.textContent === 'Back to worklists',
+      ) as HTMLButtonElement;
+      back.click();
+      await drain();
+      expect(document.getElementById('close-stepup-code')).toBeNull();
+
+      // Past a full retry interval, which is when a surviving loop would land.
+      jest.advanceTimersByTime(2_500);
+      await drain();
+      expect(closes).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('offers NO approval on a distribution somebody has already approved', async () => {

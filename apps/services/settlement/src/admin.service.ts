@@ -568,7 +568,6 @@ export class SettlementAdminService {
   /** The estate timeline: case milestones + stage decisions, oldest first. */
   async timeline(actor: string, sessionId: string, caseId: string): Promise<TimelineEntry[]> {
     const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
-    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'timeline');
     const entries: TimelineEntry[] = [
       {
         at: kase.created_at.toISOString(),
@@ -614,7 +613,12 @@ export class SettlementAdminService {
         });
       }
     }
-    return entries.sort((a, b) => a.at.localeCompare(b.at));
+    const sorted = entries.sort((a, b) => a.at.localeCompare(b.at));
+    // After the rows are gathered, before they are returned — see
+    // `recordOperatorRead`. This site emitted BEFORE reading the stage rows
+    // until the PR3b review; it was the only one of the four that did.
+    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'timeline');
+    return sorted;
   }
 
   // ----------------------------------------------------------------- helpers
@@ -669,10 +673,22 @@ export class SettlementAdminService {
    * for is a record of platform staff looking at somebody's death case, and
    * that is exactly the set this admits.
    *
-   * Emitted AFTER the rows are fetched and BEFORE they are returned, which is
-   * the M19 ordering rule for a disclosure: a read that fails half way must
-   * not leave a record claiming it completed, and a read that completes must
-   * not be able to return before the record of it exists.
+   * EMITTED AFTER THE ROWS ARE GATHERED AND BEFORE THEY ARE RETURNED, at all
+   * four call sites — `timeline` was the odd one out until the PR3b review and
+   * has been moved. The emit is awaited, and the audit path is fail-closed, so
+   * on this ordering nothing is disclosed without a record either way; what it
+   * additionally buys is that a read which THREW leaves no record claiming it
+   * completed.
+   *
+   * THIS IS THE OPPOSITE OF M19's `estate.viewed` ORDERING AND DELIBERATELY SO,
+   * because the two situations differ in the one way that decides it. There the
+   * work being recorded was a DECRYPT LOOP that released plaintext row by row,
+   * so a failure half way had already disclosed — the record had to precede it.
+   * Here the rows are gathered by one query and released only after the emit has
+   * succeeded, so there is no partial disclosure for a record to be late for.
+   * The rule is not "always before" or "always after": it is that the record
+   * must exist before anything leaves, and where release is incremental that
+   * means before the work.
    */
   private async recordOperatorRead(
     actor: string,

@@ -171,6 +171,35 @@ describe('the operator edge', () => {
       expect(calls).toHaveLength(0);
     });
 
+    it('answers a body it cannot DECODE the same way too', async () => {
+      /*
+       * `decodeURIComponent` raises `URIError` on `%zz`, on a bare `%`, and on a
+       * truncated multi-byte sequence, and before the PR3b review that throw
+       * escaped to the top-level catch and answered 500 — the one body shape
+       * that got a different status from every other refusal, on the endpoint
+       * whose own comment says it distinguishes nothing.
+       *
+       * The leak was small (well-formed-vs-malformed escaping, never
+       * valid-vs-invalid code) and the claim was the point: a uniform answer is
+       * only uniform if it has no exceptions.
+       */
+      await boot();
+      for (const body of ['code=%zz', 'code=%', 'code=%E0%A4', '%zz=EH1-ABCD']) {
+        const res = await fetch(`${base}/open`, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', origin: APP_ORIGIN },
+          body,
+        });
+        expect({ body, status: res.status, at: res.headers.get('location') }).toEqual({
+          body,
+          status: 303,
+          at: '/?open=refused',
+        });
+      }
+      expect(calls).toHaveLength(0);
+    });
+
     it('answers a missing code the same way as a bad one', async () => {
       await boot();
       const res = await fetch(`${base}/open`, {

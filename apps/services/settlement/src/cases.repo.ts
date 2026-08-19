@@ -22,8 +22,8 @@ export type CaseStatus =
  * them or in neither (`closed` and `rejected_fraud` are terminal and appear on
  * no worklist at all).
  *
- * Kept next to each other, and pinned against `CaseStatus` by
- * `cases-repo.spec.ts`, so a ninth status has to be placed deliberately rather
+ * Kept next to each other, and pinned against the MIGRATION's own status
+ * CHECK by `test/operator-worklists.spec.ts`, so a ninth status has to be placed deliberately rather
  * than defaulting into invisibility — the failure this pair exists to prevent
  * is a status nobody can reach a screen for, which is what
  * `close`/stage-decision/distribution-approval were before PR3b.
@@ -159,9 +159,9 @@ export class CasesRepo {
    * an id from somewhere else — the three verbs had a surface that could not
    * reach them.
    *
-   * `settlement_cases.spec.ts` asserts the two sets are disjoint and that
-   * every CaseStatus is in at most one of them, so a ninth status cannot
-   * silently land in both or in neither unnoticed.
+   * `test/operator-worklists.spec.ts` asserts the two sets are disjoint and
+   * that every status the DDL admits is in at most one of them, so a ninth
+   * status cannot silently land in both or in neither unnoticed.
    */
   async listAdministrable(q: Queryable | Db): Promise<CaseRow[]> {
     return q.query<CaseRow>(

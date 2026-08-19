@@ -57,7 +57,7 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
  * upstream, and a route that later needs one arrives with a decision rather
  * than by inheritance.
  */
-interface ProxyRoute {
+export interface ProxyRoute {
   readonly method: 'GET' | 'POST';
   readonly path: string;
   readonly upstream: 'identity' | 'settlement';
@@ -158,7 +158,7 @@ const PROXY_ROUTES: readonly ProxyRoute[] = [
 ];
 
 /**
- * A TABLE DEFECT IS A PROCESS THAT WILL NOT START, checked here at module load
+ * A TABLE DEFECT IS A PROCESS THAT WILL NOT START, checked at module load
  * rather than discovered as a malformed upstream path at request time.
  *
  * The failure it forecloses is quiet: a `rewriteTo` naming a parameter the
@@ -167,17 +167,47 @@ const PROXY_ROUTES: readonly ProxyRoute[] = [
  * is refused, and reads to the console user as an outage. The
  * `assertSubjectFree` precedent (M10): a registry that cannot be built is
  * better than one that can be built wrong.
+ *
+ * THREE CHECKS, AND THE FIRST TWO WERE ADDED BY THE PR3b REVIEW, which found
+ * this checking less than its own paragraph claimed. `startsWith(':')` is the
+ * same test `rewritePath` uses, so a parameter written MID-SEGMENT
+ * (`/cases/case-:caseId`) is invisible to both — the validator would pass it
+ * and the rewriter would forward the literal text, which is exactly the outcome
+ * above. And a `path` not under `/api/` is unreachable, `handleProxy` being
+ * entered only from that prefix: a dead row that reads as a granted capability,
+ * which is the shape of thing this repo keeps finding in its own tables.
+ *
+ * EXPORTED SO THE REFUSALS CAN BE DRIVEN. An exception nobody triggers in a
+ * test is an exception nobody has read (M13 review round 3), and the previous
+ * version of this was asserted by a source scan for its own error string —
+ * which cannot tell a check that fires from one that cannot.
  */
-for (const route of PROXY_ROUTES) {
-  const captured = new Set(route.path.split('/').filter((segment) => segment.startsWith(':')));
-  for (const segment of route.rewriteTo.split('/')) {
-    if (segment.startsWith(':') && !captured.has(segment)) {
+export function assertRoutesWellFormed(routes: readonly ProxyRoute[]): void {
+  for (const route of routes) {
+    if (!route.path.startsWith('/api/')) {
       throw new Error(
-        `operator-web: PROXY_ROUTES row ${route.method} ${route.path} rewrites to an uncaptured parameter ${segment}`,
+        `operator-web: PROXY_ROUTES row ${route.method} ${route.path} is unreachable — every proxied path is served under /api/`,
       );
+    }
+    for (const segment of [...route.path.split('/'), ...route.rewriteTo.split('/')]) {
+      if (segment.includes(':') && !segment.startsWith(':')) {
+        throw new Error(
+          `operator-web: PROXY_ROUTES row ${route.method} ${route.path} has a parameter inside a segment (${segment}); a parameter is a WHOLE segment or it is literal text`,
+        );
+      }
+    }
+    const captured = new Set(route.path.split('/').filter((segment) => segment.startsWith(':')));
+    for (const segment of route.rewriteTo.split('/')) {
+      if (segment.startsWith(':') && !captured.has(segment)) {
+        throw new Error(
+          `operator-web: PROXY_ROUTES row ${route.method} ${route.path} rewrites to an uncaptured parameter ${segment}`,
+        );
+      }
     }
   }
 }
+
+assertRoutesWellFormed(PROXY_ROUTES);
 
 /**
  * Segment-wise match against the table, method first.
@@ -294,13 +324,31 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-/** `code=…` out of an application/x-www-form-urlencoded body. */
+/**
+ * `code=…` out of an application/x-www-form-urlencoded body.
+ *
+ * DECODING IS FALLIBLE AND A THROW HERE WOULD BE A DISTINCTION. Node's
+ * `decodeURIComponent` raises `URIError` on `%zz`, on a bare `%`, and on a
+ * truncated multi-byte sequence — and the only caller answers a uniform 303 for
+ * every refusal precisely so that nothing about the submitted code is
+ * observable. An escaping error is not a fact about the code, but a 500 where
+ * every other body gets a 303 is still a difference somebody can measure.
+ * A body this function cannot read is a body with no code in it.
+ */
+function decode(part: string): string | null {
+  try {
+    return decodeURIComponent(part.replace(/\+/g, ' '));
+  } catch {
+    return null;
+  }
+}
+
 function formField(body: string, field: string): string | null {
   for (const pair of body.split('&')) {
     const eq = pair.indexOf('=');
     if (eq === -1) continue;
-    if (decodeURIComponent(pair.slice(0, eq).replace(/\+/g, ' ')) !== field) continue;
-    return decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, ' '));
+    if (decode(pair.slice(0, eq)) !== field) continue;
+    return decode(pair.slice(eq + 1));
   }
   return null;
 }

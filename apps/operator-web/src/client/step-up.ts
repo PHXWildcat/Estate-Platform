@@ -30,12 +30,33 @@
  * is the service identity's own session state reaches first-hand, and settlement
  * is a peer behind the cache.
  *
- * CANCEL ABORTS THE LOOP, and so does starting a new attempt. A step-up prompt
- * is a CONSENT ceremony, and an action that proceeds after consent is withdrawn
- * is the one thing it must never do (M13 review round 3, measured: a third
- * `GrantRole` landed after Cancel). Here the stakes are a death case: a retry
- * surviving Cancel could approve a review, or confirm a verification, which is
- * the transition that revokes every session a living person holds.
+ * THREE THINGS ABORT THE LOOP, and the third is the one the PR3b review
+ * caught missing: Cancel, starting a new attempt, and THE PARENT TAKING THE
+ * PROMPT OFF SCREEN. A step-up prompt is a CONSENT ceremony, and an action that
+ * proceeds after consent is withdrawn is the one thing it must never do (M13
+ * review round 3, measured: a third `GrantRole` landed after Cancel). Here the
+ * stakes are a death case: a retry surviving Cancel could approve a review, or
+ * confirm a verification, which is the transition that revokes every session a
+ * living person holds.
+ *
+ * WHAT "ABORTS" MEANS, EXACTLY, because the strong reading is not true and a
+ * claim nobody can keep is worse than a narrower one. Aborting stops the LOOP:
+ * no further attempt is issued, and no result is acted on. It cannot recall a
+ * request ALREADY ON THE WIRE — there is no cancellation that reaches a
+ * committed transaction, so an abort landing in the ~100ms while a retry is in
+ * flight may still see that retry applied at settlement, silently, because the
+ * client stops observing it. It is bounded to at most one action, and one the
+ * operator had already consented to by submitting a code. Closing it needs the
+ * SERVER to make the outcome conditional on something the client can still
+ * withdraw, which is a settlement change and not a browser one (docs/03 §6cc).
+ *
+ * SO THE PROMPT IS RETURNED AS A HANDLE RATHER THAN AS AN ELEMENT. Clearing the
+ * caller's reference only forgets the ELEMENT; the loop lives in a closure that
+ * outlives it, and the console has navigation ("Back to worklists") that
+ * discards the prompt without pressing Cancel. Measured before this was fixed:
+ * pressing Back mid-poll removed the form and CLOSED THE CASE two seconds
+ * later. `abort()` is what the parent must call, and returning the element
+ * alone made it impossible to.
  *
  * `abandon()` ALSO RESTORES THE FORM rather than leaving that to the request it
  * is cancelling. Neither await here carries a timeout, so a stalled identity
@@ -112,10 +133,16 @@ const defaultSleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+/** A prompt and the one verb its parent needs: see `abort` below. */
+export interface StepUpHandle {
+  readonly form: HTMLFormElement;
+  readonly abort: () => void;
+}
+
 /**
  * Build the prompt. The caller decides where it goes; this owns the ceremony.
  */
-export function stepUpPrompt(options: StepUpOptions): HTMLFormElement {
+export function stepUpPrompt(options: StepUpOptions): StepUpHandle {
   const sleep = options.sleep ?? defaultSleep;
   const codeId = `${options.idPrefix}-stepup-code`;
 
@@ -166,8 +193,19 @@ export function stepUpPrompt(options: StepUpOptions): HTMLFormElement {
     submit.textContent = caption;
   }
 
-  function abandon(): void {
+  /**
+   * Take this ceremony out of play: the next `owns()` is false, so the loop
+   * stops at its next checkpoint and can never apply the action. For the PARENT
+   * to call when it is discarding the prompt — it does not restore the form,
+   * because the element is on its way out of the document.
+   */
+  function abort(): void {
     attempt += 1;
+  }
+
+  /** Cancel: abort, and hand the form back to the person who is still looking at it. */
+  function abandon(): void {
+    abort();
     setBusy(false, options.submitLabel);
     options.onCancel();
   }
@@ -228,7 +266,7 @@ export function stepUpPrompt(options: StepUpOptions): HTMLFormElement {
     })();
   });
 
-  return form;
+  return { form, abort };
 }
 
 /** Focus the code field once the prompt is in the document. */

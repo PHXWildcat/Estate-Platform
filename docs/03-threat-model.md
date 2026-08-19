@@ -4115,6 +4115,18 @@ edge, and gives an operator's READS a trail of their own.
   — before PR3b there was nothing to correlate — and the correlation an
   investigator would run (an operator reading cases they are also the reporter
   of) is answerable from the case rows already recorded.
+- **[ACCEPTED]** *Withdrawing consent cannot recall an action already on the
+  wire.* The step-up prompt aborts on Cancel, on a fresh attempt, and on the
+  parent discarding it (a PR3b review finding: before it, "Back to worklists"
+  mid-poll closed the case two seconds later). What aborting stops is the LOOP —
+  no further attempt is issued and no result is acted on — and it cannot reach a
+  request already issued, whose transaction may commit at settlement while the
+  client has stopped observing it. Bounded to at most one action, and to one the
+  operator consented to by submitting a code; the window is the ~100ms of a
+  retry in flight. Closing it means making the outcome conditional on something
+  the client can still withdraw, which is a settlement change rather than a
+  browser one, for a case where consent was given and then reconsidered inside a
+  tenth of a second.
 - **[ACCEPTED]** *The case id lives in module state and not in the URL.* A refresh
   returns to the worklists, which is a real cost paid deliberately: a hash route
   would accumulate death-case references in an operator's browser history and put

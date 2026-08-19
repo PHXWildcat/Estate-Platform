@@ -79,7 +79,7 @@ describe('the step-up prompt explains a refused CODE, never a refused password',
         status,
         text: () => Promise.resolve(JSON.stringify({ error })),
       });
-    const form = stepUpPrompt({
+    const { form } = stepUpPrompt({
       hint: 'Confirm it is you.',
       submitLabel: 'Approve',
       idPrefix: 'copy',

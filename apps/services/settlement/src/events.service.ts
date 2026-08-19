@@ -98,7 +98,7 @@ export class EventsService {
    * caller decides by asking the gate, exactly as it already must to
    * authorize the read.
    *
-   * `surface` names which of the four reads this was, so one screen produces
+   * `surface` names which read this was, so one screen produces
    * four attributable rows rather than four indistinguishable ones.
    */
   async caseViewed(

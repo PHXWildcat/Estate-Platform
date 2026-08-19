@@ -49,11 +49,11 @@ function transport(reply: Reply | (() => Reply)): void {
 function harness(
   outcomes: RetryOutcome[],
   onCancel: () => void = () => {},
-): { form: HTMLFormElement; sleeps: number[]; runs: number; now: () => number } {
+): { form: HTMLFormElement; abort: () => void; sleeps: number[]; runs: number; now: () => number } {
   const sleeps: number[] = [];
   const state = { runs: 0, clock: 0 };
   jest.spyOn(Date, 'now').mockImplementation(() => state.clock);
-  const form = stepUpPrompt({
+  const { form, abort } = stepUpPrompt({
     hint: 'Confirming a verification locks this account.',
     submitLabel: 'Confirm verification',
     idPrefix: 'verify',
@@ -73,6 +73,7 @@ function harness(
   document.body.replaceChildren(form);
   return {
     form,
+    abort,
     sleeps,
     get runs() {
       return state.runs;
@@ -197,7 +198,7 @@ describe('the step-up prompt', () => {
     let cancelled = 0;
     const state = { runs: 0, clock: 0 };
     jest.spyOn(Date, 'now').mockImplementation(() => state.clock);
-    const form = stepUpPrompt({
+    const { form } = stepUpPrompt({
       hint: 'h',
       submitLabel: 'Confirm verification',
       idPrefix: 'verify',
@@ -229,6 +230,57 @@ describe('the step-up prompt', () => {
     for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));
     expect(state.runs).toBe(1);
     expect(cancelled).toBe(1);
+  });
+
+  it('ABORT() ABORTS THE LOOP TOO — the parent can withdraw consent without Cancel', async () => {
+    /*
+     * The console has navigation ("Back to worklists") that discards the prompt
+     * without pressing Cancel, and before the PR3b review that path only
+     * cleared the caller's REFERENCE to the element. Measured then: the loop
+     * survived and closed the case two seconds later. So the handle carries an
+     * abort, and this is the test that the handle's abort really aborts.
+     *
+     * Held-open sleep for the same reason as the Cancel case above: the abort
+     * is only observable while the loop is genuinely parked.
+     */
+    transport({ status: 200, body: {} });
+    let release: (() => void) | null = null;
+    let cancelled = 0;
+    const state = { runs: 0, clock: 0 };
+    jest.spyOn(Date, 'now').mockImplementation(() => state.clock);
+    const { form, abort } = stepUpPrompt({
+      hint: 'h',
+      submitLabel: 'Confirm verification',
+      idPrefix: 'verify',
+      onCancel: () => {
+        cancelled += 1;
+      },
+      onElevated: () => {
+        state.runs += 1;
+        return Promise.resolve('stale' as const);
+      },
+      sleep: () =>
+        new Promise<void>((resolve) => {
+          release = () => {
+            state.clock += RETRY_INTERVAL_MS;
+            resolve();
+          };
+        }),
+    });
+    document.body.replaceChildren(form);
+
+    field().value = '123456';
+    submit().click();
+    await until(() => release !== null);
+    expect(state.runs).toBe(1);
+
+    abort();
+    (release as unknown as () => void)();
+    for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));
+    expect(state.runs).toBe(1);
+    // And it does NOT call back: the parent is the one discarding the prompt,
+    // so telling it the prompt was cancelled would be telling it what it did.
+    expect(cancelled).toBe(0);
   });
 
   it('CANCEL RESTORES THE FORM ITSELF, without waiting for the request it cancels', () => {

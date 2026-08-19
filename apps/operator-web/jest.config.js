@@ -23,5 +23,5 @@ module.exports = require('@estate/config/jest')(__dirname, {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   // FIRST MEASURED RUN: 91.16/87.73/89.36/92.28, floor placed just below.
-  coverageThreshold: { global: { statements: 92, branches: 88, functions: 92, lines: 94 } },
+  coverageThreshold: { global: { statements: 93, branches: 89, functions: 94, lines: 95 } },
 });

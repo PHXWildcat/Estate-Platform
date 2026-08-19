@@ -157,12 +157,108 @@ describeIfPg('the case claim marker and the worklists, against Postgres', () => 
     // The constants are interpolated into SQL as literals. If one ever drifted
     // from the table's own CHECK the query would silently match nothing, which
     // is a worklist that is always empty rather than an error.
-    const { rows } = await admin.query<{ ok: boolean }>(
-      `SELECT $1::text[] <@ enum_vals AS ok
-         FROM (SELECT ARRAY['reported','verifying','waiting_period','verified','active',
-                            'distributing','closed','rejected_fraud'] AS enum_vals) s`,
-      [[...QUEUE_STATUSES, ...ADMINISTRABLE_STATUSES]],
+    //
+    // CORRECTED IN THE PR3b REVIEW: the first version compared the constants
+    // against a status list RETYPED IN THIS FILE, which is the "list retyped in
+    // a spec" the design set out to avoid — and it was measurably toothless
+    // (removing `distributing` from 001's CHECK left this test GREEN while
+    // `operator-worklists.spec.ts`, which reads the migration, went red). It
+    // asks the LIVE CATALOG now, which is stronger than either: not the
+    // migration's text but the constraint the database is actually enforcing,
+    // in the schema this suite migrated.
+    const { rows } = await admin.query<{ src: string }>(
+      `SELECT pg_get_constraintdef(c.oid) AS src
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = $1 AND t.relname = 'settlement_cases'
+          AND c.conname = 'settlement_cases_status_check'`,
+      [schema],
     );
-    expect(rows[0]?.ok).toBe(true);
+    const src = rows[0]?.src;
+    // Anti-vacuity: a renamed constraint would leave `admitted` empty, and an
+    // empty superset contains nothing — which fails loudly rather than passing.
+    expect(typeof src).toBe('string');
+    const admitted = new Set([...(src as string).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
+    expect(admitted.size).toBeGreaterThan(1);
+    const selected = [...QUEUE_STATUSES, ...ADMINISTRABLE_STATUSES];
+    expect(selected.filter((status) => !admitted.has(status))).toEqual([]);
+  });
+
+  /**
+   * THE INVARIANT 003 ASSERTED IN PROSE AND MIGRATION 004 ENFORCES.
+   *
+   * `cases.repo.ts` says a case "can never be `verifying` with no owner"; that
+   * was a property of one UPDATE and not of the table, and the PR3b review
+   * proved a bare status write produced exactly that row. Pinned here rather
+   * than in a unit test for the reason the whole file exists: a fake repo has
+   * no CHECK to violate.
+   *
+   * BOTH HALVES OF `NOT VALID`, because grandfathering is the design and an
+   * untested grandfather clause is a clause nobody has read. A fresh schema has
+   * no pre-004 rows, so the second case MAKES one the only way it can be made —
+   * by disabling the constraint for one statement, which is itself the proof
+   * that the constraint is what refuses in the first case.
+   */
+  it('refuses a NEW case that enters verifying with no claimer', async () => {
+    const caseId = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.settlement_cases (id, decedent_user_id, reported_by, report_source, status)
+       VALUES ($1, $2, $3, 'trusted_contact', 'reported')`,
+      [caseId, randomUUID(), REPORTER],
+    );
+    await expect(
+      admin.query(`UPDATE ${schema}.settlement_cases SET status = 'verifying' WHERE id = $1`, [
+        caseId,
+      ]),
+    ).rejects.toThrow(/settlement_cases_claimed_when_verifying/);
+    const { rows } = await admin.query<{ status: string }>(
+      `SELECT status FROM ${schema}.settlement_cases WHERE id = $1`,
+      [caseId],
+    );
+    expect(rows[0]?.status).toBe('reported');
+  });
+
+  it('grandfathers a pre-004 unowned case, and still lets it be decided', async () => {
+    const caseId = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.settlement_cases (id, decedent_user_id, reported_by, report_source, status)
+       VALUES ($1, $2, $3, 'trusted_contact', 'reported')`,
+      [caseId, randomUUID(), REPORTER],
+    );
+    // The only way to mint the pre-004 shape once 004 has run.
+    await admin.query(
+      `ALTER TABLE ${schema}.settlement_cases DROP CONSTRAINT settlement_cases_claimed_when_verifying`,
+    );
+    await admin.query(`UPDATE ${schema}.settlement_cases SET status = 'verifying' WHERE id = $1`, [
+      caseId,
+    ]);
+    await admin.query(
+      `ALTER TABLE ${schema}.settlement_cases
+         ADD CONSTRAINT settlement_cases_claimed_when_verifying
+         CHECK (status <> 'verifying' OR claimed_by IS NOT NULL) NOT VALID`,
+    );
+
+    // It survives — NOT VALID does not scan what is already there…
+    const { rows: kept } = await admin.query<{ n: string }>(
+      `SELECT count(*) AS n FROM ${schema}.settlement_cases
+        WHERE id = $1 AND status = 'verifying' AND claimed_by IS NULL`,
+      [caseId],
+    );
+    expect(kept[0]?.n).toBe('1');
+
+    // …and it is not stranded: deciding it leaves `verifying`, so the
+    // constraint is satisfied and the UPDATE is allowed.
+    await admin.query(
+      `UPDATE ${schema}.settlement_cases
+          SET status = 'rejected_fraud', resolution = 'operator_rejected', resolved_at = now()
+        WHERE id = $1`,
+      [caseId],
+    );
+    const { rows: after } = await admin.query<{ status: string }>(
+      `SELECT status FROM ${schema}.settlement_cases WHERE id = $1`,
+      [caseId],
+    );
+    expect(after[0]?.status).toBe('rejected_fraud');
   });
 });

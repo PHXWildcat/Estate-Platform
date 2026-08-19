@@ -10,7 +10,7 @@ import type {
   TimelineEvent,
 } from './settlement.js';
 import { REJECTION_REASONS } from './settlement.js';
-import { focusStepUp, stepUpPrompt, type RetryOutcome } from './step-up.js';
+import { focusStepUp, stepUpPrompt, type RetryOutcome, type StepUpHandle } from './step-up.js';
 
 /**
  * THE OPERATOR CONSOLE (M21 PR3a shipped the boundary; PR3b the surface).
@@ -148,7 +148,7 @@ type View = { readonly kind: 'worklists' } | { readonly kind: 'case'; readonly c
 let view: View = { kind: 'worklists' };
 
 /** The prompt currently open, if any, and the action it is gating. */
-let pending: HTMLElement | null = null;
+let pending: StepUpHandle | null = null;
 let notice: string | null = null;
 let busy = false;
 
@@ -168,6 +168,25 @@ function failed(code: ApiFailure): void {
  * short-TTL positive introspection cache — so `stale` is a real answer and not
  * a failure, and it is the ONE code this helper does not turn into a notice.
  */
+/**
+ * Take the prompt off screen AND out of the ceremony.
+ *
+ * EVERY path that discards a prompt without pressing Cancel goes through here.
+ * Clearing `pending` alone only forgets the element: the polling loop lives in
+ * a closure that keeps running, and it would apply the very action the operator
+ * navigated away from. Measured before this existed — pressing "Back to
+ * worklists" mid-poll removed the form and closed the case two seconds later,
+ * with nothing on screen to say so.
+ *
+ * The loop's own exits (`attempt` below, on both of its terminal outcomes) do
+ * NOT use this: there the loop is clearing its own prompt and returns
+ * immediately after, so aborting it would be aborting the thing that finished.
+ */
+function dismissPrompt(): void {
+  pending?.abort();
+  pending = null;
+}
+
 async function attempt<T>(run: () => Promise<ApiResult<T>>): Promise<RetryOutcome> {
   const result = await run();
   if (result.ok) {
@@ -211,6 +230,8 @@ async function guarded<T>(
       submitLabel,
       idPrefix,
       onElevated: () => attempt(run),
+      // Cancel: the prompt has aborted itself already, so this is only the
+      // parent being told to stop showing it.
       onCancel: () => {
         pending = null;
         void render();
@@ -466,11 +487,11 @@ async function renderCase(caseId: string): Promise<void> {
       stageActions: pending ? () => [] : stageControls(kase.data),
       distributionActions: pending ? () => [] : distributionControls(),
       notice,
-      prompt: pending,
+      prompt: pending?.form ?? null,
       onBack: () => {
         view = { kind: 'worklists' };
         notice = null;
-        pending = null;
+        dismissPrompt();
         void render();
       },
     }),
@@ -482,7 +503,7 @@ function backControl(): HTMLElement {
     button('Back to worklists', 'back', () => {
       view = { kind: 'worklists' };
       notice = null;
-      pending = null;
+      dismissPrompt();
       void render();
     }),
   ]);

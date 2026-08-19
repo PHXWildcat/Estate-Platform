@@ -17,6 +17,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import packageJson from '../package.json';
+import { assertRoutesWellFormed, type ProxyRoute } from '../src/server';
 
 const ROOT = join(__dirname, '..');
 const CLIENT = join(ROOT, 'src', 'client');
@@ -490,12 +491,60 @@ describe('the proxy allowlist reaches identity and settlement, exactly and only'
     expect(server).toContain('new URL(req.url');
   });
 
-  it('REFUSES TO START on a row whose rewrite names an uncaptured parameter', () => {
-    // A boot-time check rather than a request-time surprise: the literal
-    // `:caseId` would otherwise travel upstream as a path segment and read to
-    // the operator as an outage.
-    expect(server).toContain('rewrites to an uncaptured parameter');
-    expect(server).toMatch(/for \(const route of PROXY_ROUTES\) \{[\s\S]{0,400}throw new Error\(/);
+  describe('REFUSES TO START on a malformed row', () => {
+    /*
+     * A boot-time check rather than a request-time surprise: the literal
+     * `:caseId` would otherwise travel upstream as a path segment and read to
+     * the operator as an outage.
+     *
+     * DRIVEN, NOT GREPPED. The previous version of this asserted that the
+     * source CONTAINED the error string and that a `throw` appeared within 400
+     * characters of the loop — which cannot tell a check that fires from one
+     * that cannot, and used the very `[\s\S]{0,400}` bridge this repo has
+     * already recorded as a mistake (2026-08-08, where it backtracked past
+     * `async` and attributed a decorator to a constructor). The validator is
+     * exported now and each refusal is triggered.
+     */
+    const row = (over: Partial<ProxyRoute>): ProxyRoute => ({
+      method: 'GET',
+      path: '/api/settlement/cases/:caseId',
+      upstream: 'settlement',
+      rewriteTo: '/v1/settlement/cases/:caseId',
+      ...over,
+    });
+
+    it('accepts the real table — so the refusals below are about the ROW', () => {
+      expect(() => assertRoutesWellFormed([row({})])).not.toThrow();
+    });
+
+    it('refuses a rewrite naming a parameter the path does not capture', () => {
+      expect(() =>
+        assertRoutesWellFormed([row({ rewriteTo: '/v1/settlement/cases/:otherId' })]),
+      ).toThrow(/uncaptured parameter/);
+    });
+
+    it('refuses a parameter written INSIDE a segment, on either side', () => {
+      // `startsWith(':')` is what the rewriter tests, so a mid-segment
+      // parameter is literal text to it: `case-:caseId` would travel upstream
+      // verbatim. Invisible to the validator too, until this.
+      expect(() =>
+        assertRoutesWellFormed([row({ rewriteTo: '/v1/settlement/cases/case-:caseId' })]),
+      ).toThrow(/parameter inside a segment/);
+      expect(() =>
+        assertRoutesWellFormed([
+          row({ path: '/api/settlement/cases/case-:caseId', rewriteTo: '/v1/settlement/cases' }),
+        ]),
+      ).toThrow(/parameter inside a segment/);
+    });
+
+    it('refuses a row no request can reach', () => {
+      // `handleProxy` is entered only from the `/api/` prefix, so a row outside
+      // it is dead — and a dead row in an allowlist reads as a granted
+      // capability to everyone who later counts the table.
+      expect(() => assertRoutesWellFormed([row({ path: '/v1/settlement/cases/:caseId' })])).toThrow(
+        /unreachable/,
+      );
+    });
   });
 
   it('READS ONE CREDENTIAL FROM ONE PLACE — no bearer header path exists', () => {
@@ -523,6 +572,51 @@ describe('the proxy allowlist reaches identity and settlement, exactly and only'
     // Anti-vacuity: the edge really does present one upstream, so the absence
     // above is a fact about the READ path rather than about the whole package.
     expect(code(join(SRC, 'upstream.ts'))).toContain('authorization');
+  });
+
+  it('ONLY THREE FUNCTIONS MAY DISCARD A STEP-UP PROMPT', () => {
+    /*
+     * `pending` holds a CEREMONY, not a widget, and clearing it without
+     * aborting leaves a polling loop alive in a closure that will apply the
+     * action the operator navigated away from. Measured, before the PR3b
+     * review: pressing "Back to worklists" mid-poll closed the case two
+     * seconds later.
+     *
+     * `console.spec.ts` pins the back control on the CASE screen. It cannot
+     * pin every screen — `backControl()` on the case-unavailable screen is a
+     * second one already, and the next screen with a way out will be a third —
+     * so what stops this recurring is the shape rather than a scenario per
+     * button: the assignment lives in three functions and nowhere else.
+     *
+     *   · `dismissPrompt`  — aborts first; the one door for everything outside
+     *                        the ceremony.
+     *   · `attempt`        — the LOOP clearing its own prompt on a terminal
+     *                        outcome, then returning. Aborting there would abort
+     *                        the thing that just finished.
+     *   · `guarded`        — opens the prompt, and its `onCancel` closes one
+     *                        that has already aborted itself.
+     *
+     * Attribution is by top-level function span, so a nested callback is
+     * credited to the function that declares it — which is the point: the
+     * defect was an assignment inside a callback in `renderCase`.
+     */
+    const app = code(join(CLIENT, 'app.ts'));
+    const lines = app.split('\n');
+    const owners: string[] = [];
+    let current = '(top level)';
+    for (const line of lines) {
+      const declaration = /^(?:export )?(?:async )?function ([A-Za-z0-9_]+)/.exec(line);
+      if (declaration) current = declaration[1] as string;
+      if (/(?:^|[^.\w])pending\s*=[^=]/.test(line)) owners.push(current);
+    }
+    expect([...new Set(owners)].sort()).toEqual(['attempt', 'dismissPrompt', 'guarded']);
+    // Anti-vacuity: the scan really did find the assignments, and there are as
+    // many as the three functions above between them make.
+    expect(owners.length).toBe(5);
+    // And the one door aborts before it forgets.
+    expect(app).toMatch(
+      /function dismissPrompt\(\): void \{\n\s*pending\?\.abort\(\);\n\s*pending = null;/,
+    );
   });
 
   it('has no pass-through table, because nothing here is credential-free but arrival', () => {

@@ -13,7 +13,7 @@
  * 2. THE HANDLE DRIFTING BACK TO THE POOL. Six of those seven asked the pool
  *    and one asked its own transaction, so the convention (a caller that owns a
  *    transaction asks inside it) is declared as data here rather than left as a
- *    habit. The five pool reads are the ones with no transaction to be
+ *    habit. The declared pool reads are the ones with no transaction to be
  *    consistent with, each named with its reason.
  *
  * 3. A BOOLEAN LITERAL REACHING CEDAR. `assertCan`'s second argument is the
