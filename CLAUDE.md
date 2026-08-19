@@ -7351,7 +7351,11 @@ deviating from them, stop and propose the change with rationale — do not silen
   `'self'` with no `data:` too. The distinctive strictness is against the MAIN APP,
   which needs `data:` for M12's document viewer - a true sentence about the wrong
   neighbour. THE HARM IS THE COPYING: the false half had reached docs/03 §6bb,
-  docs/04's PR3a section and the PR body before the two headers were ever compared,
+  docs/04's PR3a section before the two headers were ever compared - THREE places,
+  and my first write-up of this correction said four, adding "and the PR body" to a
+  body that never carried it, which is the 2026-08-06 rule (a doc claiming evidence
+  it does not have is a defect even when the fix it justifies is sound) turned on
+  the correction itself -
   which is exactly PR2.5's subject arriving one PR later in the milestone that
   wrote it. THE FIX IS TO MAKE THE NAME TRUE rather than to correct the comment:
   the test fetches BOTH live headers and compares them directive by directive - for

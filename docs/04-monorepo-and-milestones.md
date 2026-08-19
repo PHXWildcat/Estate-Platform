@@ -5878,8 +5878,11 @@ ANY environment, Trusted Types enforced with no policy, and — stricter than th
 MAIN APP, which needs `data:` for M12's document viewer — no `data:` in
 `img-src`, because nothing here renders an inline image. Against the VAULT
 origin it is identical rather than stricter: the claim that it was stricter
-survived into three documents and the PR body before the two headers were
-compared, and the stack e2e now makes that comparison live.
+survived into three places — this test's own comment, docs/03 §6bb and this
+section — before the two headers were compared, and the stack e2e now makes
+that comparison live. (A first draft of this correction said "three documents
+and the PR body"; the PR body never carried it. Overstating the spread of a
+false claim is the same defect as the false claim.)
 It holds no credential in either direction, asserted by a source fence, by a
 runtime assertion that its config's credential holding is both equal to the
 granted set and explicitly EMPTY (the ai-assistant precedent, where the second

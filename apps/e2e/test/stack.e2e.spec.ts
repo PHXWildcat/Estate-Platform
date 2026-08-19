@@ -1644,7 +1644,10 @@ describeIfStack('the running stack', () => {
        * The name promised a relation and the body checked a constant, which is
        * the shape this repo keeps finding (a test named for a property it never
        * touched), with the added harm that the false half had been copied into
-       * docs/03, docs/04 and the PR body before anybody compared them.
+       * docs/03 and docs/04 before anybody compared the two headers. (An
+       * earlier draft of this comment said the PR body carried it too; it did
+       * not — the claim lived in exactly these three places, and overstating
+       * its spread was the same defect one layer up.)
        *
        * What is worth gating is the RELATION rather than either constant: a
        * second isolated origin must never drift WEAKER than the first, and the
