@@ -1,5 +1,11 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
-import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
+import {
+  AllowSessionAudiences,
+  CallerGuard,
+  requireCaller,
+  StepUpGuard,
+  type CallerRequest,
+} from '@estate/auth-guard';
 import type { ReportableEstate } from './core-reads.repo';
 import { SettlementService, type CaseDto } from './settlement.service';
 import { AddEvidenceSchema, parse, ReportCaseSchema, SettingsSchema, UuidSchema } from './schemas';
@@ -41,6 +47,7 @@ export class SettlementController {
   }
 
   @Get('cases/:caseId')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   getCase(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<CaseDto> {
     const caller = requireCaller(req);

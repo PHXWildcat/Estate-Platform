@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  AllowSessionAudiences,
   CallerGuard,
   requireCaller,
   ServiceCredentialGuard,
@@ -70,6 +71,7 @@ export class SettlementAdminController {
   }
 
   @Get('cases/:caseId/stages')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   listStages(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<StageDto[]> {
     const caller = requireCaller(req);
@@ -77,6 +79,7 @@ export class SettlementAdminController {
   }
 
   @Post('stages/:stageId/decision')
+  @AllowSessionAudiences('operator')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   decideStage(
@@ -95,6 +98,7 @@ export class SettlementAdminController {
   }
 
   @Post('stages/:stageId/revoke')
+  @AllowSessionAudiences('operator')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   revokeStage(@Req() req: CallerRequest, @Param('stageId') stageId: string): Promise<StageDto> {
@@ -152,6 +156,7 @@ export class SettlementAdminController {
   }
 
   @Get('cases/:caseId/distributions')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   listDistributions(
     @Req() req: CallerRequest,
@@ -162,6 +167,7 @@ export class SettlementAdminController {
   }
 
   @Post('distributions/:distributionId/approval')
+  @AllowSessionAudiences('operator')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   approveDistribution(
@@ -197,6 +203,7 @@ export class SettlementAdminController {
   // ------------------------------------------------------- timeline + close
 
   @Get('cases/:caseId/timeline')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   timeline(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<TimelineEntry[]> {
     const caller = requireCaller(req);
@@ -204,6 +211,7 @@ export class SettlementAdminController {
   }
 
   @Post('cases/:caseId/close')
+  @AllowSessionAudiences('operator')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   closeCase(

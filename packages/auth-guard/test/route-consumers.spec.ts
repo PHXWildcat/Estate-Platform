@@ -610,6 +610,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement PUT /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement POST /v1/settlement/cases/report-provider': { exempt: EXEMPT_TB7_OPERATOR },
   'settlement GET /v1/settlement/queue': { exempt: EXEMPT_TB7_OPERATOR },
+  'settlement GET /v1/settlement/administrable': { exempt: EXEMPT_TB7_OPERATOR },
   'settlement POST /v1/settlement/cases/:caseId/review/start': { exempt: EXEMPT_TB7_OPERATOR },
   'settlement POST /v1/settlement/cases/:caseId/review': { exempt: EXEMPT_TB7_OPERATOR },
   'settlement POST /v1/settlement/cases/:caseId/verify': { exempt: EXEMPT_TB7_OPERATOR },

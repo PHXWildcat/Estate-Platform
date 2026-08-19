@@ -75,8 +75,11 @@ describe('the two worklists are disjoint, and the DDL is what says so', () => {
       'utf8',
     );
     const m = /CHECK \(status IN \(([^)]*)\)\)/.exec(sql);
-    if (!m) throw new Error('could not find the status CHECK in 001 — the fence is blind');
-    return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1] as string);
+    const body = m?.[1];
+    // A regex that stops matching goes GREEN, which is the failure this whole
+    // block exists to prevent — so it throws rather than returning nothing.
+    if (!body) throw new Error('could not find the status CHECK in 001 — the fence is blind');
+    return [...body.matchAll(/'([a-z_]+)'/g)].map((x) => x[1] as string);
   };
 
   it('every status the DDL admits is on at most one worklist', () => {

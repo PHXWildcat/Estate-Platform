@@ -9,7 +9,13 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
+import {
+  AllowSessionAudiences,
+  CallerGuard,
+  requireCaller,
+  StepUpGuard,
+  type CallerRequest,
+} from '@estate/auth-guard';
 import { SettlementService, type CaseDto, type EvidenceReadAnswer } from './settlement.service';
 import {
   EvidenceReadQuerySchema,
@@ -38,6 +44,7 @@ export class OperatorController {
   constructor(private readonly settlement: SettlementService) {}
 
   @Get('queue')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   queue(@Req() req: CallerRequest): Promise<CaseDto[]> {
     const caller = requireCaller(req);
@@ -62,6 +69,7 @@ export class OperatorController {
    * collide beats a path whose correctness is a property of a list.
    */
   @Get('administrable')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   administrable(@Req() req: CallerRequest): Promise<CaseDto[]> {
     const caller = requireCaller(req);
@@ -81,6 +89,7 @@ export class OperatorController {
   }
 
   @Post('cases/:caseId/review/start')
+  @AllowSessionAudiences('operator')
   @HttpCode(200)
   startReview(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<CaseDto> {
     const caller = requireCaller(req);
@@ -88,6 +97,7 @@ export class OperatorController {
   }
 
   @Post('cases/:caseId/review')
+  @AllowSessionAudiences('operator')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   decideReview(
@@ -105,6 +115,7 @@ export class OperatorController {
   }
 
   @Post('cases/:caseId/verify')
+  @AllowSessionAudiences('operator')
   @UseGuards(StepUpGuard)
   @HttpCode(200)
   verify(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<CaseDto> {
