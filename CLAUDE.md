@@ -7339,3 +7339,38 @@ deviating from them, stop and propose the change with rationale — do not silen
   profile switch is real. Stated rather than implied: what was measured locally is
   the COUNTS, which is what the two workflow twins assert; a full production
   rehearsal is what CI's own blocking production leg runs.
+- 2026-08-18 - A TEST NAMED FOR A COMPARISON THAT CHECKED A CONSTANT, found by a
+  hand adversarial pass over PR3a's own new machinery before merging it - which is
+  this repo's standing expectation that new trust machinery is defective, met for
+  the fifteenth milestone running. `stack.e2e.spec.ts`'s "serves the shell under a
+  CSP at least as strict as the vault origin's" asserted a list of FIXED STRINGS
+  and never fetched the vault's policy at all, while a comment beside it claimed
+  this origin was "STRICTER than the vault's in one directive: no `data:` in
+  img-src". MEASURED, from the two live origins rather than from the source: the
+  policies are BYTE-IDENTICAL, twelve directives each, and the vault's `img-src` is
+  `'self'` with no `data:` too. The distinctive strictness is against the MAIN APP,
+  which needs `data:` for M12's document viewer - a true sentence about the wrong
+  neighbour. THE HARM IS THE COPYING: the false half had reached docs/03 §6bb,
+  docs/04's PR3a section and the PR body before the two headers were ever compared,
+  which is exactly PR2.5's subject arriving one PR later in the milestone that
+  wrote it. THE FIX IS TO MAKE THE NAME TRUE rather than to correct the comment:
+  the test fetches BOTH live headers and compares them directive by directive - for
+  these allowlist-shaped policies, "no weaker" means omit nothing the vault names
+  and, per directive, allow no source the vault does not - with an anti-vacuity
+  floor, because two empty maps compare equal perfectly. That converts a false
+  claim into a real gate on the property worth having: a second isolated origin
+  must never drift weaker than the first, and the realistic regression is somebody
+  relaxing this one for a charting library on an operator console.
+  Probed THREE ways against a mutated edge run as a host process on a spare port
+  (cheap enough that the mutation did not need an image rebuild). Widening
+  `connect-src` - A DIRECTIVE THE OLD TEST NEVER ASSERTED AT ALL - turns it red
+  naming the offending source; dropping `object-src` entirely turns it red on the
+  omitted-directive branch; and the SECOND PROBE of the 2026-08-17 pair - the same
+  mutation with the comparison loop neutered - goes green, which is what identifies
+  the loop as the thing that saw it rather than some incidental assertion.
+  The harness also earned its keep by REFUSING two bad operations of mine rather
+  than silently no-op'ing: a restore whose pristine path landed in the wrong argv
+  slot died with ENOENT, and an anchor carrying a `\n` through a shell argument
+  reported `ANCHOR NOT UNIQUE: 0 occurrences`. Both would previously have read as
+  "the test does not catch this". That is the accumulating-mutation defect closed by
+  construction rather than by care.

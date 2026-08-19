@@ -5875,7 +5875,11 @@ absent, so a leaked operator code cannot chain itself forward in either
 direction. `apps/operator-web` is the origin: framework-free, no dependency tree
 in the browser, `default-src 'none'` / `script-src 'self'` with no `unsafe-*` in
 ANY environment, Trusted Types enforced with no policy, and — stricter than the
-vault's — no `data:` in `img-src`, because nothing here renders an inline image.
+MAIN APP, which needs `data:` for M12's document viewer — no `data:` in
+`img-src`, because nothing here renders an inline image. Against the VAULT
+origin it is identical rather than stricter: the claim that it was stricter
+survived into three documents and the PR body before the two headers were
+compared, and the stack e2e now makes that comparison live.
 It holds no credential in either direction, asserted by a source fence, by a
 runtime assertion that its config's credential holding is both equal to the
 granted set and explicitly EMPTY (the ai-assistant precedent, where the second

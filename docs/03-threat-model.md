@@ -3968,8 +3968,13 @@ material stood behind it.
 - **`apps/operator-web`** is the origin: framework-free, zero dependency tree in
   the browser, `default-src 'none'` / `script-src 'self'` with no `unsafe-*` in
   ANY environment, `require-trusted-types-for 'script'` with `trusted-types
-  'none'`, and — stricter than the vault's — no `data:` in `img-src`, because
-  nothing here renders an inline image. It holds NO credential in either
+  'none'`, and — stricter than the MAIN APP, which needs `data:` for M12's
+  document viewer — no `data:` in `img-src`, because nothing here renders an
+  inline image. It is IDENTICAL to the vault origin's policy, not stricter than
+  it; the first draft of this paragraph claimed otherwise and measurement
+  refuted it. What now gates the relation is a live comparison of the two
+  origins' headers in the stack e2e, directive by directive, so the second
+  isolated origin cannot drift weaker than the first. It holds NO credential in either
   direction, asserted three ways: a source fence, a runtime assertion that its
   config's credential holding is both equal to the granted set and explicitly
   empty, and a compose-parity assertion over its deployment block.
