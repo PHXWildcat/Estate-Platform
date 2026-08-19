@@ -7300,3 +7300,42 @@ deviating from them, stop and propose the change with rationale — do not silen
   precedent, where settlement's "decrypted only on explicit read" comment described
   a read route that did not exist. The harm in a wrong claim of this kind is not
   the sentence - it is that a reader who believes it stops looking.
+- 2026-08-18 - M21 PR3a DRIVEN LIVE, and the CSP had to be measured TWICE because
+  the first measurement was of the wrong world. The whole ceremony ran in a real
+  browser against the running stack: sign in, `/operator`, the step-up prompt
+  (`#operator-launch-code`, labelled "Confirm it's you"), a genuine TOTP code, a
+  top-level form POST across the origin boundary, landing on
+  `http://operator.localhost:3011/` reading "Session type: operator", "Identity
+  check: Not recently confirmed" - the M15 PR4 rule holding, since redemption
+  grants no step-up - and `document.cookie` EMPTY, the `__Host-` cookie being
+  `HttpOnly` on an origin whose client never needs to read it. The app's nav
+  carries no `/operator` entry (`hasOperatorLink: false`), which is the decision
+  above made observable rather than asserted. THE CSP PROBE FIRST REPORTED `eval`
+  AND `new Function` AS ALLOWED, which would have been a false claim in the
+  reassuring direction: the browser tool evaluates in an ISOLATED WORLD whose CSP
+  is not the page's (the M15 PR1 finding, met again). Chased rather than reported -
+  a probe module was served from the origin's own tree, and direct `<script>`
+  injection was itself refused by Trusted Types, so the probe had to arrive through
+  a modified shell. From the PAGE world: `trustedTypes.createPolicy` TypeError,
+  `innerHTML` TypeError leaving ZERO child nodes, `eval` EvalError, `new Function`
+  EvalError, and a cross-origin `fetch` at the app's BFF refused by
+  `connect-src 'self'`. The container was then RECREATED rather than edited back,
+  because a restore that leaves the artifact byte-identical is the only restore
+  worth trusting (probe 404, zero references in the served shell).
+- 2026-08-18 - THE STACK COUNTS WERE MEASURED IN BOTH PROFILES, and the production
+  half came with its own control. Development moved 26 -> 32 passed with pending
+  unchanged at 4; the six operator-origin tests sit OUTSIDE the profile split (a
+  plain `describe`, the M15 vault-origin precedent) because nothing about this
+  origin needs a third-party credential. My own summary had said five, and the
+  measurement said six - which is why the number comes from `--json` rather than
+  from counting `it(` blocks. The PRODUCTION count was measured STRUCTURALLY, by
+  running the suite under `STACK_PROFILE=production` against the development stack
+  and reading which tests EXECUTE versus skip: 22 executed, 14 pending, all six
+  operator tests passing. Exactly ONE test failed, and it is the control rather
+  than a defect - `production rehearsal: arms an emergency-access escrow` failed
+  because M14's arming gate is production-scoped and legitimately answers 201
+  instead of 503 on a development stack. That is verbatim the reason the M15 PR1
+  entry gives for never DERIVING these numbers, reproduced as evidence that the
+  profile switch is real. Stated rather than implied: what was measured locally is
+  the COUNTS, which is what the two workflow twins assert; a full production
+  rehearsal is what CI's own blocking production leg runs.

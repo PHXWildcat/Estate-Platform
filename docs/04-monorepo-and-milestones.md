@@ -5921,6 +5921,34 @@ precedent (correct the claim, do not add the route). `estate.viewed` was also
 mis-cited: it is `asset.estate.viewed`, an ASSETS event describing an EXECUTOR's
 inventory read, in a paragraph about operators.
 
+**Driven live, and the CSP measured twice.** The whole ceremony ran in a real
+browser against the running stack: sign in, `/operator`, the step-up prompt, a
+genuine TOTP code, a top-level form POST across the origin boundary, landing on
+`http://operator.localhost:3011/` reading "Session type: operator" and "Identity
+check: Not recently confirmed" — redemption grants no step-up, the M15 PR4 rule —
+with `document.cookie` empty. The app's nav carries no `/operator` entry. The
+first CSP probe reported `eval` and `new Function` as ALLOWED, which is the M15
+PR1 artifact: the browser tool evaluates in an isolated world whose CSP is not the
+page's. Chased rather than reported — and script injection was itself refused by
+Trusted Types, so the probe had to arrive through a served module. From the page
+world: `trustedTypes.createPolicy` TypeError, `innerHTML` TypeError leaving zero
+child nodes, `eval` and `new Function` both EvalError, and a cross-origin `fetch`
+at the BFF refused by `connect-src 'self'`. The boundary itself was probed across
+seven services: the redeemed session answers at identity's three widened routes
+and 401 everywhere else, settlement included.
+
+**Stack counts, measured in both profiles.** Development 26 → 32 passed, pending
+unchanged at 4; the six operator-origin tests sit outside the profile split (the
+M15 vault-origin precedent — nothing here needs a third-party credential). The
+production count was measured structurally, by running under
+`STACK_PROFILE=production` and reading which tests execute versus skip: 22
+executed, 14 pending, all six operator tests passing. Exactly one test failed and
+it is the control rather than a defect — `production rehearsal: arms an
+emergency-access escrow` fails on a development stack because M14's arming gate is
+production-scoped and legitimately answers 201 instead of 503, which is verbatim
+the reason M15 PR1 gives for never deriving these numbers. Both workflow twins
+updated.
+
 Threat-model delta and residuals: `docs/03` §6bb. §4 TB7's operator-authentication
 and operator-reads paragraphs are rewritten in the same PR — the first said the
 audience does not exist, and the second was wrong in both halves.

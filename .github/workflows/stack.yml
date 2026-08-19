@@ -222,7 +222,7 @@ jobs:
             // journey traffic proving the false-positive half is the same
             // test that proves detector liveness). It is describeDev, so the
             // production leg gains it as +1 pending.
-            const expectedPassed = production ? 16 : 26;
+            const expectedPassed = production ? 22 : 32;
             const expectedPending = production ? 14 : 4;
             console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
             if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
