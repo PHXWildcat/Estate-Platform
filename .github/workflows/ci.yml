@@ -130,6 +130,8 @@ jobs:
           fi
           total=0
           for f in "${files[@]}"; do
+            # mktemp rather than the workspace: a CI step that drops a file in
+            # the repo root is one somebody eventually commits.
             log=$(mktemp)
             if ! node --test "$f" > "$log" 2>&1; then
               cat "$log"
@@ -148,18 +150,6 @@ jobs:
             exit 1
           fi
           echo "helper tests: $total passing across ${#files[@]} files"
-          # mktemp rather than the workspace: a CI step that drops a file in
-          # the repo root is one somebody eventually commits.
-          log=$(mktemp)
-          status=0
-          node --test "${files[@]}" > "$log" 2>&1 || status=$?
-          cat "$log"
-          if [ "$status" != 0 ]; then exit "$status"; fi
-          passed=$(awk '/^# pass /{print $3}' "$log")
-          if [ -z "$passed" ] || [ "$passed" -lt 30 ]; then
-            echo "::error::helper tests reported ${passed:-no} passing tests, expected at least 30 — the suite ran but is not testing what it claims"
-            exit 1
-          fi
 
       # --coverage makes the per-package coverage tables visible in CI logs;
       # thresholds (95 backend / 90 frontend target) get enabled once real
