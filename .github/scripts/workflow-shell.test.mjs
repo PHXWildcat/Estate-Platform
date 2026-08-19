@@ -212,6 +212,46 @@ test('a block scalar ENDS at the next key, so a later step is not swallowed', ()
   assert.doesNotMatch(scripts[0].body, /other/);
 });
 
+test('NO SILENT SKIP — every run: header form is either read or refused', () => {
+  // The whole fence is worth exactly what the extractor sees, so the property
+  // that matters is not "it parses every form" but "it never quietly ignores
+  // one". A refusal fails the fence and is the design; a silent skip is a hole.
+  const q = String.fromCharCode(39);
+  // A body that IS defective, so "read" means "would be caught".
+  const body = [
+    `          node -e ${q}`,
+    `            // the gates${q} and the twins${q} numbers`,
+    `          ${q}`,
+  ];
+
+  const headers = [
+    '|',
+    '|-',
+    '|+',
+    '>',
+    '>-',
+    '|2',
+    '|2-',
+    '',
+    '2',
+    'echo inline',
+    '"echo quoted"',
+    `${q}echo sq${q}`,
+  ];
+  const skipped = [];
+  for (const hdr of headers) {
+    const yaml = ['      - name: t', `        run: ${hdr}`, ...body].join('\n');
+    const { scripts, unreadable } = extractRunBlocks(yaml);
+    if (unreadable.length > 0) continue; // refused — fails the fence, which is fine
+    if (scripts.length === 0) skipped.push(`${hdr} -> no script at all`);
+  }
+  assert.deepEqual(
+    skipped,
+    [],
+    'a run: form that is neither read nor refused is a hole in the fence',
+  );
+});
+
 test('REFUSES a quoted YAML scalar rather than guessing at its shell', () => {
   const { scripts, unreadable } = extractRunBlocks('        run: "echo hi"');
   assert.equal(scripts.length, 0);

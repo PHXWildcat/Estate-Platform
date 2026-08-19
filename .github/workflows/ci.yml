@@ -104,8 +104,11 @@ jobs:
       # workflow: armed it exits 1, disarmed it exits 0 over the same defect.
       # The contrast that proves it is node's own: a missing path WITHOUT a `*`
       # makes node exit 1, so it is the metacharacter that suppresses the
-      # failure. The floors are deliberately below the real numbers (3 files, 34
-      # tests) so ordinary additions never trip them.
+      # failure. The floors sit deliberately BELOW the real numbers so ordinary
+      # additions never trip them, and the numbers themselves are not restated
+      # here: a count in prose beside a mechanism that measures one is a second
+      # copy free to drift, and this comment had already drifted (it said 34
+      # while the suite ran 38) within two commits of being written.
       - name: Test the CI helper scripts
         run: |
           shopt -s nullglob
