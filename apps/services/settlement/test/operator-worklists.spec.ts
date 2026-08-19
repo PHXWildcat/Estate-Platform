@@ -1,0 +1,268 @@
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ForbiddenException } from '@nestjs/common';
+import { ADMINISTRABLE_STATUSES, QUEUE_STATUSES } from '../src/cases.repo';
+import {
+  auditActions,
+  auditEvents,
+  buildAdminHarness,
+  buildHarness,
+  markCaseVerified,
+  NOW,
+  type AdminHarness,
+  type Harness,
+} from './support';
+
+/**
+ * The two operator worklists, the claim marker, and the read events — the
+ * three things M21 PR3b adds to the settlement service itself.
+ *
+ * Each exists because of a measured absence rather than a feature request:
+ * `/queue` could not reach a closeable case, `markReviewStarted` recorded the
+ * claiming operator nowhere, and all 23 settlement audit actions were writes,
+ * so an operator reading somebody's death case left no trace at all.
+ */
+
+const DECEDENT = randomUUID();
+const REPORTER = randomUUID();
+const OPERATOR = randomUUID();
+const EXECUTOR = randomUUID();
+const STRANGER = randomUUID();
+const SESSION = randomUUID();
+
+function linkedHarness(): Harness {
+  const h = buildHarness();
+  h.coreReads.link(DECEDENT, REPORTER);
+  h.operators.active.add(OPERATOR);
+  return h;
+}
+
+async function reportCase(h: Harness): Promise<string> {
+  const dto = await h.service.report(REPORTER, SESSION, {
+    decedentUserId: DECEDENT,
+    source: 'trusted_contact',
+    evidence: [],
+  });
+  return dto.caseId;
+}
+
+async function verifiedAdminCase(h: AdminHarness): Promise<string> {
+  const row = await h.cases.insert(undefined as never, {
+    decedentUserId: DECEDENT,
+    reportedBy: REPORTER,
+    source: 'trusted_contact',
+    evidence: [],
+  });
+  markCaseVerified(h.cases, row.id, NOW);
+  h.coreReads.link(DECEDENT, EXECUTOR);
+  h.coreReads.executors.add(`${DECEDENT}:${EXECUTOR}`);
+  h.operators.active.add(OPERATOR);
+  return row.id;
+}
+
+describe('the two worklists are disjoint, and the DDL is what says so', () => {
+  /**
+   * Pinned against the MIGRATION rather than against a list retyped here.
+   * `CaseStatus` is a type and vanishes at runtime, so a spec that declared
+   * its own eight members would be checking one hand-written list against
+   * another — which is how a ninth status ends up in both worklists, or in
+   * neither, with everything green (the M10 scope-vocabulary precedent).
+   */
+  const ddlStatuses = (): string[] => {
+    const sql = readFileSync(
+      join(__dirname, '..', 'migrations', '001_settlement_schema.sql'),
+      'utf8',
+    );
+    const m = /CHECK \(status IN \(([^)]*)\)\)/.exec(sql);
+    if (!m) throw new Error('could not find the status CHECK in 001 — the fence is blind');
+    return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1] as string);
+  };
+
+  it('every status the DDL admits is on at most one worklist', () => {
+    const all = ddlStatuses();
+    expect(all.length).toBeGreaterThanOrEqual(8); // anti-vacuity: the regex found statuses
+    for (const status of all) {
+      const on = [QUEUE_STATUSES, ADMINISTRABLE_STATUSES].filter((set) =>
+        (set as readonly string[]).includes(status),
+      );
+      expect(on.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('neither worklist names a status the DDL does not admit', () => {
+    const all = new Set(ddlStatuses());
+    for (const status of [...QUEUE_STATUSES, ...ADMINISTRABLE_STATUSES]) {
+      expect(all.has(status)).toBe(true);
+    }
+  });
+
+  it('the statuses on NEITHER worklist are exactly the terminal ones', () => {
+    // Stated as an equality rather than a subset, because the failure that
+    // matters is a status quietly reachable from no screen at all — which is
+    // what close/stage-decision/distribution-approval were before this PR.
+    const listed = new Set<string>([...QUEUE_STATUSES, ...ADMINISTRABLE_STATUSES]);
+    const unlisted = ddlStatuses().filter((s) => !listed.has(s));
+    expect(unlisted.sort()).toEqual(['closed', 'rejected_fraud']);
+  });
+});
+
+describe('the post-verification worklist', () => {
+  it('is operator-only', async () => {
+    const h = linkedHarness();
+    await expect(h.service.administrable(STRANGER, SESSION)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('lists administrable cases and the queue does not, and vice versa', async () => {
+    // ONE test over BOTH lists, because the property is that a case appears on
+    // exactly one of them — asserting either alone would pass while a case sat
+    // on both or on neither.
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+
+    expect((await h.service.queue(OPERATOR, SESSION)).map((c) => c.caseId)).toEqual([caseId]);
+    expect(await h.service.administrable(OPERATOR, SESSION)).toEqual([]);
+
+    markCaseVerified(h.cases, caseId, NOW);
+
+    expect(await h.service.queue(OPERATOR, SESSION)).toEqual([]);
+    expect((await h.service.administrable(OPERATOR, SESSION)).map((c) => c.caseId)).toEqual([
+      caseId,
+    ]);
+  });
+});
+
+describe('the claim marker', () => {
+  it('records WHO claimed the review, and when', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    const dto = await h.service.startReview(OPERATOR, SESSION, caseId);
+
+    expect(dto.status).toBe('verifying');
+    expect(dto.claimedBy).toBe(OPERATOR);
+    expect(dto.claimedAt).toBe(NOW.toISOString());
+    // Distinct from the review pair, which is written at the DECISION — the
+    // whole reason this is a second pair rather than an early write of that one.
+    expect(dto.humanReviewBy).toBeNull();
+    expect(dto.humanReviewAt).toBeNull();
+  });
+
+  it('refuses a reporter-operator AT THE CLAIM, leaving the case unclaimed', async () => {
+    // Before this, a reporter-operator could claim (moving the case to
+    // `verifying` and putting their name on it) and only discover at the
+    // decision that they could never discharge it.
+    const h = linkedHarness();
+    h.operators.active.add(REPORTER);
+    const caseId = await reportCase(h);
+
+    await expect(h.service.startReview(REPORTER, SESSION, caseId)).rejects.toMatchObject({
+      response: { error: 'reviewer_is_reporter' },
+    });
+
+    const after = await h.service.getCase(OPERATOR, SESSION, caseId);
+    expect(after.status).toBe('reported');
+    expect(after.claimedBy).toBeNull();
+  });
+});
+
+describe('operator reads leave a trace (docs/03 §4 TB7)', () => {
+  it('a queue read is recorded with its size and NO case id', async () => {
+    const h = linkedHarness();
+    await reportCase(h);
+    h.producer.messages.length = 0;
+
+    await h.service.queue(OPERATOR, SESSION);
+
+    const [event] = auditEvents(h.producer);
+    expect(event).toMatchObject({
+      action: 'settlement.queue.viewed',
+      actorType: 'operator',
+      actorId: OPERATOR,
+      detail: { worklist: 'queue', count: '1' },
+    });
+    // No single case is the subject of a cross-case listing.
+    expect(event?.resourceId).toBeNull();
+    expect(event?.onBehalfOf).toBeNull();
+  });
+
+  it('the administrable worklist is recorded under its own name', async () => {
+    const h = linkedHarness();
+    h.producer.messages.length = 0;
+    await h.service.administrable(OPERATOR, SESSION);
+    expect(auditEvents(h.producer)[0]).toMatchObject({
+      action: 'settlement.queue.viewed',
+      detail: { worklist: 'administrable', count: '0' },
+    });
+  });
+
+  it('an OPERATOR reading one case is recorded on that case; the SUBJECT and the REPORTER are not', async () => {
+    // One test, because the property is the DIFFERENCE. Recording every read
+    // would drown the signal TB7 asks for — platform staff looking at somebody
+    // else's death case — in people reading their own.
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    h.producer.messages.length = 0;
+
+    await h.service.getCase(DECEDENT, SESSION, caseId);
+    await h.service.getCase(REPORTER, SESSION, caseId);
+    expect(auditActions(h.producer)).toEqual([]);
+
+    await h.service.getCase(OPERATOR, SESSION, caseId);
+    expect(auditEvents(h.producer)).toEqual([
+      expect.objectContaining({
+        action: 'settlement.case.viewed',
+        actorType: 'operator',
+        actorId: OPERATOR,
+        resourceId: caseId,
+        onBehalfOf: DECEDENT,
+        detail: { surface: 'case' },
+      }),
+    ]);
+  });
+
+  it('each administration read names WHICH surface it was', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedAdminCase(h);
+    h.producer.messages.length = 0;
+
+    await h.admin.timeline(OPERATOR, SESSION, caseId);
+    await h.admin.listStages(OPERATOR, SESSION, caseId);
+    await h.admin.listTasks(OPERATOR, SESSION, caseId);
+    await h.admin.listDistributions(OPERATOR, SESSION, caseId);
+
+    expect(auditEvents(h.producer).map((e) => (e.detail as { surface: string }).surface)).toEqual([
+      'timeline',
+      'stages',
+      'tasks',
+      'distributions',
+    ]);
+    expect(auditActions(h.producer).every((a) => a === 'settlement.case.viewed')).toBe(true);
+  });
+
+  it('the EXECUTOR reading the same four surfaces is recorded nowhere', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedAdminCase(h);
+    h.producer.messages.length = 0;
+
+    await h.admin.timeline(EXECUTOR, SESSION, caseId);
+    await h.admin.listStages(EXECUTOR, SESSION, caseId);
+    await h.admin.listTasks(EXECUTOR, SESSION, caseId);
+    await h.admin.listDistributions(EXECUTOR, SESSION, caseId);
+
+    expect(auditActions(h.producer)).toEqual([]);
+  });
+
+  it('an operator who is ALSO the reporter is still recorded as an operator read', async () => {
+    // The gate is consulted unconditionally rather than as the second arm of
+    // the visibility chain, so this cannot depend on which clause admitted the
+    // caller — an audit claim whose truth turned on the order of an `if`.
+    const h = buildAdminHarness();
+    const caseId = await verifiedAdminCase(h);
+    h.operators.active.add(REPORTER);
+    h.producer.messages.length = 0;
+
+    await h.admin.timeline(REPORTER, SESSION, caseId);
+
+    expect(auditActions(h.producer)).toEqual(['settlement.case.viewed']);
+  });
+});

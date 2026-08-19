@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { FieldCrypto } from '@estate/crypto';
-import { CasesRepo, type CaseRow, type CaseStatus } from './cases.repo';
+import { ADMINISTRABLE_STATUSES, CasesRepo, type CaseRow, type CaseStatus } from './cases.repo';
 import { CoreReadsRepo } from './core-reads.repo';
 import { CLOCK, FIELD_CRYPTO, type Clock } from './di-tokens';
 import { Db, isCheckViolation, type Queryable } from './db';
@@ -70,8 +70,15 @@ export interface TimelineEntry {
 /** AAD field label for an encrypted distribution amount (docs/02 conventions). */
 const DISTRIBUTION_AMOUNT_FIELD = 'distributions.amount';
 
-/** Case statuses at which post-verification administration is permitted. */
-const ADMINISTRABLE: readonly CaseStatus[] = ['verified', 'active', 'distributing'];
+/**
+ * Case statuses at which post-verification administration is permitted.
+ *
+ * Re-exported from the repo rather than declared here (M21 PR3b): the same set
+ * now also selects the operator worklist that makes these verbs reachable, and
+ * a second copy would let the screen list cases the verbs refuse — or hide
+ * cases they accept.
+ */
+const ADMINISTRABLE: readonly CaseStatus[] = ADMINISTRABLE_STATUSES;
 /** Statuses that mean "this estate is still contested/pending" for the vault gate. */
 const NON_TERMINAL: readonly CaseStatus[] = [
   'reported',
@@ -291,17 +298,19 @@ export class SettlementAdminService {
     return stageDto(row);
   }
 
-  async listStages(actor: string, caseId: string): Promise<StageDto[]> {
-    await this.assertCaseVisible(actor, caseId);
+  async listStages(actor: string, sessionId: string, caseId: string): Promise<StageDto[]> {
+    const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
     const rows = await this.stages.listByCase(this.db, caseId);
+    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'stages');
     return rows.map(stageDto);
   }
 
   // ------------------------------------------------------------------- tasks
 
-  async listTasks(actor: string, caseId: string): Promise<TaskDto[]> {
-    await this.assertCaseVisible(actor, caseId);
+  async listTasks(actor: string, sessionId: string, caseId: string): Promise<TaskDto[]> {
+    const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
     const rows = await this.tasks.listByCase(this.db, caseId);
+    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'tasks');
     return rows.map(taskDto);
   }
 
@@ -463,9 +472,14 @@ export class SettlementAdminService {
     return distributionDto(row);
   }
 
-  async listDistributions(actor: string, caseId: string): Promise<DistributionDto[]> {
-    await this.assertCaseVisible(actor, caseId);
+  async listDistributions(
+    actor: string,
+    sessionId: string,
+    caseId: string,
+  ): Promise<DistributionDto[]> {
+    const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
     const rows = await this.distributions.listByCase(this.db, caseId);
+    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'distributions');
     return rows.map(distributionDto);
   }
 
@@ -552,8 +566,9 @@ export class SettlementAdminService {
   // ---------------------------------------------------------------- timeline
 
   /** The estate timeline: case milestones + stage decisions, oldest first. */
-  async timeline(actor: string, caseId: string): Promise<TimelineEntry[]> {
-    const kase = await this.assertCaseVisible(actor, caseId);
+  async timeline(actor: string, sessionId: string, caseId: string): Promise<TimelineEntry[]> {
+    const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
+    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'timeline');
     const entries: TimelineEntry[] = [
       {
         at: kase.created_at.toISOString(),
@@ -645,20 +660,60 @@ export class SettlementAdminService {
     }
   }
 
-  /** Case reads: the subject, the reporter, its executor, or an operator. */
-  private async assertCaseVisible(actor: string, caseId: string): Promise<CaseRow> {
+  /**
+   * Record a case read that the OPERATOR ALLOWLIST is behind (M21 PR3b).
+   *
+   * A no-op for everyone else by construction: the decedent, the reporter and
+   * the estate's executor are reading their own case, which the rest of the
+   * product does not audit as a disclosure either. What docs/03 §4 TB7 asks
+   * for is a record of platform staff looking at somebody's death case, and
+   * that is exactly the set this admits.
+   *
+   * Emitted AFTER the rows are fetched and BEFORE they are returned, which is
+   * the M19 ordering rule for a disclosure: a read that fails half way must
+   * not leave a record claiming it completed, and a read that completes must
+   * not be able to return before the record of it exists.
+   */
+  private async recordOperatorRead(
+    actor: string,
+    sessionId: string,
+    kase: CaseRow,
+    isOperator: boolean,
+    surface: 'timeline' | 'stages' | 'tasks' | 'distributions',
+  ): Promise<void> {
+    if (!isOperator) return;
+    await this.events.caseViewed(actor, sessionId, kase.id, kase.decedent_user_id, surface);
+  }
+
+  /**
+   * Case reads: the subject, the reporter, its executor, or an operator.
+   *
+   * Returns the operator flag as well as the row, because M21 PR3b audits
+   * OPERATOR reads and the answer must not depend on which clause admitted
+   * the caller. The gate is therefore consulted UNCONDITIONALLY and up front,
+   * rather than as the second arm of the chain it used to be: an operator who
+   * is also the reporter of a case is still platform staff reading a death
+   * case, and if the subject/reporter clause short-circuited first their read
+   * would go unrecorded — an audit claim whose truth turned on the order of an
+   * `if`. One extra indexed lookup on the caller's own reads is the price, and
+   * `settlement.case.viewed` is worth more than it.
+   */
+  private async assertCaseVisible(
+    actor: string,
+    caseId: string,
+  ): Promise<{ kase: CaseRow; isOperator: boolean }> {
     const kase = await this.cases.findById(this.db, caseId);
     if (!kase) {
       throw new NotFoundException({ error: 'not_found' });
     }
-    if (kase.decedent_user_id === actor || kase.reported_by === actor) {
-      return kase;
-    }
-    if (await this.gate.is(this.db, actor)) {
-      return kase;
-    }
-    if (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor)) {
-      return kase;
+    const isOperator = await this.gate.is(this.db, actor);
+    if (
+      kase.decedent_user_id === actor ||
+      kase.reported_by === actor ||
+      isOperator ||
+      (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))
+    ) {
+      return { kase, isOperator };
     }
     // The SAME answer the missing case above gives. Every read that funnels
     // through here is scoped by a case id, so a 403 would tell an unrelated

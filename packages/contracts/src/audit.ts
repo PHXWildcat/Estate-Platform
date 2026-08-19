@@ -136,6 +136,32 @@ export const AUDIT_ACTIONS = [
   'settlement.case.closed',
   'settlement.contact.attempted',
   'settlement.settings.updated',
+  // OPERATOR READS (M21 PR3b), and until this milestone there were none.
+  //
+  // Every one of the settlement actions above is a WRITE. An operator working
+  // the review queue, opening a death case, reading its timeline, its access
+  // stages or its distributions therefore left NO TRACE THAT THEY HAD LOOKED —
+  // in the service whose whole subject is a docs/03 §5.1 investigation, and in
+  // the one domain where the question after the fact is usually "who saw
+  // this?" rather than "who changed it?". PR3a corrected §4 TB7's claim that
+  // these events already existed; PR3b is the change that makes them exist,
+  // shipped with the screens that make the reads rather than as a routeless
+  // event nothing emits (the M4 legal-hold shape).
+  //
+  // TWO actions, not six. Loading one case opens four reads (case, timeline,
+  // stages, distributions), so one action per route would be four events per
+  // screen — noisier without being more informative. The route is carried in
+  // `detail.surface`, which SAFE_TOKEN_PATTERN already admits, and the two are
+  // split because they answer different questions: a QUEUE read is
+  // cross-case reconnaissance with no resource id, while a CASE read names
+  // exactly one estate and belongs on that case's own trail.
+  //
+  // These feed nothing automatic. The M18 decrypt-rate detector counts
+  // `crypto.field.decrypted` and only that, so a read action is bounded by no
+  // rate limit anywhere — stated rather than implied, because "we now log it"
+  // reads like "we now detect it" and does not mean it.
+  'settlement.queue.viewed',
+  'settlement.case.viewed',
   // The operator allowlist itself (M21 PR1). Until this milestone, granting
   // the authority to approve a death case — the most privileged act in the
   // settlement domain — emitted NOTHING, so the one row that decides who may

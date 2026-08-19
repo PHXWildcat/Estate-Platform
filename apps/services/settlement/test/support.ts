@@ -6,7 +6,13 @@ import { InMemoryAuditProducer } from '@estate/kafka';
 import type { DistributionRow } from '../src/distributions.repo';
 import type { AccessStage, StageRow } from '../src/stages.repo';
 import { SettlementAuthz } from '../src/authz.service';
-import type { CaseRow, CaseStatus, EvidenceEntry } from '../src/cases.repo';
+import {
+  ADMINISTRABLE_STATUSES,
+  QUEUE_STATUSES,
+  type CaseRow,
+  type CaseStatus,
+  type EvidenceEntry,
+} from '../src/cases.repo';
 import type { SettlementConfig } from '../src/config';
 import type { ContactAttemptsRepo, ContactChannel } from '../src/contact-attempts.repo';
 import type { CoreReadsRepo, ReportableEstate } from '../src/core-reads.repo';
@@ -81,6 +87,8 @@ export class InMemoryCases {
       verification_evidence: [...input.evidence],
       human_review_by: null,
       human_review_at: null,
+      claimed_by: null,
+      claimed_at: null,
       waiting_period_ends: null,
       verified_at: null,
       resolution: null,
@@ -108,11 +116,17 @@ export class InMemoryCases {
     );
   }
 
+  // Both worklists filter on the REAL status sets rather than a list retyped
+  // here: a fixture that invents an enum tests the fixture (M15 PR3).
   listOpenForReview(): Promise<CaseRow[]> {
     return Promise.resolve(
-      [...this.rows.values()].filter((r) =>
-        ['reported', 'verifying', 'waiting_period'].includes(r.status),
-      ),
+      [...this.rows.values()].filter((r) => QUEUE_STATUSES.includes(r.status)),
+    );
+  }
+
+  listAdministrable(): Promise<CaseRow[]> {
+    return Promise.resolve(
+      [...this.rows.values()].filter((r) => ADMINISTRABLE_STATUSES.includes(r.status)),
     );
   }
 
@@ -151,12 +165,19 @@ export class InMemoryCases {
     return Promise.resolve();
   }
 
-  markReviewStarted(_tx: unknown, caseId: string): Promise<boolean> {
+  markReviewStarted(
+    _tx: unknown,
+    caseId: string,
+    claimedBy: string,
+    claimedAt: Date,
+  ): Promise<boolean> {
     const row = this.rows.get(caseId);
     if (!row || row.status !== 'reported') {
       return Promise.resolve(false);
     }
     row.status = 'verifying';
+    row.claimed_by = claimedBy;
+    row.claimed_at = claimedAt;
     row.updated_at = this.clock();
     return Promise.resolve(true);
   }

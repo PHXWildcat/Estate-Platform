@@ -40,7 +40,32 @@ export class OperatorController {
   @Get('queue')
   @HttpCode(200)
   queue(@Req() req: CallerRequest): Promise<CaseDto[]> {
-    return this.settlement.queue(requireCaller(req).userId);
+    const caller = requireCaller(req);
+    return this.settlement.queue(caller.userId, caller.sessionId);
+  }
+
+  /**
+   * The post-verification worklist (M21 PR3b).
+   *
+   * A SEPARATE path from `queue` rather than a `?status=` filter on it: the
+   * operator edge deliberately drops the query string (a case id names
+   * somebody's death, and a query string is the part intermediaries log by
+   * default — the M12 document-search rule), so a filter would have to be a
+   * path segment anyway. Two paths, two status sets, and the sets are pinned
+   * disjoint.
+   *
+   * A SIBLING OF `queue` rather than `cases/administrable`, which would be a
+   * literal segment competing with `SettlementController`'s `cases/:caseId`
+   * in another controller entirely — Nest resolves those in module
+   * registration order, so the two would work or not work depending on the
+   * order of `app.module.ts`'s `controllers` array. A path that cannot
+   * collide beats a path whose correctness is a property of a list.
+   */
+  @Get('administrable')
+  @HttpCode(200)
+  administrable(@Req() req: CallerRequest): Promise<CaseDto[]> {
+    const caller = requireCaller(req);
+    return this.settlement.administrable(caller.userId, caller.sessionId);
   }
 
   @Post('cases/report-provider')

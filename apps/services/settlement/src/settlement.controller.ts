@@ -43,7 +43,8 @@ export class SettlementController {
   @Get('cases/:caseId')
   @HttpCode(200)
   getCase(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<CaseDto> {
-    return this.settlement.getCase(requireCaller(req).userId, parse(UuidSchema, caseId));
+    const caller = requireCaller(req);
+    return this.settlement.getCase(caller.userId, caller.sessionId, parse(UuidSchema, caseId));
   }
 
   @Post('cases/:caseId/evidence')

@@ -47,6 +47,14 @@ export interface CaseDto {
   evidence: EvidenceEntry[];
   humanReviewBy: string | null;
   humanReviewAt: string | null;
+  /**
+   * Who picked this case up, and when (M21 PR3b). Distinct from
+   * humanReviewBy — which records who APPROVED the review and is written at
+   * the decision — because a shared queue needs to say "taken" before anyone
+   * has decided anything, and the two can legitimately be different people.
+   */
+  claimedBy: string | null;
+  claimedAt: string | null;
   waitingPeriodEnds: string | null;
   verifiedAt: string | null;
   resolution: string | null;
@@ -83,6 +91,8 @@ function toDto(row: CaseRow, now: Date): CaseDto {
     evidence: row.verification_evidence,
     humanReviewBy: row.human_review_by,
     humanReviewAt: row.human_review_at?.toISOString() ?? null,
+    claimedBy: row.claimed_by,
+    claimedAt: row.claimed_at?.toISOString() ?? null,
     waitingPeriodEnds: row.waiting_period_ends?.toISOString() ?? null,
     verifiedAt: row.verified_at?.toISOString() ?? null,
     resolution: row.resolution,
@@ -292,7 +302,17 @@ export class SettlementService {
         'review',
         caseResource(locked.id, locked.decedent_user_id, locked.reported_by),
       );
-      if (!(await this.cases.markReviewStarted(tx, caseId))) {
+      if (locked.reported_by === operator) {
+        // Dual control, refused at the CLAIM rather than only at the decision
+        // (M21 PR3b). decideReview and confirmVerification have always thrown
+        // this, and the DDL has always backstopped it — but nothing stopped a
+        // reporter-operator claiming the case first, which moved it to
+        // `verifying` and put their name on a review they could never
+        // discharge. Now that the claim is recorded and shown on a shared
+        // queue, a claim has to mean "I may decide this".
+        throw new ForbiddenException({ error: 'reviewer_is_reporter' });
+      }
+      if (!(await this.cases.markReviewStarted(tx, caseId, operator, now))) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
       return (await this.cases.findById(tx, caseId)) as CaseRow;
@@ -603,7 +623,7 @@ export class SettlementService {
 
   // ------------------------------------------------------------------ queries
 
-  async getCase(actor: string, caseId: string): Promise<CaseDto> {
+  async getCase(actor: string, sessionId: string, caseId: string): Promise<CaseDto> {
     const row = await this.cases.findById(this.db, caseId);
     if (!row) {
       throw new NotFoundException({ error: 'not_found' });
@@ -618,6 +638,13 @@ export class SettlementService {
       'read',
       caseResource(row.id, row.decedent_user_id, row.reported_by),
     );
+    // Operator reads only — the decedent and the reporter are reading their
+    // own case. See SettlementAdminService.recordOperatorRead for why the
+    // distinction is drawn on the ALLOWLIST rather than on the Cedar clause
+    // that admitted them.
+    if (isOperator) {
+      await this.events.caseViewed(actor, sessionId, row.id, row.decedent_user_id, 'case');
+    }
     return toDto(row, this.clock());
   }
 
@@ -629,10 +656,31 @@ export class SettlementService {
   }
 
   /** The operator review queue (documented row check: allowlist is the gate). */
-  async queue(operator: string): Promise<CaseDto[]> {
+  async queue(operator: string, sessionId: string): Promise<CaseDto[]> {
     await this.gate.assertIn(this.db, operator);
     const now = this.clock();
     const rows = await this.cases.listOpenForReview(this.db);
+    await this.events.worklistViewed(operator, sessionId, 'queue', rows.length);
+    return rows.map((r) => toDto(r, now));
+  }
+
+  /**
+   * The post-verification worklist (M21 PR3b).
+   *
+   * Same gate, same shape, a disjoint status set — see
+   * `ADMINISTRABLE_STATUSES`. It exists because `close`, stage decisions and
+   * distribution approvals all require a case in one of those statuses, and
+   * the only listing that existed could not return one: an operator could
+   * reach three of their six verbs only by holding an id from somewhere else.
+   */
+  async administrable(operator: string, sessionId: string): Promise<CaseDto[]> {
+    // On the POOL, and declared as such in operator-gate-fence.spec.ts: a
+    // listing owns no transaction, so there is no row for the answer to be
+    // consistent with (the `queue` argument verbatim).
+    await this.gate.assertIn(this.db, operator);
+    const now = this.clock();
+    const rows = await this.cases.listAdministrable(this.db);
+    await this.events.worklistViewed(operator, sessionId, 'administrable', rows.length);
     return rows.map((r) => toDto(r, now));
   }
 

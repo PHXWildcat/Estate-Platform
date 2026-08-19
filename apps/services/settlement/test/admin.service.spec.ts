@@ -398,10 +398,10 @@ describe('case visibility for administration reads', () => {
   it('subject, reporter, executor, and operators can read', async () => {
     const h = buildAdminHarness();
     const caseId = await verifiedCase(h);
-    await expect(h.admin.listStages(DECEDENT, caseId)).resolves.toEqual([]);
-    await expect(h.admin.listStages(REPORTER, caseId)).resolves.toEqual([]);
-    await expect(h.admin.listStages(EXECUTOR, caseId)).resolves.toEqual([]);
-    await expect(h.admin.listStages(OPERATOR, caseId)).resolves.toEqual([]);
+    await expect(h.admin.listStages(DECEDENT, SESSION, caseId)).resolves.toEqual([]);
+    await expect(h.admin.listStages(REPORTER, SESSION, caseId)).resolves.toEqual([]);
+    await expect(h.admin.listStages(EXECUTOR, SESSION, caseId)).resolves.toEqual([]);
+    await expect(h.admin.listStages(OPERATOR, SESSION, caseId)).resolves.toEqual([]);
   });
 
   it("a stranger's refusal is INDISTINGUISHABLE from an unknown case", async () => {
@@ -415,8 +415,10 @@ describe('case visibility for administration reads', () => {
     const h = buildAdminHarness();
     const caseId = await verifiedCase(h);
 
-    const real = await h.admin.listStages(STRANGER, caseId).catch((e: unknown) => e);
-    const unknown = await h.admin.listStages(STRANGER, randomUUID()).catch((e: unknown) => e);
+    const real = await h.admin.listStages(STRANGER, SESSION, caseId).catch((e: unknown) => e);
+    const unknown = await h.admin
+      .listStages(STRANGER, SESSION, randomUUID())
+      .catch((e: unknown) => e);
 
     expect(real).toBeInstanceOf(NotFoundException);
     expect(unknown).toBeInstanceOf(NotFoundException);
@@ -433,7 +435,9 @@ describe('case visibility for administration reads', () => {
     // Someone entitled to read the case must still be told the id is wrong,
     // or the fix would make the surface unusable for the people it is for.
     const h = buildAdminHarness();
-    await expect(h.admin.listStages(OPERATOR, randomUUID())).rejects.toThrow(NotFoundException);
+    await expect(h.admin.listStages(OPERATOR, SESSION, randomUUID())).rejects.toThrow(
+      NotFoundException,
+    );
   });
 
   it('the timeline orders case milestones and stage decisions', async () => {
@@ -441,7 +445,7 @@ describe('case visibility for administration reads', () => {
     const caseId = await verifiedCase(h);
     const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
     await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
-    const timeline = await h.admin.timeline(EXECUTOR, caseId);
+    const timeline = await h.admin.timeline(EXECUTOR, SESSION, caseId);
     const kinds = timeline.map((t) => t.kind);
     expect(kinds).toContain('case.reported');
     expect(kinds).toContain('case.verified');

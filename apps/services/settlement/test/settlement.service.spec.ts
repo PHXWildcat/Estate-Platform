@@ -218,7 +218,7 @@ describe('review (docs/03 §5.1 control 2: mandatory human review)', () => {
     const h = linkedHarness();
     h.operators.asked.length = 0;
 
-    await h.service.queue(OPERATOR);
+    await h.service.queue(OPERATOR, SESSION);
 
     expect(h.operators.asked).toHaveLength(1);
     expect(h.operators.asked[0]?.handle).toBe(h.db);
@@ -617,13 +617,13 @@ describe('reads and the operator queue', () => {
     // while the pair still leaked.
     const h = linkedHarness();
     const caseId = await reportCase(h);
-    await expect(h.service.getCase(DECEDENT, caseId)).resolves.toMatchObject({ caseId });
-    await expect(h.service.getCase(REPORTER, caseId)).resolves.toMatchObject({ caseId });
-    await expect(h.service.getCase(OPERATOR, caseId)).resolves.toMatchObject({ caseId });
+    await expect(h.service.getCase(DECEDENT, SESSION, caseId)).resolves.toMatchObject({ caseId });
+    await expect(h.service.getCase(REPORTER, SESSION, caseId)).resolves.toMatchObject({ caseId });
+    await expect(h.service.getCase(OPERATOR, SESSION, caseId)).resolves.toMatchObject({ caseId });
 
-    const real = await h.service.getCase(STRANGER, caseId).catch((e: unknown) => e);
+    const real = await h.service.getCase(STRANGER, SESSION, caseId).catch((e: unknown) => e);
     const unknown = await h.service
-      .getCase(STRANGER, '00000000-0000-4000-8000-0000000000ff')
+      .getCase(STRANGER, SESSION, '00000000-0000-4000-8000-0000000000ff')
       .catch((e: unknown) => e);
     expect(real).toBeInstanceOf(NotFoundException);
     expect((real as NotFoundException).getStatus()).toBe(
@@ -637,18 +637,18 @@ describe('reads and the operator queue', () => {
   it('the queue is operator-only and lists pre-verification cases', async () => {
     const h = linkedHarness();
     const caseId = await reportCase(h);
-    await expect(h.service.queue(STRANGER)).rejects.toThrow(ForbiddenException);
-    const queue = await h.service.queue(OPERATOR);
+    await expect(h.service.queue(STRANGER, SESSION)).rejects.toThrow(ForbiddenException);
+    const queue = await h.service.queue(OPERATOR, SESSION);
     expect(queue).toEqual([expect.objectContaining({ caseId })]);
   });
 
   it('eligibleForVerification flips when the deadline lapses, without any state change', async () => {
     const h = linkedHarness();
     const caseId = await approvedCase(h);
-    let dto = await h.service.getCase(OPERATOR, caseId);
+    let dto = await h.service.getCase(OPERATOR, SESSION, caseId);
     expect(dto.eligibleForVerification).toBe(false);
     h.clock.value = new Date(NOW.getTime() + 5 * DAY + HOUR);
-    dto = await h.service.getCase(OPERATOR, caseId);
+    dto = await h.service.getCase(OPERATOR, SESSION, caseId);
     expect(dto.eligibleForVerification).toBe(true);
     expect(dto.status).toBe('waiting_period'); // the clock moved nothing
   });

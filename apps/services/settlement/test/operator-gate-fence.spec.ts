@@ -81,10 +81,13 @@ const DECLARED_FALSE: ReadonlyArray<{ readonly action: string; readonly why: str
  * The ONLY methods that may consult the gate on the connection pool.
  *
  * Everything else passes its own `tx`, so the allowlist answer and the row it
- * authorizes come from one handle. These five own no transaction — four are
+ * authorizes come from one handle. These own no transaction — all but one are
  * reads, and `reportProviderSignal`'s write happens inside `insertCase`, a
  * helper shared with the trusted-contact path whose gate is the linked-contact
  * check rather than the allowlist.
+ *
+ * No count in this sentence, deliberately: the assertion below derives one and
+ * a number in the prose beside it is a second copy free to drift (M21 PR2.5).
  *
  * Declared with a reason each, because "which handle" is exactly what the seven
  * replaced call sites had already drifted about, and a convention nobody checks
@@ -102,6 +105,10 @@ const DECLARED_POOL_READS: ReadonlyArray<{ readonly method: string; readonly why
   {
     method: 'queue',
     why: 'A read with no transaction: it lists open cases and writes nothing, so there is no row for the answer to be consistent with.',
+  },
+  {
+    method: 'administrable',
+    why: 'The post-verification worklist (M21 PR3b) — the queue argument verbatim: a listing owns no transaction, so there is no row for the allowlist answer to be consistent with.',
   },
   {
     method: 'evidenceReadAuthority',

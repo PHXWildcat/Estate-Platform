@@ -72,7 +72,8 @@ export class SettlementAdminController {
   @Get('cases/:caseId/stages')
   @HttpCode(200)
   listStages(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<StageDto[]> {
-    return this.admin.listStages(requireCaller(req).userId, parse(UuidSchema, caseId));
+    const caller = requireCaller(req);
+    return this.admin.listStages(caller.userId, caller.sessionId, parse(UuidSchema, caseId));
   }
 
   @Post('stages/:stageId/decision')
@@ -106,7 +107,8 @@ export class SettlementAdminController {
   @Get('cases/:caseId/tasks')
   @HttpCode(200)
   listTasks(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<TaskDto[]> {
-    return this.admin.listTasks(requireCaller(req).userId, parse(UuidSchema, caseId));
+    const caller = requireCaller(req);
+    return this.admin.listTasks(caller.userId, caller.sessionId, parse(UuidSchema, caseId));
   }
 
   @Post('tasks/:taskId/completion')
@@ -155,7 +157,8 @@ export class SettlementAdminController {
     @Req() req: CallerRequest,
     @Param('caseId') caseId: string,
   ): Promise<DistributionDto[]> {
-    return this.admin.listDistributions(requireCaller(req).userId, parse(UuidSchema, caseId));
+    const caller = requireCaller(req);
+    return this.admin.listDistributions(caller.userId, caller.sessionId, parse(UuidSchema, caseId));
   }
 
   @Post('distributions/:distributionId/approval')
@@ -196,7 +199,8 @@ export class SettlementAdminController {
   @Get('cases/:caseId/timeline')
   @HttpCode(200)
   timeline(@Req() req: CallerRequest, @Param('caseId') caseId: string): Promise<TimelineEntry[]> {
-    return this.admin.timeline(requireCaller(req).userId, parse(UuidSchema, caseId));
+    const caller = requireCaller(req);
+    return this.admin.timeline(caller.userId, caller.sessionId, parse(UuidSchema, caseId));
   }
 
   @Post('cases/:caseId/close')

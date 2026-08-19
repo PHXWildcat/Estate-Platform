@@ -57,6 +57,69 @@ export class EventsService {
     });
   }
 
+  /**
+   * An operator listed a worklist (M21 PR3b).
+   *
+   * NO `resourceId`, deliberately: a queue read is about no single case, and
+   * naming one would put an arbitrary member of the list on that estate's
+   * trail. The count is the useful fact — it distinguishes an operator glancing
+   * at an empty queue from one enumerating every open estate — and it is a
+   * stringified integer, which SAFE_TOKEN_PATTERN admits, never a list of ids.
+   *
+   * `onBehalfOf` is likewise absent: there is no single subject.
+   */
+  async worklistViewed(
+    operatorId: string,
+    sessionId: string,
+    worklist: 'queue' | 'administrable',
+    count: number,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.queue.viewed',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: null,
+      resourceType: 'settlement_case',
+      resourceId: null,
+      sessionId,
+      detail: { worklist, count: String(count) },
+    });
+  }
+
+  /**
+   * Somebody read one case (M21 PR3b), on the case's own trail.
+   *
+   * Emitted for OPERATOR reads only, and that narrowness is the decision
+   * rather than an omission. `assertCaseVisible` and the Cedar `read` permit
+   * both admit the decedent, the reporter and the estate's executor — people
+   * reading their own case, which the rest of the product does not audit as a
+   * disclosure either. What TB7 asks for is a record of PLATFORM STAFF looking
+   * at somebody's death case, so `actorType` here is always `operator` and the
+   * caller decides by asking the gate, exactly as it already must to
+   * authorize the read.
+   *
+   * `surface` names which of the four reads this was, so one screen produces
+   * four attributable rows rather than four indistinguishable ones.
+   */
+  async caseViewed(
+    operatorId: string,
+    sessionId: string,
+    caseId: string,
+    decedentUserId: string,
+    surface: 'case' | 'timeline' | 'stages' | 'tasks' | 'distributions',
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.case.viewed',
+      actorId: operatorId,
+      actorType: 'operator',
+      onBehalfOf: decedentUserId,
+      resourceType: 'settlement_case',
+      resourceId: caseId,
+      sessionId,
+      detail: { surface },
+    });
+  }
+
   async evidenceAdded(
     actorId: string,
     sessionId: string,
