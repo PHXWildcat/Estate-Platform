@@ -17,7 +17,7 @@ export type MfaLevel = z.infer<typeof MfaLevelSchema>;
  * reason and is imported by both auth-guard and the BFF today.
  *
  * ONE SOURCE, so a consumer that cannot import auth-guard cannot hand-copy
- * three string literals and drift away from the fence that governs them
+ * the string literals and drift away from the fence that governs them
  * (`packages/auth-guard/test/session-audience.spec.ts`, which pins this union
  * to identity's DDL in both directions).
  *
@@ -27,8 +27,23 @@ export type MfaLevel = z.infer<typeof MfaLevelSchema>;
  * the M16 pairing ceremony for the browser extension; unlike `vault` it DOES
  * carry a refresh token, which is why it is admitted per handler to a set that
  * yields ciphertext and cannot destroy anything (docs/03 §6j).
+ *
+ * `operator` is minted by the SAME handoff ceremony as `vault` (M21 PR3a), for
+ * the isolated operator origin, and is the one audience whose value is PURELY
+ * subtractive: it is admitted by no service at all, only by identity's three
+ * self-referential routes, so holding one is strictly LESS than holding the
+ * account session it was minted from.
+ *
+ * THAT IS WHY MINTING IT IS ROLE-BLIND AND SAFE. Identity cannot ask whether
+ * the caller is an operator — it holds no settlement credential, there is no
+ * dblink between the auth and core clusters, and it has no concept of a role —
+ * so any account holder may mint one under step-up. Nothing is granted by
+ * doing so. `settlement_operators`, read through `OperatorGate`, remains the
+ * only thing that decides who may act on a death case, exactly as before the
+ * audience existed. An audience is a RESTRICTION on where a credential may be
+ * spent, never a claim about who is holding it.
  */
-export const SESSION_AUDIENCES = ['account', 'vault', 'extension'] as const;
+export const SESSION_AUDIENCES = ['account', 'vault', 'extension', 'operator'] as const;
 export const SessionAudienceSchema = z.enum(SESSION_AUDIENCES);
 export type SessionAudience = z.infer<typeof SessionAudienceSchema>;
 

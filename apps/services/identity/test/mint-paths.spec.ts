@@ -54,7 +54,13 @@ const MINT_PATHS: ReadonlyArray<{ file: string; audience: string; why: string }>
   {
     file: 'handoff.service.ts',
     audience: 'handoff.audience',
-    why: 'the M15 vault handoff: 15 minutes, no usable refresh token, no step-up',
+    why:
+      'the M15 handoff, serving BOTH isolated origins: vault, and (M21 PR3a) ' +
+      'operator. 15 minutes, no usable refresh token, no step-up. One ceremony ' +
+      'and one mint path for two audiences — which is why adding the operator ' +
+      'origin did not add a row here. The audience is read off the claimed ' +
+      'row rather than chosen at redemption, and which audiences the column ' +
+      'admits is pinned to HANDOFF_AUDIENCES by the auth-guard fence.',
   },
   {
     file: 'extension-pairing.service.ts',

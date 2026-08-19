@@ -73,6 +73,7 @@ export const typeDefs = /* GraphQL */ `
     ACCOUNT
     VAULT
     EXTENSION
+    OPERATOR
   }
 
   type Session {
@@ -1221,7 +1222,7 @@ export interface SchemaDeps {
 
 interface UserSessionPayload {
   readonly sessionId: string;
-  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION';
+  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR';
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly current: boolean;
@@ -1231,7 +1232,7 @@ interface SessionPayload {
   readonly userId: string;
   readonly mfaLevel: 'NONE' | 'MFA' | 'STEPUP';
   readonly stepUpFresh: boolean;
-  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION';
+  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR';
 }
 
 interface CredentialsArgs {
@@ -1329,6 +1330,7 @@ const AUDIENCE_GQL: Record<SessionAudience, SessionPayload['audience']> = {
   account: 'ACCOUNT',
   vault: 'VAULT',
   extension: 'EXTENSION',
+  operator: 'OPERATOR',
 };
 
 const OK = { ok: true } as const;

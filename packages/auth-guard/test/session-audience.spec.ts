@@ -491,20 +491,62 @@ describe('the SQL audience vocabulary matches the TypeScript union', () => {
   });
 
   it('a handoff can never mint the DEFAULT audience', () => {
-    // THE RISK MOVED AND THE CHECK DID NOT. This said `HandoffService.mint`
-    // types its `audience` PARAMETER as the full union — true until M16 PR1,
-    // which deleted the parameter precisely because a knob nobody turns is one
-    // a later milestone finds and assumes the database agrees with. What
-    // replaced it is `const HANDOFF_AUDIENCE: SessionAudience = 'vault'`
-    // (`handoff.service.ts`), annotated with the SAME full union — so
-    // reassigning it to `'account'` still type-checks and this CHECK is still
-    // the only thing stopping it. Whoever widens either one trips this test
-    // rather than discovering the consequence.
+    // THE RISK MOVED TWICE AND THE CHECK STAYED PUT, which is why this comment
+    // is a history rather than a description. M15 typed `mint`'s `audience`
+    // PARAMETER as the full union, so `mint(user, session, 'account')`
+    // type-checked and this CHECK was all that stopped it. M16 deleted the
+    // parameter — a knob nobody turns is one a later milestone finds and
+    // assumes the database agrees with — leaving `const HANDOFF_AUDIENCE:
+    // SessionAudience`, annotated with the same full union, so reassigning it
+    // was the same hazard in a new place. M21 PR3a brought the parameter back
+    // (the operator origin needs it) but typed it as `HANDOFF_AUDIENCES`, so
+    // `'account'` no longer type-checks at all and the compiler refuses it
+    // before the database ever sees it. This CHECK is now the second line
+    // rather than the only one — and it is still asserted, because a type is a
+    // claim about source and this is a claim about the column.
     const handoffs = effectiveCheck('auth_handoffs');
     expect(handoffs?.length).toBeGreaterThan(0);
     expect(handoffs).not.toContain(DEFAULT_SESSION_AUDIENCE);
     for (const value of handoffs ?? []) {
       expect(SESSION_AUDIENCES).toContain(value);
     }
+  });
+
+  it('the handoff audiences TypeScript will mint are exactly the ones the column admits', () => {
+    /*
+     * "ASSUMING THE DATABASE AGREES" IS NOW CHECKED RATHER THAN HOPED.
+     *
+     * M16 deleted `mint`'s audience parameter and wrote the condition for its
+     * return: a future audience "adds the parameter back in the same change as
+     * the DDL widening — which is strictly better than finding the parameter
+     * already there and assuming the database agrees." M21 PR3a is that change,
+     * and this is the assertion that makes the second half true.
+     *
+     * TWO HAND-WRITTEN LISTS, one in TypeScript and one in SQL, are the drift
+     * class this repo has recorded more times than any other. Widen the CHECK
+     * and forget the union: an operator handoff is refused by the compiler, and
+     * the route simply cannot be written. Widen the union and forget the CHECK:
+     * every mint of the new audience dies on a 23514 at runtime, on a ceremony
+     * whose failures are deliberately indistinguishable from each other, so it
+     * would surface as `invalid_code` — the one answer that explains nothing.
+     *
+     * Read by `readFileSync` from the service's source rather than imported,
+     * for `credential-graph.spec.ts`'s reason: every service depends on this
+     * package, so a spec here can never import one back.
+     */
+    const source = readFileSync(
+      join(SERVICES_DIR, 'identity', 'src', 'handoff.service.ts'),
+      'utf8',
+    );
+    const declared = /export const HANDOFF_AUDIENCES = \[([^\]]*)\] as const;/.exec(source);
+    // Anti-vacuity: a renamed or reshaped constant must fail loudly here rather
+    // than leave the comparison below matching two empty sets.
+    expect({ found: declared !== null }).toEqual({ found: true });
+    const audiences = [...(declared?.[1] ?? '').matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+    expect(audiences.length).toBeGreaterThan(0);
+
+    expect(audiences.slice().sort()).toEqual(
+      (effectiveCheck('auth_handoffs') ?? []).slice().sort(),
+    );
   });
 });

@@ -145,7 +145,7 @@ export interface SessionInfo {
 }
 
 /** What a session may be spent on — the BFF enum verbatim (M15's audience, listed in M16). */
-export type SessionAudience = 'ACCOUNT' | 'VAULT' | 'EXTENSION';
+export type SessionAudience = 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR';
 
 /**
  * One live credential on the caller's account (M16).

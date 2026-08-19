@@ -23,7 +23,7 @@ describe('@estate/auth-guard public surface', () => {
     // them through the barrel, so the re-export getters were uncovered and the
     // package fell under its own functions floor. Every one of these is
     // consumed by a service or a fence, so the barrel is load-bearing.
-    expect(authGuard.SESSION_AUDIENCES).toEqual(['account', 'vault', 'extension']);
+    expect(authGuard.SESSION_AUDIENCES).toEqual(['account', 'vault', 'extension', 'operator']);
     expect(authGuard.DEFAULT_SESSION_AUDIENCE).toBe('account');
     // The declaration the fence checks source against — vault, and only vault.
     expect(authGuard.AUDIENCE_ADMITTERS.vault).toEqual(['vault']);
@@ -33,6 +33,14 @@ describe('@estate/auth-guard public surface', () => {
     // open all 23 vault routes at once, and this is the barrel test that would
     // notice.
     expect(authGuard.AUDIENCE_ADMITTERS.extension).toEqual([]);
+    // M21 PR3a's operator audience is empty for a DIFFERENT reason than the one
+    // above, which is why it gets its own line rather than being folded in:
+    // `extension` is empty because a service-wide grant at the vault would be
+    // too wide, while `operator` is empty because NO service admits it at all,
+    // settlement included. An `operator: ['settlement']` here would union with
+    // every settlement route — the decedent's own void, the owner's settings, a
+    // reporter's case reads — and this is the barrel test that would notice.
+    expect(authGuard.AUDIENCE_ADMITTERS.operator).toEqual([]);
     // The DI token a service binds to widen its guard. Absence is the secure
     // setting, so the symbol existing is what makes opting in explicit.
     expect(typeof authGuard.ALLOWED_SESSION_AUDIENCES).toBe('symbol');

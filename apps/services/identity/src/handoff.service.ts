@@ -1,6 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Injectable, Inject, UnauthorizedException } from '@nestjs/common';
-import type { SessionAudience } from '@estate/auth-guard';
 import { CLOCK, type Clock } from './di-tokens';
 import { EventsService } from './events.service';
 import { HandoffsRepo } from './handoffs.repo';
@@ -26,23 +25,32 @@ export const HANDOFF_TTL_MS = 60 * 1000;
 const HANDOFF_CODE_BYTES = 20;
 
 /**
- * THE ONE AUDIENCE A HANDOFF MAY MINT — a constant, not a parameter (M16).
+ * THE AUDIENCES A HANDOFF MAY MINT — and the whole story of this constant.
  *
- * This was `mint(userId, sessionId, audience: SessionAudience = 'vault')`, and
- * the parameter was typed as the FULL union while no caller ever passed one. So
- * `mint(user, session, 'account')` type-checked, and the only thing standing
- * between that call and an ordinary account session minted by an unauthenticated
- * redeem route was `auth_handoffs`' `CHECK (audience IN ('vault'))` — a
- * constraint any milestone widening the vocabulary is tempted to touch.
+ * M15 wrote `mint(userId, sessionId, audience: SessionAudience = 'vault')`,
+ * typed as the FULL union while no caller ever passed one. So
+ * `mint(user, session, 'account')` type-checked, and the only thing between
+ * that call and an ordinary account session minted by an UNAUTHENTICATED redeem
+ * route was `auth_handoffs`' CHECK. M16 deleted the parameter rather than
+ * narrowing it, because narrowing leaves a knob nobody turns, and recorded the
+ * condition for bringing it back: "If a future audience does need a handoff, it
+ * adds the parameter back IN THE SAME CHANGE AS THE DDL WIDENING — which is
+ * strictly better than finding the parameter already there and assuming the
+ * database agrees."
  *
- * Deleted rather than narrowed, because narrowing leaves a knob nobody turns.
- * M16 pairs extensions with a typed code and its own table, deliberately NOT
- * through this ceremony, so there is no prospective caller either. If a future
- * audience does need a handoff, it adds the parameter back in the same change
- * as the DDL widening — which is strictly better than finding the parameter
- * already there and assuming the database agrees.
+ * M21 PR3a is that change. Migration 012 widens the CHECK to
+ * `IN ('vault', 'operator')` and this list widens with it, in the same commit.
+ *
+ * TWO THINGS KEEP THE OLD HAZARD FROM COMING BACK. The type is this list rather
+ * than `SessionAudience`, so `'account'` does not type-check and the compiler —
+ * not a database constraint reached at runtime — is what refuses it. And the
+ * list is PINNED TO THE DDL by `packages/auth-guard/test/session-audience.spec.ts`,
+ * which reads this file and migration 012 and asserts they name the same set in
+ * both directions. "Assuming the database agrees" is now a thing the suite
+ * checks rather than a thing a reader hopes.
  */
-const HANDOFF_AUDIENCE: SessionAudience = 'vault';
+export const HANDOFF_AUDIENCES = ['vault', 'operator'] as const;
+export type HandoffAudience = (typeof HANDOFF_AUDIENCES)[number];
 
 export interface MintedHandoff {
   readonly code: string;
@@ -122,14 +130,22 @@ export class HandoffService {
   }
 
   /**
-   * Mint a code for the vault origin. Step-up gated at the route.
+   * Mint a code for one isolated origin. Step-up gated at the route.
+   *
+   * `audience` is REQUIRED and has no default. A default is how the wrong
+   * origin's credential gets minted silently by a caller that forgot the
+   * argument, and there is no audience here that is more "normal" than the
+   * other — each route names its own and there are exactly two.
    *
    * Retires the caller's outstanding handoff first, so pressing the button
    * twice leaves one live credential rather than two — see `retireLive`.
+   * RETIREMENT IS ACROSS AUDIENCES, deliberately: minting an operator code
+   * retires an outstanding vault code and vice versa. One person at one
+   * keyboard is crossing to one origin, so a second live code is a second thing
+   * to steal rather than a second thing to use.
    */
-  async mint(userId: string, sessionId: string): Promise<MintedHandoff> {
+  async mint(userId: string, sessionId: string, audience: HandoffAudience): Promise<MintedHandoff> {
     const now = this.clock();
-    const audience = HANDOFF_AUDIENCE;
     // base64url: this value only ever travels inside a form field, so it needs
     // no human-legible alphabet and no canonical fold. What it must not be is
     // shorter than the 160 bits the other ceremonies use.
