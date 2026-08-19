@@ -137,11 +137,76 @@ describe('the DOM helper has no URL attribute, and one place has', () => {
     },
   );
 
-  it('names setAttribute in exactly one module, and a URL in exactly one other', () => {
-    const setters = clientFiles.filter((file) => code(file).includes('setAttribute'));
-    expect(setters.map((f) => f.slice(CLIENT.length + 1))).toEqual(['app.ts', 'dom.ts']);
-    // `app.ts`'s single use is the link, over the origin the edge validated.
-    expect(code(join(CLIENT, 'app.ts')).match(/setAttribute/g)).toHaveLength(1);
+  /**
+   * WHICH ATTRIBUTES, not which files.
+   *
+   * The first version of this fence asserted that exactly two modules named
+   * `setAttribute`, which held while there were two modules and stopped being
+   * the property the moment a third legitimately set `inputmode`. A count of
+   * FILES was always a proxy: what matters is that no client file ever puts a
+   * URL — or a script — into an attribute, and that is a question about the
+   * ATTRIBUTE NAME. So the names are declared here with a reason apiece,
+   * asserted equal to what the source really sets in both directions, and
+   * separately checked against the URL/script-bearing set.
+   *
+   * `dom.ts` is excluded from the literal scan and named explicitly: its two
+   * calls pass a VARIABLE key, which is the `Attrs` interface's business —
+   * that interface is sliced and asserted URL-free directly above.
+   */
+  const SET_ATTRIBUTES: ReadonlyArray<readonly [string, string]> = [
+    ['href', 'the one "back to Estate" link, over the origin the edge validated as a URL'],
+    ['value', 'the rejection-reason options, over `REJECTION_REASONS` — closed, in-repo constants'],
+    ['inputmode', 'a numeric keypad for the six-digit step-up code'],
+    ['autocomplete', 'one-time-code, so an authenticator app can offer to fill it'],
+  ];
+
+  /** Anything that can fetch, navigate, or run. `on*` is covered by the regex below. */
+  const FORBIDDEN_ATTRIBUTES = [
+    'src',
+    'srcdoc',
+    'action',
+    'formaction',
+    'style',
+    'data',
+    'ping',
+    'poster',
+    'background',
+  ];
+
+  function literalAttributes(): Set<string> {
+    const found = new Set<string>();
+    for (const file of clientFiles) {
+      if (file.endsWith('dom.ts')) continue;
+      for (const match of code(file).matchAll(/setAttribute\(\s*'([^']+)'/g)) {
+        found.add(match[1] as string);
+      }
+    }
+    return found;
+  }
+
+  it('sets only the attributes declared here, and every declared one is really set', () => {
+    const found = literalAttributes();
+    // Anti-vacuity: a scan that matched nothing agrees with any table.
+    expect(found.size).toBeGreaterThanOrEqual(4);
+    expect([...found].sort()).toEqual(SET_ATTRIBUTES.map(([name]) => name).sort());
+  });
+
+  it('sets no attribute that can fetch, navigate or run', () => {
+    const declared = SET_ATTRIBUTES.map(([name]) => name);
+    for (const attribute of FORBIDDEN_ATTRIBUTES) {
+      expect(declared).not.toContain(attribute);
+    }
+    // `href` is declared and is the exception the docstring names; it must stay
+    // a single use, in `app.ts`, over the validated app origin.
+    expect(code(join(CLIENT, 'app.ts')).match(/setAttribute\(\s*'href'/g)).toHaveLength(1);
+    for (const file of clientFiles) {
+      expect(code(file)).not.toMatch(/setAttribute\(\s*'on/);
+    }
+  });
+
+  it('dom.ts is the only module setting an attribute from a variable key', () => {
+    const dynamic = clientFiles.filter((file) => /setAttribute\(\s*[a-zA-Z_$]/.test(code(file)));
+    expect(dynamic.map((f) => f.slice(CLIENT.length + 1))).toEqual(['dom.ts']);
   });
 });
 

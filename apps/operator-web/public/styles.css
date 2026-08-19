@@ -89,7 +89,7 @@ body {
 }
 
 .shell {
-  max-width: 38rem;
+  max-width: 48rem;
   margin: 2.5rem auto;
   padding: 1.75rem;
   background: var(--surface);
@@ -169,9 +169,75 @@ body {
 }
 
 .foot {
-  max-width: 38rem;
+  max-width: 48rem;
   margin: 0 auto 3rem;
   padding: 0 1.75rem;
   font-size: 0.8125rem;
   color: var(--muted);
+}
+
+/*
+ * The case surface (M21 PR3b). A panel per section, a list of rows inside it.
+ *
+ * Deliberately flat: no table, because a stage row and a distribution row carry
+ * different facts and a shared table would force a shape neither wants; and no
+ * colour-coded status pills, because a status here decides whether somebody's
+ * account gets locked and a person should read the word rather than a hue.
+ */
+.panel {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.1rem 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+
+.heading {
+  margin: 0 0 0.85rem;
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.list {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.row:first-child {
+  border-top: 0;
+}
+
+.row .facts {
+  margin-bottom: 0.6rem;
+}
+
+.input {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.label {
+  display: block;
+  margin: 0 0 0.35rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+/* A ceremony is a form on a screen full of buttons; give it an edge. */
+.prompt {
+  margin: 0 0 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--rail-line);
+  border-radius: 0.6rem;
+  background: var(--surface);
 }

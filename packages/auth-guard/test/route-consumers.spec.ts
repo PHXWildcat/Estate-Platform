@@ -159,10 +159,31 @@ function extractTemplates(file: string): string[] {
   if (!existsSync(absolute)) {
     return [];
   }
-  // Collapse interpolations FIRST: an `${encodeURIComponent(\n …\n)}` spans
-  // lines, and extracting before collapsing would truncate the template at
-  // the newline (measured against documents-client.ts).
-  const collapsed = read(absolute).replace(/\$\{[^}]*\}/g, ':p');
+  const source = read(absolute);
+  /*
+   * RESOLVE FILE-LOCAL PATH CONSTANTS BEFORE COLLAPSING.
+   *
+   * A client that writes `${CASES}/${id}/timeline` has a template this scan
+   * cannot see: the constant collapses to `:p` like any other interpolation,
+   * so the whole prefix disappears and the row reads as "addresses nothing".
+   * That direction is the safe one — it fails the fence rather than passing it
+   * — but it is still a fence going red for a reason that is not the property,
+   * which is how an escape hatch gets widened. Only same-file `const X = '…'`
+   * string literals are substituted, so this cannot reach across modules and
+   * cannot invent a path the file does not contain.
+   */
+  const constants = new Map<string, string>();
+  for (const m of source.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*=\s*'([^']*)'/g)) {
+    constants.set(m[1] as string, m[2] as string);
+  }
+  const resolved = source.replace(
+    /\$\{([A-Z][A-Z0-9_]*)\}/g,
+    (whole, name: string) => constants.get(name) ?? whole,
+  );
+  // Collapse the REST of the interpolations: an `${encodeURIComponent(\n …\n)}`
+  // spans lines, and extracting before collapsing would truncate the template
+  // at the newline (measured against documents-client.ts).
+  const collapsed = resolved.replace(/\$\{[^}]*\}/g, ':p');
   const templates = new Set<string>();
   for (const m of collapsed.matchAll(/\/(?:v1|internal|api)\/[A-Za-z0-9_/.:-]*/g)) {
     templates.add(m[0]);
@@ -473,6 +494,15 @@ const AI = 'apps/services/ai-assistant/src/clients';
 const VW = 'apps/vault-web/src';
 const VX = 'apps/vault-extension/src';
 const OW = 'apps/operator-web/src';
+/**
+ * The console's ONE settlement call site. Named alongside `server.ts` on every
+ * route it reaches, because the edge and the client are two different claims: a
+ * path in `PROXY_ROUTES` says the edge WOULD forward it, and a template here
+ * says something actually asks. Slice 3 flipped these routes on the edge alone
+ * and the second half arrives with the screens, which is the M9 PR2 rule (a
+ * capability and its callers ship together) applied inside one milestone.
+ */
+const OW_CLIENT = `${OW}/client/settlement.ts`;
 
 /**
  * Where a consumer of a service route can live. Used by the stale-exemption
@@ -674,7 +704,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement GET /v1/settlement/reportable-estates': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement POST /v1/settlement/cases': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement GET /v1/settlement/cases': { exempt: EXEMPT_SETTLEMENT_REPORTING },
-  'settlement GET /v1/settlement/cases/:caseId': consumed(`${OW}/server.ts`),
+  'settlement GET /v1/settlement/cases/:caseId': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/evidence': {
     exempt: EXEMPT_SETTLEMENT_REPORTING,
   },
@@ -682,25 +712,31 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement GET /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement PUT /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement POST /v1/settlement/cases/report-provider': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement GET /v1/settlement/queue': consumed(`${OW}/server.ts`),
-  'settlement GET /v1/settlement/administrable': consumed(`${OW}/server.ts`),
-  'settlement POST /v1/settlement/cases/:caseId/review/start': consumed(`${OW}/server.ts`),
-  'settlement POST /v1/settlement/cases/:caseId/review': consumed(`${OW}/server.ts`),
-  'settlement POST /v1/settlement/cases/:caseId/verify': consumed(`${OW}/server.ts`),
-  'settlement POST /v1/settlement/cases/:caseId/close': consumed(`${OW}/server.ts`),
-  'settlement GET /v1/settlement/cases/:caseId/timeline': consumed(`${OW}/server.ts`),
+  'settlement GET /v1/settlement/queue': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement GET /v1/settlement/administrable': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/review/start': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+  ),
+  'settlement POST /v1/settlement/cases/:caseId/review': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/verify': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/close': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement GET /v1/settlement/cases/:caseId/timeline': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/cases/:caseId/tasks': { exempt: EXEMPT_TB7_OPERATOR },
   'settlement POST /v1/settlement/tasks/:taskId/completion': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement GET /v1/settlement/cases/:caseId/stages': consumed(`${OW}/server.ts`),
+  'settlement GET /v1/settlement/cases/:caseId/stages': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/stages': pathSharedWith(
     'settlement GET /v1/settlement/cases/:caseId/stages',
     'The EXECUTOR stage request. The operator console proxies the GET on this path and not the ' +
       'POST — PROXY_ROUTES names a method per row — and the operator audience admits listStages ' +
       'and not requestStage. The executor-facing surface is its own milestone.',
   ),
-  'settlement POST /v1/settlement/stages/:stageId/decision': consumed(`${OW}/server.ts`),
-  'settlement POST /v1/settlement/stages/:stageId/revoke': consumed(`${OW}/server.ts`),
-  'settlement GET /v1/settlement/cases/:caseId/distributions': consumed(`${OW}/server.ts`),
+  'settlement POST /v1/settlement/stages/:stageId/decision': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/stages/:stageId/revoke': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement GET /v1/settlement/cases/:caseId/distributions': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+  ),
   'settlement POST /v1/settlement/cases/:caseId/distributions': pathSharedWith(
     'settlement GET /v1/settlement/cases/:caseId/distributions',
     'Recording a distribution is the executor write; the console proxies the GET on this path ' +
@@ -708,6 +744,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   ),
   'settlement POST /v1/settlement/distributions/:distributionId/approval': consumed(
     `${OW}/server.ts`,
+    OW_CLIENT,
   ),
   'settlement POST /v1/settlement/distributions/:distributionId/status': {
     exempt: EXEMPT_TB7_OPERATOR,
