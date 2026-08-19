@@ -7432,3 +7432,25 @@ deviating from them, stop and propose the change with rationale — do not silen
   stronger gate; the production rehearsal was verified on the PR against an
   identical tree and not on `main`. Stating that split precisely is the point -
   "all green" was the claim that was wrong, not the underlying evidence.
+- 2026-08-19 - AND THEN THE REPLACEMENT WATCHER WAS WRONG TWICE MORE, within
+  minutes of the entry above, which is why the progression rather than any one
+  instance is the lesson: THREE SUCCESSIVE SURVEYS OF THE SAME QUESTION WERE
+  EACH WRONG ONE LEVEL DOWN. (a) `gh run list --commit 4c7fc88` — an ABBREVIATED
+  sha — exits 0 with `[]`, so the set-bound watcher written to fix the count
+  defect reported all five workflows MISSING while four were running and one had
+  already passed. An empty result and a filter that matches nothing are
+  indistinguishable, which is the standing zsh lesson arriving through `gh`: the
+  sha is resolved with `git rev-parse` now, and a filter that has matched NOTHING
+  after a grace period reports MISCONFIGURED OBSERVER rather than a missing gate,
+  because those are different facts with different remedies. (b) The expected set
+  was hand-listed as five workflows from parsing each file's `on:` KEYS —
+  and `Extension` declares `paths:` filters it does not match on a PR touching
+  two workflow files and CLAUDE.md, so it was legitimately absent and would have
+  been reported missing forever. PARSING THE EVENT KEYS IS NOT PARSING THE
+  EVENT'S PREDICATE. The expected set is DERIVED now, by evaluating each
+  workflow's `paths`/`paths-ignore` against the commit's own changed files (four
+  expected here, not five). The general shape: grep → parse-the-keys →
+  parse-the-predicate, each step correcting the last, and each intermediate
+  answer confident enough to be written down. Neither of these was a CI defect;
+  both times the thing observed was fine and the observer was broken, which is
+  the direction that wastes the most time because there is nothing to find.
