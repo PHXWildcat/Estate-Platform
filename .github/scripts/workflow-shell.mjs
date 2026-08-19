@@ -14,11 +14,28 @@
  * many lines later. The property is a property of the WHOLE run body, and
  * answering it means tracking shell quoting state across it — which is a parse.
  *
+ * IT CATCHES BOTH HALVES, and the second is the dangerous one. An ODD number of
+ * stray apostrophes leaves a quote UNTERMINATED, which is the failure above: it
+ * fails loudly. An EVEN number RE-BALANCES them, and that one is silent-green.
+ * Measured, with `// it's the console's round trip` inside a `node -e` body:
+ * bash splits it into THREE arguments, node evaluates only the first —
+ * `const r = {...}; // its`, which is valid JavaScript — exits 0, and the
+ * assertion has simply vanished. The step passes. So an unterminated-quote check
+ * alone would have been blind to the worse half of the class it was written for.
+ *
+ * The second check is on the CAUSE rather than on the symptom, which is what
+ * lets one rule cover both: a `'` that CLOSES a single-quoted string and is
+ * immediately followed by a word character is an accidental close. That is
+ * exactly `console's` — the quote shuts at `console` and `s` runs on. A
+ * deliberate close is followed by whitespace, a newline, `)`, `;`, `|`, `&`, or
+ * another quote — including `'"'"'`, the escape dance, whose close is followed
+ * by `"`. It fires at the FIRST accidental close, so it does not care whether
+ * the count is odd or even.
+ *
  * WHAT IT DELIBERATELY DOES NOT DO. This is not a shell parser. It tracks the
- * three states that decide whether a quote is open at the end of a script
- * (bare, single-quoted, double-quoted, plus backslash escapes where they apply)
- * and reports an unterminated one. That is the defect class; a full parse would
- * be a much larger thing to trust, and unbalanced quoting is the failure that
+ * states that decide whether a quote is open at the end of a script (bare,
+ * single-quoted, double-quoted, plus backslash escapes where they apply). A full
+ * parse would be a much larger thing to trust, and quoting is the failure that
  * silently unhooks a gate.
  *
  * REFUSES WHAT IT CANNOT READ. A `run:` written in a shape the extractor does
@@ -110,11 +127,12 @@ export function extractRunBlocks(source) {
  * quote that was left open — the OPENING position, which is what a person needs
  * in order to fix it, rather than the end of the file where it was noticed.
  */
-export function unterminatedQuote(script) {
+export function scanQuoting(script) {
   let state = 'bare';
   let openedAt = null;
   let line = 1;
   let column = 0;
+  const accidental = [];
 
   for (let i = 0; i < script.length; i += 1) {
     const ch = script[i];
@@ -130,7 +148,14 @@ export function unterminatedQuote(script) {
       // Nothing escapes inside single quotes — not even a backslash. This is
       // the whole reason the defect exists: there is no way to write an
       // apostrophe here, so the first one always closes the string.
-      if (ch === "'") state = 'bare';
+      if (ch === "'") {
+        state = 'bare';
+        // An accidental close: the shell shuts the string here and the rest of
+        // the word runs on unquoted. `console's` is this exactly.
+        if (/[A-Za-z0-9_]/.test(script[i + 1] ?? '')) {
+          accidental.push({ line, column, after: script[i + 1] });
+        }
+      }
       continue;
     }
 
@@ -168,8 +193,19 @@ export function unterminatedQuote(script) {
     }
   }
 
-  if (state === 'bare') return null;
-  return { kind: state, ...openedAt };
+  return {
+    unterminated: state === 'bare' ? null : { kind: state, ...openedAt },
+    accidental,
+  };
+}
+
+/**
+ * The unterminated half alone, kept as its own name because that is the failure
+ * people describe when they hit it. One scanner underneath, so the two notions
+ * cannot drift apart.
+ */
+export function unterminatedQuote(script) {
+  return scanQuoting(script).unterminated;
 }
 
 /** Every workflow file, so a new one is covered without anyone remembering. */
@@ -191,7 +227,16 @@ export function sweep(dir) {
     for (const r of unreadable) refusals.push({ file: file.name, ...r });
     for (const script of scripts) {
       blocks += 1;
-      const open = unterminatedQuote(script.body);
+      const { unterminated: open, accidental } = scanQuoting(script.body);
+      for (const a of accidental) {
+        findings.push({
+          file: file.name,
+          line: script.bodyLine + a.line - 1,
+          column: a.column,
+          kind: 'accidental-close',
+          detail: `a single-quoted string closes here and \`${a.after}\` runs on unquoted — an apostrophe in prose`,
+        });
+      }
       if (open) {
         findings.push({
           file: file.name,

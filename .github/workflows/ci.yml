@@ -22,7 +22,18 @@ on:
 permissions:
   contents: read
 
-# Skip the branch-push run when a PR run for the same commit exists.
+# Supersede an older run on the SAME ref when a newer commit lands there.
+#
+# CORRECTED: this used to say it skipped the branch-push run when a PR run for
+# the same commit existed. It cannot, and never did. `github.ref` is
+# `refs/heads/<branch>` for a push and `refs/pull/<n>/merge` for a
+# pull_request, so the two events land in DIFFERENT groups and neither can
+# cancel the other. MEASURED over this repo's own history (400 runs of this
+# workflow, grouped by sha): 67 shas received both a push run and a
+# pull_request run, and 64 of those pairs ran both to completion with no
+# cancellation at all. The three pairs that do contain one are same-event
+# supersession — a newer commit arriving — which is what this block actually
+# buys, and is worth keeping.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -81,8 +92,37 @@ jobs:
       # DOT-directory: given `.github/scripts/` it hands the path to the module
       # loader and dies with MODULE_NOT_FOUND, which would have looked like a
       # broken test rather than a discovery quirk.
+      #
+      # TWO FLOORS, because this step is the SOLE invoker of every
+      # `.github/scripts/*.test.mjs` and it cannot otherwise detect its own
+      # disarming. MEASURED: with `nullglob` off (the default) an unmatched glob
+      # reaches node as the LITERAL pattern; node 22 expands it itself, finds
+      # nothing, prints `1..0 / # tests 0` and EXITS 0. Renaming the files from
+      # `.test.mjs` to `.spec.mjs` — every test still on disk, every assertion
+      # intact — takes this step from 34 passing tests to zero, silently and
+      # green. Demonstrated with the real apostrophe defect planted in a
+      # workflow: armed it exits 1, disarmed it exits 0 over the same defect.
+      # The contrast that proves it is node's own: a missing path WITHOUT a `*`
+      # makes node exit 1, so it is the metacharacter that suppresses the
+      # failure. The floors are deliberately below the real numbers (3 files, 34
+      # tests) so ordinary additions never trip them.
       - name: Test the CI helper scripts
-        run: node --test .github/scripts/*.test.mjs
+        run: |
+          shopt -s nullglob
+          files=(.github/scripts/*.test.mjs)
+          if [ "${#files[@]}" -lt 3 ]; then
+            echo "::error::found ${#files[@]} helper test files, expected at least 3 — a rename, a move or a pattern edit has disarmed this gate"
+            exit 1
+          fi
+          status=0
+          node --test "${files[@]}" > helper-tests.log 2>&1 || status=$?
+          cat helper-tests.log
+          if [ "$status" != 0 ]; then exit "$status"; fi
+          passed=$(awk '/^# pass /{print $3}' helper-tests.log)
+          if [ -z "$passed" ] || [ "$passed" -lt 30 ]; then
+            echo "::error::helper tests reported ${passed:-no} passing tests, expected at least 30 — the suite ran but is not testing what it claims"
+            exit 1
+          fi
 
       # --coverage makes the per-package coverage tables visible in CI logs;
       # thresholds (95 backend / 90 frontend target) get enabled once real

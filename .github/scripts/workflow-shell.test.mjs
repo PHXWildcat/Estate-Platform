@@ -13,7 +13,13 @@ import { test } from 'node:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { extractRunBlocks, sweep, unterminatedQuote, workflowFiles } from './workflow-shell.mjs';
+import {
+  extractRunBlocks,
+  scanQuoting,
+  sweep,
+  unterminatedQuote,
+  workflowFiles,
+} from './workflow-shell.mjs';
 
 const WORKFLOWS = join(dirname(fileURLToPath(import.meta.url)), '..', 'workflows');
 
@@ -37,6 +43,42 @@ test('THE HISTORICAL DEFECT — an apostrophe in prose inside a single-quoted bo
     5,
     'it is the TERMINATOR that is left open, once prose closed the string early',
   );
+});
+
+test('THE SILENT HALF — an EVEN number of prose apostrophes re-balances the quotes', () => {
+  // This is the dangerous one and an unterminated-quote check cannot see it.
+  // MEASURED with bash: the body below splits into THREE arguments, node
+  // evaluates only the first (`const r = 1; // its`, which is valid
+  // JavaScript), exits 0, and the assertion is simply gone. The step passes.
+  const q = String.fromCharCode(39);
+  const script = [
+    `node -e ${q}`,
+    '  const r = 1;',
+    `  // it${q}s the console${q}s round trip`,
+    '  console.log("RAN");',
+    q,
+  ].join('\n');
+
+  const { unterminated, accidental } = scanQuoting(script);
+  assert.equal(unterminated, null, 'the quotes DO balance — that is what makes it silent');
+  assert.equal(accidental.length, 1, 'and the accidental close is what catches it anyway');
+  assert.equal(accidental[0].line, 3);
+  assert.equal(accidental[0].after, 's');
+});
+
+test('the ESCAPE DANCE is not a false positive', () => {
+  // `'"'"'` is the only way to write an apostrophe inside single quotes, and
+  // stack.yml used it for years. Its close is followed by `"`, not by a word
+  // character, so the rule is on the cause rather than on the count.
+  const q = String.fromCharCode(39);
+  const script = [`node -e ${q}`, `  // profile${q}"${q}"${q}s block`, q].join('\n');
+  assert.deepEqual(scanQuoting(script).accidental, []);
+});
+
+test('a deliberate close followed by punctuation or space is not flagged', () => {
+  for (const script of ["echo 'a' 'b'", "echo 'a';", "echo 'a')", "grep 'x' | wc -l", "echo 'a'"]) {
+    assert.deepEqual(scanQuoting(script).accidental, [], script);
+  }
 });
 
 test('the same body without the apostrophe is clean', () => {
@@ -131,7 +173,7 @@ test('the word `run:` inside a script body is not mistaken for a key', () => {
   assert.equal(scripts.length, 1);
 });
 
-test('THE REPO ITSELF — every run block in every workflow closes its quotes', () => {
+test('THE REPO ITSELF — no unterminated quote, and no apostrophe in prose', () => {
   const files = workflowFiles(WORKFLOWS);
   const { findings, refusals, blocks } = sweep(WORKFLOWS);
 

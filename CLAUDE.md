@@ -7578,6 +7578,73 @@ deviating from them, stop and propose the change with rationale — do not silen
   neutered (red in its own suite), and THE SECOND PROBE OF THE PAIR — the defect
   planted AND the quoting checker neutered — GREEN, which is what identifies the
   checker as the thing that saw it rather than some incidental assertion.
+- 2026-08-19 — AND MY OWN FENCE SHIPPED BLIND TO THE WORSE HALF OF ITS OWN
+  DEFECT CLASS, found by a parallel audit of the CI configuration and confirmed
+  by execution before it was believed. `unterminatedQuote` asked whether a quote
+  was left OPEN, which is the ODD-apostrophe case — the one that fails loudly.
+  An EVEN number RE-BALANCES the quotes, and that case is SILENT-GREEN.
+  MEASURED with `// it's the console's round trip` inside a `node -e` body: bash
+  splits it into THREE arguments, node evaluates only the first —
+  `const r = {...}; // its`, which is VALID JAVASCRIPT — exits 0, and the
+  assertion has vanished with the step passing. Strictly worse than the defect
+  that prompted the fence, because that one at least went red. Two lenses
+  reached it independently.
+  THE FIX IS ON THE CAUSE RATHER THAN THE SYMPTOM, which is what lets one rule
+  cover both parities: a `'` that CLOSES a single-quoted string and is
+  immediately followed by a WORD CHARACTER is an accidental close — `console's`
+  is exactly that, the quote shutting at `console` with `s` running on. A
+  deliberate close is followed by whitespace, `)`, `;`, `|`, `&` or another
+  quote, INCLUDING `'\"'\"'`, the escape dance, whose close is followed by `"` —
+  so stack.yml's years-old workaround is not a false positive. It fires at the
+  first accidental close and never counts apostrophes, so parity is irrelevant.
+  Zero false positives across all 47 run blocks in the repo. Mutation-tested as
+  a pair: the even-parity defect planted goes RED, and planted with the
+  accidental-close check neutered goes GREEN — which is what identifies the new
+  check, rather than the old one, as the thing that sees it.
+  THE LESSON IS ABOUT WHAT A FENCE MEASURES. I wrote a checker for "is a quote
+  left open", which is the symptom I had just spent an hour measuring, and
+  called it a fence against apostrophes in prose. The two are not the same
+  question, and the half I missed was the half that goes green. A fence written
+  in the same sitting as the defect it answers inherits the author's model of
+  that defect — the M21 PR2 lesson, arriving in the very next fence I wrote.
+- 2026-08-19 — THE STEP THAT RUNS EVERY `.github/scripts` FENCE COULD NOT
+  DETECT ITS OWN DISARMING, found by a parallel audit of the CI configuration
+  and confirmed by two independent verifiers, both by execution. `ci.yml`'s
+  helper-test step was one line — `node --test .github/scripts/*.test.mjs` —
+  and with `nullglob` off (the default) an unmatched glob reaches node as the
+  LITERAL pattern; node 22 expands it itself, finds nothing, prints
+  `1..0 / # tests 0` and EXITS 0. The contrast that proves the mechanism is
+  node's own: a missing path WITHOUT a `*` makes it exit 1, so the
+  metacharacter is what suppresses the failure. A verifier then demonstrated it
+  end to end — plant the real apostrophe defect in a workflow, rename the test
+  files from `.test.mjs` to `.spec.mjs` with every assertion still on disk, and
+  the same defect in the same file goes from exit 1 to exit 0.
+  MATERIALITY HAD ALREADY LANDED RATHER THAN BEING PROSPECTIVE: that step is
+  the SOLE invoker of every `.github/scripts/*.test.mjs`, no jest project covers
+  `.github`, and the two fences committed hours earlier — the stack count gate
+  and the workflow quoting fence — run exclusively through it. The fence I wrote
+  to catch a disarmed gate was itself reachable only through a gate that could
+  be disarmed silently.
+  TWO FLOORS, because the two failures are different: a FILE-COUNT floor catches
+  the rename, the move and the pattern edit, and a PASSING-TEST floor catches
+  three surviving files with their assertions gutted. Both proven by execution
+  against a copy of the real tree — normal 34/34 exit 0, renamed exit 1 naming
+  the count, emptied exit 1 reporting 3 passing (node counts a file with no
+  subtests as one passing test, which is exactly why a file-count floor alone is
+  not enough).
+- 2026-08-19 — A CONCURRENCY COMMENT DESCRIBED A DEDUP THAT CANNOT HAPPEN, and
+  the verifier settled it against the repo's own history rather than by reading.
+  `ci.yml` said it skipped the branch-push run when a PR run for the same commit
+  existed; the group is `ci-${{ github.ref }}`, which is `refs/heads/<branch>`
+  for a push and `refs/pull/<n>/merge` for a pull_request — different groups, so
+  neither event can ever cancel the other. MEASURED over 400 runs grouped by
+  sha: 67 shas received BOTH a push run and a pull_request run, and 64 of those
+  pairs ran both to completion with no cancellation at all; the three that
+  contain one are same-event supersession. The block is worth keeping for what
+  it really does — superseding an older run when a newer commit lands on the
+  same ref — so the comment now says that, with the measurement beside it. A
+  wrong claim about a gate is worse than no claim, because it stops the next
+  person looking.
 - 2026-08-19 — TWO MORE WAYS THE HARNESS TRIED TO LIE, both caught by guards
   this repo already had. `$M mutate …` ran nothing, because zsh does not
   word-split an unquoted variable, so the whole string became one command name —
