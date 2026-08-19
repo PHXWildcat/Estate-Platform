@@ -114,11 +114,14 @@ jobs:
             echo "::error::found ${#files[@]} helper test files, expected at least 3 — a rename, a move or a pattern edit has disarmed this gate"
             exit 1
           fi
+          # mktemp rather than the workspace: a CI step that drops a file in
+          # the repo root is one somebody eventually commits.
+          log=$(mktemp)
           status=0
-          node --test "${files[@]}" > helper-tests.log 2>&1 || status=$?
-          cat helper-tests.log
+          node --test "${files[@]}" > "$log" 2>&1 || status=$?
+          cat "$log"
           if [ "$status" != 0 ]; then exit "$status"; fi
-          passed=$(awk '/^# pass /{print $3}' helper-tests.log)
+          passed=$(awk '/^# pass /{print $3}' "$log")
           if [ -z "$passed" ] || [ "$passed" -lt 30 ]; then
             echo "::error::helper tests reported ${passed:-no} passing tests, expected at least 30 — the suite ran but is not testing what it claims"
             exit 1

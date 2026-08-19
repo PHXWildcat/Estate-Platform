@@ -38,6 +38,14 @@
  * parse would be a much larger thing to trust, and quoting is the failure that
  * silently unhooks a gate.
  *
+ * KNOWN LIMITATION, stated rather than left to be met as a mystery: a HEREDOC
+ * body is shell input, not a shell string, so bash does not parse quotes inside
+ * one — but this scanner does, and would read `don't` in a `<<'EOF'` block as an
+ * unterminated quote. No workflow in this repo uses a heredoc today (measured),
+ * so it is latent rather than live. Whoever adds the first one will get a red
+ * finding that is the scanner's fault and not theirs; the fix at that point is
+ * to skip heredoc bodies, not to widen the rule or to add an exemption.
+ *
  * REFUSES WHAT IT CANNOT READ. A `run:` written in a shape the extractor does
  * not recognise is an ERROR naming the file and line, never a skip — a scan
  * that quietly matches nothing goes green for the same reason it is wrong.

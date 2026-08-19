@@ -123,6 +123,16 @@ test('a backslash inside double quotes escapes, inside single quotes it does not
   assert.ok(unterminatedQuote("echo 'a\\'b'"));
 });
 
+test('KNOWN LIMITATION: a heredoc body is scanned as if it were shell', () => {
+  // Recorded, not fixed. Bash does not parse quotes inside a heredoc, so this
+  // is a false positive — and no workflow in the repo has one, so it is latent.
+  // The test exists so the behaviour is a documented decision rather than a
+  // surprise, and so that whoever fixes it has a case to flip.
+  const q = String.fromCharCode(39);
+  const script = ['cat > f <<' + q + 'EOF' + q, "don't worry", 'EOF'].join('\n');
+  assert.ok(unterminatedQuote(script), 'today it flags this; fix by skipping heredoc bodies');
+});
+
 test('EXTRACTION reads block scalars and single-line runs, and reports where each body starts', () => {
   const yaml = [
     'jobs:',
