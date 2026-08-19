@@ -52,9 +52,18 @@ on:
   # its callers, not by events), and the two that could and did not were this
   # one and `ci.yml` — the two heaviest gates in the repo.
   #
-  # HOW IT RECOVERS A WEDGED RUN: `concurrency` below groups on the ref with
-  # `cancel-in-progress`, so a dispatch on `main` cancels a stuck `main` run and
-  # starts a clean one — which is exactly the manoeuvre that was unavailable.
+  # HOW IT IS MEANT TO RECOVER A WEDGED RUN: `concurrency` below groups on the
+  # ref with `cancel-in-progress`, so a dispatch on `main` should cancel a stuck
+  # `main` run and start a clean one — the manoeuvre that was unavailable.
+  # STATED AS THE MECHANISM AND NOT AS AN OBSERVATION, because the wedge refused
+  # `cancel` and `force-cancel` with HTTP 500 and nobody has yet watched a
+  # concurrency cancellation land on a run in that state. What WAS measured:
+  # a dispatch reads the workflow file AT THE REF IT IS GIVEN, not from the
+  # default branch — `--ref` at the branch carrying this line created a run,
+  # while `--ref main` answered HTTP 422 "Workflow does not have
+  # 'workflow_dispatch' trigger". So the lever exists on `main` only once this
+  # is merged there, which is also why it could not be rehearsed against the
+  # wedge it was written for.
   workflow_dispatch:
 
 permissions:

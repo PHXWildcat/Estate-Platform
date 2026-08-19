@@ -7387,9 +7387,11 @@ deviating from them, stop and propose the change with rationale — do not silen
   recovered — `cancel` and `force-cancel` both answered HTTP 500, `rerun` was
   refused as "already running", and with only `push` and `pull_request` declared
   there was no way to ask for a fresh one. The only available resolution was to
-  wait for somebody to push to `main` again, which the `concurrency` group would
-  then use to cancel the wedge. `workflow_dispatch` is that manoeuvre made
-  available on purpose: security.yml's own comment already records the same
+  wait for somebody to push to `main` again, which the `concurrency` group is
+  documented to use to cancel the wedge — STATED AS THE MECHANISM RATHER THAN AS
+  AN OBSERVATION, since a run that refuses `cancel` and `force-cancel` with HTTP
+  500 has not been watched accepting a concurrency cancellation either.
+  `workflow_dispatch` is that manoeuvre made available on purpose: security.yml's own comment already records the same
   lesson from the other direction, where a trigger that could only fire at 06:00
   UTC is how a sweep failed seventeen consecutive runs unnoticed. A GATE YOU
   CANNOT INVOKE IS A GATE YOU CAN ONLY OBSERVE.
@@ -7400,6 +7402,13 @@ deviating from them, stop and propose the change with rationale — do not silen
   to Stack. `notify-failure.yml` is DELIBERATELY still without it and that is not
   an omission: it is `workflow_call`-only, and a reusable workflow is invoked by
   its callers rather than by events.
+  MEASURED WHILE WIRING IT, because the obvious assumption is wrong in the
+  direction that matters: a dispatch reads the workflow file AT THE REF IT IS
+  GIVEN, not from the default branch. `gh workflow run stack.yml --ref
+  <this-branch>` created a run, while `--ref main` answered HTTP 422 "Workflow
+  does not have 'workflow_dispatch' trigger" — so the lever can be rehearsed on
+  the branch that adds it, and exists ON `main` only once merged there, which is
+  precisely why it could not be tried against the wedge that motivated it.
   AND THE SURVEY THAT JUSTIFIED IT WAS WRONG THE FIRST TIME, which is the part
   worth keeping. `grep -q workflow_dispatch` over each file reported FOUR of six
   already carrying the trigger; one of those four was `notify-failure.yml`, where
