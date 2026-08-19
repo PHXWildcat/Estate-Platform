@@ -141,6 +141,8 @@ export function scanQuoting(script) {
   let line = 1;
   let column = 0;
   const accidental = [];
+  const regions = [];
+  let openAtEol = false;
 
   for (let i = 0; i < script.length; i += 1) {
     const ch = script[i];
@@ -158,6 +160,21 @@ export function scanQuoting(script) {
       // apostrophe here, so the first one always closes the string.
       if (ch === "'") {
         state = 'bare';
+        regions.push({
+          kind: 'single',
+          line: openedAt.line,
+          column: openedAt.column,
+          closeLine: line,
+          openAtEol,
+          // The first non-whitespace on its line? `slice` back to the newline.
+          closeAtBol: /^\s*$/.test(script.slice(script.lastIndexOf('\n', i - 1) + 1, i)),
+          // Shell CONCATENATION: `'...'"'"'...'` is the only way to write an
+          // apostrophe inside single quotes, and its close is immediately
+          // followed by another quote. The string is being joined, not ended,
+          // so the body has not been cut short. A fence must flag what is
+          // broken, not what is merely ugly.
+          concatenated: script[i + 1] === '"' || script[i + 1] === "'",
+        });
         // An accidental close: the shell shuts the string here and the rest of
         // the word runs on unquoted. `console's` is this exactly.
         if (/[A-Za-z0-9_]/.test(script[i + 1] ?? '')) {
@@ -193,6 +210,9 @@ export function scanQuoting(script) {
     if (ch === "'") {
       state = 'single';
       openedAt = { line, column };
+      // Last non-whitespace on its line? Then this opens a multi-line body.
+      const eol = script.indexOf('\n', i + 1);
+      openAtEol = eol !== -1 && /^\s*$/.test(script.slice(i + 1, eol));
       continue;
     }
     if (ch === '"') {
@@ -204,7 +224,37 @@ export function scanQuoting(script) {
   return {
     unterminated: state === 'bare' ? null : { kind: state, ...openedAt },
     accidental,
+    regions,
   };
+}
+
+/**
+ * A multi-line single-quoted body must close on a line of its own.
+ *
+ * THIS IS THE STRUCTURAL CHECK, and it is the one that actually covers the
+ * class. The accidental-close rule above keys on `'` followed by a word
+ * character, which catches `console's` and MISSES `the gates' numbers` — a
+ * possessive plural closes the string just as thoroughly and is followed by a
+ * space. Measured: two of those in one prose comment re-balance the quotes,
+ * bash splits the body, node evaluates a valid prefix, and the step exits 0
+ * with the assertion gone. Same silent-green failure, one rule over.
+ *
+ * Every embedded script in this repo has the same shape — the opening quote is
+ * the LAST thing on its line and the closing quote is the FIRST thing on its:
+ *
+ *     node -e '
+ *       ...body...
+ *     '
+ *
+ * So a region that opens at end-of-line and closes anywhere but at the start of
+ * a line has been cut short by something in the body, whatever that something
+ * looks like and whatever the apostrophe count is. That is a property of the
+ * SHAPE rather than of the prose, which is why it does not need to guess.
+ */
+export function shortBodies(script) {
+  return scanQuoting(script).regions.filter(
+    (r) => r.kind === 'single' && r.openAtEol && !r.closeAtBol && !r.concatenated,
+  );
 }
 
 /**
@@ -236,6 +286,15 @@ export function sweep(dir) {
     for (const script of scripts) {
       blocks += 1;
       const { unterminated: open, accidental } = scanQuoting(script.body);
+      for (const r of shortBodies(script.body)) {
+        findings.push({
+          file: file.name,
+          line: script.bodyLine + r.line - 1,
+          column: r.column,
+          kind: 'body-cut-short',
+          detail: `a multi-line single-quoted body opened here closes mid-line on line ${script.bodyLine + r.closeLine - 1} — something in the body ended it early`,
+        });
+      }
       for (const a of accidental) {
         findings.push({
           file: file.name,

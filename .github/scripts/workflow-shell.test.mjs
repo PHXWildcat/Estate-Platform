@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import {
   extractRunBlocks,
   scanQuoting,
+  shortBodies,
   sweep,
   unterminatedQuote,
   workflowFiles,
@@ -66,6 +67,43 @@ test('THE SILENT HALF — an EVEN number of prose apostrophes re-balances the qu
   assert.equal(accidental[0].after, 's');
 });
 
+test('THE EVASION THE WORD-CHARACTER RULE MISSES — a possessive PLURAL', () => {
+  // `console's` closes the string and is followed by `s`, so the accidental
+  // rule sees it. `the gates' numbers` closes it just as thoroughly and is
+  // followed by a SPACE. Two of them re-balance the quotes, so neither the
+  // unterminated check nor the accidental check fires — MEASURED: bash exits 0
+  // and the assertion never runs. The structural check is what covers it.
+  const q = String.fromCharCode(39);
+  const script = [
+    `node -e ${q}`,
+    '  const r = 1;',
+    `  // the gates${q} numbers and the twins${q} numbers must agree.`,
+    '  console.log("RAN");',
+    q,
+  ].join('\n');
+
+  const { unterminated, accidental } = scanQuoting(script);
+  assert.equal(unterminated, null, 'balanced, so the unterminated check is blind');
+  assert.deepEqual(accidental, [], 'followed by a space, so the word-character rule is blind too');
+  assert.equal(shortBodies(script).length, 1, 'the structural check is what sees it');
+});
+
+test('THE STRUCTURAL CHECK — a body that opens at end-of-line must close at start-of-line', () => {
+  const q = String.fromCharCode(39);
+  const good = [`node -e ${q}`, '  console.log("ok");', q].join('\n');
+  assert.deepEqual(shortBodies(good), [], 'the shape every embedded script in this repo has');
+
+  // Cut short by anything at all, not just an apostrophe in prose.
+  const cut = [`node -e ${q}`, `  console.log("ok");${q} echo surprise`, ''].join('\n');
+  assert.equal(shortBodies(cut).length, 1);
+});
+
+test('a SINGLE-LINE quoted argument is not a multi-line body', () => {
+  // The structural rule must not fire on ordinary quoting, or it is noise.
+  assert.deepEqual(shortBodies("echo 'hello' && echo 'world'"), []);
+  assert.deepEqual(shortBodies("awk '/^# pass /{print $3}' file"), []);
+});
+
 test('the ESCAPE DANCE is not a false positive', () => {
   // `'"'"'` is the only way to write an apostrophe inside single quotes, and
   // stack.yml used it for years. Its close is followed by `"`, not by a word
@@ -73,6 +111,10 @@ test('the ESCAPE DANCE is not a false positive', () => {
   const q = String.fromCharCode(39);
   const script = [`node -e ${q}`, `  // profile${q}"${q}"${q}s block`, q].join('\n');
   assert.deepEqual(scanQuoting(script).accidental, []);
+  // ...and the STRUCTURAL check must exempt it too: its close is followed by a
+  // quote, so the shell is concatenating rather than ending the body. Without
+  // this assertion the concatenation exemption has no test at all.
+  assert.deepEqual(shortBodies(script), []);
 });
 
 test('a deliberate close followed by punctuation or space is not flagged', () => {
@@ -183,7 +225,7 @@ test('the word `run:` inside a script body is not mistaken for a key', () => {
   assert.equal(scripts.length, 1);
 });
 
-test('THE REPO ITSELF — no unterminated quote, and no apostrophe in prose', () => {
+test('THE REPO ITSELF — every embedded body is delimited the way its author meant', () => {
   const files = workflowFiles(WORKFLOWS);
   const { findings, refusals, blocks } = sweep(WORKFLOWS);
 

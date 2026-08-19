@@ -6207,6 +6207,50 @@ the refusal path), the count decision neutered, and the second probe of the pair
 the defect planted *and* the quoting checker neutered, which goes **green** and
 is what identifies the checker as the thing that saw it.
 
+#### M21 PR3b — reviewing the fence that reviewed the gate
+
+The quoting fence shipped with a hole in the class it was written for, found by
+a parallel audit and then widened by attacking it directly.
+
+**The audit's finding.** `unterminatedQuote` asked whether a quote was left
+*open* — the odd-apostrophe case, which fails loudly. An **even** number
+re-balances them. Measured with `// it's the console's round trip` inside a
+`node -e` body: bash splits it into three arguments, node evaluates only the
+first (`const r = {...}; // its`, valid JavaScript), exits 0, and the assertion
+is gone with the step passing. Strictly worse than the defect that prompted the
+fence, which at least went red.
+
+**And the first fix had its own evasion.** Keying on `'` followed by a *word
+character* catches `console's` and misses `the gates' numbers` — a possessive
+plural closes the string just as thoroughly and is followed by a space. Two of
+them re-balance the quotes and the assertion vanishes again. The rule had been
+keyed on the shape of the one example available rather than on the structure.
+
+**The structure was the answer.** Every embedded script in this repo opens with
+a quote that is the last thing on its line and closes with one that is the first
+thing on its:
+
+```
+node -e '
+  ...body...
+'
+```
+
+So a multi-line body that closes anywhere but at the start of a line has been
+cut short — by an apostrophe, a stray quote, or anything else, at any parity,
+whatever follows it. That is a property of the shape rather than of the prose,
+and all three variants fall out of it. One exemption: a close immediately
+followed by another quote is shell concatenation (`'"'"'`), so the body has not
+ended — verified by running the dance and watching it work, because a fence must
+flag what is broken and not what is merely ugly. That exemption had no test until
+it was looked for; it has one now, and mutating the branch turns it red.
+
+The audit also found that the step running every `.github/scripts` fence could
+not detect its own disarming — an unmatched glob reaches node as a literal, which
+node expands to nothing and exits 0 — and that `ci.yml`'s concurrency comment
+described a push/PR dedup that 400 real runs show does not happen. Both fixed,
+both measured.
+
 #### M21 PR3b — the review round, and the drive that proved it
 
 Three file-scoped lenses, each in its own worktree pinned with

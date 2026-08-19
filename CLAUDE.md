@@ -7607,6 +7607,35 @@ deviating from them, stop and propose the change with rationale — do not silen
   question, and the half I missed was the half that goes green. A fence written
   in the same sitting as the defect it answers inherits the author's model of
   that defect — the M21 PR2 lesson, arriving in the very next fence I wrote.
+- 2026-08-19 — I ATTACKED MY OWN RULE AND IT HAD AN EVASION, found within the
+  hour and by the obvious attack: I keyed the accidental-close check on `'`
+  FOLLOWED BY A WORD CHARACTER, because the one example I had was `console's`.
+  A possessive PLURAL closes the string exactly as thoroughly and is followed by
+  a SPACE. MEASURED with `// the gates' numbers and the twins' numbers` inside a
+  `node -e` body: the unterminated check is blind (two apostrophes re-balance),
+  the word-character check is blind (a space is not a word character), bash
+  exits 0, and the assertion never runs — the same silent-green failure, one
+  rule over, in the fix for the previous silent-green failure.
+  THE RULE WAS KEYED ON THE SYMPTOM SHAPE RATHER THAN ON THE STRUCTURE, which is
+  this repo's own recurring lesson about fences written in the same sitting as
+  the defect they answer. The structure was in front of me the whole time: every
+  embedded script here opens with a quote that is the LAST thing on its line and
+  closes with one that is the FIRST thing on its. So a multi-line body that
+  closes anywhere but at the start of a line has been cut short — by an
+  apostrophe, a stray quote, or anything else, at any parity, whatever follows
+  it. That is a property of the SHAPE, so it does not have to guess about prose.
+  Both earlier defects and the plural evasion all fall out of it.
+  ONE EXEMPTION, and it is the only one: a close IMMEDIATELY followed by another
+  quote is shell CONCATENATION — `'\"'\"'` — so the body has not ended. Verified
+  by running the dance and watching it work. A fence must flag what is broken,
+  not what is merely ugly. And that exemption HAD NO TEST until I went looking:
+  the escape-dance case asserted only the word-character rule, so mutating the
+  concatenation branch stayed green. It asserts both now, and the mutation is
+  red.
+  Also caught by a test rather than by me: a `python` replacement that added the
+  new import SILENTLY DID NOT MATCH, because I asserted the anchor and not the
+  import line. A replacement that does not replace reads exactly like a change
+  that did nothing — the same family as a mutation that does not mutate.
 - 2026-08-19 — THE STEP THAT RUNS EVERY `.github/scripts` FENCE COULD NOT
   DETECT ITS OWN DISARMING, found by a parallel audit of the CI configuration
   and confirmed by two independent verifiers, both by execution. `ci.yml`'s
