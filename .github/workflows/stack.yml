@@ -34,15 +34,16 @@ on:
   pull_request:
   # A LEVER FOR A GATE THAT OTHERWISE HAS NONE, and the reason is measured
   # rather than hypothetical. On 2026-08-19 the post-merge run for `388d22b`
-  # sat in `queued` for over seventy minutes having created ZERO jobs, while
-  # two LATER runs of this same workflow on the same repo started and finished
-  # normally — so it was that run, not runner capacity, and not an Actions
-  # incident (the status page read operational throughout). It could not be
-  # recovered: `cancel` and `force-cancel` both answered HTTP 500, `rerun` was
-  # refused as "already running", and with only `push` and `pull_request`
-  # declared there was no way to ask for a fresh one. The heaviest gate in the
-  # repo had no lever at all, and the only resolution available was to wait for
-  # somebody to push to `main` again.
+  # sat in `queued` having created ZERO jobs — eleven hours later its
+  # `updatedAt` still equalled its `createdAt`, so it never ran and never will.
+  # Two LATER runs of this same workflow on the same repo, created one minute
+  # after it, started and finished normally — so it was that run, not runner
+  # capacity, and not an Actions incident (the status page read operational
+  # throughout). It could not be recovered: `cancel` and `force-cancel` both
+  # answered HTTP 500, `rerun` was refused as "already running", and with only
+  # `push` and `pull_request` declared there was no way to ask for a fresh one.
+  # The heaviest gate in the repo had no lever at all, and the only resolution
+  # available was to wait for somebody to push to `main` again.
   #
   # That is security.yml's lesson in a different costume: a gate you cannot
   # INVOKE is a gate you can only OBSERVE, and the latency of waiting for an
@@ -52,18 +53,37 @@ on:
   # its callers, not by events), and the two that could and did not were this
   # one and `ci.yml` — the two heaviest gates in the repo.
   #
-  # HOW IT IS MEANT TO RECOVER A WEDGED RUN: `concurrency` below groups on the
-  # ref with `cancel-in-progress`, so a dispatch on `main` should cancel a stuck
-  # `main` run and start a clean one — the manoeuvre that was unavailable.
-  # STATED AS THE MECHANISM AND NOT AS AN OBSERVATION, because the wedge refused
-  # `cancel` and `force-cancel` with HTTP 500 and nobody has yet watched a
-  # concurrency cancellation land on a run in that state. What WAS measured:
-  # a dispatch reads the workflow file AT THE REF IT IS GIVEN, not from the
-  # default branch — `--ref` at the branch carrying this line created a run,
-  # while `--ref main` answered HTTP 422 "Workflow does not have
-  # 'workflow_dispatch' trigger". So the lever exists on `main` only once this
-  # is merged there, which is also why it could not be rehearsed against the
-  # wedge it was written for.
+  # WHAT IT DOES AND DOES NOT RECOVER — measured at the moment the change adding
+  # these lines merged, rather than predicted. The prediction was that
+  # `concurrency` below, grouping on the ref with `cancel-in-progress`, would let
+  # a dispatch on `main` clear a stuck `main` run. HALF OF THAT IS TRUE AND THE
+  # LOAD-BEARING HALF IS NOT:
+  #   * cancellation in this group WORKS — a dispatch created 19s after the
+  #     merge's own push run superseded it, and that run reached
+  #     completed/cancelled about seventy seconds later;
+  #   * it NEVER REACHES A WEDGED RUN — two fresh runs arrived in the 05:24
+  #     wedge's own group and its `updatedAt` still equalled its `createdAt`.
+  #     At that same moment `gh run cancel` was ACCEPTED on an ordinary pending
+  #     run and answered HTTP 500 on the wedge, so being unreachable is specific
+  #     to that run and is not a property of queued runs.
+  # SO THIS IS STILL THE FIX, FOR A DIFFERENT REASON THAN FIRST WRITTEN: it
+  # cannot evict the corpse, it buys a FRESH VERDICT, which is what was actually
+  # missing. Telling the two apart is easy once you know to look — a healthy run
+  # creates its jobs within a minute (the restored one: 2 jobs in 44s) where the
+  # wedge has created zero, ever.
+  #
+  # AND IT IS A FOOT-GUN: dispatching on a ref that already has a live run in
+  # this group CANCELS that run. Doing exactly that to the merge's own Stack run
+  # is how the first bullet got measured, and main's verdict had to be restored
+  # by dispatching again once the group was idle. Dispatch when the group is
+  # idle, or when superseding is what you want.
+  #
+  # Also measured: a dispatch reads the workflow file AT THE REF IT IS GIVEN,
+  # not from the default branch — `--ref` at the branch adding these lines
+  # created a run while `--ref main` answered HTTP 422 "Workflow does not have
+  # 'workflow_dispatch' trigger", and `--ref main` began working the moment it
+  # merged. Which is also why it could not be rehearsed against the wedge it was
+  # written for.
   workflow_dispatch:
 
 permissions:
