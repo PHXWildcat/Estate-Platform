@@ -4498,16 +4498,9 @@ silent.
 
 **Residuals, stated rather than implied.**
 
-- **[ACCEPTED]** `reportProviderSignal` — an operator opening death cases on a
-  provider's behalf — is squarely in the category and is NOT counted. The route
-  owns no transaction (`insertCase` opens its own, shared with the non-operator
-  contact path), and a ledger row written after that commit can be lost while the
-  case stands, which under-counts. Under-counting is the fail-open direction, so
-  the gap is recorded here rather than closed badly. The exemption is written in
-  the fence with this reason, so it cannot be forgotten silently. Intake breadth
-  remains visible in the trail: `case.reported` carries the operator-actor flag.
-  Closing it properly means threading the ledger write into `insertCase`'s own
-  transaction under an operator-only branch — an M22 item.
+- **[CLOSED — M22 PR2, 2026-08-20]** `reportProviderSignal` is counted. See
+  §6jj: the ledger write was threaded into `insertCase`'s own transaction, which
+  is what the exemption said the correct fix would be.
 - **[ACCEPTED]** The ceiling (12) and the window (1h) are engineering guesses
   with no production data behind them. They are constants in one file, asserted
   at both boundary arms, so re-tuning is a one-line change with a test that
@@ -4516,3 +4509,46 @@ silent.
   services (documents, assets) is not aggregated here; only settlement's own
   ceremonies are counted. A cross-service view belongs to the audit pipeline,
   which already receives every one of these events.
+
+## 6jj. Threat-model delta — M22 PR2, intake counted (2026-08-20)
+
+The one gap §6ii declared open. An operator opening death cases on a data
+provider's behalf is the purest form of the pattern the breadth bound models —
+it needs no prior relationship to the estate, and it is the only permissive verb
+that CREATES the estate it counts against — and it was the one permissive verb
+not counted.
+
+**Why it was left open, and why that reason is now gone.** `reportProviderSignal`
+owns no transaction: `insertCase` opens its own, and it is shared with the
+non-operator trusted-contact path. A ledger row written after that commit can be
+lost while the case stands, which UNDER-counts — the fail-open direction, and not
+a thing to ship quietly. The fix is the one the exemption named: `insertCase`
+takes the attribution and records inside its own transaction, returning the count
+so the caller emits after the commit. The row and the case it describes now
+commit together, which is the invariant every other counted verb already had.
+
+**The field is `countBreadthFor`, and it is NOT derived from `reportedBy`.** That
+derivation is the obvious simplification, it type-checks perfectly, and it is
+wrong on exactly one input: an operator who is ALSO a linked contact reporting
+through the contact path. Their authority there is the contact link, not the
+allowlist — the same reasoning that makes the owner's `void` pass a literal
+`false` rather than measuring the allowlist — so they must not be charged for it.
+The test that decides this exercises the arm where the two facts DISAGREE, and
+mutating the field to `actor` turns it red.
+
+**The fence follows the delegation now.** Because the record happens one hop away
+in `insertCase`, a fence reading only a method's own text would have called the
+one verb whose ledger write is transactionally correct an orphan. It resolves
+`this.<method>(` edges out of the AST and computes reachability transitively, so
+inserting another hop cannot silently drop a verb out of coverage. That resolver
+is itself pinned: making it answer `true` for everything turns a named assertion
+red, because the read-only gated verbs must still come back uncounted.
+
+Four mutations red by a named assertion, with a no-op edit green as the control.
+The first attempt at the `countBreadthFor: actor` mutation SURVIVED, and the
+diagnosis is worth recording: it inserted a duplicate object key rather than
+replacing the existing one, and the last key wins in JavaScript, so the mutant
+was byte-different and behaviourally identical. Unfaithful mutation, not a weak
+test — retargeted at the real line, it went red.
+
+**No new residuals.** The window and ceiling caveats from §6ii stand unchanged.

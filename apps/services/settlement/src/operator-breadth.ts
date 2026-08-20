@@ -66,6 +66,12 @@ export const OPERATOR_BREADTH_MAX_CASES = 12;
  * that grows is this repo's most repeated defect; this one is checked.
  */
 export const PERMISSIVE_OPERATOR_ACTIONS = [
+  // INTAKE. An operator opening death cases on a data provider's behalf is the
+  // purest form of the pattern this bound models — nothing about it requires an
+  // existing relationship to the estate, and it is the one permissive verb that
+  // CREATES the case it counts against. Recorded inside `insertCase`'s own
+  // transaction, so the ledger row and the case commit together.
+  'case.reported',
   'review.started',
   'review.approved',
   'verification.confirmed',
