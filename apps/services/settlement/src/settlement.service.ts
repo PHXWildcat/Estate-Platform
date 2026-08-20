@@ -186,12 +186,16 @@ export class SettlementService {
     }
     const now = this.clock();
     const evidence: EvidenceEntry[] = input.evidence.map((e) => this.toEntry(e, actor, now));
-    const row = await this.insertCase({
+    const { row } = await this.insertCase({
       decedentUserId: input.decedentUserId,
       reportedBy: actor,
       source: input.source,
       evidence,
       now,
+      // NULL, and deliberately not `actor`. This route's authority is the
+      // linked-contact check above; a reporter who is also an operator acted as
+      // a contact here, and breadth counts the ALLOWLIST being used.
+      countBreadthFor: null,
     });
     await this.events.caseReported(actor, sessionId, row.id, row.decedent_user_id, input.source);
     await this.notifyOwner('case_opened', row);
@@ -226,12 +230,15 @@ export class SettlementService {
       addedBy: operator,
       addedAt: now.toISOString(),
     }));
-    const row = await this.insertCase({
+    const { row, breadth } = await this.insertCase({
       decedentUserId: input.decedentUserId,
       reportedBy: operator,
       source: 'data_provider',
       evidence,
       now,
+      // The allowlist IS the gate on this route (`assertIn` above), so this is
+      // the operator acting as an operator and it counts.
+      countBreadthFor: operator,
     });
     await this.events.caseReported(
       operator,
@@ -245,6 +252,15 @@ export class SettlementService {
       true,
     );
     await this.notifyOwner('case_opened', row);
+    if (this.breadth.exceeded(breadth)) {
+      await this.events.operatorBreadthExceeded(
+        operator,
+        sessionId,
+        breadth,
+        OPERATOR_BREADTH_MAX_CASES,
+        OPERATOR_BREADTH_WINDOW_MS,
+      );
+    }
     return toDto(row, now);
   }
 
@@ -873,13 +889,32 @@ export class SettlementService {
       : { type: 'provider_match', matchId: input.matchId, addedBy, addedAt: now.toISOString() };
   }
 
+  /**
+   * Open a case, and — when an OPERATOR opened it — count it toward their
+   * breadth in the same transaction.
+   *
+   * `countBreadthFor` is the operator id or `null`, and it is a separate field
+   * rather than a re-read of `reportedBy` on purpose: the two intake paths
+   * differ in the AUTHORITY they used, not in who signed the row. The
+   * trusted-contact path is gated by the linked-contact check, so a reporter
+   * who happens also to be on the allowlist acted as a contact and must not be
+   * charged for it — the same reasoning that makes `void` pass a literal
+   * `false` rather than measuring the allowlist.
+   *
+   * Recording INSIDE this transaction is what closes the §6ii residual. The
+   * first slice left intake uncounted because this method owns the transaction
+   * and the caller does not, and a ledger row written after the commit can be
+   * lost while the case stands — under-counting, the fail-open direction. The
+   * count comes back out instead, and the caller emits after the commit.
+   */
   private async insertCase(input: {
     decedentUserId: string;
     reportedBy: string;
     source: 'trusted_contact' | 'data_provider' | 'death_certificate_upload';
     evidence: EvidenceEntry[];
     now: Date;
-  }): Promise<CaseRow> {
+    countBreadthFor: string | null;
+  }): Promise<{ row: CaseRow; breadth: number }> {
     try {
       return await this.db.withTransaction(input.reportedBy, async (tx) => {
         const row = await this.cases.insert(tx, input);
@@ -891,7 +926,17 @@ export class SettlementService {
           channel: 'push',
           attemptedAt: input.now,
         });
-        return row;
+        const breadth =
+          input.countBreadthFor === null
+            ? 0
+            : await this.breadth.record(
+                tx,
+                input.countBreadthFor,
+                row.id,
+                'case.reported',
+                input.now,
+              );
+        return { row, breadth };
       });
     } catch (err) {
       if (isUniqueViolation(err)) {

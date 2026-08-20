@@ -1,0 +1,27 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    /*
+     * THIS PACKAGE'S TESTS READ FILES OUTSIDE THIS PACKAGE.
+     *
+     * `threat-model-residuals.spec.ts` is a fence over `docs/03-threat-model.md`
+     * and `docs/04-monorepo-and-milestones.md`. Turbo's default input set is the
+     * package's own tracked files, so editing either doc left the hash
+     * unchanged, and `pnpm test` REPLAYED A GREEN LOG for a fence whose only
+     * input had changed. Measured, not theorised: a docs/03 edit that violated
+     * the tag grammar four ways passed locally as `cache hit, replaying logs`
+     * and failed in CI, where the cache was cold.
+     *
+     * The glob is deliberately WIDER than the two files read today. A
+     * hand-listed pair beside a spec that names its own paths is a second copy
+     * that drifts, and the two failure directions are not symmetric: too broad
+     * re-runs a fast test when an unrelated doc changes, while too narrow
+     * replays a stale pass on a gate nobody realises is disarmed. Only one of
+     * those can ship a wrong answer.
+     */
+    "test": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/*.md"]
+    }
+  }
+}

@@ -6913,3 +6913,19 @@ version row at all.
 
 `settlement.operator.breadth_exceeded` is a new `AUDIT_ACTIONS` member, so the
 audit consumer deploys before the settlement service.
+
+### M22 PR2 — intake counted, the last §6ii gap closed (2026-08-20)
+
+PR1 shipped the breadth bound with one honest hole: an operator opening death
+cases on a provider's behalf was in the category and was not counted, because
+`insertCase` owns the transaction and a post-commit ledger row can be lost while
+the case stands. The exemption named the correct fix; this is that fix.
+
+`insertCase` now takes `countBreadthFor` and records inside its own transaction.
+The field is deliberately NOT derived from `reportedBy`: the two intake paths
+differ in the AUTHORITY that admitted the caller, not in who signed the row, and
+an operator who is also a linked contact must not be charged for using the
+contact path. docs/03 §6jj; three decisions in docs/06.
+
+The coverage fence grew a call-graph resolver to match — otherwise it would have
+reported the one verb whose ledger write is transactionally correct as an orphan.

@@ -6,6 +6,12 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { auditActions, auditEvents, buildHarness, NOW, type Harness } from './support';
+import {
+  breadthExceeded,
+  OPERATOR_BREADTH_MAX_CASES,
+  PERMISSIVE_OPERATOR_ACTIONS,
+} from '../src/operator-breadth';
+import type { OperatorBreadthMonitor } from '../src/operator-breadth.monitor';
 
 const DECEDENT = randomUUID();
 const REPORTER = randomUUID();
@@ -773,5 +779,118 @@ describe('the contact sweep (the driver holds no transition power)', () => {
       (e) => e['action'] === 'settlement.contact.attempted',
     );
     expect(attempt).toMatchObject({ actorType: 'system', actorId: null, onBehalfOf: DECEDENT });
+  });
+});
+
+describe('intake counts toward operator breadth (docs/03 §6ii, the closed residual)', () => {
+  /**
+   * The first slice left this route uncounted because `insertCase` owns the
+   * transaction and the caller does not. It is counted now, and the property
+   * that matters is not "does it record" — it is WHICH ARM records. The two
+   * intake paths pass the same `reportedBy` and differ only in the AUTHORITY
+   * that admitted them, so the test that decides this must exercise the case
+   * where those two facts DISAGREE: an operator who is also a linked contact.
+   */
+  function spy(answer: number): {
+    monitor: OperatorBreadthMonitor;
+    calls: Array<{ operator: string; caseId: string; action: string }>;
+  } {
+    const calls: Array<{ operator: string; caseId: string; action: string }> = [];
+    const monitor = {
+      record: (
+        _tx: unknown,
+        operator: string,
+        caseId: string,
+        action: string,
+        _now: Date,
+      ): Promise<number> => {
+        calls.push({ operator, caseId, action });
+        return Promise.resolve(answer);
+      },
+      exceeded: (n: number): boolean => breadthExceeded(n),
+    } as unknown as OperatorBreadthMonitor;
+    return { monitor, calls };
+  }
+
+  const warnings = (h: Harness): string[] =>
+    h.producer.messages
+      .map((m) => String(m.value))
+      .filter((v) => v.includes('settlement.operator.breadth_exceeded'));
+
+  it('declares case.reported as a permissive kind', () => {
+    expect([...PERMISSIVE_OPERATOR_ACTIONS]).toContain('case.reported');
+  });
+
+  it('counts a provider signal against the operator who filed it', async () => {
+    const { monitor, calls } = spy(1);
+    const h = buildHarness({ monitor });
+    h.operators.active.add(OPERATOR);
+    const dto = await h.service.reportProviderSignal(OPERATOR, SESSION, {
+      decedentUserId: DECEDENT,
+      providerMatchIds: ['m1'],
+    });
+    // The case id is the one just created — the ledger row and the case were
+    // written in the same transaction, so there is no other id it could be.
+    expect(calls).toEqual([{ operator: OPERATOR, caseId: dto.caseId, action: 'case.reported' }]);
+  });
+
+  it('counts NOTHING when an OPERATOR reports through the contact path', async () => {
+    // THE DISAGREEING ARM. `reportedBy` is an allowlisted operator here and the
+    // authority used is the linked-contact check, so the two facts point
+    // opposite ways. Deriving `countBreadthFor` from `reportedBy` — the obvious
+    // simplification — type-checks perfectly and is wrong exactly here.
+    const { monitor, calls } = spy(1);
+    const h = buildHarness({ monitor });
+    h.coreReads.link(DECEDENT, OPERATOR);
+    h.operators.active.add(OPERATOR);
+    await h.service.report(OPERATOR, SESSION, {
+      decedentUserId: DECEDENT,
+      source: 'trusted_contact',
+      evidence: [],
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('records nothing when the case already exists', async () => {
+    // One open case per decedent. A refused intake must leave no ledger row,
+    // or an operator is charged for work the platform declined to do.
+    const { monitor, calls } = spy(1);
+    const h = buildHarness({ monitor });
+    h.operators.active.add(OPERATOR);
+    await h.service.reportProviderSignal(OPERATOR, SESSION, {
+      decedentUserId: DECEDENT,
+      providerMatchIds: ['m1'],
+    });
+    calls.length = 0;
+    await expect(
+      h.service.reportProviderSignal(OPERATOR, SESSION, {
+        decedentUserId: DECEDENT,
+        providerMatchIds: ['m2'],
+      }),
+    ).rejects.toThrow();
+    expect(calls).toEqual([]);
+  });
+
+  it('WARNS above the ceiling and still opens the case', async () => {
+    const { monitor } = spy(OPERATOR_BREADTH_MAX_CASES + 1);
+    const h = buildHarness({ monitor });
+    h.operators.active.add(OPERATOR);
+    const dto = await h.service.reportProviderSignal(OPERATOR, SESSION, {
+      decedentUserId: DECEDENT,
+      providerMatchIds: ['m1'],
+    });
+    expect(dto.caseId).toBeDefined();
+    expect(warnings(h)).toHaveLength(1);
+  });
+
+  it('stays silent at the ceiling', async () => {
+    const { monitor } = spy(OPERATOR_BREADTH_MAX_CASES);
+    const h = buildHarness({ monitor });
+    h.operators.active.add(OPERATOR);
+    await h.service.reportProviderSignal(OPERATOR, SESSION, {
+      decedentUserId: DECEDENT,
+      providerMatchIds: ['m1'],
+    });
+    expect(warnings(h)).toEqual([]);
   });
 });

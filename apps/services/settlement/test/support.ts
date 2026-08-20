@@ -526,7 +526,9 @@ export interface Harness {
   clock: ClockHolder;
 }
 
-export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}): Harness {
+export function buildHarness(
+  over: { config?: Partial<SettlementConfig>; monitor?: OperatorBreadthMonitor } = {},
+): Harness {
   const clock: ClockHolder = { value: NOW };
   const clockFn = (): Date => clock.value;
   const db = fakeDb();
@@ -547,7 +549,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     cases,
     attempts as unknown as ContactAttemptsRepo,
     new OperatorGate(operators as unknown as OperatorsRepo),
-    breadthMonitor(),
+    over.monitor ?? breadthMonitor(),
     settings,
     tasks as unknown as TasksRepo,
     coreReads as unknown as CoreReadsRepo,

@@ -19,7 +19,8 @@
  * A grep would report both facts for the file and pair them wrongly.
  *
  * WHAT IT CANNOT SEE, stated so it is not over-read: it proves that a gated
- * method mentions the ledger, not that it records on the right ARM. The arms
+ * method REACHES the ledger, not that it records on the right ARM, and not that
+ * the reached call is on a path the verb actually takes. The arms
  * — approve counts, deny and revoke do not — are proven by execution in
  * `admin.service.spec.ts`, and the SQL by `operator-breadth.int.spec.ts`.
  */
@@ -47,15 +48,6 @@ const EXEMPT: Readonly<Record<string, string>> = {
   'settlement.service.ts#administrable':
     'READ. The second operator worklist, and the same reasoning as `queue`: it ' +
     'reports which estates are in administration and changes none of them.',
-  'settlement.service.ts#reportProviderSignal':
-    'INTAKE, and a KNOWN GAP rather than a clean exemption. An operator opening ' +
-    'cases across many estates is squarely the pattern this bound is for, but ' +
-    'this route owns no transaction — `insertCase` opens its own, shared with ' +
-    'the non-operator contact path — and a ledger row written after that commit ' +
-    'can be lost while the case stands, which under-counts. Under-counting is the ' +
-    'fail-open direction, so it is recorded as a residual (docs/03 §6ff) rather ' +
-    'than closed badly. Intake breadth is meanwhile visible in the trail: ' +
-    '`case.reported` carries the operator-actor flag.',
 };
 
 interface Gated {
@@ -63,24 +55,62 @@ interface Gated {
   readonly records: boolean;
 }
 
+/**
+ * Every method of one file: whether it records DIRECTLY, and which sibling
+ * methods it delegates to. The delegation edge matters because the intake verb
+ * records through `insertCase` — the private helper that owns the transaction —
+ * and a fence that only looked at a method's own text would call the one verb
+ * whose ledger write is transactionally correct an orphan.
+ *
+ * The call graph is READ, not listed: `this.foo(` where `foo` is a method of
+ * the same class. Reachability is then transitive, so inserting another hop
+ * does not silently drop a verb out of coverage.
+ */
+function methodsOf(
+  file: string,
+): Map<string, { direct: boolean; calls: string[]; gated: boolean }> {
+  const text = readFileSync(join(SRC, file), 'utf8');
+  const parsed = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const names = new Set<string>();
+  const nodes: ts.MethodDeclaration[] = [];
+  const collect = (node: ts.Node): void => {
+    if (ts.isMethodDeclaration(node) && node.name) {
+      names.add(node.name.getText(parsed));
+      nodes.push(node);
+    }
+    node.forEachChild(collect);
+  };
+  collect(parsed);
+
+  const out = new Map<string, { direct: boolean; calls: string[]; gated: boolean }>();
+  for (const node of nodes) {
+    const body = node.getText(parsed);
+    const calls = [...body.matchAll(/this\.(\w+)\s*\(/g)]
+      .map((m) => m[1] as string)
+      .filter((n) => names.has(n));
+    out.set(node.name.getText(parsed), {
+      direct: /this\.breadth\.record\s*\(/.test(body),
+      calls,
+      gated: /this\.gate\.assertIn\s*\(/.test(body),
+    });
+  }
+  return out;
+}
+
 function gatedMethods(): Gated[] {
   const found: Gated[] = [];
   for (const file of SERVICES) {
-    const text = readFileSync(join(SRC, file), 'utf8');
-    const parsed = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const visit = (node: ts.Node): void => {
-      if (ts.isMethodDeclaration(node) && node.name) {
-        const body = node.getText(parsed);
-        if (/this\.gate\.assertIn\s*\(/.test(body)) {
-          found.push({
-            key: `${file}#${node.name.getText(parsed)}`,
-            records: /this\.breadth\.record\s*\(/.test(body),
-          });
-        }
-      }
-      node.forEachChild(visit);
+    const methods = methodsOf(file);
+    const reaches = (name: string, seen = new Set<string>()): boolean => {
+      if (seen.has(name)) return false;
+      seen.add(name);
+      const m = methods.get(name);
+      if (!m) return false;
+      return m.direct || m.calls.some((c) => reaches(c, seen));
     };
-    visit(parsed);
+    for (const [name, m] of methods) {
+      if (m.gated) found.push({ key: `${file}#${name}`, records: reaches(name) });
+    }
   }
   return found;
 }
