@@ -14,9 +14,9 @@
  * digest-pinned artifact; `test/psl.spec.ts` regenerates from it and asserts the
  * committed module matches, so the two cannot drift.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { domainToASCII, fileURLToPath } from 'node:url';
+import { domainToASCII, fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -87,7 +87,35 @@ export const PUBLIC_SUFFIX_RULES = \`${rules.join('\n')}\`.split('\\n');
 `;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run main only when this file IS the entry point, so `psl.spec.ts` can
+// import `toALabels` without regenerating anything.
+//
+// BOTH SIDES ARE RESOLVED. The `file://${process.argv[1]}` template this
+// replaces was broken by TWO independent distortions, each measured on this
+// script: a SPACE anywhere in the path (`import.meta.url` percent-encodes it
+// and the template does not), and a SYMLINK at or below the working directory
+// (node reports the RESOLVED REAL path in `import.meta.url` and the path AS
+// TYPED in `process.argv[1]`; symlinks ABOVE the working directory collapse
+// into the physical cwd and are invisible here, which is the distinction the
+// packer's own header measures).
+//
+// Refreshing the list is the reachable case and it fails quietly: this script
+// is the only way to regenerate `src/psl-data.ts`, run by hand by whoever
+// takes a new snapshot, and an unfired guard exits 0 having written nothing —
+// so the reviewable diff is empty and the honest reading of that is "the
+// vendored list is already current". The list decides which registrable domain
+// a credential is offered on (docs/03 TB9), so a refresh that silently did not
+// happen is a security parameter left stale.
+//
+// `realpathSync` THROWS rather than answering "not the entry point" when
+// argv[1] names nothing on disk. That is deliberate and it is the safe
+// direction: argv[1] is the script node is running, so it exists — the only way
+// to reach the throw is an `-e` invocation carrying a trailing argument, and
+// swallowing it would mean a guard that silently declines to fire, which is the
+// entire defect this shape exists to prevent.
+const entryPoint =
+  process.argv[1] === undefined ? undefined : pathToFileURL(realpathSync(process.argv[1])).href;
+if (import.meta.url === entryPoint) {
   const source = readFileSync(join(root, 'vendor', 'public-suffix-list.dat'), 'utf8');
   const version = /^\/\/ VERSION: (.+)$/m.exec(source)?.[1] ?? 'unknown';
   const rules = rulesFrom(source);
