@@ -4344,17 +4344,59 @@ under-collecting and one of them had been declared correct.
   this reader does not will stop the fence rather than mislead it. Failing loudly
   is the accepted trade; `js-yaml` is not a dependency of this repo and adding
   one to a test was not worth it.
-- **[OWNER: M23]** `setDistributionStatus` reads and row-locks before its authz
-  gate, giving three distinguishable refusals (404 / 409 / 403) where every
-  sibling verb gates first. Latent today — no edge forwards `/status`, and the
-  route is already exempt as executor surface. It arms the moment M23 wires the
-  executor UI, which is when somebody adds a proxy line rather than re-reads the
-  ordering. Recorded in #125 with the measurement.
+- **[CLOSED: §6gg]** *`setDistributionStatus` refused in three distinguishable
+  ways.* **CLOSED by M21 PR4d** — see §6gg. It was filed here as owned by M23 on
+  the reasoning that it was latent until the executor UI arrived; closing it
+  immediately was the cheaper call, because the fix is a refusal shape and no
+  consumer exists to break.
 - **[OWNER: M23]** The `granted_by IS NULL` forensic marker is stated backwards
   in `001_settlement_schema.sql`. Migrations are append-only and checksummed, so
   the correction belongs in a later migration or in `docs/02`, which mentions the
   column nowhere. It misleads exactly the person reading the schema during an
   incident.
+
+## 6gg. Threat-model delta — M21 PR4d, the distribution-status oracle (2026-08-20)
+
+The one runtime finding from round 3, closed a day after it was recorded rather
+than deferred to M23. `setDistributionStatus` was the only operator-reachable
+write verb that looked its row up before consulting the gate, and it refused in
+three distinguishable ways: `404` for an unknown id, `409 case_not_verified` for
+a case that exists but is not administrable, and `403` for a real administrable
+case the caller had no authority over. Holding a distribution UUID was therefore
+enough to follow an estate's settlement progress after losing authority over it.
+The concrete holder is a replaced or former executor; the id is a v4 UUID, so
+this was never blind enumeration.
+
+**The lookup could not move, so the refusals did.** The executor arm of the
+authority test needs the case to know whose estate it is — unlike
+`approveDistribution` twenty lines above, which is operator-only and can gate
+first. Every refusal a caller without authority can reach is now the same `404`
+an unknown id gets, which is the rule `assertCaseVisible` already states in that
+file. `assertCaseVisible` itself was deliberately NOT reused: it admits the
+decedent and the reporter, and neither of them may move money.
+
+**Fail closed means DE-ESCALATE.** An executor with authority over the case is
+still told `case_not_verified` when it is closed, because their remedy differs
+from "this id does not exist". Two tests hold the pair apart and each is
+load-bearing in the opposite direction: reverting the fix turns the uniformity
+test red, and answering `404` to everybody turns the de-escalation test red.
+
+Worth recording that the whole suite passed unchanged when the fix went in — no
+test had ever exercised a refusal path on this verb, which is why the oracle
+survived two reviews.
+
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** The uniformity is proven at the SERVICE layer against in-memory
+  repositories, not on the wire. It reaches the wire because
+  `HttpErrorFilter` passes `getStatus()` and the `error` token through unchanged
+  — read, not measured. There is no live probe because no edge forwards this
+  route: the BFF proxies no settlement admin route and operator-web's allowlist
+  carries `/approval`, not `/status`. When M23 wires it, the e2e that ships with
+  the UI is where the wire property gets asserted.
+- **[ACCEPTED]** The `granted_by IS NULL` marker recorded in §6ff stays open and
+  is not restated here. One residual, one place: a second copy is the thing that
+  drifts, and the §6 count is derived from these bullets.
 
 ## 7. Validation program
 

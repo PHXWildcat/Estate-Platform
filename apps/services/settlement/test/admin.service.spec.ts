@@ -34,6 +34,14 @@ async function verifiedCase(h: AdminHarness): Promise<string> {
   return row.id;
 }
 
+/** A verified case with one approved stage — the state distributions need. */
+async function readyCase(h: AdminHarness): Promise<string> {
+  const caseId = await verifiedCase(h);
+  const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+  await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+  return caseId;
+}
+
 describe('staged executor access (docs/03 §5.1 control 5)', () => {
   it('the ladder cannot be skipped: documents needs inventory approved first', async () => {
     const h = buildAdminHarness();
@@ -279,13 +287,6 @@ describe('the vault gate (docs/03 §6a)', () => {
 });
 
 describe('distributions under dual control (docs/02 §7)', () => {
-  async function readyCase(h: AdminHarness): Promise<string> {
-    const caseId = await verifiedCase(h);
-    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
-    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
-    return caseId;
-  }
-
   it('encrypts the amount under the DECEDENT’s key and never audits the value', async () => {
     const h = buildAdminHarness();
     const caseId = await readyCase(h);
@@ -428,6 +429,66 @@ describe('case visibility for administration reads', () => {
     expect((real as NotFoundException).getResponse()).toEqual(
       (unknown as NotFoundException).getResponse(),
     );
+  });
+
+  it('setDistributionStatus answers a stranger the SAME way three times over', async () => {
+    // THE ORACLE THIS CLOSES. Until M21 PR4d this verb refused in three
+    // distinguishable ways — 404 unknown id, 409 `case_not_verified`, 403 for a
+    // real administrable case — so holding a distribution UUID let a caller
+    // with no authority follow an estate's settlement progress. A replaced
+    // executor is the concrete holder.
+    //
+    // One test, because the property is that the three answers are IDENTICAL
+    // and no one of them alone can see it.
+    const h = buildAdminHarness();
+    const caseId = await readyCase(h);
+    const dto = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: CONTACT,
+      amount: '50.00',
+    });
+    await h.admin.approveDistribution(OPERATOR, SESSION, dto.distributionId);
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dto.distributionId, 'in_progress');
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dto.distributionId, 'completed');
+
+    const probe = (id: string): Promise<unknown> =>
+      h.admin.setDistributionStatus(STRANGER, SESSION, id, 'disputed').catch((e: unknown) => e);
+
+    const onLiveCase = await probe(dto.distributionId);
+    const unknownId = await probe(randomUUID());
+    await h.admin.closeCase(OPERATOR, SESSION, caseId);
+    const onClosedCase = await probe(dto.distributionId);
+
+    for (const answer of [onLiveCase, unknownId, onClosedCase]) {
+      expect(answer).toBeInstanceOf(NotFoundException);
+    }
+    // Byte-identical, not merely all-4xx: status AND body.
+    const shape = (e: unknown): unknown => [
+      (e as NotFoundException).getStatus(),
+      (e as NotFoundException).getResponse(),
+    ];
+    expect(shape(onLiveCase)).toEqual(shape(unknownId));
+    expect(shape(onClosedCase)).toEqual(shape(unknownId));
+  });
+
+  it('but an EXECUTOR is still told the case is closed, not that it is missing', async () => {
+    // DE-ESCALATE, DO NOT REFUSE EVERYTHING. A fix that answered 404 to
+    // everybody would pass the test above and be wrong: the person entitled to
+    // act needs the specific answer, because their remedy differs from
+    // "this id does not exist". This is the positive control for it.
+    const h = buildAdminHarness();
+    const caseId = await readyCase(h);
+    const dto = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: CONTACT,
+      amount: '50.00',
+    });
+    await h.admin.approveDistribution(OPERATOR, SESSION, dto.distributionId);
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dto.distributionId, 'in_progress');
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dto.distributionId, 'completed');
+    await h.admin.closeCase(OPERATOR, SESSION, caseId);
+
+    await expect(
+      h.admin.setDistributionStatus(EXECUTOR, SESSION, dto.distributionId, 'disputed'),
+    ).rejects.toMatchObject({ response: { error: 'case_not_verified' } });
   });
 
   it('an OPERATOR still learns an unknown case is unknown', async () => {
