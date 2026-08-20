@@ -4235,6 +4235,69 @@ obligation stated next to it.
   narrower-input-than-claim shape §6y names.
 
 
+## 6ee. Threat-model delta — M21 PR5, review round 2 (2026-08-20)
+
+A second pass over the lens scopes PR4's fan-out never reached. Four findings,
+all confirmed by execution; two sit in code PR4 itself shipped, which is the
+fifteenth consecutive milestone where the machinery a milestone introduced is
+where its own review lands.
+
+**A DETECTOR WHOSE PREMISE WAS A TIMING CLAIM WAS DEAD CODE.** Both
+isolated-origin launchers (`OperatorLaunch`, `VaultLaunch`) hand authority across
+a trust boundary by a top-level form POST, and `form-action` is baked into the
+app's CSP at BUILD time while the BFF serves the destination origin at REQUEST
+time. PR4 added a `securitypolicyviolation` listener so a refused submit could
+not fail silently, and asserted in the code that the event "fires synchronously
+on the blocked submit". It does not. The listener was removed in a `finally` and
+the flag read a task before the event could set it, so the refusal branch could
+never execute. Measured in Chrome against `form-action 'none'`: the submit is
+refused, the event does arrive, and the synchronous read is `false` in the
+blocked and the allowed case alike — a signal carrying no information. The
+listener now OUTLIVES the submit and reports when the violation lands; the two
+ways it stops listening (re-arm, unmount) are the only reason that is safe and
+both are asserted. What was never at risk is the credential: the field is cleared
+unconditionally in the `finally`, so this was a silent-failure defect and not an
+exposure.
+
+**ONE UNKNOWN AUDIENCE BLANKED THE PAGE A USER OPENS TO REVOKE A CREDENTIAL.**
+`Query.session` is deliberately tolerant of an audience it does not recognise;
+`Query.sessions` was strict, and a `z.array` of strict objects fails WHOLESALE —
+so a single row minted by an identity deployed ahead of the BFF discarded every
+other row, `parseBody` threw, and the paired-devices page rendered an error
+instead of the credentials the user came to revoke. `lib/sessions.ts` had carried
+the fallback copy for exactly this case since M16, citing the rule that a service
+deployed ahead of the app must not blank the page — and it was unreachable,
+because the edge refused one layer up. The row is now carried as an opaque string
+and named `UNKNOWN` on the wire. Deliberately NOT coerced to `ACCOUNT`: telling
+somebody that a credential they do not recognise is their own browser is worse
+than the error page it replaces, because it argues them out of revoking it.
+
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** *The blocked-submit report is best-effort.* It reports a
+  `form-action` refusal the browser chose to tell us about, and browsers are not
+  obliged to. The guarantee on that path is the unconditional clear of the code
+  field, not the message — which is why the clear is not conditional on the
+  detector and never should become so.
+- **[ACCEPTED]** *`UNKNOWN` describes two different situations to a reader.* An
+  audience identity minted that this BFF does not know, and — through
+  `audienceCopy`'s own fallback — one this app does not know because the BFF is
+  ahead of it. Two skew directions, two mechanisms, one sentence on screen. The
+  user's action is the same in both (revoke it), so distinguishing them would
+  cost a reader something and buy nothing.
+- **[OWNER: M23]** *No test anywhere exercises a real CSP refusal.* jsdom
+  implements neither CSP enforcement nor `SecurityPolicyViolationEvent`, so the
+  suite models the browser's half with a double, and the double's TIMING is the
+  thing that was wrong for a whole PR. The measurement that settles it is a real
+  browser, run by hand. Closing this properly wants the launchers exercised in
+  the existing headless-Chrome harness rather than in jsdom.
+- **[OWNER: M23]** *The `form-action` origin split is still unenforced outside
+  the compose stack.* The detector reports the mismatch; nothing prevents it. A
+  deployment can still serve an operator origin the built CSP does not permit,
+  and the only reason this is not routine is that `images.yml` asserts the served
+  policy names the origins it was built with.
+
+
 ## 7. Validation program
 
 - **Continuous:** SAST/DAST/dependency scanning in CI; fuzzing on parsers (document ingest, OCR, webhook handlers); secrets scanning; IaC policy checks (tfsec/OPA).

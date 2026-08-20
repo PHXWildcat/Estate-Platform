@@ -286,20 +286,44 @@ describe('FetchIdentityClient — sessions, revoke and pairing', () => {
     );
   });
 
-  it('refuses a session list with an audience it cannot recognise', async () => {
-    // The audience is the whole of what a row says, so an unrecognised value is
-    // a parse failure rather than a row rendered as something it is not.
+  it('KEEPS the other rows when one audience is unrecognised', async () => {
+    /*
+     * THIS CASE USED TO ASSERT THE OPPOSITE, and its reasoning was half right:
+     * "an unrecognised value is a parse failure rather than a row rendered as
+     * something it is not." Rendering it as something it is not would indeed be
+     * worse — which is why the resolver names it `UNKNOWN` rather than coercing
+     * it to `account`. But a strict row inside a `z.array` fails the WHOLE
+     * parse, so one unrecognised audience discarded every OTHER row too, and
+     * the paired-devices page rendered an error instead of the credentials the
+     * user came to revoke. `lib/sessions.ts` had carried the fallback copy for
+     * this exact case since M16, unreachable because the edge refused first.
+     *
+     * Two known rows plus one unknown, so the assertion can tell "kept the
+     * unknown row" apart from "kept everything regardless".
+     */
+    const rows = [
+      { sessionId: 's-1', audience: 'account', createdAt: 'a', expiresAt: 'b', current: true },
+      {
+        sessionId: 's-2',
+        audience: 'something-new',
+        createdAt: 'c',
+        expiresAt: 'd',
+        current: false,
+      },
+      { sessionId: 's-3', audience: 'operator', createdAt: 'e', expiresAt: 'f', current: false },
+    ];
+    const { client } = clientWith(() => response(200, { sessions: rows }));
+    await expect(client.sessions(TOKEN)).resolves.toEqual(rows);
+  });
+
+  it('still refuses a row that is malformed rather than merely unfamiliar', async () => {
+    // Tolerating an unknown VOCABULARY is not tolerating a broken SHAPE: a row
+    // with no audience at all is a peer answering something this edge cannot
+    // describe, and inventing a value for it would be the coercion the case
+    // above exists to avoid.
     const { client } = clientWith(() =>
       response(200, {
-        sessions: [
-          {
-            sessionId: 's-1',
-            audience: 'something-new',
-            createdAt: 'x',
-            expiresAt: 'y',
-            current: false,
-          },
-        ],
+        sessions: [{ sessionId: 's-1', createdAt: 'x', expiresAt: 'y', current: false }],
       }),
     );
     await expect(client.sessions(TOKEN)).rejects.toThrow(/failed validation/);

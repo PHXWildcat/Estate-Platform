@@ -8395,3 +8395,71 @@ Append new entries here, in the format: `- YYYY-MM-DD — decision — rationale
   instead of one reporting a count mismatch. The 2026-08-13 rule restated: when
   a fix has two halves, say which one is load-bearing rather than crediting
   both — and the way to find out is to disable one and keep the defect.
+- 2026-08-20 — A DETECTOR WHOSE PREMISE IS A TIMING CLAIM IS A CLAIM, NOT A
+  CONTROL, and M21 PR4 shipped one. Both isolated-origin launchers hand
+  authority across a trust boundary by a top-level form POST, and `form-action`
+  is baked into the app's CSP at BUILD time while the BFF serves the destination
+  at REQUEST time — so PR4 listened for `securitypolicyviolation` rather than
+  letting a refused submit fail silently, and asserted in the code that the event
+  "fires synchronously on the blocked submit". IT DOES NOT. The listener was
+  removed in a `finally` and the flag read a task early, so the branch reporting
+  a refused handoff was DEAD CODE. Measured in Chrome against
+  `form-action 'none'`: the submit is refused, the event does arrive, and the
+  synchronous read is `false` in the blocked and the allowed case alike — a
+  signal carrying no information at all. The listener OUTLIVES the submit now
+  and reports when the violation lands; re-arm and unmount are the only two ways
+  it stops listening and both are asserted, because a lingering `document`
+  listener holding a closure over `setError` is how this becomes a leak instead.
+  What was never at risk is the credential — the field is cleared unconditionally
+  in the `finally` — so this was silent failure, not exposure. THE GENERAL RULE:
+  when a control's correctness rests on WHEN something happens, the timing is the
+  thing to measure, and jsdom cannot answer it.
+- 2026-08-20 — AND THE DOUBLE WAS MORE GENEROUS THAN THE PLATFORM, which is the
+  only reason the suite was green over it: the mock dispatched the violation
+  INLINE, and `document.dispatchEvent` is synchronous by definition, so the
+  double answered a question the browser answers a task later. The
+  `chrome-double.ts` shape (M16 PR2b) in a new place — a double must be faithful
+  about TIMING, not only about values and absences. THE 2×2 IS THE EVIDENCE, and
+  it is why one mutation is reported as a SURVIVOR rather than argued away:
+  fixed+async green, defective+async RED, fixed+sync green (so the double's
+  timing is not load-bearing once the code is right), defective+sync GREEN —
+  the historical false green reproduced exactly. The asynchronous double is
+  load-bearing precisely where it matters, which is converting the defect from
+  green to red, and saying that is better than claiming every mutation was red.
+- 2026-08-20 — A TOLERANT SCHEMA BESIDE A STRICT ONE IS AN ASYMMETRY THAT MUST
+  BE DELIBERATE. `Query.session` accepts an audience it does not recognise;
+  `Query.sessions` did not, and a `z.array` of strict objects fails WHOLESALE —
+  so one row minted by an identity deployed ahead of the BFF discarded every
+  OTHER row, `parseBody` threw, and the paired-devices page rendered an error
+  instead of the credentials the user came to revoke. `lib/sessions.ts` had
+  carried the fallback copy for exactly this case since M16, citing the rule that
+  a service deployed ahead of the app must not blank the page — UNREACHABLE,
+  because the edge refused one layer up. A fallback nothing can reach is the
+  zero-callers shape wearing a schema. The row is an opaque string now, named
+  `UNKNOWN` on the wire and given its own copy, and deliberately NOT coerced to
+  `ACCOUNT`: telling somebody a credential they do not recognise is their own
+  browser is worse than the error page it replaces, because it argues them out of
+  revoking it. The existing test asserted the OLD behaviour with half-right
+  reasoning ("a parse failure rather than a row rendered as something it is
+  not") — rendering it as something it is not IS worse, which is why the answer
+  is to NAME the state rather than to coerce or to drop the row.
+- 2026-08-20 — A PARSER THAT CANNOT READ A LEGAL CONSTRUCT EITHER LIES OR FORBIDS
+  DOCUMENTING THE THING IT CHECKS. `enum-parity.test.ts` splits an SDL enum body
+  on whitespace, and the first documented member in this schema turned every WORD
+  of its `"""…"""` description into an enum member — the fence went red naming
+  "Named", "a" and "and" as members. Loud rather than silent this time, and still
+  the wrong shape: descriptions are stripped before splitting now, with an
+  anti-vacuity assertion that stripping never leaves an enum with no members. The
+  alternative — deleting the documentation to suit the parser — would have let a
+  fence dictate what the schema may say about itself.
+- 2026-08-20 — MEASURE THE AUTO-LOADED PREAMBLE BEFORE PLANNING A REVIEW
+  FAN-OUT. `CLAUDE.md` was 641 KB (~160k tokens) and auto-loads into every
+  subagent, so an agent started near the context limit before reading anything:
+  four of five lenses terminated with `Autocompact is thrashing`, two before
+  opening a single 600-line file, and cutting the briefing from 19k lines to 3k
+  saved none of them — compaction re-injects the preamble, so it thrashes rather
+  than degrades. The scopes were covered in the main session instead. Largely
+  REMOVED the same day by #123, which cut the file to 183 lines by moving this
+  log to `docs/06`; the lesson that survives its own fix is that the preamble is
+  a budget, it is invisible from inside the agent, and a fan-out planned without
+  measuring it fails in a way that looks like a prompt problem and is not.

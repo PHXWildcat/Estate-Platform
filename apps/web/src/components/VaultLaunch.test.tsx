@@ -7,6 +7,19 @@ import {
 } from '../test-utils/graphql-fetch-mock';
 
 /**
+ * How many `securitypolicyviolation` registrations a spy saw. Counted rather
+ * than eyeballed because every other `document` listener in the tree (React's
+ * own included) shows up in the same spy.
+ */
+function cspListeners(spy: jest.SpyInstance): number {
+  // `jest.SpyInstance` without generics types `calls` as `any[]`, which the
+  // no-unsafe-member-access rule refuses. `unknown[][]` is the honest shape:
+  // the only thing read here is the event name in the first argument.
+  const calls = spy.mock.calls as unknown[][];
+  return calls.filter((call) => call[0] === 'securitypolicyviolation').length;
+}
+
+/**
  * The vault interstitial (M15).
  *
  * What matters here is not the copy but WHERE THE CODE GOES. A handoff code in
@@ -306,22 +319,78 @@ describe('VaultLaunch', () => {
     (HTMLFormElement.prototype.submit as jest.Mock).mockImplementation(function blocked(
       this: void,
     ): void {
-      // What the browser does: refuse the navigation and dispatch the violation.
+      /*
+       * ASYNCHRONOUSLY, WHICH IS THE WHOLE POINT OF THIS DOUBLE. The first
+       * version dispatched inline, and that is the only reason the original
+       * read-the-flag-after-submit code passed: `document.dispatchEvent` is
+       * synchronous by definition, so the double answered a question the
+       * browser answers a task later. Measured in Chrome against
+       * `form-action 'none'` — the submit is refused, the event arrives, and a
+       * synchronous read sees `false`. A double must be faithful about TIMING,
+       * not only about values; dispatching inline here makes this suite green
+       * over a detector that cannot fire.
+       */
       const event = new Event('securitypolicyviolation');
       // `violatedDirective` is read-only on the real interface, so it is
       // DEFINED rather than assigned — jsdom implements neither the event nor
       // the enforcement, so the browser's half is modelled here.
       Object.defineProperty(event, 'violatedDirective', { value: 'form-action' });
-      document.dispatchEvent(event);
+      setTimeout(() => document.dispatchEvent(event), 0);
     });
     render(<VaultLaunch />);
     fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
 
-    // The ERROR ITSELF, not merely that a status region exists — `FormStatus`
-    // renders its node either way, so asserting the region is satisfied by a
-    // page that reported nothing at all.
-    expect(await screen.findByRole('status')).toHaveTextContent(/\S/);
+    /*
+     * AWAITED, because the violation arrives a task after the submit — which is
+     * the defect this case now pins. The ERROR ITSELF is asserted, not merely
+     * that a status region exists: `FormStatus` renders its node either way, so
+     * asserting the region is satisfied by a page that reported nothing at all.
+     */
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/open the vault just now/i),
+    );
     expect(document.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe('');
     expect(screen.getByRole('button', { name: /open the vault/i })).toBeEnabled();
+  });
+
+  /*
+   * THE LISTENER OUTLIVES THE SUBMIT BY DESIGN (the violation is dispatched a
+   * task later), so the two things that stop it listening are the only reason
+   * that is safe. Both are asserted here rather than reasoned about, because a
+   * lingering `document` listener holding a closure over `setError` is exactly
+   * how this becomes a leak or a "state update on an unmounted component".
+   */
+  it('detaches the violation listener when the page goes away', async () => {
+    installGraphqlFetchMock({
+      StartVaultHandoff: () => jsonResponse({ data: { startVaultHandoff: HANDOFF } }),
+    });
+    const added = jest.spyOn(document, 'addEventListener');
+    const removed = jest.spyOn(document, 'removeEventListener');
+    const view = render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    // The submit double navigates nowhere and dispatches nothing, which is the
+    // ALLOWED path — so the listener is still attached when the page unmounts.
+    await waitFor(() => expect(cspListeners(added)).toBe(1));
+    expect(cspListeners(removed)).toBe(0);
+
+    view.unmount();
+    expect(cspListeners(removed)).toBe(1);
+  });
+
+  it('re-arming replaces the listener rather than stacking a second', async () => {
+    installGraphqlFetchMock({
+      StartVaultHandoff: () => jsonResponse({ data: { startVaultHandoff: HANDOFF } }),
+    });
+    const added = jest.spyOn(document, 'addEventListener');
+    const removed = jest.spyOn(document, 'removeEventListener');
+    render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await waitFor(() => expect(cspListeners(added)).toBe(1));
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await waitFor(() => expect(cspListeners(added)).toBe(2));
+
+    // One armed, one detached: never two live listeners, which would report the
+    // same refusal twice.
+    expect(cspListeners(removed)).toBe(1);
   });
 });

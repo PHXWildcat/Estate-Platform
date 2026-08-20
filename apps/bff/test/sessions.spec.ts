@@ -33,6 +33,38 @@ describe('paired devices', () => {
     await app.close();
   });
 
+  it('names an audience it does not recognise UNKNOWN, and keeps the other rows', async () => {
+    /*
+     * THE ROWS SURVIVE, which is the whole finding: before this, a strict row
+     * inside a `z.array` failed the entire parse, so one audience minted by an
+     * identity deployed ahead of this build blanked the page a user opens to
+     * revoke a credential they do not recognise.
+     *
+     * Three rows so the assertion can distinguish "kept the unknown one" from
+     * "kept everything regardless", and `UNKNOWN` rather than `ACCOUNT` because
+     * the failure mode that matters is telling somebody an unrecognised
+     * credential is their own browser.
+     */
+    identity.sessionsResult = [
+      { sessionId: 's-1', audience: 'account', createdAt: 'a', expiresAt: 'b', current: true },
+      {
+        sessionId: 's-2',
+        audience: 'a-fifth-audience',
+        createdAt: 'c',
+        expiresAt: 'd',
+        current: false,
+      },
+      { sessionId: 's-3', audience: 'operator', createdAt: 'e', expiresAt: 'f', current: false },
+    ];
+    const res = await gql(app, { query: SESSIONS_QUERY }, COOKIE);
+    expect(gqlBody(res).data?.sessions).toEqual([
+      expect.objectContaining({ sessionId: 's-1', audience: 'ACCOUNT' }),
+      expect.objectContaining({ sessionId: 's-2', audience: 'UNKNOWN' }),
+      expect.objectContaining({ sessionId: 's-3', audience: 'OPERATOR' }),
+    ]);
+    expect(gqlBody(res).errors).toBeUndefined();
+  });
+
   it('lists sessions on the CALLER’S OWN bearer, carrying the audience', async () => {
     identity.sessionsResult = [
       {
