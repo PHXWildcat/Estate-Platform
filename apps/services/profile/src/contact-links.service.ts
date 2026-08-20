@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { coreResource, ProfileAuthz } from './authz.service';
 import { ContactsRepo } from './contacts.repo';
+import { FieldCipher } from './field-cipher';
 import { ContactLinksRepo, InvitationRaceError, MAX_REDEEM_ATTEMPTS } from './contact-links.repo';
 import { CLOCK, CONFIG, LINK_NOTIFIER, type Clock } from './di-tokens';
 import type { ProfileConfig } from './config';
@@ -22,6 +23,21 @@ export const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export interface MintedInvitation {
   code: string;
   expiresAt: string;
+}
+
+/**
+ * One estate that names the caller (M22 PR4a).
+ *
+ * `ownerName` is NULLABLE and the null means "this owner has never saved a
+ * profile" — no name exists to disclose. It is deliberately not defaulted to a
+ * placeholder here: a missing field is NO DATA, and a surface that invented
+ * "Unknown" would be stating something the server never said.
+ */
+export interface LinkedEstate {
+  ownerUserId: string;
+  contactId: string;
+  ownerName: string | null;
+  roles: string[];
 }
 
 /**
@@ -66,11 +82,85 @@ export class ContactLinksService {
     private readonly links: ContactLinksRepo,
     private readonly contacts: ContactsRepo,
     private readonly authz: ProfileAuthz,
+    private readonly cipher: FieldCipher,
     private readonly events: EventsService,
     @Inject(LINK_NOTIFIER) private readonly notifier: LinkNotificationPort,
     @Inject(CONFIG) private readonly config: ProfileConfig,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
+
+  /**
+   * THE ESTATES THAT NAME THE CALLER (M22 PR4a) — the read this service never
+   * had, in the only direction it never went.
+   *
+   * WHY IT EXISTS. `contacts.linked_user_id` is an authorization edge, and
+   * until now it was one a person could be on the receiving end of without
+   * ever being able to see it. `redeem` returns `Ok!`. Nothing in the BFF or
+   * the web app told a linked contact whose estate they had joined. And
+   * settlement's `reportable-estates` — the list a bereaved person picks from
+   * to report a death — is a set of bare UUIDs for exactly this reason. A
+   * capability you hold and cannot enumerate is not a capability you can
+   * exercise responsibly.
+   *
+   * WHAT IT DISCLOSES, stated plainly because it is the point of review. This
+   * decrypts `profile.legal_name` belonging to somebody who is NOT the caller
+   * — the first read in this service where the DEK subject and the actor are
+   * different people. Three things make that proportionate, and all three are
+   * mechanisms rather than assurances:
+   *
+   *  - The owner CHOSE this person. A link exists only because the owner
+   *    minted a code under step-up and handed it over out of band; you cannot
+   *    appear in someone's contacts by asking.
+   *  - The owner can END it, with one click and no step-up (`removeLink`).
+   *    The disclosure is revocable by the person disclosed, and the protective
+   *    action is the easier one — this repo's rule, applied to a read.
+   *  - The name is ALL it discloses. Not the address, the DOB, the SSN, the
+   *    assets, or the other people named. One field, chosen because it is the
+   *    minimum that makes the list usable by a human.
+   *
+   * THE AUDIT RECORD GOES FIRST, before any decrypt. That is the rule for
+   * anything that records a disclosure: an event written afterwards is an
+   * event a crash can lose while the plaintext has already been produced. It
+   * is emitted once for the LIST rather than once per row, with a count and no
+   * owner ids in it — naming them would write the very PII whose disclosure it
+   * records into the audit trail.
+   *
+   * NO PEP. Being the linked contact IS the authorization, resolved in the
+   * query's own WHERE clause — the vault `requireGranteePolicy` precedent for
+   * a documented row check. There is no id parameter here to authorize
+   * against: the caller cannot name an estate, only be named by one, so the
+   * anti-enumeration property is structural rather than enforced.
+   */
+  async estatesNaming(callerUserId: string): Promise<LinkedEstate[]> {
+    const rows = await this.links.listEstatesNaming(callerUserId);
+    if (rows.length === 0) {
+      // Nothing was disclosed, so there is nothing to record. An event here
+      // would make "this account has no links" an auditable fact about a
+      // person who did nothing.
+      return [];
+    }
+    await this.events.contactLinkEstatesRead(callerUserId, rows.length);
+    return Promise.all(
+      rows.map(async (row) => ({
+        ownerUserId: row.owner_user_id,
+        contactId: row.contact_id,
+        roles: row.roles,
+        ownerName:
+          row.dek_id === null
+            ? null
+            : await this.cipher.decrypt({
+                // The DEK subject is the OWNER; the actor is the caller. The
+                // two being different is what this event exists to record.
+                ownerUserId: row.owner_user_id,
+                dekId: row.dek_id,
+                field: 'profile.legal_name',
+                ciphertext: row.legal_name_ct,
+                actorId: callerUserId,
+                purpose: 'linked_estate_read',
+              }),
+      })),
+    );
+  }
 
   /**
    * Mint a single-use code for one of the owner's contacts. STEP-UP GATED at the

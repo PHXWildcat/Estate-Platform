@@ -64,6 +64,7 @@ import type {
   ProfileClient,
   RoleAssignment,
   RoleAssignmentInput,
+  LinkedEstate,
   SaveProfileInput,
 } from '../src/profile-client';
 import type {
@@ -1014,6 +1015,14 @@ export class FakeProfileClient implements ProfileClient {
     grantId: string;
   }> = [];
 
+  linkedEstatesResult: LinkedEstate[] = [
+    {
+      ownerUserId: 'a2c2e6a4-0000-4000-8000-00000000000e',
+      contactId: 'a2c2e6a4-0000-4000-8000-00000000000f',
+      ownerName: 'Ada Lovelace',
+      roles: ['executor'],
+    },
+  ];
   profileResult: Profile | null = PROFILE;
   familyResult: FamilyMember[] = [FAMILY_MEMBER];
   contactsResult: ContactSummary[] = [CONTACT_SUMMARY];
@@ -1021,6 +1030,13 @@ export class FakeProfileClient implements ProfileClient {
   roleAssignmentsResult: RoleAssignment[] = [ROLE_ASSIGNMENT];
   permissionsResult: PermissionGrant[] = [PERMISSION_GRANT];
   profileError: Error | null = null;
+
+  linkedEstatesCalls: string[] = [];
+
+  linkedEstates(accessToken: string): Promise<LinkedEstate[]> {
+    this.linkedEstatesCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.linkedEstatesResult);
+  }
 
   profile(accessToken: string): Promise<Profile | null> {
     this.profileCalls.push(accessToken);

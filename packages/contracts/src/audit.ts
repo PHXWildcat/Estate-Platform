@@ -59,6 +59,15 @@ export const AUDIT_ACTIONS = [
   // The production notifications precondition firing. A control refusing must
   // never read as an outage (the M9 rule).
   'contact.link.notifications_refused',
+  // A LINKED CONTACT READING THE NAMES OF THE ESTATES THAT NAME THEM (M22
+  // PR4a). This is a DISCLOSURE event, not a navigation one: answering it
+  // decrypts another user's `profile.legal_name` for a caller who is not its
+  // owner, which is the first read in this service where the DEK subject and
+  // the actor are different people. `resourceId` is the READER, because the
+  // list has no single subject — the owners disclosed are in `detail.count`
+  // and nowhere else, since naming them here would put the very PII the event
+  // records the disclosure of into the audit trail.
+  'contact.link.estates_read',
   // Asset service (financial cluster).
   'asset.created',
   'asset.updated',

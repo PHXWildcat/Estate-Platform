@@ -854,6 +854,22 @@ export const SET_SETTLEMENT_WAITING_PERIOD_MUTATION = `mutation SetSettlementWai
   }
 }`;
 
+/**
+ * The estates that name you (M22 PR4a) — the reverse of CONTACTS_QUERY.
+ *
+ * 'ownerName' is nullable and the null means the owner never saved a profile.
+ * Render it as an estate without a name; never as "Unknown", which would be
+ * this app asserting something the server declined to say.
+ */
+export const LINKED_ESTATES_QUERY = `query LinkedEstates {
+  linkedEstates {
+    ownerUserId
+    contactId
+    ownerName
+    roles
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -937,6 +953,7 @@ export const operations = {
   RevokeContactLinkInvitation: REVOKE_CONTACT_LINK_INVITATION_MUTATION,
   UnlinkContact: UNLINK_CONTACT_MUTATION,
   RedeemContactLink: REDEEM_CONTACT_LINK_MUTATION,
+  LinkedEstates: LINKED_ESTATES_QUERY,
   SettlementCases: SETTLEMENT_CASES_QUERY,
   VoidSettlementCase: VOID_SETTLEMENT_CASE_MUTATION,
   SettlementSettings: SETTLEMENT_SETTINGS_QUERY,

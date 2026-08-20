@@ -708,6 +708,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'profile POST /v1/contacts/:id/link-invitation': consumed(`${BFF}/profile-client.ts`),
   'profile DELETE /v1/contacts/:id/link-invitation': consumed(`${BFF}/profile-client.ts`),
   'profile DELETE /v1/contacts/:id/link': consumed(`${BFF}/profile-client.ts`),
+  'profile GET /v1/contact-links/estates': consumed(`${BFF}/profile-client.ts`),
   'profile POST /v1/contact-links/redeem': consumed(`${BFF}/profile-client.ts`),
   'profile GET /v1/contacts/grantee-candidates': consumed(`${VW}/server.ts`),
   'profile GET /v1/role-assignments': consumed(`${BFF}/profile-client.ts`),

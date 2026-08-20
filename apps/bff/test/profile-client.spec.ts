@@ -374,3 +374,72 @@ describe('FetchProfileClient', () => {
     });
   });
 });
+
+/**
+ * THE REVERSE-LINK READ (M22 PR4a) against the real transport.
+ *
+ * The route it addresses is the one whose answer is another user's PII, so the
+ * two things worth pinning here are that the caller's own bearer is what opens
+ * it — the BFF holds no profile credential and could not ask on somebody's
+ * behalf — and that a null name survives the parse. A schema that quietly
+ * dropped or defaulted `ownerName` would put the BFF in the business of
+ * asserting what the key holder declined to say.
+ */
+describe('linkedEstates', () => {
+  function clientWith(reply: Response): {
+    client: FetchProfileClient;
+    calls: Array<{ url: string; init: RequestInit }>;
+  } {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new FetchProfileClient(BASE, (url, init) => {
+      calls.push({ url, init });
+      return Promise.resolve(reply);
+    });
+    return { client, calls };
+  }
+
+  const ESTATE = {
+    ownerUserId: 'b2222222-2222-4222-8222-222222222222',
+    contactId: 'c3333333-3333-4333-8333-333333333333',
+    ownerName: 'Ada Lovelace',
+    roles: ['executor'],
+  };
+
+  it('asks the reverse-link route with the caller’s own bearer', async () => {
+    const { client, calls } = clientWith(response(200, [ESTATE]));
+    await expect(client.linkedEstates(TOKEN)).resolves.toEqual([ESTATE]);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/contact-links/estates`);
+    expect(calls[0]?.init.method).toBe('GET');
+    expect((calls[0]?.init.headers as Record<string, string>)['authorization']).toBe(
+      `Bearer ${TOKEN}`,
+    );
+  });
+
+  it('keeps a null owner name as null', async () => {
+    const { client } = clientWith(response(200, [{ ...ESTATE, ownerName: null }]));
+    const [row] = await client.linkedEstates(TOKEN);
+    expect(row?.ownerName).toBeNull();
+  });
+
+  it('accepts an estate carrying no roles', async () => {
+    const { client } = clientWith(response(200, [{ ...ESTATE, roles: [] }]));
+    const [row] = await client.linkedEstates(TOKEN);
+    expect(row?.roles).toEqual([]);
+  });
+
+  it('refuses a malformed answer rather than half-trusting it', async () => {
+    // `ownerName` absent is NOT the same as null — the first is a peer whose
+    // shape this client does not recognise, the second is a real answer.
+    const { client } = clientWith(response(200, [{ ownerUserId: 'x' }]));
+    await expect(client.linkedEstates(TOKEN)).rejects.toThrow();
+  });
+
+  it('maps a dead session without forwarding the downstream body', async () => {
+    const { client } = clientWith(
+      response(401, { error: 'unauthenticated', detail: 'user bob@example.com' }),
+    );
+    const err = await client.linkedEstates(TOKEN).catch((e: unknown) => e);
+    expect((err as { extensions: { code: string } }).extensions.code).toBe('UNAUTHENTICATED');
+    expect(JSON.stringify(err)).not.toMatch(/bob@example.com/);
+  });
+});

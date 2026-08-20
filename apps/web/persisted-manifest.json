@@ -24,6 +24,7 @@
   "43af420be4e7fd8d9ff78c576a9db00354440830cc6a64f4fabe878959d5d884": "mutation RevokeSession($sessionId: ID!) {\n  revokeSession(sessionId: $sessionId) {\n    ok\n  }\n}",
   "47e53b142c3c7a809a1ac84c2a04c86c4bdc321fd5adbff779f8fd526437d03b": "mutation StartOperatorHandoff {\n  startOperatorHandoff {\n    code\n    expiresAt\n    operatorOrigin\n  }\n}",
   "487cbff0c060c975557e1a80bd06c31b2d320b00475b05d0749ec63c011dfbba": "mutation ChangePassword($currentPassword: String!, $newPassword: String!) {\n  changePassword(currentPassword: $currentPassword, newPassword: $newPassword) {\n    ok\n  }\n}",
+  "4b3ee96adbe840f3514f40f3667f753b2d917f4aeb3c2a4952743a81b848f226": "query LinkedEstates {\n  linkedEstates {\n    ownerUserId\n    contactId\n    ownerName\n    roles\n  }\n}",
   "4cb1fcc97f36f2f223eec078e4bca42a67725a5e86a2603b6aa7a0e30988b879": "mutation ResendEmailVerification {\n  resendEmailVerification\n}",
   "4e7ca310c318dd7719b918a5976930e43283476fdad6fb6535a3c9158ec3869d": "mutation SetDocumentStatus($documentId: ID!, $status: String!, $executedAt: String) {\n  setDocumentStatus(documentId: $documentId, status: $status, executedAt: $executedAt) {\n    documentId\n    executionStatus\n    executedAt\n    allowedTransitions\n  }\n}",
   "5307d9f6344c49a9b915c593369ae5ba368366655e230431cb9c09f75aca4645": "query Documents {\n  documents {\n    documentId\n    docType\n    source\n    title\n    currentVersion\n    executionStatus\n    executedAt\n    legalHold\n    sealed\n    templateId\n    createdAt\n    updatedAt\n  }\n}",

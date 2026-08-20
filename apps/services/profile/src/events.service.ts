@@ -176,6 +176,34 @@ export class EventsService {
     });
   }
 
+  /**
+   * A linked contact read the estates naming them (M22 PR4a).
+   *
+   * ONE EVENT FOR THE LIST, not one per row, and `resourceId` is the READER
+   * rather than any owner. The reason is the same one that keeps plaintext out
+   * of every audit payload: this event records that N owners' legal names were
+   * disclosed to this caller, and writing WHICH owners into the detail would
+   * put the relationship — and by implication the PII — into the trail that
+   * exists to police it. The per-row decrypt already emits
+   * `crypto.field.decrypted` with the owner as its DEK subject, so the join is
+   * available to an investigator who has authority for both halves and to
+   * nobody who has only this one.
+   */
+  async contactLinkEstatesRead(actorId: string, count: number): Promise<void> {
+    await this.audit.emit({
+      action: 'contact.link.estates_read',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: actorId,
+      sessionId: null,
+      // Stringified count only — the audit detail vocabulary is ids, enums and
+      // counts, never names.
+      detail: { count: String(count) },
+    });
+  }
+
   async contactLinkInvitationRevoked(actorId: string, contactId: string): Promise<void> {
     await this.contactLink('contact.link.invitation_revoked', actorId, contactId);
   }

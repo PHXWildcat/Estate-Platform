@@ -18,6 +18,42 @@ const OWNER = 'a1111111-1111-4111-8111-111111111111';
  * the same mistake — one character per byte, 100 bits where the docs said 160 —
  * and was caught by reading a code the live stack minted.
  */
+
+/**
+ * A FieldCipher double that is faithful about what it REFUSES, not only about
+ * what it returns. `decrypt` answers null for null ciphertext — the real
+ * cipher's first branch — so a test cannot pass by never exercising the
+ * owner-has-no-profile arm, and it RECORDS the (ownerUserId, actorId) pair so
+ * a test can assert the two are different people, which is the whole property
+ * the disclosure event exists to record.
+ */
+function cipherDouble(): {
+  decrypt: (input: {
+    ownerUserId: string;
+    dekId: string;
+    ciphertext: Buffer | null;
+    actorId: string;
+    purpose: string;
+  }) => Promise<string | null>;
+  calls: Array<{ ownerUserId: string; actorId: string; purpose: string }>;
+} {
+  const calls: Array<{ ownerUserId: string; actorId: string; purpose: string }> = [];
+  return {
+    calls,
+    decrypt: (input): Promise<string | null> => {
+      calls.push({
+        ownerUserId: input.ownerUserId,
+        actorId: input.actorId,
+        purpose: input.purpose,
+      });
+      if (input.ciphertext === null) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(input.ciphertext.toString('utf8'));
+    },
+  };
+}
+
 describe('the invitation code', () => {
   function build() {
     const inserted: Array<{ codeSha256: Buffer }> = [];
@@ -51,6 +87,7 @@ describe('the invitation code', () => {
       links as never,
       contacts as never,
       new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+      cipherDouble() as never,
       events as never,
       new StubLinkNotifier(),
       { nodeEnv: 'test' } as ProfileConfig,
@@ -176,6 +213,7 @@ describe('a claimed link is never silently unnotified', () => {
       links as never,
       { findById: () => Promise.resolve(null) } as never,
       new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+      cipherDouble() as never,
       events as never,
       notifier,
       { nodeEnv: 'test' } as ProfileConfig,
@@ -356,6 +394,7 @@ describe('minting a link code requires a reachable owner', () => {
           Promise.resolve({ id: CONTACT, owner_user_id: OWNER, linked_user_id: null }),
       } as never,
       new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+      cipherDouble() as never,
       {
         contactLinkInvited: () => Promise.resolve(),
         contactLinkInvitationRevoked: () => Promise.resolve(),
@@ -404,5 +443,143 @@ describe('minting a link code requires a reachable owner', () => {
     const minted = await h.service.invite(OWNER, CONTACT);
     expect(minted.code.startsWith('ESL1-')).toBe(true);
     expect(h.asked).toEqual([]);
+  });
+});
+
+/**
+ * THE ESTATES THAT NAME YOU (M22 PR4a) — the reverse-link read.
+ *
+ * This is the first read in profile where the DEK subject and the actor are
+ * different people, so what these tests defend is the disclosure discipline
+ * rather than the query: the audit record precedes the plaintext, the decrypt
+ * is attributed to the OWNER's key and the CALLER's hand, an owner with no
+ * profile yields no invented name, and an account with no links produces no
+ * event about a person who did nothing.
+ */
+describe('estatesNaming', () => {
+  const CALLER = 'c2222222-2222-4222-8222-222222222222';
+  const OWNER_B = 'b3333333-3333-4333-8333-333333333333';
+
+  function harness(rows: unknown[]): {
+    service: ContactLinksService;
+    cipher: { calls: ReturnType<typeof cipherDouble>['calls'] };
+    order: string[];
+    events: string[];
+  } {
+    const order: string[] = [];
+    const events: string[] = [];
+    const cipher = cipherDouble();
+    const wrapped = {
+      calls: cipher.calls,
+      decrypt: (input: Parameters<typeof cipher.decrypt>[0]): Promise<string | null> => {
+        order.push('decrypt');
+        return cipher.decrypt(input);
+      },
+    };
+    const service = new ContactLinksService(
+      { listEstatesNaming: () => Promise.resolve(rows) } as never,
+      {} as never,
+      new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies())),
+      wrapped as never,
+      {
+        contactLinkEstatesRead: (actorId: string, count: number): Promise<void> => {
+          order.push('audit');
+          events.push(`${actorId}:${count}`);
+          return Promise.resolve();
+        },
+      } as never,
+      new StubLinkNotifier(),
+      { nodeEnv: 'test' } as ProfileConfig,
+      () => new Date('2026-08-20T00:00:00Z'),
+    );
+    return { service, cipher: wrapped, order, events };
+  }
+
+  function row(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      owner_user_id: OWNER,
+      contact_id: 'd4444444-4444-4444-8444-444444444444',
+      roles: ['executor'],
+      legal_name_ct: Buffer.from('Ada Lovelace', 'utf8'),
+      dek_id: 'dek-1',
+      ...over,
+    };
+  }
+
+  it('names the estates that name the caller', async () => {
+    const { service } = harness([row()]);
+    await expect(service.estatesNaming(CALLER)).resolves.toEqual([
+      {
+        ownerUserId: OWNER,
+        contactId: 'd4444444-4444-4444-8444-444444444444',
+        ownerName: 'Ada Lovelace',
+        roles: ['executor'],
+      },
+    ]);
+  });
+
+  /**
+   * THE RECORD GOES FIRST. An event written after the decrypt is an event a
+   * crash can lose while the plaintext has already been produced — the rule
+   * for anything recording a disclosure. Asserted as an ORDER, because both
+   * orderings return identical data and only one of them is correct.
+   */
+  it('emits the disclosure record BEFORE any plaintext exists', async () => {
+    const { service, order } = harness([row(), row({ owner_user_id: OWNER_B })]);
+    await service.estatesNaming(CALLER);
+    expect(order[0]).toBe('audit');
+    expect(order).toEqual(['audit', 'decrypt', 'decrypt']);
+  });
+
+  it('records the count and the reader, and no owner ids', async () => {
+    const { service, events } = harness([row(), row({ owner_user_id: OWNER_B })]);
+    await service.estatesNaming(CALLER);
+    expect(events).toEqual([`${CALLER}:2`]);
+    // The owners disclosed must not appear: naming them would write the very
+    // relationship this event records the disclosure of into the trail.
+    expect(events.join()).not.toContain(OWNER);
+    expect(events.join()).not.toContain(OWNER_B);
+  });
+
+  /**
+   * The arm where the two facts DISAGREE. A decrypt attributed to the caller's
+   * own key would type-check perfectly and be wrong on exactly this input.
+   */
+  it('decrypts under the OWNER’s key while attributing the read to the CALLER', async () => {
+    const { service, cipher } = harness([row()]);
+    await service.estatesNaming(CALLER);
+    expect(cipher.calls).toEqual([
+      { ownerUserId: OWNER, actorId: CALLER, purpose: 'linked_estate_read' },
+    ]);
+    expect(cipher.calls[0]?.ownerUserId).not.toBe(cipher.calls[0]?.actorId);
+  });
+
+  it('invents no name for an owner who never saved a profile', async () => {
+    // A missing field is NO DATA. "Unknown" here would be this surface stating
+    // something the server never said.
+    const { service, cipher } = harness([row({ legal_name_ct: null, dek_id: null })]);
+    const [only] = await service.estatesNaming(CALLER);
+    expect(only?.ownerName).toBeNull();
+    // ...and it must not have spent a decrypt to find that out.
+    expect(cipher.calls).toEqual([]);
+  });
+
+  it('says nothing, and records nothing, for an account with no links', async () => {
+    const { service, events, order } = harness([]);
+    await expect(service.estatesNaming(CALLER)).resolves.toEqual([]);
+    // No disclosure happened, so "this person has no links" must not become an
+    // auditable fact about somebody who did nothing.
+    expect(events).toEqual([]);
+    expect(order).toEqual([]);
+  });
+
+  it('carries an estate that names the caller with no role at all', async () => {
+    // A contact can be linked without holding any role_assignment — the LEFT
+    // JOIN's empty case. Dropping it would hide an estate the caller really is
+    // named in, which is the direction that matters.
+    const { service } = harness([row({ roles: [] })]);
+    const [only] = await service.estatesNaming(CALLER);
+    expect(only?.roles).toEqual([]);
+    expect(only?.ownerUserId).toBe(OWNER);
   });
 });
