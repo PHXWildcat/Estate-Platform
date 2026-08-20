@@ -5625,6 +5625,8 @@ because at that point the value lens becomes the one with real inputs.
   of them in machinery PR4 introduced.
 - **PR4c — the fences themselves. SHIPPED** (record below). Twelve findings from
   the round-3 lens re-run, all in fences and none in product code; #125.
+- **PR4d — the distribution-status oracle. SHIPPED** (record below). The one
+  RUNTIME finding of round 3; docs/03 §6gg.
 - **PR5 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7. NOT YET SHIPPED.
@@ -6641,6 +6643,35 @@ description under test, so it failed for the wrong reason.
 `compose-parity`'s new refusal immediately found that the reader was already
 skipping lines in six service blocks today — all YAML comments, harmless, but
 unread, which is the state the fence could not previously tell from clean.
+
+#### M21 PR4d — the distribution-status oracle (shipped)
+
+The one runtime finding from round 3, closed a day after it was recorded rather
+than left to M23. `setDistributionStatus` was the only operator-reachable write
+verb that looked its row up before consulting the gate, and it refused in three
+distinguishable ways — `404` unknown id, `409 case_not_verified`, `403` for a
+real administrable case the caller had no authority over. A distribution UUID
+was enough to follow an estate's settlement progress after losing authority over
+it.
+
+The lookup could not move — the executor arm of the authority test needs the
+case to know whose estate it is — so the REFUSALS moved instead. Every refusal
+reachable without authority is now the same `404` an unknown id gets.
+`assertCaseVisible` was deliberately not reused: it admits the decedent and the
+reporter, and neither may move money.
+
+Fail closed means de-escalate, so an executor WITH authority is still told
+`case_not_verified`. Two tests hold the pair apart and each is load-bearing in
+the opposite direction: reverting the fix turns the uniformity test red;
+answering `404` to everybody turns the de-escalation test red.
+
+**The whole suite passed unchanged when the fix went in.** No test had ever
+exercised a refusal path on this verb — which is why the oracle survived two
+reviews before a lens found it by reading the ordering.
+
+Filed as `[OWNER: M23]` in §6ff on the reasoning that it was latent until the
+executor UI arrived; closing it immediately was cheaper, because the fix is a
+refusal shape and there is no consumer to break. docs/03 §6gg.
 
 ### M32 — Subscription manager (planned; re-sequenced 2026-08-12, displaced by M20, re-numbered 2026-08-17 when M21 became the TB7 operator platform)
 

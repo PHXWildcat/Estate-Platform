@@ -479,14 +479,43 @@ export class SettlementAdminService {
     to: Extract<DistributionStatus, 'in_progress' | 'completed' | 'disputed'>,
   ): Promise<DistributionDto> {
     const row = await this.db.withTransaction(actor, async (tx) => {
+      // AUTHORISE BEFORE ANSWERING ANYTHING ABOUT THIS ROW.
+      //
+      // This was the one operator-reachable write verb that refused in three
+      // distinguishable ways: 404 for an unknown id, 409 `case_not_verified`
+      // for a case that exists but is not administrable, and 403 for a real
+      // administrable case the caller had no authority over. Holding a
+      // distribution UUID was therefore enough to track an estate's settlement
+      // progress after losing authority over it — a former or replaced executor
+      // is the concrete holder, and the id is a v4 UUID so this was never blind
+      // enumeration. Every sibling verb gates first; this one looked the row up
+      // first, and `approveDistribution` twenty lines above does not.
+      //
+      // The lookup CANNOT move: the executor arm of the authority test needs
+      // the case to know whose estate it is. So the refusals are what get
+      // fixed, not the order — every one of them is now the same 404 an unknown
+      // id gets, which is the rule `assertCaseVisible` already states in this
+      // file. Only a caller with authority may learn that the case is real but
+      // not yet administrable.
+      //
+      // NOT `assertCaseVisible`, deliberately: that admits the decedent and the
+      // reporter as well, and neither of them may move money. Same refusal
+      // shape, narrower authority.
       const locked = await this.distributions.lockById(tx, distributionId);
-      if (!locked) {
+      const kase = locked ? await this.cases.lockById(tx, locked.case_id) : null;
+      // Asked unconditionally so the work done before a refusal does not itself
+      // vary with whether the id was real.
+      const isOperator = await this.gate.is(tx, actor);
+      const authorised =
+        kase !== null &&
+        (isOperator || (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor)));
+      if (locked === null || kase === null || !authorised) {
         throw new NotFoundException({ error: 'not_found' });
       }
-      const kase = await this.requireAdministrableCase(tx, locked.case_id);
-      const isOperator = await this.gate.is(tx, actor);
-      if (!isOperator && !(await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))) {
-        throw new ForbiddenException({ error: 'forbidden' });
+      if (!ADMINISTRABLE.includes(kase.status)) {
+        // Reachable only by someone with authority over this case, so it is
+        // safe to be specific — and useful, because their remedy differs.
+        throw new ConflictException({ error: 'case_not_verified' });
       }
       // Nothing moves until dual control has been satisfied.
       const from: DistributionStatus[] =
