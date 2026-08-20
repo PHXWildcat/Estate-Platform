@@ -2,7 +2,7 @@
   "name": "@estate/bff",
   "version": "0.0.1",
   "private": true,
-  "description": "GraphQL BFF: the only GraphQL surface (docs/01 §7). Persisted operations enforced in production; auth via httpOnly cookies; proxies to internal service REST APIs.",
+  "description": "GraphQL BFF: the only GraphQL surface (docs/01 \u00a77). Persisted operations enforced in production; auth via httpOnly cookies; proxies to internal service REST APIs.",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@estate/config": "workspace:*",
+    "@estate/settlement-client": "workspace:*",
     "@nestjs/testing": "catalog:",
     "@types/jest": "catalog:",
     "@types/node": "catalog:",

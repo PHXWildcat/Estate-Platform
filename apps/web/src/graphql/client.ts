@@ -113,6 +113,12 @@ export const GQL_ERROR_CODES = [
   'CASE_ALREADY_REPORTED',
   /** The case moved past the point where more evidence can be attached (M22 PR4c). */
   'EVIDENCE_WINDOW_CLOSED',
+  /** An earlier rung of the staged-access ladder is not approved yet (M23 PR2). */
+  'STAGE_OUT_OF_ORDER',
+  /** A live request for this stage already exists. A control firing, not an outage. */
+  'STAGE_ALREADY_REQUESTED',
+  /** A real case, really this caller's to administer, not yet at a status that has one. */
+  'CASE_NOT_VERIFIED',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -144,6 +150,51 @@ export interface SettlementCaseInfo {
  * `ownerName` is null when that owner has never saved a profile. It is not a
  * missing value to paper over — it is the server saying there is no name.
  */
+/**
+ * One estate this caller is settling as executor (M23 PR2).
+ *
+ * NO USER ID, the rule `ReportableEstateInfo` already holds: the estate is
+ * named by `caseId`, every executor query takes the same handle, and the BFF
+ * resolves it against settlement's own list. A case id names something only to
+ * a caller with authority over it, so it is safe here in a way a
+ * `decedentUserId` never would be.
+ */
+export interface ExecutorCaseInfo {
+  caseId: string;
+  ownerName: string | null;
+  status: string;
+  verifiedAt: string | null;
+}
+
+/**
+ * One rung of the staged-access ladder.
+ *
+ * DERIVED FROM THE SDL's `AccessStage` enum by `enum-parity.test.ts` — GraphQL
+ * serialises an enum as its member NAME, so these are UPPERCASE and a
+ * lowercase union here would compare permanently false (the M20 PR1 defect).
+ */
+export type AccessStage = 'INVENTORY' | 'DOCUMENTS' | 'VAULT';
+
+/**
+ * The ladder IN ORDER — the one thing the union above cannot carry.
+ *
+ * `enum-parity.test.ts` checks the MEMBERS of the union against the SDL and is
+ * order-blind by design (it sorts, so declaration order is free). Order is
+ * load-bearing here: it decides which rung is offered next, and vault being
+ * last is a security property rather than a layout choice. So this array is
+ * checked separately, against the SDL's own declaration order, in
+ * `EstateSettlement.test.tsx`.
+ */
+export const ACCESS_STAGES: readonly AccessStage[] = ['INVENTORY', 'DOCUMENTS', 'VAULT'];
+
+export interface EstateAccessStageInfo {
+  stage: AccessStage;
+  /** 'requested' | 'approved' | 'denied' | 'revoked' — the service's vocabulary. */
+  status: string;
+  requestedAt: string;
+  decidedAt: string | null;
+}
+
 export interface LinkedEstateInfo {
   ownerUserId: string;
   contactId: string;
@@ -768,6 +819,22 @@ interface OperationSignatures {
   SettlementSettings: {
     variables: EmptyVariables;
     data: { settlementSettings: SettlementSettingsInfo };
+  };
+  ExecutorCases: {
+    variables: EmptyVariables;
+    data: { executorCases: ExecutorCaseInfo[] };
+  };
+  EstateStages: {
+    variables: { caseId: string };
+    data: { estateStages: EstateAccessStageInfo[] };
+  };
+  EstateInventory: {
+    variables: { caseId: string };
+    data: { estateInventory: AssetInfo[] };
+  };
+  RequestEstateAccess: {
+    variables: { caseId: string; stage: AccessStage };
+    data: { requestEstateAccess: EstateAccessStageInfo };
   };
   SetSettlementWaitingPeriod: {
     variables: { days: number };

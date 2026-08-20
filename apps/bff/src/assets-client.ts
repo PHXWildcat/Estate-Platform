@@ -176,6 +176,21 @@ export type DesignateBeneficiaryInput = {
 
 export interface AssetsClient {
   list(accessToken: string, includeRetired?: boolean): Promise<Asset[]>;
+  /**
+   * ANOTHER PERSON'S ESTATE INVENTORY, under a settlement staged grant
+   * (M23 PR2, docs/03 §5.1 control 5).
+   *
+   * A separate method for the separate route the service deliberately kept
+   * separate: `/v1/estates/:ownerUserId/assets` carries its own authorization
+   * model — assets asks settlement whether this caller has an APPROVED
+   * `inventory` stage on a verified case — and its own audit action,
+   * `asset.estate.viewed`, which names the case that authorised the read. The
+   * owner's own `list` stays exactly as it was, with no non-owner branch in it.
+   *
+   * The BFF adds nothing to that decision and cannot: it forwards the caller's
+   * own bearer, and assets re-asks settlement on every call.
+   */
+  listEstate(accessToken: string, ownerUserId: string): Promise<Asset[]>;
   netWorth(accessToken: string): Promise<NetWorth>;
   get(accessToken: string, assetId: string): Promise<AssetDetail>;
   history(accessToken: string, assetId: string): Promise<HistoryEntry[]>;
@@ -236,6 +251,18 @@ export class FetchAssetsClient implements AssetsClient {
   async list(accessToken: string, includeRetired = false): Promise<Asset[]> {
     const path = includeRetired ? '/v1/assets?includeRetired=true' : '/v1/assets';
     const res = await this.request('GET', path, accessToken);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(AssetSchema));
+  }
+
+  async listEstate(accessToken: string, ownerUserId: string): Promise<Asset[]> {
+    const res = await this.request(
+      'GET',
+      `/v1/estates/${encodeURIComponent(ownerUserId)}/assets`,
+      accessToken,
+    );
     if (!res.ok) {
       throw await this.mapError(res);
     }

@@ -103,6 +103,46 @@ export interface DocumentEvidence {
 
 export type ReportSource = 'trusted_contact' | 'death_certificate_upload';
 
+/**
+ * ONE ESTATE THIS CALLER IS SETTLING (M23 PR2).
+ *
+ * Two ids, and only one of them ever leaves the BFF. `contactId` is the handle
+ * GraphQL exposes — the same handle `ReportableEstate` uses, so an estate has
+ * ONE name across the reporter's surface and the executor's. `decedentUserId`
+ * stays here because assets and profile identify an estate by nothing else,
+ * and the resolver's job is to turn a contact id back into it by re-reading
+ * THIS list: an argument the browser supplies is a claim, and a row on this
+ * list is settlement's answer.
+ */
+const ExecutorCaseSchema = z.object({
+  caseId: z.string().min(1),
+  contactId: z.string().min(1),
+  decedentUserId: z.string().min(1),
+  status: z.string().min(1),
+  verifiedAt: z.string().nullable(),
+  createdAt: z.string().min(1),
+});
+export type ExecutorCase = z.infer<typeof ExecutorCaseSchema>;
+
+/**
+ * One rung of the staged-access ladder.
+ *
+ * `requestedBy` and `decidedBy` are on the wire and are NOT modelled: both are
+ * raw user UUIDs, the executor cannot act on either, and naming the operator
+ * who decided a stage would put a staff member's id in a grieving family
+ * member's browser. What the surface needs is which stage, what state, and
+ * when — the same absence-over-filter rule the evidence array is under.
+ */
+const StageSchema = z.object({
+  stageId: z.string().min(1),
+  caseId: z.string().min(1),
+  stage: z.string().min(1),
+  status: z.string().min(1),
+  requestedAt: z.string().min(1),
+  decidedAt: z.string().nullable(),
+});
+export type SettlementStage = z.infer<typeof StageSchema>;
+
 const SettingsSchema = z.object({
   waitingPeriodDays: z.number().int(),
 });
@@ -133,6 +173,12 @@ export interface SettlementClient {
     evidence: DocumentEvidence,
   ): Promise<SettlementCase>;
   voidCase(accessToken: string, caseId: string): Promise<SettlementCase>;
+  /** The estates this caller is settling — the executor surface's spine. */
+  executorCases(accessToken: string): Promise<ExecutorCase[]>;
+  /** The staged-access ladder on one case, requested and decided rungs alike. */
+  listStages(accessToken: string, caseId: string): Promise<SettlementStage[]>;
+  /** Ask an operator for one rung. Step-up gated at the service. */
+  requestStage(accessToken: string, caseId: string, stage: string): Promise<SettlementStage>;
   getSettings(accessToken: string): Promise<SettlementSettings>;
   updateSettings(accessToken: string, waitingPeriodDays: number): Promise<SettlementSettings>;
 }
@@ -222,6 +268,47 @@ export class FetchSettlementClient implements SettlementClient {
     return this.parseBody(res, CaseSchema);
   }
 
+  async executorCases(accessToken: string): Promise<ExecutorCase[]> {
+    const res = await this.request('GET', '/v1/settlement/executor-cases', accessToken);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(ExecutorCaseSchema));
+  }
+
+  async listStages(accessToken: string, caseId: string): Promise<SettlementStage[]> {
+    const res = await this.request(
+      'GET',
+      `/v1/settlement/cases/${encodeURIComponent(caseId)}/stages`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(StageSchema));
+  }
+
+  async requestStage(accessToken: string, caseId: string, stage: string): Promise<SettlementStage> {
+    const res = await this.request(
+      'POST',
+      `/v1/settlement/cases/${encodeURIComponent(caseId)}/stages`,
+      accessToken,
+      { stage },
+    );
+    if (!res.ok) {
+      // BOTH of settlement's 409s on this route are named. `case_not_verified`
+      // reaches only the estate's own executor (M23 PR1), so mapping it is not
+      // a leak — and leaving it unmapped would render the one refusal whose
+      // remedy is "wait" as the generic failure whose remedy is "retry".
+      throw await this.mapError(res, {
+        stageOutOfOrder: 'STAGE_OUT_OF_ORDER',
+        stageExists: 'STAGE_ALREADY_REQUESTED',
+        caseNotVerified: 'CASE_NOT_VERIFIED',
+      });
+    }
+    return this.parseBody(res, StageSchema);
+  }
+
   async getSettings(accessToken: string): Promise<SettlementSettings> {
     const res = await this.request('GET', '/v1/settlement/settings', accessToken);
     if (!res.ok) {
@@ -285,6 +372,9 @@ export class FetchSettlementClient implements SettlementClient {
     meaning: {
       readonly invalidTransition?: 'CASE_NOT_VOIDABLE' | 'EVIDENCE_WINDOW_CLOSED';
       readonly caseExists?: 'CASE_ALREADY_REPORTED';
+      readonly stageOutOfOrder?: 'STAGE_OUT_OF_ORDER';
+      readonly stageExists?: 'STAGE_ALREADY_REQUESTED';
+      readonly caseNotVerified?: 'CASE_NOT_VERIFIED';
     } = {},
   ): Promise<Error> {
     let token = '';
@@ -340,6 +430,15 @@ export class FetchSettlementClient implements SettlementClient {
        * existence it confirms is one they were entitled to ask about.
        */
       return bffError(meaning.caseExists);
+    }
+    if (res.status === 409 && token === 'stage_exists' && meaning.stageExists) {
+      return bffError(meaning.stageExists);
+    }
+    if (res.status === 409 && token === 'stage_out_of_order' && meaning.stageOutOfOrder) {
+      return bffError(meaning.stageOutOfOrder);
+    }
+    if (res.status === 409 && token === 'case_not_verified' && meaning.caseNotVerified) {
+      return bffError(meaning.caseNotVerified);
     }
     if (res.status === 409 && token === 'invalid_transition' && meaning.invalidTransition) {
       /*

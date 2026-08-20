@@ -108,6 +108,11 @@ const OPERATOR_ROUTES: ReadonlyArray<{ controller: Ctor; route: string }> = [
  */
 const MUST_REFUSE: ReadonlyArray<{ controller: Ctor; route: string; why: string }> = [
   {
+    controller: SettlementAdminController,
+    route: 'executorCases',
+    why: "the EXECUTOR's own worklist — an operator asking which estates they personally administer is asking in a private capacity, and `administrable` is the console's listing of the same estates",
+  },
+  {
     controller: SettlementController,
     route: 'void',
     why: "the DECEDENT's own kill switch — §5.1 control 3, and the step-up on it IS the liveness proof",
@@ -195,10 +200,10 @@ describe('settlement route audiences match the declaration', () => {
     // assertion below pass — the credential-graph anti-drop lesson.
     const counts = CONTROLLERS.map((c) => routeNames(c.ctor).length);
     expect(counts.every((n) => n > 0)).toBe(true);
-    // 29 across four controllers. Asserted so the next person MEASURES rather
+    // 30 across four controllers. Asserted so the next person MEASURES rather
     // than remembering: the decision log carried a wrong route count for
     // settlement for four milestones (M21 PR2.5).
-    expect(counts.reduce((a, b) => a + b, 0)).toBe(29);
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(30);
   });
 
   it('exactly the console routes admit an operator session', () => {
@@ -220,14 +225,14 @@ describe('settlement route audiences match the declaration', () => {
 
   it('every route that is not a console route refuses the operator audience', () => {
     // The derived half, so the named list above cannot go stale into a false
-    // sense of coverage: a 30th route added tomorrow is refused by default and
-    // this notices if it is not. SIXTEEN refused — a number that lives here,
+    // sense of coverage: a 31st route added tomorrow is refused by default and
+    // this notices if it is not. SEVENTEEN refused — a number that lives here,
     // where it is measured, and deliberately not in prose beside it.
     const allowed = new Set(OPERATOR_ROUTES.map((r) => r.route));
     const refused = CONTROLLERS.flatMap(({ ctor }) =>
       routeNames(ctor).filter((route) => !allowed.has(route)),
     );
-    expect(refused).toHaveLength(16);
+    expect(refused).toHaveLength(17);
     for (const { ctor } of CONTROLLERS) {
       for (const route of routeNames(ctor)) {
         if (allowed.has(route)) continue;

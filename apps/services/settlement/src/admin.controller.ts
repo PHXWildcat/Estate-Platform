@@ -20,6 +20,7 @@ import {
 import {
   SettlementAdminService,
   type DistributionDto,
+  type ExecutorCaseDto,
   type StageDto,
   type TaskDto,
   type TimelineEntry,
@@ -51,6 +52,21 @@ export class SettlementAdminController {
   constructor(private readonly admin: SettlementAdminService) {}
 
   // ------------------------------------------------------------ staged access
+
+  /**
+   * The estates this caller is settling.
+   *
+   * No `@AllowSessionAudiences`: the service-wide `account` grant is exactly
+   * right, and an operator has `/administrable` for the same estates from the
+   * other side. Not step-up gated — it is a read that widens nothing, and a
+   * grieving executor should not face an MFA prompt to find the case they were
+   * told to look at.
+   */
+  @Get('executor-cases')
+  @HttpCode(200)
+  executorCases(@Req() req: CallerRequest): Promise<ExecutorCaseDto[]> {
+    return this.admin.executorCases(requireCaller(req).userId);
+  }
 
   @Post('cases/:caseId/stages')
   @UseGuards(StepUpGuard)

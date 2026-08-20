@@ -842,6 +842,63 @@ export const VOID_SETTLEMENT_CASE_MUTATION = `mutation VoidSettlementCase($caseI
   }
 }`;
 
+/**
+ * THE EXECUTOR SURFACE (M23 PR2).
+ *
+ * Every operation here is keyed on `caseId` and nothing else. Settlement
+ * identifies an estate by `decedentUserId`; the BFF resolves the case id back
+ * to one against settlement's own list, so this app never holds another
+ * person's user id and never sends one. There is no field to ask for.
+ *
+ * `estateInventory` selects exactly the fields `assets` does, because it is the
+ * SAME `Asset` type — the difference is the authorization behind it, not the
+ * shape. A separate list type would have been a second thing to keep in step
+ * with the service's one audited decrypt per row.
+ */
+export const EXECUTOR_CASES_QUERY = `query ExecutorCases {
+  executorCases {
+    caseId
+    ownerName
+    status
+    verifiedAt
+  }
+}`;
+
+export const ESTATE_STAGES_QUERY = `query EstateStages($caseId: ID!) {
+  estateStages(caseId: $caseId) {
+    stage
+    status
+    requestedAt
+    decidedAt
+  }
+}`;
+
+export const ESTATE_INVENTORY_QUERY = `query EstateInventory($caseId: ID!) {
+  estateInventory(caseId: $caseId) {
+    assetId
+    category
+    title
+    estValue
+    valuationAsOf
+    valuationSource
+    ownershipPct
+    inTrust
+    fundingStatus
+    status
+    retiredAt
+    version
+  }
+}`;
+
+export const REQUEST_ESTATE_ACCESS_MUTATION = `mutation RequestEstateAccess($caseId: ID!, $stage: AccessStage!) {
+  requestEstateAccess(caseId: $caseId, stage: $stage) {
+    stage
+    status
+    requestedAt
+    decidedAt
+  }
+}`;
+
 export const SETTLEMENT_SETTINGS_QUERY = `query SettlementSettings {
   settlementSettings {
     waitingPeriodDays
@@ -1012,6 +1069,10 @@ export const operations = {
   VoidSettlementCase: VOID_SETTLEMENT_CASE_MUTATION,
   SettlementSettings: SETTLEMENT_SETTINGS_QUERY,
   SetSettlementWaitingPeriod: SET_SETTLEMENT_WAITING_PERIOD_MUTATION,
+  ExecutorCases: EXECUTOR_CASES_QUERY,
+  EstateStages: ESTATE_STAGES_QUERY,
+  EstateInventory: ESTATE_INVENTORY_QUERY,
+  RequestEstateAccess: REQUEST_ESTATE_ACCESS_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

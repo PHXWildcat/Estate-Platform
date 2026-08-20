@@ -280,6 +280,11 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    *     authority questions, asked by documents, assets and vault on somebody
    *     else's forwarded bearer or their own service credential. A human
    *     session has no business answering them.
+   *   · `executorCases` — the EXECUTOR's own worklist (M23 PR2). An operator
+   *     asking which estates they personally administer is asking a question
+   *     about their private capacity, and `administrable` is the console's
+   *     listing of the very same estates from the other side. Two audiences,
+   *     two routes, neither borrowing the other's answer.
    *   · `requestStage`, `completeTask`, `recordDistribution` — EXECUTOR-ONLY
    *     at the service: each refuses an operator outright (M23).
    *     `recordDistribution` is also the recording half of the distribution
