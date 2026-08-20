@@ -140,7 +140,7 @@ describe('VaultLaunch', () => {
    * permissive one finishing — so pressing it mid-flight is ordinary use.
    */
   async function elevate(): Promise<void> {
-    const input = (await screen.findByLabelText(/confirm it’s you/i)) as HTMLInputElement;
+    const input = await screen.findByLabelText<HTMLInputElement>(/confirm it’s you/i);
     fireEvent.change(input, { target: { value: '123456' } });
     // The form OWNER, not `closest`: the M16 lesson about a selector that
     // matches an ancestor form and submits the action it was guarding.
@@ -148,7 +148,9 @@ describe('VaultLaunch', () => {
   }
 
   it('CANCELLING while the retry is in flight lands nowhere — no navigation, no live code', async () => {
-    let release: (() => void) | null = null;
+    // Assigned synchronously by the executor; typed non-null because TS cannot
+    // narrow an assignment made inside a callback it does not know runs first.
+    let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -182,7 +184,7 @@ describe('VaultLaunch', () => {
     });
     // The mint the user withdrew from now answers. Before this fix it set the
     // action, wrote the code into the field and navigated.
-    (release as unknown as () => void)();
+    release();
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(submitted).toBeNull();
@@ -190,7 +192,9 @@ describe('VaultLaunch', () => {
   });
 
   it('a withdrawn ceremony is not RE-OPENED by the request that was withdrawn', async () => {
-    let release: (() => void) | null = null;
+    // Assigned synchronously by the executor; typed non-null because TS cannot
+    // narrow an assignment made inside a callback it does not know runs first.
+    let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -214,7 +218,7 @@ describe('VaultLaunch', () => {
     await waitFor(() => {
       expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
     });
-    (release as unknown as () => void)();
+    release();
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
