@@ -424,7 +424,11 @@ profile's `contacts`/`role_assignments`, which is why settlement lives in core):
   deletable (§5.1 control 6); exempted from the soft-delete convention.
 - New PR1 tables: `settlement_contact_attempts` (append-only owner-contact
   trail, UNIQUE (case_id, seq) for driver idempotency),
-  `settlement_operators` (interim CLI-managed review allowlist),
+  `settlement_operators` (interim CLI-managed review allowlist; what a NULL
+  `granted_by` MEANS is carried as a catalog comment on the column, not
+  restated here — `\d+ settlement_operators`, set by migration 005 and
+  asserted by `operator-cli.int.spec.ts`, because the reading inverted once
+  already and a second copy is the one that drifts),
   `settlement_settings` (waiting period, CHECK 5..60 days, versioned by
   user_id on the profiles precedent).
 - `users.status` transitions for settlement are identity-enforced:

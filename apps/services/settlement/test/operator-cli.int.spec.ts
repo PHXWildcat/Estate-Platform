@@ -288,4 +288,37 @@ describeIfPg('the operator ceremony against Postgres', () => {
     expect(line).toContain('2 active operator(s)');
     expect(events()).toHaveLength(before);
   });
+
+  it('the catalog states the forensic marker, and states it the right way round', async () => {
+    // 001 declares this column with `-- NULL: granted via the ops CLI`, which
+    // has been false since PR1 made `--by` mandatory: a NULL now marks a row
+    // that did NOT come through the ceremony. Migrations are checksummed, so
+    // 005 corrects it with COMMENT ON rather than editing 001 — and the point
+    // of putting it in the CATALOG is that `\d+` shows it during an incident,
+    // which is the only time anybody reads this.
+    //
+    // Asserted against `col_description` rather than against the migration
+    // TEXT: the text is what an editor sees, the catalog is what an
+    // investigator sees, and only the second one is the claim being made.
+    const { rows } = await admin.query<{ comment: string | null }>(
+      `SELECT col_description(c.oid, a.attnum) AS comment
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_attribute a ON a.attrelid = c.oid
+        WHERE n.nspname = $1 AND c.relname = 'settlement_operators'
+          AND a.attname = 'granted_by'`,
+      [schema],
+    );
+    // Anti-vacuity: a query that matched no row would leave `rows` empty and
+    // every assertion below would be skipped rather than fail.
+    expect(rows).toHaveLength(1);
+    const comment = rows[0]?.comment ?? '';
+    expect(comment).not.toEqual('');
+    // The DIRECTION is the whole point. A comment that merely mentions the
+    // column would satisfy a `toContain('granted_by')` and still be backwards.
+    expect(comment).toContain('did NOT come through the ceremony');
+    expect(comment).toContain('REQUIRED it for grant and revoke');
+    // And the inverted reading must be absent, not merely outnumbered.
+    expect(comment).not.toMatch(/NULL[^.]*granted via the ops CLI/i);
+  });
 });
