@@ -8125,3 +8125,99 @@ deviating from them, stop and propose the change with rationale — do not silen
   Nothing enforces the ordering. The tell is cheap and worth knowing: an expected
   event missing from `audit_events` should send you to the CONSUMER's log before
   the producer's code.
+- 2026-08-19 — THE SIGNING WORKFLOW'S TRIGGER DID NOT COVER THE INPUTS THAT
+  DECIDE WHAT IT SIGNS, which is the PR #116 defect one layer out: #116 was a
+  value crossing layers with a fence on each and none on the chain; this is a
+  workflow whose every internal check is sound and which does not RUN when the
+  artifact changes. `extension.yml` is the only paths-filtered workflow in the
+  repo — `images.yml`, thirteen container builds, runs unfiltered — and its
+  three-line filter decides at once whether the two-build reproducibility
+  comparison happens, whether the packed bytes are driven in a real browser, and
+  whether an attestation is minted. It listed `apps/vault-extension/**`,
+  `packages/vault-crypto/**` and itself, and MISSED THREE INPUTS. `turbo.json`
+  declares the build task's `env`: measured, deleting `VAULT_ORIGIN` from that
+  list makes Turbo 2's strict env mode strip the variable, `build-package.mjs`
+  falls through to its localhost `DEFAULT_ORIGIN`, the build exits 0 and the
+  packed digest moves — the M8 PR5 / M16 PR4b defect, in the same `turbo.json`
+  whose own comment describes it, and `host_permissions` is what the browser
+  enforces so the result is a signed extension that cannot reach the vault.
+  `pnpm-lock.yaml` pins the compiler. And `packages/config/**` holds the
+  `tsconfig.base.json` that `tsconfig.build.json` extends transitively — an
+  input NOBODY HAD NOTICED, found only by asking turbo for the task graph rather
+  than by listing what seemed relevant. The failure is silent in the worst
+  direction: the last attestation on `main` simply stops describing `main` while
+  every other gate stays green.
+  CORRECTING THE REPORT THAT RAISED IT, because the correction is the useful
+  half: the turbo.json case is NOT unguarded. `test/turbo-env.spec.ts` runs in
+  `ci.yml`, which has no paths filter, and it goes red on exactly that edit —
+  verified. What the missing trigger costs is not that defect going undetected,
+  it is the ATTESTATION never being re-minted for bytes that changed. Stating
+  that precisely is what separates the two remedies, and getting it wrong would
+  have justified the fix with a harm that does not exist.
+- 2026-08-19 — DERIVE THE TRIGGER, DO NOT DELETE IT — and the alternative was
+  live rather than rhetorical. Removing the filter entirely is simpler, cannot
+  drift, and had a real precedent behind it (2026-08-11: "the trap is gone
+  rather than merely unvisited"); measured, it costs little, since the build is
+  1.75s and images.yml already runs unfiltered on every push. It loses to the
+  three-times-applied remedy for this exact shape — stack.yml's hand-copied
+  migrate list, `web.Dockerfile`'s asserted-absent `public/`, images.yml's
+  hand-listed diagnostics containers — every one of which was fixed by DERIVING
+  FROM THE PROJECT, and to the fact that a list a reader can see documents what
+  decides the artifact where an absent one documents nothing. It also triples
+  attestation churn on `main` (every push rather than every input change), and
+  2026-08-12 already records that a supply-chain artifact is not something to
+  churn. So `test/workflow-inputs.spec.ts` asks turbo for the build's own task
+  graph (`--dry=json` → `apps/vault-extension`, `packages/vault-crypto`,
+  `packages/config`, plus its declared global file inputs), adds the four inputs
+  turbo does not model as DECLARED entries with a reason each — so a reader can
+  tell a derived entry from a judgement — and asserts the workflow's list covers
+  the union in both directions. A new dependency arrives covered or `ci.yml`
+  goes red.
+  THE TWO EVENT LISTS ARE WRITTEN OUT TWICE RATHER THAN SHARED BY A YAML ANCHOR,
+  and that is a decision rather than an oversight. The anchor was written first
+  and reverted: GitHub does not document anchor support in workflow files, this
+  would have been the repo's first, and the failure mode if their parser
+  resolves the alias to nothing is a paths filter matching nothing and a
+  workflow that silently never runs — the very defect being fixed. Duplication a
+  fence checks beats cleverness a fence cannot.
+- 2026-08-19 — AND THE PROVENANCE RECORD ASSERTED A VALUE IT HAD NEVER READ FROM
+  THE ARTIFACT. `VERIFYING.md` tells a third party to rebuild with the origin
+  from the digest file and to reject a package whose baked origin is not their
+  deployment's, so that `# origin` line has to be a statement ABOUT THE BYTES —
+  and it was `echo "# origin ${VAULT_ORIGIN}"`, the job's own env, i.e. a
+  statement about intent. The two differ in exactly the case the record exists
+  to catch: with the variable stripped, the archive is baked to localhost and
+  the sidecar shipped beside it claims the real origin. Latent only because
+  `vars.VAULT_ORIGIN` is unset (the M5 cloud deferral) so the fallback EQUALS
+  the packager's default, which is the same indistinguishability #116 found —
+  and which arms the day a real origin is configured. Both the summary row and
+  the sidecar now read the origin out of `first.zip`'s own `manifest.json`, and
+  the job refuses to continue if it disagrees with what was asked for.
+  THE DECISIVE HALF IS A PROBE BUILD, for #116's stated reason that a read-back
+  only proves something when the value could not have arrived by accident: one
+  throwaway build runs at `https://vault.probe.invalid` (RFC 2606 reserved,
+  matching images.yml) and asserts the PACKED archive carries it in BOTH
+  `manifest.json` and `origin.js` — both, because the offscreen document cannot
+  read the manifest back and a package where only one took the value loads and
+  cannot reach its vault. This is the only place the whole chain — job env,
+  turbo, tsc, packer, archive — is exercised on the artifact that gets signed:
+  `turbo-env.spec.ts` proves the DECLARATION and never builds, and
+  `manifest.spec.ts` spawns `build-package.mjs` directly, so turbo is not in its
+  path either. Driven both ways against real archives before shipping: the probe
+  passes on the fixed tree and fails naming the localhost origin under the
+  stripped-declaration mutation.
+- 2026-08-19 — MY OWN FENCE WAS BLIND EXACTLY WHERE IT MATTERED, and only
+  mutating it found that — the anti-vacuity lesson of 2026-08-18 arriving one
+  day later in the fence written to apply it. `workflowPaths` models a missing
+  `paths:` key as `null` meaning "no filter, therefore covering", which is
+  correct and is also a fail-OPEN default: breaking the `paths:` regex so the
+  parser found nothing left ALL SEVEN CHECKS GREEN, because every event then
+  read as unfiltered. The case meant to catch that asserted only that the event
+  KEYS were found — which a broken paths regex does not disturb. It is a SET
+  COMPARISON now, not a floor: a deliberately permissive second read counts the
+  `paths:` keys and the list items actually in the file, and the parse must
+  equal both. Equality rather than a floor on purpose, so deleting both filters
+  — a legitimate and strictly wider change — still passes. Nine mutations, nine
+  as expected, including a POSITIVE CONTROL (both filters deleted stays green),
+  without which "every mutation went red" is equally consistent with a fence
+  that fails on any edit at all.
