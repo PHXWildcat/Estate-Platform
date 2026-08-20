@@ -4498,9 +4498,9 @@ silent.
 
 **Residuals, stated rather than implied.**
 
-- **[CLOSED — M22 PR2, 2026-08-20]** `reportProviderSignal` is counted. See
-  §6jj: the ledger write was threaded into `insertCase`'s own transaction, which
-  is what the exemption said the correct fix would be.
+- **[CLOSED: §6jj]** *`reportProviderSignal` was in the category and was not
+  counted.* Closed by M22 PR2: the ledger write was threaded into `insertCase`'s
+  own transaction, which is what this bullet said the correct fix would be.
 - **[ACCEPTED]** The ceiling (12) and the window (1h) are engineering guesses
   with no production data behind them. They are constants in one file, asserted
   at both boundary arms, so re-tuning is a one-line change with a test that
@@ -4551,4 +4551,16 @@ replacing the existing one, and the last key wins in JavaScript, so the mutant
 was byte-different and behaviourally identical. Unfaithful mutation, not a weak
 test — retargeted at the real line, it went red.
 
-**No new residuals.** The window and ceiling caveats from §6ii stand unchanged.
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** The coverage fence proves a gated verb REACHES the ledger, not
+  that the reached call sits on a path the verb actually takes. Following
+  delegation made it able to see the intake verb at all; it did not make it a
+  path analysis, and a helper that records inside a branch the caller never
+  enters would still read as covered. The ARMS are proved by execution instead —
+  `settlement.service.spec.ts` and `admin.service.spec.ts` assert which
+  decisions record and which record nothing — so the fence's job is coverage and
+  the tests' job is behaviour. Making the fence path-sensitive would be a real
+  improvement and is not attempted here.
+- **[ACCEPTED]** The window and ceiling caveats from §6ii stand unchanged and are
+  not restated: one residual, one place.
