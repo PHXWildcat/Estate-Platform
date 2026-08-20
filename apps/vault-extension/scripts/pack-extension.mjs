@@ -73,6 +73,7 @@
  * regardless of platform.
  */
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -207,7 +208,43 @@ export async function packDirectory(dir) {
   return { zip: Buffer.concat([...locals, centralBytes, end]), entries: names.length };
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Run main only when this file IS the entry point, so importing `packDirectory`
+// from the test does not write an archive.
+//
+// BOTH SIDES ARE RESOLVED, because each repairs a distortion the other does
+// not. `pathToFileURL` repairs the SPACE that broke the original
+// `file://${process.argv[1]}` template (M16 PR4b). `realpathSync` repairs the
+// SYMLINK, which that fix did not: node reports the RESOLVED REAL path in
+// `import.meta.url` and the path AS TYPED in `process.argv[1]`.
+//
+// WHICH SYMLINKS REACH THIS, measured rather than assumed — and the distinction
+// is why the defect survived PR4b's own check. argv[1] is resolved against the
+// PHYSICAL cwd, so every symlink ABOVE the working directory is collapsed and
+// can never be seen: that is why running the packer from `/tmp/has space/probe`
+// passed on a macOS whose /tmp IS a symlink to /private/tmp. A symlink AT OR
+// BELOW the working directory is NOT collapsed — the segments stay in argv[1]
+// as typed while `import.meta.url` resolves them — so
+// `node apps/vault-extension/scripts/pack-extension.mjs` from a root where any
+// of those segments is a link compares .../root/apps/... against the resolved
+// .../root/real/..., and so does any absolute-path invocation through a link.
+//
+// IT FAILS SILENTLY IN THE REASSURING DIRECTION, which is what makes it worth a
+// guard rather than a note. That command is VERIFYING.md's own, and the line
+// after it there is `sha256sum` on the archive. Measured: with the guard
+// unfired the packer exits 0 having written and printed nothing, so that hash
+// is of the archive LEFT BY AN EARLIER RUN — a digest MATCH reported for a
+// build that never happened, in the one procedure whose entire purpose is to
+// detect that the bytes are not what they claim to be.
+//
+// `realpathSync` THROWS rather than answering "not the entry point" when
+// argv[1] names nothing on disk. That is deliberate and it is the safe
+// direction: argv[1] is the script node is running, so it exists — the only way
+// to reach the throw is an `-e` invocation carrying a trailing argument, and
+// swallowing it would mean a guard that silently declines to fire, which is the
+// entire defect this shape exists to prevent.
+const entryPoint =
+  process.argv[1] === undefined ? undefined : pathToFileURL(realpathSync(process.argv[1])).href;
+if (import.meta.url === entryPoint) {
   const dir = process.env.PACK_DIR ?? join(root, 'dist');
   const out = process.env.PACK_OUT ?? join(root, 'vault-extension.zip');
   await stat(dir); // fail loudly if there is nothing built to pack
