@@ -50,17 +50,40 @@ export function OperatorLaunch(): ReactElement {
   const [stepUpOpen, setStepUpOpen] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const codeRef = useRef<HTMLInputElement>(null);
+  /*
+   * CONSENT WITHDRAWN, which `StepUpPrompt`'s ownership counter cannot express
+   * from where it sits. That counter is checked AFTER `onElevated()` resolves —
+   * and this component's whole side effect (mint the code, fill the field, set
+   * the action, navigate) happens INSIDE that call, so the counter can only
+   * ever discard the return value of a handoff that has already left. Pressing
+   * Cancel while the retry's mint is in flight landed the browser on the
+   * operator console origin with a live code, and an in-flight refusal answering
+   * STEPUP_REQUIRED re-opened the prompt that had just been dismissed.
+   *
+   * The withdrawal therefore has to be legible HERE, in the one window between
+   * the response arriving and anything being done with it.
+   */
+  const withdrawn = useRef(false);
 
   async function open(): Promise<'applied' | 'stale'> {
     setError(null);
     setBusy(true);
     try {
       const result = await gqlRequest('StartOperatorHandoff', {});
+      if (withdrawn.current) {
+        // Nothing is applied and nothing is re-opened. Returning 'applied'
+        // rather than 'stale' also stops the retry loop asking again.
+        return 'applied';
+      }
       if (!result.ok) {
         if (result.code === 'STEPUP_REQUIRED') {
           setStepUpOpen(true);
           return 'stale';
         }
+        // A refusal a fresh identity check cannot fix must not leave a live
+        // prompt on screen inviting one — the M20 PR5 finding, which reached
+        // `SecurityPanel` and not the two launchers.
+        setStepUpOpen(false);
         setError(errorCopy[result.code]);
         return 'applied';
       }
@@ -79,6 +102,7 @@ export function OperatorLaunch(): ReactElement {
         typeof handoff?.operatorOrigin === 'string' ? handoff.operatorOrigin : null;
       const form = formRef.current;
       if (code === null || operatorOrigin === null || !form || !codeRef.current) {
+        setStepUpOpen(false);
         setError(errorCopy.OPERATOR_UNAVAILABLE);
         return 'applied';
       }
@@ -88,7 +112,49 @@ export function OperatorLaunch(): ReactElement {
       form.action = `${operatorOrigin}/open`;
       codeRef.current.value = code;
       setStepUpOpen(false);
-      form.submit();
+
+      /*
+       * A BLOCKED SUBMIT IS SILENT, and this page has a live single-use code in
+       * the DOM at this exact moment. `form-action` is baked into the app's CSP
+       * at BUILD time while the BFF serves this origin at REQUEST time, and
+       * nothing outside the compose stack forces the two to agree — so a
+       * deployment that moves the origin without rebuilding the image gets a
+       * POST the browser refuses, no exception, no rejected promise, and a
+       * button that simply goes back to idle. Twice already this repo has been
+       * bitten by a build-arg-versus-runtime split; the difference here is that
+       * the failure leaves a credential behind.
+       *
+       * So the violation is listened for rather than assumed away. It fires
+       * synchronously on the blocked submit, which is why a one-shot listener
+       * with no timer is enough.
+       */
+      let blocked = false;
+      const onViolation = (event: SecurityPolicyViolationEvent): void => {
+        if (event.violatedDirective === 'form-action') {
+          blocked = true;
+        }
+      };
+      document.addEventListener('securitypolicyviolation', onViolation);
+      try {
+        form.submit();
+      } finally {
+        document.removeEventListener('securitypolicyviolation', onViolation);
+        /*
+         * CLEARED WHATEVER HAPPENED. On the normal path the navigation discards
+         * this document and the clear is redundant; on every path where it does
+         * not, the code would otherwise sit readable in the DOM for as long as
+         * the page lives. Script on THIS origin cannot mint a handoff — minting
+         * is step-up gated — but it can read one out of a field, and this origin
+         * is the weaker of the two by design (its `script-src` is deliberately
+         * not locked down, Next's bootstrap needing nonces). Submission
+         * serialises the body synchronously, so clearing here cannot race it.
+         */
+        codeRef.current.value = '';
+      }
+      if (blocked) {
+        setError(errorCopy.OPERATOR_UNAVAILABLE);
+        return 'applied';
+      }
       return 'applied';
     } finally {
       setBusy(false);
@@ -143,6 +209,10 @@ export function OperatorLaunch(): ReactElement {
         className="button-primary"
         disabled={busy}
         onClick={() => {
+          // A fresh press is a fresh ceremony. Re-arming here rather than in
+          // `open()` is what keeps the retry path (`onElevated`) from clearing
+          // a withdrawal the user has just made.
+          withdrawn.current = false;
           void open();
         }}
       >
@@ -155,7 +225,10 @@ export function OperatorLaunch(): ReactElement {
           submitLabel="Open the console"
           idPrefix="operator-launch"
           onElevated={open}
-          onCancel={() => setStepUpOpen(false)}
+          onCancel={() => {
+            withdrawn.current = true;
+            setStepUpOpen(false);
+          }}
         />
       ) : null}
 

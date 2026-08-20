@@ -283,6 +283,83 @@ describe('the step-up prompt', () => {
     expect(cancelled).toBe(0);
   });
 
+  it('AN ABORTED PROMPT REFUSES A LATER SUBMIT — consent withdrawn stays withdrawn', async () => {
+    /*
+     * THE HALF THE PR3b FIX DID NOT CLOSE, and the test above is why it was
+     * missed: it submits FIRST, so it aborts a prompt whose submit is already
+     * disabled — the one state in which a missing guard cannot show. Here the
+     * operator has typed the code and NOT submitted, so `busy` is false and the
+     * form is fully interactive.
+     *
+     * Measured before the fix: `submit.disabled === false` after `abort()`, a
+     * real `POST /api/auth/stepup`, and the bound action ran. On this console
+     * that action closes a case or confirms a verification — which locks a
+     * living person's account and revokes every session they hold. The prompt
+     * is still mounted at that moment because `dismissPrompt()` is followed by
+     * a `render()` that awaits three reads before it swaps the DOM.
+     */
+    transport({ status: 200, body: {} });
+    const state = { runs: 0 };
+    jest.spyOn(Date, 'now').mockImplementation(() => 0);
+    const { form, abort } = stepUpPrompt({
+      hint: 'h',
+      submitLabel: 'Confirm verification',
+      idPrefix: 'verify',
+      onCancel: () => {},
+      onElevated: () => {
+        state.runs += 1;
+        return Promise.resolve('applied' as const);
+      },
+      sleep: () => Promise.resolve(),
+    });
+    document.body.replaceChildren(form);
+    field().value = '123456';
+
+    // The parent withdraws consent — "Back to worklists".
+    abort();
+
+    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+    // Nothing was elevated and nothing was applied: no step-up was even
+    // attempted, so this is not merely "the action did not run" but "the
+    // ceremony did not restart".
+    expect(calls).toEqual([]);
+    expect(state.runs).toBe(0);
+  });
+
+  it('CANCEL STILL RE-ARMS after an abort, because Cancel is not the parent withdrawing', async () => {
+    /*
+     * The asymmetry `abandon()` exists for, pinned so the fix above cannot be
+     * "simplified" into making Cancel terminal too. Cancel means the person is
+     * still looking at the form and may try again; the parent discarding the
+     * prompt means it is on its way out of the document.
+     */
+    transport({ status: 200, body: {} });
+    const state = { runs: 0 };
+    jest.spyOn(Date, 'now').mockImplementation(() => 0);
+    const { form } = stepUpPrompt({
+      hint: 'h',
+      submitLabel: 'Confirm verification',
+      idPrefix: 'verify',
+      onCancel: () => {},
+      onElevated: () => {
+        state.runs += 1;
+        return Promise.resolve('applied' as const);
+      },
+      sleep: () => Promise.resolve(),
+    });
+    document.body.replaceChildren(form);
+
+    cancel().click();
+
+    field().value = '123456';
+    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+    expect(state.runs).toBe(1);
+  });
+
   it('CANCEL RESTORES THE FORM ITSELF, without waiting for the request it cancels', () => {
     // Neither await carries a timeout, so a stalled identity call would leave a
     // declined consent form disabled forever — the protective action must not
@@ -356,5 +433,39 @@ describe('the step-up prompt', () => {
     const label = document.querySelector('label') as HTMLLabelElement;
     expect(label.htmlFor).toBe('verify-stepup-code');
     expect(document.querySelectorAll('#verify-stepup-code')).toHaveLength(1);
+  });
+  it('AN EXPIRED CONSOLE SESSION is not explained as a wrong code', async () => {
+    /*
+     * M21 PR4's review. Identity's step-up route is SessionGuard-ed, so a
+     * lapsed console session is refused with 401 `unauthorized` BEFORE the code
+     * is looked at — and the client mapped every 401 onto the wrong-code
+     * sentence. The path is ordinary: an operator near the end of the
+     * fifteen-minute, non-renewable session presses an action, the prompt
+     * opens, they go and fetch their authenticator, and by the time they type a
+     * correct code the session has gone. Every correct code after that was
+     * answered "check your authenticator and enter the current one", forever,
+     * because the guard never reaches the code. The M12 rule — never explain a
+     * refusal in the vocabulary of a different secret — one status over.
+     */
+    transport({ status: 401, body: { error: 'unauthorized' } });
+    harness(['applied']);
+    field().value = '123456';
+    submit().click();
+    await until(() => notice().length > 0);
+
+    expect(notice()).toMatch(/console session has ended/i);
+    expect(notice()).not.toMatch(/authenticator/i);
+    expect(notice()).not.toMatch(/30 seconds/i);
+  });
+
+  it('AND A WRONG CODE still is — the two 401s stay apart', async () => {
+    transport({ status: 401, body: { error: 'invalid_credentials' } });
+    harness(['applied']);
+    field().value = '000000';
+    submit().click();
+    await until(() => notice().length > 0);
+
+    expect(notice()).toMatch(/Codes change every 30 seconds/i);
+    expect(notice()).not.toMatch(/session has ended/i);
   });
 });

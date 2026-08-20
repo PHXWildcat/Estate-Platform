@@ -39,6 +39,17 @@ import type { CaseSummary, DistributionView, StageView, TimelineEvent } from './
  */
 export function messageFor(code: ApiFailure): string {
   switch (code) {
+    case 'INVALID_CODE':
+      /*
+       * A CREDENTIAL THIS CALLER SUBMITTED WAS WRONG — split out of
+       * `UNAUTHENTICATED` by M21 PR4, because 401 carried that fact and "your
+       * session is gone" at once and they have opposite remedies. On this
+       * surface only the step-up prompt can produce it, and `stepUpMessage` has
+       * the sentence that fits a form with a code field on it; this is the
+       * general fallback, so it names the fact without assuming the reader is
+       * looking at that form.
+       */
+      return 'That was not accepted. Check what you entered and try again.';
     case 'UNAUTHENTICATED':
       /*
        * A 401 FROM SETTLEMENT, not from the session read — `render()` handles
@@ -178,9 +189,19 @@ export function worklist(options: WorklistOptions): HTMLElement {
 
 export interface CaseScreenOptions {
   readonly kase: CaseSummary;
-  readonly timeline: readonly TimelineEvent[];
-  readonly stages: readonly StageView[];
-  readonly distributions: readonly DistributionView[];
+  /*
+   * NULL MEANS THE READ FAILED, and it is a different fact from an empty list.
+   * The case screen makes four independent requests; before M21 PR4 a refusal
+   * on any of the three lists was collapsed to `[]` by the caller and rendered
+   * as "No stage has been requested on this case." — an affirmative statement
+   * that nothing exists, made on the strength of not knowing. `settlement.ts`
+   * states the rule one file over: a response missing its fields is NO DATA,
+   * never data. It matters most on the panel it reads worst on, staged access,
+   * where the thing being asserted not to exist is a request for Zone A.
+   */
+  readonly timeline: readonly TimelineEvent[] | null;
+  readonly stages: readonly StageView[] | null;
+  readonly distributions: readonly DistributionView[] | null;
   readonly actions: readonly HTMLElement[];
   /**
    * Per-row controls, supplied by the caller rather than decided here.
@@ -198,12 +219,29 @@ export interface CaseScreenOptions {
   readonly onBack: () => void;
 }
 
+/**
+ * A section body that tells "we could not read this" apart from "there is
+ * nothing here". One helper rather than three copies of a ternary: the three
+ * panels were identical before and the way this regresses is one of them
+ * quietly not learning about `null`.
+ */
+function sectionBody(read: readonly unknown[] | null, rows: readonly Node[], empty: string): Node {
+  if (read === null) {
+    return el('p', { class: 'notice', role: 'alert' }, [
+      'This could not be loaded, so what is here may be incomplete. Reopen the case to try again.',
+    ]);
+  }
+  return rows.length === 0
+    ? el('p', { class: 'lede' }, [empty])
+    : el('ul', { class: 'list' }, rows);
+}
+
 export function caseScreen(options: CaseScreenOptions): readonly Node[] {
   const { kase } = options;
   const back = el('button', { type: 'button', class: 'button', id: 'back' }, ['Back to worklists']);
   onClick(back, options.onBack);
 
-  const stageRows = options.stages.map((stage) => {
+  const stageRows = (options.stages ?? []).map((stage) => {
     // Built ONCE. Calling the slot twice — once to test it and once to render
     // it — would mount a second set of buttons and throw the first away, which
     // is harmless until a slot ever does anything but construct nodes.
@@ -220,7 +258,7 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
     ]);
   });
 
-  const distributionRows = options.distributions.map((distribution) => {
+  const distributionRows = (options.distributions ?? []).map((distribution) => {
     const controls = options.distributionActions(distribution);
     return el('li', { class: 'row' }, [
       el('dl', { class: 'facts' }, [
@@ -241,7 +279,7 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
     ]);
   });
 
-  const timelineRows = options.timeline.map((event) =>
+  const timelineRows = (options.timeline ?? []).map((event) =>
     el('li', { class: 'row' }, [
       el('dl', { class: 'facts' }, [
         ...fact('When', event.at),
@@ -271,21 +309,19 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
     ...(options.actions.length > 0 ? [el('p', { class: 'actions' }, options.actions)] : []),
     el('section', { class: 'panel' }, [
       el('h2', { class: 'heading' }, ['Staged access']),
-      stageRows.length === 0
-        ? el('p', { class: 'lede' }, ['No stage has been requested on this case.'])
-        : el('ul', { class: 'list' }, stageRows),
+      sectionBody(options.stages, stageRows, 'No stage has been requested on this case.'),
     ]),
     el('section', { class: 'panel' }, [
       el('h2', { class: 'heading' }, ['Distributions']),
-      distributionRows.length === 0
-        ? el('p', { class: 'lede' }, ['Nothing has been recorded for distribution.'])
-        : el('ul', { class: 'list' }, distributionRows),
+      sectionBody(
+        options.distributions,
+        distributionRows,
+        'Nothing has been recorded for distribution.',
+      ),
     ]),
     el('section', { class: 'panel' }, [
       el('h2', { class: 'heading' }, ['Timeline']),
-      timelineRows.length === 0
-        ? el('p', { class: 'lede' }, ['Nothing recorded yet.'])
-        : el('ul', { class: 'list' }, timelineRows),
+      sectionBody(options.timeline, timelineRows, 'Nothing recorded yet.'),
     ]),
     el('p', { class: 'actions' }, [back]),
   ];

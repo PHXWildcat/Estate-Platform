@@ -472,11 +472,20 @@ async function renderCase(caseId: string): Promise<void> {
     );
     return;
   }
-  const events2: readonly TimelineEvent[] = events.ok ? events.data : [];
-  const stages2: readonly StageView[] = stageList.ok ? stageList.data : [];
-  const distributions2: readonly DistributionView[] = distributionList.ok
+  /*
+   * A FAILED READ IS NULL, NOT EMPTY. These three collapsed to `[]`, which the
+   * screen then rendered as "No stage has been requested on this case." — an
+   * operator being told, affirmatively, that no one has asked for access to a
+   * dead person's vault, on the strength of a request that did not come back.
+   * The four reads are four independent requests and diverge routinely: each
+   * settlement read awaits its own audit emit, so a broker fault 500s one route
+   * while the other three answer.
+   */
+  const events2: readonly TimelineEvent[] | null = events.ok ? events.data : null;
+  const stages2: readonly StageView[] | null = stageList.ok ? stageList.data : null;
+  const distributions2: readonly DistributionView[] | null = distributionList.ok
     ? distributionList.data
-    : [];
+    : null;
   show(
     ...caseScreen({
       kase: kase.data,

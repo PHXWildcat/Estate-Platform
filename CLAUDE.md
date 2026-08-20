@@ -7791,6 +7791,159 @@ deviating from them, stop and propose the change with rationale — do not silen
   accumulating-mutation defect closed by construction. Its diff was then read
   before restoring, rather than trusting `git checkout --` on a tree with
   uncommitted work.
+- 2026-08-19 — M21 PR4 security review (seven file-scoped discovery lenses over
+  the milestone's OWN FILES — never a diff range — each in its own worktree
+  detached at `9101c12`; then TWO adversarial verifiers per deduped candidate on
+  different angles, production reachability and is-it-already-a-decision, both
+  defaulting to refuted; 7 confirmed, 4 refuted). Every confirmed finding
+  re-proved BY EXECUTION before a line changed; every fix mutation-tested from a
+  pristine copy taken ONCE by the caller, each with a POSITIVE CONTROL that must
+  stay green beside the reds. FIFTEENTH milestone running where every confirmed
+  finding sits in machinery the milestone introduced — WITH ONE EXCEPTION, which
+  is the most useful thing the review produced.
+  THE EXCEPTION IS OLDER THAN M21 AND IS A CONSENT CEREMONY APPLYING ITS ACTION
+  AFTER WITHDRAWAL. `StepUpPrompt` checks its ownership counter AROUND
+  `onElevated()` — `let outcome = await onElevated(); … if (!owns()) return;` —
+  and both handoff launchers do their ENTIRE side effect inside that call: mint
+  the code, set `form.action`, write the code into the hidden field, navigate to
+  the isolated origin. So the counter could only ever discard the RETURN VALUE of
+  a handoff that had already left. MEASURED with the mint held open by a promise
+  the test releases itself: nothing submitted at the moment of Cancel,
+  `submittedAfterRelease: true` with `action: https://operator.example.test/open`
+  and the live code in the field. No adversary and no narrow race — type the
+  code, press the button, change your mind; Cancel is deliberately never disabled
+  because the protective action must not be contingent on the permissive one
+  finishing, so pressing it mid-flight is ORDINARY USE. This is NOT §6cc's
+  accepted residual, which is a different app and is about a request already on
+  the wire; here the harmful step is client code running AFTER the response
+  arrives with the withdrawal already recorded, so it was closable. The general
+  rule: A GUARD CHECKED AROUND A CALLBACK CANNOT PROTECT WHAT THE CALLBACK DID
+  WHILE RUNNING — so the shared component's promise was narrowed to what it can
+  enforce and the caller's obligation written next to it.
+- 2026-08-19 — THREE OF THE SEVEN M21 PR4 FINDINGS HAD A TEST THAT COULD NOT
+  FAIL, which is the pattern this repo keeps rediscovering and the reason a
+  review reads tests as evidence rather than as coverage. The launcher's
+  "CANCELLING the step-up puts the prompt away and submits nothing" CITES THE M16
+  PR5 FINDING BY NAME and cancels BEFORE a code is ever typed — no retry is in
+  flight, so `expect(submitted).toBeNull()` is true whatever the component does:
+  it asserts the property in the one state where the defect is unreachable. The
+  console's "shows the CASE even when its timeline and stages are refused"
+  asserted `/Nothing recorded yet/`, i.e. it PINNED THE DEFECT — the
+  case-still-renders half was right, and it accepted an affirmative absence as
+  the correct answer to three reads that had just 503'd. And "posts the code to
+  the operator origin, and puts it nowhere else" read the hidden field AFTER
+  submit, which is the wrong moment: whether the code reached the request BODY
+  and whether it LINGERS are two questions, and only the second was being asked
+  — wrongly. All three rewritten to assert the property, with the counterpart
+  cases beside them (an EMPTY read must still say nothing is here; ONE refused
+  read must not make the other two claim to be unreadable; a wrong code must
+  still be explained as a wrong code).
+- 2026-08-19 — A FAILED READ IS NOT AN EMPTY ONE, and on this surface the
+  difference is a claim about somebody's vault. The console's case screen makes
+  four independent requests; `renderCase` collapsed three of them to `[]` on
+  failure and `caseScreen` renders a zero-length list as "No stage has been
+  requested on this case." — so an operator was told, affirmatively, that nobody
+  had asked for access to a dead person's Zone A vault, on the strength of a
+  request that did not come back. `settlement.ts` states the rule ONE FILE OVER
+  ("A ROW THAT CANNOT BE READ FAILS THE WHOLE LIST … a response missing its
+  fields is NO DATA, never data"). They diverge routinely rather than
+  exceptionally: each settlement read awaits its own audit emit, which propagates
+  a broker failure by design, so one route 500s while the other three answer.
+  Null means unreadable now, through ONE `sectionBody` helper rather than three
+  copies of a ternary — the way this regresses is one panel quietly not learning
+  about `null` — and the notice is PER SECTION rather than a banner, because the
+  panels that answered are still worth reading and a screen that cried wolf on
+  every ordinary case would stop being read (the M5 permanently-red-gate lesson).
+- 2026-08-19 — 401 CARRIES TWO FACTS AND THE CONSOLE KEYED ON THE STATUS.
+  `failureFor` keys 403 and 409 on the response TOKEN — its own comment says
+  "because these four call for four different things from the person reading
+  them" — and keyed 401 on the status alone, collapsing a wrong second factor
+  (`invalid_credentials`) onto an EXPIRED CONSOLE SESSION (`unauthorized`, from
+  the guard, refused before the code is ever looked at). The console session
+  lasts fifteen minutes and cannot be renewed, so the path is ordinary: press an
+  action near the end of it, go and fetch your authenticator, and every correct
+  code you then type is answered "check your authenticator and enter the current
+  one" — forever, because the guard never reaches the code. The M12 rule, which
+  `stepUpMessage`'s own docstring cites, one status over. Split into
+  `INVALID_CODE`; the UNRECOGNISED 401 token falls to the session reading
+  deliberately, because every other guarded route answers 401 only for a dead
+  credential, and being told to sign in again when the code was wrong costs one
+  round trip where the other direction is a loop with no exit. The copy fence
+  demanded a general sentence for the new code on its first run, which is the
+  fence working rather than something to route around.
+- 2026-08-19 — A DECORATION THE FENCE COULD NOT READ WAS INVISIBLE, NOT REFUSED,
+  which is the failure `session-audience.spec.ts`'s own header calls worse than
+  matching nothing. `decoratedRoutes()` is line-oriented and requires the closing
+  paren on the same line; a wrapped decoration hit `if (!decorator) continue` and
+  was never recorded, with the only floor a `> 0` against a real corpus of 24 —
+  which a partial parse cannot trip. MEASURED: a class-level
+  `@AllowSessionAudiences(\n  // console support\n  'operator',\n)` on
+  `AuthController` left `prettier --check` PASS, identity's three specs green (26
+  passed) and auth-guard's whole suite green (221 passed), while the real
+  `Reflector` call `SessionGuard` makes resolved `mintHandoff` to
+  `["account","operator"]` — falsifying the invariant `AUDIENCE_ROUTE_ADMITTERS`
+  calls absent and load-bearing, that an operator session cannot mint another and
+  so a leaked one cannot chain itself forward. WHY A COMMENT AND NOT A BARE WRAP:
+  prettier is a blocking gate and COLLAPSES a multi-line decorator whose
+  arguments fit in 100 columns, which they always do for this vocabulary — so the
+  bare wrapped form cannot survive CI and is not the risk; a comment inside the
+  parens keeps it multi-line AND prettier-stable, and this codebase comments
+  everything. Fixed with the reconciliation settlement's own audience spec had
+  and the shared fence did not: a second, deliberately dumber reading counts
+  `@AllowSessionAudiences` in comment-stripped source, and PARSED must equal
+  SEEN. Counting cannot be evaded by the thing it watches for — whatever form a
+  decoration takes, it contains the decorator's name exactly once.
+- 2026-08-19 — HOW THIS REPOSITORY CAN ACTUALLY BE REVIEWED, learned the
+  expensive way: FIVE of M21 PR4's first seven lens agents died. The obvious
+  diagnosis was file size and it was WRONG — one lens's entire target set was
+  ~4,300 lines. The briefing was next, at 19,115 lines, and cutting it to 2,974
+  did not save the next agent either. THE REAL CAUSE IS THAT CLAUDE.md IS
+  AUTO-LOADED INTO EVERY SUBAGENT AS PROJECT INSTRUCTIONS, so each one begins
+  ~8,300 lines deep no matter what its prompt says, before it reads a single
+  file. What works: inline the context the lens needs, tell the agent explicitly
+  NOT to read CLAUDE.md, docs/03 and docs/04, and name `grep -n` + `sed -n
+  'A,Bp'` as the only permitted way to consult them. This is a standing
+  constraint on review fan-out here, not an incident — and it compounds the
+  existing rules (file-scoped lists never a diff range, `git checkout --detach`
+  first because worktrees are created at `main`, and size the fan-out for partial
+  loss).
+- 2026-08-19 — WHAT THE VERIFIERS KILLED IS WORTH AS MUCH AS WHAT THEY
+  CONFIRMED, and M21 PR4's four refutations are recorded because a review that
+  reports them as findings teaches people to skim the next one. Retargeting a
+  proxy row's upstream IS invisible to the operator edge's own fences — which
+  assert `path` only, with a `>= 16` floor — and is caught by
+  `route-consumers.spec.ts`, which derives the edge's rewrites from `server.ts`
+  itself, so the conclusion drawn from the fence gap was false.
+  `setDistributionStatus` really does leave two of three transitions unaudited
+  and really does admit `disputed` from `completed`, and has no product consumer,
+  no BFF client and no edge route — a latent defect in a surface M23 will build,
+  left as found because fixing the emit without the surface is the routeless-event
+  shape. `evidenceReadAuthority`'s docstring does NOT falsely claim to audit: it
+  says the read is audited on the documents side, which is TRUE. And the
+  bearer-header fence matches one spelling of several, which a developer can
+  evade and a request cannot. The refutation that mattered most was the second
+  verifier's angle, not the first's — three of the four turn on reachability, and
+  the fourth on actually reading the sentence the lens said was false.
+- 2026-08-19 — A DEFERRAL POINTING AT SOMETHING ALREADY SHIPPED IS HOW AN ITEM
+  STOPS BEING COUNTED, which is the failure M21 exists to answer, found inside
+  M21's own threat-model block. §4 TB7 carried TWO deferrals aimed at **M21
+  PR3b** — a merged PR that shipped neither: the operator rate limit, which §6bb
+  already owns as **M23**, so ONE ITEM HAD TWO OWNERS and the earlier one was
+  delivered; and the human-facing surface for M18's decrypt-rate alarm, whose
+  reader is an operator who now exists. Both repointed to M23. The mechanism is
+  the same one PR0 was written for: TB7 looked small, so deferring to it looked
+  cheap, so more was deferred to it — and a deferral that resolves to a shipped
+  PR is worse than an untagged one, because it reads as done.
+- 2026-08-19 — A MUTATION SURVIVED AND THE TEST WAS AT FAULT, not the fix, which
+  is the third of the three readings the rule allows and the one it is tempting
+  to skip. M21 PR4's blocked-submit case awaited `findByRole('status')` — and
+  `FormStatus` renders that node whether or not it has a message, so the
+  assertion was satisfied by a page that reported nothing at all. The tempting
+  move is to weaken the mutation until it goes red and call the fix proven; the
+  correct one is to assert the region has TEXT, after which the mutation is red.
+  Recorded alongside the standing list of ways a harness lies, because this is a
+  different thing: the harness was honest, the measurement was real, and the
+  TEST was the weak link.
 - 2026-08-19 — THE APP'S `form-action` ORIGINS NEVER REACHED THE BUILD, in
   either of the two layers that carry them, and it was found by a discovery
   sweep for M21 PR3b rather than by any gate. `docker-compose.stack.yml` has

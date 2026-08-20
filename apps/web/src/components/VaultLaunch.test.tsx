@@ -24,9 +24,14 @@ describe('VaultLaunch', () => {
   };
 
   let submitted: HTMLFormElement | null;
+  // Captured AT SUBMIT TIME. The field is cleared immediately afterwards, so a
+  // credential that reached the body and a credential still sitting in the DOM
+  // are now two different questions and each is asked separately.
+  let submittedCode: string | null;
 
   beforeEach(() => {
     submitted = null;
+    submittedCode = null;
     // jsdom will not perform a cross-origin navigation, so the submit is
     // intercepted and the form captured in the state it WOULD have been
     // submitted in — which is the only state worth asserting about.
@@ -34,6 +39,8 @@ describe('VaultLaunch', () => {
       this: void,
     ): void {
       submitted = document.querySelector('form');
+      submittedCode =
+        submitted?.querySelector<HTMLInputElement>('input[name="code"]')?.value ?? null;
     });
   });
 
@@ -53,7 +60,10 @@ describe('VaultLaunch', () => {
     expect(form.method.toLowerCase()).toBe('post');
     // A TOP-LEVEL POST to the isolated origin's arrival route.
     expect(form.action).toBe('http://vault.localhost:3010/open');
-    expect(form.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe(HANDOFF.code);
+    expect(submittedCode).toBe(HANDOFF.code);
+    // …and it does not LINGER. A blocked or refused navigation leaves this page
+    // in place, and the code must not still be readable in the DOM when it does.
+    expect(form.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe('');
 
     // The code is in the body and NOWHERE ELSE: not in the action, not in the
     // page's URL, not in the rendered text.
@@ -114,5 +124,204 @@ describe('VaultLaunch', () => {
 
     await screen.findByRole('status');
     expect(submitted).toBeNull();
+  });
+  /*
+   * CONSENT WITHDRAWN MID-CEREMONY (M21 PR4 review).
+   *
+   * The test above — "CANCELLING the step-up ... submits nothing" — cites the
+   * M16 PR5 finding by name and CANNOT FAIL: it cancels before a code is ever
+   * typed, so no retry is ever in flight and there is nothing for a withdrawal
+   * to race. It asserts the property in the one state where the defect is
+   * unreachable. These three drive the state where it is not.
+   *
+   * The window is one network round trip wide and needs no adversary: type the
+   * code, press the button, change your mind. Cancel is deliberately never
+   * disabled, because the protective action must not be contingent on the
+   * permissive one finishing — so pressing it mid-flight is ordinary use.
+   */
+  async function elevate(): Promise<void> {
+    const input = await screen.findByLabelText<HTMLInputElement>(/confirm it’s you/i);
+    fireEvent.change(input, { target: { value: '123456' } });
+    // The form OWNER, not `closest`: the M16 lesson about a selector that
+    // matches an ancestor form and submits the action it was guarding.
+    fireEvent.submit(input.form as HTMLFormElement);
+  }
+
+  it('CANCELLING while the retry is in flight lands nowhere — no navigation, no live code', async () => {
+    // Assigned synchronously by the executor; typed non-null because TS cannot
+    // narrow an assignment made inside a callback it does not know runs first.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let mints = 0;
+    installGraphqlFetchMock({
+      Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      StartVaultHandoff: async () => {
+        mints += 1;
+        if (mints === 1) return graphqlError('STEPUP_REQUIRED');
+        await held;
+        return jsonResponse({
+          data: {
+            startVaultHandoff: {
+              code: 'LIVE-CODE',
+              expiresAt: 'x',
+              vaultOrigin: 'https://vault.example.test',
+            },
+          },
+        });
+      },
+    });
+    render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await elevate();
+    await waitFor(() => expect(mints).toBe(2));
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
+    });
+    // The mint the user withdrew from now answers. Before this fix it set the
+    // action, wrote the code into the field and navigated.
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(submitted).toBeNull();
+    expect(document.querySelector('input[type=hidden]')).toHaveValue('');
+  });
+
+  it('a withdrawn ceremony is not RE-OPENED by the request that was withdrawn', async () => {
+    // Assigned synchronously by the executor; typed non-null because TS cannot
+    // narrow an assignment made inside a callback it does not know runs first.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let mints = 0;
+    installGraphqlFetchMock({
+      Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      StartVaultHandoff: async () => {
+        mints += 1;
+        if (mints === 1) return graphqlError('STEPUP_REQUIRED');
+        await held;
+        return graphqlError('STEPUP_REQUIRED');
+      },
+    });
+    render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await elevate();
+    await waitFor(() => expect(mints).toBe(2));
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
+    });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
+  });
+
+  it('a refusal a fresh check CANNOT fix puts the prompt away rather than inviting one', async () => {
+    // The M20 PR5 finding, which reached `SecurityPanel` and not this. Identity's
+    // step-up cap answers 429; asking for another factor cannot help, and the
+    // page said both things at once.
+    let mints = 0;
+    installGraphqlFetchMock({
+      Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      StartVaultHandoff: () => {
+        mints += 1;
+        return graphqlError(mints === 1 ? 'STEPUP_REQUIRED' : 'TOO_MANY_ATTEMPTS');
+      },
+    });
+    render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await elevate();
+    await screen.findByRole('status');
+
+    expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fresh identity check/i)).not.toBeInTheDocument();
+    expect(submitted).toBeNull();
+  });
+  it('A FRESH PRESS re-arms after a withdrawal — Cancel must not disable the page', async () => {
+    // The other half of the withdrawal, and the reason the flag is cleared on
+    // the trigger rather than inside `open()`: a marker that only ever gets set
+    // turns one Cancel into a permanently dead button.
+    let mints = 0;
+    installGraphqlFetchMock({
+      Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+      StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
+      StartVaultHandoff: () => {
+        mints += 1;
+        if (mints === 1) return graphqlError('STEPUP_REQUIRED');
+        return jsonResponse({
+          data: {
+            startVaultHandoff: {
+              code: 'LIVE-CODE',
+              expiresAt: 'x',
+              vaultOrigin: 'https://vault.example.test',
+            },
+          },
+        });
+      },
+    });
+    render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await screen.findByLabelText(/confirm it’s you/i);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/confirm it’s you/i)).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+    await waitFor(() => expect(submitted).not.toBeNull());
+    expect((submitted as unknown as HTMLFormElement).action).toBe(
+      'https://vault.example.test/open',
+    );
+  });
+  it('A BLOCKED SUBMIT is reported, not silent — and leaves no code behind', async () => {
+    /*
+     * `form-action` is baked into this app's CSP at BUILD time while the BFF
+     * serves the origin at REQUEST time, and nothing outside the compose stack
+     * makes them agree. A deployment that moves the origin without rebuilding
+     * gets a POST the browser refuses: no throw, no rejected promise, a button
+     * that returns to idle — and, before this fix, a live single-use handoff
+     * code left readable in the DOM of the weaker of the two origins.
+     */
+    installGraphqlFetchMock({
+      StartVaultHandoff: () =>
+        jsonResponse({
+          data: {
+            startVaultHandoff: {
+              code: 'LIVE-CODE',
+              expiresAt: 'x',
+              vaultOrigin: 'https://vault.example.test',
+            },
+          },
+        }),
+    });
+    (HTMLFormElement.prototype.submit as jest.Mock).mockImplementation(function blocked(
+      this: void,
+    ): void {
+      // What the browser does: refuse the navigation and dispatch the violation.
+      const event = new Event('securitypolicyviolation');
+      // `violatedDirective` is read-only on the real interface, so it is
+      // DEFINED rather than assigned — jsdom implements neither the event nor
+      // the enforcement, so the browser's half is modelled here.
+      Object.defineProperty(event, 'violatedDirective', { value: 'form-action' });
+      document.dispatchEvent(event);
+    });
+    render(<VaultLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the vault/i }));
+
+    // The ERROR ITSELF, not merely that a status region exists — `FormStatus`
+    // renders its node either way, so asserting the region is satisfied by a
+    // page that reported nothing at all.
+    expect(await screen.findByRole('status')).toHaveTextContent(/\S/);
+    expect(document.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe('');
+    expect(screen.getByRole('button', { name: /open the vault/i })).toBeEnabled();
   });
 });

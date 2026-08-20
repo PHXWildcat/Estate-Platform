@@ -508,3 +508,104 @@ describe('the PII firewall holds across every PR2 audit payload', () => {
     }
   });
 });
+
+describe('operator actions name the estate they act on', () => {
+  /*
+   * THE RULE, and it is the audit schema's own: `onBehalfOf` is "Set for
+   * delegated access (trustee acting for an owner, OPERATOR SUPPORT)". So every
+   * event whose ACTOR is an operator names the decedent. Before this fix the
+   * four operator decisions that GRANT ACCESS TO AN ESTATE — the three stage
+   * decisions, including the one that opens Zone A, and the distribution
+   * approval — were the only operator events that did not, so from the audit
+   * cluster alone you could not answer "who was granted access to THIS
+   * person's estate" without leaving it and joining `settlement_cases` in core.
+   *
+   * Asserted as a PROPERTY over every event the run emits rather than as four
+   * assertions, so an emitter added later is covered without anyone
+   * remembering. Executor-actor events on the same resources stay null
+   * deliberately: an executor administering an estate is not operator support,
+   * which is why this is four of the eight sub-resource emitters and not all
+   * eight.
+   *
+   * No test asserted an audit ENVELOPE at all before this one — the suite
+   * checked action NAMES, which is why it was green either way.
+   */
+  it('EVERY operator-actor event carries the decedent, across the whole administration flow', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    const denied = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'documents');
+    await h.admin.decideStage(OPERATOR, SESSION, denied.stageId, 'deny');
+    await h.admin.revokeStage(OPERATOR, SESSION, stage.stageId);
+
+    const dist = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: randomUUID(),
+      amount: '100.00',
+    });
+    await h.admin.approveDistribution(OPERATOR, SESSION, dist.distributionId);
+
+    const operatorEvents = auditEvents(h.producer).filter((e) => e['actorType'] === 'operator');
+    // Anti-vacuity: a filter that stops matching agrees with any expectation.
+    expect(operatorEvents.length).toBeGreaterThanOrEqual(4);
+    for (const event of operatorEvents) {
+      expect({ action: event['action'], onBehalfOf: event['onBehalfOf'] }).toEqual({
+        action: event['action'],
+        onBehalfOf: DECEDENT,
+      });
+    }
+  });
+
+  it('AN OPERATOR COMPLETING A DISTRIBUTION IS RECORDED AS AN OPERATOR', async () => {
+    /*
+     * `distributions` has `created_by` and `approved_by` and no `completed_by`,
+     * so this event is the only record of who completed one and in what
+     * capacity. The flag was computed two statements above to authorize the
+     * call and then discarded.
+     *
+     * Every pre-existing test of this method passed EXECUTOR — the one arm
+     * where `'user'` is correct — so the operator disjunct, which is the only
+     * reason the gate is consulted here, had no coverage at all.
+     */
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+    const dist = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: randomUUID(),
+      amount: '100.00',
+    });
+    await h.admin.approveDistribution(OPERATOR, SESSION, dist.distributionId);
+    await h.admin.setDistributionStatus(OPERATOR, SESSION, dist.distributionId, 'in_progress');
+    await h.admin.setDistributionStatus(OPERATOR, SESSION, dist.distributionId, 'completed');
+
+    const completed = auditEvents(h.producer).filter(
+      (e) => e['action'] === 'settlement.distribution.completed',
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.['actorType']).toBe('operator');
+    expect(completed[0]?.['onBehalfOf']).toBe(DECEDENT);
+  });
+
+  it('AN EXECUTOR completing one is still a user, and still names no estate', async () => {
+    /*
+     * The other arm, pinned so the fix above cannot be "simplified" into
+     * marking every completion as operator support.
+     */
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+    const dist = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: randomUUID(),
+      amount: '100.00',
+    });
+    await h.admin.approveDistribution(OPERATOR, SESSION, dist.distributionId);
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dist.distributionId, 'in_progress');
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dist.distributionId, 'completed');
+
+    const completed = auditEvents(h.producer).filter(
+      (e) => e['action'] === 'settlement.distribution.completed',
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.['actorType']).toBe('user');
+    expect(completed[0]?.['onBehalfOf']).toBeNull();
+  });
+});

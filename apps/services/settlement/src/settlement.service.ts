@@ -236,6 +236,10 @@ export class SettlementService {
       row.id,
       row.decedent_user_id,
       'data_provider',
+      // This route is operator-gated (`gate.assertIn` above) and is the only
+      // intake path that needs no linked contact, so the actor class is the
+      // one fact the trail must not get wrong.
+      true,
     );
     await this.notifyOwner('case_opened', row);
     return toDto(row, now);

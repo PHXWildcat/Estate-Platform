@@ -114,8 +114,13 @@ export interface StepUpOptions {
  */
 function stepUpMessage(code: ApiFailure): string {
   switch (code) {
-    case 'UNAUTHENTICATED':
+    case 'INVALID_CODE':
       return 'That code was not accepted. Codes change every 30 seconds — check your authenticator and enter the current one.';
+    case 'UNAUTHENTICATED':
+      // NOT a wrong code: the console session has lapsed, and it cannot be
+      // renewed from here. Saying "check your authenticator" sent an operator
+      // to fetch a code the guard refuses before it ever reads it.
+      return 'Your console session has ended — it lasts fifteen minutes and cannot be renewed. Open the console again from Estate to carry on.';
     case 'INVALID_REQUEST':
       return 'That code was not accepted. Enter the six digits currently shown in your authenticator.';
     case 'TOO_MANY_ATTEMPTS':
@@ -182,6 +187,26 @@ export function stepUpPrompt(options: StepUpOptions): StepUpHandle {
    */
   let attempt = 0;
   let busy = false;
+  /**
+   * WITHDRAWN FOR GOOD, which the counter alone cannot express.
+   *
+   * The counter answers "which submission owns the form"; a fresh submit
+   * answers it by taking ownership, which is right for Cancel (`abandon`
+   * deliberately re-arms) and wrong for the parent discarding the prompt. The
+   * PR3b review closed the in-flight half and left this one: `abort()` bumped
+   * the counter, so a loop already parked stopped — but the form stayed
+   * interactive, and a submit made AFTER the abort re-armed and applied the
+   * action. Measured: `submit.disabled === false`, a real POST to
+   * `/api/auth/stepup`, and the bound verb ran. On this console that verb
+   * closes a case or confirms a verification, which revokes every session a
+   * living person holds.
+   *
+   * The prompt outlives the withdrawal because `dismissPrompt()` is followed
+   * by a `render()` that awaits a session read and both worklist reads before
+   * it swaps the DOM, so the window is two round trips wide and unbounded on a
+   * stalled connection.
+   */
+  let aborted = false;
 
   function say(text: string): void {
     notice.textContent = text;
@@ -201,11 +226,17 @@ export function stepUpPrompt(options: StepUpOptions): StepUpHandle {
    */
   function abort(): void {
     attempt += 1;
+    aborted = true;
   }
 
   /** Cancel: abort, and hand the form back to the person who is still looking at it. */
   function abandon(): void {
     abort();
+    // Cancel is the one withdrawal that re-arms: the person is still looking at
+    // the form and may try again. `abort()` is terminal, so clear the flag it
+    // just set — the counter bump stands, which is what stops the request the
+    // cancel was aimed at.
+    aborted = false;
     setBusy(false, options.submitLabel);
     options.onCancel();
   }
@@ -217,7 +248,10 @@ export function stepUpPrompt(options: StepUpOptions): StepUpHandle {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (busy) return;
+    // `busy` covers a submission in flight; `aborted` covers a ceremony the
+    // parent has discarded. An IDLE aborted prompt has `busy === false`, which
+    // is exactly the state the PR3b fix could not see.
+    if (busy || aborted) return;
     const code = input.value.trim();
     if (!/^\d{6}$/.test(code)) {
       say('Enter the six digits shown in your authenticator.');

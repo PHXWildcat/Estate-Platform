@@ -160,9 +160,11 @@ there is no dblink between the auth and core clusters, so it cannot ask who is a
 operator, and a session is a RESTRICTION rather than a claim about its holder.
 `OperatorGate` stays the control in every case.
 
-*Operator actions are audited but NOT rate-limited* — **M21 PR3b** for the
-surface, and the bound itself is deferred to the milestone that gives it a
-consumer, on the rule that a control ships with its caller.
+*Operator actions are audited but NOT rate-limited* — **M23**, which is where
+§6bb already places it. This line said **M21 PR3b** until PR4's review: PR3b
+shipped the surface and no bound, so one item carried two owners and the earlier
+one was a merged PR. A deferral pointing at something already delivered is how
+an item stops being counted, which is the failure M21 exists to answer.
 
 *Operator reads of user data are audit events — for ONE operator read, and not
 for the ones an operator console would make; and none of them is "surfaced to the
@@ -191,7 +193,10 @@ distinct from the reviewer ≠ reporter CHECK that already exists (**M21 follow-
 not the minimum slice**); session recording (**E1**); KMS grant suspension and
 paging on a decrypt-rate anomaly, which is the RESPONSE half of TB4's insider
 control whose DETECTION shipped in M18 (**E1**); a human-facing surface for that
-M18 alarm, whose reader is an operator who does not exist (**M21 PR3b**);
+M18 alarm, whose reader is an operator who NOW exists (**M23**; this said **M21
+PR3b**, which shipped the console without it — the same rot, one paragraph
+over, and the reason PR4 swept every TB7 owner rather than the one it tripped
+on);
 operator-assisted account recovery, which §§6h/6m/6o each name as the remedy that
 does not exist (**M21 follow-on**); and the legal-hold lift ceremony, which M9 PR2
 shipped noting that a hold outlives case close with no way to release it
@@ -4145,6 +4150,89 @@ edge, and gives an operator's READS a trail of their own.
   requester, approver ≠ recorder, all DDL CHECKs — and nothing anywhere reviews
   who READ what. That is the same deferral TB7 records for session recording, and
   it needs the operator platform's own surfaces rather than this console's.
+
+
+## 6dd. Threat-model delta — M21 PR4, the security review (2026-08-19)
+
+Seven file-scoped discovery lenses over the milestone's own files (never a diff
+range), each in its own worktree detached at `9101c12`, then two adversarial
+verifiers per deduped candidate on different angles — reachability in a real
+production configuration, and is-it-already-a-documented-decision — both told to
+default to refuted. Every confirmed finding was re-proved by execution before a
+line changed, and every fix mutation-tested from a pristine copy with a positive
+control beside it.
+
+FIFTEENTH milestone running where every confirmed finding sits in machinery the
+milestone introduced — with ONE exception, which is the most useful thing the
+review produced and is recorded below as the launcher consent defect.
+
+**What the verifiers killed, and why that is the point.** Four candidates were
+REFUTED on reachability and they are worth naming, because a review that reports
+them as findings teaches people to skim it. Retargeting a proxy row's upstream is
+caught by `route-consumers.spec.ts`, which derives the edge's rewrites from
+`server.ts` itself. `setDistributionStatus` really does leave two of three
+transitions unaudited and really does admit `disputed` from `completed` — and has
+no product consumer, no BFF client and no edge route, so nothing can reach it.
+`evidenceReadAuthority`'s docstring does NOT falsely claim to audit; it says the
+read is audited on the documents side, which is true. And the bearer-header fence
+matches one spelling of several, which a developer could evade and a request
+cannot.
+
+**The one defect older than the milestone.** `StepUpPrompt` checks its ownership
+counter AROUND `onElevated()`, never inside it — and both handoff launchers do
+their entire side effect inside that call: mint the code, set the form action,
+write the code into the field, navigate. So Cancel pressed while the retry's mint
+was in flight arrived after the browser had already been sent to the isolated
+origin with a live code. Measured, with the mint held open by a promise the test
+releases: nothing submitted at the moment of cancel, submitted immediately after.
+This is NOT §6cc's accepted residual, which is a different app and is about a
+request already on the wire; here the harmful step is client code running after
+the response arrives, with the withdrawal already recorded, so it was closable
+and is closed. `StepUpPrompt`'s claim that an action can never proceed after
+consent is withdrawn has been narrowed to what it can enforce, with the caller's
+obligation stated next to it.
+
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** *A blocked handoff POST is detected, not prevented.* The app's
+  `form-action` is baked at build time and the BFF serves the origin at request
+  time, and nothing outside the compose stack forces them to agree — the parity
+  spec compares two literals against one constant, and the image probe proves the
+  value arrives rather than that it matches. PR4 converts the silent failure into
+  a reported one and clears the code from the DOM, which is what the client can
+  do about it. Making the two agree is a deployment-configuration property, not a
+  browser one.
+- **[OWNER: M23]** *Two of three distribution status transitions emit no audit
+  event, and `disputed` is reachable from `completed`.* An unlogged undo of a
+  completed distribution, callable by an executor as well as an operator. Left as
+  found because the route has no consumer anywhere — no BFF client, and the
+  operator edge's exact-match allowlist does not carry it — so it is a latent
+  defect in a surface M23 will build, and fixing the emit without the surface is
+  the routeless-event shape this milestone exists to close.
+- **[OWNER: M23]** *The bearer-header fence matches one spelling.* It anchors on
+  `req.headers['authorization']`, so a destructured or aliased read evades it. No
+  bearer read path exists on the edge today — the credential comes from the
+  `__Host-` cookie and the only `authorization` in the source is the outbound set
+  — so evading it requires writing the bypass rather than sending a request.
+- **[OWNER: M23]** *The console's egress fence does not cover navigation sinks.*
+  It asserts one module may reach the network and lists `fetch`, `XMLHttpRequest`,
+  `sendBeacon`, WebSocket, EventSource, service worker and `new Image`; it does
+  not list `window.open`, `location.href =`, `location.assign` or
+  `form.submit`. The declarative half is covered separately by the
+  no-navigating-attribute assertion.
+- **[OWNER: M23]** *Three operator-edge items with no reach path.* The edge
+  answers 500 rather than 400 on a malformed `Host`; `config.secureCookies` is
+  asserted by a test and read by nothing, the cookie attributes being hardcoded;
+  and `APP_ORIGIN` is validated as a URL rather than as an origin, so a value
+  carrying a path is accepted and serialised to the client.
+- **[OWNER: M23]** *Only three of nine services have a service-local audience
+  spec.* Identity, settlement and vault have one; the rest rely on the shared
+  source fence alone, which cannot see that `CallerGuard`'s reflector is
+  `@Optional()` and falls back to the service-wide list when it does not resolve
+  — a perfectly decorated route on such a container is silently inert. Vault's own
+  sweeps additionally filter on `extension` only, leaving its `vault` admission
+  unmeasured, and profile has a per-route widening with no spec at all. The same
+  narrower-input-than-claim shape §6y names.
 
 
 ## 7. Validation program

@@ -19,18 +19,28 @@ export class EventsService {
     this.audit = new AuditEmitter(producer, clock);
   }
 
-  /** A reporter (or an operator filing provider signals) opened a case. */
+  /**
+   * A reporter (or an operator filing provider signals) opened a case.
+   *
+   * `asOperator` is EXPLICIT rather than inferred from `source`. The source
+   * token is a reliable proxy only while `data_provider` has exactly one
+   * writer — a POSITIONAL dependency, which is the shape §6aa criticised in
+   * Cedar's literal `true` and the reason `assertIn` now returns its answer.
+   * The docstring above already said an operator files provider signals while
+   * the code below hardcoded `'user'`; this makes the code agree with it.
+   */
   async caseReported(
     actorId: string,
     sessionId: string,
     caseId: string,
     decedentUserId: string,
     source: 'trusted_contact' | 'data_provider' | 'death_certificate_upload',
+    asOperator = false,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.case.reported',
       actorId,
-      actorType: 'user',
+      actorType: asOperator ? 'operator' : 'user',
       onBehalfOf: decedentUserId,
       resourceType: 'settlement_case',
       resourceId: caseId,
@@ -271,6 +281,7 @@ export class EventsService {
     operatorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     stageId: string,
     stage: string,
   ): Promise<void> {
@@ -278,7 +289,7 @@ export class EventsService {
       action: 'settlement.stage.approved',
       actorId: operatorId,
       actorType: 'operator',
-      onBehalfOf: null,
+      onBehalfOf: decedentUserId,
       resourceType: 'settlement_access_stage',
       resourceId: stageId,
       sessionId,
@@ -290,6 +301,7 @@ export class EventsService {
     operatorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     stageId: string,
     stage: string,
   ): Promise<void> {
@@ -297,7 +309,7 @@ export class EventsService {
       action: 'settlement.stage.denied',
       actorId: operatorId,
       actorType: 'operator',
-      onBehalfOf: null,
+      onBehalfOf: decedentUserId,
       resourceType: 'settlement_access_stage',
       resourceId: stageId,
       sessionId,
@@ -309,6 +321,7 @@ export class EventsService {
     operatorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     stageId: string,
     stage: string,
   ): Promise<void> {
@@ -316,7 +329,7 @@ export class EventsService {
       action: 'settlement.stage.revoked',
       actorId: operatorId,
       actorType: 'operator',
-      onBehalfOf: null,
+      onBehalfOf: decedentUserId,
       resourceType: 'settlement_access_stage',
       resourceId: stageId,
       sessionId,
@@ -378,13 +391,14 @@ export class EventsService {
     operatorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     distributionId: string,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.distribution.approved',
       actorId: operatorId,
       actorType: 'operator',
-      onBehalfOf: null,
+      onBehalfOf: decedentUserId,
       resourceType: 'distribution',
       resourceId: distributionId,
       sessionId,
@@ -392,17 +406,26 @@ export class EventsService {
     });
   }
 
+  /**
+   * Either an executor or an OPERATOR may move a distribution, and this is the
+   * only record of which — `distributions` has `created_by` and `approved_by`
+   * and no `completed_by`. The caller already computes the flag to authorize
+   * the call and used to discard it; `evidenceAdded` in this same file has
+   * taken an explicit `asOperator` since M7 for exactly this reason.
+   */
   async distributionCompleted(
     actorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     distributionId: string,
+    asOperator: boolean,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.distribution.completed',
       actorId,
-      actorType: 'user',
-      onBehalfOf: null,
+      actorType: asOperator ? 'operator' : 'user',
+      onBehalfOf: asOperator ? decedentUserId : null,
       resourceType: 'distribution',
       resourceId: distributionId,
       sessionId,

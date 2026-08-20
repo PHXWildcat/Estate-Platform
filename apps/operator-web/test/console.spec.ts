@@ -742,9 +742,66 @@ describe('a case that will not load', () => {
     });
     await render();
     await openCase();
-    expect(copy()).toMatch(/Nothing recorded yet/);
+
+    /*
+     * REWRITTEN BY M21 PR4'S REVIEW. This asserted `/Nothing recorded yet/` —
+     * i.e. it pinned the defect. The case DOES still render, which is the half
+     * the name is about and is still asserted below; what it also did was
+     * accept an affirmative "nothing exists" as the right answer to three reads
+     * that had just 503'd.
+     *
+     * The staged-access line is the one that mattered: "No stage has been
+     * requested on this case" is a claim that nobody has asked for access to a
+     * dead person's vault, and it was being made on the strength of not
+     * knowing. `settlement.ts` already states the rule — a response missing its
+     * fields is NO DATA, never data.
+     */
+    expect(copy()).not.toMatch(/Nothing recorded yet/);
+    expect(copy()).not.toMatch(/No stage has been requested/);
+    expect(copy()).not.toMatch(/Nothing has been recorded for distribution/);
+    expect(copy().match(/could not be loaded/g)).toHaveLength(3);
     expect([...app().querySelectorAll('button')].map((b) => b.textContent)).toContain(
       'Start review',
     );
+  });
+
+  it('an EMPTY read still says nothing is here — the two answers stay apart', async () => {
+    // The other half, and the reason this is a distinction rather than a
+    // blanket warning: a case that genuinely has no stages must still say so,
+    // or the screen cries wolf on every ordinary case and the notice stops
+    // being read (the M5 permanently-red-gate lesson).
+    transport({
+      ...WORKLISTS([REPORTED], []),
+      [`/api/settlement/cases/${CASE_ID}`]: { status: 200, body: REPORTED },
+      [`/api/settlement/cases/${CASE_ID}/timeline`]: { status: 200, body: [] },
+      [`/api/settlement/cases/${CASE_ID}/stages`]: { status: 200, body: [] },
+      [`/api/settlement/cases/${CASE_ID}/distributions`]: { status: 200, body: [] },
+    });
+    await render();
+    await openCase();
+
+    expect(copy()).toMatch(/No stage has been requested/);
+    expect(copy()).toMatch(/Nothing has been recorded for distribution/);
+    expect(copy()).toMatch(/Nothing recorded yet/);
+    expect(copy()).not.toMatch(/could not be loaded/);
+  });
+
+  it('ONE refused read does not make the other two claim to be unreadable', async () => {
+    // Per-section, not per-screen: the panels that answered are still worth
+    // reading, and a blanket banner would hide which one is missing.
+    transport({
+      ...WORKLISTS([REPORTED], []),
+      [`/api/settlement/cases/${CASE_ID}`]: { status: 200, body: REPORTED },
+      [`/api/settlement/cases/${CASE_ID}/timeline`]: { status: 200, body: [] },
+      [`/api/settlement/cases/${CASE_ID}/stages`]: { status: 503, body: {} },
+      [`/api/settlement/cases/${CASE_ID}/distributions`]: { status: 200, body: [] },
+    });
+    await render();
+    await openCase();
+
+    expect(copy().match(/could not be loaded/g)).toHaveLength(1);
+    expect(copy()).not.toMatch(/No stage has been requested/);
+    expect(copy()).toMatch(/Nothing has been recorded for distribution/);
+    expect(copy()).toMatch(/Nothing recorded yet/);
   });
 });

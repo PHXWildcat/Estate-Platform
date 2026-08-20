@@ -5614,10 +5614,15 @@ because at that point the value lens becomes the one with real inputs.
   narrow, so decorating a settlement route ALSO admits every ordinary account
   session. `OperatorGate` stays the control. **PR3a and PR3b SHIPPED** (see the
   records below).
-- **PR4 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
+- **PR4 — the security review. SHIPPED** (record below). RE-SEQUENCED
+  2026-08-19: this slot was documents evidence content + the legal-hold lift
+  ceremony, and the review was PR5. The review moved ahead of it because PR3b put
+  an operator console in front of the §5.1 human-review chain and a milestone
+  does not add surface on top of unreviewed surface. Recorded rather than
+  silently absorbed — a plan that quietly re-aims is a plan nobody can audit.
+- **PR5 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
-  assigned that to TB7. This is TB7.
-- **PR5 — the security review.**
+  assigned that to TB7. This is TB7. NOT YET SHIPPED.
 
 #### M21 PR1 — the operator grant ceremony (shipped)
 
@@ -6471,6 +6476,71 @@ IS real and survives: four comments cite a "retention job" and an "operator" tha
 do not exist, and `destroyDek` has one definition and one test caller — **no
 production caller at all**. That is M25's, and it is why no new encrypted data
 class should ship before it.
+
+#### M21 PR4 — the security review (shipped)
+
+Seven file-scoped discovery lenses over the milestone's own files, each in its
+own worktree detached at `9101c12`; then two adversarial verifiers per deduped
+candidate on different angles — production reachability, and
+is-it-already-a-documented-decision — both defaulting to refuted. Seven
+confirmed, four refuted. Every confirmed finding re-proved by execution before a
+line changed; every fix mutation-tested from a pristine copy taken once, with a
+positive control that must stay GREEN beside the reds.
+
+**The method cost more than the findings did, and the reason is worth keeping.**
+Five of the first seven lens agents died. The obvious diagnosis was file size and
+it was wrong — one lens's whole target set was ~4,300 lines. The briefing was the
+problem at 19,115 lines, so it was cut to 2,974; an agent died again anyway. The
+real cause is that **CLAUDE.md is auto-loaded into every subagent as project
+instructions**, so each one starts ~8,300 lines deep whatever the prompt says.
+What worked was inlining the context and telling agents explicitly not to read
+the three big documents, with a `grep -n` + `sed -n 'A,Bp'` technique named as
+the only way to consult them. That is a standing constraint on how this
+repository can be reviewed, not an incident.
+
+**The seven confirmed.**
+
+1. **A step-up prompt could apply its action after being abandoned** (console).
+   `abort()` bumped the ownership counter, but the submit handler re-armed
+   unconditionally, so a submission started AFTER the abandonment owned the
+   ceremony again. An idle abandoned prompt has `busy === false`, which is
+   exactly the state the PR3b fix could not see.
+2. **Operator actions were filed under the wrong actor, or named no estate.**
+   Stage and distribution approvals recorded `onBehalfOf: null`, and a
+   provider-filed report and an operator-completed distribution were both
+   recorded `actorType: 'user'` — in the trail kept for §5.1 investigations. The
+   fix threads the decedent out of the transactions that already had it and was
+   invisible to the suite: the test count moved 227 → 227.
+3. **A decoration the audience fence could not read was invisible, not refused.**
+   The scan is line-oriented and skipped a multi-line decoration outright. A
+   class-level `@AllowSessionAudiences('operator')` on `AuthController` left
+   prettier, identity's three specs and auth-guard's whole suite green while the
+   real `Reflector` call resolved `mintHandoff` to `["account","operator"]` —
+   falsifying the stated invariant that an operator session cannot mint another.
+4. **A handoff completed after the step-up was cancelled** (app). The oldest
+   defect here and the one exception to "every finding is in machinery the
+   milestone introduced".
+5. **A refused read was rendered as an affirmative absence.** The case screen
+   collapsed three failed sub-reads to `[]`, which renders as "No stage has been
+   requested on this case." — a claim that nobody has asked for access to a dead
+   person's vault, made on the strength of not knowing.
+6. **An expired console session was explained as a wrong code.** `failureFor`
+   keys 403 and 409 on the response token and keyed 401 on the status alone,
+   collapsing "your fifteen-minute session has gone" onto "check your
+   authenticator" — a loop with no exit, since the guard refuses before the code
+   is read.
+7. **A refused handoff POST was silent and left the code in the DOM.**
+
+**Three of the seven had a test that could not fail.** The launcher's
+cancel test cancels before a code is typed, so no retry is ever in flight;
+the case-screen test asserted the affirmative-absence sentence, i.e. it pinned
+the defect; and the "puts it nowhere else" assertion read the code field after
+submit rather than at submit. All three are rewritten to assert the property.
+
+**One mutation survived and the test was at fault, not the fix** — the
+blocked-submit case awaited `findByRole('status')`, which `FormStatus` renders
+whether or not there is a message. Recorded because the tempting move is to
+weaken the mutation until it goes red and call the fix proven.
 
 ### M32 — Subscription manager (planned; re-sequenced 2026-08-12, displaced by M20, re-numbered 2026-08-17 when M21 became the TB7 operator platform)
 

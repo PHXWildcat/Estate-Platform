@@ -247,14 +247,32 @@ export class SettlementAdminService {
       if (decision === 'approve' && kase.status === 'verified') {
         await this.cases.advanceStatus(tx, locked.case_id, ['verified'], 'active');
       }
-      return (await this.stages.lockById(tx, stageId)) as StageRow;
+      return {
+        stage: (await this.stages.lockById(tx, stageId)) as StageRow,
+        decedentUserId: kase.decedent_user_id,
+      };
     });
+    const { stage: outcomeStage, decedentUserId } = outcome;
     if (decision === 'approve') {
-      await this.events.stageApproved(operator, sessionId, outcome.case_id, stageId, outcome.stage);
+      await this.events.stageApproved(
+        operator,
+        sessionId,
+        outcomeStage.case_id,
+        decedentUserId,
+        stageId,
+        outcomeStage.stage,
+      );
     } else {
-      await this.events.stageDenied(operator, sessionId, outcome.case_id, stageId, outcome.stage);
+      await this.events.stageDenied(
+        operator,
+        sessionId,
+        outcomeStage.case_id,
+        decedentUserId,
+        stageId,
+        outcomeStage.stage,
+      );
     }
-    return stageDto(outcome);
+    return stageDto(outcomeStage);
   }
 
   /**
@@ -294,7 +312,14 @@ export class SettlementAdminService {
         }
         throw err;
       });
-    await this.events.stageRevoked(operator, sessionId, row.case_id, stageId, row.stage);
+    await this.events.stageRevoked(
+      operator,
+      sessionId,
+      row.case_id,
+      await this.requireDecedentFor(row.case_id),
+      stageId,
+      row.stage,
+    );
     return stageDto(row);
   }
 
@@ -427,14 +452,23 @@ export class SettlementAdminService {
       if (locked.created_by === operator) {
         throw new ForbiddenException({ error: 'approver_is_recorder' });
       }
-      await this.requireAdministrableCase(tx, locked.case_id);
+      const kase = await this.requireAdministrableCase(tx, locked.case_id);
       if (!(await this.distributions.approve(tx, distributionId, operator, now))) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
-      return (await this.distributions.lockById(tx, distributionId)) as DistributionRow;
+      return {
+        distribution: (await this.distributions.lockById(tx, distributionId)) as DistributionRow,
+        decedentUserId: kase.decedent_user_id,
+      };
     });
-    await this.events.distributionApproved(operator, sessionId, row.case_id, distributionId);
-    return distributionDto(row);
+    await this.events.distributionApproved(
+      operator,
+      sessionId,
+      row.distribution.case_id,
+      row.decedentUserId,
+      distributionId,
+    );
+    return distributionDto(row.distribution);
   }
 
   /** Post-approval movement: in_progress → completed, or disputed. */
@@ -464,12 +498,23 @@ export class SettlementAdminService {
       if (!(await this.distributions.setStatus(tx, distributionId, from, to))) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
-      return (await this.distributions.lockById(tx, distributionId)) as DistributionRow;
+      return {
+        distribution: (await this.distributions.lockById(tx, distributionId)) as DistributionRow,
+        decedentUserId: kase.decedent_user_id,
+        asOperator: isOperator,
+      };
     });
     if (to === 'completed') {
-      await this.events.distributionCompleted(actor, sessionId, row.case_id, distributionId);
+      await this.events.distributionCompleted(
+        actor,
+        sessionId,
+        row.distribution.case_id,
+        row.decedentUserId,
+        distributionId,
+        row.asOperator,
+      );
     }
-    return distributionDto(row);
+    return distributionDto(row.distribution);
   }
 
   async listDistributions(

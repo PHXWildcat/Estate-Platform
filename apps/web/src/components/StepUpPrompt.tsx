@@ -55,6 +55,22 @@ import { validateTotpCode } from '../lib/validation';
  * nowhere). A step-up prompt is a CONSENT ceremony; an action that proceeds after
  * consent is withdrawn is the one thing it must never do.
  *
+ * WHAT THAT PROMISE DOES NOT COVER, narrowed by the M21 PR4 review because the
+ * paragraph above read as an absolute and is not one. The abort is checked
+ * AROUND `onElevated()`, never inside it — so it governs whether the loop asks
+ * AGAIN and whether the RESULT is acted on, and it cannot touch anything the
+ * callback itself did while it was running. A callback whose side effect lands
+ * before it returns has already applied the action by the time this component
+ * gets to look. That is not hypothetical: both handoff launchers minted a code,
+ * set the form action and navigated to an isolated origin inside the await, and
+ * a Cancel pressed mid-flight arrived far too late to stop any of it.
+ *
+ * SO THE CALLER OWNS THAT WINDOW. A callback that performs a side effect must
+ * record the withdrawal itself (`onCancel`) and re-check it after its own await,
+ * before doing anything — which is what `OperatorLaunch` and `VaultLaunch` now
+ * do. Callbacks that only READ and return a verdict, or whose whole effect is a
+ * `setState` this component's own counter already gates, need nothing.
+ *
  * CANCEL ALSO RESTORES THE FORM ITSELF, rather than leaving that to the thing it
  * is cancelling. It used to set the abort flag and call `onCancel`, and nothing
  * else — every path of the in-flight `submit()` does clear `busy`, so the form
