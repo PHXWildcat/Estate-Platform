@@ -798,6 +798,62 @@ export const REDEEM_CONTACT_LINK_MUTATION = `mutation RedeemContactLink($code: S
   }
 }`;
 
+/**
+ * The settlement owner surface (M22 PR3).
+ *
+ * `settlementCases` returns BOTH kinds of row — a case opened about you, and one
+ * you reported — because settlement selects them with one OR. `aboutMe` is what
+ * tells them apart, and `voidable` is what decides whether the kill switch is
+ * offered. Neither the decedent nor the reporter user id is requestable: the BFF
+ * drops both, so there is no field here to ask for.
+ *
+ * `resolution` is selected on every case-shaped operation ON PURPOSE. The DDL
+ * forces a voided case to carry the status `rejected_fraud`, so a surface that
+ * renders `status` without `resolution` tells the person who just closed a
+ * fraudulent case about themselves that fraud was found against them.
+ */
+export const SETTLEMENT_CASES_QUERY = `query SettlementCases {
+  settlementCases {
+    caseId
+    status
+    reportSource
+    evidenceCount
+    waitingPeriodEnds
+    resolution
+    resolvedAt
+    createdAt
+    aboutMe
+    voidable
+  }
+}`;
+
+export const VOID_SETTLEMENT_CASE_MUTATION = `mutation VoidSettlementCase($caseId: ID!) {
+  voidSettlementCase(caseId: $caseId) {
+    caseId
+    status
+    reportSource
+    evidenceCount
+    waitingPeriodEnds
+    resolution
+    resolvedAt
+    createdAt
+    aboutMe
+    voidable
+  }
+}`;
+
+export const SETTLEMENT_SETTINGS_QUERY = `query SettlementSettings {
+  settlementSettings {
+    waitingPeriodDays
+  }
+}`;
+
+export const SET_SETTLEMENT_WAITING_PERIOD_MUTATION = `mutation SetSettlementWaitingPeriod($days: Int!) {
+  setSettlementWaitingPeriod(days: $days) {
+    waitingPeriodDays
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -881,6 +937,10 @@ export const operations = {
   RevokeContactLinkInvitation: REVOKE_CONTACT_LINK_INVITATION_MUTATION,
   UnlinkContact: UNLINK_CONTACT_MUTATION,
   RedeemContactLink: REDEEM_CONTACT_LINK_MUTATION,
+  SettlementCases: SETTLEMENT_CASES_QUERY,
+  VoidSettlementCase: VOID_SETTLEMENT_CASE_MUTATION,
+  SettlementSettings: SETTLEMENT_SETTINGS_QUERY,
+  SetSettlementWaitingPeriod: SET_SETTLEMENT_WAITING_PERIOD_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

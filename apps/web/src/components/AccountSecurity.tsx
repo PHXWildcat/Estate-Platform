@@ -3,6 +3,7 @@
 import { useState, type ReactElement } from 'react';
 import { EmailVerificationPanel } from './EmailVerificationPanel';
 import { SecurityPanel } from './SecurityPanel';
+import { WaitingPeriodPanel } from './WaitingPeriodPanel';
 
 /**
  * The /security page's client half, and it exists for exactly one reason: TWO
@@ -51,6 +52,14 @@ export function AccountSecurity(): ReactElement {
           setAddressVersion((version) => version + 1);
         }}
       />
+      {/*
+        M22 PR3. A SIBLING, not a section inside SecurityPanel: it reads a
+        different service and owns a different fact, and that file is long
+        enough that folding a settlement round trip into it would give the
+        credentials panel a second reason to re-render. It sits last because
+        it is the setting people revisit least.
+      */}
+      <WaitingPeriodPanel />
     </>
   );
 }

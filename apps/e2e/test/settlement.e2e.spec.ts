@@ -581,11 +581,31 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     const caseId = (reported.body as { caseId: string }).caseId;
 
     // Void requires the step-up (the liveness proof), and only the subject.
-    await settlement.post(`/v1/settlement/cases/${caseId}/void`).set(reporter2.bearer).expect(403);
+    //
+    // BOTH ARMS, because the first one alone never proved the second claim
+    // (M22 PR3). A bare bearer is turned away by `StepUpGuard` BEFORE the
+    // handler runs, so this line says "step-up required" and says nothing
+    // whatever about who may void — the reporter never reaches the Cedar
+    // decision. Stepping the reporter up is what walks it to the authz check,
+    // and the answer there is the UNIFORM 404: a real case must not be
+    // distinguishable from an absent one by anyone holding its id.
+    await settlement
+      .post(`/v1/settlement/cases/${caseId}/void`)
+      .set(reporter2.bearer)
+      .expect(403, { error: 'stepup_required' });
     await settlement
       .post(`/v1/settlement/cases/${caseId}/void`)
       .set(owner2.bearer)
       .expect(403, { error: 'stepup_required' });
+    await stepUp(reporter2);
+    await settlement
+      .post(`/v1/settlement/cases/${caseId}/void`)
+      .set(reporter2.bearer)
+      .expect(404, { error: 'not_found' });
+    await settlement
+      .post(`/v1/settlement/cases/${randomUUID()}/void`)
+      .set(reporter2.bearer)
+      .expect(404, { error: 'not_found' });
     await stepUp(owner2);
     const voided = await settlement
       .post(`/v1/settlement/cases/${caseId}/void`)

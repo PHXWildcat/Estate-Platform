@@ -11,6 +11,7 @@ import type { DocumentsClient } from './documents-client';
 import type { IdentityClient } from './identity-client';
 import { loadPersistedManifest, type PersistedOperationsManifest } from './persisted';
 import type { ProfileClient } from './profile-client';
+import type { SettlementClient } from './settlement-client';
 import { createBffSchema, type RequestContext } from './schema';
 
 /**
@@ -80,6 +81,7 @@ export interface BffAppOptions {
   assistant: AssistantClient;
   documents: DocumentsClient;
   profile: ProfileClient;
+  settlement: SettlementClient;
   /** Injectable for tests; defaults to loading from PERSISTED_MANIFEST_PATH. */
   persistedOperations?: PersistedOperationsManifest;
   /** Nest logger override (tests pass false). */
@@ -92,7 +94,7 @@ export interface BffAppOptions {
  * call `app.listen(port)` (main.ts) or `app.init()` (tests/supertest).
  */
 export async function createBffApp(options: BffAppOptions): Promise<INestApplication> {
-  const { config, identity, assets, assistant, documents, profile } = options;
+  const { config, identity, assets, assistant, documents, profile, settlement } = options;
   const production = config.nodeEnv === 'production';
   const manifest =
     options.persistedOperations ?? loadPersistedManifest(config.persistedManifestPath);
@@ -104,6 +106,7 @@ export async function createBffApp(options: BffAppOptions): Promise<INestApplica
       assistant,
       documents,
       profile,
+      settlement,
       secureCookies: production,
       vaultOrigin: config.vaultOrigin,
       operatorOrigin: config.operatorOrigin,

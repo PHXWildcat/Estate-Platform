@@ -116,6 +116,22 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   CODE_REQUESTED_RECENTLY:
     'You asked for this very recently. If a code arrived, use that one — otherwise wait a few ' +
     'minutes before asking again.',
+  // M22 PR3, the settlement owner surface. Three refusals with three remedies,
+  // and the reason they are three sentences is that one of them is a control
+  // firing, one is "you are too late", and one is an outage that changed
+  // nothing — an owner who reads the wrong one either gives up on killing a
+  // fraudulent case or retries a change that was refused on purpose.
+  CASE_OPEN:
+    'A case about you is open right now, so this setting is frozen until it’s resolved. That’s ' +
+    'deliberate: it stops the waiting period being shortened while someone is trying to use it.',
+  CASE_NOT_VOIDABLE:
+    'This case has already been verified, so closing it is no longer something you can do here. ' +
+    'Contact us and we’ll take it from there.',
+  // NOT an outage of the product, and NOT a refusal: the change did not happen
+  // and trying again is the right move. On the kill switch this distinction is
+  // the whole thing — an owner who reads a refusal here stops trying.
+  SETTLEMENT_UNAVAILABLE:
+    'We couldn’t complete that just now, and nothing has changed. Please try again in a moment.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
   // M20 PR4, CORRECTED BY THE PR5 REVIEW, which found this sentence claiming

@@ -268,6 +268,10 @@ describe('bffProcessEnv', () => {
       DOCUMENTS_URL: 'http://localhost:3005',
       // M13: the fourth. Profile has no service-credential routes at all.
       PROFILE_URL: 'http://localhost:3002',
+      // M22 PR3: the fifth, and the first BFF edge to settlement. Same posture
+      // — settlement decides operator authority from its own allowlist, about
+      // the caller, so this address cannot widen anything.
+      SETTLEMENT_URL: 'http://localhost:3007',
       // M15: NOT a downstream — the address the BFF hands the browser.
       VAULT_ORIGIN: 'http://vault.localhost:3010',
       // M21 PR3a: the second one, for the second isolated origin.

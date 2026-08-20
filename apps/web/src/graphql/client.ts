@@ -103,9 +103,41 @@ export const GQL_ERROR_CODES = [
    * sent would send them looking for a mail that will never arrive.
    */
   'CODE_REQUESTED_RECENTLY',
+  /** A case about this owner is open, so the waiting period is frozen (M22 PR3). */
+  'CASE_OPEN',
+  /** The case passed verification — self-rescue is now an operator ceremony. */
+  'CASE_NOT_VOIDABLE',
+  /** A settlement transition rolled back. NOTHING happened; retry is the remedy. */
+  'SETTLEMENT_UNAVAILABLE',
 ] as const;
 
 /** Error codes the BFF contract defines. */
+/**
+ * One settlement case, as this app receives it (M22 PR3).
+ *
+ * `status` is a STRING, not a union, and deliberately so: the DDL owns that
+ * vocabulary and the BFF declines to make it a GraphQL enum, so an app-side
+ * union would be a third copy of a list neither of the other two derives.
+ * Render from `resolution` for an ENDED case — the DDL forces an owner-voided
+ * case to carry `status: 'rejected_fraud'`.
+ */
+export interface SettlementCaseInfo {
+  caseId: string;
+  status: string;
+  reportSource: string;
+  evidenceCount: number;
+  waitingPeriodEnds: string | null;
+  resolution: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  aboutMe: boolean;
+  voidable: boolean;
+}
+
+export interface SettlementSettingsInfo {
+  waitingPeriodDays: number;
+}
+
 export type GqlErrorCode = (typeof GQL_ERROR_CODES)[number];
 
 /** Every way a request can fail, as seen by the UI. */
@@ -678,6 +710,22 @@ interface OperationSignatures {
       clientEventId?: string;
     };
     data: { removeBeneficiary: AssetCommandAckInfo };
+  };
+  SettlementCases: {
+    variables: EmptyVariables;
+    data: { settlementCases: SettlementCaseInfo[] };
+  };
+  VoidSettlementCase: {
+    variables: { caseId: string };
+    data: { voidSettlementCase: SettlementCaseInfo };
+  };
+  SettlementSettings: {
+    variables: EmptyVariables;
+    data: { settlementSettings: SettlementSettingsInfo };
+  };
+  SetSettlementWaitingPeriod: {
+    variables: { days: number };
+    data: { setSettlementWaitingPeriod: SettlementSettingsInfo };
   };
   Readiness: { variables: EmptyVariables; data: { readiness: ReadinessInfo } };
   Conversations: { variables: EmptyVariables; data: { conversations: ConversationInfo[] } };

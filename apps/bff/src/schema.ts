@@ -43,6 +43,11 @@ import type {
   RoleAssignment,
   SaveProfileInput,
 } from './profile-client';
+import type {
+  SettlementCase as SettlementCaseDto,
+  SettlementClient,
+  SettlementSettings,
+} from './settlement-client';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -707,6 +712,87 @@ export const typeDefs = /* GraphQL */ `
     roleAssignments: [RoleAssignment!]!
     "The live permission grants on one of the caller's role assignments."
     rolePermissions(roleAssignmentId: ID!): [PermissionGrant!]!
+    """
+    Every settlement case this caller can see (M22 PR3): one opened about them,
+    one they reported, or both. Settlement selects
+    'WHERE decedent_user_id = $1 OR reported_by = $1', so this is ONE list
+    serving two audiences and 'aboutMe' says which row is which.
+
+    Empty is the overwhelmingly common answer and it is a real one — no case
+    has been opened. It is not the same fact as a failed read.
+    """
+    settlementCases: [SettlementCase!]!
+    "The caller's own settlement settings — currently the waiting period."
+    settlementSettings: SettlementSettings!
+  }
+
+  """
+  A settlement case as its SUBJECT or its REPORTER needs to see it (M22 PR3).
+
+  DELIBERATELY NARROWER THAN THE SERVICE'S OWN SHAPE. Settlement returns
+  'decedentUserId' and 'reportedBy' as raw user UUIDs and neither is projected
+  here: the first becomes the boolean 'aboutMe', and the second is dropped
+  outright because a bare UUID tells a person nothing they can act on while
+  resolving it to a NAME would mean a cross-cluster read this edge has no
+  business making. Evidence is COUNTED, never carried — the owner's surface
+  asks how many, and a field the BFF never parses is a field no later resolver
+  can leak.
+  """
+  type SettlementCase {
+    caseId: ID!
+    """
+    The service's own vocabulary, as a string rather than a GraphQL enum, for
+    the reason the asset 'status' field is a string: the DDL owns this list,
+    and a serialised enum turns a value this schema has not learned yet into a
+    hard execution failure. Read 'outcome' before rendering this.
+    """
+    status: String!
+    "How the report arrived: 'trusted_contact', 'death_certificate_upload', ..."
+    reportSource: String!
+    "How many pieces of evidence are attached. Never their contents."
+    evidenceCount: Int!
+    "When the waiting period ends, while one is running."
+    waitingPeriodEnds: String
+    """
+    WHY a resolved case ended, and the field to render an outcome from — NOT
+    'status'.
+
+    The DDL forces '(resolution IS NOT NULL) = (status = ''rejected_fraud'')',
+    so an owner who kills a fraudulent case about themselves lands their case
+    in a status literally spelled 'rejected_fraud'. Rendering that verbatim
+    would tell a person who just used a protective control that fraud was found
+    against them. 'owner_voided' and 'operator_rejected' are the two answers
+    that actually distinguish what happened.
+    """
+    resolution: String
+    resolvedAt: String
+    createdAt: String!
+    "True when this case names the caller as the decedent; false when they filed it."
+    aboutMe: Boolean!
+    """
+    Whether the caller may still void this case — the SUBJECT's kill switch, and
+    only while the case is pre-verification.
+
+    A HINT FOR WHETHER TO OFFER THE ACTION, never authority to perform it:
+    settlement re-decides on the write, under a row lock, and this value is
+    computed from a case that was read a moment earlier. Drift can therefore
+    only show a button whose press earns a clean refusal, which is the harmless
+    direction — the reverse (hiding a live kill switch) is the one that would
+    matter.
+    """
+    voidable: Boolean!
+  }
+
+  """
+  The owner's settlement settings (M22 PR3).
+
+  The waiting period is emergency-access-configuration class: it is the window
+  between a case being approved for review and the estate opening, and it is
+  the delay that gives a living owner time to notice and object.
+  """
+  type SettlementSettings {
+    "Days. Floor of 5 and ceiling of 60, restated from the DDL CHECK."
+    waitingPeriodDays: Int!
   }
 
   """
@@ -1232,6 +1318,31 @@ export const typeDefs = /* GraphQL */ `
     and therefore no way to learn whether one exists. Every failure is one code.
     """
     redeemContactLink(code: String!): Ok!
+    """
+    THE SUBJECT'S KILL SWITCH (M22 PR3, docs/03 §5.1 control 3): close a
+    settlement case opened about you.
+
+    STEP-UP GATED downstream, and this is the one place in the schema where the
+    step-up is not a friction tax but the POINT — signing in freshly is itself
+    the proof of life that kills the case, so a stolen bearer must not be able
+    to reach it. Not a violation of "the protective action must never be harder
+    than the permissive one": what filing a report buys is scrutiny, and the
+    ceremony here is the evidence, not the obstacle.
+
+    Returns the case in its resolved shape so the surface can render the
+    outcome from 'resolution' without a re-read.
+    """
+    voidSettlementCase(caseId: ID!): SettlementCase!
+    """
+    Set the waiting period, in days (5–60).
+
+    STEP-UP GATED downstream as emergency-access-configuration class, and
+    REFUSED outright while a case about the caller is open — a pending case's
+    parameters are frozen, or a step-up-fresh stolen session could shorten the
+    very window designed to catch it. That refusal arrives as CASE_OPEN, which
+    is a control firing and not bad input.
+    """
+    setSettlementWaitingPeriod(days: Int!): SettlementSettings!
   }
 `;
 
@@ -1247,6 +1358,7 @@ export interface SchemaDeps {
   assistant: AssistantClient;
   documents: DocumentsClient;
   profile: ProfileClient;
+  settlement: SettlementClient;
   /** Adds the Secure attribute to session cookies (production). */
   secureCookies: boolean;
   /**
@@ -1396,6 +1508,66 @@ function cookieValue(ctx: RequestContext, name: string): string | null {
   return parseCookies(ctx.req.headers.cookie).get(name) ?? null;
 }
 
+/**
+ * The GraphQL shape of one settlement case. Narrower than the service's, and
+ * every difference is deliberate — see the SDL type for what is dropped.
+ */
+interface SettlementCasePayload {
+  readonly caseId: string;
+  readonly status: string;
+  readonly reportSource: string;
+  readonly evidenceCount: number;
+  readonly waitingPeriodEnds: string | null;
+  readonly resolution: string | null;
+  readonly resolvedAt: string | null;
+  readonly createdAt: string;
+  readonly aboutMe: boolean;
+  readonly voidable: boolean;
+}
+
+/**
+ * The statuses a case can still be voided FROM, restated from
+ * `settlement.service.ts#void`.
+ *
+ * A SECOND COPY, said out loud rather than hidden. Settlement re-decides this
+ * under a row lock on the write, so this list only chooses whether to OFFER the
+ * kill switch. If it drifts wider, a button appears that earns a clean
+ * CASE_NOT_VOIDABLE; if it drifts narrower, a live kill switch is hidden from
+ * the person it protects. The second direction is the dangerous one, which is
+ * why the copy is permissive by construction — it names the three OPEN
+ * statuses rather than trying to enumerate the terminal ones, so a status added
+ * later is excluded (button hidden) only if it is genuinely not in this set.
+ *
+ * Not derived from the service because apps/bff cannot import from a Nest
+ * service package — the same constraint that gives `error-codes.test.ts` and
+ * `enum-parity.test.ts` their read-the-file shape. `settlement-projection.spec.ts`
+ * pins it against the service's source for exactly that reason.
+ */
+const VOIDABLE_STATUSES: readonly string[] = ['reported', 'verifying', 'waiting_period'];
+
+export function toSettlementCasePayload(
+  dto: SettlementCaseDto,
+  callerUserId: string,
+): SettlementCasePayload {
+  // The subject's kill switch, so it is the SUBJECT who may press it — a
+  // reporter seeing their own filed case in this same list must not be offered
+  // one. Cedar says the same thing (`resource.decedent == principal`); this is
+  // the surface declining to offer what the service would refuse.
+  const aboutMe = dto.decedentUserId === callerUserId;
+  return {
+    caseId: dto.caseId,
+    status: dto.status,
+    reportSource: dto.reportSource,
+    evidenceCount: dto.evidence.length,
+    waitingPeriodEnds: dto.waitingPeriodEnds,
+    resolution: dto.resolution,
+    resolvedAt: dto.resolvedAt,
+    createdAt: dto.createdAt,
+    aboutMe,
+    voidable: aboutMe && VOIDABLE_STATUSES.includes(dto.status),
+  };
+}
+
 function requireAccessToken(ctx: RequestContext): string {
   const token = cookieValue(ctx, ACCESS_COOKIE);
   if (token === null) {
@@ -1516,11 +1688,31 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
     assistant,
     documents,
     profile,
+    settlement,
     secureCookies,
     vaultOrigin,
     operatorOrigin,
   } = deps;
   const now = deps.now ?? ((): number => Date.now());
+
+  /**
+   * Who is calling, or UNAUTHENTICATED.
+   *
+   * `identity.session` answers null for a token that is syntactically fine but
+   * dead, and the `session` QUERY treats that as a real answer because "you are
+   * signed out" is what it exists to report. Nowhere else can: a null here
+   * means the caller cannot be identified, and a resolver that carried on with
+   * an empty id would compare `''` against `decedentUserId` and quietly decide
+   * every case belongs to somebody else — hiding the kill switch rather than
+   * refusing the request.
+   */
+  const requireCallerUserId = async (token: string): Promise<string> => {
+    const session = await identity.session(token);
+    if (session === null) {
+      throw bffError('UNAUTHENTICATED');
+    }
+    return session.userId;
+  };
 
   return createSchema<RequestContext>({
     typeDefs,
@@ -1760,6 +1952,32 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<PermissionGrant[]> =>
           profile.permissions(requireAccessToken(ctx), args.roleAssignmentId),
+        /**
+         * TWO CALLS, and the second one is not avoidable at this layer. The
+         * case list arrives keyed by user UUID and the surface needs to know
+         * which rows are ABOUT the caller rather than filed by them, so
+         * something has to know who the caller is. Asking identity keeps that
+         * comparison inside the BFF; the alternative — projecting
+         * `decedentUserId` into GraphQL and comparing in the browser — would
+         * ship two raw user ids to the client to answer a boolean.
+         *
+         * Ordered session-first so an expired token spends nothing downstream.
+         */
+        settlementCases: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<SettlementCasePayload[]> => {
+          const token = requireAccessToken(ctx);
+          const callerUserId = await requireCallerUserId(token);
+          const cases = await settlement.listMyCases(token);
+          return cases.map((dto) => toSettlementCasePayload(dto, callerUserId));
+        },
+        settlementSettings: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<SettlementSettings> => settlement.getSettings(requireAccessToken(ctx)),
       },
       Mutation: {
         register: async (
@@ -2304,6 +2522,31 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           await profile.redeemLink(requireAccessToken(ctx), args.code);
           return OK;
         },
+        /**
+         * The void returns the RESOLVED case, and the projection needs a caller
+         * id to answer `aboutMe`. Session first again, for the reason the query
+         * does it: a dead token should not reach the kill switch at all.
+         */
+        voidSettlementCase: async (
+          _parent: unknown,
+          args: { caseId: string },
+          ctx: RequestContext,
+        ): Promise<SettlementCasePayload> => {
+          const token = requireAccessToken(ctx);
+          const callerUserId = await requireCallerUserId(token);
+          const voided = await settlement.voidCase(token, args.caseId);
+          return toSettlementCasePayload(voided, callerUserId);
+        },
+        setSettlementWaitingPeriod: async (
+          _parent: unknown,
+          args: { days: number },
+          ctx: RequestContext,
+        ): Promise<SettlementSettings> =>
+          // Forwarded unvalidated ON PURPOSE: settlement's zod schema restates
+          // the DDL's 5–60 CHECK and answers 400 `invalid_request`, and a
+          // second opinion here would be a second place for the range to drift
+          // (the M12 upload-client rule — one validator, never two).
+          settlement.updateSettings(requireAccessToken(ctx), args.days),
         revokeRolePermission: async (
           _parent: unknown,
           args: { roleAssignmentId: string; grantId: string },

@@ -43,6 +43,14 @@ const EnvSchema = z
      */
     PROFILE_URL: z.string().url().default('http://localhost:3002'),
     /**
+     * Base URL of the settlement service (M22 PR3, the fifth non-identity
+     * downstream and the first BFF edge to settlement that has ever existed).
+     * Same posture as the rest: the caller's own bearer is forwarded and the
+     * BFF holds no settlement credential, so this address opens no route that
+     * the caller could not already open for themselves.
+     */
+    SETTLEMENT_URL: z.string().url().default('http://localhost:3007'),
+    /**
      * M15. NOT a downstream — the BFF never calls the vault origin and holds no
      * credential for it. This is the address it HANDS THE BROWSER so the app
      * can submit its top-level handoff form there, returned per request rather
@@ -87,6 +95,7 @@ export interface BffConfig {
   readonly aiAssistantUrl: string;
   readonly documentsUrl: string;
   readonly profileUrl: string;
+  readonly settlementUrl: string;
   /** Browser-facing origin of the isolated vault surface (M15). */
   readonly vaultOrigin: string;
   readonly operatorOrigin: string;
@@ -118,6 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BffConfig {
     aiAssistantUrl: e.AI_ASSISTANT_URL.replace(/\/+$/, ''),
     documentsUrl: e.DOCUMENTS_URL.replace(/\/+$/, ''),
     profileUrl: e.PROFILE_URL.replace(/\/+$/, ''),
+    settlementUrl: e.SETTLEMENT_URL.replace(/\/+$/, ''),
     vaultOrigin: e.VAULT_ORIGIN.replace(/\/+$/, ''),
     operatorOrigin: e.OPERATOR_ORIGIN.replace(/\/+$/, ''),
     persistedManifestPath: e.PERSISTED_MANIFEST_PATH ?? null,
