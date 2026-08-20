@@ -188,6 +188,29 @@ describe('intake (docs/03 §5.1: reports only OPEN a case)', () => {
     expect(dto.evidence).toEqual([
       expect.objectContaining({ type: 'provider_match', matchId: 'lexis:match:123' }),
     ]);
+
+    /*
+     * AND THE TRAIL SAYS AN OPERATOR FILED IT. `caseReported` serves both
+     * intake paths and used to hardcode `actorType: 'user'`, while its own
+     * docstring said "or an operator filing provider signals" — the claim and
+     * the code disagreeing inside one function.
+     *
+     * The fact was recoverable from `detail.source === 'data_provider'`, but
+     * only as a POSITIONAL proxy: it holds while that source has exactly one
+     * writer, which is the shape §6aa criticised in Cedar's literal `true`.
+     * This is the §5.1 intake path that needs no linked contact — the one way
+     * to open a death case against any account — so who filed it is the fact
+     * the trail must not get wrong.
+     *
+     * The assertions above are why this was green: they read the DTO and never
+     * the envelope.
+     */
+    const reported = auditEvents(h.producer).filter(
+      (e) => e['action'] === 'settlement.case.reported',
+    );
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.['actorType']).toBe('operator');
+    expect(reported[0]?.['actorId']).toBe(OPERATOR);
   });
 });
 
