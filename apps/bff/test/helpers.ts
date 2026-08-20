@@ -66,6 +66,11 @@ import type {
   RoleAssignmentInput,
   SaveProfileInput,
 } from '../src/profile-client';
+import type {
+  SettlementCase,
+  SettlementClient,
+  SettlementSettings,
+} from '../src/settlement-client';
 
 export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
   return {
@@ -76,6 +81,7 @@ export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
     aiAssistantUrl: 'http://assistant.test',
     documentsUrl: 'http://documents.test',
     profileUrl: 'http://profile.test',
+    settlementUrl: 'http://settlement.test',
     vaultOrigin: 'http://vault.localhost:3010',
     operatorOrigin: 'http://operator.localhost:3011',
     persistedManifestPath: null,
@@ -1140,6 +1146,66 @@ export class FakeProfileClient implements ProfileClient {
   }
 }
 
+/**
+ * One case as SETTLEMENT shapes it — decedent/reporter UUIDs and all. The
+ * double answers the SERVICE's shape, not the BFF's projection, so a test that
+ * asserts `aboutMe` or `evidenceCount` is exercising the real projection rather
+ * than a fixture that already agrees with it.
+ */
+export const SETTLEMENT_CASE: SettlementCase = {
+  caseId: '11111111-1111-4111-8111-111111111111',
+  decedentUserId: 'user-1',
+  reportedBy: 'user-2',
+  status: 'reported',
+  reportSource: 'trusted_contact',
+  evidence: [{ type: 'provider_match' }],
+  waitingPeriodEnds: null,
+  resolution: null,
+  resolvedAt: null,
+  createdAt: '2026-08-20T00:00:00.000Z',
+};
+
+export class FakeSettlementClient implements SettlementClient {
+  listCalls: string[] = [];
+  voidCalls: Array<{ accessToken: string; caseId: string }> = [];
+  getSettingsCalls: string[] = [];
+  updateSettingsCalls: Array<{ accessToken: string; waitingPeriodDays: number }> = [];
+
+  listResult: SettlementCase[] = [SETTLEMENT_CASE];
+  voidResult: SettlementCase = {
+    ...SETTLEMENT_CASE,
+    status: 'rejected_fraud',
+    resolution: 'owner_voided',
+    resolvedAt: '2026-08-20T01:00:00.000Z',
+  };
+  settingsResult: SettlementSettings = { waitingPeriodDays: 5 };
+  settlementError: Error | null = null;
+
+  listMyCases(accessToken: string): Promise<SettlementCase[]> {
+    this.listCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.listResult);
+  }
+
+  voidCase(accessToken: string, caseId: string): Promise<SettlementCase> {
+    this.voidCalls.push({ accessToken, caseId });
+    return this.reject() ?? Promise.resolve(this.voidResult);
+  }
+
+  getSettings(accessToken: string): Promise<SettlementSettings> {
+    this.getSettingsCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.settingsResult);
+  }
+
+  updateSettings(accessToken: string, waitingPeriodDays: number): Promise<SettlementSettings> {
+    this.updateSettingsCalls.push({ accessToken, waitingPeriodDays });
+    return this.reject() ?? Promise.resolve({ waitingPeriodDays });
+  }
+
+  private reject<T>(): Promise<T> | null {
+    return this.settlementError === null ? null : Promise.reject(this.settlementError);
+  }
+}
+
 export interface TestAppOptions {
   config?: BffConfig;
   identity?: IdentityClient;
@@ -1147,6 +1213,7 @@ export interface TestAppOptions {
   assistant?: AssistantClient;
   documents?: DocumentsClient;
   profile?: ProfileClient;
+  settlement?: SettlementClient;
   manifest?: PersistedOperationsManifest;
 }
 
@@ -1158,6 +1225,7 @@ export async function makeApp(options: TestAppOptions = {}): Promise<INestApplic
     assistant: options.assistant ?? new FakeAssistantClient(),
     documents: options.documents ?? new FakeDocumentsClient(),
     profile: options.profile ?? new FakeProfileClient(),
+    settlement: options.settlement ?? new FakeSettlementClient(),
     persistedOperations: options.manifest ?? new Map(),
     logger: false,
   });

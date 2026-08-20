@@ -6836,7 +6836,7 @@ decision booked as progress is how a queue stays untouched.**
 | # | Milestone | Status |
 |---|---|---|
 | M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
-| M22 | Settlement reporter/owner surface | 8 routes, complete backend, zero consumers |
+| M22 | Settlement reporter/owner surface | Complete backend; the unconsumed routes are the `EXEMPT_SETTLEMENT_REPORTING` entries in `packages/auth-guard/test/route-consumers.spec.ts` — PR3 shipped the owner's half |
 | M23 | Executor surface | 3 routes; §5.1 control 5 has never executed outside a test |
 | M24 | Dashboard, computable subset | **Flip-trigger: jumps to the front on a demo date or a signed customer** |
 | M25 | Crypto-shredding execution path | `destroyDek` has no production caller; must precede any new encrypted data class |
@@ -6929,3 +6929,58 @@ contact path. docs/03 §6jj; three decisions in docs/06.
 
 The coverage fence grew a call-graph resolver to match — otherwise it would have
 reported the one verb whose ledger write is transactionally correct as an orphan.
+
+### M22 PR3 — the BFF settlement edge and the owner's kill switch (2026-08-20)
+
+The first milestone of the reporter/owner surface proper. PR1 and PR2 were M21
+review carryover filed under this banner; this is the surface the row describes.
+
+**There was no BFF↔settlement edge at all.** `apps/bff/src` held five clients and
+none of them was settlement, so every reporter/owner route had been complete and
+unreachable since M7. This PR creates the edge and consumes four of the seven
+exempt routes: the case list, the void, and both settings routes.
+
+**The owner's half shipped before the reporter's, deliberately.** Filing a death
+report is already one tap by design — the controls sit on what a report can
+CAUSE, not on filing it — so shipping the reporting screen first would have put
+the permissive capability in front of ten million people while the protective
+one still required curl. That is the inversion "the protective action must never
+be harder than the permissive one" exists to prevent. PR4 has the reporter's
+three routes.
+
+**A refusal oracle on the kill switch, found while consuming it.** `void`
+answered 403 for a real case belonging to someone else and 404 for an absent
+one, so any account that could step up on ITSELF could ask whether a death case
+existed for a given UUID — the M21 PR4d defect, on the route a victim uses
+against a fraudulent case naming them. `assertCanOrNotFound` exists for exactly
+this and its docstring listed `void` under the exemption for the owner's own
+`manage`; `manage` earns it (its resource is built from the caller's own id and
+cannot deny), `void` does not (it locks a row by a supplied id, then asks
+Cedar). **`addEvidence` was the same category and moved with it** — found by
+asking what else was in the category rather than stopping at the reported one.
+The three genuine operator writes keep `assertCan`: `OperatorGate.assertIn`
+refuses a non-operator before any lookup, so nothing is learned either way.
+Nothing had ever exercised an `addEvidence` refusal, and the two `void` tests
+pinned the exception TYPE — which is green whether or not the answers differ.
+
+**Rendering reads `resolution`, never `status`.** The DDL CHECK forces
+`(resolution IS NOT NULL) = (status = 'rejected_fraud')`, so an owner who kills
+a fraudulent case about themselves lands the row in a status spelled
+`rejected_fraud`. A surface printing `status` would tell the person who just
+used a protective control that fraud was found against them.
+
+**Two product decisions, both in docs/06.** The waiting period sits on
+`/security` as emergency-access-configuration class, a sibling of `SecurityPanel`
+rather than a section inside it. The case surface gets NO `AppNav` entry: it is
+empty for virtually everyone, and a permanent "Death cases" item in an estate app
+is a standing memento mori — it is reached instead through an app-shell banner
+that appears only while a case naming you is open, and from a pointer on
+`/security`.
+
+Three new BFF error codes, because three refusals here have three remedies:
+`CASE_OPEN` (a control firing — the window is frozen while a case is open),
+`CASE_NOT_VOIDABLE` (too late to self-rescue; not the DOCUMENT
+`INVALID_TRANSITION`, whose copy names a document), and `SETTLEMENT_UNAVAILABLE`
+(the transition rolled back, nothing happened, retry). On the kill switch that
+last distinction is the whole thing: an owner who reads an outage as a refusal
+stops trying.

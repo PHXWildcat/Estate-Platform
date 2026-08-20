@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -38,6 +39,26 @@ async function reportCase(h: Harness): Promise<string> {
     evidence: [],
   });
   return dto.caseId;
+}
+
+/**
+ * The refusal a caller actually receives, as a comparable VALUE: HTTP status
+ * and response body together.
+ *
+ * Exists because `rejects.toThrow(SomeException)` cannot express the property
+ * a uniform refusal has — two refusals being the SAME — and this repo's
+ * enumeration oracles have all lived in the gap between "both were refused"
+ * and "both were refused identically". Throws if the call RESOLVES, so a
+ * comparison can never be made between two non-refusals.
+ */
+async function refusalOf(call: () => Promise<unknown>): Promise<{ status: number; body: unknown }> {
+  try {
+    await call();
+  } catch (err) {
+    const http = err as HttpException;
+    return { status: http.getStatus(), body: http.getResponse() };
+  }
+  throw new Error('expected a refusal, but the call resolved');
 }
 
 /** report → startReview → approve, leaving the case in waiting_period. */
@@ -375,8 +396,48 @@ describe('owner void (docs/03 §5.1 control 3: the kill switch)', () => {
   it('only the case subject can void — not the reporter, not an operator', async () => {
     const h = linkedHarness();
     const caseId = await reportCase(h);
-    await expect(h.service.void(REPORTER, SESSION, caseId)).rejects.toThrow(ForbiddenException);
-    await expect(h.service.void(OPERATOR, SESSION, caseId)).rejects.toThrow(ForbiddenException);
+    await expect(h.service.void(REPORTER, SESSION, caseId)).rejects.toThrow(NotFoundException);
+    await expect(h.service.void(OPERATOR, SESSION, caseId)).rejects.toThrow(NotFoundException);
+  });
+
+  /**
+   * THE ORACLE THIS ROUTE CARRIED UNTIL M22 PR3, and the reason no existing
+   * test saw it: the two assertions above pinned the exception TYPE, which was
+   * `ForbiddenException`, and a type assertion is green whether or not the
+   * answer distinguishes anything. The property is not "a stranger is refused"
+   * — it is "the refusal a stranger gets is BYTE-IDENTICAL to the one an absent
+   * case gets", and nothing compared the two answers.
+   *
+   * Compared as VALUES, both arms, in one assertion: status and body together.
+   * A version that checked only the status would go green against a 404 whose
+   * body still said `forbidden`.
+   */
+  it('void answers one uniform 404 for "not yours" and "no such case" alike', async () => {
+    const h = linkedHarness();
+    const realCase = await reportCase(h);
+    const absent = randomUUID();
+
+    const notYours = await refusalOf(() => h.service.void(STRANGER, SESSION, realCase));
+    const noSuchCase = await refusalOf(() => h.service.void(STRANGER, SESSION, absent));
+
+    expect(notYours).toEqual(noSuchCase);
+    expect(notYours).toEqual({ status: 404, body: { error: 'not_found' } });
+  });
+
+  /**
+   * POSITIVE CONTROL for the assertion above. The uniformity test alone is
+   * equally consistent with a `void` that refuses EVERYONE — including the
+   * owner — which is the failure this repo calls out by name ("fail closed
+   * means DE-ESCALATE, not refuse everything"). This says the protective path
+   * still works, so the pair can only be green when the oracle is closed AND
+   * the kill switch is live.
+   */
+  it('...and the owner it protects can still void (the refusal is not universal)', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await expect(h.service.void(DECEDENT, SESSION, caseId)).resolves.toMatchObject({
+      resolution: 'owner_voided',
+    });
   });
 
   it('void is refused post-verification (rescue becomes an operator ceremony)', async () => {
@@ -387,6 +448,50 @@ describe('owner void (docs/03 §5.1 control 3: the kill switch)', () => {
     await expect(h.service.void(DECEDENT, SESSION, caseId)).rejects.toMatchObject({
       response: { error: 'invalid_transition' },
     });
+  });
+});
+
+/**
+ * THE SECOND MEMBER OF `void`'s CATEGORY (M22 PR3), and the reason it needed
+ * asking for: it reads like an operator path and is not one. The three genuine
+ * operator writes call `OperatorGate.assertIn`, which REFUSES a non-operator
+ * before any row is fetched — so a stranger never learns whether the id was
+ * real. `addEvidence` calls `gate.is`, which MEASURES operator-ness into a
+ * boolean and refuses nobody, so a stranger reaches the Cedar decision with a
+ * located row behind it.
+ *
+ * Nothing here had ever exercised an `addEvidence` refusal — the whole suite
+ * was green either way, which is the warning this milestone was told to expect.
+ * Its consumer arrives in PR4; the oracle was reachable now.
+ */
+describe('evidence attach refuses uniformly (void’s category, second member)', () => {
+  const EVIDENCE = { type: 'provider_match', matchId: 'm-1' } as const;
+
+  it('answers one uniform 404 for "not yours" and "no such case" alike', async () => {
+    const h = linkedHarness();
+    const realCase = await reportCase(h);
+    const absent = randomUUID();
+
+    const notYours = await refusalOf(() =>
+      h.service.addEvidence(STRANGER, SESSION, realCase, EVIDENCE),
+    );
+    const noSuchCase = await refusalOf(() =>
+      h.service.addEvidence(STRANGER, SESSION, absent, EVIDENCE),
+    );
+
+    expect(notYours).toEqual(noSuchCase);
+    expect(notYours).toEqual({ status: 404, body: { error: 'not_found' } });
+  });
+
+  /** Positive control — the reporter this route exists for still reaches it. */
+  it('...and the reporter who filed the case can still attach (not universal)', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await expect(h.service.addEvidence(REPORTER, SESSION, caseId, EVIDENCE)).resolves.toMatchObject(
+      {
+        evidence: [expect.objectContaining({ type: 'provider_match', addedBy: REPORTER })],
+      },
+    );
   });
 });
 

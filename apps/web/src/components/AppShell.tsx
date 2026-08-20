@@ -4,6 +4,7 @@ import { MobileTabBar, RailNav } from './AppNav';
 import { BrandMark } from './Brand';
 import { RailAccount } from './RailAccount';
 import { ThemeToggle } from './ThemeToggle';
+import { OpenSettlementCaseBanner } from './OpenSettlementCaseBanner';
 import { UnverifiedAddressBanner } from './UnverifiedAddressBanner';
 
 /**
@@ -48,6 +49,13 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
 
       {/* Content */}
       <div className="flex min-w-0 flex-1 flex-col">
+        {/*
+          ORDERED BY URGENCY, not by age. An open death case outranks an
+          unconfirmed address — and the two are related, because an
+          unconfirmed address is part of why a case may have got this far
+          without the owner hearing about it.
+        */}
+        <OpenSettlementCaseBanner />
         <UnverifiedAddressBanner />
         <main
           id="main"

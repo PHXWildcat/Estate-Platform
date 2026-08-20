@@ -109,9 +109,23 @@ export class SettlementAuthz {
    * Use this wherever the resource was located BY the id under authorization
    * AND a policy decides the answer.
    * Keep `assertCan` where the id is one the caller already holds by other
-   * means and the refusal reveals nothing new — the operator write paths, where
-   * a non-operator is refused BEFORE any lookup and so learns nothing either
-   * way, and the owner's own `manage`/`void`.
+   * means and the refusal reveals nothing new — the operator write paths
+   * (`startReview`, `decideReview`, `confirmVerification`), where
+   * `OperatorGate.assertIn` refuses a non-operator BEFORE any lookup and so
+   * learns nothing either way, and the owner's own `manage`, whose resource is
+   * built from the CALLER'S OWN id (`settingsResource(owner)`) and therefore
+   * cannot deny.
+   *
+   * THIS LIST USED TO SAY "the owner's own `manage`/`void`", AND `void` DID NOT
+   * BELONG IN IT (fixed M22 PR3). `manage` earns the exemption because nothing
+   * is looked up by a supplied id; `void` looks a case up by exactly such an
+   * id and then asks Cedar — the first sentence above, not this one. So the
+   * two spellings sat side by side under one justification that was true of
+   * only one of them, and `void` answered 403-vs-404 on the route a victim uses
+   * against a fraudulent case naming them. `addEvidence` was the same category
+   * and moved with it; the distinction there is `gate.is` (a measurement) vs
+   * `gate.assertIn` (a refusal), which is why it reads like an operator path
+   * and is not one.
    */
   assertCanOrNotFound(
     principalUserId: string,

@@ -332,6 +332,14 @@ export function bffProcessEnv(
     // notifications SEND key — which is invisible from here and unreachable
     // through this URL.)
     PROFILE_URL: serviceUrl('profile', options.addressing),
+    // M22 PR3: the settlement owner surface — a case naming you, the kill
+    // switch, and the waiting-period setting. Present in BOTH profiles; the
+    // settlement service needs no third-party credential either. Note what
+    // this URL does NOT open: settlement's operator routes are gated on the
+    // `settlement_operators` allowlist inside the transaction that would act,
+    // which is a question about the CALLER and not about who is asking on
+    // their behalf, so pointing the BFF at settlement widens nothing.
+    SETTLEMENT_URL: serviceUrl('settlement', options.addressing),
     /*
      * M15. NOT a downstream — the BFF never calls the vault origin. This is the
      * address it HANDS THE BROWSER when a user opens the vault, returned in the

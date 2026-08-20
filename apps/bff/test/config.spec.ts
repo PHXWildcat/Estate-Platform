@@ -21,6 +21,7 @@ describe('loadConfig', () => {
       // has no service-credential routes at all — nothing here that a bearer
       // token could not have opened anyway.
       profileUrl: 'http://localhost:3002',
+      settlementUrl: 'http://localhost:3007',
       // M15: handed to the browser, never called by the BFF.
       vaultOrigin: 'http://vault.localhost:3010',
       // M21 PR3a: the operator console's origin (3011). Handed to the browser

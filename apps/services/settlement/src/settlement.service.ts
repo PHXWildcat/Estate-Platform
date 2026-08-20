@@ -282,7 +282,15 @@ export class SettlementService {
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
       }
-      this.authz.assertCan(
+      // ...OrNotFound for `void`'s reason, and this is the OTHER member of that
+      // category — found by asking what else was in it (M22 PR3). `gate.is`
+      // above MEASURES operator-ness; it does not refuse, so unlike
+      // startReview/decideReview/confirmVerification — where `gate.assertIn`
+      // turns a non-operator away BEFORE any lookup, and who therefore learns
+      // nothing either way — a stranger reaches this line with a real row
+      // behind it. Its consumer arrives in M22 PR4; the oracle was reachable
+      // now.
+      this.authz.assertCanOrNotFound(
         actor,
         isOperator,
         'evidence_add',
@@ -503,7 +511,15 @@ export class SettlementService {
         // decedent: measuring the allowlist here would WIDEN the decision for
         // an owner who happens also to be an operator, which is the wrong
         // direction on the one route a subject uses against their own case.
-        this.authz.assertCan(
+        //
+        // ...OrNotFound, because the row above was located BY a caller-supplied
+        // id and a policy decides the answer — `assertCanOrNotFound`'s stated
+        // rule exactly. Until M22 PR3 this was `assertCan`, so a real case
+        // answered 403 where an absent one answered 404, and any account that
+        // could step up on ITSELF could ask "is there a death case for this
+        // UUID" and be told. That is the M21 PR4d oracle on the route a victim
+        // uses to kill a fraudulent case about themselves.
+        this.authz.assertCanOrNotFound(
           owner,
           false,
           'void',

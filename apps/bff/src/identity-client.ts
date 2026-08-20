@@ -493,7 +493,37 @@ export type BffErrorCode =
    * route is arranged so that no answer implies delivery; its refusals must not
    * either.
    */
-  | 'CODE_REQUESTED_RECENTLY';
+  | 'CODE_REQUESTED_RECENTLY'
+  /**
+   * The waiting period cannot change while a settlement case about this owner
+   * is open (M22 PR3). A CONTROL FIRING, not bad input: the parameters of a
+   * pending case are frozen so a step-up-fresh stolen session cannot shorten
+   * the very window designed to catch it. Its own code because its own remedy
+   * — resolve or void the case, then change the setting.
+   */
+  | 'CASE_OPEN'
+  /**
+   * The case has passed verification, so the subject's own kill switch no
+   * longer applies and rescue is an operator ceremony (M22 PR3).
+   *
+   * DELIBERATELY NOT `INVALID_TRANSITION`, which the service also spells
+   * `invalid_transition` on the wire. That code's copy names a DOCUMENT and
+   * its remedy is a different next step; this one is about a death case and
+   * the remedy is "contact us". Same token downstream, different sentence to
+   * the person reading it — which is exactly the split this repo's rule asks
+   * for.
+   */
+  | 'CASE_NOT_VOIDABLE'
+  /**
+   * A settlement transition rolled back because identity or documents could
+   * not be reached (M22 PR3). NOTHING HAPPENED and the remedy is to try again.
+   *
+   * This one earns its place on the kill switch specifically: an owner told
+   * "we could not do that right now" tries again, an owner told "that is not
+   * allowed" gives up, and a fraudulent case about them stays alive on the
+   * difference. Which downstream was down is collapsed on purpose.
+   */
+  | 'SETTLEMENT_UNAVAILABLE';
 
 const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   UNAUTHENTICATED: 'Not authenticated',
@@ -527,6 +557,9 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   WEBAUTHN_FAILED: 'The passkey ceremony was not accepted',
   TOO_MANY_ATTEMPTS: 'Too many attempts — wait a few minutes before trying again',
   CODE_REQUESTED_RECENTLY: 'A change was requested recently — wait before asking for another',
+  CASE_OPEN: 'This cannot change while a case about you is open',
+  CASE_NOT_VOIDABLE: 'This case has moved past the point where you can close it yourself',
+  SETTLEMENT_UNAVAILABLE: 'We could not complete that right now — nothing has changed',
 };
 
 /**

@@ -772,6 +772,11 @@ services:
       # service-credential routes at all, so there is nothing behind this URL
       # that a bearer token could not have opened anyway.
       PROFILE_URL: http://profile:3002
+      # Fifth one (M22 PR3, the settlement owner surface), same posture again.
+      # What it does not open: settlement's operator routes ask the
+      # settlement_operators allowlist about the CALLER, inside the transaction
+      # that would act — a question this address cannot influence.
+      SETTLEMENT_URL: http://settlement:3007
       # M15: NOT a downstream. This is the address the BFF hands the browser
       # in startVaultHandoff, so the app can submit its top-level form there.
       VAULT_ORIGIN: http://vault.localhost:3010
