@@ -7025,3 +7025,74 @@ unchanged.
 The panel lands last on `/people`, after the two panels describing the plan the
 caller is making, and offers no control: a contact removing themselves would be
 editing someone else's plan silently.
+
+### M22 PR4b — the evidence a review is conducted on (2026-08-20)
+
+The reviewer's half of PR4, and both parts came out of building the reporter's
+half: one thing the console was not showing, and one thing the service was not
+refusing.
+
+**A human review with the evidence missing.** `CaseDto` has carried `evidence`
+since M7 and the operator console's `parseCase` dropped the field, so the
+mandatory human review docs/03 §5.1 control 2 rests on was conducted against a
+status, a timeline and two opaque ids. Nothing was red, because the failure was
+an absent read rather than a wrong one — there was no assertion to fail.
+`screens.ts` named *"a case's evidence"* as the reason for the origin's
+`trusted-types 'none'` posture while showing none of it; that sentence is now
+true. The Evidence panel is first of the four, above staged access, because it
+is what the verbs on that screen are decided on.
+
+`EvidenceView` is deliberately **flat, not a mirror of settlement's
+discriminated union**. Both alternatives are wrong here: failing the row removes
+a death case from a worklist over an evidence kind added last week, and skipping
+the entry tells a reviewer there is one piece of evidence when there are two.
+The type token is carried as settlement's own — unrecognised values render as
+themselves — and `addedBy`/`addedAt` are required because every arm has them, so
+an entry this build predates still reports that it exists, who attached it and
+when. A missing `evidence` FIELD fails the case, on the M11 rule: a case with no
+evidence field is not a case with no evidence.
+
+`addedBy` is rendered as *"the account that reported this case"* when it equals
+`reportedBy`, and as a bare id otherwise. Reporter-versus-operator is the
+distinction a reviewer actually wants and this origin **cannot honestly make** —
+it is role-blind by construction, `settlement_operators` being read inside the
+transaction that acts — so the narrower true claim is the one made. The panel
+shows what was attached, never its contents; a document opens through the
+documents service under its own audited read, and pulling estate documents into
+the lowest-trust origin in the product is its own decision, not a detail of this
+panel.
+
+**Provider matches are operator-filed, through either door.** Cedar grants the
+reporter `evidence_add` and says nothing about the KIND, and until this PR
+nothing else did either: a reporter could attach
+`{type:'provider_match', matchId:'…'}` with a token of their own invention, and
+it landed in `verification_evidence` beside entries operators file from real
+provider signals — indistinguishable to the human whose review is the control.
+The reporter-facing SOURCE enum had excluded `data_provider` since M7 for
+exactly this reason; the evidence union was the same claim through another door.
+Building the panel above is what made it visible, because it is the panel where
+the two would have appeared side by side.
+
+One rule, two enforcement layers, because only one route serves both capacities:
+`ReportCaseSchema.evidence` narrows **statically** to documents (that route's
+authority is the linked-contact check, and `report()` already says a reporter
+who is also an operator "acted as a contact here"), while `addEvidence` decides
+**dynamically** on the `isOperator` it already measures, refusing with a 403
+`document_evidence_only`. The check is an allowlist rather than
+`=== 'provider_match'`, and runs BEFORE the status check: that refusal is
+permanent and about the caller where `invalid_transition` is transient and about
+the row, and answering the transient one first sends a reporter back later for
+something that will never work.
+
+The PR3 test whose positive control asserted a reporter attaching a provider
+match is called out rather than quietly edited — it was proving the behaviour
+removed here, and it never needed that entry to prove what it was named for.
+
+Fences: `parseEvidence` is pinned against `EvidenceEntry` in **both
+directions**, the only shape in `settlement-client.spec.ts` that is. The other
+four are subset checks because a client may legitimately ignore a DTO field;
+evidence is the field this console exists to put in front of a human, and
+"ignored it" is precisely how this defect survived five milestones.
+
+No route or GraphQL surface changes: PR4b consumes nothing new. The reporter's
+three routes and the retirement of `EXEMPT_SETTLEMENT_REPORTING` remain PR4c.

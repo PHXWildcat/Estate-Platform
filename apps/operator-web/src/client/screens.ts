@@ -9,6 +9,14 @@
  * input on the screen somebody reads before authorizing a lock on a living
  * person's account.
  *
+ * THAT SENTENCE WAS AN ASPIRATION UNTIL M22 PR4b. The case screen named a
+ * case's evidence as the reason for the posture and did not show any: settlement
+ * has returned `evidence` on every `CaseDto` since M7, and the console's parser
+ * dropped it, so the mandatory human review docs/03 §5.1 leans on was conducted
+ * against a status, a timeline and two ids. The Evidence panel is the field
+ * itself, and `addedBy` is on every row because "the account that reported this
+ * case attached this" is the fact a reviewer most needs and could not get.
+ *
  * WHAT THE SCREENS DELIBERATELY DO NOT SHOW is a name. Settlement returns user
  * IDs and enum tokens and nothing else — the PII firewall — so this console
  * shows the decedent as an opaque id. That is not a gap to fill later by
@@ -24,7 +32,13 @@
  */
 import type { ApiFailure } from './api.js';
 import { el, onClick } from './dom.js';
-import type { CaseSummary, DistributionView, StageView, TimelineEvent } from './settlement.js';
+import type {
+  CaseSummary,
+  DistributionView,
+  EvidenceView,
+  StageView,
+  TimelineEvent,
+} from './settlement.js';
 
 /**
  * What went wrong, in the operator's vocabulary rather than the wire's.
@@ -109,6 +123,16 @@ const CASE_STATUS: Readonly<Record<string, string>> = {
   rejected: 'Rejected at review',
   disputed: 'Disputed',
   voided: 'Voided',
+};
+
+/**
+ * `document` and `provider_match` are settlement's whole vocabulary today, and
+ * `label` renders anything else as the raw token rather than as a blank — a
+ * kind this build predates must still be visible to the person reviewing.
+ */
+const EVIDENCE_KIND: Readonly<Record<string, string>> = {
+  document: 'Document',
+  provider_match: 'Death-data provider match',
 };
 
 const STAGE_STATUS: Readonly<Record<string, string>> = {
@@ -279,6 +303,44 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
     ]);
   });
 
+  /**
+   * WHO ATTACHED IT, said in terms this console can actually stand behind.
+   *
+   * The interesting distinction to a reviewer is reporter-supplied versus
+   * operator-supplied, and this origin cannot make it: it is role-BLIND by
+   * construction — `settlement_operators` is read inside the transaction that
+   * acts, and nothing about operator-ness is on the wire here. What IS on the
+   * wire is the case's `reportedBy`, so the one claim available is that this
+   * entry was attached by the same account that filed the report, which is
+   * exactly true and is the one worth flagging. Everything else is an id.
+   */
+  function attribution(entry: EvidenceView): string {
+    return entry.addedBy === kase.reportedBy
+      ? `${entry.addedBy} — the account that reported this case`
+      : entry.addedBy;
+  }
+
+  const evidenceRows = kase.evidence.map((entry) =>
+    el('li', { class: 'row' }, [
+      el('dl', { class: 'facts' }, [
+        ...fact('Kind', label(EVIDENCE_KIND, entry.type)),
+        // Per-arm fields. An entry shows the reference it HAS; a kind this
+        // build predates has neither and still shows its kind, who and when.
+        ...(entry.documentId === null
+          ? []
+          : fact(
+              'Document',
+              entry.version === null
+                ? entry.documentId
+                : `${entry.documentId} — version ${entry.version}`,
+            )),
+        ...(entry.matchId === null ? [] : fact('Provider reference', entry.matchId)),
+        ...fact('Attached by', attribution(entry)),
+        ...fact('Attached', when(entry.addedAt)),
+      ]),
+    ]),
+  );
+
   const timelineRows = (options.timeline ?? []).map((event) =>
     el('li', { class: 'row' }, [
       el('dl', { class: 'facts' }, [
@@ -307,6 +369,29 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
     ]),
     ...(options.prompt ? [options.prompt] : []),
     ...(options.actions.length > 0 ? [el('p', { class: 'actions' }, options.actions)] : []),
+    el('section', { class: 'panel' }, [
+      el('h2', { class: 'heading' }, ['Evidence']),
+      /*
+       * WHAT WAS ATTACHED, NOT WHAT IT SAYS. A document's contents live in the
+       * documents service behind its own audited read (`document.evidence.
+       * accessed`, authorized by settlement's evidence-read route), and this
+       * console has no path to them — deliberately, for now: pulling estate
+       * documents into the lowest-trust origin in the product is its own
+       * decision with its own audit volume, not a detail of this panel. Saying
+       * so beats a screen that lists an id and leaves a reviewer wondering
+       * whether they are looking at everything.
+       */
+      el('p', { class: 'lede' }, [
+        'What was attached to this case. Opening a document is a separate read, recorded separately — this console does not do it.',
+      ]),
+      /*
+       * `kase.evidence` is never null: it arrives ON the case read, so a
+       * failure here is no screen at all rather than an empty panel. It goes
+       * through `sectionBody` anyway — one spelling for "nothing here", and the
+       * day evidence moves to its own request the null arm is already right.
+       */
+      sectionBody(kase.evidence, evidenceRows, 'Nothing was attached to this report.'),
+    ]),
     el('section', { class: 'panel' }, [
       el('h2', { class: 'heading' }, ['Staged access']),
       sectionBody(options.stages, stageRows, 'No stage has been requested on this case.'),

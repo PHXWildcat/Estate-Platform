@@ -44,12 +44,23 @@ export type EvidenceInput = z.infer<typeof EvidenceInputSchema>;
  * Reporter intake (docs/03 §5.1). `data_provider` is deliberately absent from
  * the reporter-facing source enum: provider signals arrive via the
  * operator-filed route, never as a self-serve claim.
+ *
+ * EVIDENCE IS DOCUMENTS ONLY, closing that same gap from the other side (M22
+ * PR4b). The source enum stopped a reporter CALLING their report a provider
+ * signal while `EvidenceInputSchema` still let them ATTACH one — a
+ * `provider_match` carrying a matchId of their own choosing, which renders on
+ * the review screen beside the ones operators file. This route's authority is
+ * the linked-contact check, and `report` already says what that means where it
+ * declines to count breadth: a reporter who is also an operator "acted as a
+ * contact here". So the narrowing is STATIC and needs no caller context —
+ * unlike `AddEvidenceSchema`, whose one route serves both capacities and must
+ * therefore decide at the call (`SettlementService.addEvidence`).
  */
 export const ReportCaseSchema = z
   .object({
     decedentUserId: z.string().uuid(),
     source: z.enum(['trusted_contact', 'death_certificate_upload']),
-    evidence: z.array(EvidenceInputSchema).max(16).default([]),
+    evidence: z.array(DocumentEvidenceSchema).max(16).default([]),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -75,6 +86,16 @@ export const ProviderReportSchema = z
   .strict();
 export type ProviderReportInput = z.infer<typeof ProviderReportSchema>;
 
+/**
+ * Evidence attached to a case that already exists — by its reporter, or by an
+ * operator working it.
+ *
+ * THE UNION STAYS WHOLE HERE and the narrowing lives in the service, because
+ * this is the one route that serves both capacities and operators legitimately
+ * file provider signals through it. A schema cannot see who is calling;
+ * `SettlementService.addEvidence` refuses a non-operator's non-document entry
+ * at the point where operator-ness has been measured.
+ */
 export const AddEvidenceSchema = z.object({ evidence: EvidenceInputSchema }).strict();
 
 export const ReviewDecisionSchema = z

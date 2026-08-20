@@ -314,6 +314,122 @@ describe('opening a case', () => {
   });
 });
 
+/**
+ * THE EVIDENCE A REVIEW IS CONDUCTED ON (M22 PR4b).
+ *
+ * `CaseDto` has carried `evidence` since M7 and this console dropped it in
+ * `parseCase`, so the mandatory human review docs/03 §5.1 rests on was being
+ * conducted against a status, a timeline and two opaque ids. Nothing was red:
+ * the field was simply never read, which is the shape of gap that a test suite
+ * cannot report because there is no assertion to fail.
+ */
+describe('the evidence a review is conducted on', () => {
+  const DOC = {
+    type: 'document',
+    documentId: 'doc-7',
+    version: 3,
+    addedBy: 'u-rep',
+    addedAt: '2026-08-01T01:00:00.000Z',
+  };
+  const MATCH = {
+    type: 'provider_match',
+    matchId: 'lexisnexis-abc',
+    addedBy: 'u-op1',
+    addedAt: '2026-08-02T02:00:00.000Z',
+  };
+
+  const withEvidence = async (evidence: unknown): Promise<void> => {
+    await freshLoad();
+    const kase = { ...REPORTED, evidence };
+    transport({ ...WORKLISTS([REPORTED], []), ...CASE_ROUTES(kase) });
+    await render();
+    await openCase();
+  };
+
+  it('shows each entry, with the reference its kind carries', async () => {
+    await withEvidence([DOC, MATCH]);
+    expect(copy()).toMatch(/Document/);
+    expect(copy()).toMatch(/doc-7 — version 3/);
+    expect(copy()).toMatch(/Death-data provider match/);
+    expect(copy()).toMatch(/lexisnexis-abc/);
+  });
+
+  it('says whose attachment came from the account that filed the report', async () => {
+    /*
+     * The distinction a reviewer needs and the one this origin can honestly
+     * make. Reporter-vs-operator is NOT available here — the console is
+     * role-blind by construction and `settlement_operators` is read inside the
+     * transaction that acts — so the claim made is the narrower true one:
+     * this id is the id that reported the case.
+     */
+    await withEvidence([DOC, MATCH]);
+    expect(copy()).toMatch(/u-rep — the account that reported this case/);
+    // The other entry's attacher is a bare id, with no claim attached to it.
+    expect(copy()).toMatch(/u-op1/);
+    expect(copy()).not.toMatch(/u-op1 — the account that reported/);
+  });
+
+  it('does not offer to open a document it cannot open', async () => {
+    await withEvidence([DOC]);
+    expect(copy()).toMatch(/this console does not do it/i);
+    expect(app().querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('an empty list says so plainly', async () => {
+    await withEvidence([]);
+    expect(copy()).toMatch(/Nothing was attached to this report/i);
+  });
+
+  it('renders an evidence kind this build predates, rather than hiding the entry', async () => {
+    /*
+     * The reason `EvidenceView` is flat rather than a mirror of settlement's
+     * discriminated union. Both alternatives are wrong on this screen: failing
+     * the row removes a death case from a worklist over an evidence kind added
+     * last week, and skipping the entry tells a reviewer there is one piece of
+     * evidence when there are two. The entry appears, its kind is named as the
+     * raw token, and who and when survive because every arm carries them.
+     */
+    await withEvidence([DOC, { type: 'coroner_record', addedBy: 'u-op1', addedAt: 'when' }]);
+    expect(copy()).toMatch(/coroner_record/);
+    expect(copy()).toMatch(/doc-7/);
+    expect(app().querySelectorAll('.panel .list li')).toHaveLength(2);
+  });
+
+  it('a case with NO evidence FIELD is not a case with no evidence', async () => {
+    /*
+     * The failure this panel could have shipped with. A peer that stops sending
+     * the field — or a rename at the service — must not render as "nothing was
+     * attached to this report" on the screen where somebody decides whether to
+     * lock a living person's account. The case fails to read, exactly as a
+     * worklist row missing a field does.
+     */
+    const { evidence: _dropped, ...withoutEvidence } = REPORTED;
+    await freshLoad();
+    transport({ ...WORKLISTS([REPORTED], []), ...CASE_ROUTES(withoutEvidence) });
+    await render();
+    (app().querySelector('.list .button') as HTMLButtonElement).click();
+    await until(() => copy().includes('Something went wrong'));
+    expect(copy()).not.toMatch(/Nothing was attached to this report/i);
+  });
+
+  it('and neither is one whose entries cannot be read', async () => {
+    // Positive control on the same mechanism: a well-formed list still renders,
+    // so the assertion above is about the missing shape and not about this
+    // screen refusing any case handed to it.
+    await freshLoad();
+    transport({
+      ...WORKLISTS([REPORTED], []),
+      ...CASE_ROUTES({ ...REPORTED, evidence: [{ type: 'document', documentId: 'doc-7' }] }),
+    });
+    await render();
+    (app().querySelector('.list .button') as HTMLButtonElement).click();
+    await until(() => copy().includes('Something went wrong'));
+
+    await withEvidence([DOC]);
+    expect(copy()).toMatch(/doc-7/);
+  });
+});
+
 describe('the verbs a status makes available', () => {
   const withCase = async (overrides: Record<string, unknown>): Promise<void> => {
     await freshLoad();

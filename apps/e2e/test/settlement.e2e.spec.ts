@@ -454,6 +454,60 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     // Before the lock: the reporter's contact-read grant works.
     await profile.get(`/v1/profiles/${owner.userId}/contacts`).set(reporter.bearer).expect(200);
 
+    /*
+     * EVIDENCE: WHO MAY ATTACH WHAT (M22 PR4b).
+     *
+     * Cedar grants the reporter `evidence_add` and says nothing about the
+     * KIND, so until PR4b a reporter could append a `provider_match` carrying
+     * a token of their own invention — corroboration for their own report,
+     * landing in `verification_evidence` beside the entries operators file
+     * from real death-data signals and indistinguishable to the human whose
+     * review is docs/03 §5.1's control 2. Asserted here rather than only in
+     * the unit suite because the refusal depends on the operator allowlist
+     * being resolved inside the writing transaction, which a double cannot
+     * prove.
+     */
+    await settlement
+      .post(`/v1/settlement/cases/${caseId}/evidence`)
+      .set(reporter.bearer)
+      .send({ evidence: { type: 'provider_match', matchId: 'lexis:invented:1' } })
+      .expect(403, { error: 'document_evidence_only' });
+
+    // The same door, from the capacity it exists for.
+    const operatorAttached = await settlement
+      .post(`/v1/settlement/cases/${caseId}/evidence`)
+      .set(operator.bearer)
+      .send({ evidence: { type: 'provider_match', matchId: 'lexis:real:1' } })
+      .expect(200);
+
+    // And the reporter's own route still works, with the kind it is for —
+    // the control that keeps the refusal above about the TYPE rather than
+    // about this route having been closed to reporters.
+    const documentId = randomUUID();
+    const reporterAttached = await settlement
+      .post(`/v1/settlement/cases/${caseId}/evidence`)
+      .set(reporter.bearer)
+      .send({ evidence: { type: 'document', documentId, version: 1 } })
+      .expect(200);
+
+    expect((operatorAttached.body as { evidence: unknown[] }).evidence).toHaveLength(1);
+    expect((reporterAttached.body as { evidence: unknown[] }).evidence).toEqual([
+      expect.objectContaining({ type: 'provider_match', addedBy: operator.userId }),
+      expect.objectContaining({ type: 'document', documentId, addedBy: reporter.userId }),
+    ]);
+
+    // The intake door, closed statically. A reporter cannot smuggle the same
+    // claim in with the report itself.
+    await settlement
+      .post('/v1/settlement/cases')
+      .set(reporter.bearer)
+      .send({
+        decedentUserId: owner.userId,
+        source: 'trusted_contact',
+        evidence: [{ type: 'provider_match', matchId: 'lexis:invented:2' }],
+      })
+      .expect(400, { error: 'invalid_request' });
+
     // Review: operator-only, step-up-gated decision, real account lock.
     await settlement
       .post(`/v1/settlement/cases/${caseId}/review/start`)

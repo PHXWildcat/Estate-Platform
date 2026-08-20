@@ -35,6 +35,35 @@ export interface CaseSummary {
   readonly resolution: string | null;
   readonly createdAt: string;
   readonly eligibleForVerification: boolean;
+  readonly evidence: readonly EvidenceView[];
+}
+
+/**
+ * AN EVIDENCE ENTRY, widened on purpose (M22 PR4b).
+ *
+ * Settlement's own `EvidenceEntry` is a discriminated union — `document` with
+ * a documentId and version, `provider_match` with a matchId — and mirroring it
+ * as a union here would mean an entry of a type this build predates fails to
+ * parse. Every path out of that is wrong on a review screen: fail the ROW and a
+ * death case vanishes from the worklist because of an evidence kind added last
+ * week; drop the ENTRY and the reviewer is told there are two when there are
+ * three, which is the affirmative statement about what does not exist that this
+ * file's docstring exists to forbid.
+ *
+ * So the shape is flat and the discriminant is carried as settlement's own
+ * token, unrecognised values included: `screens.ts` renders an unknown token as
+ * ITSELF, and `addedBy`/`addedAt` are on every arm, so an entry this console
+ * cannot fully describe still reports that it exists, who attached it and when.
+ * That is the M15 `parseTimeline` posture — say what is not understood rather
+ * than discard it — applied to the field a human review turns on.
+ */
+export interface EvidenceView {
+  readonly type: string;
+  readonly documentId: string | null;
+  readonly version: number | null;
+  readonly matchId: string | null;
+  readonly addedBy: string;
+  readonly addedAt: string;
 }
 
 export interface StageView {
@@ -73,6 +102,49 @@ function nullableStr(value: unknown): string | null | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * A row this parser cannot read fails the CASE, exactly as one bad worklist row
+ * fails the list. The alternative is a case screen whose evidence panel is
+ * shorter than the case's evidence, and short is the direction that reads as
+ * "there was not much to go on".
+ *
+ * The three fields required are the three every arm of settlement's union
+ * carries. `documentId` / `version` / `matchId` are per-arm and absent by
+ * design on the other one, so they are read WHEN PRESENT and are null
+ * otherwise — never a reason to reject the entry.
+ */
+function parseEvidence(payload: unknown): EvidenceView | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const raw = payload as Record<string, unknown>;
+  const type = str(raw['type']);
+  const addedBy = str(raw['addedBy']);
+  const addedAt = str(raw['addedAt']);
+  if (type === null || addedBy === null || addedAt === null) return null;
+  return {
+    type,
+    documentId: str(raw['documentId']),
+    version: num(raw['version']),
+    matchId: str(raw['matchId']),
+    addedBy,
+    addedAt,
+  };
+}
+
+function parseEvidenceList(payload: unknown): EvidenceView[] | null {
+  if (!Array.isArray(payload)) return null;
+  const rows: EvidenceView[] = [];
+  for (const row of payload) {
+    const parsed = parseEvidence(row);
+    if (parsed === null) return null;
+    rows.push(parsed);
+  }
+  return rows;
+}
+
 function parseCase(payload: unknown): CaseSummary | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const raw = payload as Record<string, unknown>;
@@ -89,7 +161,12 @@ function parseCase(payload: unknown): CaseSummary | null {
   const verifiedAt = nullableStr(raw['verifiedAt']);
   const resolution = nullableStr(raw['resolution']);
   const eligible = raw['eligibleForVerification'];
+  // A CASE WITH NO `evidence` FIELD IS NOT A CASE WITH NO EVIDENCE. A peer that
+  // stopped sending it must not render as an empty panel on the screen where
+  // somebody decides whether to lock a living person's account.
+  const evidence = parseEvidenceList(raw['evidence']);
   if (
+    evidence === null ||
     caseId === null ||
     decedentUserId === null ||
     status === null ||
@@ -120,6 +197,7 @@ function parseCase(payload: unknown): CaseSummary | null {
     resolution,
     createdAt,
     eligibleForVerification: eligible,
+    evidence,
   };
 }
 
