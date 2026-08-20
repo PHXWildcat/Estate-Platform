@@ -24,6 +24,9 @@
  * GITHUB_SHA, GITHUB_EVENT_NAME, NOTIFY_WORKFLOW, NOTIFY_DETAILS.
  */
 
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
 const LABEL = 'ci-failure';
 
 /** Every field this needs, so a missing one fails loudly rather than half-working. */
@@ -156,6 +159,38 @@ async function main() {
   console.log(`opened #${created.number}`);
 }
 
-if (process.argv[1] && process.argv[1].endsWith('notify-failure.mjs')) {
+// Run main only when this file IS the entry point, so `notify-failure.test.mjs`
+// can import `decide` without opening a GitHub issue.
+//
+// IDENTITY, NOT NAME. `endsWith('notify-failure.mjs')` asks whether the entry
+// path is SPELLED like this file, which is a different question and wrong in
+// both directions — each measured before this changed:
+//
+//   · FALSE NEGATIVE. Rename the file and update both the workflow `run:` and
+//     the test's import, and the guard silently stops matching: node exits 0,
+//     main never runs, nothing is printed. A symlink pointing at this file
+//     under any other name does the same.
+//   · FALSE POSITIVE. `endsWith` matches any path with this suffix, so a
+//     sibling called e.g. `security-notify-failure.mjs` runs main as a SIDE
+//     EFFECT OF IMPORTING this module — measured: importing `decide` from one
+//     threw `GITHUB_TOKEN is required` from main instead of returning.
+//
+// THE FALSE NEGATIVE IS THE DANGEROUS ONE, because of what this script is.
+// Producing nothing is its NORMAL state — it speaks only when a scheduled gate
+// fails — so a guard that never fires is indistinguishable from a green week,
+// and the failure it exists to surface goes unremarked exactly as the secret
+// sweep's seventeen consecutive red runs did. A notifier is the one component
+// whose silence nobody thinks to question.
+//
+// Both sides are resolved before comparing, because each repairs a distortion
+// the other does not: `pathToFileURL` the SPACE (`import.meta.url`
+// percent-encodes it), `realpathSync` the SYMLINK (node reports the resolved
+// real path in `import.meta.url` and the path AS TYPED in `process.argv[1]`).
+// `realpathSync` throwing on an argv[1] that names nothing is deliberate: only
+// an `-e` invocation with a trailing argument reaches it, and swallowing it
+// would mean a guard that silently declines to fire — the defect itself.
+const entryPoint =
+  process.argv[1] === undefined ? undefined : pathToFileURL(realpathSync(process.argv[1])).href;
+if (import.meta.url === entryPoint) {
   await main();
 }
