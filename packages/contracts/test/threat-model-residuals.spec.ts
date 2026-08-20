@@ -238,6 +238,7 @@ function residuals(): {
   sections: Set<string>;
   declared: Set<string>;
   regions: Region[];
+  interruptions: Array<{ section: string; line: number; label: string }>;
 } {
   const lines = readFileSync(DOC, 'utf8').split('\n');
   const blockHeading = (line: string): boolean =>
@@ -247,6 +248,7 @@ function residuals(): {
   const items: Residual[] = [];
   const sections = new Set<string>();
   const declared = new Set<string>();
+  const interruptions: Array<{ section: string; line: number; label: string }> = [];
   const regions: Region[] = [];
   let section: string | null = null;
   let inBlock = false;
@@ -287,7 +289,17 @@ function residuals(): {
       // SHIPPED. Caught only because an independent classification of the
       // corpus disagreed with this parser about two bullets.
       const label = boldLabel(line);
+      const wasInBlock = inBlock;
       inBlock = label !== null && REGION_MARKERS.includes(label);
+      // A CLOSURE IS A LOSS, and it used to be a silent one. Every bullet after
+      // this line leaves the corpus, but the region still reports the bullets
+      // BEFORE it — so `count === 0`, the check this file calls its own silent
+      // failure, cannot see a region that went blank after its first bullet.
+      // That is the level-vs-total rule the file applies correctly elsewhere
+      // (it compares SETS for reach and for owners) and not here.
+      if (wasInBlock && !inBlock && section !== null) {
+        interruptions.push({ section, line: index + 1, label: label ?? line.trim() });
+      }
       setBlock(inBlock, index + 1, label ?? line.trim());
       if (inBlock && section !== null) declared.add(section);
     }
@@ -309,7 +321,7 @@ function residuals(): {
     }
   });
 
-  return { items, sections, declared, regions };
+  return { items, sections, declared, regions, interruptions };
 }
 
 /**
@@ -321,10 +333,44 @@ function residuals(): {
  * untagged, and a delta heading would be attributed to whichever single-letter
  * section preceded it.
  */
+/**
+ * Bolded lead-ins that CLOSE a residual region, frozen as data.
+ *
+ * Closing is deliberate — see the parser — because without it §6a's block runs
+ * on and swallows five bullets describing controls that SHIPPED. But a closure
+ * is also a LOSS: every bullet after one of these leaves the corpus, and the
+ * region still reports the bullets BEFORE it, so `count === 0` (the check this
+ * file calls its own silent failure) cannot see a region that went blank after
+ * its first bullet. An untagged residual below one of these lines was invisible
+ * to every assertion here, and the §6 count is what a milestone gets scoped
+ * from.
+ *
+ * So the set is declared and compared. This freezes today's behaviour rather
+ * than adjudicating ten doc sections: what it buys is that the NEXT one fails
+ * loudly, and whoever adds it has to say whether the bullets below it are
+ * residuals. Adding a lead-in to a §6 list is an ordinary way to write these
+ * paragraphs, which is exactly why it needed to stop being free.
+ */
+const DECLARED_INTERRUPTIONS: ReadonlyArray<{ section: string; label: string }> = [
+  { section: '6a', label: '§5.2 emergency-access controls, now shipped (M6 PR2).' },
+  {
+    section: '6b',
+    label: 'Service-credential scoping (added by the M7 security review, 2026-07-28).',
+  },
+  { section: '6c', label: 'The M6 delivery-channel identifier leakage item: PARTIALLY CLOSED.' },
+  { section: '6e', label: 'PR2 addendum — ingest, the ladder, and deletion (2026-08-06).' },
+  { section: '6i', label: 'The Secret Key on the device, as a residual rather than a control.' },
+  { section: '6j', label: 'Added by PR2a (the extension and its transport).' },
+  { section: '6m', label: 'Proven live, and one defect the whole suite passed over.' },
+  { section: '6q', label: "The window's clock, and what that costs (M18 PR3)." },
+  { section: '6q', label: 'Evidence, one database, one table.' },
+  { section: '6t', label: 'Proven live, on the disagreeing arm.' },
+];
+
 const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,2})\]\*\*/;
 
 describe('docs/03 §6 — every residual declares a disposition', () => {
-  const { items, sections, declared, regions } = residuals();
+  const { items, sections, declared, regions, interruptions } = residuals();
 
   it('every DECLARED region actually collects a residual', () => {
     /*
@@ -341,6 +387,10 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
      * The remedy in the doc is to write a residual as a bullet. The remedy
      * here is to refuse to be silent about the difference.
      */
+    // SETS, not a total. Mis-attribution preserves a count.
+    expect(interruptions.map((i) => `${i.section} :: ${i.label}`).sort()).toEqual(
+      DECLARED_INTERRUPTIONS.map((d) => `${d.section} :: ${d.label}`).sort(),
+    );
     const empty = regions.filter((r) => r.count === 0);
     expect(
       empty.map((r) => `docs/03 §${r.section} line ${r.line}: "${r.label}" collected no bullet`),
