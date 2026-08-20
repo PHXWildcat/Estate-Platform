@@ -4349,11 +4349,9 @@ under-collecting and one of them had been declared correct.
   the reasoning that it was latent until the executor UI arrived; closing it
   immediately was the cheaper call, because the fix is a refusal shape and no
   consumer exists to break.
-- **[OWNER: M23]** The `granted_by IS NULL` forensic marker is stated backwards
-  in `001_settlement_schema.sql`. Migrations are append-only and checksummed, so
-  the correction belongs in a later migration or in `docs/02`, which mentions the
-  column nowhere. It misleads exactly the person reading the schema during an
-  incident.
+- **[CLOSED: §6hh]** *The `granted_by IS NULL` forensic marker was stated
+  backwards.* **CLOSED by M21 PR4e** — see §6hh. Corrected in the catalog by
+  migration 005 rather than by editing the checksummed 001.
 
 ## 6gg. Threat-model delta — M21 PR4d, the distribution-status oracle (2026-08-20)
 
@@ -4397,6 +4395,46 @@ survived two reviews.
 - **[ACCEPTED]** The `granted_by IS NULL` marker recorded in §6ff stays open and
   is not restated here. One residual, one place: a second copy is the thing that
   drifts, and the §6 count is derived from these bullets.
+
+## 6hh. Threat-model delta — M21 PR4e, the marker in the catalog (2026-08-20)
+
+The last item from round 3. `001_settlement_schema.sql` declares
+`granted_by UUID, -- NULL: granted via the ops CLI`, and that has been false
+since M21 PR1 made `--by` mandatory: the ceremony always writes the column now,
+so a NULL marks a row that did **not** come through it — the exact inversion of
+what the schema says. It is the signal `operator-cli.ts` §2 and two specs rely
+on, and the schema told an investigator the reverse.
+
+**Where the correction lives is the point.** Migrations are append-only and
+checksummed, so 001 could not be edited — but a `--` comment in an old migration
+was the wrong home anyway. Nobody reading `\d+ settlement_operators` during an
+incident is also reading migration 001. Migration 005 sets a `COMMENT ON COLUMN`
+(and one on the table), so the truth is in the catalog where `\d+` and
+`col_description()` both show it, following the identity 004 precedent.
+
+**And it is now a fence, not a sentence.** `operator-cli.int.spec.ts` asserts the
+catalog comment against real Postgres, keyed on the DIRECTION rather than the
+column name: a comment that merely mentioned `granted_by` would satisfy a
+presence check and still be backwards. Two mutations confirm it — deleting the
+`COMMENT ON` and restoring 001's original wording each turn it red, with eight
+tests passing as the control.
+
+`docs/02` gained a POINTER rather than a copy: it names where the meaning lives
+instead of restating it, because a second copy is the one that drifts and this
+particular reading has already inverted once.
+
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** The wrong sentence still sits in `001_settlement_schema.sql` and
+  always will — the file is checksummed and immutable. A reader of that file
+  alone still reads the inversion. Accepted because the alternative is editing an
+  applied migration, which raises `MigrationDriftError` and blocks the next one;
+  the catalog is the surface an investigator actually queries, and it is now
+  right and asserted.
+- **[ACCEPTED]** `--by` remains attribution, not authentication: whoever runs the
+  CLI holds the database connection and could write the row by hand. Unchanged by
+  this delta and stated again because the corrected comment says so — a NULL is a
+  row to investigate, not proof of anything on its own.
 
 ## 7. Validation program
 

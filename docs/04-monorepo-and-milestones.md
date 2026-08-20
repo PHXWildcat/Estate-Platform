@@ -5627,6 +5627,8 @@ because at that point the value lens becomes the one with real inputs.
   the round-3 lens re-run, all in fences and none in product code; #125.
 - **PR4d — the distribution-status oracle. SHIPPED** (record below). The one
   RUNTIME finding of round 3; docs/03 §6gg.
+- **PR4e — the marker in the catalog. SHIPPED** (record below). The last
+  round-3 item; docs/03 §6hh.
 - **PR5 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7. NOT YET SHIPPED.
@@ -6672,6 +6674,35 @@ reviews before a lens found it by reading the ordering.
 Filed as `[OWNER: M23]` in §6ff on the reasoning that it was latent until the
 executor UI arrived; closing it immediately was cheaper, because the fix is a
 refusal shape and there is no consumer to break. docs/03 §6gg.
+
+#### M21 PR4e — the marker in the catalog (shipped)
+
+The last item from round 3. `001_settlement_schema.sql` says
+`granted_by UUID, -- NULL: granted via the ops CLI`, false since PR1 made `--by`
+mandatory: the ceremony always writes the column now, so a NULL marks a row that
+did NOT come through it. The schema told an investigator the exact reverse of
+the signal `operator-cli.ts` §2 and two specs depend on.
+
+Migrations are checksummed, so 001 could not be edited — but a `--` comment in
+an old migration was the wrong home anyway. **Nobody reading
+`\d+ settlement_operators` during an incident is also reading migration 001.**
+Migration 005 sets a `COMMENT ON COLUMN` (and one on the table), putting the
+truth in the catalog where `\d+` and `col_description()` show it, on the
+identity 004 precedent.
+
+It is a fence now rather than a sentence: `operator-cli.int.spec.ts` asserts the
+catalog comment against real Postgres, keyed on the **direction** — a comment
+that merely mentioned `granted_by` would satisfy a presence check and still be
+backwards. Deleting the `COMMENT ON` and restoring 001's original wording each
+turn it red, eight passing as control.
+
+`docs/02` gained a pointer, not a copy: it names where the meaning lives rather
+than restating it, because this reading has already inverted once and a second
+copy is the one that drifts.
+
+Accepted and stated in docs/03 §6hh: the wrong sentence stays in 001 forever,
+because the file is immutable. The catalog is the surface anybody actually
+queries.
 
 ### M32 — Subscription manager (planned; re-sequenced 2026-08-12, displaced by M20, re-numbered 2026-08-17 when M21 became the TB7 operator platform)
 
