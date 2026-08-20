@@ -283,6 +283,83 @@ describe('the step-up prompt', () => {
     expect(cancelled).toBe(0);
   });
 
+  it('AN ABORTED PROMPT REFUSES A LATER SUBMIT — consent withdrawn stays withdrawn', async () => {
+    /*
+     * THE HALF THE PR3b FIX DID NOT CLOSE, and the test above is why it was
+     * missed: it submits FIRST, so it aborts a prompt whose submit is already
+     * disabled — the one state in which a missing guard cannot show. Here the
+     * operator has typed the code and NOT submitted, so `busy` is false and the
+     * form is fully interactive.
+     *
+     * Measured before the fix: `submit.disabled === false` after `abort()`, a
+     * real `POST /api/auth/stepup`, and the bound action ran. On this console
+     * that action closes a case or confirms a verification — which locks a
+     * living person's account and revokes every session they hold. The prompt
+     * is still mounted at that moment because `dismissPrompt()` is followed by
+     * a `render()` that awaits three reads before it swaps the DOM.
+     */
+    transport({ status: 200, body: {} });
+    const state = { runs: 0 };
+    jest.spyOn(Date, 'now').mockImplementation(() => 0);
+    const { form, abort } = stepUpPrompt({
+      hint: 'h',
+      submitLabel: 'Confirm verification',
+      idPrefix: 'verify',
+      onCancel: () => {},
+      onElevated: () => {
+        state.runs += 1;
+        return Promise.resolve('applied' as const);
+      },
+      sleep: () => Promise.resolve(),
+    });
+    document.body.replaceChildren(form);
+    field().value = '123456';
+
+    // The parent withdraws consent — "Back to worklists".
+    abort();
+
+    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+    // Nothing was elevated and nothing was applied: no step-up was even
+    // attempted, so this is not merely "the action did not run" but "the
+    // ceremony did not restart".
+    expect(calls).toEqual([]);
+    expect(state.runs).toBe(0);
+  });
+
+  it('CANCEL STILL RE-ARMS after an abort, because Cancel is not the parent withdrawing', async () => {
+    /*
+     * The asymmetry `abandon()` exists for, pinned so the fix above cannot be
+     * "simplified" into making Cancel terminal too. Cancel means the person is
+     * still looking at the form and may try again; the parent discarding the
+     * prompt means it is on its way out of the document.
+     */
+    transport({ status: 200, body: {} });
+    const state = { runs: 0 };
+    jest.spyOn(Date, 'now').mockImplementation(() => 0);
+    const { form } = stepUpPrompt({
+      hint: 'h',
+      submitLabel: 'Confirm verification',
+      idPrefix: 'verify',
+      onCancel: () => {},
+      onElevated: () => {
+        state.runs += 1;
+        return Promise.resolve('applied' as const);
+      },
+      sleep: () => Promise.resolve(),
+    });
+    document.body.replaceChildren(form);
+
+    cancel().click();
+
+    field().value = '123456';
+    form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+    expect(state.runs).toBe(1);
+  });
+
   it('CANCEL RESTORES THE FORM ITSELF, without waiting for the request it cancels', () => {
     // Neither await carries a timeout, so a stalled identity call would leave a
     // declined consent form disabled forever — the protective action must not
