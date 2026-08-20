@@ -16,13 +16,19 @@ import { bffError } from './identity-client';
  * `settlement_operators`, inside the transaction that would act. This client
  * cannot widen that decision because it cannot ask it.
  *
- * FOUR OF THE SEVEN, deliberately. PR3 consumes the OWNER's half — the list, the
- * kill switch, and the waiting-period setting. The reporter's three
- * (`reportable-estates`, `POST /cases`, evidence attach) land in PR4, and the
- * order is the repo's own rule rather than a scheduling accident: filing a
- * death report is already one tap by design, so shipping the reporting screen
- * first would put the permissive capability in front of ten million people
- * while the protective one still required a terminal.
+ * ALL SEVEN NOW (M22 PR4c completed what PR3 began), and the ORDER was the
+ * repo's own rule rather than a scheduling accident: filing a death report is
+ * already one tap by design, so the owner's kill switch shipped first rather
+ * than putting the permissive capability in front of ten million people while
+ * the protective one still required a terminal. `EXEMPT_SETTLEMENT_REPORTING`
+ * is gone from `route-consumers.spec.ts` with its last entry.
+ *
+ * INTAKE IS NOT STEP-UP GATED and that is deliberate — see the settlement
+ * controller's own docstring. Filing ADDS scrutiny rather than authority: the
+ * case locks nothing, the owner is notified on every channel we have, and they
+ * void it with one ungated click. A gate here would fall on a grieving contact
+ * on a borrowed device while stopping nothing a token thief wants, and the
+ * protective action must never be the harder one.
  *
  * WHAT IS DELIBERATELY NOT MODELLED HERE: evidence CONTENTS. `CaseDto.evidence`
  * carries document ids, versions, provider match ids and the id of whoever
@@ -61,6 +67,42 @@ const CaseSchema = z.object({
 });
 export type SettlementCase = z.infer<typeof CaseSchema>;
 
+/**
+ * ONE ESTATE THIS CALLER MAY REPORT ON.
+ *
+ * `decedentUserId` is kept, and it is the only place in this file where a raw
+ * user id survives into the resolver layer — because it is the argument the
+ * reporting mutation must send back, and settlement identifies an estate by
+ * nothing else. It is NOT projected into GraphQL: the resolver joins it to a
+ * name and exposes an opaque handle, and the schema comment there says why.
+ *
+ * SETTLEMENT IS THE AUTHORITATIVE SET, not profile's `linkedEstates`, even
+ * though the two queries read the same `contacts` rows today. `report()`
+ * re-checks `isLinkedContact` under its own transaction and answers a uniform
+ * 404 otherwise, so this is the list that predicts what the server will accept.
+ * Building the picker from the other read would be offering an action the
+ * server might refuse the moment the two drift — the M12 rule.
+ */
+const ReportableEstateSchema = z.object({
+  decedentUserId: z.string().min(1),
+  contactId: z.string().min(1),
+  roles: z.array(z.string()),
+});
+export type ReportableEstate = z.infer<typeof ReportableEstateSchema>;
+
+/**
+ * What a reporter may attach, at intake or afterwards. DOCUMENTS ONLY, and the
+ * type has no other arm on purpose: settlement refuses a non-operator's
+ * `provider_match` (M22 PR4b, 403 `document_evidence_only`), and a field the
+ * BFF cannot express is a refusal the UI cannot walk into. Absence over filter.
+ */
+export interface DocumentEvidence {
+  readonly documentId: string;
+  readonly version: number;
+}
+
+export type ReportSource = 'trusted_contact' | 'death_certificate_upload';
+
 const SettingsSchema = z.object({
   waitingPeriodDays: z.number().int(),
 });
@@ -75,6 +117,21 @@ export interface SettlementClient {
    * resolver derives rather than a second request.
    */
   listMyCases(accessToken: string): Promise<SettlementCase[]>;
+  /** The estates whose death this caller is entitled to report — the picker's spine. */
+  reportableEstates(accessToken: string): Promise<ReportableEstate[]>;
+  reportCase(
+    accessToken: string,
+    input: {
+      decedentUserId: string;
+      source: ReportSource;
+      evidence: readonly DocumentEvidence[];
+    },
+  ): Promise<SettlementCase>;
+  addEvidence(
+    accessToken: string,
+    caseId: string,
+    evidence: DocumentEvidence,
+  ): Promise<SettlementCase>;
   voidCase(accessToken: string, caseId: string): Promise<SettlementCase>;
   getSettings(accessToken: string): Promise<SettlementSettings>;
   updateSettings(accessToken: string, waitingPeriodDays: number): Promise<SettlementSettings>;
@@ -100,6 +157,59 @@ export class FetchSettlementClient implements SettlementClient {
     return this.parseBody(res, z.array(CaseSchema));
   }
 
+  async reportableEstates(accessToken: string): Promise<ReportableEstate[]> {
+    const res = await this.request('GET', '/v1/settlement/reportable-estates', accessToken);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(ReportableEstateSchema));
+  }
+
+  async reportCase(
+    accessToken: string,
+    input: {
+      decedentUserId: string;
+      source: ReportSource;
+      evidence: readonly DocumentEvidence[];
+    },
+  ): Promise<SettlementCase> {
+    const res = await this.request('POST', '/v1/settlement/cases', accessToken, {
+      decedentUserId: input.decedentUserId,
+      source: input.source,
+      // `type` is added HERE rather than carried on the input, so the one
+      // evidence kind a reporter may file is a property of this edge and not
+      // of a caller's argument.
+      evidence: input.evidence.map((e) => ({
+        type: 'document',
+        documentId: e.documentId,
+        version: e.version,
+      })),
+    });
+    if (!res.ok) {
+      throw await this.mapError(res, { caseExists: 'CASE_ALREADY_REPORTED' });
+    }
+    return this.parseBody(res, CaseSchema);
+  }
+
+  async addEvidence(
+    accessToken: string,
+    caseId: string,
+    evidence: DocumentEvidence,
+  ): Promise<SettlementCase> {
+    const res = await this.request(
+      'POST',
+      `/v1/settlement/cases/${encodeURIComponent(caseId)}/evidence`,
+      accessToken,
+      {
+        evidence: { type: 'document', documentId: evidence.documentId, version: evidence.version },
+      },
+    );
+    if (!res.ok) {
+      throw await this.mapError(res, { invalidTransition: 'EVIDENCE_WINDOW_CLOSED' });
+    }
+    return this.parseBody(res, CaseSchema);
+  }
+
   async voidCase(accessToken: string, caseId: string): Promise<SettlementCase> {
     const res = await this.request(
       'POST',
@@ -107,7 +217,7 @@ export class FetchSettlementClient implements SettlementClient {
       accessToken,
     );
     if (!res.ok) {
-      throw await this.mapError(res);
+      throw await this.mapError(res, { invalidTransition: 'CASE_NOT_VOIDABLE' });
     }
     return this.parseBody(res, CaseSchema);
   }
@@ -153,7 +263,30 @@ export class FetchSettlementClient implements SettlementClient {
     }
   }
 
-  private async mapError(res: Response): Promise<Error> {
+  /**
+   * WHAT A REUSED TOKEN MEANS ON THIS ROUTE.
+   *
+   * Settlement spends one `invalid_transition` on two routes with opposite
+   * remedies: on `void` it means self-rescue has become an operator ceremony,
+   * and on the evidence attach it means the case has passed the window where
+   * anything more can be added. One sentence cannot serve both — "this case
+   * has moved past the point where you can close it yourself" is simply false
+   * when the caller was trying to attach a death certificate — and the repo's
+   * rule is that two failures needing different remedies never share a token.
+   *
+   * A ROUTE THAT DECLARES NOTHING GETS NOTHING. There is deliberately no
+   * default: an unmapped 409 falls through to the generic status error rather
+   * than borrowing whichever sentence happened to be written first. That is
+   * the fail-closed direction — a new route added without thinking about this
+   * says something vague, not something confidently wrong.
+   */
+  private async mapError(
+    res: Response,
+    meaning: {
+      readonly invalidTransition?: 'CASE_NOT_VOIDABLE' | 'EVIDENCE_WINDOW_CLOSED';
+      readonly caseExists?: 'CASE_ALREADY_REPORTED';
+    } = {},
+  ): Promise<Error> {
     let token = '';
     try {
       const body: unknown = await res.json();
@@ -194,15 +327,27 @@ export class FetchSettlementClient implements SettlementClient {
        */
       return bffError('CASE_OPEN');
     }
-    if (res.status === 409 && token === 'invalid_transition') {
+    if (res.status === 409 && token === 'case_exists' && meaning.caseExists !== undefined) {
+      /*
+       * ONE OPEN CASE PER DECEDENT, enforced by a partial unique index. It is
+       * NOT `CASE_OPEN`, which is about a case on the CALLER'S OWN account
+       * freezing their waiting period: this one says somebody has already
+       * reported this estate and the reporter's next step is to do nothing.
+       * Two facts, two audiences, two sentences.
+       *
+       * It is also NOT a leak. Settlement answers this only to a caller who
+       * has already passed the linked-contact check on that estate, so the
+       * existence it confirms is one they were entitled to ask about.
+       */
+      return bffError(meaning.caseExists);
+    }
+    if (res.status === 409 && token === 'invalid_transition' && meaning.invalidTransition) {
       /*
        * NOT the document `INVALID_TRANSITION`, whose copy names a document and
-       * whose remedy is a different next step. This one means the case has
-       * passed verification, so self-rescue has become an operator ceremony —
-       * a different fact needing a different sentence, and the repo's rule is
-       * that two failures with different remedies never share a token.
+       * whose remedy is a different next step. Which sentence this becomes is
+       * the calling route's decision — see `mapError`'s own docstring.
        */
-      return bffError('CASE_NOT_VOIDABLE');
+      return bffError(meaning.invalidTransition);
     }
     if (res.status === 503) {
       /*

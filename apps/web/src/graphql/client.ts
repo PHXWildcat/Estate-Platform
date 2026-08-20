@@ -109,6 +109,10 @@ export const GQL_ERROR_CODES = [
   'CASE_NOT_VOIDABLE',
   /** A settlement transition rolled back. NOTHING happened; retry is the remedy. */
   'SETTLEMENT_UNAVAILABLE',
+  /** Somebody already reported this estate (M22 PR4c). Not the caller's OWN open case. */
+  'CASE_ALREADY_REPORTED',
+  /** The case moved past the point where more evidence can be attached (M22 PR4c). */
+  'EVIDENCE_WINDOW_CLOSED',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -142,6 +146,19 @@ export interface SettlementCaseInfo {
  */
 export interface LinkedEstateInfo {
   ownerUserId: string;
+  contactId: string;
+  ownerName: string | null;
+  roles: string[];
+}
+
+/**
+ * One estate this caller may file a death report on (M22 PR4c).
+ *
+ * NO USER ID — the estate is named by `contactId`, and the reporting mutation
+ * takes the same handle. The BFF resolves it against settlement's own list, so
+ * this app never holds and never sends another person's user id.
+ */
+export interface ReportableEstateInfo {
   contactId: string;
   ownerName: string | null;
   roles: string[];
@@ -731,6 +748,18 @@ interface OperationSignatures {
   SettlementCases: {
     variables: EmptyVariables;
     data: { settlementCases: SettlementCaseInfo[] };
+  };
+  ReportableEstates: {
+    variables: EmptyVariables;
+    data: { reportableEstates: ReportableEstateInfo[] };
+  };
+  ReportDeath: {
+    variables: { contactId: string; documentId?: string; documentVersion?: number };
+    data: { reportDeath: SettlementCaseInfo };
+  };
+  AttachCaseEvidence: {
+    variables: { caseId: string; documentId: string; version: number };
+    data: { attachCaseEvidence: SettlementCaseInfo };
   };
   VoidSettlementCase: {
     variables: { caseId: string };

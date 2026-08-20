@@ -870,6 +870,57 @@ export const LINKED_ESTATES_QUERY = `query LinkedEstates {
   }
 }`;
 
+/**
+ * THE REPORTER'S PICKER (M22 PR4c).
+ *
+ * No user id is selected because the type has none: an estate is named by
+ * `contactId` and the reporting mutation takes the same handle, so a death
+ * report can be filed without another person's user id ever reaching this app.
+ */
+export const REPORTABLE_ESTATES_QUERY = `query ReportableEstates {
+  reportableEstates {
+    contactId
+    ownerName
+    roles
+  }
+}`;
+
+/**
+ * There is no `source` argument, and that is the service's rule respected
+ * rather than a shortcut: a report carrying a death certificate IS a
+ * `death_certificate_upload` and one without IS a `trusted_contact`. The BFF
+ * derives it from the document, so the two facts cannot disagree.
+ */
+export const REPORT_DEATH_MUTATION = `mutation ReportDeath($contactId: ID!, $documentId: ID, $documentVersion: Int) {
+  reportDeath(contactId: $contactId, documentId: $documentId, documentVersion: $documentVersion) {
+    caseId
+    status
+    reportSource
+    evidenceCount
+    waitingPeriodEnds
+    resolution
+    resolvedAt
+    createdAt
+    aboutMe
+    voidable
+  }
+}`;
+
+export const ATTACH_CASE_EVIDENCE_MUTATION = `mutation AttachCaseEvidence($caseId: ID!, $documentId: ID!, $version: Int!) {
+  attachCaseEvidence(caseId: $caseId, documentId: $documentId, version: $version) {
+    caseId
+    status
+    reportSource
+    evidenceCount
+    waitingPeriodEnds
+    resolution
+    resolvedAt
+    createdAt
+    aboutMe
+    voidable
+  }
+}`;
+
 export const operations = {
   Register: REGISTER_MUTATION,
   Login: LOGIN_MUTATION,
@@ -954,6 +1005,9 @@ export const operations = {
   UnlinkContact: UNLINK_CONTACT_MUTATION,
   RedeemContactLink: REDEEM_CONTACT_LINK_MUTATION,
   LinkedEstates: LINKED_ESTATES_QUERY,
+  ReportableEstates: REPORTABLE_ESTATES_QUERY,
+  ReportDeath: REPORT_DEATH_MUTATION,
+  AttachCaseEvidence: ATTACH_CASE_EVIDENCE_MUTATION,
   SettlementCases: SETTLEMENT_CASES_QUERY,
   VoidSettlementCase: VOID_SETTLEMENT_CASE_MUTATION,
   SettlementSettings: SETTLEMENT_SETTINGS_QUERY,

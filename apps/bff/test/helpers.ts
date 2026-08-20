@@ -68,6 +68,9 @@ import type {
   SaveProfileInput,
 } from '../src/profile-client';
 import type {
+  DocumentEvidence,
+  ReportableEstate,
+  ReportSource,
   SettlementCase,
   SettlementClient,
   SettlementSettings,
@@ -1183,6 +1186,14 @@ export const SETTLEMENT_CASE: SettlementCase = {
 
 export class FakeSettlementClient implements SettlementClient {
   listCalls: string[] = [];
+  reportableCalls: string[] = [];
+  reportCalls: Array<{
+    accessToken: string;
+    decedentUserId: string;
+    source: ReportSource;
+    evidence: readonly DocumentEvidence[];
+  }> = [];
+  evidenceCalls: Array<{ accessToken: string; caseId: string; evidence: DocumentEvidence }> = [];
   voidCalls: Array<{ accessToken: string; caseId: string }> = [];
   getSettingsCalls: string[] = [];
   updateSettingsCalls: Array<{ accessToken: string; waitingPeriodDays: number }> = [];
@@ -1194,6 +1205,19 @@ export class FakeSettlementClient implements SettlementClient {
     resolution: 'owner_voided',
     resolvedAt: '2026-08-20T01:00:00.000Z',
   };
+  /**
+   * TWO ESTATES, and the second has no roles.
+   *
+   * A linked contact with no role assignment is reportable — settlement's
+   * query LEFT JOINs `role_assignments` and keeps the row — and it is the arm
+   * a picker is most likely to drop, because "executor of X" reads like the
+   * point of the list and `[]` reads like nothing.
+   */
+  reportableResult: ReportableEstate[] = [
+    { decedentUserId: 'user-1', contactId: 'contact-1', roles: ['executor', 'viewer'] },
+    { decedentUserId: 'user-9', contactId: 'contact-9', roles: [] },
+  ];
+  reportResult: SettlementCase = { ...SETTLEMENT_CASE, evidence: [] };
   settingsResult: SettlementSettings = { waitingPeriodDays: 5 };
   settlementError: Error | null = null;
 
@@ -1205,6 +1229,42 @@ export class FakeSettlementClient implements SettlementClient {
   voidCase(accessToken: string, caseId: string): Promise<SettlementCase> {
     this.voidCalls.push({ accessToken, caseId });
     return this.reject() ?? Promise.resolve(this.voidResult);
+  }
+
+  reportableEstates(accessToken: string): Promise<ReportableEstate[]> {
+    this.reportableCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.reportableResult);
+  }
+
+  reportCase(
+    accessToken: string,
+    input: {
+      decedentUserId: string;
+      source: ReportSource;
+      evidence: readonly DocumentEvidence[];
+    },
+  ): Promise<SettlementCase> {
+    this.reportCalls.push({ accessToken, ...input });
+    return this.reject() ?? Promise.resolve(this.reportResult);
+  }
+
+  addEvidence(
+    accessToken: string,
+    caseId: string,
+    evidence: DocumentEvidence,
+  ): Promise<SettlementCase> {
+    this.evidenceCalls.push({ accessToken, caseId, evidence });
+    return (
+      this.reject() ??
+      Promise.resolve({
+        ...this.reportResult,
+        // FAITHFUL ABOUT THE EFFECT, not just the status code: attaching
+        // GROWS the evidence array, and `evidenceCount` is projected from its
+        // length. A double that returned an unchanged case would let a
+        // resolver that silently dropped the attach pass.
+        evidence: [...this.reportResult.evidence, evidence],
+      })
+    );
   }
 
   getSettings(accessToken: string): Promise<SettlementSettings> {

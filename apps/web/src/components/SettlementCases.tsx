@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { gqlRequest, type SettlementCaseInfo } from '../graphql/client';
+import Link from 'next/link';
+import { gqlRequest, type DocumentInfo, type SettlementCaseInfo } from '../graphql/client';
 import { messageFor } from '../lib/copy';
 import { caseDetail, caseHeadline, formatDate, isOpen, reportSourceLabel } from '../lib/settlement';
 import type { StepUpRetryOutcome } from '../lib/step-up';
@@ -33,6 +34,13 @@ import { StepUpPrompt } from './StepUpPrompt';
 
 type PendingVoid = { caseId: string };
 
+/** Which reported case has its attach form open, and what it can offer. */
+type Attaching = {
+  caseId: string;
+  documents: DocumentInfo[] | null;
+  documentId: string;
+};
+
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'ready'; cases: SettlementCaseInfo[] }
@@ -43,6 +51,8 @@ export function SettlementCases(): ReactElement {
   const [pending, setPending] = useState<PendingVoid | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState<Attaching | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     const result = await gqlRequest('SettlementCases', {});
@@ -68,6 +78,67 @@ export function SettlementCases(): ReactElement {
    * still answers stepup_required (the prompt polls to its deadline),
    * 'applied' once the case is closed.
    */
+  /**
+   * Open the attach form for one reported case, and read the caller's own
+   * documents to fill it. Read on OPEN rather than with the case list: most
+   * visits to this page never touch it, and a list nobody uses is a request
+   * nobody needed.
+   */
+  const openAttach = useCallback(async (caseId: string): Promise<void> => {
+    setFormError(null);
+    setNotice(null);
+    setAttaching({ caseId, documents: null, documentId: '' });
+    const result = await gqlRequest('Documents', {});
+    setAttaching((current) =>
+      current?.caseId === caseId
+        ? {
+            ...current,
+            // `null` stays `null` on a failed read — the form says it could
+            // not load them rather than showing an empty list, which would
+            // read as "you have no documents".
+            documents:
+              result.ok && Array.isArray(result.data.documents)
+                ? // A sealed document is Zone A ciphertext no reviewer could
+                  // ever read; attaching one is evidence guaranteed to tell
+                  // nobody anything.
+                  result.data.documents.filter((doc) => !doc.sealed)
+                : null,
+          }
+        : current,
+    );
+  }, []);
+
+  const runAttach = useCallback(async (target: Attaching): Promise<void> => {
+    const chosen = target.documents?.find((doc) => doc.documentId === target.documentId);
+    if (!chosen) return;
+    setSaving(true);
+    setFormError(null);
+    const result = await gqlRequest('AttachCaseEvidence', {
+      caseId: target.caseId,
+      documentId: chosen.documentId,
+      // Pinned to the version that exists NOW. Evidence names a version
+      // because a document can be replaced, and a reviewer must see the one
+      // that was meant.
+      version: chosen.currentVersion,
+    });
+    setSaving(false);
+    if (result.ok && result.data.attachCaseEvidence) {
+      const updated = result.data.attachCaseEvidence;
+      setAttaching(null);
+      setNotice('We’ve attached that to the case.');
+      setState((current) =>
+        current.kind === 'ready'
+          ? {
+              ...current,
+              cases: current.cases.map((row) => (row.caseId === updated.caseId ? updated : row)),
+            }
+          : current,
+      );
+      return;
+    }
+    setFormError(result.ok ? messageFor('UNKNOWN') : messageFor(result.code));
+  }, []);
+
   const runVoid = useCallback(
     async (target: PendingVoid): Promise<StepUpRetryOutcome> => {
       setFormError(null);
@@ -190,9 +261,11 @@ export function SettlementCases(): ReactElement {
 
       {/*
         The same list carries cases this person REPORTED, because settlement
-        selects both with one OR. They are shown apart and carry no control:
-        the kill switch belongs to the subject, and Cedar refuses it to the
-        reporter — offering it here would be an action the server declines.
+        selects both with one OR. They are shown apart, and the ONE control
+        they carry is the attach: the kill switch belongs to the subject and
+        Cedar refuses it to the reporter, so offering that here would be an
+        action the server declines. `evidence_add` is the one verb Cedar DOES
+        grant the reporter, and M22 PR4c is where it got a caller.
       */}
       {filedByMe.length > 0 ? (
         <section aria-labelledby="filed-heading">
@@ -207,6 +280,89 @@ export function SettlementCases(): ReactElement {
                   Opened {formatDate(row.createdAt) ?? 'recently'} · {row.evidenceCount} piece
                   {row.evidenceCount === 1 ? '' : 's'} of evidence
                 </p>
+
+                {attaching?.caseId === row.caseId ? (
+                  <div className="mt-4">
+                    {attaching.documents === null ? (
+                      /* Could not read them — NOT "you have none". */
+                      <p className="text-sm text-ink-muted">
+                        We couldn’t load your documents just now. Please try again in a moment.
+                      </p>
+                    ) : attaching.documents.length === 0 ? (
+                      <p className="text-sm text-ink-muted">
+                        You haven’t uploaded any documents yet.{' '}
+                        <Link
+                          href="/documents"
+                          className="font-medium text-ink underline underline-offset-4"
+                        >
+                          Upload one
+                        </Link>{' '}
+                        and you can attach it here.
+                      </p>
+                    ) : (
+                      <>
+                        {/*
+                          The label names WHICH case this field belongs to. Two
+                          reported cases would otherwise put two fields called
+                          "Document" on one page.
+                        */}
+                        <label htmlFor={`attach-${row.caseId}`} className="label">
+                          Document to attach to this report
+                        </label>
+                        <select
+                          id={`attach-${row.caseId}`}
+                          className="input"
+                          value={attaching.documentId}
+                          onChange={(event) => {
+                            setAttaching({ ...attaching, documentId: event.target.value });
+                          }}
+                        >
+                          <option value="">Choose a document…</option>
+                          {attaching.documents.map((doc) => (
+                            <option key={doc.documentId} value={doc.documentId}>
+                              {doc.title}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={saving || attaching.documentId === ''}
+                        onClick={() => void runAttach(attaching)}
+                      >
+                        {saving ? 'Attaching…' : 'Attach'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={saving}
+                        onClick={() => {
+                          setAttaching(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : isOpen(row) ? (
+                  /*
+                    OFFERED ONLY WHILE THE CASE IS OPEN. Settlement accepts
+                    evidence in `reported` and `verifying` only and answers 409
+                    otherwise, so a button on a resolved case would be an
+                    action the server refuses — and `isOpen` is the same
+                    predicate the owner's half already renders from.
+                  */
+                  <button
+                    type="button"
+                    className="btn btn-secondary mt-4"
+                    onClick={() => void openAttach(row.caseId)}
+                  >
+                    Attach a document
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>

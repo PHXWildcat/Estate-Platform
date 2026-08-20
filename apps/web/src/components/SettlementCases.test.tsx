@@ -43,6 +43,8 @@ function handlers(
     cases?: OperationHandler;
     voidCase?: OperationHandler;
     stepUp?: OperationHandler;
+    documents?: OperationHandler;
+    attach?: OperationHandler;
   } = {},
 ): Record<string, OperationHandler> {
   return {
@@ -62,8 +64,168 @@ function handlers(
         })),
     StepUp: options.stepUp ?? (() => jsonResponse({ data: { stepUp: { ok: true } } })),
     Passkeys: () => jsonResponse({ data: { passkeys: [] } }),
+    Documents: options.documents ?? (() => jsonResponse({ data: { documents: DOCUMENTS } })),
+    AttachCaseEvidence:
+      options.attach ??
+      (() =>
+        jsonResponse({
+          data: {
+            attachCaseEvidence: settlementCase({
+              aboutMe: false,
+              voidable: false,
+              evidenceCount: 1,
+            }),
+          },
+        })),
   };
 }
+
+const DOCUMENTS = [
+  {
+    documentId: 'doc-1',
+    docType: 'other',
+    source: 'uploaded',
+    title: 'Death certificate',
+    currentVersion: 4,
+    executionStatus: 'none',
+    executedAt: null,
+    legalHold: false,
+    sealed: false,
+    templateId: null,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+  },
+];
+
+/** A case this caller REPORTED — settlement returns it from the same list. */
+function reported(over: Partial<SettlementCaseInfo> = {}): SettlementCaseInfo {
+  return settlementCase({ aboutMe: false, voidable: false, ...over });
+}
+
+/**
+ * ATTACHING EVIDENCE TO A REPORT YOU FILED (M22 PR4c).
+ *
+ * `evidence_add` is the ONE verb Cedar grants a reporter on the case they
+ * filed, and until PR4c it had no caller at any layer. The properties worth
+ * pinning are about what is OFFERED: the kill switch must stay absent here
+ * (Cedar refuses it to the reporter), and the attach must be absent once the
+ * case has moved past the window where settlement accepts one.
+ */
+describe('the reporter’s own cases', () => {
+  it('offers the attach on an open report, and never the kill switch', async () => {
+    installGraphqlFetchMock(
+      handlers({ cases: () => jsonResponse({ data: { settlementCases: [reported()] } }) }),
+    );
+    render(<SettlementCases />);
+    expect(await screen.findByRole('button', { name: /attach a document/i })).toBeInTheDocument();
+    // The reporter is not the subject. Offering it would be an action the
+    // server declines — and would suggest they can end a case they filed.
+    expect(screen.queryByRole('button', { name: /close this case/i })).not.toBeInTheDocument();
+  });
+
+  it.each(['verified', 'active', 'closed', 'rejected_fraud'])(
+    'does not offer the attach on a %s case, which settlement would refuse',
+    async (status) => {
+      installGraphqlFetchMock(
+        handlers({
+          cases: () => jsonResponse({ data: { settlementCases: [reported({ status })] } }),
+        }),
+      );
+      render(<SettlementCases />);
+      await screen.findByText(/reports you’ve made/i);
+      expect(screen.queryByRole('button', { name: /attach a document/i })).not.toBeInTheDocument();
+    },
+  );
+
+  it('sends the document at its current version and updates the count', async () => {
+    const { requests } = installGraphqlFetchMock(
+      handlers({ cases: () => jsonResponse({ data: { settlementCases: [reported()] } }) }),
+    );
+    render(<SettlementCases />);
+    fireEvent.click(await screen.findByRole('button', { name: /attach a document/i }));
+    fireEvent.change(await screen.findByLabelText(/document to attach to this report/i), {
+      target: { value: 'doc-1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^attach$/i }));
+    await screen.findByText(/we’ve attached that to the case/i);
+    const sent = requests.filter((r) => r.body.query?.includes('AttachCaseEvidence'));
+    expect(sent[0]?.body.variables).toEqual({
+      caseId: 'case-1',
+      documentId: 'doc-1',
+      version: 4,
+    });
+    // The list re-renders from the mutation's own answer rather than re-reading.
+    expect(await screen.findByText(/1 piece of evidence/i)).toBeInTheDocument();
+  });
+
+  it('a failed documents read says so, and does not claim there are none', async () => {
+    installGraphqlFetchMock(
+      handlers({
+        cases: () => jsonResponse({ data: { settlementCases: [reported()] } }),
+        documents: () => graphqlError('UNKNOWN'),
+      }),
+    );
+    render(<SettlementCases />);
+    fireEvent.click(await screen.findByRole('button', { name: /attach a document/i }));
+    expect(await screen.findByText(/couldn’t load your documents/i)).toBeInTheDocument();
+    expect(screen.queryByText(/haven’t uploaded any documents/i)).not.toBeInTheDocument();
+  });
+
+  it('points at the upload page, not the template generator', async () => {
+    // The same defect as the report flow's, found the same way — in a browser.
+    installGraphqlFetchMock(
+      handlers({
+        cases: () => jsonResponse({ data: { settlementCases: [reported()] } }),
+        documents: () => jsonResponse({ data: { documents: [] } }),
+      }),
+    );
+    render(<SettlementCases />);
+    fireEvent.click(await screen.findByRole('button', { name: /attach a document/i }));
+    expect(await screen.findByRole('link', { name: /upload one/i })).toHaveAttribute(
+      'href',
+      '/documents',
+    );
+  });
+
+  it('reads a closed window as its own fact, not as the kill switch’s', async () => {
+    /*
+     * Settlement spends one `invalid_transition` on the void and on this
+     * route. "You can no longer close this case yourself" is simply false for
+     * somebody attaching a certificate — and they are not the person who
+     * could close it in the first place.
+     */
+    installGraphqlFetchMock(
+      handlers({
+        cases: () => jsonResponse({ data: { settlementCases: [reported()] } }),
+        attach: () => graphqlError('EVIDENCE_WINDOW_CLOSED'),
+      }),
+    );
+    render(<SettlementCases />);
+    fireEvent.click(await screen.findByRole('button', { name: /attach a document/i }));
+    fireEvent.change(await screen.findByLabelText(/document to attach to this report/i), {
+      target: { value: 'doc-1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^attach$/i }));
+    expect(await screen.findByText(/moved too far along/i)).toBeInTheDocument();
+    // Anchored on CASE_NOT_VOIDABLE's own sentence rather than on a phrase the
+    // owner-side empty state legitimately uses a few elements away.
+    expect(screen.queryByText(/already been verified/i)).not.toBeInTheDocument();
+  });
+
+  it('attaches nothing until a document is chosen', async () => {
+    const { requests } = installGraphqlFetchMock(
+      handlers({ cases: () => jsonResponse({ data: { settlementCases: [reported()] } }) }),
+    );
+    render(<SettlementCases />);
+    fireEvent.click(await screen.findByRole('button', { name: /attach a document/i }));
+    const submit = await screen.findByRole('button', { name: /^attach$/i });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    await waitFor(() => {
+      expect(requests.filter((r) => r.body.query?.includes('AttachCaseEvidence'))).toHaveLength(0);
+    });
+  });
+});
 
 describe('a case the owner closed is never described as fraud', () => {
   /**

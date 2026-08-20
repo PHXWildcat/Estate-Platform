@@ -4,6 +4,7 @@ import type { INestApplication } from '@nestjs/common';
 import { ACCESS_COOKIE } from '../src/cookies';
 import {
   FakeIdentityClient,
+  FakeProfileClient,
   FakeSettlementClient,
   SETTLEMENT_CASE,
   TOKENS,
@@ -43,15 +44,29 @@ const VOID_MUTATION = `mutation VoidSettlementCase($caseId: ID!) {
 const SET_PERIOD = `mutation SetSettlementWaitingPeriod($days: Int!) {
   setSettlementWaitingPeriod(days: $days) { waitingPeriodDays }
 }`;
+const REPORTABLE_QUERY =
+  'query ReportableEstates { reportableEstates { contactId ownerName roles } }';
+const REPORT_MUTATION = `mutation ReportDeath($contactId: ID!, $documentId: ID, $documentVersion: Int) {
+  reportDeath(contactId: $contactId, documentId: $documentId, documentVersion: $documentVersion) {
+    caseId status aboutMe evidenceCount
+  }
+}`;
+const ATTACH_MUTATION = `mutation AttachCaseEvidence($caseId: ID!, $documentId: ID!, $version: Int!) {
+  attachCaseEvidence(caseId: $caseId, documentId: $documentId, version: $version) {
+    caseId evidenceCount
+  }
+}`;
 
 describe('settlement resolvers', () => {
   let app: INestApplication;
   let settlement: FakeSettlementClient;
   let identity: FakeIdentityClient;
+  let profile: FakeProfileClient;
 
   beforeEach(async () => {
     settlement = new FakeSettlementClient();
     identity = new FakeIdentityClient();
+    profile = new FakeProfileClient();
     identity.sessionResult = {
       userId: TOKENS.userId,
       sessionId: TOKENS.sessionId,
@@ -59,7 +74,7 @@ describe('settlement resolvers', () => {
       stepupExpiresAt: '2099-01-01T00:00:00.000Z',
       audience: 'account',
     };
-    app = await makeApp({ settlement, identity });
+    app = await makeApp({ settlement, identity, profile });
   });
 
   afterEach(async () => {
@@ -303,6 +318,190 @@ describe('settlement resolvers', () => {
         { cookie: COOKIE },
       );
       expect(gqlBody(res).errors?.[0]?.extensions?.['code']).toBe('CASE_OPEN');
+    });
+  });
+
+  /**
+   * THE REPORTER'S SURFACE (M22 PR4c).
+   *
+   * Two services answer one query here and the join is where this goes wrong
+   * quietly, so the assertions are about the SET rather than about a happy
+   * row: settlement decides who may be reported on, profile only supplies a
+   * name, and an estate must never disappear because the second one had
+   * nothing to say about it.
+   */
+  describe('reportable estates', () => {
+    beforeEach(() => {
+      // Settlement's two rows; profile names only the FIRST. The fixture is
+      // built to disagree, because two lists that agree cannot show which one
+      // is the spine.
+      profile.linkedEstatesResult = [
+        {
+          ownerUserId: 'user-1',
+          contactId: 'contact-1',
+          ownerName: 'Ada Lovelace',
+          roles: ['executor', 'viewer'],
+        },
+      ];
+    });
+
+    it('takes the SET from settlement and the NAME from profile', async () => {
+      const res = await gql(app, { query: REPORTABLE_QUERY }, { cookie: COOKIE });
+      expect(gqlBody(res).data?.['reportableEstates']).toEqual([
+        { contactId: 'contact-1', ownerName: 'Ada Lovelace', roles: ['executor', 'viewer'] },
+        // Reportable, and nameless. Dropping it would hide an estate this
+        // caller may genuinely report on because ITS OWNER never saved a
+        // profile — somebody else's blank form deciding what this person sees.
+        { contactId: 'contact-9', ownerName: null, roles: [] },
+      ]);
+    });
+
+    it('carries no user id, on a list whose whole job is naming people', async () => {
+      const res = await gql(app, { query: REPORTABLE_QUERY }, { cookie: COOKIE });
+      const body = JSON.stringify(gqlBody(res).data);
+      expect(body).not.toMatch(/user-1|user-9/);
+      // Anti-vacuity: the ids ARE in the fixtures the resolver read, so their
+      // absence is the projection working and not an empty answer.
+      expect(settlement.reportableResult.map((e) => e.decedentUserId)).toEqual([
+        'user-1',
+        'user-9',
+      ]);
+      expect(body).toMatch(/contact-1/);
+    });
+
+    it('a failed profile read fails the query — a picker is not a place to guess', async () => {
+      // A plain Error, because that is what an unreachable profile service
+      // actually produces here — not a mapped BFF code.
+      profile.profileError = new Error('profile unreachable');
+      const res = await gql(app, { query: REPORTABLE_QUERY }, { cookie: COOKIE });
+      expect(gqlBody(res).data?.['reportableEstates']).toBeFalsy();
+      expect(gqlBody(res).errors).toBeDefined();
+    });
+  });
+
+  describe('filing a report', () => {
+    it('resolves the contact id to an estate and derives trusted_contact', async () => {
+      const res = await gql(
+        app,
+        { query: REPORT_MUTATION, variables: { contactId: 'contact-9' } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors).toBeUndefined();
+      expect(settlement.reportCalls).toEqual([
+        {
+          accessToken: TOKENS.accessToken,
+          decedentUserId: 'user-9',
+          source: 'trusted_contact',
+          evidence: [],
+        },
+      ]);
+    });
+
+    it('derives death_certificate_upload from the presence of a document', async () => {
+      /*
+       * The source is NOT a parameter. Settlement refuses
+       * `death_certificate_upload` with no document, so the two facts imply
+       * each other and deriving one from the other means they cannot
+       * disagree — an argument that could only ever be wrong, removed.
+       */
+      await gql(
+        app,
+        {
+          query: REPORT_MUTATION,
+          variables: { contactId: 'contact-1', documentId: 'doc-1', documentVersion: 2 },
+        },
+        { cookie: COOKIE },
+      );
+      expect(settlement.reportCalls[0]).toMatchObject({
+        decedentUserId: 'user-1',
+        source: 'death_certificate_upload',
+        evidence: [{ documentId: 'doc-1', version: 2 }],
+      });
+    });
+
+    it('refuses a contact id that is not on the caller’s own list, with the uniform 404', async () => {
+      const res = await gql(
+        app,
+        { query: REPORT_MUTATION, variables: { contactId: 'contact-nobody' } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors?.[0]?.extensions?.['code']).toBe('NOT_FOUND');
+      // AND IT NEVER REACHED SETTLEMENT. The check is the resolve-first
+      // pattern, not a filter applied to an answer.
+      expect(settlement.reportCalls).toEqual([]);
+    });
+
+    it('refuses a document id with no version rather than guessing version 1', async () => {
+      const res = await gql(
+        app,
+        {
+          query: REPORT_MUTATION,
+          variables: { contactId: 'contact-1', documentId: 'doc-1' },
+        },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors?.[0]?.extensions?.['code']).toBe('INVALID_REQUEST');
+      expect(settlement.reportCalls).toEqual([]);
+    });
+
+    it('is NOT step-up gated — the whole ordering of this milestone', async () => {
+      /*
+       * Filing ADDS scrutiny rather than authority: the case locks nothing,
+       * the owner is notified on every channel and voids with one ungated
+       * click. A gate here would fall on a grieving contact on a borrowed
+       * device and stop nothing a token thief wants. Asserted with a session
+       * that is authenticated and NOT step-up fresh, which is the state a
+       * gate would refuse.
+       */
+      identity.sessionResult = {
+        userId: TOKENS.userId,
+        sessionId: TOKENS.sessionId,
+        mfaLevel: 'mfa',
+        stepupExpiresAt: null,
+        audience: 'account',
+      };
+      const res = await gql(
+        app,
+        { query: REPORT_MUTATION, variables: { contactId: 'contact-1' } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors).toBeUndefined();
+      expect(settlement.reportCalls).toHaveLength(1);
+    });
+  });
+
+  describe('attaching evidence', () => {
+    it('sends the document and returns the case with the count grown', async () => {
+      const res = await gql(
+        app,
+        {
+          query: ATTACH_MUTATION,
+          variables: { caseId: SETTLEMENT_CASE.caseId, documentId: 'doc-1', version: 2 },
+        },
+        { cookie: COOKIE },
+      );
+      expect(settlement.evidenceCalls).toEqual([
+        {
+          accessToken: TOKENS.accessToken,
+          caseId: SETTLEMENT_CASE.caseId,
+          evidence: { documentId: 'doc-1', version: 2 },
+        },
+      ]);
+      expect(gqlBody(res).data?.['attachCaseEvidence']).toMatchObject({ evidenceCount: 1 });
+    });
+
+    it('surfaces the closed window as its own code, not as the kill switch’s', async () => {
+      const { bffError } = await import('../src/identity-client');
+      settlement.settlementError = bffError('EVIDENCE_WINDOW_CLOSED');
+      const res = await gql(
+        app,
+        {
+          query: ATTACH_MUTATION,
+          variables: { caseId: SETTLEMENT_CASE.caseId, documentId: 'doc-1', version: 2 },
+        },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors?.[0]?.extensions?.['code']).toBe('EVIDENCE_WINDOW_CLOSED');
     });
   });
 });

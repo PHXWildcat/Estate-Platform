@@ -132,6 +132,24 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // the whole thing — an owner who reads a refusal here stops trying.
   SETTLEMENT_UNAVAILABLE:
     'We couldn’t complete that just now, and nothing has changed. Please try again in a moment.',
+  /*
+   * SOMEBODY GOT THERE FIRST, and the whole job of this sentence is to stop a
+   * grieving person trying again. It is NOT `CASE_OPEN`, which is about a case
+   * on the reader's OWN account freezing their waiting period — same word,
+   * opposite audience — and it is not an error they caused.
+   */
+  CASE_ALREADY_REPORTED:
+    'Someone has already reported this, so there’s nothing more you need to do. The case is open ' +
+    'and being reviewed.',
+  /*
+   * The attach window has closed, which is a fact about the CASE and not about
+   * the document. Deliberately not the kill switch's sentence: "you can no
+   * longer close it yourself" is simply wrong for somebody who was trying to
+   * add a certificate.
+   */
+  EVIDENCE_WINDOW_CLOSED:
+    'This case has moved too far along for anything more to be added to it. If there’s something ' +
+    'we should see, contact us and we’ll take it from there.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
   // M20 PR4, CORRECTED BY THE PR5 REVIEW, which found this sentence claiming
