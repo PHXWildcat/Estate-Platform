@@ -101,7 +101,49 @@ export function VaultLaunch(): ReactElement {
       form.action = `${vaultOrigin}/open`;
       codeRef.current.value = code;
       setStepUpOpen(false);
-      form.submit();
+
+      /*
+       * A BLOCKED SUBMIT IS SILENT, and this page has a live single-use code in
+       * the DOM at this exact moment. `form-action` is baked into the app's CSP
+       * at BUILD time while the BFF serves this origin at REQUEST time, and
+       * nothing outside the compose stack forces the two to agree — so a
+       * deployment that moves the origin without rebuilding the image gets a
+       * POST the browser refuses, no exception, no rejected promise, and a
+       * button that simply goes back to idle. Twice already this repo has been
+       * bitten by a build-arg-versus-runtime split; the difference here is that
+       * the failure leaves a credential behind.
+       *
+       * So the violation is listened for rather than assumed away. It fires
+       * synchronously on the blocked submit, which is why a one-shot listener
+       * with no timer is enough.
+       */
+      let blocked = false;
+      const onViolation = (event: SecurityPolicyViolationEvent): void => {
+        if (event.violatedDirective === 'form-action') {
+          blocked = true;
+        }
+      };
+      document.addEventListener('securitypolicyviolation', onViolation);
+      try {
+        form.submit();
+      } finally {
+        document.removeEventListener('securitypolicyviolation', onViolation);
+        /*
+         * CLEARED WHATEVER HAPPENED. On the normal path the navigation discards
+         * this document and the clear is redundant; on every path where it does
+         * not, the code would otherwise sit readable in the DOM for as long as
+         * the page lives. Script on THIS origin cannot mint a handoff — minting
+         * is step-up gated — but it can read one out of a field, and this origin
+         * is the weaker of the two by design (its `script-src` is deliberately
+         * not locked down, Next's bootstrap needing nonces). Submission
+         * serialises the body synchronously, so clearing here cannot race it.
+         */
+        codeRef.current.value = '';
+      }
+      if (blocked) {
+        setError(errorCopy.VAULT_UNAVAILABLE);
+        return 'applied';
+      }
       return 'applied';
     } finally {
       setBusy(false);

@@ -28,13 +28,20 @@ describe('OperatorLaunch', () => {
   };
 
   let submitted: HTMLFormElement | null;
+  // Captured AT SUBMIT TIME. The field is cleared immediately afterwards, so a
+  // credential that reached the body and a credential still sitting in the DOM
+  // are now two different questions and each is asked separately.
+  let submittedCode: string | null;
 
   beforeEach(() => {
     submitted = null;
+    submittedCode = null;
     jest.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(function mockSubmit(
       this: void,
     ): void {
       submitted = document.querySelector('form');
+      submittedCode =
+        submitted?.querySelector<HTMLInputElement>('input[name="code"]')?.value ?? null;
     });
   });
 
@@ -53,7 +60,10 @@ describe('OperatorLaunch', () => {
     const form = submitted as unknown as HTMLFormElement;
     expect(form.method.toLowerCase()).toBe('post');
     expect(form.action).toBe('http://operator.localhost:3011/open');
-    expect(form.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe(HANDOFF.code);
+    expect(submittedCode).toBe(HANDOFF.code);
+    // …and it does not LINGER. A blocked or refused navigation leaves this page
+    // in place, and the code must not still be readable in the DOM when it does.
+    expect(form.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe('');
 
     // The code is in the body and NOWHERE ELSE: not in the action, not in the
     // page's URL, not in the rendered text.
@@ -314,5 +324,47 @@ describe('OperatorLaunch', () => {
     expect((submitted as unknown as HTMLFormElement).action).toBe(
       'https://operator.example.test/open',
     );
+  });
+  it('A BLOCKED SUBMIT is reported, not silent — and leaves no code behind', async () => {
+    /*
+     * `form-action` is baked into this app's CSP at BUILD time while the BFF
+     * serves the origin at REQUEST time, and nothing outside the compose stack
+     * makes them agree. A deployment that moves the origin without rebuilding
+     * gets a POST the browser refuses: no throw, no rejected promise, a button
+     * that returns to idle — and, before this fix, a live single-use handoff
+     * code left readable in the DOM of the weaker of the two origins.
+     */
+    installGraphqlFetchMock({
+      StartOperatorHandoff: () =>
+        jsonResponse({
+          data: {
+            startOperatorHandoff: {
+              code: 'LIVE-CODE',
+              expiresAt: 'x',
+              operatorOrigin: 'https://operator.example.test',
+            },
+          },
+        }),
+    });
+    (HTMLFormElement.prototype.submit as jest.Mock).mockImplementation(function blocked(
+      this: void,
+    ): void {
+      // What the browser does: refuse the navigation and dispatch the violation.
+      const event = new Event('securitypolicyviolation');
+      // `violatedDirective` is read-only on the real interface, so it is
+      // DEFINED rather than assigned — jsdom implements neither the event nor
+      // the enforcement, so the browser's half is modelled here.
+      Object.defineProperty(event, 'violatedDirective', { value: 'form-action' });
+      document.dispatchEvent(event);
+    });
+    render(<OperatorLaunch />);
+    fireEvent.click(screen.getByRole('button', { name: /open the console/i }));
+
+    // The ERROR ITSELF, not merely that a status region exists — `FormStatus`
+    // renders its node either way, so asserting the region is satisfied by a
+    // page that reported nothing at all.
+    expect(await screen.findByRole('status')).toHaveTextContent(/\S/);
+    expect(document.querySelector<HTMLInputElement>('input[name="code"]')?.value).toBe('');
+    expect(screen.getByRole('button', { name: /open the console/i })).toBeEnabled();
   });
 });
