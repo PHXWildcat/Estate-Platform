@@ -5623,6 +5623,8 @@ because at that point the value lens becomes the one with real inputs.
 - **PR4b — review round 2. SHIPPED** (record below). The lens scopes PR4's
   fan-out lost to agent deaths, covered in the main session: four findings, two
   of them in machinery PR4 introduced.
+- **PR4c — the fences themselves. SHIPPED** (record below). Twelve findings from
+  the round-3 lens re-run, all in fences and none in product code; #125.
 - **PR5 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7. NOT YET SHIPPED.
@@ -6602,6 +6604,43 @@ controls green. F1 re-proved in a real browser before and after: against
 `form-action 'none'`, the old shape reports `false` and the fixed shape reports
 `true`, with the submit genuinely refused in both.
 
+
+#### M21 PR4c — the fences themselves (shipped)
+
+Round 3 of the M21 review, and the first run where every lens completed: #123 cut
+the auto-loaded `CLAUDE.md` from 641 KB to 11 KB, and the same four scopes that
+had died of context exhaustion during PR4 ran to the end, spending 128k-196k
+tokens each. Twelve findings, **all in fences, none in product code** — tracked
+as #125 and closed here.
+
+Four classes rather than twelve bugs: four fences anchored on a name a caller
+chooses (the audience metadata key, the `OperatorsRepo` write path, the gate's
+`tx` handle, the Cedar provenance binding); three parsers narrower than their
+claim (comment stripping, compose `environment:` blocks, SDL descriptions); two
+anti-vacuity floors at the wrong LEVEL (residual regions, the operator-web
+credential scan); three sentences that had stopped being true.
+
+Two were worse than reported, found only by attempting the fix:
+
+- The naive comment stripper is in **24 places across 13 packages**. Three were
+  replaced with a real TypeScript parse — `ts.createScanner` was tried first and
+  MEASURED to still fail on a regex literal containing `/*`, silently and green,
+  so `createSourceFile` is what shipped. The other 21 are an accepted residual
+  (docs/03 §6ff), not an oversight.
+- The nine-verb route list the review called complete is short by seven: Nest 11
+  ships **sixteen** route decorators. Both fences derive from `RequestMethod`
+  now, so a verb Nest adds arrives without an edit.
+
+Every fix mutation-tested by re-applying the construct that defeated it: nine
+mutations red on the assertion naming their property, each with a positive
+control that stayed green. Two survivors were reported as UNFAITHFUL MUTATIONS
+and retargeted rather than argued away — one mutated a `gate.is` binding no
+`assertCan` consumes, the other added an unmirrored enum member alongside the
+description under test, so it failed for the wrong reason.
+
+`compose-parity`'s new refusal immediately found that the reader was already
+skipping lines in six service blocks today — all YAML comments, harmless, but
+unread, which is the state the fence could not previously tell from clean.
 
 ### M32 — Subscription manager (planned; re-sequenced 2026-08-12, displaced by M20, re-numbered 2026-08-17 when M21 became the TB7 operator platform)
 

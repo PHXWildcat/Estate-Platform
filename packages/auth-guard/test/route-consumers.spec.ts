@@ -38,6 +38,9 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+
+import { routeDecorator, routeDecoratorOpener } from './nest-routes';
+import { stripComments } from './source-text';
 import { SERVICE_CREDENTIAL_GRAPH } from '../src/credential-graph';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -59,10 +62,6 @@ function walk(dir: string): string[] {
     }
     return full.endsWith('.ts') ? [full] : [];
   });
-}
-
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 }
 
 function read(file: string): string {
@@ -93,9 +92,10 @@ function serviceNames(): string[] {
  * so a handler using one derived no route at all — invisible to both halves of
  * the fence.
  */
-const ROUTE_VERBS = 'Get|Put|Post|Patch|Delete|All|Head|Options|Search';
-const ROUTE_DECORATOR = new RegExp(`@(${ROUTE_VERBS})\\(\\s*(?:'([^']*)')?\\s*\\)`, 'g');
-const ROUTE_DECORATOR_OPENER = new RegExp(`@(?:${ROUTE_VERBS})\\(`, 'g');
+// The nine-verb list that used to live here was short by the seven WebDAV
+// verbs Nest 11 also ships. It is derived now — see ./nest-routes.
+const ROUTE_DECORATOR = routeDecorator();
+const ROUTE_DECORATOR_OPENER = routeDecoratorOpener();
 
 /** Route decorators the parser above could not read; asserted empty below. */
 const unparseable: string[] = [];
@@ -471,10 +471,27 @@ const EXEMPT_SETTLEMENT_REPORTING =
   'Reporter/owner-facing settlement surface (report a death, follow a case, attach evidence, ' +
   'void, waiting-period settings) has no UI milestone yet; the settlement e2e drives the flows ' +
   'end to end against real services (docs/03 §5.1).';
-const EXEMPT_TB7_OPERATOR =
-  'Operator-facing: the TB7 operator platform is deliberately deferred (docs/03 §6b — operators ' +
-  'are CLI-managed as an interim); building an operator UI before TB7’s controls exist would be ' +
-  'the wrong order, and the settlement/documents e2e suites exercise the routes.';
+// EXEMPT_TB7_OPERATOR is GONE (M21 PR4c). It said the operator platform was
+// deferred and that building its UI "would be the wrong order" — true when it
+// was written, false since M21 PR3b (#117) shipped the console, which consumes
+// thirteen settlement routes named `consumed(OW_CLIENT)` about forty lines
+// below. Its five routes were never one category, and the single reason hid
+// that: a reviewer checking whether they were still legitimately unconsumed was
+// told the operator platform does not exist. Same standard as the
+// EXEMPT_RECOVERY_SURFACE note below — except the sentence had stopped being
+// true while the constant was still in use, which is the harder case to notice.
+const EXEMPT_EVIDENCE_CONTENT =
+  'Documents\u2019 own surface, not the console\u2019s: the operator reads a case timeline, never ' +
+  'document bytes. Its consumer is the M21 PR5 slot (docs/04 — documents evidence content plus ' +
+  'the legal-hold lift ceremony); the documents e2e drives the versioned read end to end.';
+const EXEMPT_PROVIDER_INTAKE =
+  'Machine-to-machine intake: a death signal arrives from the data-provider isolate, never from ' +
+  'a person\u2019s browser, which is why `reportProvider` is deliberately absent from the operator ' +
+  'audience list. No single source triggers anything — mandatory human review follows it.';
+const EXEMPT_EXECUTOR_CASEWORK =
+  'Executor-facing, owned by M23 (docs/04 — "Executor surface | 3 routes", which is exactly these ' +
+  'three). The operator console deliberately does not carry them: an executor is a grieving ' +
+  'family member, not a platform operator, and the two surfaces have different ceremonies.';
 const EXEMPT_PLAID_UI =
   'M3 PR2 shipped the Plaid isolate deliberately backend-only (decision log 2026-07-21); the ' +
   'account-linking UI is a later milestone and the plaid e2e drives link/sync/revoke end to end.';
@@ -601,7 +618,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'documents DELETE /v1/documents/:documentId': consumed(`${BFF}/documents-client.ts`),
   'documents GET /v1/templates': consumed(`${BFF}/documents-client.ts`),
   'documents GET /v1/evidence/:documentId/versions/:version/content': {
-    exempt: EXEMPT_TB7_OPERATOR,
+    exempt: EXEMPT_EVIDENCE_CONTENT,
   },
 
   // ---------------------------------------------------------------- identity
@@ -711,7 +728,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement POST /v1/settlement/cases/:caseId/void': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement GET /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement PUT /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
-  'settlement POST /v1/settlement/cases/report-provider': { exempt: EXEMPT_TB7_OPERATOR },
+  'settlement POST /v1/settlement/cases/report-provider': { exempt: EXEMPT_PROVIDER_INTAKE },
   'settlement GET /v1/settlement/queue': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/administrable': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/review/start': consumed(
@@ -722,8 +739,8 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement POST /v1/settlement/cases/:caseId/verify': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/close': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/cases/:caseId/timeline': consumed(`${OW}/server.ts`, OW_CLIENT),
-  'settlement GET /v1/settlement/cases/:caseId/tasks': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/tasks/:taskId/completion': { exempt: EXEMPT_TB7_OPERATOR },
+  'settlement GET /v1/settlement/cases/:caseId/tasks': { exempt: EXEMPT_EXECUTOR_CASEWORK },
+  'settlement POST /v1/settlement/tasks/:taskId/completion': { exempt: EXEMPT_EXECUTOR_CASEWORK },
   'settlement GET /v1/settlement/cases/:caseId/stages': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/stages': pathSharedWith(
     'settlement GET /v1/settlement/cases/:caseId/stages',
@@ -747,7 +764,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     OW_CLIENT,
   ),
   'settlement POST /v1/settlement/distributions/:distributionId/status': {
-    exempt: EXEMPT_TB7_OPERATOR,
+    exempt: EXEMPT_EXECUTOR_CASEWORK,
   },
 
   // ------------------------------------------------------------------- vault

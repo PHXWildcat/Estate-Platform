@@ -2,7 +2,14 @@
  * The operator grant ceremony's DECISIONS, with the database faked.
  *
  * What this proves is the argv contract, the attribution requirement, the
- * broker gate and what each branch emits. What it deliberately does NOT prove
+ * broker gate and what each branch emits.
+ *
+ * "THE BROKER GATE" MEANT `brokersFrom` UNTIL M21 PR4c. The env parser
+ * answering `[]` and the ceremony REFUSING TO WRITE are different facts, and
+ * only the first was asserted — the decision itself lived inside an unexported
+ * `main()` that nothing in this repository executes. A reviewer reading this
+ * sentence was told the test already existed. It does now: `auditTransportFor`
+ * is exported for that purpose and is pinned below. What it deliberately does NOT prove
  * is the SQL — `grant`'s idempotence rides a partial unique index, and a fake
  * repo has no index to violate. That half is `operator-cli.int.spec.ts`, which
  * runs against real Postgres, and the split is stated because this repo's own
@@ -12,10 +19,12 @@
 import type { AuditEvent } from '@estate/contracts';
 import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
 import {
+  auditTransportFor,
   brokersFrom,
   parseOperatorArgv,
   runOperatorCommand,
   type CommandDeps,
+  type OperatorCommand,
 } from '../src/operator-cli';
 import type { GrantOutcome, OperatorsRepo, RevokeOutcome } from '../src/operators.repo';
 
@@ -118,6 +127,51 @@ describe('brokersFrom', () => {
 
   it.each([[undefined], [''], ['  '], [',']])('treats %p as no brokers', (value) => {
     expect(brokersFrom({ KAFKA_BROKERS: value })).toEqual([]);
+  });
+});
+
+describe('auditTransportFor — the ceremony refuses to write what it cannot record', () => {
+  const GRANT: OperatorCommand = { kind: 'grant', userId: SUBJECT, by: BY };
+  const REVOKE: OperatorCommand = { kind: 'revoke', userId: SUBJECT, by: BY };
+
+  it.each([
+    ['grant', GRANT],
+    ['revoke', REVOKE],
+  ])('REFUSES %s when no broker is configured', (_label, command) => {
+    const decision = auditTransportFor(command, {});
+    expect(decision.kind).toBe('refuse');
+    // The message is the operator's only signal, so it says WHY rather than
+    // naming a variable: this is a ceremony declining, not a misconfiguration.
+    expect(decision.kind === 'refuse' ? decision.message : '').toContain(
+      'refuses to make a change it cannot record',
+    );
+  });
+
+  it.each([
+    ['grant', GRANT],
+    ['revoke', REVOKE],
+  ])('carries %s to Kafka when a broker IS configured', (_label, command) => {
+    expect(auditTransportFor(command, { KAFKA_BROKERS: 'a:9092,b:9092' })).toEqual({
+      kind: 'kafka',
+      brokers: ['a:9092', 'b:9092'],
+    });
+  });
+
+  it('lets `list` run with no broker, because it emits nothing', () => {
+    // The positive control for the refusal above: a gate that refused
+    // everything would pass both cases there and be wrong here. `list` gets the
+    // REFUSING producer, not a silent stub — see operator-cli.ts.
+    expect(auditTransportFor({ kind: 'list' }, {})).toEqual({ kind: 'refusing' });
+  });
+
+  it('WHICH LAYER: this is the repo-owned refusal, not kafkajs rejecting []', () => {
+    // Deleting the gate in operator-cli.ts still fails closed today, because
+    // kafkajs happens to refuse an empty broker array. That is a dependency's
+    // incidental behaviour and one upgrade from becoming a silent in-memory
+    // write, so a test that only observed the binary exiting non-zero would not
+    // distinguish the two. This one calls the decision directly and never
+    // constructs a producer at all.
+    expect(auditTransportFor(GRANT, { KAFKA_BROKERS: '   ' }).kind).toBe('refuse');
   });
 });
 

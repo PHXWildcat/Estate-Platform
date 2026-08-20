@@ -35,8 +35,11 @@ import {
   AUDIENCE_ADMITTERS,
   AUDIENCE_ROUTE_ADMITTERS,
   DEFAULT_SESSION_AUDIENCE,
+  SESSION_AUDIENCE_METADATA,
   SESSION_AUDIENCES,
 } from '../src/session';
+
+import { stripComments } from './source-text';
 
 const SERVICES_DIR = join(__dirname, '..', '..', '..', 'apps', 'services');
 const IDENTITY_MIGRATIONS = join(SERVICES_DIR, 'identity', 'migrations');
@@ -202,8 +205,13 @@ describe('session-audience grants match the declaration', () => {
       // Comments discuss the decorator by name (the credential-graph habit),
       // so strip them before counting or the reconciliation is off by however
       // many times the prose mentions it.
-      const withoutComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-      return (withoutComments.match(/@AllowSessionAudiences\b/g) ?? []).length;
+      //
+      // THE STRIPPER IS A REAL PARSE, and that is load-bearing: the regex that
+      // used to be inlined here treated a `/*` inside a string literal as a
+      // comment opener, so a CSP header value ending `/*` on the handler above
+      // swallowed the decoration below it and the reconciliation still
+      // balanced. See ./source-text.
+      return (stripComments(source).match(/@AllowSessionAudiences\b/g) ?? []).length;
     }
 
     let seenDecorations = 0;
@@ -276,8 +284,22 @@ describe('session-audience grants match the declaration', () => {
      * services this scan is the whole enforcement.
      *
      * So the fence also asserts that the ONLY route to the metadata key is the
-     * declared decorator. That cannot be evaded by renaming, because it is
-     * keyed on the thing the guard actually reads.
+     * declared decorator.
+     *
+     * AN EARLIER VERSION OF THIS COMMENT CLAIMED THAT COULD NOT BE EVADED BY
+     * RENAMING, "because it is keyed on the thing the guard actually reads".
+     * It was keyed on the IDENTIFIER `SESSION_AUDIENCE_METADATA` — a name a
+     * caller chooses — while the guard resolves the STRING that identifier
+     * holds. `@SetMetadata('estate:session-audiences', ['operator'])` is
+     * honoured identically by `Reflector` and was matched by nothing: one line,
+     * any handler in the six services with no second-layer spec. The M21
+     * round-3 review widened `GET /v1/profile` with it and the package stayed
+     * green at 221 tests.
+     *
+     * It is keyed on the VALUE now, read from the exported constant at run
+     * time, so the fence cannot drift from the guard even if the constant is
+     * renamed or its value changed. A service has no legitimate reason to spell
+     * that string at all — the decorator exists so it never has to.
      */
     it('the metadata key is written by the DECORATOR and by nothing else', () => {
       const offenders: string[] = [];
@@ -291,14 +313,36 @@ describe('session-audience grants match the declaration', () => {
             // A service may IMPORT the key (its own guard wiring does), but it
             // may not hand it to SetMetadata: that is a decoration this scan
             // cannot see.
+            // THE VALUE, not the identifier. This is what `Reflector`
+            // resolves, so it is the only spelling that cannot be renamed out
+            // of sight. Derived from the constant so the two cannot drift.
+            if (trimmed.includes(SESSION_AUDIENCE_METADATA)) {
+              offenders.push(
+                `${service}:${file}:${String(index + 1)} spells the metadata key literally`,
+              );
+            }
+            // The identifier form, still worth naming separately: it reads as
+            // legitimate to a reviewer in a way the bare string does not.
             if (/SetMetadata\s*\(\s*SESSION_AUDIENCE_METADATA/.test(trimmed)) {
               offenders.push(`${service}:${file}:${String(index + 1)} raw SetMetadata`);
             }
-            // An alias renames the decorator out of the scan's sight.
-            const aliased = /\bAllowSessionAudiences\s+as\s+(\w+)/.exec(trimmed);
+            // An alias renames the decorator out of the scan's sight, whether
+            // by import (`AllowSessionAudiences as Allow`), by assignment
+            // (`const Allow = AllowSessionAudiences`), or through a namespace
+            // import (`ns.AllowSessionAudiences(...)`), which the decoration
+            // scan above cannot see either.
+            const aliased =
+              /\bAllowSessionAudiences\s+as\s+(\w+)/.exec(trimmed) ??
+              /\b(?:const|let|var)\s+(\w+)\s*=\s*AllowSessionAudiences\b/.exec(trimmed);
             if (aliased) {
               offenders.push(
                 `${service}:${file}:${String(index + 1)} aliased as ${aliased[1] ?? ''}`,
+              );
+            }
+            const namespaced = /@(\w+)\.AllowSessionAudiences\s*\(/.exec(trimmed);
+            if (namespaced) {
+              offenders.push(
+                `${service}:${file}:${String(index + 1)} namespaced as ${namespaced[1] ?? ''}.`,
               );
             }
           }

@@ -165,6 +165,47 @@ export async function runOperatorCommand(
   return `${outcome.result === 'revoked' ? 'revoked' : 'no active grant'}: ${command.userId}\n`;
 }
 
+/** What `main` should do about audit transport before it opens a connection. */
+export type AuditTransport =
+  | { readonly kind: 'refuse'; readonly message: string }
+  | { readonly kind: 'kafka'; readonly brokers: readonly string[] }
+  | { readonly kind: 'refusing' };
+
+/**
+ * THE FAIL-CLOSED DECISION, extracted so a test can reach it.
+ *
+ * It used to live inline in `main()`, which is not exported and which nothing
+ * in this repository executes — so the control this file's docstring calls its
+ * headline ("IT AUDITS, AND REFUSES TO WRITE WHEN IT CANNOT") was pinned by no
+ * assertion at all. The M21 round-3 review proved the cost: replacing the gate
+ * with `brokers.length > 0 ? kafka : inMemory` — verbatim the precedent §1
+ * names as wrong — left the whole 230-test suite green while the rebuilt binary
+ * committed a grant of death-case review authority and emitted nothing.
+ *
+ * TWO LAYERS GUARD THIS, and it matters which one a test proves. Deleting the
+ * refusal below still fails closed today, but only because kafkajs happens to
+ * reject an empty broker array — an incidental behaviour of a dependency, one
+ * upgrade away from becoming a silent in-memory write. This function is the
+ * layer this repository owns, and `operator-cli.spec.ts` pins it directly.
+ */
+export function auditTransportFor(
+  command: OperatorCommand,
+  env: NodeJS.ProcessEnv,
+): AuditTransport {
+  const brokers = brokersFrom(env);
+  if (command.kind === 'list') return { kind: 'refusing' };
+  if (brokers.length === 0) {
+    // Fail closed. An unauditable grant of the authority to approve a death
+    // case is exactly what the append-only trail exists to make impossible.
+    return {
+      kind: 'refuse',
+      message:
+        'KAFKA_BROKERS is required to grant or revoke: this ceremony refuses to make a change it cannot record\n',
+    };
+  }
+  return { kind: 'kafka', brokers };
+}
+
 async function main(): Promise<void> {
   const databaseUrl = process.env['DATABASE_URL'];
   if (!databaseUrl) {
@@ -180,25 +221,24 @@ async function main(): Promise<void> {
     return;
   }
 
-  const brokers = brokersFrom(process.env);
-  const writes = command.kind !== 'list';
-  if (writes && brokers.length === 0) {
-    // Fail closed. An unauditable grant of the authority to approve a death
-    // case is exactly what the append-only trail exists to make impossible.
-    process.stderr.write(
-      'KAFKA_BROKERS is required to grant or revoke: this ceremony refuses to make a change it cannot record\n',
-    );
+  const transport = auditTransportFor(command, process.env);
+  if (transport.kind === 'refuse') {
+    process.stderr.write(transport.message);
     process.exitCode = 1;
     return;
   }
 
-  const producer = writes
-    ? new KafkaAuditProducer({ clientId: 'settlement-operator-cli', brokers })
-    : // `list` changes nothing and emits nothing, so it needs no broker. This
-      // is an ASSERTION of that rather than a stub for it: should the read
-      // path ever start emitting, it fails loudly here instead of quietly
-      // dropping an event into a producer connected to nowhere.
-      REFUSING_PRODUCER;
+  const producer =
+    transport.kind === 'kafka'
+      ? new KafkaAuditProducer({
+          clientId: 'settlement-operator-cli',
+          brokers: [...transport.brokers],
+        })
+      : // `list` changes nothing and emits nothing, so it needs no broker. This
+        // is an ASSERTION of that rather than a stub for it: should the read
+        // path ever start emitting, it fails loudly here instead of quietly
+        // dropping an event into a producer connected to nowhere.
+        REFUSING_PRODUCER;
   const emitter = new AuditEmitter(producer, () => new Date());
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();

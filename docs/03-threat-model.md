@@ -4235,7 +4235,7 @@ obligation stated next to it.
   narrower-input-than-claim shape §6y names.
 
 
-## 6ee. Threat-model delta — M21 PR5, review round 2 (2026-08-20)
+## 6ee. Threat-model delta — M21 PR4b, review round 2 (2026-08-20)
 
 A second pass over the lens scopes PR4's fan-out never reached. Four findings,
 all confirmed by execution; two sit in code PR4 itself shipped, which is the
@@ -4297,6 +4297,64 @@ than the error page it replaces, because it argues them out of revoking it.
   and the only reason this is not routine is that `images.yml` asserts the served
   policy names the origins it was built with.
 
+
+## 6ff. Threat-model delta — M21 PR4c, the fences themselves (2026-08-20)
+
+Round 3 re-ran the four lens scopes that had died of context exhaustion during
+PR4, after #123 cut the auto-loaded `CLAUDE.md` from 641 KB to 11 KB. All four
+completed and returned twelve findings — **none of them a product defect.** Every
+runtime control they examined is correct. What was wrong was the proof: nine of
+the twelve went green over the exact construct they were written to catch.
+
+Four repeated mistakes, not twelve unrelated ones. Four fences were anchored on a
+name a caller chooses rather than on what the runtime reads; three parsers were
+narrower than their claim and skipped silently; two anti-vacuity floors sat at
+the wrong LEVEL, asserting a total where the loss happens per-region; three
+sentences had stopped being true. The first and third are rules this repository
+already states — and had applied to its services, not to its fences.
+
+The sharpest was the audience fence. `CallerGuard` resolves the string
+`'estate:session-audiences'`; the fence grepped for the IDENTIFIER
+`SESSION_AUDIENCE_METADATA`, so `@SetMetadata('estate:session-audiences',
+['operator'])` widened any handler in six services and matched nothing — while
+the docstring two lines above claimed that evasion was impossible. It is keyed on
+the VALUE now, read from the exported constant at run time.
+
+Two findings turned out to understate their own scope once the fix was attempted,
+which is the reason this delta exists rather than a line in the decision log. The
+naive comment stripper is in **24 places across 13 packages**, not the one the
+lens named. And the "complete" nine-verb route list the review told us to copy is
+itself short: Nest 11 ships **sixteen** route decorators, so both fences were
+under-collecting and one of them had been declared correct.
+
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** Twenty-one hand-rolled comment strippers remain outside
+  `packages/auth-guard`, each `source.replace(/\/\*[\s\S]*?\*\//g, '')` or a
+  near-variant, and each blind to a `/*` inside a string, template or regex
+  literal. Three were replaced here with a real TypeScript parse; the rest were
+  left deliberately rather than touching thirteen packages in a fence-repair
+  change. The residual is that any fence reading source through one of them can
+  be blinded by a string. Accepted because the blast radius of the sweep exceeds
+  the risk of the gap, and because each remaining site is an absence check over a
+  small corpus rather than a reconciliation.
+- **[ACCEPTED]** `compose-parity` now REFUSES an environment line it cannot
+  classify rather than skipping it, which closes the merge-key hole without a
+  YAML dependency. It is still not a YAML parse: a construct compose accepts and
+  this reader does not will stop the fence rather than mislead it. Failing loudly
+  is the accepted trade; `js-yaml` is not a dependency of this repo and adding
+  one to a test was not worth it.
+- **[OWNER: M23]** `setDistributionStatus` reads and row-locks before its authz
+  gate, giving three distinguishable refusals (404 / 409 / 403) where every
+  sibling verb gates first. Latent today — no edge forwards `/status`, and the
+  route is already exempt as executor surface. It arms the moment M23 wires the
+  executor UI, which is when somebody adds a proxy line rather than re-reads the
+  ordering. Recorded in #125 with the measurement.
+- **[OWNER: M23]** The `granted_by IS NULL` forensic marker is stated backwards
+  in `001_settlement_schema.sql`. Migrations are append-only and checksummed, so
+  the correction belongs in a later migration or in `docs/02`, which mentions the
+  column nowhere. It misleads exactly the person reading the schema during an
+  incident.
 
 ## 7. Validation program
 

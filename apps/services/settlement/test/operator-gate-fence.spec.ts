@@ -298,17 +298,33 @@ describe('Cedar is handed a MEASURED operator value, never a literal', () => {
    * uniform 404. Both are PEP entry points taking the same operator attribute,
    * so a rule that covered only one would be evaded by choosing the other.
    */
-  function calls(): Array<{ file: string; method: string; arg: string; action: string }> {
-    const out: Array<{ file: string; method: string; arg: string; action: string }> = [];
+  function calls(): Array<{
+    file: string;
+    method: string;
+    subject: string;
+    arg: string;
+    action: string;
+  }> {
+    const out: Array<{
+      file: string;
+      method: string;
+      subject: string;
+      arg: string;
+      action: string;
+    }> = [];
     for (const mm of methods) {
-      const re = /assertCan(?:OrNotFound)?\(\s*[^,]+?\s*,\s*([^,]+?)\s*,\s*'([a-z_]+)'\s*,/g;
+      // The PRINCIPAL is captured now. It used to be skipped with `[^,]+?`,
+      // which is why the provenance check below could only prove the argument
+      // came from a gate call and not whose operator-ness it measured.
+      const re = /assertCan(?:OrNotFound)?\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*'([a-z_]+)'\s*,/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(mm.raw)) !== null) {
         out.push({
           file: mm.file,
           method: mm.method,
-          arg: (m[1] as string).trim(),
-          action: m[2] as string,
+          subject: (m[1] as string).trim(),
+          arg: (m[2] as string).trim(),
+          action: m[3] as string,
         });
       }
     }
@@ -354,11 +370,26 @@ describe('Cedar is handed a MEASURED operator value, never a literal', () => {
     for (const c of measured) {
       expect(c.arg).toMatch(/^[A-Za-z_$][\w$]*$/);
       const owner = methods.find((mm) => mm.file === c.file && mm.method === c.method) as Method;
-      const bound = new RegExp(`\\b${c.arg}\\s*=\\s*await\\s+this\\.gate\\.(?:is|assertIn)\\s*\\(`);
-      expect({ method: c.method, arg: c.arg, boundByGate: bound.test(owner.body) }).toEqual({
+      // WHOSE operator-ness. Binding on assignment alone proved the value came
+      // from a gate call but said nothing about the principal it measured:
+      // `const isOperator = await this.gate.is(tx, locked.reported_by)` beside
+      // `assertCan(operator, isOperator, …)` satisfied the old check while
+      // handing Cedar an attribute belonging to somebody else. The gate's
+      // second argument must be the same principal the decision is about.
+      const bound = new RegExp(
+        `\\b${c.arg}\\s*=\\s*await\\s+this\\.gate\\.(?:is|assertIn)\\s*\\(\\s*[^,]+,\\s*([A-Za-z_$][\\w$.]*)\\s*\\)`,
+      );
+      const measured = bound.exec(owner.body);
+      expect({
+        method: c.method,
+        arg: c.arg,
+        boundByGate: measured !== null,
+        measuredSubject: measured?.[1] ?? null,
+      }).toEqual({
         method: c.method,
         arg: c.arg,
         boundByGate: true,
+        measuredSubject: c.subject,
       });
     }
   });
@@ -389,8 +420,29 @@ describe('the handle is a decision, and pool reads are declared', () => {
     for (const c of found) expect(c.method).not.toEqual('constructor');
   });
 
-  it('passes `tx` everywhere except the declared pool reads', () => {
-    const pool = gateCalls().filter((c) => c.handle !== 'tx');
+  /**
+   * The transaction callback's parameter in this method, if it opens one.
+   *
+   * DERIVED, because the rule used to be `handle !== 'tx'` — a claim about an
+   * identifier the caller picks. The M21 round-3 review defeated it with a
+   * `private async checkOperator(tx: Queryable, …)` helper called as
+   * `this.checkOperator(this.db, operator)`: the gate then resolved the
+   * allowlist on the POOL from inside a transaction, which is the exact defect
+   * invariant (a) forbids, and the fence read the handle as transactional
+   * because it was spelled `tx`. A method that opens no transaction has no
+   * transactional handle to offer, whatever it names its parameter.
+   */
+  function txParamOf(body: string): string | null {
+    const m = /withTransaction\s*\([^,]*,\s*async\s*\(\s*([A-Za-z_$][\w$]*)/.exec(body);
+    return m ? (m[1] as string) : null;
+  }
+
+  it('passes the transaction handle everywhere except the declared pool reads', () => {
+    const pool = gateCalls().filter((c) => {
+      const owner = methods.find((mm) => mm.file === c.file && mm.method === c.method) as Method;
+      const txParam = txParamOf(owner.body);
+      return txParam === null || c.handle !== txParam;
+    });
     expect(pool.map((c) => c.method).sort()).toEqual(
       DECLARED_POOL_READS.map((d) => d.method).sort(),
     );

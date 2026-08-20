@@ -65,8 +65,30 @@ function composeEnvironmentBlock(compose: string, service: string): Map<string, 
       if (!entry) {
         if (/^ {4}\S/.test(line)) {
           inEnvironment = false;
+          continue;
         }
-        continue;
+        // A blank line or a `#` comment carries no variable, so ignoring it
+        // loses nothing. Everything else does carry something.
+        if (line.trim() === '' || line.trim().startsWith('#')) continue;
+        // REFUSE WHAT IT CANNOT READ, rather than skipping it.
+        //
+        // A `<<: *anchor` merge key matches neither the entry pattern nor the
+        // block exit, so it used to be skipped in silence — and every variable
+        // the anchor merged in became invisible to the parity assertion AND to
+        // the credential scan below, which is the one place the "operator-web
+        // holds no credential in either direction" claim is checked on the
+        // deployment side. The construct is already house style in this very
+        // file: the six `pg-*` services all merge `<<: *pg-env`.
+        //
+        // The M21 round-3 review delivered SETTLEMENT_INTERNAL_TOKEN to
+        // operator-web that way and both fences stayed green while js-yaml
+        // confirmed the container received six keys and the fence saw five.
+        // Skipping a line is how a parser lies; this is a fence, so it shouts.
+        throw new Error(
+          `compose-parity cannot read an environment line for "${service}", so it refuses to ` +
+            `report on it: ${JSON.stringify(line)}. Teach the reader this construct (a real YAML ` +
+            `parse would be the honest fix) rather than letting the block go unread.`,
+        );
       }
       const [, key, rawValue] = entry;
       env.set(key as string, (rawValue as string).replace(/^['"]|['"]$/g, ''));
@@ -155,6 +177,13 @@ describe('compose/supervisor mapping parity', () => {
     // that would let it reach settlement at all — which is also why there is no
     // SETTLEMENT_URL here yet: the surface that needs one is PR3b.
     const composeEnv = composeEnvironmentBlock(compose, 'operator-web');
+    // ANTI-VACUITY. A `for…of` over an empty map runs no assertion and passes,
+    // so the claim "carries no credential" and "was never read" looked
+    // identical. The parity test above happens to fail on an empty block, but
+    // that is adjacency, not a stated guarantee — and the merge-key hole was
+    // precisely the case where the two went blind together rather than one
+    // catching the other. State the corpus.
+    expect(composeEnv.size).toBeGreaterThanOrEqual(4);
     for (const key of composeEnv.keys()) {
       expect({ key, credentialShaped: /_INTERNAL_TOKEN$|KEY|SECRET/.test(key) }).toEqual({
         key,

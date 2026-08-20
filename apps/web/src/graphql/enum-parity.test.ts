@@ -54,7 +54,16 @@ function schemaEnums(): Map<string, string[]> {
      * but a parser that cannot read a legal construct is a parser that either
      * lies or forbids documenting the thing it checks.
      */
-    const declarations = (members as string).replace(/"""[\s\S]*?"""/g, ' ');
+    // BOTH legal spellings. Block descriptions were stripped from M21 PR4b;
+    // single-line `"…"` ones were not, and this SDL already uses that spelling
+    // on `Session`'s fields — so documenting an enum member the same way turned
+    // every word of the prose into a member. Loud, not silent: it could not
+    // certify a wrong mirror, but a parser that cannot read a legal construct
+    // forbids documenting the thing it checks, which is the complaint the
+    // comment above raises about the state this replaced.
+    const declarations = (members as string)
+      .replace(/"""[\s\S]*?"""/g, ' ')
+      .replace(/"(?:[^"\\\n]|\\.)*"/g, ' ');
     // Anti-vacuity: stripping must never leave an enum with no members at all.
     const parsed = declarations.split(/\s+/).filter(Boolean);
     expect({ enum: name, members: parsed.length > 0 }).toEqual({ enum: name, members: true });

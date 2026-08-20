@@ -1677,11 +1677,33 @@ describeIfStack('the running stack', () => {
       const there = directives(vault.headers.get('content-security-policy') ?? '');
       // Anti-vacuity: two empty maps compare equal perfectly.
       expect(there.size).toBeGreaterThanOrEqual(10);
-      for (const [name, allowed] of there) {
+      // THE UNION, not just the vault's directives.
+      //
+      // This loop used to iterate `there` alone, so a directive present only in
+      // the operator's policy was never examined — and since both policies
+      // start from `default-src 'none'`, ADDING a directive is exactly how one
+      // of them gets relaxed. `frame-src`, `worker-src` and `script-src-elem`
+      // (which overrides `script-src` for element-inserted scripts in Chromium)
+      // all widened this origin past the vault's while the fence stayed green;
+      // the string absolutes below miss them too, because they check that the
+      // strict directives are PRESENT, not that nothing else was added.
+      //
+      // The realistic regression this test's own comment names — somebody
+      // relaxing a directive for a charting library on an operator console —
+      // has both an edit form and an add form. Only the edit form was caught.
+      for (const name of new Set([...there.keys(), ...here.keys()])) {
+        const allowed = there.get(name);
         const ours = here.get(name);
-        expect(ours).toBeDefined();
+        expect({ directive: name, inVault: allowed !== undefined }).toEqual({
+          directive: name,
+          inVault: true,
+        });
+        expect({ directive: name, inOperator: ours !== undefined }).toEqual({
+          directive: name,
+          inOperator: true,
+        });
         for (const source of ours ?? []) {
-          expect([...allowed]).toContain(source);
+          expect([...(allowed ?? [])]).toContain(source);
         }
       }
 

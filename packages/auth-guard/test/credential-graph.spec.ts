@@ -22,6 +22,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
+import { routeDecorator } from './nest-routes';
+import { stripComments } from './source-text';
+
 import {
   credentialEnvVarsFor,
   credentialSentinel,
@@ -74,11 +77,6 @@ function allSourceFiles(): string[] {
         : [],
     )
     .sort();
-}
-
-/** Comments name other services' variables freely; only real code counts. */
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 }
 
 function read(file: string): string {
@@ -358,7 +356,11 @@ describe('every guarded route is declared in the graph', () => {
           continue;
         }
         const prefix = /@Controller\(\s*'([^']*)'/.exec(chunk)?.[1] ?? '';
-        for (const m of chunk.matchAll(/@(Get|Put|Post|Patch|Delete)\(\s*(?:'([^']*)')?\s*\)/g)) {
+        // DERIVED from Nest, not hand-listed. This alternation used to name
+        // five verbs; a handler on any of the other eleven derived no route at
+        // all, so `guardedRoutes` under-collected AND `edge.opens` never
+        // demanded it — invisible in both directions, with no refusal.
+        for (const m of chunk.matchAll(routeDecorator())) {
           const segment = m[2] ? `${prefix}/${m[2]}` : prefix;
           routes.push(`${(m[1] as string).toUpperCase()} /${segment}`);
         }
