@@ -74,6 +74,13 @@ export const typeDefs = /* GraphQL */ `
     VAULT
     EXTENSION
     OPERATOR
+    """
+    An audience identity minted that this build does not recognise — a peer
+    deployed ahead of this one. Named rather than coerced: a row a user does not
+    recognise must still be listed and revocable, and calling it ACCOUNT would
+    argue them out of revoking it.
+    """
+    UNKNOWN
   }
 
   type Session {
@@ -1261,7 +1268,7 @@ export interface SchemaDeps {
 
 interface UserSessionPayload {
   readonly sessionId: string;
-  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR';
+  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR' | 'UNKNOWN';
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly current: boolean;
@@ -1271,7 +1278,7 @@ interface SessionPayload {
   readonly userId: string;
   readonly mfaLevel: 'NONE' | 'MFA' | 'STEPUP';
   readonly stepUpFresh: boolean;
-  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR';
+  readonly audience: 'ACCOUNT' | 'VAULT' | 'EXTENSION' | 'OPERATOR' | 'UNKNOWN';
 }
 
 interface CredentialsArgs {
@@ -1570,7 +1577,17 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<UserSessionPayload[]> => {
           const rows = await identity.sessions(requireAccessToken(ctx));
-          return rows.map((row) => ({ ...row, audience: AUDIENCE_GQL[row.audience] }));
+          /*
+           * `?? 'UNKNOWN'`, not a coercion to ACCOUNT and not a dropped row.
+           * The list row's audience is a plain string by the time it reaches
+           * here (see `LiveSessionsSchema`) precisely so an identity deployed
+           * ahead of this build cannot blank the page a user opens to revoke
+           * something they do not recognise.
+           */
+          return rows.map((row) => ({
+            ...row,
+            audience: AUDIENCE_GQL[row.audience as SessionAudience] ?? 'UNKNOWN',
+          }));
         },
         passkeys: async (_parent: unknown, _args: unknown, ctx: RequestContext) =>
           identity.passkeys(requireAccessToken(ctx)),

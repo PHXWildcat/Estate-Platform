@@ -187,8 +187,16 @@ describe('session-audience grants match the declaration', () => {
      *
      * Counting is the right shape because it cannot be evaded by the thing it
      * is watching for: whatever form a decoration takes, it contains the
-     * decorator's name exactly once. `settlement`'s own audience spec has had
-     * this reconciliation since PR3b; the shared fence did not.
+     * decorator's name exactly once.
+     *
+     * NO SIBLING FENCE HAD THIS, and an earlier version of this comment said
+     * settlement's audience spec did. It does not and cannot: that spec reads
+     * the DECORATED METADATA off the real controller prototypes and never parses
+     * decorator text, so there is nothing there to reconcile. What it has is a
+     * `declared`/`parsed` reconciliation over the vault edge's route table —
+     * the same habit, a different scan. Identity's and vault's audience specs
+     * are runtime-metadata specs too, which is why this hole was one fence wide
+     * rather than a category.
      */
     function countDecorations(source: string): number {
       // Comments discuss the decorator by name (the credential-graph habit),

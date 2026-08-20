@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
 import { errorCopy } from '../lib/copy';
 import { StepUpPrompt } from './StepUpPrompt';
@@ -64,6 +64,42 @@ export function OperatorLaunch(): ReactElement {
    * the response arriving and anything being done with it.
    */
   const withdrawn = useRef(false);
+  const violationRef = useRef<((event: SecurityPolicyViolationEvent) => void) | null>(null);
+
+  function detachViolationWatch(): void {
+    if (!violationRef.current) return;
+    document.removeEventListener('securitypolicyviolation', violationRef.current);
+    violationRef.current = null;
+  }
+
+  /*
+   * Armed immediately before every submit and left attached afterwards, because
+   * the violation it watches for is dispatched ASYNCHRONOUSLY (see `open()`).
+   * Re-arming replaces the previous listener rather than stacking a second, and
+   * the effect below detaches it if this component goes away first — those two
+   * are the only ways it stops listening, and both are exercised.
+   *
+   * There is deliberately NO `withdrawn` check here. It would never fire: the
+   * prompt is dismissed before the submit, so a cancel can only land while the
+   * mint is in flight, and that path returns before anything is submitted and
+   * before this is ever armed. A guard no test can reach is a guard nobody has
+   * read.
+   */
+  function watchForBlockedSubmit(): void {
+    detachViolationWatch();
+    const onViolation = (event: SecurityPolicyViolationEvent): void => {
+      if (event.violatedDirective !== 'form-action') return;
+      detachViolationWatch();
+      setError(errorCopy.OPERATOR_UNAVAILABLE);
+    };
+    violationRef.current = onViolation;
+    document.addEventListener('securitypolicyviolation', onViolation);
+  }
+
+  // The listener outlives the submit by design, so unmounting must take it
+  // with it — otherwise a violation from an abandoned attempt would call
+  // `setError` on a component that is gone.
+  useEffect(() => detachViolationWatch, []);
 
   async function open(): Promise<'applied' | 'stale'> {
     setError(null);
@@ -124,21 +160,28 @@ export function OperatorLaunch(): ReactElement {
        * bitten by a build-arg-versus-runtime split; the difference here is that
        * the failure leaves a credential behind.
        *
-       * So the violation is listened for rather than assumed away. It fires
-       * synchronously on the blocked submit, which is why a one-shot listener
-       * with no timer is enough.
+       * THE VIOLATION EVENT IS ASYNCHRONOUS, which the first version of this
+       * code got wrong and asserted the opposite of. It listened, submitted,
+       * removed the listener in a `finally` and read the flag — so the flag was
+       * read a task before the event could set it and the refusal branch was
+       * DEAD CODE. Measured in Chrome against `form-action 'none'`: the submit
+       * is refused (the URL does not change), the event does arrive, and the
+       * synchronous read is `false` in both the blocked and the allowed case,
+       * i.e. it carried no information at all. The repo's own jsdom double hid
+       * it by dispatching synchronously — a double more generous than the
+       * platform.
+       *
+       * So the listener OUTLIVES the call. On the success path the navigation
+       * discards this document and the listener with it; on the path where it
+       * does not, the violation lands a moment later and is reported then.
+       * BEST-EFFORT, and worth saying plainly: this reports a refusal the
+       * browser chose to tell us about. The guarantee on this path is the
+       * unconditional clear below, not the message.
        */
-      let blocked = false;
-      const onViolation = (event: SecurityPolicyViolationEvent): void => {
-        if (event.violatedDirective === 'form-action') {
-          blocked = true;
-        }
-      };
-      document.addEventListener('securitypolicyviolation', onViolation);
+      watchForBlockedSubmit();
       try {
         form.submit();
       } finally {
-        document.removeEventListener('securitypolicyviolation', onViolation);
         /*
          * CLEARED WHATEVER HAPPENED. On the normal path the navigation discards
          * this document and the clear is redundant; on every path where it does
@@ -150,10 +193,6 @@ export function OperatorLaunch(): ReactElement {
          * serialises the body synchronously, so clearing here cannot race it.
          */
         codeRef.current.value = '';
-      }
-      if (blocked) {
-        setError(errorCopy.OPERATOR_UNAVAILABLE);
-        return 'applied';
       }
       return 'applied';
     } finally {

@@ -45,7 +45,20 @@ function schemaEnums(): Map<string, string[]> {
 
   const found = new Map<string, string[]>();
   for (const [, name, members] of body.matchAll(/\benum\s+(\w+)\s*\{([^}]*)\}/g)) {
-    found.set(name as string, (members as string).split(/\s+/).filter(Boolean));
+    /*
+     * DESCRIPTIONS STRIPPED FIRST. A GraphQL member may carry a `""".."""`
+     * description, and splitting the body on whitespace turns every WORD of
+     * that prose into a member — which is what happened the first time a member
+     * in this schema was documented: the fence went red listing "Named", "a",
+     * "and" as enum members. Silently wrong in the loud direction this time,
+     * but a parser that cannot read a legal construct is a parser that either
+     * lies or forbids documenting the thing it checks.
+     */
+    const declarations = (members as string).replace(/"""[\s\S]*?"""/g, ' ');
+    // Anti-vacuity: stripping must never leave an enum with no members at all.
+    const parsed = declarations.split(/\s+/).filter(Boolean);
+    expect({ enum: name, members: parsed.length > 0 }).toEqual({ enum: name, members: true });
+    found.set(name as string, parsed);
   }
   return found;
 }

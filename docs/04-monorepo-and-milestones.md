@@ -5620,6 +5620,9 @@ because at that point the value lens becomes the one with real inputs.
   an operator console in front of the §5.1 human-review chain and a milestone
   does not add surface on top of unreviewed surface. Recorded rather than
   silently absorbed — a plan that quietly re-aims is a plan nobody can audit.
+- **PR4b — review round 2. SHIPPED** (record below). The lens scopes PR4's
+  fan-out lost to agent deaths, covered in the main session: four findings, two
+  of them in machinery PR4 introduced.
 - **PR5 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7. NOT YET SHIPPED.
@@ -6541,6 +6544,64 @@ submit rather than at submit. All three are rewritten to assert the property.
 blocked-submit case awaited `findByRole('status')`, which `FormStatus` renders
 whether or not there is a message. Recorded because the tempting move is to
 weaken the mutation until it goes red and call the fix proven.
+
+#### M21 PR4b — review round 2 (shipped)
+
+A second pass over the lens scopes PR4's fan-out never reached. FOUR findings,
+all confirmed by execution, two of them in code PR4 itself shipped. Numbered
+`4b` rather than taking the PR5 slot, which is already the documents evidence
+work: this is the review's own continuation, on the M16 PR4a/PR4b precedent.
+
+**FOUR OF FIVE LENSES DIED, AND THE CAUSE WAS THE PREAMBLE.** `CLAUDE.md` was
+641 KB (~160k tokens) and auto-loads into every subagent, so an agent began near
+the context limit before reading anything: four terminated with
+`Autocompact is thrashing`, two of them before opening a single 600-line file,
+and cutting the briefing from 19k lines to 3k saved none of them. The four
+scopes were covered in the main session instead. Recorded rather than retried,
+because it is a property of the repo and not of the prompt — and largely REMOVED
+the same day by #123, which cut the file to 183 lines by moving the decision log
+to `docs/06`. The lesson that survives the fix: measure the auto-loaded preamble
+before planning a fan-out. L7a (stack/e2e) is the least-covered scope.
+
+**The findings.** (1) The CSP `form-action` violation detector PR4 added to both
+isolated-origin launchers was DEAD CODE — the event is dispatched
+asynchronously, so the listener was removed and the flag read before it could be
+set, and the branch reporting a refused handoff could never run. Its own comment
+asserted the opposite, and the jsdom double dispatched SYNCHRONOUSLY, which is
+the only reason the suite was green. (2) `LiveSessionsSchema` was strict where
+`SessionSchema` is tolerant, so one unrecognised audience failed the whole
+`z.array` and blanked the paired-devices page — defeating the fallback
+`lib/sessions.ts` had carried for exactly that skew since M16. (3) A stale
+comment in `sessions.test.ts` asserted, twelve lines above the assertion pinning
+its absence, the absolute PR3b removed. (4) A PR4 docstring cited a settlement
+precedent that does not exist: that spec reads runtime metadata off controller
+prototypes and has never parsed decorator text, so it cannot have the
+decorator-counting reconciliation the comment credited it with.
+
+**Refuted, and worth as much as the confirmations.** Executor events naming no
+estate looked like PR4's own fix half-applied and is an explicit PR4 decision
+("an executor administering an estate is not operator support"). A 404-vs-403
+oracle on the operator WRITE routes was proved clean with a positive control on
+one session: as a non-operator, a real case and an unknown case both answered a
+byte-identical `403 {"error":"forbidden"}`; after `operator-cli grant` on that
+same user, the real case answered 200 and the unknown 404 — so the uniform 403
+comes from `OperatorGate` and not from a blanket refusal. All six declared
+pool-read sites in `operator-gate-fence.spec.ts` still map exactly to the six
+gate call sites.
+
+**The 2×2 is what proves the F1 pin**, and it is why one surviving mutation is
+reported as a survivor rather than argued away. Fixed component + async double:
+green. Defective component + async double: RED. Fixed component + sync double:
+green — so the double's timing is not load-bearing once the code is right.
+Defective component + sync double: GREEN, which is the historical false green
+reproduced exactly. The asynchronous double is therefore load-bearing precisely
+where it matters: it is what converts the defect from green to red.
+
+Nine mutations red on the assertion that names the property, two positive
+controls green. F1 re-proved in a real browser before and after: against
+`form-action 'none'`, the old shape reports `false` and the fixed shape reports
+`true`, with the submit genuinely refused in both.
+
 
 ### M32 — Subscription manager (planned; re-sequenced 2026-08-12, displaced by M20, re-numbered 2026-08-17 when M21 became the TB7 operator platform)
 

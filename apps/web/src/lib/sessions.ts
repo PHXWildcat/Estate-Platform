@@ -29,6 +29,22 @@ export interface AudienceCopy {
  * `AUDIENCE_GQL`, and for the same reason.
  */
 export const AUDIENCE_COPY: Record<SessionAudience, AudienceCopy> = {
+  /*
+   * IDENTITY MINTED SOMETHING THIS PLATFORM DOES NOT RECOGNISE — a peer
+   * deployed ahead of the BFF. It is a real row and it is revocable, so it is
+   * listed rather than hidden and named rather than guessed at. Coercing it to
+   * ACCOUNT would be worse than the error page it replaces: it would tell
+   * somebody the credential they do not recognise is their own browser.
+   *
+   * Distinct from `audienceCopy`'s fallback below, which covers the OPPOSITE
+   * skew — a BFF ahead of this app, naming a member this build lacks. Two
+   * directions, two mechanisms; neither can cover the other.
+   */
+  UNKNOWN: {
+    label: 'Unrecognised credential',
+    detail:
+      'Estate does not recognise what kind of credential this is. If you did not expect it, revoke it.',
+  },
   ACCOUNT: {
     label: 'Signed-in browser',
     detail: 'A normal sign-in. It can reach everything in your account.',

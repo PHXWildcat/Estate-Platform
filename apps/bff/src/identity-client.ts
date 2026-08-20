@@ -249,7 +249,14 @@ export interface Passkey {
 
 export interface LiveSession {
   readonly sessionId: string;
-  readonly audience: SessionAudience;
+  /*
+   * A STRING, not `SessionAudience`, and the widening is deliberate: this row
+   * comes from a peer that may be deployed ahead of this build, and the type
+   * has to be able to hold what identity actually sent. The resolver names an
+   * unrecognised value `UNKNOWN` on the wire. `SessionContext.audience` — the
+   * one an authorization decision is ever made from — stays the closed union.
+   */
+  readonly audience: string;
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly current: boolean;
@@ -590,11 +597,30 @@ const MintedCodeSchema = z.object({
   expiresAt: z.string().min(1),
 });
 
+/*
+ * THE ROW IS TOLERANT WHERE `SessionSchema` IS STRICT, and the asymmetry is the
+ * point rather than an oversight.
+ *
+ * A `z.array` of strict objects fails WHOLESALE: one row carrying an audience
+ * this build has not heard of discarded the entire response, `parseBody` threw,
+ * and the paired-devices page rendered an error INSTEAD OF THE ROWS THE USER
+ * CAME TO REVOKE. That is the page somebody opens when they believe a device is
+ * compromised, and `lib/sessions.ts` already carries the fallback copy for
+ * exactly this case — citing the rule that a service deployed ahead of the app
+ * must not blank the page. The fallback was unreachable, because the edge
+ * refused one layer up.
+ *
+ * So an unrecognised audience is carried as an opaque string and named
+ * `UNKNOWN` on the wire, never coerced to `account`: mislabelling somebody's
+ * unrecognised credential as "this browser" is worse than the blank page, since
+ * it argues them out of revoking it. The one thing this must not do is drop the
+ * row, which would hide it entirely.
+ */
 const LiveSessionsSchema = z.object({
   sessions: z.array(
     z.object({
       sessionId: z.string().min(1),
-      audience: SessionAudienceSchema,
+      audience: z.string().min(1),
       createdAt: z.string().min(1),
       expiresAt: z.string().min(1),
       current: z.boolean(),
