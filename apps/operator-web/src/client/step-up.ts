@@ -114,8 +114,13 @@ export interface StepUpOptions {
  */
 function stepUpMessage(code: ApiFailure): string {
   switch (code) {
-    case 'UNAUTHENTICATED':
+    case 'INVALID_CODE':
       return 'That code was not accepted. Codes change every 30 seconds — check your authenticator and enter the current one.';
+    case 'UNAUTHENTICATED':
+      // NOT a wrong code: the console session has lapsed, and it cannot be
+      // renewed from here. Saying "check your authenticator" sent an operator
+      // to fetch a code the guard refuses before it ever reads it.
+      return 'Your console session has ended — it lasts fifteen minutes and cannot be renewed. Open the console again from Estate to carry on.';
     case 'INVALID_REQUEST':
       return 'That code was not accepted. Enter the six digits currently shown in your authenticator.';
     case 'TOO_MANY_ATTEMPTS':

@@ -160,9 +160,11 @@ there is no dblink between the auth and core clusters, so it cannot ask who is a
 operator, and a session is a RESTRICTION rather than a claim about its holder.
 `OperatorGate` stays the control in every case.
 
-*Operator actions are audited but NOT rate-limited* — **M21 PR3b** for the
-surface, and the bound itself is deferred to the milestone that gives it a
-consumer, on the rule that a control ships with its caller.
+*Operator actions are audited but NOT rate-limited* — **M23**, which is where
+§6bb already places it. This line said **M21 PR3b** until PR4's review: PR3b
+shipped the surface and no bound, so one item carried two owners and the earlier
+one was a merged PR. A deferral pointing at something already delivered is how
+an item stops being counted, which is the failure M21 exists to answer.
 
 *Operator reads of user data are audit events — for ONE operator read, and not
 for the ones an operator console would make; and none of them is "surfaced to the
@@ -191,7 +193,10 @@ distinct from the reviewer ≠ reporter CHECK that already exists (**M21 follow-
 not the minimum slice**); session recording (**E1**); KMS grant suspension and
 paging on a decrypt-rate anomaly, which is the RESPONSE half of TB4's insider
 control whose DETECTION shipped in M18 (**E1**); a human-facing surface for that
-M18 alarm, whose reader is an operator who does not exist (**M21 PR3b**);
+M18 alarm, whose reader is an operator who NOW exists (**M23**; this said **M21
+PR3b**, which shipped the console without it — the same rot, one paragraph
+over, and the reason PR4 swept every TB7 owner rather than the one it tripped
+on);
 operator-assisted account recovery, which §§6h/6m/6o each name as the remedy that
 does not exist (**M21 follow-on**); and the legal-hold lift ceremony, which M9 PR2
 shipped noting that a hold outlives case close with no way to release it

@@ -434,4 +434,38 @@ describe('the step-up prompt', () => {
     expect(label.htmlFor).toBe('verify-stepup-code');
     expect(document.querySelectorAll('#verify-stepup-code')).toHaveLength(1);
   });
+  it('AN EXPIRED CONSOLE SESSION is not explained as a wrong code', async () => {
+    /*
+     * M21 PR4's review. Identity's step-up route is SessionGuard-ed, so a
+     * lapsed console session is refused with 401 `unauthorized` BEFORE the code
+     * is looked at — and the client mapped every 401 onto the wrong-code
+     * sentence. The path is ordinary: an operator near the end of the
+     * fifteen-minute, non-renewable session presses an action, the prompt
+     * opens, they go and fetch their authenticator, and by the time they type a
+     * correct code the session has gone. Every correct code after that was
+     * answered "check your authenticator and enter the current one", forever,
+     * because the guard never reaches the code. The M12 rule — never explain a
+     * refusal in the vocabulary of a different secret — one status over.
+     */
+    transport({ status: 401, body: { error: 'unauthorized' } });
+    harness(['applied']);
+    field().value = '123456';
+    submit().click();
+    await until(() => notice().length > 0);
+
+    expect(notice()).toMatch(/console session has ended/i);
+    expect(notice()).not.toMatch(/authenticator/i);
+    expect(notice()).not.toMatch(/30 seconds/i);
+  });
+
+  it('AND A WRONG CODE still is — the two 401s stay apart', async () => {
+    transport({ status: 401, body: { error: 'invalid_credentials' } });
+    harness(['applied']);
+    field().value = '000000';
+    submit().click();
+    await until(() => notice().length > 0);
+
+    expect(notice()).toMatch(/Codes change every 30 seconds/i);
+    expect(notice()).not.toMatch(/session has ended/i);
+  });
 });

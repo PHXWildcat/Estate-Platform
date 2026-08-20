@@ -30,6 +30,7 @@
  */
 export type ApiFailure =
   | 'UNAUTHENTICATED'
+  | 'INVALID_CODE'
   | 'STEPUP_REQUIRED'
   | 'FORBIDDEN'
   | 'NOT_FOUND'
@@ -60,7 +61,26 @@ const CSRF_HEADER = 'x-estate-operator-csrf';
 
 /** Server error TEXT is never surfaced; statuses narrow to the set above. */
 function failureFor(status: number, token: string | null): ApiFailure {
-  if (status === 401) return 'UNAUTHENTICATED';
+  if (status === 401) {
+    /*
+     * KEYED ON THE TOKEN, like the 403 and 409 branches below — 401 carries two
+     * facts that call for opposite things. A wrong second factor is
+     * `invalid_credentials` (or `invalid_code`); an EXPIRED CONSOLE SESSION is
+     * `unauthorized` from the guard, and this session lasts fifteen minutes and
+     * cannot be renewed. Collapsing both onto `UNAUTHENTICATED` told an operator
+     * whose session had lapsed to check their authenticator — and every correct
+     * code they then entered was answered the same way, because the guard
+     * refuses before the code is ever looked at. The M12 finding, which this
+     * file's own `stepUpMessage` docstring cites, one status over.
+     *
+     * The unrecognised token falls to UNAUTHENTICATED deliberately: every other
+     * guarded route in the product answers 401 only for a dead credential, and
+     * being told to sign in again when the code was wrong costs one round trip,
+     * where the other direction is a loop with no exit.
+     */
+    if (token === 'invalid_credentials' || token === 'invalid_code') return 'INVALID_CODE';
+    return 'UNAUTHENTICATED';
+  }
   if (status === 403) {
     if (token === 'stepup_required') return 'STEPUP_REQUIRED';
     return 'FORBIDDEN';
