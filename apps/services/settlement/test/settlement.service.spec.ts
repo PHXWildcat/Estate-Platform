@@ -465,7 +465,17 @@ describe('owner void (docs/03 §5.1 control 3: the kill switch)', () => {
  * Its consumer arrives in PR4; the oracle was reachable now.
  */
 describe('evidence attach refuses uniformly (void’s category, second member)', () => {
-  const EVIDENCE = { type: 'provider_match', matchId: 'm-1' } as const;
+  /*
+   * A DOCUMENT, and it was a `provider_match` until M22 PR4b.
+   *
+   * That is worth a sentence rather than a silent edit: the positive control
+   * below asserted that a reporter could attach a provider match, which is the
+   * behaviour PR4b removes. It was never the property this block set out to
+   * prove — it needed ANY entry the reporter could legitimately attach — so the
+   * fixture moves to one and the removed behaviour gets its own tests further
+   * down, where it is the subject rather than the scenery.
+   */
+  const EVIDENCE = { type: 'document', documentId: randomUUID(), version: 1 } as const;
 
   it('answers one uniform 404 for "not yours" and "no such case" alike', async () => {
     const h = linkedHarness();
@@ -489,7 +499,86 @@ describe('evidence attach refuses uniformly (void’s category, second member)',
     const caseId = await reportCase(h);
     await expect(h.service.addEvidence(REPORTER, SESSION, caseId, EVIDENCE)).resolves.toMatchObject(
       {
-        evidence: [expect.objectContaining({ type: 'provider_match', addedBy: REPORTER })],
+        evidence: [expect.objectContaining({ type: 'document', addedBy: REPORTER })],
+      },
+    );
+  });
+});
+
+/**
+ * WHO MAY ATTACH WHAT (M22 PR4b).
+ *
+ * Cedar grants the reporter `evidence_add` and says nothing about the KIND,
+ * and until PR4b nothing else did either: a reporter could append
+ * `{type:'provider_match', matchId:'…'}` with a token of their own invention,
+ * and it landed in `verification_evidence` beside the entries operators file
+ * from real provider signals — indistinguishable to the human whose review is
+ * the control docs/03 §5.1 leans on. The reporter-facing SOURCE enum had
+ * excluded `data_provider` since M7 for exactly this reason; the evidence union
+ * was the same claim through the other door.
+ *
+ * WHICH LAYER EACH HALF IS PROVEN AT. The intake door is a SCHEMA property —
+ * `report()` is handed an already-parsed `ReportCaseInput` and never sees a
+ * body — so asserting it here would be asserting it against the type checker.
+ * `schemas.spec.ts` holds that half, against `ReportCaseSchema` itself. This
+ * block holds the half a schema cannot reach: the one that depends on who is
+ * calling. Both are the same rule, and a rule applied to one member of a
+ * category is a rule half-applied.
+ */
+describe('provider matches are operator-filed, through either door', () => {
+  const PROVIDER = { type: 'provider_match', matchId: 'lexis:mine:1' } as const;
+  const DOCUMENT = { type: 'document', documentId: randomUUID(), version: 1 } as const;
+
+  it('refuses a reporter attaching one to their own case', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    const refusal = await refusalOf(() =>
+      h.service.addEvidence(REPORTER, SESSION, caseId, PROVIDER),
+    );
+    expect(refusal).toEqual({ status: 403, body: { error: 'document_evidence_only' } });
+  });
+
+  it('is a refusal about the CALLER, so it does not vary with the case’s status', async () => {
+    /*
+     * The ordering assertion. `addEvidence` also refuses on status with
+     * `invalid_transition`, and the two have opposite remedies: come back
+     * later, versus never. A reporter on a case past the attach window must
+     * hear the permanent one.
+     */
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await h.service.startReview(OPERATOR, SESSION, caseId);
+    await h.service.decideReview(OPERATOR, SESSION, caseId, { decision: 'approve' });
+    const beyondTheWindow = await refusalOf(() =>
+      h.service.addEvidence(REPORTER, SESSION, caseId, PROVIDER),
+    );
+    expect(beyondTheWindow).toEqual({ status: 403, body: { error: 'document_evidence_only' } });
+
+    // Positive control on the SAME case: the status refusal is still reachable
+    // and still says the other thing, so the assertion above is about the
+    // evidence type and not about this fixture being refused for any reason.
+    const documentInstead = await refusalOf(() =>
+      h.service.addEvidence(REPORTER, SESSION, caseId, DOCUMENT),
+    );
+    expect(documentInstead).toEqual({ status: 409, body: { error: 'invalid_transition' } });
+  });
+
+  it('lets an OPERATOR attach one — the path this evidence type exists for', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await expect(h.service.addEvidence(OPERATOR, SESSION, caseId, PROVIDER)).resolves.toMatchObject(
+      {
+        evidence: [expect.objectContaining({ type: 'provider_match', addedBy: OPERATOR })],
+      },
+    );
+  });
+
+  it('and lets the reporter attach a DOCUMENT, which is the point of the route', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    await expect(h.service.addEvidence(REPORTER, SESSION, caseId, DOCUMENT)).resolves.toMatchObject(
+      {
+        evidence: [expect.objectContaining({ type: 'document', addedBy: REPORTER })],
       },
     );
   });

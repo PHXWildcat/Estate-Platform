@@ -47,6 +47,25 @@ function interfaceFields(source: string, name: string): Set<string> {
   return fields;
 }
 
+/**
+ * The fields a UNION OF OBJECT LITERALS declares, across every arm.
+ *
+ * `interfaceFields` cannot read `EvidenceEntry`: it is a `type`, its arms are
+ * indented one level deeper than an interface's members, and one of them is
+ * written on a single line. Scanned to the next top-level declaration rather
+ * than to the next `;`, because the arms contain semicolons of their own
+ * (`type: 'document';`) and the first one ends nothing.
+ */
+function unionFields(source: string, name: string): Set<string> {
+  const start = source.indexOf(`export type ${name} =`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf('\nexport ', start + 1);
+  const body = source.slice(start, next === -1 ? source.length : next);
+  const fields = new Set<string>();
+  for (const match of body.matchAll(/([A-Za-z_$][\w$]*)\s*\??:/g)) fields.add(match[1] as string);
+  return fields;
+}
+
 /** The keys this client insists on finding, read from its own parsers. */
 function requiredKeys(parser: string): Set<string> {
   const start = client.indexOf(`function ${parser}(`);
@@ -74,6 +93,28 @@ describe('the wire shapes this client reads really exist at settlement', () => {
     expect(declared.size).toBeGreaterThan(2);
     expect(wanted.size).toBeGreaterThan(2);
     expect([...wanted].filter((key) => !declared.has(key))).toEqual([]);
+  });
+
+  /**
+   * EVIDENCE IS PINNED IN BOTH DIRECTIONS (M22 PR4b), and it is the only shape
+   * here that is.
+   *
+   * The other four are subset checks: a client may legitimately ignore a DTO
+   * field it has no use for. Evidence is the field this console exists to put
+   * in front of a human, and "ignored it" is how it got here — settlement has
+   * returned `evidence` on every `CaseDto` since M7 and `parseCase` dropped it
+   * for five milestones, silently, because no assertion ran in that direction.
+   * A new arm with a new reference is a reviewer looking at an entry whose
+   * substance is not on screen, so the sets must be EQUAL and a widening is
+   * somebody's decision rather than a default.
+   */
+  it('parseEvidence reads EXACTLY the fields EvidenceEntry declares, both ways', () => {
+    const declared = unionFields(code(join(SERVICE, 'cases.repo.ts')), 'EvidenceEntry');
+    const wanted = requiredKeys('parseEvidence');
+    // Anti-vacuity: two empty sets agree perfectly, and both arms together
+    // carry six fields.
+    expect(declared.size).toBeGreaterThan(4);
+    expect([...declared].sort()).toEqual([...wanted].sort());
   });
 });
 

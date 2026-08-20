@@ -296,6 +296,28 @@ export class SettlementService {
         'evidence_add',
         caseResource(locked.id, locked.decedent_user_id, locked.reported_by),
       );
+      // A NON-OPERATOR MAY ATTACH DOCUMENTS ONLY (M22 PR4b) — the half of this
+      // rule that needs a caller, the other half being static in
+      // `ReportCaseSchema`. A `provider_match` asserts that a death-data
+      // provider matched this person, and it renders on the review screen
+      // beside the entries operators file; a reporter able to mint one would be
+      // manufacturing corroboration for their own report out of a string they
+      // chose. Cedar grants the reporter `evidence_add` and that is right — it
+      // simply does not say WHAT, and this is the only place that knows.
+      //
+      // An ALLOWLIST, not `=== 'provider_match'`: a third evidence type added
+      // later is refused here until somebody decides it is reporter-safe.
+      //
+      // BEFORE the status check, because the two refusals have opposite
+      // remedies and only one of them can ever change: this one is permanent
+      // and about the caller, `invalid_transition` is transient and about the
+      // row, and answering it first would send a reporter back later for
+      // something that will never work. A 403 discloses nothing here —
+      // `assertCanOrNotFound` above has already established that this caller
+      // belongs to this case.
+      if (!isOperator && input.type !== 'document') {
+        throw new ForbiddenException({ error: 'document_evidence_only' });
+      }
       if (locked.status !== 'reported' && locked.status !== 'verifying') {
         throw new ConflictException({ error: 'invalid_transition' });
       }
