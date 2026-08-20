@@ -6261,6 +6261,62 @@ the refusal path), the count decision neutered, and the second probe of the pair
 the defect planted *and* the quoting checker neutered, which goes **green** and
 is what identifies the checker as the thing that saw it.
 
+#### M21 PR3b — the gate ran twice, and its main guard could fail to fire
+
+Two more, both in the helper gate itself and both found by refusing to accept a
+number without an explanation.
+
+**The step ran everything twice.** The per-file loop was added *above* the old
+aggregate block instead of replacing it. Found in the CI log rather than by
+review: the step printed `helper tests: 43 passing across 3 files` and then a
+fourth TAP stream numbered `1..43`, which can only be one invocation over all
+three files — three separate runs cannot number past their own file's count.
+The leftover mattered beyond the duplicated work, because it still carried
+`awk '/^# pass /{print $3}'` with **no** `exit`: the exact multi-match defect
+the comment eleven lines above it describes, where a second `# pass` line makes
+the comparison an integer-expression error, the `if` takes its else branch, and
+the floor is never evaluated. A step whose header documents a defect and whose
+body still contains it teaches the next reader that the pattern is fine.
+
+**The main-module guard could silently not fire, two ways.** Both exact-count
+gates run `assert-stack-counts.mjs`, so a guard that does not fire turns them
+into steps that exit 0 having compared nothing.
+
+The first was raised by the review and correctly **refuted**:
+`endsWith('assert-stack-counts.mjs')` is correct exactly while the filename
+matches, and the test suite catches a rename (8 of 12 red). The refutation
+holds — but it rests on a suite that only runs through the per-file floor added
+in this same slice, which is worth stating rather than filing the finding as
+dismissed.
+
+The second was found by measurement and is not about names at all. M16 PR4b
+replaced a raw `file://${process.argv[1]}` template with
+`import.meta.url === pathToFileURL(process.argv[1]).href`, and this repo has
+since treated that as the robust form. It is robust against a **space** and not
+against a **symlink**, because node reports the resolved real path in
+`import.meta.url` and the path as typed in `process.argv[1]`:
+
+| invocation | `pathToFileURL(argv[1])` | fires? |
+| --- | --- | --- |
+| `node "/tmp/has space/g/probe.mjs"` | `file:///tmp/has%20space/…` | **no** |
+| `cd "/tmp/has space/g" && node probe.mjs` | `file:///private/tmp/has%20space/…` | yes |
+
+Same file, same node, opposite answers — a relative argv is resolved against
+`process.cwd()`, which is already physical. Latent in this repo, and stated as
+*why* rather than left as luck: every invocation of both scripts is a relative
+path from the workspace root, so both fire. It arms for anyone who invokes
+either by an absolute path through a symlink, which on macOS is anything under
+`/tmp`. Fixed by resolving both sides; `pack-extension.mjs` still carries the
+unresolved comparison and `build-psl.mjs` the older template form, filed
+separately rather than folded into an unrelated PR.
+
+The mutation that **survived** is the useful part. Reverting to the name-keyed
+guard left the suite green, because every case invoked the script under its own
+name, where the two guards are indistinguishable — the property the new comment
+claimed, that a rename needs no edit, was claimed and untested. A second test
+invokes a copy under a different filename, and a third creates its own symlink
+so it is hermetic on Linux. Both mutations are now red.
+
 #### M21 PR3b — reviewing the fence that reviewed the gate
 
 The quoting fence shipped with a hole in the class it was written for, found by

@@ -4230,8 +4230,62 @@ deviating from them, stop and propose the change with rationale — do not silen
   always — the packer exited 0 and wrote nothing at all, silently, while
   VERIFYING.md promised OS independence. Fixed with `pathToFileURL`, and
   verified by running the packer from `/tmp/has space/probe`, which now produces
-  the archive instead of nothing. The first two move the digest, which is the
+  the archive instead of nothing. NARROWED 2026-08-19: that fixed the SPACE and
+  the verification is true for how it was run, but `pathToFileURL(argv[1])` is
+  not robust in general — see the symlink entry below, and the packer still has
+  it. The first two move the digest, which is the
   right time for it to move: before anything is published.
+- 2026-08-19 — A MAIN-MODULE GUARD CAN FAIL TO FIRE BECAUSE OF THE SYMLINK, NOT
+  THE SPACE, and whether it does depends on how the script is ADDRESSED — which
+  is not a property anyone should have to reason about at a call site. M16 PR4b
+  replaced a raw `file://${process.argv[1]}` template with
+  `import.meta.url === pathToFileURL(process.argv[1]).href` and this log
+  credited it as the robust form. It is robust against a space and not against a
+  symlink: node reports the RESOLVED real path in `import.meta.url` and the path
+  AS TYPED in `process.argv[1]`. MEASURED, from one probe under
+  `/tmp/has space/g` on macOS where /tmp is a symlink to /private/tmp — an
+  absolute `node "/tmp/has space/g/probe.mjs"` compares
+  `file:///private/tmp/has%20space/...` against `file:///tmp/has%20space/...`
+  and is FALSE, while `cd` into the directory and `node probe.mjs` is TRUE,
+  because node resolves a relative argv against `process.cwd()`, which is
+  already physical. Same file, same node, opposite answers.
+  THE FAILURE IS THE SILENT ONE: a guard that does not fire means `main` never
+  runs, so the process exits 0 having done nothing — for
+  `.github/scripts/assert-stack-counts.mjs` that is BOTH exact-count gates
+  passing without comparing anything, and for the extension packer it is exit 0
+  with no archive written while VERIFYING.md promises OS independence. LATENT IN
+  THIS REPO, and stated as why rather than left as luck: every invocation of
+  both is a RELATIVE path from the workspace root
+  (`node .github/scripts/assert-stack-counts.mjs`,
+  `node apps/vault-extension/scripts/pack-extension.mjs`), which resolves
+  against the physical cwd and fires. It arms for anyone who invokes either by
+  an absolute path through a symlink, which on macOS includes anything under
+  /tmp.
+  Fixed in `assert-stack-counts.mjs` by resolving BOTH sides
+  (`pathToFileURL(realpathSync(process.argv[1])).href`), which also removes the
+  dependence on invocation style. `pack-extension.mjs` still carries the
+  unresolved comparison and `build-psl.mjs` the older template form; both are
+  filed separately rather than folded into an unrelated PR. Pinned by a test
+  that creates its own symlink, so it is hermetic on Linux too — every other
+  case in that file invokes the script under a path it never symlinks, where all
+  three guards are indistinguishable.
+- 2026-08-19 — AND THE SAME SCRIPT'S GUARD WAS NAME-KEYED, which a review raised
+  and its verifiers correctly REFUTED — the refutation being the interesting
+  part. `endsWith('assert-stack-counts.mjs')` is correct exactly while the
+  filename matches, and a rename that updates both workflow call sites and
+  misses the guard is silent: measured on a renamed copy, which answered exit 0
+  for 99 passed / 7 pending against an expected 33 / 4. It is not a hole because
+  the TEST SUITE catches it — 8 of 12 red. But the suite only catches it through
+  the per-file floor added in the same slice, so the refutation was resting on a
+  gate that had itself been unreliable, which is worth saying rather than
+  filing the finding as dismissed. Hardened anyway, because "a fence catches
+  this" is weaker than "the defect cannot happen", and the fix costs one line.
+  THE MUTATION THAT SURVIVED IS THE ENTRY'S REAL LESSON: reverting to the
+  name-keyed form left the suite GREEN, because every case invoked the script
+  under its own name, where the two guards are indistinguishable. The property
+  my own comment claimed — that a rename needs no edit — was claimed and
+  untested. A second test invokes a copy under a different filename, and both
+  mutations are red.
 - 2026-08-11 — THE SIGNING CAPABILITY MOVED OUT OF THE JOB THAT RUNS THE CODE.
   `permissions` is static per job, so a single job held `id-token: write` and
   `attestations: write` on every event — including `pull_request` runs that
