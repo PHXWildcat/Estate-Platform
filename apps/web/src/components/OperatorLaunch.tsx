@@ -50,17 +50,40 @@ export function OperatorLaunch(): ReactElement {
   const [stepUpOpen, setStepUpOpen] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const codeRef = useRef<HTMLInputElement>(null);
+  /*
+   * CONSENT WITHDRAWN, which `StepUpPrompt`'s ownership counter cannot express
+   * from where it sits. That counter is checked AFTER `onElevated()` resolves —
+   * and this component's whole side effect (mint the code, fill the field, set
+   * the action, navigate) happens INSIDE that call, so the counter can only
+   * ever discard the return value of a handoff that has already left. Pressing
+   * Cancel while the retry's mint is in flight landed the browser on the
+   * operator console origin with a live code, and an in-flight refusal answering
+   * STEPUP_REQUIRED re-opened the prompt that had just been dismissed.
+   *
+   * The withdrawal therefore has to be legible HERE, in the one window between
+   * the response arriving and anything being done with it.
+   */
+  const withdrawn = useRef(false);
 
   async function open(): Promise<'applied' | 'stale'> {
     setError(null);
     setBusy(true);
     try {
       const result = await gqlRequest('StartOperatorHandoff', {});
+      if (withdrawn.current) {
+        // Nothing is applied and nothing is re-opened. Returning 'applied'
+        // rather than 'stale' also stops the retry loop asking again.
+        return 'applied';
+      }
       if (!result.ok) {
         if (result.code === 'STEPUP_REQUIRED') {
           setStepUpOpen(true);
           return 'stale';
         }
+        // A refusal a fresh identity check cannot fix must not leave a live
+        // prompt on screen inviting one — the M20 PR5 finding, which reached
+        // `SecurityPanel` and not the two launchers.
+        setStepUpOpen(false);
         setError(errorCopy[result.code]);
         return 'applied';
       }
@@ -79,6 +102,7 @@ export function OperatorLaunch(): ReactElement {
         typeof handoff?.operatorOrigin === 'string' ? handoff.operatorOrigin : null;
       const form = formRef.current;
       if (code === null || operatorOrigin === null || !form || !codeRef.current) {
+        setStepUpOpen(false);
         setError(errorCopy.OPERATOR_UNAVAILABLE);
         return 'applied';
       }
@@ -143,6 +167,10 @@ export function OperatorLaunch(): ReactElement {
         className="button-primary"
         disabled={busy}
         onClick={() => {
+          // A fresh press is a fresh ceremony. Re-arming here rather than in
+          // `open()` is what keeps the retry path (`onElevated`) from clearing
+          // a withdrawal the user has just made.
+          withdrawn.current = false;
           void open();
         }}
       >
@@ -155,7 +183,10 @@ export function OperatorLaunch(): ReactElement {
           submitLabel="Open the console"
           idPrefix="operator-launch"
           onElevated={open}
-          onCancel={() => setStepUpOpen(false)}
+          onCancel={() => {
+            withdrawn.current = true;
+            setStepUpOpen(false);
+          }}
         />
       ) : null}
 
