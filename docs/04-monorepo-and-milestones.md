@@ -7096,3 +7096,79 @@ evidence is the field this console exists to put in front of a human, and
 
 No route or GraphQL surface changes: PR4b consumes nothing new. The reporter's
 three routes and the retirement of `EXEMPT_SETTLEMENT_REPORTING` remain PR4c.
+
+### M22 PR4c — the reporter's surface (2026-08-20)
+
+The last of settlement's seven reporter/owner routes to get a consumer, and
+`EXEMPT_SETTLEMENT_REPORTING` left on the terms it set for itself: *"when PR4
+lands, this constant goes with its last entry."* `POST /v1/settlement/cases`
+moves from `pathSharedWith` back to `consumed` — that declaration existed
+because the BFF addressed the GET on the path and not the POST, which stopped
+being true the moment `reportCase` and `reportDeath` existed.
+
+**The order this shipped in was the whole design.** The owner's kill switch went
+first (PR3) because the protective action must never be harder than the
+permissive one, and until PR3 closing a fraudulent death case about yourself
+required a terminal. Only once that was one click did filing get a screen.
+
+**No step-up on intake, and the controller's docstring is the argument rather
+than an omission.** Filing ADDS SCRUTINY rather than authority: the case locks
+nothing, the owner is notified on every channel, and they void it with one
+ungated click. A gate would fall on a grieving contact on a borrowed device
+while stopping nothing a token thief wants — and since PR4b a reporter cannot
+manufacture provider corroboration either. What replaces a gate is a REVIEW
+STEP, which is not a credential and refuses nobody: it costs one click and
+exists because the consequence is legible to us and not to the person clicking.
+Somebody who is alive gets told, on every channel, that they were reported dead.
+
+**No user id reaches the browser, on the one surface that had a reason to send
+one.** Settlement identifies an estate by `decedentUserId`; `ReportableEstate`
+carries `contactId` instead — the handle `LinkedEstate` already exposes — and
+`reportDeath` takes the same. The resolver re-reads settlement's own list to
+resolve it, so the mutation checks entitlement against the service rather than
+trusting an argument (the resolve-first pattern), and a contact id that is not
+on the list gets the same uniform 404 settlement gives, without ever reaching it.
+
+**There is no `source` argument.** A report carrying a death certificate IS a
+`death_certificate_upload` and one without IS a `trusted_contact`; the service
+already enforces the implication from the other side by refusing the former with
+no document. Deriving it at the BFF removes a parameter that could only ever be
+wrong — the control you cannot misconfigure is the one you never added.
+
+**The picker needs two services and neither can answer alone.** Settlement is
+the SPINE (it re-checks the link inside `report()`'s own transaction, so it is
+the list that predicts what the server will accept) and profile supplies the
+NAME (it holds the `legal_name` ciphertext and the DEK). This is what PR4a was
+for: without it the screen reads *"report the death of 1f1645fe…"* to somebody
+who has just been bereaved. The join cannot drop a row — an estate with no
+profile match keeps its place and loses only its name, because inner-joining
+would hide an estate this caller may genuinely report on behind somebody else's
+blank form.
+
+**One settlement token, two sentences.** `invalid_transition` answers both the
+kill switch and the evidence attach with opposite remedies, so `mapError` now
+takes the calling route's own meaning — and a route that declares none gets the
+generic status error rather than borrowing whichever sentence was written first.
+That is the fail-closed direction: a route added without thinking about this
+says something vague, never something confidently wrong. `CASE_ALREADY_REPORTED`
+is likewise not `CASE_OPEN`: same word, opposite audience.
+
+The entry point is the linked-estates panel on `/people`, which is the only
+place in the product that names these estates. PR4a's *"offers no control at
+all"* narrows to *"no control over the LINK"* — the reason it gave was always
+about editing somebody else's plan, and reporting a death edits nothing. It is a
+LINK to a page, not a button that files from a list of names, and there is no
+nav entry: a permanent "Report a death" item would advertise the permissive
+action more prominently than any protective one.
+
+Evidence attach lands on "Reports you've made", which PR3 already built —
+`evidence_add` is the one verb Cedar grants a reporter, and it had no caller at
+any layer until now. Offered only while the case is open, because settlement
+accepts evidence in `reported` and `verifying` only. Sealed documents are never
+offered: a Zone A document is opaque ciphertext no reviewer could read, so
+attaching one is evidence guaranteed to tell nobody anything.
+
+Five mutations, each reddening its own named assertion: the review step skipped,
+the contact id trusted instead of resolved, the join made an inner join,
+`invalid_transition` given back its default, and the attach offered on a case
+settlement would refuse.

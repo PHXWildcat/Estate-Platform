@@ -225,6 +225,94 @@ describe('the error firewall', () => {
  * absence over filter. A future edit that models evidence entries to "surface a
  * bit more detail" reddens this.
  */
+/**
+ * THE REPORTER'S THREE ROUTES (M22 PR4c), and the property worth pinning is
+ * that one settlement token means two different things depending on which of
+ * them answered.
+ */
+describe('the reporter edge', () => {
+  it('lists reportable estates', async () => {
+    const { client, calls } = clientWith([
+      response(200, [{ decedentUserId: 'user-1', contactId: 'contact-1', roles: ['executor'] }]),
+    ]);
+    const estates = await client.reportableEstates(TOKEN);
+    expect(estates).toEqual([
+      { decedentUserId: 'user-1', contactId: 'contact-1', roles: ['executor'] },
+    ]);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/settlement/reportable-estates`);
+  });
+
+  it('files a report, stamping the one evidence type a reporter may send', async () => {
+    const { client, calls } = clientWith([response(201, CASE)]);
+    await client.reportCase(TOKEN, {
+      decedentUserId: 'user-1',
+      source: 'death_certificate_upload',
+      evidence: [{ documentId: 'doc-1', version: 2 }],
+    });
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({
+      decedentUserId: 'user-1',
+      source: 'death_certificate_upload',
+      // `type` is added by this edge, not carried on the caller's argument —
+      // the provider arm has no expression here at all (PR4b).
+      evidence: [{ type: 'document', documentId: 'doc-1', version: 2 }],
+    });
+  });
+
+  it('attaches evidence to a case by id', async () => {
+    const { client, calls } = clientWith([response(200, CASE)]);
+    await client.addEvidence(TOKEN, CASE.caseId, { documentId: 'doc-1', version: 3 });
+    expect(calls[0]?.url).toBe(`${BASE}/v1/settlement/cases/${CASE.caseId}/evidence`);
+    expect(JSON.parse(calls[0]?.init.body as string)).toEqual({
+      evidence: { type: 'document', documentId: 'doc-1', version: 3 },
+    });
+  });
+
+  it('says somebody got there first, and does not call it the caller’s own open case', async () => {
+    const { client } = clientWith([response(409, { error: 'case_exists' })]);
+    await expect(
+      client.reportCase(TOKEN, {
+        decedentUserId: 'user-1',
+        source: 'trusted_contact',
+        evidence: [],
+      }),
+    ).rejects.toMatchObject({ extensions: { code: 'CASE_ALREADY_REPORTED' } });
+  });
+
+  /**
+   * THE SAME TOKEN, TWO SENTENCES. Settlement spends one `invalid_transition`
+   * on the kill switch and on the evidence attach, and the remedies are
+   * opposite: one says self-rescue is now an operator ceremony, the other says
+   * nothing more can be added. "This case has moved past the point where you
+   * can close it yourself" is simply false when the caller was attaching a
+   * death certificate.
+   */
+  it('gives 409 invalid_transition a different meaning per route', async () => {
+    const onVoid = clientWith([response(409, { error: 'invalid_transition' })]);
+    const onEvidence = clientWith([response(409, { error: 'invalid_transition' })]);
+    const a = await onVoid.client.voidCase(TOKEN, CASE.caseId).catch((e: unknown) => e);
+    const b = await onEvidence.client
+      .addEvidence(TOKEN, CASE.caseId, { documentId: 'doc-1', version: 1 })
+      .catch((e: unknown) => e);
+    expect((a as { extensions: { code: string } }).extensions.code).toBe('CASE_NOT_VOIDABLE');
+    expect((b as { extensions: { code: string } }).extensions.code).toBe('EVIDENCE_WINDOW_CLOSED');
+  });
+
+  /**
+   * FAIL CLOSED, and this is the assertion that makes the per-route mapping
+   * worth having rather than just tidy. A route that declares no meaning for a
+   * reused token gets the generic status error — it does not inherit whichever
+   * sentence happened to be written first. The next route added without
+   * thinking about this says something vague, never something confidently
+   * wrong.
+   */
+  it('refuses to lend a sentence to a route that never claimed one', async () => {
+    const { client } = clientWith([response(409, { error: 'invalid_transition' })]);
+    const err = await client.listMyCases(TOKEN).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('settlement responded with status 409');
+    expect((err as { extensions?: unknown }).extensions).toBeUndefined();
+  });
+});
+
 describe('what the client refuses to carry', () => {
   it('parses evidence as opaque and keeps ids out of the parsed value', async () => {
     const { client } = clientWith([
@@ -247,11 +335,39 @@ describe('what the client refuses to carry', () => {
     expect(Object.keys(parsed ?? {})).not.toContain('evidenceCount');
   });
 
-  it('models no evidence entry shape at all', () => {
+  /**
+   * NARROWED BY M22 PR4c, and the narrowing is the interesting part.
+   *
+   * This asserted that `documentId` and `matchId` appeared nowhere in the
+   * source — true while the client only ever READ cases. PR4c gives it a
+   * reporting method, so it now WRITES a document id into a request body, and
+   * the blanket absence stopped being the property worth having.
+   *
+   * What survives is the property that was always the point: this client
+   * PARSES no evidence entry. An id it puts on the wire came from its own
+   * caller a moment ago; an id it parsed would be settlement's, would live in
+   * a typed field, and could be selected by any resolver added later.
+   *
+   * `matchId` stays absent OUTRIGHT. Settlement refuses a non-operator's
+   * provider match (PR4b), and an edge with no field to express one cannot
+   * walk into that refusal — absence over filter.
+   */
+  it('can WRITE an evidence id and still models no evidence entry it reads', () => {
     const source = readFileSync(join(__dirname, '..', 'src', 'settlement-client.ts'), 'utf8');
     // Anchored on the runtime construct, not on a comment: the evidence field
     // must stay `z.array(z.unknown())`.
     expect(source).toMatch(/evidence:\s*z\.array\(z\.unknown\(\)\)/);
-    expect(source).not.toMatch(/documentId|matchId/);
+    // No zod field anywhere names an evidence id, so nothing this client
+    // parses can carry one onward.
+    expect(source).not.toMatch(/documentId:\s*z\./);
+    expect(source).not.toMatch(/matchId/);
+    /*
+     * ANTI-VACUITY, and this file needs it more than most: the assertion above
+     * would also pass if `documentId` had simply disappeared from the client,
+     * which is exactly what it looked like before PR4c. Requiring the word to
+     * be PRESENT is what makes this a test of read-versus-write rather than a
+     * test of absence.
+     */
+    expect(source).toMatch(/documentId/);
   });
 });

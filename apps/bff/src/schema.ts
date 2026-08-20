@@ -735,6 +735,43 @@ export const typeDefs = /* GraphQL */ `
     settlementCases: [SettlementCase!]!
     "The caller's own settlement settings — currently the waiting period."
     settlementSettings: SettlementSettings!
+    """
+    The estates whose death this caller is entitled to report (M22 PR4c).
+
+    SETTLEMENT IS THE SPINE and profile only decorates it. The two services
+    read the same 'contacts' rows today, but settlement's is the list that
+    predicts what 'POST /cases' will accept — it re-checks the link under its
+    own transaction and answers a uniform 404 otherwise — so building the
+    picker from profile's read would be offering an action the server might
+    refuse the day the two drift.
+
+    An entry with no matching profile row keeps its place and loses only its
+    NAME. Dropping it would hide an estate this caller may genuinely report on
+    because somebody else never filled in their profile.
+    """
+    reportableEstates: [ReportableEstate!]!
+  }
+
+  """
+  One estate this caller may file a death report on (M22 PR4c).
+
+  NO USER ID. Settlement identifies an estate by 'decedentUserId' and this type
+  carries 'contactId' instead — the same handle 'LinkedEstate' already exposes,
+  meaningless outside the owner's own records. 'reportDeath' takes the contact
+  id and the BFF re-reads THIS list to resolve it, so the mutation verifies
+  entitlement against the service rather than trusting an argument, and no raw
+  user UUID crosses into the browser. That is PR3's rule about 'decedentUserId'
+  held to on the one surface that had a reason to break it.
+  """
+  type ReportableEstate {
+    contactId: ID!
+    """
+    The owner's legal name, or NULL when they have never saved a profile.
+    Null is a real answer — say so in words, never render "Unknown".
+    """
+    ownerName: String
+    "Role tokens this caller holds in that estate. May be empty."
+    roles: [String!]!
   }
 
   """
@@ -1369,6 +1406,47 @@ export const typeDefs = /* GraphQL */ `
     is a control firing and not bad input.
     """
     setSettlementWaitingPeriod(days: Int!): SettlementSettings!
+    """
+    File a death report on an estate that names you (M22 PR4c).
+
+    NOT STEP-UP GATED, deliberately, and the settlement controller's own
+    docstring is the argument: filing ADDS scrutiny rather than authority. The
+    case locks nothing, the owner is notified on every channel we have, and
+    they close it with one ungated click. A gate here would fall on a grieving
+    contact on a borrowed device while stopping nothing a token thief wants —
+    and the protective action must never be the harder one.
+
+    THERE IS NO 'source' ARGUMENT. Settlement's reporter-facing enum has two
+    members and the choice between them is not the caller's to make: a report
+    carrying a death certificate IS 'death_certificate_upload' and one without
+    IS 'trusted_contact', which the service already enforces by refusing the
+    former with no document. Deriving it here removes an argument that could
+    only ever be wrong — the control you cannot misconfigure is the parameter
+    you never added.
+
+    'documentId' and 'documentVersion' go together or not at all. The document
+    is one of the CALLER'S OWN — documents cross-checks that the attacher owns
+    it before any operator is allowed to read it, which is what stops a report
+    registering somebody else's document as evidence.
+
+    CASE_ALREADY_REPORTED means somebody got there first and the reporter's
+    next step is to do nothing. It is not CASE_OPEN, which is about the
+    caller's own account.
+    """
+    reportDeath(contactId: ID!, documentId: ID, documentVersion: Int): SettlementCase!
+    """
+    Attach a further document to a case you reported (M22 PR4c).
+
+    DOCUMENTS ONLY. Settlement refuses a non-operator's provider match (M22
+    PR4b) and this mutation has no field to express one, so the refusal is not
+    something this surface can walk into.
+
+    EVIDENCE_WINDOW_CLOSED means the case has moved past the point where more
+    can be added — its own code, because the service spends one
+    'invalid_transition' on this and on the kill switch, and "too late to close
+    this case" is simply false when the caller was attaching a certificate.
+    """
+    attachCaseEvidence(caseId: ID!, documentId: ID!, version: Int!): SettlementCase!
   }
 `;
 
@@ -1538,6 +1616,12 @@ function cookieValue(ctx: RequestContext, name: string): string | null {
  * The GraphQL shape of one settlement case. Narrower than the service's, and
  * every difference is deliberate — see the SDL type for what is dropped.
  */
+interface ReportableEstatePayload {
+  readonly contactId: string;
+  readonly ownerName: string | null;
+  readonly roles: readonly string[];
+}
+
 interface SettlementCasePayload {
   readonly caseId: string;
   readonly status: string;
@@ -1998,6 +2082,45 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           const callerUserId = await requireCallerUserId(token);
           const cases = await settlement.listMyCases(token);
           return cases.map((dto) => toSettlementCasePayload(dto, callerUserId));
+        },
+        /**
+         * SETTLEMENT'S SET, PROFILE'S NAMES, joined on `contactId`.
+         *
+         * TWO CALLS AND BOTH ARE LOAD-BEARING. Settlement decides WHO may be
+         * reported on (it re-checks the link inside `report()`'s own
+         * transaction), and profile is the only service that can turn an
+         * estate into a name — it holds the owner's `legal_name` ciphertext
+         * and the DEK. Neither can answer alone, which is exactly why PR4a
+         * existed: without it this picker reads "report the death of
+         * 1f1645fe-…" to somebody who has just been bereaved.
+         *
+         * THE JOIN CANNOT DROP A ROW. Settlement's list is the spine and a
+         * missing profile match costs the NAME only. Inner-joining would hide
+         * an estate this caller may genuinely report on because its owner
+         * never saved a profile — an omission caused by somebody else's blank
+         * form.
+         *
+         * The profile read is an audited cross-user PII disclosure (it emits
+         * `contact.link.estates_read` and one `crypto.field.decrypted` per
+         * owner), so this query is asked when the reporting screen opens and
+         * never prefetched — the audited-volume-is-a-UI-constraint rule.
+         */
+        reportableEstates: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<ReportableEstatePayload[]> => {
+          const token = requireAccessToken(ctx);
+          const [estates, named] = await Promise.all([
+            settlement.reportableEstates(token),
+            profile.linkedEstates(token),
+          ]);
+          const nameByContact = new Map(named.map((row) => [row.contactId, row.ownerName]));
+          return estates.map((estate) => ({
+            contactId: estate.contactId,
+            ownerName: nameByContact.get(estate.contactId) ?? null,
+            roles: estate.roles,
+          }));
         },
         linkedEstates: async (
           _parent: unknown,
@@ -2552,6 +2675,68 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         ): Promise<typeof OK> => {
           await profile.redeemLink(requireAccessToken(ctx), args.code);
           return OK;
+        },
+        /**
+         * RESOLVE FIRST, then act — the pattern every PEP in this repo uses.
+         *
+         * The browser names an estate by CONTACT ID and this resolver turns it
+         * into the `decedentUserId` settlement wants by re-reading the
+         * reportable list. That is not a lookup of convenience: it means the
+         * mutation checks entitlement against the service instead of trusting
+         * an argument, and it keeps a raw user UUID off the wire on the one
+         * surface that had a reason to put one there.
+         *
+         * A contact id that is not in the list gets NOT_FOUND — the same
+         * answer settlement gives for an estate that does not name this
+         * caller, so this layer does not reintroduce a distinction the service
+         * declines to make.
+         *
+         * THE SOURCE IS DERIVED, never taken. A report carrying a document is
+         * `death_certificate_upload`; one without is `trusted_contact`. The
+         * service enforces the same implication from the other side by
+         * refusing the former with no document, so agreeing here means one
+         * fact decided in one place.
+         */
+        reportDeath: async (
+          _parent: unknown,
+          args: { contactId: string; documentId?: string | null; documentVersion?: number | null },
+          ctx: RequestContext,
+        ): Promise<SettlementCasePayload> => {
+          const token = requireAccessToken(ctx);
+          const callerUserId = await requireCallerUserId(token);
+          const hasDocument = args.documentId != null;
+          if (hasDocument !== (args.documentVersion != null)) {
+            // A document id without its version names no document: versions
+            // are what evidence is pinned to, and guessing 1 would attach a
+            // draft somebody has since replaced.
+            throw bffError('INVALID_REQUEST');
+          }
+          const estates = await settlement.reportableEstates(token);
+          const estate = estates.find((row) => row.contactId === args.contactId);
+          if (estate === undefined) {
+            throw bffError('NOT_FOUND');
+          }
+          const reported = await settlement.reportCase(token, {
+            decedentUserId: estate.decedentUserId,
+            source: hasDocument ? 'death_certificate_upload' : 'trusted_contact',
+            evidence: hasDocument
+              ? [{ documentId: args.documentId as string, version: args.documentVersion as number }]
+              : [],
+          });
+          return toSettlementCasePayload(reported, callerUserId);
+        },
+        attachCaseEvidence: async (
+          _parent: unknown,
+          args: { caseId: string; documentId: string; version: number },
+          ctx: RequestContext,
+        ): Promise<SettlementCasePayload> => {
+          const token = requireAccessToken(ctx);
+          const callerUserId = await requireCallerUserId(token);
+          const updated = await settlement.addEvidence(token, args.caseId, {
+            documentId: args.documentId,
+            version: args.version,
+          });
+          return toSettlementCasePayload(updated, callerUserId);
         },
         /**
          * The void returns the RESOLVED case, and the projection needs a caller

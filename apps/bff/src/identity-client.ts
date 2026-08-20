@@ -514,6 +514,8 @@ export type BffErrorCode =
    * for.
    */
   | 'CASE_NOT_VOIDABLE'
+  | 'CASE_ALREADY_REPORTED'
+  | 'EVIDENCE_WINDOW_CLOSED'
   /**
    * A settlement transition rolled back because identity or documents could
    * not be reached (M22 PR3). NOTHING HAPPENED and the remedy is to try again.
@@ -559,6 +561,8 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   CODE_REQUESTED_RECENTLY: 'A change was requested recently — wait before asking for another',
   CASE_OPEN: 'This cannot change while a case about you is open',
   CASE_NOT_VOIDABLE: 'This case has moved past the point where you can close it yourself',
+  CASE_ALREADY_REPORTED: 'A case is already open on this estate',
+  EVIDENCE_WINDOW_CLOSED: 'This case has moved past the point where more can be attached to it',
   SETTLEMENT_UNAVAILABLE: 'We could not complete that right now — nothing has changed',
 };
 

@@ -467,22 +467,14 @@ const EXEMPT_EXECUTOR_SURFACE =
   'Executor reads resolve through settlement staged grants (M7 PR2, docs/03 §5.1 control 5); ' +
   'the executor-facing product surface is its own milestone. First-ever route tests landed in ' +
   'M19 PR1 for assets; profile’s executor contact reads are covered by its int suites.';
-// THREE LEFT, and the reason narrowed with them (M22 PR3). This used to cover
-// seven routes with one sentence saying the reporter/owner surface "has no UI
-// milestone yet" — true until PR3 shipped the OWNER's half, which consumed four
-// of them: the case list, the kill switch, and both settings routes now name
-// `apps/bff/src/settlement-client.ts` a few lines below. What survives is
-// exactly the REPORTER's half, so the reason says that and nothing wider. The
-// EXEMPT_TB7_OPERATOR precedent: a single reason spanning routes that are not
-// one category is how a reviewer gets told the wrong thing about all of them.
-const EXEMPT_SETTLEMENT_REPORTING =
-  'The REPORTER-facing settlement surface — listing the estates you may report on, and attaching ' +
-  'further evidence to a case you filed — is M22 PR4. Deliberately after PR3, because filing is ' +
-  'already one tap by design and the protective action must never be harder than the permissive ' +
-  'one, so the owner’s kill switch shipped first. Intake itself (POST /cases) is NOT here: it ' +
-  'shares a path with the consumed case list and is declared pathSharedWith, a few lines below. ' +
-  'The settlement e2e drives all of these end to end against real services (docs/03 §5.1). When ' +
-  'PR4 lands, this constant goes with its last entry.';
+// EXEMPT_SETTLEMENT_REPORTING is GONE (M22 PR4c), and it left on the terms it
+// set for itself: "when PR4 lands, this constant goes with its last entry."
+// All seven settlement routes it once covered now name a consumer — four to
+// PR3 (the case list, the kill switch, both settings routes) and the last
+// three here. The EXEMPT_TB7_OPERATOR/EXEMPT_RECOVERY_SURFACE precedent is
+// that a constant deleted with its final entry cannot be quietly reused for a
+// route it was never written about, which is how a reviewer ends up reading a
+// true sentence about the wrong thing.;
 // EXEMPT_TB7_OPERATOR is GONE (M21 PR4c). It said the operator platform was
 // deferred and that building its UI "would be the wrong order" — true when it
 // was written, false since M21 PR3b (#117) shipped the console, which consumes
@@ -731,21 +723,19 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement GET /v1/settlement/authority/evidence-read': consumed(
     'packages/settlement-client/src/client.ts',
   ),
-  'settlement GET /v1/settlement/reportable-estates': { exempt: EXEMPT_SETTLEMENT_REPORTING },
-  'settlement POST /v1/settlement/cases': pathSharedWith(
-    'settlement GET /v1/settlement/cases',
-    'REPORTER INTAKE, and it is M22 PR4 — not an oversight but the ordering the milestone was ' +
-      'built on: filing a death report is already one tap by design, so the owner’s kill switch ' +
-      'shipped first (PR3) rather than putting the permissive half in front of everyone while ' +
-      'the protective half still needed curl. The BFF settlement client addresses the GET on ' +
-      'this path (the case list, which serves subject and reporter alike) and not the POST — it ' +
-      'has no report method, and the SDL has no reporting mutation for one to sit behind.',
-  ),
+  'settlement GET /v1/settlement/reportable-estates': consumed('apps/bff/src/settlement-client.ts'),
+  // BACK TO `consumed` FROM `pathSharedWith` (M22 PR4c). The declaration existed
+  // because the BFF addressed the GET on this path and not the POST — it had no
+  // report method and the SDL had no mutation for one to sit behind. Both exist
+  // now (`reportCase`, `reportDeath`), so the weaker claim is retired rather
+  // than left standing: a `pathSharedWith` that has become untrue reads as a
+  // route still waiting for its consumer.
+  'settlement POST /v1/settlement/cases': consumed('apps/bff/src/settlement-client.ts'),
   'settlement GET /v1/settlement/cases': consumed('apps/bff/src/settlement-client.ts'),
   'settlement GET /v1/settlement/cases/:caseId': consumed(`${OW}/server.ts`, OW_CLIENT),
-  'settlement POST /v1/settlement/cases/:caseId/evidence': {
-    exempt: EXEMPT_SETTLEMENT_REPORTING,
-  },
+  'settlement POST /v1/settlement/cases/:caseId/evidence': consumed(
+    'apps/bff/src/settlement-client.ts',
+  ),
   'settlement POST /v1/settlement/cases/:caseId/void': consumed(
     'apps/bff/src/settlement-client.ts',
   ),
