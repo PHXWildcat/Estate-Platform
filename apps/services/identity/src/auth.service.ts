@@ -387,9 +387,9 @@ export class AuthService {
    * including of docs/03 §5.1's liveness proof.
    *
    * The repository had already seen the mechanism and read it as a test-seeding
-   * nuisance (CLAUDE.md 2026-08-06: "enrolling twice would leave two verified
-   * secrets and make `findActiveTotp`'s choice decide whether a later step-up
-   * works"). It is the escalation primitive.
+   * nuisance (docs/06-decision-log.md 2026-08-06: "enrolling twice would leave
+   * two verified secrets and make `findActiveTotp`'s choice decide whether a
+   * later step-up works"). It is the escalation primitive.
    *
    * SO THE GATE IS CONDITIONAL, and it has to be: the FIRST enrolment cannot
    * require a step-up, because step-up needs a verified factor and the account

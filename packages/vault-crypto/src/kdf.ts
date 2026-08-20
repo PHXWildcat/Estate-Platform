@@ -10,9 +10,9 @@
  * than Argon2id: WebCrypto has no Argon2, and adding a WASM Argon2 to this
  * package would trade a real, load-bearing property (a near-zero audit surface
  * on the user's device — docs/04 boundary rule 3) for a defense the Secret Key
- * already provides. Approved deviation from docs/00, recorded in the CLAUDE.md
- * decision log; `kdfParams` is versioned so Argon2id can be adopted later
- * without a migration.
+ * already provides. Approved deviation from docs/00, recorded in the decision
+ * log (`docs/06-decision-log.md`, 2026-07-27); `kdfParams` is versioned so
+ * Argon2id can be adopted later without a migration.
  *
  * One PBKDF2 pass feeds both outputs (the account unlock key and the SRP
  * private key) through domain-separated HKDF expansions. Deriving them with two
