@@ -1,0 +1,46 @@
+-- Settlement PR3b review — the invariant 003 asserted in prose and did not enforce.
+--
+-- `cases.repo.ts` says of `markReviewStarted`: "the claim is written in the same
+-- statement as the transition, so a case can never be `verifying` with no
+-- owner". That is true of that ONE UPDATE and was never true of the TABLE. 003
+-- added two CHECKs and neither ties `claimed_by` to `status`, so a bare
+--
+--     UPDATE settlement_cases SET status = 'verifying' WHERE id = $1
+--
+-- is accepted and the row sits in exactly the state 003 exists to prevent
+-- (measured against a real database in the PR3b review, before this file).
+--
+-- NOT REACHABLE TODAY and that is not the point: `markReviewStarted` is the
+-- only writer of `'verifying'`, so no request sequence produces it. What it
+-- costs is the guarantee. The SECOND writer of that status — a data fix, the
+-- Temporal adoption this service is designed to absorb, or the re-claim route
+-- an operator called away from a case will want — reproduces the unowned
+-- `verifying` state silently, while the code tells the next reader it "can
+-- never" happen. Every other invariant on this table is a CHECK; this one was
+-- a comment.
+--
+-- WHY `NOT VALID`, which is the whole design of this migration. 003
+-- deliberately declined a backfill, on the recorded ground that "a case claimed
+-- before this migration legitimately has no claimer to record" — and such rows
+-- exist (one in the local stack). A validating CHECK would refuse to apply
+-- against any database with one, and the honest remedy is not available to a
+-- migration: `claimed_by = reported_by` violates
+-- `settlement_cases_claimer_not_reporter`, and naming any other operator would
+-- write a FALSE ATTRIBUTION into an evidence table, which is the
+-- `002_dek_unique_active` rule ("SQL must never choose") pointed at a column
+-- whose whole purpose is to say who did something.
+--
+-- `NOT VALID` says exactly what is meant: the invariant holds from here on, and
+-- the pre-003 rows are grandfathered rather than guessed at. MEASURED against
+-- real Postgres rather than assumed, because the semantics are easy to state
+-- backwards — an existing violating row survives; a NEW unowned `verifying` row
+-- is REFUSED; and the old row can still be DECIDED (its status leaves
+-- `verifying`) or properly re-claimed, so nothing is stranded.
+--
+-- Deliberately NOT paired with a later `VALIDATE CONSTRAINT`: validation would
+-- fail for exactly the rows this clause exists to grandfather, so a migration
+-- promising it would be one that can never run.
+
+ALTER TABLE settlement_cases
+  ADD CONSTRAINT settlement_cases_claimed_when_verifying
+  CHECK (status <> 'verifying' OR claimed_by IS NOT NULL) NOT VALID;

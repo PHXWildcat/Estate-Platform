@@ -18,11 +18,14 @@ import { z } from 'zod';
  * equal to the granted set AND explicitly empty, because without the second
  * assertion the test passes vacuously if the graph ever changes shape.
  *
- * ALSO NOT HERE: a settlement URL. This origin proxies identity and nothing
- * else until M21 PR3b puts the operator surface on it, and the upstream arrives
- * in the same change as the routes that reach it — the M9 PR2 rule that a
- * capability and its callers ship together, which is the only thing that keeps
- * a zero-callers gap from opening.
+ * TWO UPSTREAMS NOW (M21 PR3b): identity and settlement. The settlement URL
+ * arrived in the same change as the thirteen routes that reach it and the
+ * screens that call them — the M9 PR2 rule that a capability and its callers
+ * ship together, which is the only thing that keeps a zero-callers gap from
+ * opening. A THIRD upstream is a trust decision and not a configuration one:
+ * this origin can address exactly the services named here, so adding a
+ * variable is how the console would gain reach into a cluster it has never
+ * touched.
  */
 const EnvSchema = z
   .object({
@@ -30,6 +33,8 @@ const EnvSchema = z
     PORT: z.coerce.number().int().positive().max(65535).default(3011),
     /** Base URL of identity: handoff redemption, step-up, session, logout. */
     IDENTITY_URL: z.string().url().optional(),
+    /** Base URL of settlement: the review queue and the case surface. */
+    SETTLEMENT_URL: z.string().url().optional(),
     /**
      * The app origin, e.g. `http://localhost:3000`. Used for exactly two
      * things, both of which must be an exact ORIGIN rather than a pattern: the
@@ -39,7 +44,7 @@ const EnvSchema = z
     APP_ORIGIN: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
-    const requiredInProduction = ['IDENTITY_URL', 'APP_ORIGIN'] as const;
+    const requiredInProduction = ['IDENTITY_URL', 'SETTLEMENT_URL', 'APP_ORIGIN'] as const;
     for (const key of requiredInProduction) {
       if (env.NODE_ENV === 'production' && !env[key]) {
         ctx.addIssue({
@@ -55,6 +60,7 @@ export interface OperatorWebConfig {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
   readonly identityUrl: string;
+  readonly settlementUrl: string;
   readonly appOrigin: string;
   /**
    * Whether cookies get `Secure`. TRUE IN EVERY ENVIRONMENT, unlike the BFF's,
@@ -88,6 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OperatorWebCon
     nodeEnv: e.NODE_ENV,
     port: e.PORT,
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
+    settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
     appOrigin: e.APP_ORIGIN ?? 'http://localhost:3000',
     secureCookies: true,
   };

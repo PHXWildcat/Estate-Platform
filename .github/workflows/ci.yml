@@ -22,7 +22,18 @@ on:
 permissions:
   contents: read
 
-# Skip the branch-push run when a PR run for the same commit exists.
+# Supersede an older run on the SAME ref when a newer commit lands there.
+#
+# CORRECTED: this used to say it skipped the branch-push run when a PR run for
+# the same commit existed. It cannot, and never did. `github.ref` is
+# `refs/heads/<branch>` for a push and `refs/pull/<n>/merge` for a
+# pull_request, so the two events land in DIFFERENT groups and neither can
+# cancel the other. MEASURED over this repo's own history (400 runs of this
+# workflow, grouped by sha): 67 shas received both a push run and a
+# pull_request run, and 64 of those pairs ran both to completion with no
+# cancellation at all. The three pairs that do contain one are same-event
+# supersession — a newer commit arriving — which is what this block actually
+# buys, and is worth keeping.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -81,8 +92,64 @@ jobs:
       # DOT-directory: given `.github/scripts/` it hands the path to the module
       # loader and dies with MODULE_NOT_FOUND, which would have looked like a
       # broken test rather than a discovery quirk.
+      #
+      # TWO FLOORS, because this step is the SOLE invoker of every
+      # `.github/scripts/*.test.mjs` and it cannot otherwise detect its own
+      # disarming. MEASURED: with `nullglob` off (the default) an unmatched glob
+      # reaches node as the LITERAL pattern; node 22 expands it itself, finds
+      # nothing, prints `1..0 / # tests 0` and EXITS 0. Renaming the files from
+      # `.test.mjs` to `.spec.mjs` — every test still on disk, every assertion
+      # intact — takes this step from 34 passing tests to zero, silently and
+      # green. Demonstrated with the real apostrophe defect planted in a
+      # workflow: armed it exits 1, disarmed it exits 0 over the same defect.
+      # The contrast that proves it is node's own: a missing path WITHOUT a `*`
+      # makes node exit 1, so it is the metacharacter that suppresses the
+      # failure. The floors sit deliberately BELOW the real numbers so ordinary
+      # additions never trip them, and the numbers themselves are not restated
+      # here: a count in prose beside a mechanism that measures one is a second
+      # copy free to drift, and this comment had already drifted (it said 34
+      # while the suite ran 38) within two commits of being written.
       - name: Test the CI helper scripts
-        run: node --test .github/scripts/*.test.mjs
+        # PER FILE, not in aggregate. An aggregate floor cannot see one file go
+        # blank: emptying assert-stack-counts.test.mjs left 31 of 41 tests, over
+        # a floor of 30, and the step stayed green — the same defect the fence
+        # this step runs was written to catch, one level up. Measured, not
+        # feared. The file-count floor only catches a file being DELETED.
+        #
+        # awk takes the FIRST match and exits. Without that, a second `# pass`
+        # line anywhere in the output makes the comparison an integer-expression
+        # error, which is not a failure: the `if` takes its else branch and the
+        # step exits 0 with the floor never evaluated. Also measured.
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          files=(.github/scripts/*.test.mjs)
+          if [ "${#files[@]}" -lt 3 ]; then
+            echo "::error::found ${#files[@]} helper test files, expected at least 3 — a rename, a move or a pattern edit has disarmed this gate"
+            exit 1
+          fi
+          total=0
+          for f in "${files[@]}"; do
+            # mktemp rather than the workspace: a CI step that drops a file in
+            # the repo root is one somebody eventually commits.
+            log=$(mktemp)
+            if ! node --test "$f" > "$log" 2>&1; then
+              cat "$log"
+              exit 1
+            fi
+            cat "$log"
+            passed=$(awk '/^# pass /{print $3; exit}' "$log")
+            if [ -z "$passed" ] || [ "$passed" -lt 5 ]; then
+              echo "::error::$f reported ${passed:-no} passing tests, expected at least 5 — it ran but is not testing what it claims"
+              exit 1
+            fi
+            total=$((total + passed))
+          done
+          if [ "$total" -lt 30 ]; then
+            echo "::error::helper tests reported $total passing tests overall, expected at least 30"
+            exit 1
+          fi
+          echo "helper tests: $total passing across ${#files[@]} files"
 
       # --coverage makes the per-package coverage tables visible in CI logs;
       # thresholds (95 backend / 90 frontend target) get enabled once real

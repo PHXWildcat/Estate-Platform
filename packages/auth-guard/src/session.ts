@@ -84,24 +84,23 @@ export const AUDIENCE_ADMITTERS: Readonly<
    */
   extension: [],
   /**
-   * ALSO EMPTY, and for a reason that is nearly the opposite of `extension`'s
-   * (M21 PR3a).
+   * STILL EMPTY AFTER PR3b, and now for the reason PR3a predicted rather than
+   * because nothing admits the audience.
    *
-   * `extension` is empty because a service-wide grant at the vault would be too
-   * WIDE. `operator` is empty because no service admits it AT ALL — not even
-   * the one whose surface it exists for. Settlement is where the operator
-   * routes live, and binding `operator` there service-wide would union with
-   * every route it has, including the reporter- and owner-facing ones: the
-   * decedent's own `void`, the owner's waiting-period settings, a reporter's
-   * case reads. An operator session must reach the operator surface, and the
-   * operator surface is a SUBSET of settlement rather than the whole of it, so
-   * the grant has to be per handler — and PR3a decorates none, because PR3a
-   * ships the boundary and PR3b ships the surface.
+   * `extension` is empty because a service-wide grant at the vault would be
+   * too WIDE. `operator` is empty for the same shape of reason, one service
+   * over: settlement is where the operator routes live, and binding `operator`
+   * there service-wide would union with every route it has — including the
+   * reporter- and owner-facing ones: the decedent's own `void`, the owner's
+   * waiting-period settings, a reporter's `cases` listing. The operator
+   * surface is a SUBSET of settlement rather than the whole of it, so the
+   * grant is per handler, in `AUDIENCE_ROUTE_ADMITTERS` below.
    *
-   * The consequence is the point rather than a gap: an `operator` session
-   * reaches identity's three self-referential routes below and NOTHING else in
-   * the product. It is strictly less powerful than the account session it was
-   * minted from, which is what makes a role-blind mint safe.
+   * `CallerGuard.audiencesFor` returns the UNION of this list and the
+   * per-route one, so a service-wide grant here could never be narrowed by a
+   * decorator. That is why the console's thirteen routes are decorated
+   * individually and this stays `[]`: the widening has to be spelled out one
+   * handler at a time, and everything not spelled out is refused by default.
    */
   operator: [],
 };
@@ -222,10 +221,12 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
     'identity:logout',
   ],
   /**
-   * THE OPERATOR ORIGIN'S ENTIRE REACH IN PR3a — identity's three, and nothing
-   * else in the product.
+   * THE OPERATOR ORIGIN'S ENTIRE REACH. PR3a shipped identity's three and
+   * nothing else in the product, deliberately — an audience is worth what the
+   * services refusing it make it worth, and there was no surface yet. PR3b
+   * added the settlement console's thirteen.
    *
-   * The same three as `vault`, admitted for the same three reasons, which are
+   * IDENTITY'S THREE, the same three as `vault`, admitted for the same three reasons, which are
    * worth restating rather than cross-referencing because each is a different
    * argument: `session` is introspection and MUST admit every audience or the
    * audience cannot be used at all; `stepUp` STRENGTHENS the session presenting
@@ -240,14 +241,77 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    * stops an operator credential from re-minting itself past its 15 minutes.
    * `session-audience.spec.ts` names that absence in a test of its own.
    *
-   * NOT A SETTLEMENT ROUTE IN SIGHT, deliberately. PR3a's whole claim is that
-   * the boundary works before anything is behind it: mint, redeem, land on the
-   * origin, read your own session — and get 401 from settlement, assets,
-   * documents, profile and the rest. PR3b adds the operator routes here in the
-   * same change as the surface that calls them, which is the rule the
-   * credential graph's own comment sets for a new capability.
+   * THE SETTLEMENT CONSOLE (PR3b), added in the same change as the client that
+   * calls each one — the rule the credential graph's own comment sets for a
+   * new capability. Three groups, and the shape of the split is the argument:
+   *
+   *   · TWO WORKLISTS and the reads that open a case. `getCase`, `timeline`,
+   *     `listStages` and `listDistributions` authorize through the Cedar
+   *     `read` permit and `assertCaseVisible`, which admit the decedent, the
+   *     reporter and the estate's executor as well as an operator — so an
+   *     operator credential reaches those people's own cases too. That is a
+   *     real widening, it is the reason `AUDIENCE_COPY.OPERATOR` no longer
+   *     claims the credential "reaches none of your estate", and it is
+   *     recorded as an accepted residual in docs/03 §6cc rather than papered
+   *     over. The alternative — four operator-only read projections — is a
+   *     second copy of an authorization decision, which is how two copies
+   *     drift apart.
+   *   · THE REVIEW VERBS: claim, decide, verify. The §5.1 chain.
+   *   · THE POST-VERIFICATION VERBS: close, stage decisions, distribution
+   *     approval.
+   *
+   * ABSENT AND DELIBERATE — every one of the other settlement handlers, each
+   * for its own reason rather than by omission. The enumeration is TOTAL and
+   * `apps/services/settlement/test/session-audience.spec.ts` asserts it is,
+   * against the refused set it derives from the real decorators: an
+   * enumeration that silently stops covering its subject is how a name here
+   * rots into a reason nobody re-reads.
+   *
+   *   · `reportableEstates`, `report`, `listMine`, `addEvidence` — the
+   *     REPORTER's surface (M22). Filing and tracking a death report is a
+   *     linked contact's act, not an operator's.
+   *   · `void`, `getSettings`, `updateSettings` — the OWNER's controls. An
+   *     operator credential must never reach the decedent's own kill switch
+   *     or their waiting-period setting.
+   *   · `reportProvider` — operator intake, but the console files no provider
+   *     signals, and a capability with no caller is exactly what this table
+   *     exists to prevent.
+   *   · `evidenceRead`, `stageAccess`, `vaultRelease` — peer-service
+   *     authority questions, asked by documents, assets and vault on somebody
+   *     else's forwarded bearer or their own service credential. A human
+   *     session has no business answering them.
+   *   · `requestStage`, `completeTask`, `recordDistribution` — EXECUTOR-ONLY
+   *     at the service: each refuses an operator outright (M23).
+   *     `recordDistribution` is also the recording half of the distribution
+   *     dual control, whose approving half IS admitted here — the row-local
+   *     CHECK refuses the same actor either way, and a console offering both
+   *     halves is not a shape to build and then rely on a constraint to save.
+   *   · `listTasks`, `setDistributionStatus` — the service DOES admit an
+   *     operator on both (`listTasks` through `assertCaseVisible`,
+   *     `setDistributionStatus` through the gate), and they are absent because
+   *     the CONSOLE does not offer them: the executor's checklist and the
+   *     payment-progress ladder are M23's surface. This is the one group whose
+   *     absence is a product decision rather than an authorization one, which
+   *     is worth saying rather than letting the list imply otherwise.
    */
-  operator: ['identity:session', 'identity:stepUp', 'identity:logout'],
+  operator: [
+    'identity:session',
+    'identity:stepUp',
+    'identity:logout',
+    'settlement:queue',
+    'settlement:administrable',
+    'settlement:getCase',
+    'settlement:timeline',
+    'settlement:listStages',
+    'settlement:listDistributions',
+    'settlement:startReview',
+    'settlement:decideReview',
+    'settlement:verify',
+    'settlement:closeCase',
+    'settlement:decideStage',
+    'settlement:revokeStage',
+    'settlement:approveDistribution',
+  ],
 };
 
 /** Metadata key carrying a route's admitted audiences. See AllowSessionAudiences. */

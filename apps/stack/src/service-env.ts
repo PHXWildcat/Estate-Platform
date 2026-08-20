@@ -274,13 +274,17 @@ export function vaultWebProcessEnv(
  * the same three reasons the vault origin is not: no cluster, no KMS key, and
  * NO CREDENTIAL in either direction.
  *
- * SHORTER STILL than the vault's, because it has one upstream rather than
- * three — it proxies identity's three routes and nothing else until PR3b puts
- * the settlement surface on it. The shortness is asserted rather than admired:
- * `apps/operator-web/test/config.spec.ts` loads the real config with EVERY
- * credential in the graph present and requires it to absorb none, and the
- * compose-parity spec requires this map and the YAML block to agree key for
- * key.
+ * STILL SHORTER than the vault's: TWO upstreams (M21 PR3b added settlement's,
+ * in the same change as the thirteen routes that reach it) rather than three,
+ * and no cookie-only projection. The shortness is asserted rather than
+ * admired: `apps/operator-web/test/config.spec.ts` loads the real config with
+ * EVERY credential in the graph present and requires it to absorb none, and
+ * the compose-parity spec requires this map and the YAML block to agree key
+ * for key.
+ *
+ * A THIRD upstream would be a trust decision rather than a variable: this
+ * origin can address exactly the services named here, so what it CAN reach is
+ * decided in this map and in `PROXY_ROUTES`, and never by a caller.
  */
 export function operatorWebProcessEnv(
   env: ReadonlyMap<string, string>,
@@ -289,8 +293,11 @@ export function operatorWebProcessEnv(
   return {
     NODE_ENV: fromFile(env, 'STACK_MODE'),
     PORT: String(OPERATOR_WEB_PORT),
-    // The one upstream it may proxy to, reached on the CALLER's bearer.
+    // Both upstreams are reached on the CALLER's own bearer: this edge holds no
+    // credential in either direction, so it can only ever fetch what the
+    // operator in front of it could already fetch.
     IDENTITY_URL: serviceUrl('identity', options.addressing),
+    SETTLEMENT_URL: serviceUrl('settlement', options.addressing),
     // An exact ORIGIN, never a pattern: it is what the handoff POST's `Origin`
     // header is compared against, and what "back to Estate" navigates to.
     APP_ORIGIN,

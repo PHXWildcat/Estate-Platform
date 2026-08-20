@@ -5612,8 +5612,8 @@ because at that point the value lens becomes the one with real inputs.
   control is which: `AllowSessionAudiences` unconditionally prepends `account`
   and `CallerGuard.audiencesFor` returns a union that widens and can never
   narrow, so decorating a settlement route ALSO admits every ordinary account
-  session. `OperatorGate` stays the control. **PR3a SHIPPED** (see the record
-  below).
+  session. `OperatorGate` stays the control. **PR3a and PR3b SHIPPED** (see the
+  records below).
 - **PR4 — documents evidence content + the legal-hold lift ceremony.** M9 PR2
   shipped the hold noting it outlives case close with no lift surface and
   assigned that to TB7. This is TB7.
@@ -5923,8 +5923,9 @@ scoped here and moved: TB7 claimed "settlement and documents emit them", and
 measurement says settlement carries 23 audit actions and every one is a WRITE, so
 adding `settlement.case.viewed` now would be a routeless event — the zero-callers
 shape this milestone exists to close. The prose is corrected in this PR and the
-events land in PR3b with the screens that make the reads, which is the M18 PR1
-precedent (correct the claim, do not add the route). `estate.viewed` was also
+events landed in PR3b with the screens that make the reads — `settlement.queue.viewed`
+and `settlement.case.viewed`, TWO actions rather than one per route, which is the
+M18 PR1 precedent (correct the claim, do not add the route). `estate.viewed` was also
 mis-cited: it is `asset.estate.viewed`, an ASSETS event describing an EXECUTOR's
 inventory read, in a paragraph about operators.
 
@@ -5959,6 +5960,498 @@ updated.
 Threat-model delta and residuals: `docs/03` §6bb. §4 TB7's operator-authentication
 and operator-reads paragraphs are rewritten in the same PR — the first said the
 audience does not exist, and the second was wrong in both halves.
+
+#### M21 PR3b — the operator screens (shipped)
+
+PR3a shipped a boundary with nothing behind it. This is the surface: two
+worklists, one case screen, and eight actions — seven of which go through a
+fresh identity check, over the six console routes settlement gates. It also flips thirteen `EXEMPT_TB7_OPERATOR` entries to
+`consumed()`, which M20 PR1's stale-exemption check makes mandatory rather than
+remembered. Five slices.
+
+**What slice 1 found before it wrote a screen**, each measured rather than
+inferred.
+
+- *The queue could not reach a closeable case.* `listOpenForReview` selects
+  `('reported','verifying','waiting_period')` and the post-verification verbs
+  act on `('verified','active','distributing')` — **disjoint**, and no document
+  named it. So `close`, stage decisions and distribution approvals were reachable
+  only by an operator who already held a case id from somewhere else: three of
+  the six verbs this milestone names had a surface that could not reach them.
+  `GET /v1/settlement/administrable` is the second worklist (the user chose this
+  over widening the existing one), and the two status sets are declared together
+  and pinned disjoint against the DDL's own CHECK rather than against a list
+  retyped in a spec. A SIBLING of `queue` and not `cases/administrable`: the
+  latter is a literal segment competing with `cases/:caseId` in a different
+  controller, which Nest resolves in module-registration order, and a path that
+  cannot collide beats a path whose correctness is a property of a list.
+- *A claimed review recorded no claimant.* `markReviewStarted` moved a case to
+  `verifying` and wrote the claiming operator NOWHERE — `human_review_by` is
+  first written at approval — so between the claim and the decision the row said
+  a review was under way and could not say by whom. Invisible while nothing
+  listed the queue; a shared work queue with no claim marker is how two operators
+  independently run one §5.1 review, which the reviewer-≠-reporter CHECK does not
+  prevent. Migration 003 adds a SECOND pair (`claimed_by`, `claimed_at`) rather
+  than writing the review pair early, because claiming and deciding are different
+  acts by possibly different people. The reporter is refused AT THE CLAIM now:
+  before, a reporter-operator could claim a case and discover only at the
+  decision that they could never discharge it.
+- *All 23 settlement audit actions were writes.* An operator working the queue,
+  opening a death case, or reading its timeline, stages, tasks or distributions
+  left no trace of having looked — in the service whose whole subject is a §5.1
+  investigation. TWO actions, not one per route:
+  `settlement.queue.viewed` (no resource id, a row count) and
+  `settlement.case.viewed` (`resourceId`, with `detail.surface` naming which of
+  the five reads). Operator reads only — the decedent and the reporter are
+  reading their own case — and the gate is consulted UNCONDITIONALLY rather than
+  as the second arm of the visibility chain, so an operator who is also the
+  reporter is still recorded and the claim does not turn on the order of an `if`.
+  Stated where it is written: these feed nothing automatic, because the M18
+  detector counts `crypto.field.decrypted` and only that.
+
+**Slice 2 — thirteen handlers, per handler and never service-wide**, and the
+reason is mechanical rather than stylistic: `CallerGuard.audiencesFor` returns
+the UNION of the service-wide list and the per-route one, so binding `operator`
+in settlement's `ALLOWED_SESSION_AUDIENCES` could never be narrowed by a
+decorator and would hand a console credential the decedent's own `void`, the
+owner's waiting-period settings and a reporter's case listing. `SESSION_AUDIENCES`
+stays `operator: []`. The routes are the two worklists, the four reads that open
+a case, the three review verbs and the four post-verification ones; the refused
+count lives in the spec that derives it, not in prose beside it. Absent and
+deliberate: `reportProvider` (the console files no signals, and a capability with
+no caller is what the table exists to prevent), `listTasks` and the three
+executor writes (M23), `report`/`listMine`/`reportableEstates` (M22), `void` and
+both `settings` routes (the OWNER's controls), the two peer-authority routes, and
+the §6a vault gate.
+
+FOUR OF THE THIRTEEN ARE A REAL WIDENING AND IT IS RECORDED AS ONE.
+`assertCaseVisible` and the Cedar `read` permit admit the decedent, the reporter
+and the estate's executor as well as an operator, so a console credential reaches
+those people's own cases too. The alternative — four operator-only read
+projections — is a second copy of an authorization decision, which this repo has
+found drifting every time it exists. **The user chose to decorate all twelve
+reads and rewrite the copy**, so the PR3a claim that the credential "reaches none
+of your estate" is replaced in the change that made it false, and the executor
+overlap is an `[ACCEPTED]` residual in §6cc.
+
+The service-local spec is the piece neither existing fence could be.
+@estate/auth-guard's fence checks the TABLE against this service's decorators; a
+prototype scan checks the metadata. Neither can see that `CallerGuard`'s
+reflector is `@Optional()` and `audiencesFor` falls back to the service-wide list
+when it is absent — so a perfectly decorated route on a container where
+`Reflector` does not resolve is SILENTLY INERT: 401, no error, no log, every
+source fence green. The new spec drives a real guard, admits an operator session
+on `queue`, refuses it on `void` with the same generic 401 an invalid token gets,
+and reproduces the inert case with no reflector, which is what proves the first
+assertion measures the reflector rather than a default that happens to agree.
+
+**Slice 3 — the edge learns a path shape, and the shape is where the safety
+argument lives.** PR3a's edge matched `r.path === pathname`, which cannot express
+`cases/:caseId`, and nine of the thirteen handlers carry a parameter. TEMPLATES,
+NOT PREFIXES: a `:name` segment matches exactly ONE non-empty path segment and
+can never span a `/` — `URL.pathname` leaves `%2F` percent-encoded and the
+matcher splits on the literal separator, so a smuggled separator arrives as one
+opaque segment settlement refuses, while `..` and `%2e%2e` never arrive at all
+because the WHATWG parse collapses both before the table is consulted (measured,
+not assumed). `startsWith` would make every row a tree, and a tree under
+`/api/auth/` reaches `/v1/auth/handoff`, the credential this origin must never
+help mint. THE METHOD IS PART OF THE ROW, because two settlement routes share a
+path and differ only by verb: `GET cases/:caseId/stages` is the operator's read
+and is admitted, `POST` on the same path is the EXECUTOR's request and is not — a
+path-only table would forward both and lean on `CallerGuard` to refuse the
+second, which it would, but the edge would be claiming a capability it does not
+have. THE QUERY STRING IS DROPPED BY NEVER BEING READ: the upstream path is built
+from the template plus the captured segments, and a row naming an uncaptured
+parameter is a process that will not start (the `assertSubjectFree` precedent),
+because a literal `:caseId` travelling upstream reads to the operator as an
+outage.
+
+Two exemptions honestly do NOT flip. `POST cases/:caseId/stages` and `POST
+cases/:caseId/distributions` are executor writes whose PATHS are addressed by the
+console's GET rows, and the route↔consumer fence matches by path — its header
+always said so and nothing had ever exercised the imprecision. `consumed()` would
+claim a caller that does not exist and `{ exempt }` would be flagged stale, so
+the collision is DECLARED (`pathSharedWith`, the `consumedByName` precedent) with
+four assertions making it checkable, including that no edge table names this
+method on this path.
+
+**Slice 4 — the console, and three decisions that are not UI preferences.**
+
+- *The ceremony POLLS.* Identity grants the elevation; settlement learns of it by
+  introspecting the token through `HttpSessionVerifier`'s short-TTL positive
+  cache, so for up to one TTL after a genuine step-up the peer still answers from
+  a cached un-elevated session and a SINGLE-SHOT retry leaves the prompt doing
+  nothing for someone whose code was accepted — the M13 review's finding against
+  the main app, whose polling shape this ports rather than the vault origin's
+  single-shot one (the vault re-proves a factor to VAULT, which identity's own
+  session state reaches first-hand). CANCEL ABORTS THE LOOP, and so does starting
+  a fresh attempt: a step-up prompt is a CONSENT ceremony, and here the stakes
+  are a death case, where a surviving retry could confirm a verification and
+  revoke every session a living person holds. The ownership marker is a COUNTER
+  rather than a boolean because Cancel restores the form, so a second attempt can
+  begin while the first is in flight and a boolean cannot tell "nobody owns this"
+  from "somebody else does".
+- *It does NOT poll the case*, and the reason is the trail rather than the
+  network: each read emits an operator read event on that estate's own death-case
+  trail, so a console that refreshed itself would turn one screen, abandoned over
+  lunch, into hundreds of recorded reads — M12's audited-volume-is-a-UI-constraint
+  rule arriving where the subject of the trail is a dead person's estate. A case
+  is re-read when somebody acts on it, pinned by a test that opens a case, counts
+  exactly four reads, and then waits.
+- *The case id never enters the URL.* Which screen the console is on is module
+  state and nowhere else: a hash route would accumulate death-case references in
+  an operator's browser history and put one in the address bar, which is the part
+  a screen-share catches. The cost is that a refresh returns to the worklists.
+
+Smaller, each because the alternative is a sentence that is not true: a refused
+list costs its own panel and never the page, and never reads as an EMPTY worklist
+— a short worklist of death reports is indistinguishable from a quiet week, which
+is also why one unparseable row fails the whole list rather than being dropped;
+`UNAUTHENTICATED` gained a sentence of its own, having fallen through to
+"something went wrong" while a console session lasts fifteen minutes and cannot
+be renewed, so an expired credential read as a fault; and a timeline detail is
+SCALARS ONLY, because `String({})` is `'[object Object]'`, which on an audit
+surface is a sentence that looks like a value and is not one.
+
+Two fences changed shape. The `setAttribute` fence asserted that exactly two
+MODULES named it — true while there were two, and no longer the property the
+moment a third legitimately set `inputmode`; it is keyed on the ATTRIBUTE NAME
+now, declared with a reason apiece and checked in both directions against the
+URL- and script-bearing set. And `route-consumers.spec.ts` could not see a path
+built from a file-local constant (`${CASES}/${id}/timeline` collapsed to
+`:p/:p/timeline`), so it resolves same-file `const X = '…'` before collapsing
+interpolations — that direction failed safe, but a fence going red for a reason
+that is not its property is how an escape hatch gets widened.
+
+**Slice 5 — the stack, and two refusals that must not be one.** The edge gains
+`SETTLEMENT_URL` in both addressings and a `service_healthy` dependency, in the
+same change as the routes and screens that use it. The e2e refusal list is SPLIT,
+never shortened: `401` means the AUDIENCE was not admitted and `CallerGuard`
+never let the request reach the handler (`GET /v1/settlement/cases` is
+owner-facing and stays that way), while `403` means the audience WAS admitted and
+the NEXT control stopped it — the probe user is not on `settlement_operators`, so
+`OperatorGate` refuses inside the transaction that would have acted. Collapsing
+those into "it is refused" would hide the boundary moving: a route silently
+losing its decoration, and the allowlist silently ceasing to be consulted, both
+still refuse, with different numbers. A new test drives the claim THROUGH the
+edge, which nothing had done — an allowlisted operator gets 200 on both worklists
+carrying nothing but the cookie they arrived with, a console session belonging to
+a non-operator gets 403 on the same path, and `/api/settlement/settings` (a real
+settlement route this origin deliberately does not carry) dies at the edge with
+404 and no request leaving the box. Minting an operator handoff is role-blind by
+design, so ARRIVING proves nothing; this is where that stops being a sentence in
+a docstring and becomes two status codes from two users.
+
+Threat-model delta and residuals: `docs/03` §6cc. §4 TB7's operator-reads
+paragraph is closed for settlement by this PR, and §6bb's read-event residual
+with it.
+
+#### M21 PR3b — the gate that had stopped running
+
+Pushing the review round turned `Images` red with `line 5: 33/4.: No such file
+or directory` and nothing else. The failing step is the stack suite's
+exact-count gate, and the cause was in the change that had just been made to it:
+its assertion lived in `node -e '...'` with twenty lines of prose INSIDE the
+single quotes, and PR3b's own update added the word `console's`. Nothing escapes
+inside single quotes, so the apostrophe closed the string; bash parsed the
+remainder as shell and found what looked like a redirection.
+
+**It had not merely mis-asserted — it had not run.** Measured by extracting the
+step verbatim from the YAML and driving it against a fabricated result file with
+deliberately wrong counts (99 passed / 7 pending): the same CI error, and the
+`passed=…` line never printed. Bash sets up redirections *before* executing a
+command, so node was never reached. The step went red only by accident: the
+shell error is what failed it, and a quoting mistake that still parsed would have
+gone green over an assertion nobody evaluated. The counts were never in doubt —
+the twin gate in `stack.yml` passed throughout, which is what verified them.
+
+The reconstruction above is a fabricated result file; the pipeline itself
+supplies the same answer in three real runs, which is the stronger evidence and
+was only assembled afterwards. On `main` at `7664d87` — the last Images run
+before this branch — the inline gate printed `passed=32 failed=0 pending=4`. On
+`f4c1391`, the first run carrying slice 5's apostrophe, it printed nothing and
+the step died on the shell error. On `4bd732e`, with the logic extracted, the
+step prints `passed=33 failed=0 pending=4` again. Working, inert, working: the
+middle term is the one no gate would have reported had the parity been even.
+
+#### M21 PR3b — reviewing the fence that reviewed the gate, again
+
+An adversarial review of that fence — sixteen agents over seven lenses, each in
+its own worktree pinned to the reviewed commit — returned nine confirmed
+defects in machinery written hours earlier. Every one was re-derived here by
+execution before anything changed, and the fifteen the fan-out dropped were
+hand-checked, three of them real.
+
+Six of the nine are one defect wearing different YAML. The module's header
+promised *"REFUSES what it cannot read … never a skip"*, and that sentence was
+false six ways — a `run` key in each of these shapes was dropped on the floor,
+neither read nor refused:
+
+| shape | before |
+| --- | --- |
+| `run :` (space before the colon) | skipped |
+| `"run":` (quoted key) | skipped |
+| `- {run: ...}` (flow mapping) | skipped |
+| `run: a && b` folded across lines | truncated to its first line |
+| `defaults.run` (a mapping) | read as a script, inflating the floor |
+| `node -e "..."` (double-quoted body) | no structural rule at all |
+
+All six were latent: the real workflows produce 47 blocks, 0 refusals and 0
+findings both before and after, so nothing was being missed today — they arm
+the moment somebody writes one of those shapes.
+
+**The structural finding is why every one of them was silent.** The
+anti-vacuity floors were global (`blocks >= 30`), and a global floor cannot see
+one workflow going blank — forty-six blocks from the other five satisfy it
+while the sixth is scanned not at all. The sweep reports per file now, with
+`seen === scripts + refusals` as an invariant. The same defect was found one
+level up in the CI step that runs these tests: emptying one of three test files
+left 31 of 41 tests over a floor of 30, and the gate stayed green. Both floors
+are per-file.
+
+This is the third place that rule has been needed, having been written down
+twice already. It is also the third time in this milestone that a fence
+inherited its author's model of the defect rather than the property: the
+`NO SILENT SKIP` test committed three hours earlier walked a hand-written list
+of block-scalar *headers*. It is a matrix over fourteen shapes now, and each
+pins its **disposition** — asking merely "was it dropped?" is still too weak,
+because deleting the `defaults.run` guard yields a *script*, which is the wrong
+outcome reached without being dropped.
+
+
+That twin was balanced only because someone had already been bitten by this:
+`stack.yml` line 226 read ``profile'"'"'s block``, the close-and-reopen dance
+that is the only way to write an apostrophe inside single quotes. An unreadable
+workaround in one copy and the live defect in the other is the same finding
+twice, so the repair is not "escape it properly".
+
+**The prose moved out of the shell.** It is worth keeping — this repo records
+why every number is what it is — so it is now a YAML `#` comment, which no shell
+parses, and the logic is `.github/scripts/assert-stack-counts.mjs`. Both call
+sites still pass their **own** numbers as arguments: `images.yml` runs the stack
+from built images and `stack.yml` from `dist`, so a number derived from the
+other would stop being a measurement. Only the mechanism is shared. Eight cases
+were driven through both extracted steps — matching counts exit 0 and print
+`passed=…`, a moved count and a failing suite exit 1 with distinct messages, an
+absent file reports that the suite did not run, and neither profile's numbers
+satisfy the other's expectation.
+
+**The test drives a subprocess**, because the defect was that nothing ran: a unit
+test of the comparison would have been green for the whole inert period. The
+`node --test .github/scripts/*.test.mjs` step already in `ci.yml` runs it, so it
+arrived covered without new wiring — and the survey that reported
+`notify-failure.test.mjs` as "a test nobody runs" was wrong, because that step
+invokes it through a glob and the filename appears nowhere in the repo. A grep is
+not a parse.
+
+**And the class is fenced.** `workflow-shell.mjs` extracts every `run:` block
+from every workflow and tracks shell quoting across each body, because the
+property belongs to the whole script: `grep "'"` matches every workflow here,
+and counting apostrophes per line calls `"don't"` a defect while missing a quote
+that opens on one line and closes twenty later. No YAML parser resolves from the
+repo root with bare node, so the extractor is hand-written and **refuses** a
+`run:` shape it cannot read rather than skipping it. It was written *before* the
+fix: against the still-broken tree it reported exactly one finding across 47
+blocks with zero refusals, and it was the real one.
+
+Six probes, all confirmed — the apostrophe reintroduced, an unterminated double
+quote elsewhere, the extractor broken so it scans nothing (red on the
+anti-vacuity floor at "saw 0"), a `run:` written as a quoted YAML scalar (red on
+the refusal path), the count decision neutered, and the second probe of the pair:
+the defect planted *and* the quoting checker neutered, which goes **green** and
+is what identifies the checker as the thing that saw it.
+
+#### M21 PR3b — the gate ran twice, and its main guard could fail to fire
+
+Two more, both in the helper gate itself and both found by refusing to accept a
+number without an explanation.
+
+**The step ran everything twice.** The per-file loop was added *above* the old
+aggregate block instead of replacing it. Found in the CI log rather than by
+review: the step printed `helper tests: 43 passing across 3 files` and then a
+fourth TAP stream numbered `1..43`, which can only be one invocation over all
+three files — three separate runs cannot number past their own file's count.
+The leftover mattered beyond the duplicated work, because it still carried
+`awk '/^# pass /{print $3}'` with **no** `exit`: the exact multi-match defect
+the comment eleven lines above it describes, where a second `# pass` line makes
+the comparison an integer-expression error, the `if` takes its else branch, and
+the floor is never evaluated. A step whose header documents a defect and whose
+body still contains it teaches the next reader that the pattern is fine.
+
+**The main-module guard could silently not fire, two ways.** Both exact-count
+gates run `assert-stack-counts.mjs`, so a guard that does not fire turns them
+into steps that exit 0 having compared nothing.
+
+The first was raised by the review and correctly **refuted**:
+`endsWith('assert-stack-counts.mjs')` is correct exactly while the filename
+matches, and the test suite catches a rename (8 of 12 red). The refutation
+holds — but it rests on a suite that only runs through the per-file floor added
+in this same slice, which is worth stating rather than filing the finding as
+dismissed.
+
+The second was found by measurement and is not about names at all. M16 PR4b
+replaced a raw `file://${process.argv[1]}` template with
+`import.meta.url === pathToFileURL(process.argv[1]).href`, and this repo has
+since treated that as the robust form. It is robust against a **space** and not
+against a **symlink**, because node reports the resolved real path in
+`import.meta.url` and the path as typed in `process.argv[1]`:
+
+| invocation | `pathToFileURL(argv[1])` | fires? |
+| --- | --- | --- |
+| `node "/tmp/has space/g/probe.mjs"` | `file:///tmp/has%20space/…` | **no** |
+| `cd "/tmp/has space/g" && node probe.mjs` | `file:///private/tmp/has%20space/…` | yes |
+
+Same file, same node, opposite answers — a relative argv is resolved against
+`process.cwd()`, which is already physical. Latent in this repo, and stated as
+*why* rather than left as luck: every invocation of both scripts is a relative
+path from the workspace root, so both fire. It arms for anyone who invokes
+either by an absolute path through a symlink, which on macOS is anything under
+`/tmp`. Fixed by resolving both sides. `pack-extension.mjs` and `build-psl.mjs`
+were filed separately rather than folded into an unrelated PR, and both were
+closed the same day (#120), as was `notify-failure.mjs` (#121) — all four
+main-module guards in the repo now resolve both sides.
+
+The mutation that **survived** is the useful part. Reverting to the name-keyed
+guard left the suite green, because every case invoked the script under its own
+name, where the two guards are indistinguishable — the property the new comment
+claimed, that a rename needs no edit, was claimed and untested. A second test
+invokes a copy under a different filename, and a third creates its own symlink
+so it is hermetic on Linux. Both mutations are now red.
+
+#### M21 PR3b — reviewing the fence that reviewed the gate
+
+The quoting fence shipped with a hole in the class it was written for, found by
+a parallel audit and then widened by attacking it directly.
+
+**The audit's finding.** `unterminatedQuote` asked whether a quote was left
+*open* — the odd-apostrophe case, which fails loudly. An **even** number
+re-balances them. Measured with `// it's the console's round trip` inside a
+`node -e` body: bash splits it into three arguments, node evaluates only the
+first (`const r = {...}; // its`, valid JavaScript), exits 0, and the assertion
+is gone with the step passing. Strictly worse than the defect that prompted the
+fence, which at least went red.
+
+**And the first fix had its own evasion.** Keying on `'` followed by a *word
+character* catches `console's` and misses `the gates' numbers` — a possessive
+plural closes the string just as thoroughly and is followed by a space. Two of
+them re-balance the quotes and the assertion vanishes again. The rule had been
+keyed on the shape of the one example available rather than on the structure.
+
+**The structure was the answer.** Every embedded script in this repo opens with
+a quote that is the last thing on its line and closes with one that is the first
+thing on its:
+
+```
+node -e '
+  ...body...
+'
+```
+
+So a multi-line body that closes anywhere but at the start of a line has been
+cut short — by an apostrophe, a stray quote, or anything else, at any parity,
+whatever follows it. That is a property of the shape rather than of the prose,
+and all three variants fall out of it. One exemption: a close immediately
+followed by another quote is shell concatenation (`'"'"'`), so the body has not
+ended — verified by running the dance and watching it work, because a fence must
+flag what is broken and not what is merely ugly. That exemption had no test until
+it was looked for; it has one now, and mutating the branch turns it red.
+
+The audit also found that the step running every `.github/scripts` fence could
+not detect its own disarming — an unmatched glob reaches node as a literal, which
+node expands to nothing and exits 0 — and that `ci.yml`'s concurrency comment
+described a push/PR dedup that 400 real runs show does not happen. Both fixed,
+both measured.
+
+#### M21 PR3b — the review round, and the drive that proved it
+
+Three file-scoped lenses, each in its own worktree pinned with
+`git checkout --detach`. One died of context exhaustion on its first attempt and
+was re-run with a tighter file budget — recorded rather than quietly retried,
+because a lens that dies and a lens that finds nothing return the same empty
+result. Every finding was re-derived by hand before anything changed, and every
+fix mutation-tested from saved pristine copies.
+
+THE ONE THAT MATTERED WAS A CONSENT DEFECT. Pressing "Back to worklists" while a
+step-up ceremony was polling removed the form and CLOSED THE CASE two seconds
+later: the back controls cleared the module's `pending` reference, which forgets
+the ELEMENT and not the CEREMONY. `step-up.ts` already had the right mechanism —
+an ownership counter re-checked after every await and every sleep — and the back
+path simply never bumped it, because `stepUpPrompt` returned an element and
+there was nothing to bump it WITH. It returns a handle now, and one
+`dismissPrompt()` is the single door for every discard outside the loop.
+
+The fence beside the two behavioural pins is the part that generalises: a scan
+asserting the assignment lives in exactly three functions. `console.spec.ts` can
+pin the back control on the case screen; it cannot pin every screen, and the
+case-unavailable screen already has a second one. Both mutation runs are in the
+record — 5/5 for the fence, 3/5 for the tests, and the two GREENs there are what
+sent me to write the fence.
+
+Also fixed: `/open` answered 500 on a malformed percent-escape where every other
+refusal gets a uniform 303 (`decodeURIComponent` throws on `%zz`), on the
+endpoint whose own comment says it distinguishes nothing; and the route-table
+validator's paragraph forecloses "the literal `:caseId` travels upstream" while
+testing `startsWith(':')` — the same test the rewriter uses — so a parameter
+written MID-segment was invisible to both. That validator is EXPORTED and its
+refusals DRIVEN now, replacing a source scan for its own error string that could
+not tell a check that fires from one that cannot.
+
+And one copy of a sentence this milestone had already corrected twice was still
+standing in the place a user reads it FIRST: `OperatorLaunch`, the interstitial,
+still said an operator session "reaches none of your own estate" — with its own
+test pinning the false version. The comment in the file that WAS corrected even
+names the console's screen as the other copy and does not mention this one.
+
+MEASURED, NOT REASONED ABOUT, before the edge findings were accepted: a `%2F`
+captured by a `:name` segment survives `fetch(base + path)` to the upstream as
+ONE segment. That was the link the edge lens could not reach from its own file,
+and the whole basis for its verdict that parameters cannot span a separator.
+
+#### The live drive
+
+Driven in a real browser against the running stack, on images rebuilt from the
+branch and verified by their `Created` timestamps rather than by what compose
+said about the containers.
+
+The ceremony end to end: sign in, the interstitial (and the rail carries no
+operator entry — discoverability is M23's question), a genuine TOTP step-up, a
+top-level form POST across the origin boundary, landing on
+`http://operator.localhost:3011` reading `Session type: operator` and
+`Identity check: Not recently confirmed` — M15 PR4's rule, since redemption
+grants no step-up. Both worklists render, and the empty one says so in a
+sentence rather than showing nothing.
+
+`Start review` ran with NO prompt, which is the one deliberate ungated verb, and
+set the claim marker in the same UPDATE that moves the status — migration 004's
+invariant satisfied by construction rather than by a second statement. `Approve
+review` was refused, prompted, and applied after a real elevation; a second case
+approved with no prompt at all, because the session was still step-up fresh,
+which is the "try bare first" decision working.
+
+THE FIX WAS PROVEN IN THE RACE IT LIVES IN, and getting there took three
+attempts, each failing for a reason worth keeping. The first: the prompt had
+already closed before Back was pressed (`submitLabel: null` at 1.4s) — the
+elevation propagated instantly because more than 30 seconds of introspection
+cache had lapsed while I generated the code, so the approve was the happy path
+and not the race. The second: no prompt opened at all, the session still being
+elevated from the first. Only a FRESH console session — un-elevated by
+construction — puts a cold cache and a live refusal in the same window. With
+that, at the moment Back was pressed the submit button read "Applying…", and
+afterwards the case was still `verifying` with `human_review_by` NULL, no
+`settlement.case.approved` anywhere, and `auth.stepup.granted` on that session
+eighteen seconds earlier in the same trail. A genuine elevation, a real poll in
+flight, and nothing applied.
+
+THE DEPLOY-ORDER HAZARD SHOWED ITSELF AGAIN, and the reads are what surfaced it:
+the case screen's four `settlement.case.viewed` events were missing from the
+trail entirely, while the audit consumer logged `audit_event_rejected
+reason=schema_violation` with `rejectedTotal` climbing to 52. A consumer that
+predates a new action treats every instance of it as malformed input. Rebuilt
+consumer first, re-opened the case, and all four land — one per surface (`case`,
+`timeline`, `stages`, `distributions`), `actor_type: operator` — with zero
+rejections after. Nothing enforces this ordering; it is the third time this repo
+has recorded it, and the first time the missing events were a control rather
+than a convenience.
 
 #### Two findings from the selection that hand-verification OVERTURNED
 

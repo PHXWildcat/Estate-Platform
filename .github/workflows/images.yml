@@ -393,39 +393,38 @@ jobs:
           npx jest test/stack.e2e.spec.ts test/aws-conformance.spec.ts test/ci-guard.spec.ts \
             --runInBand --json --outputFile=../../stack-results.json
 
+      # EXACT counts (development profile). A floor with slack in it is how two
+      # skipped assertions stay green; see stack.yml.
+      #
+      # M13 added the people-surface round trip: 16/4 -> 17/4. M14 added the
+      # address-verification ceremony: 17/4 -> 18/4. M15 added six for the
+      # isolated vault origin: 18/4 -> 24/4. M15 PR3 added the grantee-candidate
+      # projection: 24/4 -> 25/4. M18 PR2 added the decrypt-rate baseline gate:
+      # 25/4 -> 26/4. M21 PR3a added six for the isolated operator origin:
+      # 26/4 -> 32/4. M21 PR3b added the console's settlement round trip:
+      # 32/4 -> 33/4. Measured on a development-profile stack, which is what
+      # this job runs.
+      #
+      # THIS NUMBER HAS A TWIN in stack.yml, which gates both profiles. They are
+      # separate on purpose — this job runs the stack from BUILT IMAGES and that
+      # one runs it from `dist`, so a number derived from the other would stop
+      # being a measurement. The cost is that a new stack test has to be recorded
+      # in two places, and forgetting the second is exactly how this gate went
+      # red once: the suite passed 25/4 and only the stale copy of the number
+      # failed. If a third consumer of this count ever appears, derive it.
+      #
+      # THE ASSERTION ITSELF now lives in .github/scripts/assert-stack-counts.mjs,
+      # and the prose above is a YAML comment rather than part of a shell string.
+      # It used to be an inline `node -e '...'` with all of this INSIDE the
+      # single quotes — until the word `console's` two paragraphs up closed the
+      # string, bash parsed the rest as shell, and node stopped running at all.
+      # The assertion did not mis-fire; it did not execute, and had not since the
+      # apostrophe landed. YAML comments are not shell, and the script is
+      # covered by `node --test` in ci.yml — see workflow-shell.test.mjs, which
+      # is the fence that now sees this defect class across every workflow.
       - name: Assert the suite actually ran
         if: always()
-        run: |
-          if [ ! -f stack-results.json ]; then
-            echo "::error::no jest result file — the stack test did not run"
-            exit 1
-          fi
-          node -e '
-            const r = require("./stack-results.json");
-            // EXACT counts (development profile). A floor with slack in it is
-            // how two skipped assertions stay green; see stack.yml.
-            console.log(`passed=${r.numPassedTests} failed=${r.numFailedTests} pending=${r.numPendingTests}`);
-            if (r.numFailedTests > 0) { console.error("::error::stack test failures"); process.exit(1); }
-            // M13 added the people-surface round trip: 16/4 -> 17/4. M14 added
-            // the address-verification ceremony: 17/4 -> 18/4. M15 added six
-            // for the isolated vault origin: 18/4 -> 24/4. M15 PR3 added the
-            // grantee-candidate projection: 24/4 -> 25/4. M18 PR2 added the
-            // decrypt-rate baseline gate: 25/4 -> 26/4. Measured on a
-            // development-profile stack, which is what this job runs.
-            //
-            // THIS NUMBER HAS A TWIN in stack.yml, which gates both profiles.
-            // They are separate on purpose — this job runs the stack from BUILT
-            // IMAGES and that one runs it from `dist`, so a number derived from
-            // the other would stop being a measurement. The cost is that a new
-            // stack test has to be recorded in two places, and forgetting the
-            // second is exactly how this gate went red once: the suite passed
-            // 25/4 and only the stale copy of the number failed. If a third
-            // consumer of this count ever appears, derive it.
-            if (r.numPassedTests !== 32 || r.numPendingTests !== 4) {
-              console.error(`::error::expected exactly 32 passed / 4 pending, got ${r.numPassedTests}/${r.numPendingTests} — a spec skipped, or a test was added without updating this gate (and its twin in stack.yml)`);
-              process.exit(1);
-            }
-          '
+        run: node .github/scripts/assert-stack-counts.mjs stack-results.json 33 4
 
       # WHAT THIS STEP IS FOR: naming the container that failed. `up --wait`
       # reports only `service "migrate-documents" didn't complete successfully:

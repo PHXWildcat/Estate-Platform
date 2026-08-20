@@ -80,9 +80,24 @@ describe('the operator console', () => {
     // arriving is the permission.
     expect(copy).toMatch(/grants no authority on its own/i);
     expect(copy).toMatch(/operator allowlist/i);
-    expect(copy).toMatch(/reaches none of your own estate/i);
     expect(copy).toMatch(/15 minutes/);
     expect(copy).toMatch(/cannot be renewed/i);
+
+    /*
+     * THE RESTRICTION IS STATED AS A RESTRICTION, and the absolute it replaced
+     * is asserted GONE.
+     *
+     * PR3a said "it reaches none of your own estate", which was true while this
+     * credential reached three identity routes. PR3b admitted it to thirteen
+     * settlement routes, four of which reach a case through `assertCaseVisible`
+     * — and that admits the decedent, the reporter and the estate's executor as
+     * well as an operator, so a console session really can see the holder's own
+     * case when they are one of those people. An audience is a RESTRICTION on
+     * where a credential may be spent, never a claim about what its holder is.
+     */
+    expect(copy).toMatch(/cannot reach your assets, documents, people or vault/i);
+    expect(copy).toMatch(/restricted to this origin and to settlement/i);
+    expect(copy).not.toMatch(/reaches none of your own estate/i);
   });
 
   it('SHOWS the audience it actually received, so a misdirected code is visible', async () => {
@@ -178,11 +193,13 @@ describe('the operator console', () => {
     (document.getElementById('sign-out') as HTMLButtonElement).click();
     await settle();
 
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-      'GET /api/auth/session',
-      'POST /api/auth/logout',
-      'GET /api/auth/session',
-    ]);
+    // Filtered to the auth calls: the worklists are fetched alongside them and
+    // their ordering relative to the sign-out is not the property under test.
+    // What IS the property is that the LOGOUT precedes the re-read — revoke
+    // first, and only then believe it.
+    expect(
+      calls.map((c) => `${c.method} ${c.path}`).filter((c) => c.includes('/api/auth/')),
+    ).toEqual(['GET /api/auth/session', 'POST /api/auth/logout', 'GET /api/auth/session']);
     expect(app().textContent).toMatch(/not signed in on this origin/i);
   });
 

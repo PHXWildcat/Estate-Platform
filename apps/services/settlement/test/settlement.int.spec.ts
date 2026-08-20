@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import { checkConventions, Migrator } from '@estate/db';
@@ -137,19 +138,24 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
     const rows = await admin.query<{ name: string }>(
       `SELECT name FROM ${schema}.schema_migrations ORDER BY name`,
     );
-    expect(rows.rows.map((r) => r.name)).toEqual([
-      '001_core_schema.sql',
-      '001_settlement_schema.sql',
-      '002_dek_unique_active.sql',
-      '002_settlement_admin.sql',
-      // Profile's M13 migrations. Listed here because the two co-tenants SHARE
-      // `schema_migrations` (the 2026-07-22 Plaid-precedent decision): this
-      // assertion is what proves the sharing still works, so a co-owner's
-      // migration landing is exactly what it should notice.
-      '003_contact_link_invitations.sql',
-      '004_role_assignments_unique.sql',
-      '005_permission_grants_unique.sql',
-    ]);
+    // DERIVED from the two migration directories, not retyped. The list this
+    // used to hold was a hand-copy that a new migration on either side turned
+    // red for the wrong reason — a maintenance chore dressed as a finding, and
+    // this repo's own recurring drift class (M9's hand-copied migrate list,
+    // web.Dockerfile's asserted-absent public/, the Diagnostics container set).
+    // What the assertion is FOR survives and is stronger for being derived:
+    // the two co-tenants SHARE `schema_migrations` (the 2026-07-22
+    // Plaid-precedent decision), so this proves every migration from BOTH
+    // owners is recorded in the one table, and it notices a co-owner's
+    // migration failing to land rather than one succeeding.
+    const expected = [
+      ...readdirSync(migrationsDirOf('@estate/service-profile')),
+      ...readdirSync(join(__dirname, '..', 'migrations')),
+    ]
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
+    expect(expected.length).toBeGreaterThanOrEqual(7); // anti-vacuity: the dirs were read
+    expect(rows.rows.map((r) => r.name)).toEqual(expected);
   });
 
   it('meets the docs/02 conventions (append-only tables; cases hand-checked below)', async () => {

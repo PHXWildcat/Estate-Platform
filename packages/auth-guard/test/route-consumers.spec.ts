@@ -159,10 +159,31 @@ function extractTemplates(file: string): string[] {
   if (!existsSync(absolute)) {
     return [];
   }
-  // Collapse interpolations FIRST: an `${encodeURIComponent(\n …\n)}` spans
-  // lines, and extracting before collapsing would truncate the template at
-  // the newline (measured against documents-client.ts).
-  const collapsed = read(absolute).replace(/\$\{[^}]*\}/g, ':p');
+  const source = read(absolute);
+  /*
+   * RESOLVE FILE-LOCAL PATH CONSTANTS BEFORE COLLAPSING.
+   *
+   * A client that writes `${CASES}/${id}/timeline` has a template this scan
+   * cannot see: the constant collapses to `:p` like any other interpolation,
+   * so the whole prefix disappears and the row reads as "addresses nothing".
+   * That direction is the safe one — it fails the fence rather than passing it
+   * — but it is still a fence going red for a reason that is not the property,
+   * which is how an escape hatch gets widened. Only same-file `const X = '…'`
+   * string literals are substituted, so this cannot reach across modules and
+   * cannot invent a path the file does not contain.
+   */
+  const constants = new Map<string, string>();
+  for (const m of source.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*=\s*'([^']*)'/g)) {
+    constants.set(m[1] as string, m[2] as string);
+  }
+  const resolved = source.replace(
+    /\$\{([A-Z][A-Z0-9_]*)\}/g,
+    (whole, name: string) => constants.get(name) ?? whole,
+  );
+  // Collapse the REST of the interpolations: an `${encodeURIComponent(\n …\n)}`
+  // spans lines, and extracting before collapsing would truncate the template
+  // at the newline (measured against documents-client.ts).
+  const collapsed = resolved.replace(/\$\{[^}]*\}/g, ':p');
   const templates = new Set<string>();
   for (const m of collapsed.matchAll(/\/(?:v1|internal|api)\/[A-Za-z0-9_/.:-]*/g)) {
     templates.add(m[0]);
@@ -212,6 +233,15 @@ function templateMatchesPath(template: string, path: string, enumerated = false)
 
 interface EdgeRewrite {
   readonly edge: string;
+  /**
+   * The HTTP method the row grants, where the edge declares one.
+   *
+   * The vault edge's rows are prefix TREES and forward whatever method arrives,
+   * so theirs is null and every method-aware check treats them as covering all
+   * of them — which is what they do. The operator edge names a method per row,
+   * because two settlement routes there share a path and differ only by verb.
+   */
+  readonly method: string | null;
   readonly from: string;
   readonly to: string;
 }
@@ -245,6 +275,13 @@ const EDGE_SERVERS: ReadonlyArray<{ edge: string; source: string }> = [
  * narrower than its claim goes green for the same reason it is wrong.
  */
 const EDGE_REWRITES: ReadonlyArray<EdgeRewrite> = deriveEdgeRewrites();
+
+/**
+ * The same rows, named for what the method-aware checks below use them as: the
+ * complete set of (method, upstream path) pairs any isolated origin can
+ * address.
+ */
+const EDGE_ROWS = EDGE_REWRITES;
 
 /**
  * DERIVED FROM THE EDGE'S OWN TABLES, never hand-written (M19 PR4 review).
@@ -281,23 +318,35 @@ function deriveEdgeRewrites(): ReadonlyArray<EdgeRewrite> {
     for (const m of server.matchAll(
       /\{\s*prefix:\s*'([^']+)',[^}]*rewriteTo:\s*'([^']+)',\s*tree:\s*(true|false)\s*\}/g,
     )) {
-      rewrites.push({ edge, from: m[1] as string, to: m[2] as string });
+      rewrites.push({ edge, method: null, from: m[1] as string, to: m[2] as string });
     }
-    for (const m of server.matchAll(
-      /\{\s*path:\s*'([^']+)',\s*upstream:\s*'[^']+',\s*rewriteTo:\s*'([^']+)'\s*\}/g,
-    )) {
-      rewrites.push({ edge, from: m[1] as string, to: m[2] as string });
+    /*
+     * The operator edge's rows are read as BLOCKS rather than as one
+     * field-ordered alternation, and that is a fix for a hole the shape had
+     * from birth: the original regex required the row to close immediately
+     * after `rewriteTo`, so adding ANY field — which M21 PR3b did, giving each
+     * row a `method` — made it match nothing. A derivation that silently stops
+     * reading is the 2026-08-07 lesson, and the completeness assertion below is
+     * the other half of closing it.
+     */
+    for (const block of server.matchAll(/\{[^{}]*\}/g)) {
+      const text = block[0];
+      const from = /\bpath:\s*'([^']+)'/.exec(text)?.[1];
+      const to = /\brewriteTo:\s*'([^']+)'/.exec(text)?.[1];
+      if (from !== undefined && to !== undefined) {
+        rewrites.push({ edge, method: /\bmethod:\s*'([A-Z]+)'/.exec(text)?.[1] ?? null, from, to });
+      }
     }
     // PASS_THROUGH_ROUTES: credential-free upstream calls. The vault edge has
     // two (extension pairing redemption, refresh); the operator edge has none,
     // and its own fence asserts that absence.
     for (const m of server.matchAll(/\{\s*path:\s*'([^']+)',\s*upstreamPath:\s*'([^']+)'\s*\}/g)) {
-      rewrites.push({ edge, from: m[1] as string, to: m[2] as string });
+      rewrites.push({ edge, method: null, from: m[1] as string, to: m[2] as string });
     }
     // The one projection with its own constant rather than a table row.
     const grantee = /GRANTEE_CANDIDATES_PATH\s*=\s*'([^']+)'/.exec(server)?.[1];
     if (grantee !== undefined && server.includes("'/v1/contacts/grantee-candidates'")) {
-      rewrites.push({ edge, from: grantee, to: '/v1/contacts/grantee-candidates' });
+      rewrites.push({ edge, method: null, from: grantee, to: '/v1/contacts/grantee-candidates' });
     }
   }
   return rewrites;
@@ -310,9 +359,25 @@ function fileMatchesPath(file: string, path: string, enumerated = false): boolea
       return true;
     }
     for (const rewrite of EDGE_REWRITES) {
+      // A PREFIX rewrite (the vault edge's trees) — string surgery, as before.
       if (template.startsWith(rewrite.from)) {
         const rewritten = rewrite.to + template.slice(rewrite.from.length);
         if (templateMatchesPath(rewritten, path, enumerated)) {
+          return true;
+        }
+      }
+      /*
+       * A TEMPLATE rewrite (the operator edge's parameterised rows).
+       * `startsWith` cannot see these: the edge writes `:caseId` where a
+       * caller's interpolation collapses to `:p`, so the two strings never
+       * share a prefix past `cases/`. Matching the consumer's template against
+       * the edge's `from` SEGMENT-WISE is the same one-directional rule used
+       * everywhere else — a consumer wildcard lines up with an edge parameter
+       * and never with an edge literal — and the edge's `to` is then the
+       * template compared against the route.
+       */
+      if (rewrite.from.includes('/:') && templateMatchesPath(template, rewrite.from)) {
+        if (templateMatchesPath(rewrite.to, path, enumerated)) {
           return true;
         }
       }
@@ -328,9 +393,38 @@ function fileMatchesPath(file: string, path: string, enumerated = false): boolea
 
 type RouteDecl =
   | { readonly consumers: readonly string[]; readonly enumerated?: string }
-  | { readonly exempt: string };
+  | { readonly exempt: string }
+  | { readonly pathSharedWith: string; readonly reason: string };
 
 const consumed = (...files: string[]): RouteDecl => ({ consumers: files });
+
+/**
+ * A route with NO consumer of its own, whose PATH is addressed by a consumer of
+ * a SIBLING route — same path, different method.
+ *
+ * This fence matches by PATH (its header says so: "two methods sharing one path
+ * are covered by one literal"), and until M21 PR3b that imprecision cost
+ * nothing, because no consumer had ever addressed one verb of a shared path
+ * while the other stayed unconsumed. The operator edge does exactly that:
+ * `GET cases/:caseId/stages` is proxied to the console and `POST` on the same
+ * path is the EXECUTOR's request, which the operator audience does not admit
+ * and the edge's table does not carry.
+ *
+ * The two honest answers were both wrong. `consumed()` would claim a caller
+ * that does not exist. `{ exempt }` would be flagged STALE, because the
+ * sibling's literal really is in the corpus — correctly, since the check cannot
+ * see a method. So the collision is DECLARED, with the sibling named, and three
+ * assertions make the declaration checkable rather than a way out: the sibling
+ * must exist, must share the path, must differ in method and must really be
+ * consumed — and no edge table may name THIS method on THIS path, which is the
+ * property that makes the route genuinely unreachable rather than merely
+ * undeclared. That last one is the `consumedByName` precedent: a declared
+ * exception with a checked reason, never a matcher loosened globally.
+ */
+const pathSharedWith = (sibling: string, reason: string): RouteDecl => ({
+  pathSharedWith: sibling,
+  reason,
+});
 
 /**
  * A consumer that addresses this route through an INTERPOLATION WHOSE VALUES
@@ -400,6 +494,15 @@ const AI = 'apps/services/ai-assistant/src/clients';
 const VW = 'apps/vault-web/src';
 const VX = 'apps/vault-extension/src';
 const OW = 'apps/operator-web/src';
+/**
+ * The console's ONE settlement call site. Named alongside `server.ts` on every
+ * route it reaches, because the edge and the client are two different claims: a
+ * path in `PROXY_ROUTES` says the edge WOULD forward it, and a template here
+ * says something actually asks. Slice 3 flipped these routes on the edge alone
+ * and the second half arrives with the screens, which is the M9 PR2 rule (a
+ * capability and its callers ship together) applied inside one milestone.
+ */
+const OW_CLIENT = `${OW}/client/settlement.ts`;
 
 /**
  * Where a consumer of a service route can live. Used by the stale-exemption
@@ -601,7 +704,7 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement GET /v1/settlement/reportable-estates': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement POST /v1/settlement/cases': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement GET /v1/settlement/cases': { exempt: EXEMPT_SETTLEMENT_REPORTING },
-  'settlement GET /v1/settlement/cases/:caseId': { exempt: EXEMPT_SETTLEMENT_REPORTING },
+  'settlement GET /v1/settlement/cases/:caseId': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/evidence': {
     exempt: EXEMPT_SETTLEMENT_REPORTING,
   },
@@ -609,23 +712,40 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement GET /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement PUT /v1/settlement/settings': { exempt: EXEMPT_SETTLEMENT_REPORTING },
   'settlement POST /v1/settlement/cases/report-provider': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement GET /v1/settlement/queue': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/cases/:caseId/review/start': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/cases/:caseId/review': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/cases/:caseId/verify': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/cases/:caseId/close': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement GET /v1/settlement/cases/:caseId/timeline': { exempt: EXEMPT_TB7_OPERATOR },
+  'settlement GET /v1/settlement/queue': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement GET /v1/settlement/administrable': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/review/start': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+  ),
+  'settlement POST /v1/settlement/cases/:caseId/review': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/verify': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/close': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement GET /v1/settlement/cases/:caseId/timeline': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/cases/:caseId/tasks': { exempt: EXEMPT_TB7_OPERATOR },
   'settlement POST /v1/settlement/tasks/:taskId/completion': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement GET /v1/settlement/cases/:caseId/stages': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/cases/:caseId/stages': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/stages/:stageId/decision': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/stages/:stageId/revoke': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement GET /v1/settlement/cases/:caseId/distributions': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/cases/:caseId/distributions': { exempt: EXEMPT_TB7_OPERATOR },
-  'settlement POST /v1/settlement/distributions/:distributionId/approval': {
-    exempt: EXEMPT_TB7_OPERATOR,
-  },
+  'settlement GET /v1/settlement/cases/:caseId/stages': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/cases/:caseId/stages': pathSharedWith(
+    'settlement GET /v1/settlement/cases/:caseId/stages',
+    'The EXECUTOR stage request. The operator console proxies the GET on this path and not the ' +
+      'POST — PROXY_ROUTES names a method per row — and the operator audience admits listStages ' +
+      'and not requestStage. The executor-facing surface is its own milestone.',
+  ),
+  'settlement POST /v1/settlement/stages/:stageId/decision': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement POST /v1/settlement/stages/:stageId/revoke': consumed(`${OW}/server.ts`, OW_CLIENT),
+  'settlement GET /v1/settlement/cases/:caseId/distributions': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+  ),
+  'settlement POST /v1/settlement/cases/:caseId/distributions': pathSharedWith(
+    'settlement GET /v1/settlement/cases/:caseId/distributions',
+    'Recording a distribution is the executor write; the console proxies the GET on this path ' +
+      'and approves through distributions/:distributionId/approval, which is a path of its own.',
+  ),
+  'settlement POST /v1/settlement/distributions/:distributionId/approval': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+  ),
   'settlement POST /v1/settlement/distributions/:distributionId/status': {
     exempt: EXEMPT_TB7_OPERATOR,
   },
@@ -733,16 +853,97 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     expect(consumedCount).toBeGreaterThanOrEqual(80);
   });
 
+  it('every pathSharedWith names a real, consumed sibling on the same path', () => {
+    /*
+     * The declaration is only honest if all four of its parts are true, so all
+     * four are checked. Without them it would be a way to silence the fence by
+     * pointing at a name.
+     */
+    let checked = 0;
+    for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
+      if (!('pathSharedWith' in decl)) continue;
+      checked += 1;
+      const sibling = ROUTE_CONSUMERS[decl.pathSharedWith];
+      expect({ key, siblingExists: sibling !== undefined }).toEqual({ key, siblingExists: true });
+      // Same PATH, different METHOD — which is the whole claim.
+      const path = key.slice(key.lastIndexOf(' ') + 1);
+      const siblingPath = decl.pathSharedWith.slice(decl.pathSharedWith.lastIndexOf(' ') + 1);
+      expect({ key, path, siblingPath }).toEqual({ key, path, siblingPath: path });
+      expect({ key, sameKey: decl.pathSharedWith === key }).toEqual({ key, sameKey: false });
+      // …and the sibling really is CONSUMED. Pointing at another exemption, or
+      // at another pathSharedWith, would be a chain with nothing at the end.
+      expect({ key, siblingConsumed: sibling !== undefined && 'consumers' in sibling }).toEqual({
+        key,
+        siblingConsumed: true,
+      });
+    }
+    expect(checked).toBeGreaterThanOrEqual(2);
+  });
+
+  it('NO EDGE TABLE NAMES A pathSharedWith ROUTE — the method really is unreachable', () => {
+    /*
+     * The property that makes the declaration a fact rather than a convenience.
+     * `pathSharedWith` says "no consumer of MY method"; the corpus check cannot
+     * see a method, but the edge tables DO carry one, so an edge row naming
+     * this exact (method, path) is the one way the claim could be false while
+     * every other assertion passed.
+     */
+    const claims: string[] = [];
+    for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
+      if (!('pathSharedWith' in decl)) continue;
+      const method = key.slice(key.indexOf(' ') + 1, key.lastIndexOf(' '));
+      const path = key.slice(key.lastIndexOf(' ') + 1);
+      for (const row of EDGE_ROWS) {
+        if (row.method === method && templateMatchesPath(row.to, path)) {
+          claims.push(`${key} is proxied by ${row.edge} — it has a consumer, so flip it`);
+        }
+      }
+    }
+    expect(claims).toEqual([]);
+    // Anti-vacuity: the rows really were read, and they really carry methods.
+    expect(EDGE_ROWS.length).toBeGreaterThanOrEqual(16);
+    expect(EDGE_ROWS.filter((r) => r.method !== null).length).toBeGreaterThanOrEqual(16);
+  });
+
+  it('EVERY REWRITE ROW IN EVERY EDGE SOURCE WAS READ (completeness, not a floor)', () => {
+    /*
+     * The per-edge floor below asks whether an edge contributed ANYTHING. This
+     * asks whether it contributed EVERYTHING, and the difference is exactly the
+     * hole M21 PR3b found: the operator-shape regex required a row to close
+     * right after `rewriteTo`, so giving each row a `method` would have made it
+     * read zero of sixteen while the vault edge's rows kept the floor green and
+     * the operator edge kept a non-empty count from its three unchanged
+     * identity rows. A floor cannot see a partial read.
+     *
+     * Counting the `rewriteTo:` and `upstreamPath:` occurrences in the source
+     * is a second, deliberately dumber derivation. Two readings of one file
+     * that must agree is the compose-parity mechanism.
+     */
+    for (const { edge, source } of EDGE_SERVERS) {
+      const text = read(join(REPO_ROOT, source));
+      const declared =
+        (text.match(/\brewriteTo:\s*'/g) ?? []).length +
+        (text.match(/\bupstreamPath:\s*'/g) ?? []).length +
+        (/GRANTEE_CANDIDATES_PATH\s*=\s*'/.test(text) ? 1 : 0);
+      const derived = EDGE_REWRITES.filter((r) => r.edge === edge).length;
+      expect({ edge, declared, derived }).toEqual({ edge, declared, derived: declared });
+      // …and neither number is zero, or they would agree vacuously.
+      expect({ edge, declared: declared > 0 }).toEqual({ edge, declared: true });
+    }
+  });
+
   it('every declared reason is substantive — exemptions AND enumerations', () => {
     // M20 PR1: this used to guard on `'exempt' in decl` alone, so the OTHER
     // kind of reason — `consumedByName`'s `enumerated` — was checked by
-    // nothing. That string is not decoration: its mere PRESENCE widens
+    // nothing. `pathSharedWith`'s reason joined them in M21 PR3b for the same
+    // reason: it is what a reader has instead of a consumer file. That string is not decoration: its mere PRESENCE widens
     // `templateMatchesPath`'s wildcard to reach literal route segments, which
     // is the relaxation the M19 PR4 review added deliberately and narrowly. An
     // empty string bought the relaxation and stayed green.
     let checked = 0;
     for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
-      const reason = 'exempt' in decl ? decl.exempt : decl.enumerated;
+      const reason =
+        'exempt' in decl ? decl.exempt : 'pathSharedWith' in decl ? decl.reason : decl.enumerated;
       if (reason === undefined) continue;
       checked += 1;
       expect(`${key}: ${reason}`.length).toBeGreaterThanOrEqual(80);
@@ -870,7 +1071,24 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     // And each one really maps its own identity routes, so the operator edge is
     // not passing on the vault edge's table by coincidence.
     const operator = EDGE_REWRITES.filter((r) => r.edge === 'operator-web').map((r) => r.from);
-    expect(operator).toEqual(['/api/auth/session', '/api/auth/stepup', '/api/auth/logout']);
+    // Its own identity routes, read from its own table — not the vault edge's
+    // by coincidence. The COUNT is deliberately not asserted here: the settlement
+    // half of that table is derived and checked against real handler metadata by
+    // `apps/services/settlement/test/session-audience.spec.ts`, and a second copy
+    // of a number is free to drift from the one that derives it (M21 PR2.5).
+    expect(operator.filter((from) => from.startsWith('/api/auth/'))).toEqual([
+      '/api/auth/session',
+      '/api/auth/stepup',
+      '/api/auth/logout',
+    ]);
+    expect(operator.filter((from) => from.startsWith('/api/settlement/')).length).toBeGreaterThan(
+      0,
+    );
+    expect(operator).toHaveLength(
+      operator.filter(
+        (from) => from.startsWith('/api/auth/') || from.startsWith('/api/settlement/'),
+      ).length,
+    );
   });
 
   it('template extraction sees a real corpus (anti-vacuity)', () => {

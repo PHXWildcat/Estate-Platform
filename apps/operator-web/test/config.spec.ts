@@ -17,6 +17,7 @@ import { ConfigError, loadConfig } from '../src/config';
 
 const BASE = {
   IDENTITY_URL: 'http://identity:3001',
+  SETTLEMENT_URL: 'http://settlement:3007',
   APP_ORIGIN: 'http://localhost:3000',
 } as const;
 
@@ -36,7 +37,7 @@ describe('operator-web configuration', () => {
   });
 
   it('requires every upstream in production', () => {
-    for (const missing of ['IDENTITY_URL', 'APP_ORIGIN'] as const) {
+    for (const missing of ['IDENTITY_URL', 'SETTLEMENT_URL', 'APP_ORIGIN'] as const) {
       const env = { NODE_ENV: 'production', ...BASE } as Record<string, string>;
       delete env[missing];
       expect(() => loadConfig(env)).toThrow(ConfigError);
@@ -47,20 +48,32 @@ describe('operator-web configuration', () => {
     const config = loadConfig({});
     expect(config.nodeEnv).toBe('development');
     expect(config.identityUrl).toBe('http://localhost:3001');
+    expect(config.settlementUrl).toBe('http://localhost:3007');
     expect(config.appOrigin).toBe('http://localhost:3000');
     // A port of its own: the vault origin has 3010, and two isolated origins
     // sharing a port would mean only one of them could run.
     expect(config.port).toBe(3011);
   });
 
-  it('HAS NO SETTLEMENT UPSTREAM YET, and that is the zero-callers rule', () => {
-    // M21 PR3b adds it in the same change as the screens that reach it. A
-    // configured upstream nothing calls is a capability sitting ahead of its
-    // consumer, which is the shape this milestone exists to close.
+  it('NAMES EXACTLY TWO UPSTREAMS — a third is a trust decision, not a variable', () => {
+    /*
+     * PR3a asserted this key list to say settlement was NOT here yet, on the
+     * zero-callers rule: a configured upstream nothing calls is a capability
+     * sitting ahead of its consumer. PR3b adds it in the same change as the
+     * thirteen routes and the screens that reach it, so the assertion is kept
+     * and its subject moves rather than being deleted.
+     *
+     * What it now pins is the OTHER direction. This origin can address exactly
+     * the services named here — `PROXY_ROUTES` keys its `upstream` field
+     * against them — so a new URL is how a console credential would gain reach
+     * into a cluster it has never touched. That belongs in a review, which is
+     * what a red test buys.
+     */
     expect(Object.keys(loadConfig({}))).toEqual([
       'nodeEnv',
       'port',
       'identityUrl',
+      'settlementUrl',
       'appOrigin',
       'secureCookies',
     ]);

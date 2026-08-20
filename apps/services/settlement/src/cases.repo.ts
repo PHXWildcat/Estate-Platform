@@ -11,6 +11,40 @@ export type CaseStatus =
   | 'closed'
   | 'rejected_fraud';
 
+/**
+ * THE TWO WORKLISTS, declared as data because their DISJOINTNESS is a
+ * product invariant rather than a coincidence (M21 PR3b decision 2).
+ *
+ * `/queue` is pre-verification: work an operator claims, reviews and either
+ * approves or rejects. `administrable` is post-verification: estates under
+ * settlement, where the remaining operator verbs are closing the case,
+ * deciding a stage and approving a distribution. A case is in exactly one of
+ * them or in neither (`closed` and `rejected_fraud` are terminal and appear on
+ * no worklist at all).
+ *
+ * Kept next to each other, and pinned against the MIGRATION's own status
+ * CHECK by `test/operator-worklists.spec.ts`, so a ninth status has to be placed deliberately rather
+ * than defaulting into invisibility — the failure this pair exists to prevent
+ * is a status nobody can reach a screen for, which is what
+ * `close`/stage-decision/distribution-approval were before PR3b.
+ */
+export const QUEUE_STATUSES: readonly CaseStatus[] = ['reported', 'verifying', 'waiting_period'];
+export const ADMINISTRABLE_STATUSES: readonly CaseStatus[] = ['verified', 'active', 'distributing'];
+
+/**
+ * Render a status set as a SQL literal list.
+ *
+ * Interpolated rather than parameterised, which is safe HERE and only here:
+ * both inputs are module constants typed as `CaseStatus`, a closed union whose
+ * members are also enforced by the table's own CHECK — no value on this path
+ * has ever been near a request. A parameterised `= ANY($1)` would work too and
+ * is what a caller-supplied filter must use; this stays literal so the two
+ * queries read as the status sets they are.
+ */
+function statusList(statuses: readonly CaseStatus[]): string {
+  return statuses.map((s) => `'${s}'`).join(',');
+}
+
 /** An evidence entry as stored in verification_evidence (ids only, never content). */
 export type EvidenceEntry =
   | {
@@ -31,6 +65,8 @@ export interface CaseRow {
   verification_evidence: EvidenceEntry[];
   human_review_by: string | null;
   human_review_at: Date | null;
+  claimed_by: string | null;
+  claimed_at: Date | null;
   waiting_period_ends: Date | null;
   verified_at: Date | null;
   resolution: string | null;
@@ -41,6 +77,7 @@ export interface CaseRow {
 
 const COLUMNS = `id, decedent_user_id, status, reported_by, report_source,
        verification_evidence, human_review_by, human_review_at,
+       claimed_by, claimed_at,
        waiting_period_ends, verified_at, resolution, resolved_at,
        created_at, updated_at`;
 
@@ -103,8 +140,35 @@ export class CasesRepo {
     return q.query<CaseRow>(
       `SELECT ${COLUMNS}
          FROM settlement_cases
-        WHERE status IN ('reported','verifying','waiting_period')
+        WHERE status IN (${statusList(QUEUE_STATUSES)})
         ORDER BY created_at, id`,
+    );
+  }
+
+  /**
+   * The post-verification worklist, newest verification first.
+   *
+   * A SECOND route rather than a widened `/queue`, and the disjointness is the
+   * reason (M21 PR3b decision 2). `/queue` is pre-verification work an
+   * operator picks up and puts down within days; an administrable case is an
+   * estate under settlement, which lingers for months. Merging them would grow
+   * the review queue without bound and change what the word means for the one
+   * route the audience table, the route↔consumer fence, the stack e2e and
+   * docs/04 all name by it. Before this existed, `close`, stage decisions and
+   * distribution approvals were reachable only by an operator who already held
+   * an id from somewhere else — the three verbs had a surface that could not
+   * reach them.
+   *
+   * `test/operator-worklists.spec.ts` asserts the two sets are disjoint and
+   * that every status the DDL admits is in at most one of them, so a ninth
+   * status cannot silently land in both or in neither unnoticed.
+   */
+  async listAdministrable(q: Queryable | Db): Promise<CaseRow[]> {
+    return q.query<CaseRow>(
+      `SELECT ${COLUMNS}
+         FROM settlement_cases
+        WHERE status IN (${statusList(ADMINISTRABLE_STATUSES)})
+        ORDER BY verified_at DESC, id`,
     );
   }
 
@@ -165,14 +229,28 @@ export class CasesRepo {
     );
   }
 
-  /** reported → verifying (an operator claimed the review). */
-  async markReviewStarted(tx: Queryable, caseId: string): Promise<boolean> {
+  /**
+   * reported → verifying (an operator claimed the review), RECORDING THE
+   * CLAIMER. The claim is written in the same statement as the transition, so
+   * a case can never be `verifying` with no owner — which is the state that
+   * let two operators pick up one docs/03 §5.1 review (migration 003).
+   *
+   * The reporter is refused above this by the readable `reviewer_is_reporter`
+   * 403; `settlement_cases_claimer_not_reporter` is the backstop, and it is a
+   * backstop rather than the gate for the same reason the review pair's is.
+   */
+  async markReviewStarted(
+    tx: Queryable,
+    caseId: string,
+    claimedBy: string,
+    claimedAt: Date,
+  ): Promise<boolean> {
     const rows = await tx.query<{ id: string }>(
       `UPDATE settlement_cases
-          SET status = 'verifying'
+          SET status = 'verifying', claimed_by = $2, claimed_at = $3
         WHERE id = $1 AND status = 'reported'
         RETURNING id`,
-      [caseId],
+      [caseId, claimedBy, claimedAt],
     );
     return rows.length > 0;
   }

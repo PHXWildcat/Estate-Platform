@@ -4230,8 +4230,68 @@ deviating from them, stop and propose the change with rationale — do not silen
   always — the packer exited 0 and wrote nothing at all, silently, while
   VERIFYING.md promised OS independence. Fixed with `pathToFileURL`, and
   verified by running the packer from `/tmp/has space/probe`, which now produces
-  the archive instead of nothing. The first two move the digest, which is the
+  the archive instead of nothing. NARROWED 2026-08-19: that fixed the SPACE and
+  the verification is true for how it was run, but `pathToFileURL(argv[1])` is
+  not robust in general — see the symlink entry below, and the packer still has
+  it. The first two move the digest, which is the
   right time for it to move: before anything is published.
+- 2026-08-19 — A MAIN-MODULE GUARD CAN FAIL TO FIRE BECAUSE OF THE SYMLINK, NOT
+  THE SPACE, and whether it does depends on how the script is ADDRESSED — which
+  is not a property anyone should have to reason about at a call site. M16 PR4b
+  replaced a raw `file://${process.argv[1]}` template with
+  `import.meta.url === pathToFileURL(process.argv[1]).href` and this log
+  credited it as the robust form. It is robust against a space and not against a
+  symlink: node reports the RESOLVED real path in `import.meta.url` and the path
+  AS TYPED in `process.argv[1]`. MEASURED, from one probe under
+  `/tmp/has space/g` on macOS where /tmp is a symlink to /private/tmp — an
+  absolute `node "/tmp/has space/g/probe.mjs"` compares
+  `file:///private/tmp/has%20space/...` against `file:///tmp/has%20space/...`
+  and is FALSE, while `cd` into the directory and `node probe.mjs` is TRUE,
+  because node resolves a relative argv against `process.cwd()`, which is
+  already physical. Same file, same node, opposite answers.
+  THE FAILURE IS THE SILENT ONE: a guard that does not fire means `main` never
+  runs, so the process exits 0 having done nothing — for
+  `.github/scripts/assert-stack-counts.mjs` that is BOTH exact-count gates
+  passing without comparing anything, and for the extension packer it is exit 0
+  with no archive written while VERIFYING.md promises OS independence. LATENT IN
+  THIS REPO, and stated as why rather than left as luck: every invocation of
+  both is a RELATIVE path from the workspace root
+  (`node .github/scripts/assert-stack-counts.mjs`,
+  `node apps/vault-extension/scripts/pack-extension.mjs`), which resolves
+  against the physical cwd and fires. It arms for anyone who invokes either by
+  an absolute path through a symlink, which on macOS includes anything under
+  /tmp.
+  Fixed in `assert-stack-counts.mjs` by resolving BOTH sides
+  (`pathToFileURL(realpathSync(process.argv[1])).href`), which also removes the
+  dependence on invocation style. `pack-extension.mjs` carried the unresolved
+  comparison and `build-psl.mjs` the older template form; both were filed
+  separately rather than folded into an unrelated PR, and both were closed the
+  same day (#120), as was `notify-failure.mjs` (#121) — so all FOUR
+  main-module guards in the repo now resolve both sides, and the class is
+  closed rather than merely noticed. Those fixes also state the mechanism more
+  precisely than this entry first did: a symlink ABOVE the working directory is
+  collapsed by node's own cwd resolution, and one BELOW it is not, which is why
+  a relative invocation happens to fire and an absolute one does not. Pinned by a test
+  that creates its own symlink, so it is hermetic on Linux too — every other
+  case in that file invokes the script under a path it never symlinks, where all
+  three guards are indistinguishable.
+- 2026-08-19 — AND THE SAME SCRIPT'S GUARD WAS NAME-KEYED, which a review raised
+  and its verifiers correctly REFUTED — the refutation being the interesting
+  part. `endsWith('assert-stack-counts.mjs')` is correct exactly while the
+  filename matches, and a rename that updates both workflow call sites and
+  misses the guard is silent: measured on a renamed copy, which answered exit 0
+  for 99 passed / 7 pending against an expected 33 / 4. It is not a hole because
+  the TEST SUITE catches it — 8 of 12 red. But the suite only catches it through
+  the per-file floor added in the same slice, so the refutation was resting on a
+  gate that had itself been unreliable, which is worth saying rather than
+  filing the finding as dismissed. Hardened anyway, because "a fence catches
+  this" is weaker than "the defect cannot happen", and the fix costs one line.
+  THE MUTATION THAT SURVIVED IS THE ENTRY'S REAL LESSON: reverting to the
+  name-keyed form left the suite GREEN, because every case invoked the script
+  under its own name, where the two guards are indistinguishable. The property
+  my own comment claimed — that a rename needs no edit — was claimed and
+  untested. A second test invokes a copy under a different filename, and both
+  mutations are red.
 - 2026-08-11 — THE SIGNING CAPABILITY MOVED OUT OF THE JOB THAT RUNS THE CODE.
   `permissions` is static per job, so a single job held `id-token: write` and
   `attestations: write` on every event — including `pull_request` runs that
@@ -7502,6 +7562,235 @@ deviating from them, stop and propose the change with rationale — do not silen
   EXPIRY, so it must either be labelled as one or be measured before it ships —
   here it was labelled, the measurement arrived hours later, and the label is the
   only reason the correction is an addendum instead of a retraction.
+- 2026-08-19 — AN APOSTROPHE UNHOOKED A BLOCKING GATE, AND IT HAD BEEN INERT FOR
+  EVERY RUN SINCE. `images.yml`'s exact-count step wrapped its assertion in
+  `node -e '...'` with twenty lines of prose INSIDE the single quotes; M21 PR3b
+  added the word `console's`. Nothing escapes inside single quotes — that is the
+  whole point of them — so the apostrophe CLOSED the string, bash parsed the
+  remainder as shell, and hit what looked like a redirection. MEASURED by
+  extracting the step verbatim from the YAML and running it against a fabricated
+  result file with deliberately wrong counts (99 passed / 7 pending): identical
+  CI error, and `passed=…` NEVER PRINTED. Bash sets up redirections BEFORE
+  executing a command, so node never ran at all. The gate did not mis-assert; it
+  did not execute. It went red, which is the safe direction, but only by
+  accident — the shell error is what failed the step, and a quoting mistake that
+  still parsed would have gone green over an unevaluated assertion. The counts
+  themselves were fine: `stack.yml`'s twin passed, so the numbers were verified
+  by the other gate the whole time.
+  THE PIPELINE ITSELF SUPPLIES THE SAME ANSWER IN THREE REAL RUNS, assembled
+  only afterwards and stronger than the reconstruction: `main` at `7664d87`
+  (the last Images run before this branch) printed `passed=32 failed=0
+  pending=4`; `f4c1391`, the first run carrying the apostrophe, printed nothing
+  and died on the shell error; `4bd732e`, with the logic extracted, prints
+  `passed=33 failed=0 pending=4`. Working, inert, working — and the middle term
+  is the one NO gate would have reported had the parity been even.
+- 2026-08-19 — AND THE FENCE I WROTE FOR THAT DEFECT HAD SIX SILENT SKIPS OF ITS
+  OWN, found by an adversarial review of it (sixteen agents, seven lenses; nine
+  confirmed, every one re-derived here by execution before anything changed).
+  Its header promised "REFUSES what it cannot read … never a skip" and the
+  sentence was false in six ways, each a `run` key DROPPED ON THE FLOOR rather
+  than refused: `run :` with a space before the colon, a quoted `"run":` key, a
+  flow mapping `- {run: ...}`, a plain scalar folded across lines (truncated to
+  its first line), `defaults.run` (a MAPPING, read as a script), and a
+  double-quoted body, which had no structural rule of any kind — `node -e "…"`
+  needs no apostrophe at all to be cut short by prose scare quotes. All six were
+  LATENT (47 blocks, 0 refusals, 0 findings on the real workflows before and
+  after), so they arm the moment somebody writes one of those shapes.
+  THE STRUCTURAL FINDING IS WHY THEY WERE ALL SILENT: the anti-vacuity floors
+  were GLOBAL (`blocks >= 30`), and a global floor cannot see ONE workflow going
+  blank — forty-six blocks from the other five satisfy it while the sixth is
+  scanned not at all. The sweep reports PER FILE now, with `seen === scripts +
+  refusals` as an invariant. This repo has written that rule down twice already
+  (2026-08-17, 2026-08-18: an anti-vacuity check belongs on every LEVEL of a
+  scan, and where a scan has a REACH the check is a set comparison, not a
+  count), and this is the third place it was needed — the second being the
+  helper-test CI step, which had the identical aggregate-floor defect one level
+  up: emptying one of three test files left 31 of 41 tests over a floor of 30
+  and the gate stayed green.
+  MY OWN "NO SILENT SKIP" TEST, committed three hours earlier FOR THIS EXACT
+  PROPERTY, walked a hand-written list of block-scalar HEADERS — the author's
+  model of the defect rather than the property, for the third time in one
+  milestone. It is a matrix over fourteen shapes now, and each pins its
+  DISPOSITION rather than merely that something happened: asking "was it
+  dropped?" is still too weak, because deleting the `defaults.run` guard yields
+  a SCRIPT — the wrong outcome, reached without being dropped.
+  THE PAIRED PROBE EARNED ITS PLACE TWICE. Blanking two files trips the global
+  count instead of the per-file check, and blanking one file whose block scalars
+  merely fall through trips the REFUSALS assertion — so the first two attempts
+  to isolate the per-file floor were caught by something else entirely and
+  proved nothing about it. Only a single small file going wholly blank isolates
+  it: red naming the file, and GREEN with that one check neutered, which is what
+  identifies it as the thing that saw it.
+  THE TWIN WAS BALANCED ONLY BECAUSE SOMEBODY HAD ALREADY BEEN BITTEN: line 226
+  of stack.yml read `profile'"'"'s block`, the close-reopen dance that is the
+  only way to put an apostrophe inside single quotes. An unreadable workaround
+  in one copy and the defect in the other is the same finding twice, so the fix
+  is not "escape it properly".
+  FIXED BY MOVING THE PROSE OUT OF THE SHELL, not by escaping it. The prose is
+  worth keeping — this repo records why every number is what it is — so it is a
+  YAML `#` comment now, which no shell ever parses, and the LOGIC is
+  `.github/scripts/assert-stack-counts.mjs`. The two call sites still pass their
+  OWN numbers as arguments: images.yml runs the stack from BUILT IMAGES and
+  stack.yml from `dist`, so a number derived from the other would stop being a
+  measurement, and only the MECHANISM is shared. Proven by extracting both new
+  steps verbatim and driving eight cases through them — matching counts exit 0
+  and print `passed=…`, a moved count and a failing suite each exit 1 with
+  distinct messages, an absent file says "the suite did not run", and neither
+  profile's numbers satisfy the other's expectation.
+- 2026-08-19 — THE TEST HAD TO DRIVE A SUBPROCESS, BECAUSE THE DEFECT WAS THAT
+  NOTHING RAN. A unit test of the comparison would have been green throughout
+  the entire inert period — the arithmetic was never wrong. So
+  `assert-stack-counts.test.mjs` invokes the SCRIPT the way a workflow does and
+  asserts on its exit status and output, with the `passed=…` line as the
+  evidence it evaluated at all rather than merely exited. The pure-function
+  cases sit underneath, for the messages. `node --test` on the
+  `.github/scripts/*.test.mjs` glob already runs in ci.yml, whose own comment
+  says "there is no excuse for the next one either" — so this arrived covered
+  without new wiring.
+  AND MY SURVEY OF THAT WIRING WAS WRONG, in the direction that would have added
+  work: I reported `notify-failure.test.mjs` as a test nobody runs. It runs.
+  ci.yml invokes it through a GLOB, so the filename appears nowhere in the
+  repository and a grep for it returns nothing. A GREP IS NOT A PARSE — the rule
+  this repo wrote down eight days earlier, committed by me while investigating a
+  defect of the same family, and it survived long enough to be seeded into a
+  review agent's prompt as a false premise.
+- 2026-08-19 — THE FENCE PARSES THE QUOTING, BECAUSE NOTHING CHEAPER CAN.
+  `workflow-shell.mjs` extracts every `run:` block from every workflow and
+  tracks shell quoting state across the whole body. A grep cannot answer this in
+  either direction: `grep "'"` matches every workflow in the repo, counting
+  apostrophes per line calls `"don't"` inside double quotes a defect, and a
+  quote legitimately opened on one line closes many lines later — the property
+  belongs to the whole script, so answering it is a parse. It deliberately is
+  NOT a shell parser: it tracks the states that decide whether a quote is open
+  at the end (bare / single / double, with backslash escapes where they apply,
+  and `#` comments, without which every `# don't` in the repo is a false
+  positive and the next real finding is ignored). No YAML parser resolves from
+  the repo root with bare node — measured, MODULE_NOT_FOUND for both `yaml` and
+  `js-yaml` — so the extractor is hand-written and REFUSES a `run:` shape it
+  cannot read, naming file and line, rather than skipping it.
+  WRITTEN BEFORE THE FIX, so the mutation test is the genuine historical defect:
+  against the still-broken tree it reported exactly one finding across 47 blocks
+  with zero refusals, and it was the real one. Its first version mis-attributed
+  by one line — a block scalar's body starts AFTER the `run:` key while a
+  single-line body sits on it, and collapsing the two sent the reader one line
+  early. A fence that mis-attributes still goes red, and still points at the
+  wrong place.
+  Six probes, each confirmed: the apostrophe defect reintroduced (red), an
+  unterminated double quote elsewhere (red), the extractor broken so it scans
+  nothing (red on the anti-vacuity floor, "saw 0"), a `run:` written as a quoted
+  YAML scalar (red on the refusal path, not skipped), the count decision
+  neutered (red in its own suite), and THE SECOND PROBE OF THE PAIR — the defect
+  planted AND the quoting checker neutered — GREEN, which is what identifies the
+  checker as the thing that saw it rather than some incidental assertion.
+- 2026-08-19 — AND MY OWN FENCE SHIPPED BLIND TO THE WORSE HALF OF ITS OWN
+  DEFECT CLASS, found by a parallel audit of the CI configuration and confirmed
+  by execution before it was believed. `unterminatedQuote` asked whether a quote
+  was left OPEN, which is the ODD-apostrophe case — the one that fails loudly.
+  An EVEN number RE-BALANCES the quotes, and that case is SILENT-GREEN.
+  MEASURED with `// it's the console's round trip` inside a `node -e` body: bash
+  splits it into THREE arguments, node evaluates only the first —
+  `const r = {...}; // its`, which is VALID JAVASCRIPT — exits 0, and the
+  assertion has vanished with the step passing. Strictly worse than the defect
+  that prompted the fence, because that one at least went red. Two lenses
+  reached it independently.
+  THE FIX IS ON THE CAUSE RATHER THAN THE SYMPTOM, which is what lets one rule
+  cover both parities: a `'` that CLOSES a single-quoted string and is
+  immediately followed by a WORD CHARACTER is an accidental close — `console's`
+  is exactly that, the quote shutting at `console` with `s` running on. A
+  deliberate close is followed by whitespace, `)`, `;`, `|`, `&` or another
+  quote, INCLUDING `'\"'\"'`, the escape dance, whose close is followed by `"` —
+  so stack.yml's years-old workaround is not a false positive. It fires at the
+  first accidental close and never counts apostrophes, so parity is irrelevant.
+  Zero false positives across all 47 run blocks in the repo. Mutation-tested as
+  a pair: the even-parity defect planted goes RED, and planted with the
+  accidental-close check neutered goes GREEN — which is what identifies the new
+  check, rather than the old one, as the thing that sees it.
+  THE LESSON IS ABOUT WHAT A FENCE MEASURES. I wrote a checker for "is a quote
+  left open", which is the symptom I had just spent an hour measuring, and
+  called it a fence against apostrophes in prose. The two are not the same
+  question, and the half I missed was the half that goes green. A fence written
+  in the same sitting as the defect it answers inherits the author's model of
+  that defect — the M21 PR2 lesson, arriving in the very next fence I wrote.
+- 2026-08-19 — I ATTACKED MY OWN RULE AND IT HAD AN EVASION, found within the
+  hour and by the obvious attack: I keyed the accidental-close check on `'`
+  FOLLOWED BY A WORD CHARACTER, because the one example I had was `console's`.
+  A possessive PLURAL closes the string exactly as thoroughly and is followed by
+  a SPACE. MEASURED with `// the gates' numbers and the twins' numbers` inside a
+  `node -e` body: the unterminated check is blind (two apostrophes re-balance),
+  the word-character check is blind (a space is not a word character), bash
+  exits 0, and the assertion never runs — the same silent-green failure, one
+  rule over, in the fix for the previous silent-green failure.
+  THE RULE WAS KEYED ON THE SYMPTOM SHAPE RATHER THAN ON THE STRUCTURE, which is
+  this repo's own recurring lesson about fences written in the same sitting as
+  the defect they answer. The structure was in front of me the whole time: every
+  embedded script here opens with a quote that is the LAST thing on its line and
+  closes with one that is the FIRST thing on its. So a multi-line body that
+  closes anywhere but at the start of a line has been cut short — by an
+  apostrophe, a stray quote, or anything else, at any parity, whatever follows
+  it. That is a property of the SHAPE, so it does not have to guess about prose.
+  Both earlier defects and the plural evasion all fall out of it.
+  ONE EXEMPTION, and it is the only one: a close IMMEDIATELY followed by another
+  quote is shell CONCATENATION — `'\"'\"'` — so the body has not ended. Verified
+  by running the dance and watching it work. A fence must flag what is broken,
+  not what is merely ugly. And that exemption HAD NO TEST until I went looking:
+  the escape-dance case asserted only the word-character rule, so mutating the
+  concatenation branch stayed green. It asserts both now, and the mutation is
+  red.
+  Also caught by a test rather than by me: a `python` replacement that added the
+  new import SILENTLY DID NOT MATCH, because I asserted the anchor and not the
+  import line. A replacement that does not replace reads exactly like a change
+  that did nothing — the same family as a mutation that does not mutate.
+- 2026-08-19 — THE STEP THAT RUNS EVERY `.github/scripts` FENCE COULD NOT
+  DETECT ITS OWN DISARMING, found by a parallel audit of the CI configuration
+  and confirmed by two independent verifiers, both by execution. `ci.yml`'s
+  helper-test step was one line — `node --test .github/scripts/*.test.mjs` —
+  and with `nullglob` off (the default) an unmatched glob reaches node as the
+  LITERAL pattern; node 22 expands it itself, finds nothing, prints
+  `1..0 / # tests 0` and EXITS 0. The contrast that proves the mechanism is
+  node's own: a missing path WITHOUT a `*` makes it exit 1, so the
+  metacharacter is what suppresses the failure. A verifier then demonstrated it
+  end to end — plant the real apostrophe defect in a workflow, rename the test
+  files from `.test.mjs` to `.spec.mjs` with every assertion still on disk, and
+  the same defect in the same file goes from exit 1 to exit 0.
+  MATERIALITY HAD ALREADY LANDED RATHER THAN BEING PROSPECTIVE: that step is
+  the SOLE invoker of every `.github/scripts/*.test.mjs`, no jest project covers
+  `.github`, and the two fences committed hours earlier — the stack count gate
+  and the workflow quoting fence — run exclusively through it. The fence I wrote
+  to catch a disarmed gate was itself reachable only through a gate that could
+  be disarmed silently.
+  TWO FLOORS, because the two failures are different: a FILE-COUNT floor catches
+  the rename, the move and the pattern edit, and a PASSING-TEST floor catches
+  three surviving files with their assertions gutted. Both proven by execution
+  against a copy of the real tree — normal 34/34 exit 0, renamed exit 1 naming
+  the count, emptied exit 1 reporting 3 passing (node counts a file with no
+  subtests as one passing test, which is exactly why a file-count floor alone is
+  not enough).
+- 2026-08-19 — A CONCURRENCY COMMENT DESCRIBED A DEDUP THAT CANNOT HAPPEN, and
+  the verifier settled it against the repo's own history rather than by reading.
+  `ci.yml` said it skipped the branch-push run when a PR run for the same commit
+  existed; the group is `ci-${{ github.ref }}`, which is `refs/heads/<branch>`
+  for a push and `refs/pull/<n>/merge` for a pull_request — different groups, so
+  neither event can ever cancel the other. MEASURED over 400 runs grouped by
+  sha: 67 shas received BOTH a push run and a pull_request run, and 64 of those
+  pairs ran both to completion with no cancellation at all; the three that
+  contain one are same-event supersession. The block is worth keeping for what
+  it really does — superseding an older run when a newer commit lands on the
+  same ref — so the comment now says that, with the measurement beside it. A
+  wrong claim about a gate is worse than no claim, because it stops the next
+  person looking.
+- 2026-08-19 — TWO MORE WAYS THE HARNESS TRIED TO LIE, both caught by guards
+  this repo already had. `$M mutate …` ran nothing, because zsh does not
+  word-split an unquoted variable, so the whole string became one command name —
+  the recorded zsh trap, inside the harness built to avoid this class; it
+  reported HARNESS REFUSED rather than a green, which is the direction that
+  costs a minute instead of a wrong conclusion. And a restore of `ci.yml`
+  ABORTED because I had never taken a pristine copy of it: the harness compares
+  its restore byte-for-byte against a copy the CALLER took once, before any
+  mutation, so a file it was never given cannot be silently overwritten with
+  whatever the tree happened to hold. That is the 2026-08-17
+  accumulating-mutation defect closed by construction. Its diff was then read
+  before restoring, rather than trusting `git checkout --` on a tree with
+  uncommitted work.
 - 2026-08-19 — THE APP'S `form-action` ORIGINS NEVER REACHED THE BUILD, in
   either of the two layers that carry them, and it was found by a discovery
   sweep for M21 PR3b rather than by any gate. `docker-compose.stack.yml` has
@@ -7553,6 +7842,316 @@ deviating from them, stop and propose the change with rationale — do not silen
   N boundaries, N green fences prove nothing about the artifact; only reading the
   value back out of the artifact does, and it must be a value that could not have
   arrived by accident.
+- 2026-08-19 — M21 PR3b IS THE OPERATOR SCREENS, and the first thing it found is
+  that THE QUEUE COULD NOT REACH A CLOSEABLE CASE. `listOpenForReview` selects
+  `('reported','verifying','waiting_period')` and the post-verification verbs act
+  on `('verified','active','distributing')` — disjoint, measured, and no document
+  named it — so `close`, stage decisions and distribution approvals were reachable
+  only by an operator who already held a case id from somewhere else: three of the
+  six verbs this milestone names had a surface that could not reach them. `GET
+  /v1/settlement/administrable` is the second worklist (chosen over widening the
+  first), and the two status sets are declared together and pinned disjoint
+  against the DDL's own CHECK rather than against a list retyped in a spec. A
+  SIBLING of `queue` and not `cases/administrable`, because the latter is a
+  literal segment competing with `cases/:caseId` in a different controller, which
+  Nest resolves in module-registration order — a path that cannot collide beats a
+  path whose correctness is a property of a list. Also found before any screen
+  existed: `markReviewStarted` moved a case to `verifying` and recorded the
+  claiming operator NOWHERE (`human_review_by` is first written at approval), so a
+  shared work queue had no claim marker and two operators could independently run
+  one §5.1 review, which the reviewer-≠-reporter CHECK does not prevent; and ALL
+  23 SETTLEMENT AUDIT ACTIONS WERE WRITES, so an operator working the queue or
+  reading a death case left no trace of having looked, in the service whose whole
+  subject is a §5.1 investigation. TWO read actions, not one per route —
+  `settlement.queue.viewed` and `settlement.case.viewed` with `detail.surface`
+  naming which of the five reads — and the gate is consulted UNCONDITIONALLY
+  rather than as the second arm of the visibility chain, so an operator who is
+  also the reporter is still recorded and the claim does not turn on the order of
+  an `if`.
+- 2026-08-19 — THE AUDIENCE IS DECORATED PER HANDLER AND NEVER SERVICE-WIDE, for
+  a mechanical reason rather than a stylistic one: `CallerGuard.audiencesFor`
+  returns the UNION of the service-wide list and the per-route one, so binding
+  `operator` in settlement's `ALLOWED_SESSION_AUDIENCES` could never be narrowed
+  by a decorator and would hand a console credential the decedent's own `void`,
+  the owner's waiting-period settings and a reporter's case listing. FOUR OF THE
+  THIRTEEN ARE A REAL WIDENING AND ARE RECORDED AS ONE: `getCase`, `timeline`,
+  `listStages` and `listDistributions` authorize through the Cedar `read` permit
+  and `assertCaseVisible`, which admit the decedent, the reporter and the estate's
+  executor as well as an operator, so a console credential reaches those people's
+  own cases too. The alternative — four operator-only read projections — is a
+  second copy of an authorization decision, which is how two copies drift apart.
+  Decided by the user: decorate all twelve reads and REWRITE THE COPY, so PR3a's
+  claim that the credential "reaches none of your estate" is replaced in the
+  change that made it false, restated in the EXTENSION shape (what the credential
+  CANNOT do), with the executor overlap an `[ACCEPTED]` residual in docs/03 §6cc.
+  AN AUDIENCE IS A RESTRICTION ON WHERE A CREDENTIAL MAY BE SPENT, NEVER A CLAIM
+  ABOUT ITS HOLDER — `OperatorGate` against `settlement_operators` remains the
+  only answer to "may this person act".
+- 2026-08-19 — THE SERVICE-LOCAL AUDIENCE SPEC IS THE PIECE NEITHER EXISTING
+  FENCE COULD BE. @estate/auth-guard's fence checks the TABLE against this
+  service's decorators and a prototype scan checks the metadata; neither can see
+  that `CallerGuard`'s reflector is `@Optional()` and `audiencesFor` falls back to
+  the service-wide list when it is absent — so a perfectly decorated route on a
+  container where `Reflector` does not resolve is SILENTLY INERT: 401, no error,
+  no log, every source fence green. The new spec drives a REAL guard, admits an
+  operator session on `queue`, refuses it on `void` with the same generic 401 an
+  invalid token gets, and reproduces the inert case with no reflector — which is
+  what proves the first assertion measures the reflector rather than a default
+  that happens to agree. It also pins that an ACCOUNT session still reaches the
+  console routes, because a decorator must never take authority away.
+- 2026-08-19 — THE EDGE LEARNED A PATH SHAPE, AND THE SHAPE IS WHERE THE SAFETY
+  ARGUMENT LIVES. PR3a matched `r.path === pathname`, which cannot express
+  `cases/:caseId`, and nine of the thirteen handlers carry a parameter. TEMPLATES,
+  NOT PREFIXES: a `:name` segment matches exactly ONE non-empty path segment and
+  can never span a `/` — `URL.pathname` leaves `%2F` percent-encoded and the
+  matcher splits on the literal separator, so a smuggled separator arrives as one
+  opaque segment settlement refuses, while `..` and `%2e%2e` never arrive at all
+  because the WHATWG parse collapses both before the table is consulted (measured,
+  not assumed). `startsWith` would make every row a tree, and a tree under
+  `/api/auth/` reaches `/v1/auth/handoff`, the credential this origin must never
+  help mint. THE METHOD IS PART OF THE ROW, because two settlement routes share a
+  path and differ only by verb: `GET cases/:caseId/stages` is the operator's read
+  and is admitted, `POST` on the same path is the EXECUTOR's request and is not —
+  a path-only table would forward both and lean on `CallerGuard` to refuse the
+  second, which it would, but the edge would be claiming a capability it does not
+  have. THE QUERY STRING IS DROPPED BY NEVER BEING READ: the upstream path is
+  built from the template plus the captured segments, and a row naming an
+  uncaptured parameter is a process that will not start (the `assertSubjectFree`
+  precedent), because a literal `:caseId` travelling upstream reads to the
+  operator as an outage.
+- 2026-08-19 — TWO DERIVATION HOLES IN THE ROUTE↔CONSUMER FENCE, one of which
+  PR3b would itself have opened. The operator-shape regex required a row to close
+  immediately after `rewriteTo`, so giving each row a `method` would have made it
+  read ZERO of sixteen — while the per-edge floor stayed green on the vault edge's
+  rows and the operator edge's three unchanged identity ones. A FLOOR CANNOT SEE A
+  PARTIAL READ, so rows are parsed as blocks and a completeness assertion counts
+  `rewriteTo:` occurrences as a second, deliberately dumber reading of the same
+  file. The other hole is the block regex itself: `{[^{}]*}` does not span a
+  nested brace, so a row written with an object spread is not unreadable, it is
+  INVISIBLE — and an invisible EXTRA row leaves a set comparison passing. The
+  fence also could not see a path built from a file-local constant
+  (`${CASES}/${id}/timeline` collapsed to `:p/:p/timeline`), so it resolves
+  same-file `const X = '…'` before collapsing interpolations; that direction
+  failed safe, but a fence going red for a reason that is not its property is how
+  an escape hatch gets widened. TWO EXEMPTIONS HONESTLY DO NOT FLIP: `POST
+  cases/:caseId/stages` and `POST cases/:caseId/distributions` are executor writes
+  whose PATHS are addressed by the console's GET rows, and this fence matches by
+  path — its header always said so and nothing had exercised the imprecision.
+  `consumed()` would claim a caller that does not exist and `{ exempt }` would be
+  flagged stale, so the collision is DECLARED (`pathSharedWith`, the
+  `consumedByName` precedent) with four assertions making it checkable, including
+  that no edge table names this method on this path.
+- 2026-08-19 — THE CONSOLE'S CEREMONY POLLS, IT DOES NOT POLL THE CASE, AND THE
+  CASE ID NEVER ENTERS THE URL — three decisions that are not UI preferences.
+  (1) Identity grants the elevation; settlement learns of it by introspecting the
+  token through `HttpSessionVerifier`'s short-TTL positive cache, so for up to one
+  TTL after a genuine step-up the peer still answers from a cached un-elevated
+  session and a SINGLE-SHOT retry leaves the prompt doing nothing for someone
+  whose code was accepted — the M13 review's finding against the main app, whose
+  polling shape this ports rather than the vault origin's single-shot one (the
+  vault re-proves a factor to VAULT, which identity's own session state reaches
+  first-hand). CANCEL ABORTS THE LOOP and so does starting a fresh attempt: a
+  step-up prompt is a CONSENT ceremony, and here the stakes are a death case,
+  where a surviving retry could confirm a verification and revoke every session a
+  living person holds. The ownership marker is a COUNTER rather than a boolean
+  because Cancel restores the form, so a second attempt can begin while the first
+  is in flight and a boolean cannot tell "nobody owns this" from "somebody else
+  does". (2) Each case read emits an operator read event on that estate's own
+  death-case trail, so a console that refreshed itself would turn one screen,
+  abandoned over lunch, into hundreds of recorded reads — M12's
+  audited-volume-is-a-UI-constraint rule arriving where the subject of the trail
+  is a dead person's estate; a case is re-read when somebody acts on it, pinned by
+  a test that opens a case, counts exactly four reads, and then waits. (3) Which
+  screen the console is on is module state and nowhere else: a hash route would
+  accumulate death-case references in an operator's browser history and put one in
+  the address bar, which is the part a screen-share catches. The cost is that a
+  refresh returns to the worklists.
+- 2026-08-19 — A REFUSED LIST COSTS ITS OWN PANEL AND NEVER READS AS AN EMPTY
+  ONE, because a short worklist of death reports is indistinguishable from a quiet
+  week — which is also why ONE unparseable row fails the whole list rather than
+  being dropped. Three smaller copy decisions with the same shape: `UNAUTHENTICATED`
+  gained a sentence of its own, having fallen through to "something went wrong"
+  while a console session lasts fifteen minutes and cannot be renewed, so an
+  expired credential read as a fault; `UNAVAILABLE` says BOTH true things (the
+  session survives an outage AND nothing was committed) because that one code
+  reaches two surfaces; and a timeline detail is SCALARS ONLY, because
+  `String({})` is `'[object Object]'`, which on an audit surface is a sentence
+  that looks like a value and is not one.
+- 2026-08-19 — THE E2E REFUSAL LIST IS SPLIT, NEVER SHORTENED, and the split is
+  the milestone. Until PR3b every service answered a redeemed operator session
+  with 401 and one loop said so. Settlement now answers two ways: **401** means
+  the AUDIENCE was not admitted and `CallerGuard` never let the request reach the
+  handler (`GET /v1/settlement/cases` is owner-facing and stays that way), and
+  **403** means the audience WAS admitted and the NEXT control stopped it — the
+  probe user is not on `settlement_operators`, so `OperatorGate` refuses inside
+  the transaction that would have acted. Collapsing those into "it is refused"
+  would hide the boundary moving: a route silently losing its decoration, and the
+  allowlist silently ceasing to be consulted, both still refuse, with different
+  numbers. A new test drives the claim THROUGH the edge, which nothing had done —
+  an allowlisted operator gets 200 on both worklists carrying nothing but the
+  cookie they arrived with, a console session belonging to a non-operator gets 403
+  on the same path, and `/api/settlement/settings` (a real settlement route this
+  origin deliberately does not carry) dies at the edge with 404 and no request
+  leaving the box. Minting an operator handoff is role-blind by design, so
+  ARRIVING proves nothing; this is where that stops being a sentence in a
+  docstring and becomes two status codes from two users.
+- 2026-08-19 — A PARAGRAPH OF REASONS HAS NO MECHANISM BEHIND IT, which is how
+  the audience declaration's own enumeration of the absences rotted inside two
+  PRs of PR2.5 — the milestone spent entirely on counts that rotted. The
+  `operator` docblock named `listMyCases`, WHICH IS NOT A HANDLER IN THIS PRODUCT
+  (`listMine` is), omitted four refusals outright (`reportableEstates`,
+  `addEvidence`, `setDistributionStatus`, `vaultRelease`), mis-grouped two more as
+  executor-only when the SERVICE admits an operator on both — `listTasks` through
+  `assertCaseVisible` and `setDistributionStatus` through the gate, so their
+  absence is a PRODUCT decision rather than an authorization one, which is worth
+  saying rather than letting the list imply otherwise — and carried a duplicated
+  paragraph and a heading still describing PR3a's contents. The fix is not a
+  better paragraph: `session-audience.spec.ts` now asserts the enumeration is
+  TOTAL in BOTH directions against the refused set it derives from the real
+  decorators. A refused handler missing from the prose is an absence nobody
+  decided; a NAME in the prose that is not a handler is a reason pointing at
+  nothing, which is worse, because it reads as covered.
+- 2026-08-19 — AND THE STEP-UP COUNT HAD ROTTED THE SAME WAY, in code shipped
+  four days earlier. `step-up.ts` said "Eight of this console's thirteen routes
+  are `StepUpGuard`-ed"; SIX carry the guard. The eight was a count of on-screen
+  BUTTONS (approve and reject are two of them over one route), and the sentence
+  then travelled verbatim into a commit message and the docs/04 record. Corrected
+  by MEASURING it and by moving it to where it is measured: a declared table pins
+  which console routes need a fresh factor, checked against the real
+  `@UseGuards(StepUpGuard)` decorators in both directions, and the client's
+  comment points at that spec instead of restating a number. Two things fell out
+  of writing it. `startReview` is the one console verb with no guard, and stating
+  that forced the reason to be written down rather than inherited — claiming a
+  case commits to nothing, is undone by rejecting, and the DECISION that follows
+  IS gated, so gating the claim would put a factor in front of picking up work,
+  the M6 rule that the protective action must never be harder than the permissive
+  one. And Nest stores method-level `@UseGuards` ON THE HANDLER FUNCTION, not at
+  `(prototype, key)`: the first version read the wrong place, reported every route
+  ungated, and was caught by its own anti-vacuity floor (`gated > 0`) within
+  minutes of being written — a floor earning its place on the day it was added.
+- 2026-08-19 — M21 PR3b REVIEW ROUND: A STEP-UP PROMPT HAD THREE DOORS AND
+  ABORTED ON TWO. Pressing "Back to worklists" while a ceremony was polling
+  removed the form and CLOSED THE CASE two seconds later — measured before it
+  was believed, and again live against the running stack. The back controls
+  cleared the module's `pending` reference, which forgets the ELEMENT and not
+  the CEREMONY: the polling loop lives in a closure that outlives it, so it kept
+  retrying and landed an irreversible verb on a death case after consent was
+  withdrawn, with nothing on screen to say so. This is the M13 review round 3
+  finding ("Cancel did not cancel") arriving through the one door this console
+  has and the main app does not — and `step-up.ts` ALREADY HAD THE RIGHT
+  MECHANISM, an ownership counter re-checked after every await and every sleep.
+  The back path never bumped it because `stepUpPrompt` RETURNED AN ELEMENT and
+  there was nothing to bump it with. It returns a handle now (`{form, abort}`),
+  `abort()` takes a ceremony out of play without pretending the parent
+  cancelled, and one `dismissPrompt()` is the single door for everything outside
+  the loop. THE GENERAL SHAPE: when a module owns a lifecycle and hands its
+  caller only a rendering of it, every caller that discards the rendering
+  silently keeps the lifecycle.
+- 2026-08-19 — AND THE FENCE IS THE PART THAT GENERALISES, because the scenario
+  test cannot cover the next screen. `console.spec.ts` pins the back control on
+  the CASE screen; the case-unavailable screen already has a second one, and the
+  next screen with a way out will be a third. So a source scan asserts the
+  assignment to `pending` lives in exactly three functions — the one door, the
+  LOOP clearing its own prompt on a terminal outcome, and the opener. Attribution
+  is by top-level function span, so a nested callback is credited to the function
+  that declares it, which is the point: the defect was an assignment inside a
+  callback in `renderCase`. Mutation runs: 5/5 red for the fence and 3/5 for the
+  behavioural tests — AND THE TWO GREENS ARE WHY THE FENCE EXISTS, since one of
+  them was the second back control that no scenario reached. A surviving mutation
+  is a question about coverage, not a verdict on the fix.
+- 2026-08-19 — "ABORTS" IS NARROWED RATHER THAN OVERCLAIMED, in the same commit
+  that made it stronger. Aborting stops the LOOP: no further attempt is issued
+  and no result acted on. It cannot recall a request ALREADY ON THE WIRE, whose
+  transaction may commit at settlement while the client has stopped observing —
+  bounded to one action, one the operator consented to by submitting a code,
+  inside the ~100ms of a retry in flight. Recorded [ACCEPTED] in docs/03 §6cc,
+  because closing it means making the outcome conditional on something the client
+  can still withdraw, which is a settlement change and not a browser one. A claim
+  nobody can keep is worse than a narrower one, and this is the third M21 entry
+  turning that rule on my own prose.
+- 2026-08-19 — A SENTENCE CORRECTED TWICE WAS STILL FALSE IN THE PLACE IT IS
+  READ FIRST. PR3b widened the operator audience to thirteen settlement routes,
+  four of which reach a case through `assertCaseVisible` — which admits the
+  decedent, the reporter and the executor — so "it reaches none of your own
+  estate" became an absolute the platform does not keep. It was rewritten in
+  `sessions.ts` and on the console's own screen, and LEFT STANDING in
+  `OperatorLaunch`, the interstitial, where a user meets it before either. Its
+  own test PINNED the false version, so the suite was green over it; and the
+  comment in the file that WAS corrected names the console screen as the other
+  copy without mentioning this one. All three specs now assert the ABSOLUTE IS
+  GONE rather than that the new words are present, because the regression to
+  guard against is a rewrite back rather than a deletion.
+- 2026-08-19 — TWO EDGE FINDINGS, both LOW, both a claim the code did not keep.
+  `/open` answered 500 on a malformed percent-escape — `decodeURIComponent`
+  throws on `%zz`, on a bare `%`, and on a truncated multi-byte sequence — where
+  every other refusal gets a uniform 303, on the endpoint whose own comment says
+  it distinguishes nothing. And the route-table validator's paragraph forecloses
+  "the literal `:caseId` travels upstream" while testing `startsWith(':')`, THE
+  SAME TEST THE REWRITER USES, so a parameter written MID-segment was invisible
+  to both; it also admitted a row under no reachable prefix, a dead entry that
+  reads as a granted capability. The validator is EXPORTED and its refusals
+  DRIVEN now, replacing a source scan for its own error string plus a
+  `[\s\S]{0,400}` bridge — the exact mechanism this repo recorded as a mistake
+  in 2026-08-08. A scan for a thrown string cannot tell a check that fires from
+  one that cannot.
+- 2026-08-19 — MEASURED BEFORE BELIEVED, closing the one link a file-scoped lens
+  could not reach: a `%2F` captured by a `:name` segment survives
+  `fetch(base + path)` to the upstream as ONE segment (probed against a real
+  `node:http` server, which saw `/cases/a%2Fb/timeline`). The lens's whole
+  verdict that parameters cannot span a separator rested on the edge not
+  decoding-then-re-serialising, and it said so rather than assuming — which is
+  what made the assumption cheap to close.
+- 2026-08-19 — THE LIVE DRIVE TOOK THREE ATTEMPTS TO REACH THE RACE, and each
+  failure is the lesson. First: the prompt had already closed before Back was
+  pressed (`submitLabel: null` at 1.4s), because more than 30 seconds of
+  introspection cache had lapsed while I generated the TOTP code — so the
+  approve was the HAPPY PATH completing, not the race, and reading the case as
+  `waiting_period` afterwards would have looked exactly like the fix failing.
+  Second: no prompt opened at all, the session still being step-up fresh from
+  the first, which is `guarded()`'s try-bare-first decision working. Only a
+  FRESH console session — un-elevated by construction, since redemption grants
+  no step-up — puts a cold cache and a live refusal in the same window. With
+  that, the submit button read "Applying…" at the moment Back was pressed, and
+  afterwards the case was still `verifying` with `human_review_by` NULL, no
+  `settlement.case.approved` anywhere, and `auth.stepup.granted` on that session
+  eighteen seconds earlier in the same trail. THE RULE: when a live probe of a
+  race produces the outcome you feared, check whether the race was open at all
+  before concluding anything — a timing artifact and a broken fix look identical
+  in the result row.
+- 2026-08-19 — THE DEPLOY-ORDER HAZARD, THIRD RECORDING AND FIRST TIME IT COST A
+  CONTROL. The console's four `settlement.case.viewed` events were missing from
+  the trail entirely while the audit consumer logged `audit_event_rejected
+  reason=schema_violation` with `rejectedTotal` at 52: a consumer predating a new
+  `AUDIT_ACTIONS` member treats every instance as malformed input, silently.
+  Previously this had swallowed convenience events; here it swallowed the read
+  events that are PR3b's whole answer to docs/03 §4 TB7's operator-reads
+  paragraph — so "the reads are recorded" would have been a documented claim with
+  an empty table behind it. Rebuilt consumer first, re-opened the case, all four
+  land (one per surface, `actor_type: operator`) with zero rejections after.
+  Nothing enforces the ordering. The tell is cheap and worth knowing: an expected
+  event missing from `audit_events` should send you to the CONSUMER's log before
+  the producer's code.
+- 2026-08-19 — A CONFLICTED PR GETS NO `pull_request` CHECKS AT ALL, and it looks
+  exactly like a dropped webhook. Two pushes to PR #117 produced ZERO runs —
+  `gh pr checks` said "no checks reported" — while `workflow_dispatch` on the
+  same branch worked and other branches got runs minutes earlier, which is a
+  combination that reads as a delivery failure and is not one. `pull_request`
+  workflows run against `refs/pull/<n>/merge`, GitHub cannot compute that ref
+  while the PR conflicts, and with no merge commit there is nothing to run: the
+  PR reported `mergeable=CONFLICTING`, `mergeStateStatus=DIRTY`. The second half
+  of the silence is separate and equally mundane — `push` is scoped
+  `branches: [main, 'claude/**']`, which a feature branch does not match — so
+  BOTH events were legitimately absent for BOTH reasons at once. Merging main
+  resolved one CLAUDE.md conflict and all four workflows started within seconds.
+  I had concluded "dropped webhook" from the absence and was wrong; it reached
+  no artifact, which is the only reason this is an entry rather than a
+  retraction. THE DIAGNOSTIC ORDER, cheapest first, because I did it backwards:
+  ask the PR for `mergeable` and `mergeStateStatus`, then check whether the
+  event is even configured for this ref, and only then suspect delivery. The
+  general rule this repo keeps restating — suspect the observation before the
+  system — extends to the INFERENCE drawn from an absence: an absence has more
+  than one cause, and the informative move is to enumerate them rather than to
+  pick the alarming one.
 - 2026-08-19 — THE SIGNING WORKFLOW'S TRIGGER DID NOT COVER THE INPUTS THAT
   DECIDE WHAT IT SIGNS, which is the PR #116 defect one layer out: #116 was a
   value crossing layers with a fence on each and none on the chain; this is a

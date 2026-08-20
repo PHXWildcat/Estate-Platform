@@ -71,7 +71,12 @@ describe('OperatorLaunch', () => {
     expect(screen.getByText(/does not make you an operator/i)).toBeInTheDocument();
     expect(screen.getByText(/every action will be refused/i)).toBeInTheDocument();
     // And what the arriving credential is worth.
-    expect(screen.getByText(/reaches none of your own estate/i)).toBeInTheDocument();
+    // The ABSENCE is what is asserted, because the regression is a rewrite
+    // back to the absolute rather than a deletion of the paragraph.
+    expect(screen.queryByText(/reaches none of your own estate/i)).toBeNull();
+    expect(
+      screen.getByText(/cannot reach your assets, documents, people or vault/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/cannot be renewed/i)).toBeInTheDocument();
   });
 

@@ -838,10 +838,12 @@ services:
       NODE_ENV: ${STACK_MODE}
       PORT: '3011'
       IDENTITY_URL: http://identity:3001
+      SETTLEMENT_URL: http://settlement:3007
       APP_ORIGIN: http://localhost:3000
     healthcheck: *tcp-healthcheck
     depends_on:
       identity: { condition: service_healthy }
+      settlement: { condition: service_healthy }
 
   web:
     build:

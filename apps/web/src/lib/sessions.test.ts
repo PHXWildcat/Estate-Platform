@@ -28,8 +28,24 @@ describe('what a session row says about a credential', () => {
     // "operator" invites exactly the opposite reading. That is the one fact
     // worth asserting, and it is the same reason the extension row asserts what
     // it cannot do rather than what it is.
-    expect(AUDIENCE_COPY.OPERATOR.detail).toMatch(/reaches none of your estate/i);
+    /*
+     * THE RESTRICTION IS STATED AS A RESTRICTION, and the absolute it replaced
+     * is asserted GONE (M21 PR3b).
+     *
+     * "Reaches none of your estate" stopped being true when the operator
+     * audience was admitted to settlement's case routes, four of which reach a
+     * case through `assertCaseVisible` — which admits the decedent, the
+     * reporter and the estate's executor as well as an operator. Asserting the
+     * ABSENCE of the old sentence is what makes this a regression pin rather
+     * than a spelling check: re-adding it beside the new words would otherwise
+     * stay green.
+     */
+    expect(AUDIENCE_COPY.OPERATOR.detail).toMatch(
+      /cannot reach your assets, documents, people or vault/i,
+    );
+    expect(AUDIENCE_COPY.OPERATOR.detail).toMatch(/the review queue and settlement cases/i);
     expect(AUDIENCE_COPY.OPERATOR.detail).toMatch(/15 minutes/);
+    expect(AUDIENCE_COPY.OPERATOR.detail).not.toMatch(/reaches none of your estate/i);
   });
 
   it('falls back rather than blanking a row for an audience it has never heard of', () => {
