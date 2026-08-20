@@ -1,6 +1,20 @@
-import { Body, Controller, Delete, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
-import { ContactLinksService, type MintedInvitation } from './contact-links.service';
+import {
+  ContactLinksService,
+  type LinkedEstate,
+  type MintedInvitation,
+} from './contact-links.service';
 import { parse, RedeemLinkSchema, UuidSchema } from './schemas';
 
 /**
@@ -55,10 +69,34 @@ export class ContactLinksController {
   }
 
   /**
+   * The estates that name the caller (M22 PR4a). No parameters — there is
+   * nowhere to name an estate, only to be named by one.
+   */
+  @Get('contact-links/estates')
+  @HttpCode(200)
+  estates(@Req() req: CallerRequest): Promise<LinkedEstate[]> {
+    return this.links.estatesNaming(requireCaller(req).userId);
+  }
+
+  /**
    * Redeem a code, as the person being linked. Returns `{status:'ok'}` and
-   * NOTHING about the estate — not the owner, not the contact's name — because a
-   * stolen code must not become a read. The redeemer learned who invited them
-   * from the person who handed them the code.
+   * NOTHING about the estate — not the owner, not the contact's name. The
+   * redeemer learned who invited them from the person who handed them the code.
+   *
+   * THIS USED TO SAY "because a stolen code must not become a read", and M22
+   * PR4a made that sentence half true, so it says less now. The RESPONSE still
+   * discloses nothing — that part is unchanged and still worth having, because
+   * it keeps redemption from being an oracle. But the LINK a redemption creates
+   * is enumerable from the route above, so a thief who redeems a stolen code
+   * can learn the owner's legal name on the next request.
+   *
+   * That was accepted rather than overlooked. A stolen code already confers the
+   * far heavier capability this whole ceremony is careful about — opening a
+   * death case against the owner (docs/03 §6b) — so a name is not the thing
+   * standing between a thief and harm. What stands there is unchanged: the
+   * owner is NOTIFIED on claim (a production precondition, not a courtesy), and
+   * unlinking is one click with no step-up. The control is revocation, not
+   * concealment.
    */
   @Post('contact-links/redeem')
   @HttpCode(200)

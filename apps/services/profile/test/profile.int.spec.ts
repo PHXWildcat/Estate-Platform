@@ -715,6 +715,60 @@ describeIfPg('profile & contacts service end to end', () => {
       ).toMatchObject({ linked: true });
     });
 
+    /**
+     * THE REVERSE-LINK READ AGAINST A REAL DATABASE (M22 PR4a).
+     *
+     * The service spec drives this through doubles, which cannot test the part
+     * most likely to be wrong: the SQL. Two LEFT JOINs, a GROUP BY across four
+     * columns and an `array_remove(array_agg(...))` all have to be right for
+     * this to answer at all, and a query that silently returns nothing looks
+     * exactly like an account with no links.
+     */
+    it('tells the redeemer whose estate now names them, by name', async () => {
+      const estates = await request(server)
+        .get('/v1/contact-links/estates')
+        .set('authorization', asUser(STRANGER));
+      expect(estates.status).toBe(200);
+      expect(estates.body).toEqual([
+        {
+          ownerUserId: OWNER,
+          contactId: inviteeId,
+          // Decrypted from the OWNER's profile under the OWNER's key, for a
+          // CALLER who is not its owner — the disclosure this PR exists to
+          // make, proven end to end rather than asserted against a stub.
+          ownerName: LEGAL_NAME,
+          roles: [],
+        },
+      ]);
+    });
+
+    it('aggregates every role the caller holds in that estate', async () => {
+      // GRANTEE was linked earlier in this spec and carries two roles, so this
+      // is what proves the array_agg/array_remove half of the query — the row
+      // above has none, and a GROUP BY that collapsed or duplicated rows would
+      // look identical there.
+      const held = await request(server)
+        .get('/v1/contact-links/estates')
+        .set('authorization', asUser(GRANTEE));
+      expect(held.status).toBe(200);
+      const [estate] = held.body as Array<{ ownerUserId: string; roles: string[] }>;
+      expect(estate?.ownerUserId).toBe(OWNER);
+      expect([...(estate?.roles ?? [])].sort()).toEqual(['beneficiary', 'viewer']);
+      // ONE row, not one per role — the GROUP BY is doing its job.
+      expect(held.body).toHaveLength(1);
+    });
+
+    it('says nothing to somebody no estate names', async () => {
+      // Anti-vacuity for the two tests above: the route must be capable of an
+      // empty answer, or "it returned rows" proves nothing about the WHERE
+      // clause. A freshly-minted id is linked to nobody by construction.
+      const none = await request(server)
+        .get('/v1/contact-links/estates')
+        .set('authorization', asUser(randomUUID()));
+      expect(none.status).toBe(200);
+      expect(none.body).toEqual([]);
+    });
+
     it('is ONE-SHOT: the same code cannot be used twice', async () => {
       const replay = await request(server)
         .post('/v1/contact-links/redeem')
@@ -750,6 +804,19 @@ describeIfPg('profile & contacts service end to end', () => {
             .set('authorization', asUser(OWNER))
         ).status,
       ).toBe(404);
+
+      /*
+       * AND THE DISCLOSURE ENDS WITH IT (M22 PR4a). This is the assertion the
+       * whole proportionality argument for reading another user's legal name
+       * rests on: the owner can stop it, from their side, with one ungated
+       * click. If unlinking left the estate readable, the decision recorded in
+       * docs/06 would be wrong and this is what would say so.
+       */
+      const afterUnlink = await request(server)
+        .get('/v1/contact-links/estates')
+        .set('authorization', asUser(STRANGER));
+      expect(afterUnlink.status).toBe(200);
+      expect(afterUnlink.body).toEqual([]);
     });
 
     it('re-issuing retires the previous code rather than refusing', async () => {

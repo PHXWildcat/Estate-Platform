@@ -134,6 +134,19 @@ export interface SettlementCaseInfo {
   voidable: boolean;
 }
 
+/**
+ * An estate that names the caller (M22 PR4a).
+ *
+ * `ownerName` is null when that owner has never saved a profile. It is not a
+ * missing value to paper over — it is the server saying there is no name.
+ */
+export interface LinkedEstateInfo {
+  ownerUserId: string;
+  contactId: string;
+  ownerName: string | null;
+  roles: string[];
+}
+
 export interface SettlementSettingsInfo {
   waitingPeriodDays: number;
 }
@@ -710,6 +723,10 @@ interface OperationSignatures {
       clientEventId?: string;
     };
     data: { removeBeneficiary: AssetCommandAckInfo };
+  };
+  LinkedEstates: {
+    variables: EmptyVariables;
+    data: { linkedEstates: LinkedEstateInfo[] };
   };
   SettlementCases: {
     variables: EmptyVariables;

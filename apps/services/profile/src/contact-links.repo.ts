@@ -1,6 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { Db } from './db';
 
+/**
+ * One estate that names the caller (M22 PR4a). The owner's NAME is not here —
+ * this repo returns ciphertext and the key to read it, and the decrypt happens
+ * in the service where it can be audited as the cross-user disclosure it is.
+ */
+export interface LinkedEstateRow {
+  owner_user_id: string;
+  contact_id: string;
+  roles: string[];
+  /** NULL when the owner has never saved a profile — a real answer, not an error. */
+  legal_name_ct: Buffer | null;
+  dek_id: string | null;
+}
+
 /** A link invitation row, as the service needs to reason about it. */
 export interface InvitationRow {
   id: string;
@@ -39,6 +53,48 @@ export class InvitationRaceError extends Error {
 @Injectable()
 export class ContactLinksRepo {
   constructor(private readonly db: Db) {}
+
+  /**
+   * THE REVERSE OF EVERY OTHER READ IN THIS SERVICE (M22 PR4a).
+   *
+   * Everything else here is owner→contact: an owner listing the people they
+   * named. This is contact→owner — "whose estates name ME" — and until this
+   * query the platform could not answer it at all. `redeemContactLink` returns
+   * `Ok!` and tells the redeemer nothing, so somebody who accepted an
+   * invitation months ago had no way to learn what they had accepted, and
+   * settlement's reportable-estates list is a set of bare UUIDs for the same
+   * reason.
+   *
+   * The JOIN to `profiles` is a CROSS-USER read: the row belongs to the owner,
+   * not to the caller. It returns CIPHERTEXT and the dek id — never plaintext —
+   * so the decision to decrypt, and the audit event that must precede it, live
+   * in the service. A LEFT JOIN because a profile may not exist: an owner who
+   * never saved one has no name to disclose, and that is a real answer.
+   *
+   * `deleted_at IS NULL` on the contact is the authorization edge itself. An
+   * owner who unlinks (one click, no step-up — the protective action is never
+   * the harder one) removes the row and this read stops answering, which is
+   * what makes the disclosure revocable rather than permanent.
+   */
+  async listEstatesNaming(userId: string): Promise<LinkedEstateRow[]> {
+    return this.db.query<LinkedEstateRow>(
+      `SELECT c.owner_user_id,
+              c.id AS contact_id,
+              array_remove(array_agg(DISTINCT ra.role), NULL) AS roles,
+              p.legal_name_ct,
+              p.dek_id
+         FROM contacts c
+         LEFT JOIN role_assignments ra
+           ON ra.contact_id = c.id AND ra.deleted_at IS NULL
+         LEFT JOIN profiles p
+           ON p.user_id = c.owner_user_id
+        WHERE c.linked_user_id = $1
+          AND c.deleted_at IS NULL
+        GROUP BY c.owner_user_id, c.id, p.legal_name_ct, p.dek_id
+        ORDER BY c.owner_user_id`,
+      [userId],
+    );
+  }
 
   /**
    * Revoke any live invitation for a contact and insert a new one, in ONE

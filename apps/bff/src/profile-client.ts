@@ -188,7 +188,25 @@ export const LinkInvitationSchema = z.object({
 });
 export type LinkInvitation = z.infer<typeof LinkInvitationSchema>;
 
+/**
+ * One estate that names the caller (M22 PR4a).
+ *
+ * `ownerName` is NULLABLE and the null is load-bearing: the owner has never
+ * saved a profile, so there is no name to disclose. Never coalesce it here —
+ * a placeholder invented at this layer is the BFF asserting something profile
+ * declined to say.
+ */
+export const LinkedEstateSchema = z.object({
+  ownerUserId: z.string().min(1),
+  contactId: z.string().min(1),
+  ownerName: z.string().nullable(),
+  roles: z.array(z.string()),
+});
+export type LinkedEstate = z.infer<typeof LinkedEstateSchema>;
+
 export interface ProfileClient {
+  /** The estates that name the caller — contact→owner, the reverse of every other read here. */
+  linkedEstates(accessToken: string): Promise<LinkedEstate[]>;
   /** The caller's own profile, or null when they have never saved one. */
   profile(accessToken: string): Promise<Profile | null>;
   saveProfile(accessToken: string, input: SaveProfileInput): Promise<void>;
@@ -284,6 +302,14 @@ export class FetchProfileClient implements ProfileClient {
 
   async deleteFamilyMember(accessToken: string, id: string): Promise<void> {
     await this.send('DELETE', `/v1/profile/family/${encodeURIComponent(id)}`, accessToken);
+  }
+
+  async linkedEstates(accessToken: string): Promise<LinkedEstate[]> {
+    const res = await this.request('GET', '/v1/contact-links/estates', accessToken);
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(LinkedEstateSchema));
   }
 
   async contacts(accessToken: string): Promise<ContactSummary[]> {

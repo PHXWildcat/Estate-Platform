@@ -6984,3 +6984,44 @@ Three new BFF error codes, because three refusals here have three remedies:
 (the transition rolled back, nothing happened, retry). On the kill switch that
 last distinction is the whole thing: an owner who reads an outage as a refusal
 stops trying.
+
+
+### M22 PR4a — the estates that name you (2026-08-20)
+
+Scoped out of PR4 when building it exposed a gap the milestone had assumed away:
+**the reporter's picker has no name to show.** `reportableEstates` returns
+`decedentUserId`, `contactId`, `roles` — three UUIDs and some tokens — and no
+reverse-link read existed anywhere in the platform. `redeemContactLink` returns
+`Ok!`; profile's `granteeCandidates` is the owner reading their own contacts;
+nothing in the BFF or web faced that direction at all. Every path was
+owner→contact. So the reporting screen would have read *"You are a viewer and
+executor of estate 1f1645fe…"* to somebody who had just been bereaved.
+
+It ships as its own PR because it is a **cross-user PII disclosure**, the first
+read in profile where the DEK subject and the actor are different people, and
+that decision deserves review on its own rather than buried inside a feature
+diff.
+
+`GET /v1/contact-links/estates` answers "whose estates name me", decrypting each
+owner's `profile.legal_name` under the OWNER's key with the CALLER as actor. The
+audit record is emitted BEFORE the decrypt loop — an event written afterwards is
+one a crash can lose while the plaintext already exists — carrying the reader
+and a count, and no owner ids: naming them would write the very relationship
+whose disclosure it records into the trail. New `AUDIT_ACTIONS` member
+`contact.link.estates_read`, so **the audit consumer deploys before profile**.
+
+Proportionality rests on mechanisms, not assurances: the owner minted the code
+under step-up and handed it over out of band, the owner ends the link with one
+ungated click, and the NAME is all that is disclosed. Three decisions in
+docs/06.
+
+The redeem docstring's "a stolen code must not become a read" became half-true
+and now says less. The response still discloses nothing; the link it creates is
+enumerable on the next request. Accepted, because a stolen code already confers
+the heavier capability of opening a death case (docs/03 §6b) — what stands
+between a thief and harm is the claim notification and one-click unlink, both
+unchanged.
+
+The panel lands last on `/people`, after the two panels describing the plan the
+caller is making, and offers no control: a contact removing themselves would be
+editing someone else's plan silently.

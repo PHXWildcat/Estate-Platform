@@ -41,6 +41,7 @@ import type {
   Profile,
   ProfileClient,
   RoleAssignment,
+  LinkedEstate,
   SaveProfileInput,
 } from './profile-client';
 import type {
@@ -713,6 +714,16 @@ export const typeDefs = /* GraphQL */ `
     "The live permission grants on one of the caller's role assignments."
     rolePermissions(roleAssignmentId: ID!): [PermissionGrant!]!
     """
+    The estates that name the caller (M22 PR4a) — the reverse of 'contacts',
+    which lists the people the CALLER named.
+
+    This is a cross-user disclosure and profile audits it as one: answering it
+    decrypts each owner's legal name for somebody who is not its owner. The
+    authority is the link itself, and the owner ends it by unlinking — one
+    click, no step-up.
+    """
+    linkedEstates: [LinkedEstate!]!
+    """
     Every settlement case this caller can see (M22 PR3): one opened about them,
     one they reported, or both. Settlement selects
     'WHERE decedent_user_id = $1 OR reported_by = $1', so this is ONE list
@@ -724,6 +735,21 @@ export const typeDefs = /* GraphQL */ `
     settlementCases: [SettlementCase!]!
     "The caller's own settlement settings — currently the waiting period."
     settlementSettings: SettlementSettings!
+  }
+
+  """
+  An estate that names the caller, and what they are named as (M22 PR4a).
+  """
+  type LinkedEstate {
+    ownerUserId: ID!
+    contactId: ID!
+    """
+    The owner's legal name, or NULL when they have never saved a profile.
+    Null is a real answer — render it as "an estate", never as "Unknown".
+    """
+    ownerName: String
+    "Role tokens this caller holds in that estate. May be empty."
+    roles: [String!]!
   }
 
   """
@@ -1973,6 +1999,11 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           const cases = await settlement.listMyCases(token);
           return cases.map((dto) => toSettlementCasePayload(dto, callerUserId));
         },
+        linkedEstates: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<LinkedEstate[]> => profile.linkedEstates(requireAccessToken(ctx)),
         settlementSettings: async (
           _parent: unknown,
           _args: unknown,
