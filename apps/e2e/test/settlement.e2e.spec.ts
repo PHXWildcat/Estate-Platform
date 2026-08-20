@@ -574,6 +574,44 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
       .expect(200);
     expect((verified.body as { status: string }).status).toBe('verified');
 
+    // AND A VERIFIED CASE IS STILL NOT AN ADMINISTRATION SURFACE FOR ANYONE
+    // WHO IS NOT ITS EXECUTOR (M23 PR1). Before the fix, `requestStage`
+    // answered a caller holding a case id three distinguishable ways — 404
+    // unknown, 409 `case_not_verified`, 403 real-and-administrable — so the id
+    // alone tracked an estate's settlement progress. A v4 UUID is not
+    // enumerable, so the concrete holder is somebody who was given it and then
+    // lost authority: a replaced executor, or a reporter who is not the
+    // executor.
+    //
+    // POSITIVE CONTROL FIRST, and it is load-bearing here: two 404s from a
+    // mistyped path or an unreachable guard look exactly like two refusals.
+    // `seedEstate` names the reporter this estate's executor, so their 201 is
+    // the proof that the route, the step-up guard and the ladder all work on
+    // this very case.
+    await stepUp(reporter);
+    await settlement
+      .post(`/v1/settlement/cases/${caseId}/stages`)
+      .set(reporter.bearer)
+      .send({ stage: 'inventory' })
+      .expect(201);
+
+    const outsider = await registerAndLogin('stage-outsider');
+    await stepUp(outsider);
+    const onReal = await settlement
+      .post(`/v1/settlement/cases/${caseId}/stages`)
+      .set(outsider.bearer)
+      .send({ stage: 'inventory' });
+    const onAbsent = await settlement
+      .post(`/v1/settlement/cases/${randomUUID()}/stages`)
+      .set(outsider.bearer)
+      .send({ stage: 'inventory' });
+    const refusal = (res: { status: number; body: unknown }): unknown => ({
+      status: res.status,
+      body: res.body,
+    });
+    expect(refusal(onReal)).toEqual({ status: 404, body: { error: 'not_found' } });
+    expect(refusal(onReal)).toEqual(refusal(onAbsent));
+
     // Verified ⇒ no decedent credential survives: the live token dies via
     // the session-status allowlist, re-login gets the generic 401, and the
     // settled account cannot be unlocked by the service API.
