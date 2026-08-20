@@ -156,10 +156,55 @@ describe('session-audience grants match the declaration', () => {
      * reported `identity:constructor`. A fence that matches the wrong thing is
      * worse than one that matches nothing, because it still goes green.
      */
+    /**
+     * A SECOND, DELIBERATELY DUMBER READING of the same source.
+     *
+     * The scan above is LINE-oriented and its regex needs the closing paren on
+     * the same line, so a decoration wrapped across lines was `continue`d —
+     * INVISIBLE rather than refused, which is the one failure mode this file's
+     * own header calls worse than matching nothing. The M21 PR4 review measured
+     * it: a class-level
+     *
+     *     @AllowSessionAudiences(
+     *       // console support
+     *       'operator',
+     *     )
+     *
+     * on `AuthController` left `prettier --check` green, identity's
+     * session-audience, mint-paths and guards specs green (26 passed) and this
+     * package's whole suite green (221 passed) — while the real `Reflector`
+     * call that `SessionGuard` makes resolved `mintHandoff` to
+     * `["account","operator"]`, i.e. an operator session could mint another
+     * handoff and chain a leaked code forward, which is the invariant
+     * `AUDIENCE_ROUTE_ADMITTERS` calls ABSENT AND LOAD-BEARING.
+     *
+     * PRETTIER IS WHY THE BARE WRAPPED FORM IS NOT THE RISK and a comment is:
+     * `prettier --check` is a blocking gate and collapses a multi-line
+     * decorator whose arguments fit in 100 columns, which they always do for
+     * this vocabulary. A comment inside the parens keeps it multi-line and
+     * prettier-stable — and this codebase comments everything, so that is the
+     * house style rather than a contrivance.
+     *
+     * Counting is the right shape because it cannot be evaded by the thing it
+     * is watching for: whatever form a decoration takes, it contains the
+     * decorator's name exactly once. `settlement`'s own audience spec has had
+     * this reconciliation since PR3b; the shared fence did not.
+     */
+    function countDecorations(source: string): number {
+      // Comments discuss the decorator by name (the credential-graph habit),
+      // so strip them before counting or the reconciliation is off by however
+      // many times the prose mentions it.
+      const withoutComments = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      return (withoutComments.match(/@AllowSessionAudiences\b/g) ?? []).length;
+    }
+
+    let seenDecorations = 0;
+
     function decoratedRoutes(): Array<{ key: string; audiences: string[] }> {
       const found: Array<{ key: string; audiences: string[] }> = [];
       for (const service of services) {
         for (const file of sourceFiles(service)) {
+          seenDecorations += countDecorations(readFileSync(file, 'utf8'));
           const lines = readFileSync(file, 'utf8').split('\n');
           for (const [index, line] of lines.entries()) {
             // Comments discuss the decorator by name — the credential-graph
@@ -191,8 +236,16 @@ describe('session-audience grants match the declaration', () => {
     it('finds the decorated routes it is meant to be checking', () => {
       // Anti-vacuity: a regex that stops matching is worse than no fence at
       // all, which is the 2026-08-07 credential-graph lesson.
+      seenDecorations = 0;
       const routes = decoratedRoutes();
       expect(routes.length).toBeGreaterThan(0);
+      // PARSED === SEEN. A decoration the line-oriented scan cannot read must
+      // fail loudly rather than be skipped: an unread decoration is a widening
+      // nothing in this repository is looking at.
+      expect({ parsed: routes.length, seen: seenDecorations }).toEqual({
+        parsed: seenDecorations,
+        seen: seenDecorations,
+      });
       // And every one is ATTRIBUTED. A decorator the scan cannot tie to a
       // handler must fail loudly rather than be silently pinned to whatever
       // token followed it.
