@@ -17,13 +17,13 @@
  * package.json. The credential-graph precedent applies verbatim: state the
  * permitted set as data, fail the build on drift, in BOTH directions.
  *
- * PR1 PROMISED THIS AND DID NOT SHIP IT. `CLAUDE.md` and `docs/04` both said the
- * fence "lands as data BEFORE that importer exists", and it did not — the same
- * defect PR1 opens by fixing, where migration 004 cited a spec pinning its CHECK
- * to the TypeScript union and no such spec existed. Recorded here rather than
- * quietly corrected, because a fence that a document claims and nobody wrote is
- * worse than one nobody claimed: the citation is what stops the next person
- * looking.
+ * PR1 PROMISED THIS AND DID NOT SHIP IT. The decision log
+ * (`docs/06-decision-log.md`, 2026-08-10) and `docs/04` both said the fence
+ * "lands as data BEFORE that importer exists", and it did not — the same defect
+ * PR1 opens by fixing, where migration 004 cited a spec pinning its CHECK to the
+ * TypeScript union and no such spec existed. Recorded here rather than quietly
+ * corrected, because a fence that a document claims and nobody wrote is worse
+ * than one nobody claimed: the citation is what stops the next person looking.
  *
  * The mechanism is `readFileSync` over the tree — the zero-dependency-fence
  * precedent — so this suite creates no package edge and cannot be defeated by

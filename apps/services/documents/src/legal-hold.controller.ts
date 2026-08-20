@@ -23,8 +23,8 @@ function parseBody<T extends z.ZodTypeAny>(schema: T, input: unknown): z.infer<T
 /**
  * Internal legal-hold API (M7 PR2). Closes the M4 gap: `legal_hold` was
  * ENFORCED from day one (a held document cannot be deleted by anyone through
- * the API) but had no writer, because CLAUDE.md assigned the setting surface
- * to settlement.
+ * the API) but had no writer, because the decision log assigned the setting
+ * surface to settlement (`docs/06-decision-log.md`, 2026-07-23).
  *
  * Service-credential guarded, not CallerGuard: a legal hold is imposed by the
  * platform on an estate under administration, and the decedent has no session
