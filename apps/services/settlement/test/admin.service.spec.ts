@@ -8,6 +8,13 @@ import {
   NOW,
   type AdminHarness,
 } from './support';
+import {
+  breadthExceeded,
+  OPERATOR_BREADTH_MAX_CASES,
+  PERMISSIVE_OPERATOR_ACTIONS,
+  PROTECTIVE_OPERATOR_ACTIONS,
+} from '../src/operator-breadth';
+import type { OperatorBreadthMonitor } from '../src/operator-breadth.monitor';
 
 const DECEDENT = randomUUID();
 const EXECUTOR = randomUUID();
@@ -668,5 +675,129 @@ describe('operator actions name the estate they act on', () => {
     expect(completed).toHaveLength(1);
     expect(completed[0]?.['actorType']).toBe('user');
     expect(completed[0]?.['onBehalfOf']).toBeNull();
+  });
+});
+
+describe('the operator breadth bound', () => {
+  /**
+   * Four properties, and three are invisible to a test of the fourth: where the
+   * ceiling is, that PERMISSIVE actions are counted with the right estate and
+   * kind, that PROTECTIVE ones never are, and that crossing it WARNS rather
+   * than refuses. A refusal would satisfy every test here but the last two.
+   *
+   * `verifiedCase`, not `readyCase` — the latter approves a stage of its own,
+   * and a fixture that records before the test acts hides an arm that records
+   * nothing.
+   */
+  function spy(answer: number): {
+    monitor: OperatorBreadthMonitor;
+    calls: Array<{ operator: string; caseId: string; action: string }>;
+  } {
+    const calls: Array<{ operator: string; caseId: string; action: string }> = [];
+    const monitor = {
+      record: (
+        _tx: unknown,
+        operator: string,
+        caseId: string,
+        action: string,
+        _now: Date,
+      ): Promise<number> => {
+        calls.push({ operator, caseId, action });
+        return Promise.resolve(answer);
+      },
+      exceeded: (n: number): boolean => breadthExceeded(n),
+    } as unknown as OperatorBreadthMonitor;
+    return { monitor, calls };
+  }
+
+  const warnings = (h: AdminHarness): string[] =>
+    h.producer.messages
+      .map((m) => String(m.value))
+      .filter((v) => v.includes('settlement.operator.breadth_exceeded'));
+
+  it('crosses ABOVE the ceiling and not AT it', () => {
+    // Both arms of the boundary the property decides. `>=` for `>` is the
+    // likeliest mutation and it costs exactly one legitimate operator.
+    expect(breadthExceeded(OPERATOR_BREADTH_MAX_CASES - 1)).toBe(false);
+    expect(breadthExceeded(OPERATOR_BREADTH_MAX_CASES)).toBe(false);
+    expect(breadthExceeded(OPERATOR_BREADTH_MAX_CASES + 1)).toBe(true);
+  });
+
+  it('keeps the permissive and protective sets DISJOINT', () => {
+    // A protective action landing in the counted set inverts the control:
+    // the operator who withdraws access runs out before the one who grants it.
+    const permissive = new Set<string>(PERMISSIVE_OPERATOR_ACTIONS);
+    expect(PROTECTIVE_OPERATOR_ACTIONS.filter((a) => permissive.has(a))).toEqual([]);
+    expect(PROTECTIVE_OPERATOR_ACTIONS.length).toBeGreaterThan(0);
+    expect(PERMISSIVE_OPERATOR_ACTIONS.length).toBeGreaterThan(0);
+  });
+
+  it('counts an APPROVED stage, naming the estate and the kind', async () => {
+    const { monitor, calls } = spy(1);
+    const h = buildAdminHarness(monitor);
+    const caseId = await verifiedCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    expect(calls).toEqual([{ operator: OPERATOR, caseId, action: 'stage.approved' }]);
+  });
+
+  it('does NOT count a DENIED stage', async () => {
+    // The protective arm of the very same verb, which is the arm a fixture
+    // built on the approve path would never reach.
+    const { monitor, calls } = spy(1);
+    const h = buildAdminHarness(monitor);
+    const caseId = await verifiedCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'deny');
+    expect(calls).toEqual([]);
+  });
+
+  it('does NOT count a REVOKED stage', async () => {
+    const { monitor, calls } = spy(1);
+    const h = buildAdminHarness(monitor);
+    const caseId = await verifiedCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    expect(calls).toHaveLength(1);
+    calls.length = 0;
+    await h.admin.revokeStage(OPERATOR, SESSION, stage.stageId);
+    expect(calls).toEqual([]);
+  });
+
+  it('WARNS above the ceiling, and lets the action through', async () => {
+    // Which product this is. A refusal passes every other case in this block.
+    const { monitor } = spy(OPERATOR_BREADTH_MAX_CASES + 1);
+    const h = buildAdminHarness(monitor);
+    const caseId = await verifiedCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    const decided = await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    expect(decided.status).toEqual('approved');
+    expect(warnings(h)).toHaveLength(1);
+  });
+
+  it('stays silent at the ceiling', async () => {
+    // Anti-vacuity for the case above: a warning that always fired would pass
+    // it and mean nothing.
+    const { monitor } = spy(OPERATOR_BREADTH_MAX_CASES);
+    const h = buildAdminHarness(monitor);
+    const caseId = await verifiedCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    expect(warnings(h)).toEqual([]);
+  });
+
+  it('names no estate in the warning', async () => {
+    // The event is about the operator's pattern ACROSS estates. Naming one
+    // would put a family into a record that is not about them, picked
+    // arbitrarily out of a set.
+    const { monitor } = spy(OPERATOR_BREADTH_MAX_CASES + 1);
+    const h = buildAdminHarness(monitor);
+    const caseId = await verifiedCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    const [warning] = warnings(h);
+    expect(warning).toBeDefined();
+    expect(warning).not.toContain(caseId);
+    expect(warning).not.toContain(DECEDENT);
   });
 });

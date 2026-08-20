@@ -297,6 +297,38 @@ export class EventsService {
     });
   }
 
+  /**
+   * The breadth bound fired for this operator.
+   *
+   * `onBehalfOf` is deliberately absent: the event is about the OPERATOR's
+   * pattern across estates, not about any one decedent, and naming a single
+   * estate here would both mislead a reader and pick one family arbitrarily out
+   * of a set. The counts and the window are the payload — entity counts and a
+   * number, never a list of the cases touched, which would put a map of who is
+   * being administered into the trail.
+   */
+  async operatorBreadthExceeded(
+    operatorId: string,
+    sessionId: string,
+    distinctCases: number,
+    ceiling: number,
+    windowMs: number,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.operator.breadth_exceeded',
+      actorId: operatorId,
+      actorType: 'operator',
+      // NULL, not a case id. The event is about the OPERATOR's pattern across
+      // estates; naming one would both mislead the reader and pick one family
+      // arbitrarily out of a set. The field is nullable for exactly this.
+      onBehalfOf: null,
+      resourceType: 'settlement_operator',
+      resourceId: operatorId,
+      sessionId,
+      detail: { distinctCases, ceiling, windowMs },
+    });
+  }
+
   async stageDenied(
     operatorId: string,
     sessionId: string,

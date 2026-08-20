@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import type { FieldCrypto } from '@estate/crypto';
 import { ADMINISTRABLE_STATUSES, CasesRepo, type CaseRow, type CaseStatus } from './cases.repo';
+import { OperatorBreadthMonitor } from './operator-breadth.monitor';
+import { OPERATOR_BREADTH_MAX_CASES, OPERATOR_BREADTH_WINDOW_MS } from './operator-breadth';
 import { CoreReadsRepo } from './core-reads.repo';
 import { CLOCK, FIELD_CRYPTO, type Clock } from './di-tokens';
 import { Db, isCheckViolation, type Queryable } from './db';
@@ -159,6 +161,7 @@ export class SettlementAdminService {
     private readonly tasks: TasksRepo,
     private readonly distributions: DistributionsRepo,
     private readonly gate: OperatorGate,
+    private readonly breadth: OperatorBreadthMonitor,
     private readonly coreReads: CoreReadsRepo,
     private readonly events: EventsService,
     @Inject(FIELD_CRYPTO) private readonly fieldCrypto: FieldCrypto,
@@ -247,9 +250,18 @@ export class SettlementAdminService {
       if (decision === 'approve' && kase.status === 'verified') {
         await this.cases.advanceStatus(tx, locked.case_id, ['verified'], 'active');
       }
+      // Recorded inside the transaction so the ledger row commits with the
+      // approval it describes. ONLY the approve arm: a denial is the
+      // protective action and counting it would make withdrawing access the
+      // thing that runs out first.
+      const breadth =
+        decision === 'approve'
+          ? await this.breadth.record(tx, operator, locked.case_id, 'stage.approved', now)
+          : 0;
       return {
         stage: (await this.stages.lockById(tx, stageId)) as StageRow,
         decedentUserId: kase.decedent_user_id,
+        breadth,
       };
     });
     const { stage: outcomeStage, decedentUserId } = outcome;
@@ -262,6 +274,17 @@ export class SettlementAdminService {
         stageId,
         outcomeStage.stage,
       );
+      if (this.breadth.exceeded(outcome.breadth)) {
+        // WARN, never refuse. Settlement's human review is mandatory and
+        // time-sensitive; the ceiling has no production data behind it yet.
+        await this.events.operatorBreadthExceeded(
+          operator,
+          sessionId,
+          outcome.breadth,
+          OPERATOR_BREADTH_MAX_CASES,
+          OPERATOR_BREADTH_WINDOW_MS,
+        );
+      }
     } else {
       await this.events.stageDenied(
         operator,
@@ -459,6 +482,7 @@ export class SettlementAdminService {
       return {
         distribution: (await this.distributions.lockById(tx, distributionId)) as DistributionRow,
         decedentUserId: kase.decedent_user_id,
+        breadth: await this.breadth.record(tx, operator, kase.id, 'distribution.approved', now),
       };
     });
     await this.events.distributionApproved(
@@ -468,6 +492,17 @@ export class SettlementAdminService {
       row.decedentUserId,
       distributionId,
     );
+    if (this.breadth.exceeded(row.breadth)) {
+      // WARN, never refuse. Settlement's human review is mandatory and
+      // time-sensitive; the ceiling has no production data behind it yet.
+      await this.events.operatorBreadthExceeded(
+        operator,
+        sessionId,
+        row.breadth,
+        OPERATOR_BREADTH_MAX_CASES,
+        OPERATOR_BREADTH_WINDOW_MS,
+      );
+    }
     return distributionDto(row.distribution);
   }
 
@@ -565,7 +600,7 @@ export class SettlementAdminService {
     sessionId: string,
     caseId: string,
   ): Promise<{ status: string }> {
-    const decedent = await this.db.withTransaction(operator, async (tx) => {
+    const closed = await this.db.withTransaction(operator, async (tx) => {
       await this.gate.assertIn(tx, operator);
       const locked = await this.cases.lockById(tx, caseId);
       if (!locked) {
@@ -580,9 +615,21 @@ export class SettlementAdminService {
       if (!(await this.cases.advanceStatus(tx, caseId, ADMINISTRABLE, 'closed'))) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
-      return locked.decedent_user_id;
+      return {
+        decedentUserId: locked.decedent_user_id,
+        breadth: await this.breadth.record(tx, operator, caseId, 'case.closed', this.clock()),
+      };
     });
-    await this.events.caseClosed(operator, sessionId, caseId, decedent);
+    await this.events.caseClosed(operator, sessionId, caseId, closed.decedentUserId);
+    if (this.breadth.exceeded(closed.breadth)) {
+      await this.events.operatorBreadthExceeded(
+        operator,
+        sessionId,
+        closed.breadth,
+        OPERATOR_BREADTH_MAX_CASES,
+        OPERATOR_BREADTH_WINDOW_MS,
+      );
+    }
     return { status: 'closed' };
   }
 

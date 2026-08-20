@@ -173,6 +173,13 @@ export const AUDIT_ACTIONS = [
   // `granted_by IS NULL` row is visibly one that did not.
   'settlement.operator.granted',
   'settlement.operator.revoked',
+  // The breadth bound firing. NOT a refusal: this slice records and lets the
+  // action through, because settlement's human review is mandatory and
+  // time-sensitive and the ceiling has no production data behind it yet. The
+  // event is the control's whole visible surface, which is why it is a closed
+  // vocabulary member rather than a log line — a counter nobody can query is
+  // not a control. Carries counts and the window only; never a case list.
+  'settlement.operator.breadth_exceeded',
   // Staged executor access (docs/03 §5.1 control 5). Each stage is requested
   // by the executor and separately approved by an operator, so both halves are
   // recorded — a stage that was approved by whom, and when, is the audit

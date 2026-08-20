@@ -6889,3 +6889,27 @@ can start today, which the earlier framing buried inside the money one.
 Settlement came late deliberately: highest-risk domains land on mature
 primitives. (Notifications moved up and shipped as M9; the AI assistant is M10.
 The vault extension shipped as M16.)
+
+### M22 PR1 — the operator breadth bound (2026-08-20)
+
+The first item carried out of the M21 review that is a FEATURE rather than a
+correction. Three review rounds observed that an allowlisted operator may act
+across an unbounded number of estates with nothing counting, and each round
+recorded it rather than closing it.
+
+`settlement_operator_actions` (migration 006) is an append-only ledger of
+permissive operator actions; `settlement.operator.breadth_exceeded` fires when
+one operator's distinct-estate count crosses the ceiling inside the window. It
+WARNS — see docs/03 §6ii for why refusing on an untuned guess would be the wrong
+control, and docs/06 for the three decisions this settled.
+
+Two things worth carrying forward. The coverage fence is derived from the AST
+rather than listed, and it found two of the six declared action kinds were
+written by nothing at all — dead vocabulary that every count-based check would
+have passed. And the ledger is a second counter only because settlement's
+version tables are the wrong one: they capture `UPDATE`/`DELETE` only, so they
+measure row churn rather than actions, and an approval that inserts sees no
+version row at all.
+
+`settlement.operator.breadth_exceeded` is a new `AUDIT_ACTIONS` member, so the
+audit consumer deploys before the settlement service.

@@ -4442,3 +4442,77 @@ particular reading has already inverted once.
 - **Quarterly:** External penetration test rotating focus (auth → vault → settlement → APIs); purple-team exercise against one §5 scenario.
 - **Annually:** Full red team including social engineering of the settlement flow; SOC 2 Type II audit; DR failover game day; threat-model refresh.
 - **Always-on:** Public bug bounty with elevated payouts for Zone A and settlement-flow findings.
+
+## 6ii. Threat-model delta — M22 PR1, the operator breadth bound (2026-08-20)
+
+**The gap.** Three reviews in a row observed the same shape and none closed it:
+an operator on the allowlist may approve reviews, confirm verifications, approve
+stages and approve distributions across an unbounded number of estates, and
+nothing anywhere counted. Every individual action was authorised, audited and
+dual-controlled; the AGGREGATE was invisible. The abuse this leaves open is not
+one bad decision — it is a compromised or coerced operator session working
+steadily across hundreds of families, where each step looks exactly like the job.
+
+**What ships.** `settlement_operator_actions` (migration 006) is an append-only
+ledger of PERMISSIVE operator actions. `OperatorActionsRepo.distinctCasesSince`
+answers how many DISTINCT estates one operator has touched in a rolling window,
+and crossing the ceiling emits `settlement.operator.breadth_exceeded`.
+
+**BREADTH, not volume — and the distinction is the control.** Thirty actions on
+one estate is a thorough operator; one action on each of thirty estates in an
+hour is a pattern. A rate limit on actions would have penalised the first and
+missed the second. The counter is `COUNT(DISTINCT case_id)`, and a mutation to
+`COUNT(*)` turns a named integration assertion red.
+
+**It WARNS. It does not refuse.** This is a deliberate deviation from how the
+platform usually treats a ceiling, and the reason is that settlement's human
+review is *mandatory* and time-sensitive: an operator blocked mid-ceremony
+leaves a family's estate frozen and a death case stalled, and the ceiling has no
+production data behind it — 12 estates per hour is a guess. Refusing on a guess
+would make the control an outage with the face of a security measure, which is
+the failure mode docs/03 names elsewhere. So the first slice makes the pattern
+VISIBLE and reviewable, and a refusal (or a step-up re-challenge, the better
+shape) is a decision for after the numbers exist. A test asserts the action
+succeeds when the warning fires; mutating the warn into a `throw` turns it red.
+
+**PROTECTIVE actions are never counted.** Denying a review, denying a stage and
+revoking a stage write nothing to the ledger, and the two action sets are
+asserted disjoint. The design rule this serves is the one the whole bound is
+subordinate to: *the protective action must never be harder than the permissive
+one.* An operator who is close to the ceiling must never hesitate to withdraw
+access. Counting a revocation would put a budget on saying no.
+
+**Coverage is derived, not listed.** `operator-breadth-fence.spec.ts` reads the
+AST of both settlement services, takes every method that calls
+`this.gate.assertIn` as its corpus, and fails on any that neither records nor
+carries a written exemption — in both directions, so an exemption outliving its
+method also fails. It caught its own first defect: `review.approved` and
+`verification.confirmed` were declared members of the permissive vocabulary and
+nothing wrote either. Two of six kinds were dead on arrival, and a count-based
+check would not have shown it.
+
+**Deploy order.** `settlement.operator.breadth_exceeded` is a new `AUDIT_ACTIONS`
+member, so the audit consumer ships before the settlement service or the events
+are dropped as `schema_violation` and this control's only visible surface goes
+silent.
+
+**Residuals, stated rather than implied.**
+
+- **[ACCEPTED]** `reportProviderSignal` — an operator opening death cases on a
+  provider's behalf — is squarely in the category and is NOT counted. The route
+  owns no transaction (`insertCase` opens its own, shared with the non-operator
+  contact path), and a ledger row written after that commit can be lost while the
+  case stands, which under-counts. Under-counting is the fail-open direction, so
+  the gap is recorded here rather than closed badly. The exemption is written in
+  the fence with this reason, so it cannot be forgotten silently. Intake breadth
+  remains visible in the trail: `case.reported` carries the operator-actor flag.
+  Closing it properly means threading the ledger write into `insertCase`'s own
+  transaction under an operator-only branch — an M22 item.
+- **[ACCEPTED]** The ceiling (12) and the window (1h) are engineering guesses
+  with no production data behind them. They are constants in one file, asserted
+  at both boundary arms, so re-tuning is a one-line change with a test that
+  moves with it — but until the platform runs, the right value is unknown.
+- **[ACCEPTED]** The ledger is per-service. An operator's breadth across OTHER
+  services (documents, assets) is not aggregated here; only settlement's own
+  ceremonies are counted. A cross-service view belongs to the audit pipeline,
+  which already receives every one of these events.
