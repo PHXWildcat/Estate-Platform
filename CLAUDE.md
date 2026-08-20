@@ -8125,6 +8125,27 @@ deviating from them, stop and propose the change with rationale — do not silen
   Nothing enforces the ordering. The tell is cheap and worth knowing: an expected
   event missing from `audit_events` should send you to the CONSUMER's log before
   the producer's code.
+- 2026-08-19 — A CONFLICTED PR GETS NO `pull_request` CHECKS AT ALL, and it looks
+  exactly like a dropped webhook. Two pushes to PR #117 produced ZERO runs —
+  `gh pr checks` said "no checks reported" — while `workflow_dispatch` on the
+  same branch worked and other branches got runs minutes earlier, which is a
+  combination that reads as a delivery failure and is not one. `pull_request`
+  workflows run against `refs/pull/<n>/merge`, GitHub cannot compute that ref
+  while the PR conflicts, and with no merge commit there is nothing to run: the
+  PR reported `mergeable=CONFLICTING`, `mergeStateStatus=DIRTY`. The second half
+  of the silence is separate and equally mundane — `push` is scoped
+  `branches: [main, 'claude/**']`, which a feature branch does not match — so
+  BOTH events were legitimately absent for BOTH reasons at once. Merging main
+  resolved one CLAUDE.md conflict and all four workflows started within seconds.
+  I had concluded "dropped webhook" from the absence and was wrong; it reached
+  no artifact, which is the only reason this is an entry rather than a
+  retraction. THE DIAGNOSTIC ORDER, cheapest first, because I did it backwards:
+  ask the PR for `mergeable` and `mergeStateStatus`, then check whether the
+  event is even configured for this ref, and only then suspect delivery. The
+  general rule this repo keeps restating — suspect the observation before the
+  system — extends to the INFERENCE drawn from an absence: an absence has more
+  than one cause, and the informative move is to enumerate them rather than to
+  pick the alarming one.
 - 2026-08-19 — THE SIGNING WORKFLOW'S TRIGGER DID NOT COVER THE INPUTS THAT
   DECIDE WHAT IT SIGNS, which is the PR #116 defect one layer out: #116 was a
   value crossing layers with a fence on each and none on the chain; this is a
