@@ -11,6 +11,8 @@ import { ContactAttemptsRepo } from '../src/contact-attempts.repo';
 import { CoreReadsRepo } from '../src/core-reads.repo';
 import { Db } from '../src/db';
 import { EventsService } from '../src/events.service';
+import { OperatorActionsRepo } from '../src/operator-actions.repo';
+import { OperatorBreadthMonitor } from '../src/operator-breadth.monitor';
 import { OperatorGate } from '../src/operator-gate';
 import { OperatorsRepo } from '../src/operators.repo';
 import { SettingsRepo } from '../src/settings.repo';
@@ -84,6 +86,9 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       new CasesRepo(),
       new ContactAttemptsRepo(),
       new OperatorGate(new OperatorsRepo()),
+      // The REAL monitor here: this suite runs against Postgres, and the
+      // distinct-case SQL is the part a double cannot prove.
+      new OperatorBreadthMonitor(new OperatorActionsRepo()),
       new SettingsRepo(),
       new TasksRepo(),
       new CoreReadsRepo(db),

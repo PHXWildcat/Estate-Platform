@@ -52,6 +52,8 @@ import { HttpNotificationsClient } from '@estate/notifications-client';
 import { HttpNotifier, StubNotifier, type NotificationPort } from './notifications';
 import { OperatorController } from './operator.controller';
 import { OperatorGate } from './operator-gate';
+import { OperatorActionsRepo } from './operator-actions.repo';
+import { OperatorBreadthMonitor } from './operator-breadth.monitor';
 import { OperatorsRepo } from './operators.repo';
 import { SettingsRepo } from './settings.repo';
 import { SettlementController } from './settlement.controller';
@@ -231,6 +233,8 @@ function kmsProviderFor(config: SettlementConfig): KmsKeyProvider {
     ContactAttemptsRepo,
     OperatorsRepo,
     OperatorGate,
+    OperatorActionsRepo,
+    OperatorBreadthMonitor,
     SettingsRepo,
     StagesRepo,
     TasksRepo,

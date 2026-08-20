@@ -8,6 +8,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { SettlementAuthz, caseResource, settingsResource } from './authz.service';
+import { OperatorBreadthMonitor } from './operator-breadth.monitor';
+import { OPERATOR_BREADTH_MAX_CASES, OPERATOR_BREADTH_WINDOW_MS } from './operator-breadth';
 import { CasesRepo, type CaseRow, type EvidenceEntry } from './cases.repo';
 import type { SettlementConfig } from './config';
 import { ContactAttemptsRepo, type ContactChannel } from './contact-attempts.repo';
@@ -147,6 +149,7 @@ export class SettlementService {
     private readonly cases: CasesRepo,
     private readonly attempts: ContactAttemptsRepo,
     private readonly gate: OperatorGate,
+    private readonly breadth: OperatorBreadthMonitor,
     private readonly settings: SettingsRepo,
     private readonly tasks: TasksRepo,
     private readonly coreReads: CoreReadsRepo,
@@ -290,7 +293,7 @@ export class SettlementService {
 
   async startReview(operator: string, sessionId: string, caseId: string): Promise<CaseDto> {
     const now = this.clock();
-    const row = await this.db.withTransaction(operator, async (tx) => {
+    const started = await this.db.withTransaction(operator, async (tx) => {
       // BEFORE lockById, deliberately: a non-operator must be refused without
       // learning whether the case id names anything (the uniform-404 rule).
       // INSIDE the transaction, so the allowlist answer and the row it
@@ -319,9 +322,22 @@ export class SettlementService {
       if (!(await this.cases.markReviewStarted(tx, caseId, operator, now))) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
-      return (await this.cases.findById(tx, caseId)) as CaseRow;
+      return {
+        kase: (await this.cases.findById(tx, caseId)) as CaseRow,
+        breadth: await this.breadth.record(tx, operator, caseId, 'review.started', now),
+      };
     });
+    const { kase: row } = started;
     await this.events.reviewStarted(operator, sessionId, caseId, row.decedent_user_id);
+    if (this.breadth.exceeded(started.breadth)) {
+      await this.events.operatorBreadthExceeded(
+        operator,
+        sessionId,
+        started.breadth,
+        OPERATOR_BREADTH_MAX_CASES,
+        OPERATOR_BREADTH_WINDOW_MS,
+      );
+    }
     return toDto(row, now);
   }
 
@@ -339,7 +355,12 @@ export class SettlementService {
     input: ReviewDecisionInput,
   ): Promise<CaseDto> {
     const now = this.clock();
-    let outcome: { row: CaseRow; waitingPeriodEnds: Date | null; restored: boolean };
+    let outcome: {
+      row: CaseRow;
+      waitingPeriodEnds: Date | null;
+      restored: boolean;
+      breadth: number;
+    };
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
         const isOperator = await this.gate.assertIn(tx, operator);
@@ -377,7 +398,12 @@ export class SettlementService {
           // is under administration and its documents must not be deletable.
           await this.documentsHold.setHold(locked.decedent_user_id, true, caseId);
           const row = (await this.cases.findById(tx, caseId)) as CaseRow;
-          return { row, waitingPeriodEnds: ends, restored: false };
+          return {
+            row,
+            waitingPeriodEnds: ends,
+            restored: false,
+            breadth: await this.breadth.record(tx, operator, caseId, 'review.approved', now),
+          };
         }
 
         if (locked.status !== 'verifying' && locked.status !== 'waiting_period') {
@@ -399,7 +425,10 @@ export class SettlementService {
           await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
         }
         const row = (await this.cases.findById(tx, caseId)) as CaseRow;
-        return { row, waitingPeriodEnds: null, restored: wasLocked };
+        // The REJECT arm records nothing. Rejecting terminates the case and
+        // restores the account: it is the protective decision, and an operator
+        // must never approach a ceiling by refusing things.
+        return { row, waitingPeriodEnds: null, restored: wasLocked, breadth: 0 };
       });
     } catch (err) {
       throw this.mapIdentityFailure(err);
@@ -422,6 +451,15 @@ export class SettlementService {
         row.decedent_user_id,
         input.reason ?? 'other',
         row.reported_by,
+      );
+    }
+    if (this.breadth.exceeded(outcome.breadth)) {
+      await this.events.operatorBreadthExceeded(
+        operator,
+        sessionId,
+        outcome.breadth,
+        OPERATOR_BREADTH_MAX_CASES,
+        OPERATOR_BREADTH_WINDOW_MS,
       );
     }
     return toDto(row, now);
@@ -503,7 +541,7 @@ export class SettlementService {
    */
   async confirmVerification(operator: string, sessionId: string, caseId: string): Promise<CaseDto> {
     const now = this.clock();
-    let outcome: { row: CaseRow; voided: boolean };
+    let outcome: { row: CaseRow; voided: boolean; breadth: number };
     let taskCount = 0;
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
@@ -580,7 +618,17 @@ export class SettlementService {
               locked.created_at,
             );
             const row = (await this.cases.findById(tx, caseId)) as CaseRow;
-            return { row, voided: false };
+            return {
+              row,
+              voided: false,
+              breadth: await this.breadth.record(
+                tx,
+                operator,
+                caseId,
+                'verification.confirmed',
+                now,
+              ),
+            };
           } catch (err) {
             if (!(err instanceof OwnerAliveError)) {
               throw err;
@@ -601,7 +649,10 @@ export class SettlementService {
         await this.identity.setState(locked.decedent_user_id, 'active', caseId);
         await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
         const row = (await this.cases.findById(tx, caseId)) as CaseRow;
-        return { row, voided: true };
+        // The VOID arm records nothing: the owner is alive, and the operator's
+        // attempt became a restoration. Counting it would charge them for the
+        // outcome that protects the subject.
+        return { row, voided: true, breadth: 0 };
       });
     } catch (err) {
       throw this.mapIdentityFailure(err);
@@ -621,6 +672,15 @@ export class SettlementService {
     await this.events.caseVerified(operator, sessionId, caseId, outcome.row.decedent_user_id);
     if (taskCount > 0) {
       await this.events.tasksGenerated(caseId, outcome.row.decedent_user_id, taskCount);
+    }
+    if (this.breadth.exceeded(outcome.breadth)) {
+      await this.events.operatorBreadthExceeded(
+        operator,
+        sessionId,
+        outcome.breadth,
+        OPERATOR_BREADTH_MAX_CASES,
+        OPERATOR_BREADTH_WINDOW_MS,
+      );
     }
     return toDto(outcome.row, now);
   }

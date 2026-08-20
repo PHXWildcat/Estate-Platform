@@ -26,6 +26,8 @@ import {
   type LockState,
 } from '../src/identity-lock';
 import { StubNotifier } from '../src/notifications';
+import { OperatorBreadthMonitor } from '../src/operator-breadth.monitor';
+import { breadthExceeded } from '../src/operator-breadth';
 import { OperatorGate } from '../src/operator-gate';
 import type { OperatorsRepo } from '../src/operators.repo';
 import type { TasksRepo } from '../src/tasks.repo';
@@ -545,6 +547,7 @@ export function buildHarness(over: { config?: Partial<SettlementConfig> } = {}):
     cases,
     attempts as unknown as ContactAttemptsRepo,
     new OperatorGate(operators as unknown as OperatorsRepo),
+    breadthMonitor(),
     settings,
     tasks as unknown as TasksRepo,
     coreReads as unknown as CoreReadsRepo,
@@ -769,7 +772,7 @@ export interface AdminHarness {
   clock: ClockHolder;
 }
 
-export function buildAdminHarness(): AdminHarness {
+export function buildAdminHarness(monitor?: OperatorBreadthMonitor): AdminHarness {
   const clock: ClockHolder = { value: NOW };
   const clockFn = (): Date => clock.value;
   const cases = new InMemoryCases(clockFn);
@@ -788,6 +791,7 @@ export function buildAdminHarness(): AdminHarness {
     tasks as unknown as TasksRepo,
     distributions,
     new OperatorGate(operators as unknown as OperatorsRepo),
+    monitor ?? breadthMonitor(),
     coreReads as unknown as CoreReadsRepo,
     events,
     crypto as unknown as FieldCrypto,
@@ -825,4 +829,26 @@ export function auditActions(producer: InMemoryAuditProducer): string[] {
 
 export function auditEvents(producer: InMemoryAuditProducer): Array<Record<string, unknown>> {
   return producer.messages.map((m) => JSON.parse(m.value) as Record<string, unknown>);
+}
+
+/**
+ * An in-memory breadth monitor for the unit harnesses.
+ *
+ * The double is FAITHFUL ABOUT WHAT IT REFUSES, not only about values: it keeps
+ * a real per-operator set of case ids so `record` returns a real distinct
+ * count, because a stub that always answered 0 would make every breadth
+ * assertion in this package pass by construction. `operator-breadth.int.spec.ts`
+ * runs the same logic against Postgres, which is where the SQL is proven.
+ */
+export function breadthMonitor(): OperatorBreadthMonitor {
+  const seen = new Map<string, Set<string>>();
+  return {
+    record(_tx: unknown, operator: string, caseId: string): Promise<number> {
+      const cases = seen.get(operator) ?? new Set<string>();
+      cases.add(caseId);
+      seen.set(operator, cases);
+      return Promise.resolve(cases.size);
+    },
+    exceeded: (n: number) => breadthExceeded(n),
+  } as unknown as OperatorBreadthMonitor;
 }
