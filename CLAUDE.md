@@ -4263,9 +4263,15 @@ deviating from them, stop and propose the change with rationale — do not silen
   /tmp.
   Fixed in `assert-stack-counts.mjs` by resolving BOTH sides
   (`pathToFileURL(realpathSync(process.argv[1])).href`), which also removes the
-  dependence on invocation style. `pack-extension.mjs` still carries the
-  unresolved comparison and `build-psl.mjs` the older template form; both are
-  filed separately rather than folded into an unrelated PR. Pinned by a test
+  dependence on invocation style. `pack-extension.mjs` carried the unresolved
+  comparison and `build-psl.mjs` the older template form; both were filed
+  separately rather than folded into an unrelated PR, and both were closed the
+  same day (#120), as was `notify-failure.mjs` (#121) — so all FOUR
+  main-module guards in the repo now resolve both sides, and the class is
+  closed rather than merely noticed. Those fixes also state the mechanism more
+  precisely than this entry first did: a symlink ABOVE the working directory is
+  collapsed by node's own cwd resolution, and one BELOW it is not, which is why
+  a relative invocation happens to fire and an absolute one does not. Pinned by a test
   that creates its own symlink, so it is hermetic on Linux too — every other
   case in that file invokes the script under a path it never symlinks, where all
   three guards are indistinguishable.

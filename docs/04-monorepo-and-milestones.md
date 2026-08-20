@@ -6306,9 +6306,10 @@ Same file, same node, opposite answers — a relative argv is resolved against
 *why* rather than left as luck: every invocation of both scripts is a relative
 path from the workspace root, so both fire. It arms for anyone who invokes
 either by an absolute path through a symlink, which on macOS is anything under
-`/tmp`. Fixed by resolving both sides; `pack-extension.mjs` still carries the
-unresolved comparison and `build-psl.mjs` the older template form, filed
-separately rather than folded into an unrelated PR.
+`/tmp`. Fixed by resolving both sides. `pack-extension.mjs` and `build-psl.mjs`
+were filed separately rather than folded into an unrelated PR, and both were
+closed the same day (#120), as was `notify-failure.mjs` (#121) — all four
+main-module guards in the repo now resolve both sides.
 
 The mutation that **survived** is the useful part. Reverting to the name-keyed
 guard left the suite green, because every case invoked the script under its own
