@@ -8242,3 +8242,54 @@ deviating from them, stop and propose the change with rationale — do not silen
   as expected, including a POSITIVE CONTROL (both filters deleted stays green),
   without which "every mutation went red" is equally consistent with a fence
   that fails on any edit at all.
+- 2026-08-19 — THE WORKFLOW-INPUTS FENCE GENERALIZED, because the version
+  shipped one commit earlier had the defect it was written to prevent, one level
+  up: it lived in `apps/vault-extension/test/`, knew about exactly one workflow
+  by name, and so the NEXT `paths:` filter added anywhere in the repo would have
+  inherited the original defect with nothing watching — a fence whose input is
+  narrower than its claim, which is docs/03 §6y's own entry, committed by me in
+  the PR that cites it. Moved to `packages/config/test/workflow-inputs.spec.ts`,
+  beside the shared `ci-guard` (the established home for CI-wide logic; no
+  coverage floor there, so no threshold games), and restructured around a
+  REGISTRY keyed by workflow file — the credential-graph shape. It now
+  ENUMERATES every workflow, parses each one's `on:` block, and asserts the set
+  of filtered workflows equals the set of registry entries IN BOTH DIRECTIONS.
+  A new filter arrives with a declared derivation or the build goes red naming
+  the file; an entry whose workflow stops being filtered is equally red, so the
+  registry cannot rot into a description of the past.
+  THE ENTRY SAYS HOW ITS INPUTS ARE DERIVED, not what they are: a `turbo` source
+  names a package and the task graph answers it (add a dependency and the
+  required set grows on its own), a `declared` source names a path and states
+  why. Two kinds of claim, distinguishable by a reader — "which packages feed
+  this build" is a fact the tooling knows, "what else moves the bytes" is a
+  judgement, and collapsing them into one list is how the second kind stops
+  being reviewed. `paths-ignore` is modelled too (an input is covered only by
+  NOT matching), because a filter can exclude as well as include and the
+  exclusion direction is the one nobody thinks to check.
+- 2026-08-19 — TWO DEFECTS IN THAT FENCE, BOTH FOUND BY MUTATION, AND ONE OF
+  THEM ONLY BY A CONTROL THAT HAD TO BE BUILT PROPERLY FIRST. (1) `it.each([])`
+  IS A JEST ERROR, not zero tests — so an empty registry, which is exactly what
+  removing the last `paths:` filter in the repo legitimately produces, made the
+  fence red for a mechanical reason having nothing to do with what it checks:
+  the legitimate simplification was punished by the thing meant to keep it
+  honest. A named placeholder keeps the suite well-formed and every per-workflow
+  case returns on it, which IS a vacuous pass and is sound only because the
+  registry-vs-reality equality carries the property when both sides are empty;
+  that reasoning is written next to it rather than left to be re-derived.
+  (2) MY FIRST POSITIVE CONTROL WAS NOT ONE. It claimed to remove a filter AND
+  its registry entry, and it RENAMED the entry's key instead of deleting it —
+  so the per-workflow cases went chasing a workflow that does not exist and the
+  case went red for a reason its own name did not describe. The M13 "a test
+  named for a property it never touched" shape, in a mutation case rather than a
+  test. Rewritten to delete the entry by walking the object literal's braces,
+  after which it is green — and that green is what makes the other thirteen reds
+  mean something, since "every mutation went red" is otherwise equally
+  consistent with a fence that fails on any edit at all.
+  ALSO MEASURED, AND IT NARROWED A CLAIM OF MINE: the refusal of unreadable
+  filter shapes (flow style, an anchor, an alias) is DEFENCE IN DEPTH RATHER
+  THAN THE CONTROL. Planting a flow-style filter AND disabling the refusal still
+  goes red, because the parser-reach comparison sees a `paths:` key the parser
+  did not collect. What the refusal buys is a failure that names the shape
+  instead of one reporting a count mismatch. The 2026-08-13 rule restated: when
+  a fix has two halves, say which one is load-bearing rather than crediting
+  both — and the way to find out is to disable one and keep the defect.
