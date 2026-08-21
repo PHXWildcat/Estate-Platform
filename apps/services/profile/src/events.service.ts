@@ -204,6 +204,44 @@ export class EventsService {
     });
   }
 
+  /**
+   * An executor read the ESTATE's contacts through the staged-access grant
+   * (M23 PR4a) — the sibling of assets' `asset.estate.viewed`.
+   *
+   * `resourceId` is the DECEDENT, unlike `contactLinkEstatesRead` above whose
+   * resource is the reader. The two differ because the questions differ: that
+   * event has no single subject (it discloses N owners at once), while this one
+   * has exactly one — somebody's estate was opened, and the trail should be
+   * answerable by the decedent's id. `onBehalfOf` names them too, which is what
+   * makes the read findable from the side of the person whose data it was.
+   *
+   * The contacts themselves appear only as a stringified COUNT. Naming them
+   * would put the very PII this event records the disclosure of into the trail
+   * that exists to police it.
+   */
+  async contactEstateViewed(
+    actorId: string,
+    ownerUserId: string,
+    detail: { caseId: string | null; count: number },
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'contact.estate.viewed',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: ownerUserId,
+      resourceType: 'user',
+      resourceId: ownerUserId,
+      sessionId: null,
+      detail: {
+        // A null case id cannot occur on an allowed answer — settlement returns
+        // one with every grant — but the port's type admits it, so it is
+        // rendered rather than asserted away.
+        caseId: detail.caseId ?? 'unknown',
+        count: String(detail.count),
+      },
+    });
+  }
+
   async contactLinkInvitationRevoked(actorId: string, contactId: string): Promise<void> {
     await this.contactLink('contact.link.invitation_revoked', actorId, contactId);
   }

@@ -13,6 +13,7 @@ import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
 import type { StepUpRetryOutcome } from '../lib/step-up';
 import { EstateChecklist } from './EstateChecklist';
+import { EstateContacts } from './EstateContacts';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
 import { estateName } from './SettlingEstatesPanel';
@@ -339,6 +340,12 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
       </section>
 
       {/*
+        AFTER THE INVENTORY, unlike the checklist above, and for the mirror of
+        the same reason: this panel is BEHIND A RUNG, so on day one it says
+        "not open yet" and putting it high would make the screen open with two
+        refusals. It sits with the other staged reads.
+      */}
+      {/*
         BEFORE THE INVENTORY, deliberately. The checklist needs no stage, so on
         day one — every rung shut, an operator yet to look at anything — it is
         the only section here that works, and it is what somebody newly handed
@@ -393,6 +400,8 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
           )
         ) : null}
       </section>
+
+      <EstateContacts caseId={caseId} />
     </div>
   );
 }

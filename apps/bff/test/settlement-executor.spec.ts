@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { INestApplication } from '@nestjs/common';
 import { ACCESS_STAGES } from '@estate/settlement-client';
 import { ACCESS_COOKIE } from '../src/cookies';
+import { bffError } from '../src/identity-client';
 import {
   FakeAssetsClient,
   FakeIdentityClient,
@@ -47,6 +48,9 @@ const INVENTORY_QUERY = `query EstateInventory($caseId: ID!) {
 }`;
 const REQUEST_MUTATION = `mutation RequestEstateAccess($caseId: ID!, $stage: AccessStage!) {
   requestEstateAccess(caseId: $caseId, stage: $stage) { stage status decidedAt }
+}`;
+const CONTACTS_QUERY = `query EstateContacts($caseId: ID!) {
+  estateContacts(caseId: $caseId) { id name relationship professionalKind hasEmail linked }
 }`;
 const TASKS_QUERY = `query EstateTasks($caseId: ID!) {
   estateTasks(caseId: $caseId) { taskId title category assignedRole dueAt completedAt }
@@ -385,6 +389,87 @@ describe('executor resolvers', () => {
       );
       expect(gqlBody(tick).errors).toBeUndefined();
       expect(settlement.completeTaskCalls).toHaveLength(1);
+    });
+  });
+
+  /**
+   * THE ESTATE'S CONTACTS (M23 PR4a) — docs/03 §5.4's control against
+   * grief-window phishing, and §5.1 control 5's ladder deciding when it opens.
+   *
+   * Two properties. The first is that this resolver RESOLVES rather than
+   * forwards: profile keys the route on `ownerUserId`, so the case id has to
+   * become a user id somewhere, and doing it against settlement's own list is
+   * what keeps a `decedentUserId` out of the browser and stops a case id with
+   * no authority behind it from ever reaching profile.
+   *
+   * The second is that a shut rung is not a missing estate. Profile collapses
+   * every other 403 to the uniform not-found; here that would tell an executor
+   * the case they are looking at does not exist.
+   */
+  describe('the estate’s contacts', () => {
+    it('reads PROFILE with the decedent the case names, never the caller’s own list', async () => {
+      const res = await gql(
+        app,
+        { query: CONTACTS_QUERY, variables: { caseId: 'case-9' } },
+        { cookie: COOKIE },
+      );
+      // `case-9` names `user-9` and the FIRST row of the list names `user-1`, so
+      // a resolver that took the head would pass a one-estate fixture.
+      expect(profile.estateContactsCalls).toEqual([
+        { accessToken: TOKENS.accessToken, ownerUserId: 'user-9' },
+      ]);
+      // The caller's OWN contacts route is never touched — two routes, two
+      // authorization models, and serving one for the other would show an
+      // executor their own address book under a dead person's name.
+      expect(profile.contactsCalls).toEqual([]);
+      const list = rows(res, 'estateContacts');
+      expect(list).toHaveLength(2);
+      expect(list[0]).toMatchObject({ name: 'Grace Hopper', professionalKind: 'attorney' });
+    });
+
+    it('exposes no user id — not the decedent’s, not the contacts’', async () => {
+      const res = await gql(
+        app,
+        { query: CONTACTS_QUERY, variables: { caseId: 'case-9' } },
+        { cookie: COOKIE },
+      );
+      // On the SERIALISED body: `ContactSummary` has no `ownerUserId` field to
+      // select, which is the property, and asserting it on the wire is what
+      // proves the type could not carry one even if a query asked.
+      const body = JSON.stringify(rows(res, 'estateContacts'));
+      expect(body).not.toContain('user-9');
+      expect(body).not.toContain('user-1');
+    });
+
+    it('answers NOT_FOUND for a case this caller does not administer, without calling profile', async () => {
+      const res = await gql(
+        app,
+        { query: CONTACTS_QUERY, variables: { caseId: 'someone-elses-case' } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors?.[0]?.extensions?.['code']).toBe('NOT_FOUND');
+      expect(profile.estateContactsCalls).toEqual([]);
+    });
+
+    it('lets the client’s own refusal through unchanged', async () => {
+      /*
+       * WHICH LAYER THIS PROVES. That a shut rung becomes
+       * `STAGE_NOT_APPROVED` rather than the uniform not-found is the profile
+       * CLIENT's mapping, and a fake client cannot demonstrate it — that
+       * assertion lives in `profile-client.spec.ts` against a real 403.
+       *
+       * What this layer decides is that the resolver ADDS NOTHING: whatever
+       * code the client raises is the code the browser sees, so the resolver
+       * cannot quietly re-collapse a distinction the edge went to trouble to
+       * preserve.
+       */
+      profile.profileError = bffError('STAGE_NOT_APPROVED');
+      const res = await gql(
+        app,
+        { query: CONTACTS_QUERY, variables: { caseId: 'case-9' } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(res).errors?.[0]?.extensions?.['code']).toBe('STAGE_NOT_APPROVED');
     });
   });
 });

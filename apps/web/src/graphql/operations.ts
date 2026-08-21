@@ -909,6 +909,29 @@ export const REQUEST_ESTATE_ACCESS_MUTATION = `mutation RequestEstateAccess($cas
  * The tick and the untick are ONE mutation with a boolean, not two, so the
  * server cannot grow a path to complete that has no matching path to correct.
  */
+/**
+ * THE ESTATE'S CONTACT CARDS (M23 PR4a) — docs/03 §5.4's phishing control.
+ *
+ * Selects the SUMMARY fields only. There is no `estateContact(contactId:)`
+ * detail read on this surface and deliberately so: an executor needs to know
+ * WHO the estate's attorney is in order to recognise an impostor, and that is
+ * a name and a role. Their email and phone are several more audited decrypts
+ * on a dead person's trail, bought for a reason nobody has yet stated.
+ */
+export const ESTATE_CONTACTS_QUERY = `query EstateContacts($caseId: ID!) {
+  estateContacts(caseId: $caseId) {
+    id
+    name
+    relationship
+    professionalKind
+    hasEmail
+    hasPhone
+    hasAddress
+    hasNotes
+    linked
+  }
+}`;
+
 export const ESTATE_TASKS_QUERY = `query EstateTasks($caseId: ID!) {
   estateTasks(caseId: $caseId) {
     taskId
@@ -1105,6 +1128,7 @@ export const operations = {
   EstateStages: ESTATE_STAGES_QUERY,
   EstateInventory: ESTATE_INVENTORY_QUERY,
   RequestEstateAccess: REQUEST_ESTATE_ACCESS_MUTATION,
+  EstateContacts: ESTATE_CONTACTS_QUERY,
   EstateTasks: ESTATE_TASKS_QUERY,
   SetEstateTaskCompletion: SET_ESTATE_TASK_COMPLETION_MUTATION,
 } as const;

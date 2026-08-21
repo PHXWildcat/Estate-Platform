@@ -523,6 +523,7 @@ export type BffErrorCode =
    * this one — rather than "that was not allowed".
    */
   | 'STAGE_OUT_OF_ORDER'
+  | 'STAGE_NOT_APPROVED'
   /**
    * A live request for this stage already exists — `requested` or `approved`
    * (M23 PR2). A CONTROL FIRING and not an outage: the remedy is to wait, and
@@ -587,6 +588,16 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   CASE_ALREADY_REPORTED: 'A case is already open on this estate',
   EVIDENCE_WINDOW_CLOSED: 'This case has moved past the point where more can be attached to it',
   STAGE_OUT_OF_ORDER: 'An earlier stage of access has to be approved first',
+  /*
+   * DISTINCT FROM `NOT_FOUND`, and that is the whole reason it exists (M23
+   * PR4a). Profile narrows every 403 to the uniform not-found, which is right
+   * for the caller's own data — "not yours" and "no such row" must stay
+   * indistinguishable there. It is wrong for a STAGED read: the executor
+   * reached this screen from a list of the estates they are settling, so
+   * "there is no such estate" is a sentence they know to be false, and a
+   * control firing would read as the product being broken.
+   */
+  STAGE_NOT_APPROVED: 'This stage of access has not been approved yet',
   STAGE_ALREADY_REQUESTED: 'This stage has already been requested',
   CASE_NOT_VERIFIED: 'This case is not yet ready to be administered',
   SETTLEMENT_UNAVAILABLE: 'We could not complete that right now — nothing has changed',

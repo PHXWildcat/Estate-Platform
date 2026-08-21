@@ -72,6 +72,7 @@ function handlers(
     inventory?: OperationHandler;
     request?: OperationHandler;
     tasks?: OperationHandler;
+    contacts?: OperationHandler;
   } = {},
 ): Record<string, OperationHandler> {
   return {
@@ -92,6 +93,14 @@ function handlers(
      * in it would put its own text on the screen for every query below.
      */
     EstateTasks: options.tasks ?? (() => jsonResponse({ data: { estateTasks: [] } })),
+    /*
+     * SO IS THE CONTACTS PANEL (M23 PR4a). Answered with the SHUT RUNG rather
+     * than an empty list, because that is this screen's day-one state and
+     * because an unhandled operation here does not fail loudly — `gqlRequest`
+     * swallows the mock's throw into a failure result and the panel renders its
+     * error copy, which is a suite quietly exercising a broken read.
+     */
+    EstateContacts: options.contacts ?? (() => graphqlError('STAGE_NOT_APPROVED')),
     // `StepUpPrompt` elevates through identity BEFORE re-running the refused
     // action. Without this the prompt stalls on its own first request and a
     // test reads it as the surface failing to close the prompt — which is what

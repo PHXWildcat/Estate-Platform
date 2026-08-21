@@ -155,6 +155,9 @@ export const errorCopy: Record<GqlFailureCode, string> = {
    * here is the ladder WORKING — the sentence names the next step rather than
    * reporting a failure, because there is nothing wrong to fix.
    */
+  STAGE_NOT_APPROVED:
+    'This part of the estate hasn’t been opened yet. It opens once our team approves the stage ' +
+    'above — nothing here is hidden from you permanently.',
   STAGE_OUT_OF_ORDER:
     'Access is granted one stage at a time, and the stage before this one hasn’t been approved ' +
     'yet. Request that one first.',

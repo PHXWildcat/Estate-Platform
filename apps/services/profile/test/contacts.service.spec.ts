@@ -1,5 +1,10 @@
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
+import type {
+  AccessStage,
+  SettlementStageAuthority,
+  StageAccessAuthority,
+} from '@estate/settlement-client';
 import { FieldCrypto, LocalKmsProvider, type DekRecord, type DekRepository } from '@estate/crypto';
 import { ProfileAuthz } from '../src/authz.service';
 import type { ProfileConfig } from '../src/config';
@@ -99,8 +104,26 @@ class FakeRolesRepo {
 
 class FakeEvents {
   readonly created: string[] = [];
+  /** Every emission in order — the estate read asserts WHEN, not just whether. */
+  readonly order: string[] = [];
+  readonly estateViews: Array<{
+    actor: string;
+    owner: string;
+    caseId: string | null;
+    count: number;
+  }> = [];
   contactCreated(_actor: string, id: string): Promise<void> {
     this.created.push(id);
+    this.order.push('contact.created');
+    return Promise.resolve();
+  }
+  contactEstateViewed(
+    actor: string,
+    owner: string,
+    detail: { caseId: string | null; count: number },
+  ): Promise<void> {
+    this.order.push('contact.estate.viewed');
+    this.estateViews.push({ actor, owner, ...detail });
     return Promise.resolve();
   }
   contactUpdated(): Promise<void> {
@@ -130,16 +153,49 @@ function build() {
   const events = new FakeEvents();
   const authz = new ProfileAuthz(new PolicyDecisionPoint(loadBundledPolicies()));
   const config = { emailIndexKey: Buffer.alloc(32, 7) } as unknown as ProfileConfig;
+  const settlement = new FakeStageAuthority();
   const service = new ContactsService(
     repo as never,
     roles as never,
     cipher,
     authz,
     events as never,
+    settlement,
     config,
     () => new Date(),
   );
-  return { service, repo, roles, events, decrypted, authz };
+  return { service, repo, roles, events, decrypted, authz, settlement };
+}
+
+/**
+ * SETTLEMENT'S STAGED-ACCESS ANSWER, doubled.
+ *
+ * FAITHFUL ABOUT WHAT IT REFUSES, not only about what it grants: the real
+ * `HttpSettlementAuthority` answers `{allowed:false, caseId:null}` for a
+ * network failure, a non-2xx and an unparseable body alike, so the double
+ * defaults to REFUSING and a test must open it deliberately. A double that
+ * defaulted to `allowed` would make every "the executor is refused" assertion
+ * in this file pass for the wrong reason.
+ *
+ * It also RECORDS THE STAGE it was asked about, because "gated on a stage" and
+ * "gated on the DOCUMENTS stage" are different claims and only one of them is
+ * the decision docs/03 §5.1 records.
+ */
+class FakeStageAuthority implements SettlementStageAuthority {
+  allowed = false;
+  caseId = 'case-1';
+  calls: Array<{ bearerToken: string; ownerUserId: string; stage: string }> = [];
+
+  checkStageAccess(input: {
+    bearerToken: string;
+    ownerUserId: string;
+    stage: AccessStage;
+  }): Promise<StageAccessAuthority> {
+    this.calls.push({ ...input });
+    return Promise.resolve(
+      this.allowed ? { allowed: true, caseId: this.caseId } : { allowed: false, caseId: null },
+    );
+  }
 }
 
 describe('ContactsService ABAC boundary (docs/03 §5.5)', () => {
@@ -301,6 +357,152 @@ describe('the contact link survives ordinary edits (M13 PR1)', () => {
     repo.assignedContactIds.delete(a.id);
     await service.remove(OWNER, a.id);
     expect(repo.rows.some((r) => r.id === a.id)).toBe(false);
+  });
+
+  /**
+   * THE ESTATE'S CONTACTS, FOR A VERIFIED EXECUTOR (M23 PR4a) — docs/03 §5.1
+   * control 5, and the §5.4 control that says an executor dashboard shows
+   * verified contact cards for the estate's attorney and CPA.
+   *
+   * The property this block exists for is that the decision is SETTLEMENT'S and
+   * this service adds nothing to it. Before PR4a an executor could not read
+   * these contacts at any point, ever: `effectiveContactReadGrants` resolves
+   * only `effective_condition = 'immediate'`, which an `on_death_verified`
+   * designation never satisfies, and carried a freeze predicate excluding
+   * exactly the case states an executor administers. Control 4 was answering a
+   * question that belongs to control 5, and answering it "no" forever.
+   */
+  describe('the estate’s contacts, for a verified executor', () => {
+    const EXECUTOR = 'c3333333-3333-4333-8333-333333333333';
+
+    async function estateWithTwoContacts(): Promise<ReturnType<typeof build>> {
+      const h = build();
+      await h.service.create(OWNER, { name: 'Ada Lovelace’s attorney' });
+      await h.service.create(OWNER, { name: 'Ada Lovelace’s accountant' });
+      // The fixture's own writes are not the thing under test — clearing both
+      // ledgers means every count below is this call's, not the setup's.
+      h.decrypted.length = 0;
+      h.events.order.length = 0;
+      return h;
+    }
+
+    it('asks settlement about the DOCUMENTS rung, on the caller’s own bearer', async () => {
+      const { service, settlement } = await estateWithTwoContacts();
+      settlement.allowed = true;
+      await service.listEstateContacts(EXECUTOR, 'bearer-abc', OWNER);
+      /*
+       * THE STAGE IS ASSERTED, not just that a stage was asked about. "Gated on
+       * a rung" and "gated on the DOCUMENTS rung" are different claims, and
+       * only the second is the decision docs/03 §5.1 records — INVENTORY would
+       * open a decedent's address book on the lightest approval on the ladder.
+       */
+      expect(settlement.calls).toEqual([
+        { bearerToken: 'bearer-abc', ownerUserId: OWNER, stage: 'documents' },
+      ]);
+    });
+
+    it('returns the estate’s contacts once the rung is approved', async () => {
+      const { service, settlement } = await estateWithTwoContacts();
+      settlement.allowed = true;
+      const rows = await service.listEstateContacts(EXECUTOR, 'bearer-abc', OWNER);
+      expect(rows.map((r) => r.name).sort()).toEqual([
+        'Ada Lovelace’s accountant',
+        'Ada Lovelace’s attorney',
+      ]);
+      // Every row names the DECEDENT as its owner — this is their address book,
+      // not a merged view of the executor's own.
+      expect(rows.every((r) => r.ownerUserId === OWNER)).toBe(true);
+    });
+
+    it('refuses when the rung is NOT approved, and reads nothing first', async () => {
+      const { service, settlement, decrypted, events } = await estateWithTwoContacts();
+      settlement.allowed = false;
+      await expect(
+        service.listEstateContacts(EXECUTOR, 'bearer-abc', OWNER),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      // No decrypt spent and no disclosure event: the refusal happens before
+      // anything about this estate is read, so a refused call costs the
+      // decedent's DEK nothing and leaves no trace claiming a disclosure.
+      expect(decrypted).toEqual([]);
+      expect(events.estateViews).toEqual([]);
+    });
+
+    it('refuses when settlement cannot be reached — fail closed', async () => {
+      const { service, settlement } = await estateWithTwoContacts();
+      /*
+       * The real client answers `{allowed:false}` for a network failure, a
+       * non-2xx and an unparseable body alike, so "we could not ask" and "no"
+       * are the same answer here BY CONSTRUCTION. Asserted because the
+       * alternative — treating an unreachable settlement as permission — is the
+       * failure mode that turns an outage into an estate disclosure.
+       */
+      settlement.checkStageAccess = (): Promise<never> => {
+        throw new Error('the double must never be asked to invent an answer');
+      };
+      settlement.checkStageAccess = () =>
+        Promise.resolve({ allowed: false as const, caseId: null });
+      await expect(
+        service.listEstateContacts(EXECUTOR, 'bearer-abc', OWNER),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('records the AUTHORITY before releasing any plaintext', async () => {
+      const { service, settlement, events, decrypted } = await estateWithTwoContacts();
+      settlement.allowed = true;
+      /*
+       * ORDER AGAINST THE DECRYPTS, not position in the event list — the
+       * M19 PR4 lesson `asset.estate.viewed` learned. Emitted after the decrypt
+       * loop, a failure part-way through leaves executor-attributed
+       * `crypto.field.decrypted` events on the decedent's trail with NO record
+       * of what authorised them, in exactly the §5.1 case the trail is kept
+       * for. So the measurement is how many names had been decrypted AT THE
+       * MOMENT the event fired, which is the thing that actually has to be
+       * zero.
+       */
+      let decryptsWhenRecorded = -1;
+      const realEmit = events.contactEstateViewed.bind(events);
+      events.contactEstateViewed = (actor, owner, detail): Promise<void> => {
+        decryptsWhenRecorded = decrypted.length;
+        return realEmit(actor, owner, detail);
+      };
+
+      await service.listEstateContacts(EXECUTOR, 'bearer-abc', OWNER);
+
+      expect(decryptsWhenRecorded).toBe(0);
+      // Anti-vacuity: the call really did decrypt afterwards, so the zero above
+      // is an ORDERING and not a route that read nothing.
+      expect(decrypted.length).toBe(2);
+      expect(events.estateViews).toEqual([
+        { actor: EXECUTOR, owner: OWNER, caseId: 'case-1', count: 2 },
+      ]);
+    });
+
+    it('counts the AUTHORISED scope, and names no contact in the trail', async () => {
+      const { service, settlement, events } = await estateWithTwoContacts();
+      settlement.allowed = true;
+      await service.listEstateContacts(EXECUTOR, 'bearer-abc', OWNER);
+      // The count is the scope the grant covered. Naming the contacts would put
+      // the very PII this event records the disclosure of into the trail.
+      expect(JSON.stringify(events.estateViews)).not.toContain('attorney');
+      expect(JSON.stringify(events.estateViews)).not.toContain('accountant');
+    });
+
+    it('does NOT thaw the grant path — an ordinary role-holder stays frozen', async () => {
+      /*
+       * THE POSITIVE CONTROL FOR THE WHOLE BLOCK, and the reason this is two
+       * arms rather than one widened query. `GRANTEE` holds no effective grant
+       * here (the roles double returns none), and the executor arm must not
+       * have become a back door for them: they are not this estate's executor,
+       * so settlement refuses, and `listForOwner` still refuses too.
+       */
+      const { service, settlement } = await estateWithTwoContacts();
+      settlement.allowed = false;
+      await expect(service.listForOwner(GRANTEE, OWNER)).rejects.toBeInstanceOf(ForbiddenException);
+      // ...and with the rung open for the EXECUTOR, the grantee's own path is
+      // unchanged: the two arms do not see each other.
+      settlement.allowed = true;
+      await expect(service.listForOwner(GRANTEE, OWNER)).rejects.toBeInstanceOf(ForbiddenException);
+    });
   });
 
   /**

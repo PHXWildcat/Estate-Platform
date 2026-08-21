@@ -56,6 +56,11 @@ describe('config validation', () => {
     AWS_KMS_KEY_ID: 'alias/estate-core-kek',
     AWS_REGION: 'us-east-1',
     IDENTITY_URL: 'https://identity.internal',
+    // M23 PR4a: the executor staged-access question. Required in production for
+    // the same reason IDENTITY_URL is — the client fails closed, so a missing
+    // value would not widen anything, it would silently REFUSE every executor's
+    // contact read with no signal that the deployment was wrong.
+    SETTLEMENT_URL: 'https://settlement.internal',
     // M13: production pins the real notification adapter, because link
     // redemption refuses behind one that reaches nobody.
     NOTIFY_MODE: 'http',
@@ -81,6 +86,26 @@ describe('config validation', () => {
 
   it('defaults IDENTITY_URL to localhost outside production', () => {
     expect(loadConfig(validEnv()).identityUrl).toBe('http://localhost:3001');
+  });
+
+  it('production REQUIRES SETTLEMENT_URL (executor staged-access checks)', () => {
+    /*
+     * A MISSING VALUE FAILS CLOSED, WHICH IS WHY IT HAS TO BE REQUIRED. The
+     * client refuses on any failure, so an unset URL does not widen access —
+     * it silently denies every executor the contacts a verified case entitles
+     * them to, with nothing in the deployment saying so. Fail closed means
+     * de-escalate, not "misconfigure quietly".
+     */
+    const { SETTLEMENT_URL: _omitted, ...withoutSettlement } = PROD_KMS;
+    expect(() =>
+      loadConfig(
+        validEnv({ NODE_ENV: 'production', KAFKA_BROKERS: 'k1:9092', ...withoutSettlement }),
+      ),
+    ).toThrow(/SETTLEMENT_URL/);
+  });
+
+  it('defaults SETTLEMENT_URL to localhost outside production', () => {
+    expect(loadConfig(validEnv()).settlementUrl).toBe('http://localhost:3007');
   });
 
   it('production REQUIRES Kafka (audit must never silently no-op)', () => {

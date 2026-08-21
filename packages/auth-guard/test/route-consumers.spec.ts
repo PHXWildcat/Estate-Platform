@@ -464,13 +464,16 @@ const ANALYSIS_BY_NAME =
   'so the one call site genuinely addresses each of them.';
 
 const EXEMPT_EXECUTOR_SURFACE =
-  'Profile’s two executor contact reads, and the LAST entries under this reason — M23 PR2 took ' +
-  'the assets one, and the sentence has narrowed with it rather than being left to cover a ' +
-  'smaller set than it describes. They resolve through the same settlement staged grant the ' +
-  'inventory does (docs/03 §5.1 control 5, which executes outside a test as of that PR), but ' +
-  'behind the DOCUMENTS rung rather than INVENTORY, and the screen for that rung is the next ' +
-  'slice. Profile’s int suites cover both routes.';
-// EXEMPT_SETTLEMENT_REPORTING is GONE (M22 PR4c), and it left on the terms it
+  'Profile\u2019s two CROSS-OWNER contact reads \u2014 the docs/03 \u00a75.5 ABAC demonstrator, ' +
+  'resolved through `effectiveContactReadGrants`: a permission the owner handed out WHILE LIVING, ' +
+  'to a role-holder who is not necessarily an executor. No product surface asks them; the People ' +
+  'screen reads the caller\u2019s own contacts. THIS REASON USED TO SAY THEY RESOLVE THROUGH ' +
+  'SETTLEMENT\u2019S STAGED GRANT BEHIND THE DOCUMENTS RUNG. That was false when written (M23 PR2) ' +
+  'and is the defect M23 PR4a was opened to fix: the grant query filters ' +
+  '`effective_condition = \u2018immediate\u2019`, which an executor\u2019s `on_death_verified` ' +
+  'designation never satisfies, so no ladder had any bearing on these two routes at all. The ' +
+  'executor now has a route of his own \u2014 `GET /v1/estates/:ownerUserId/contacts`, consumed ' +
+  'below \u2014 and these two stay what they always were. Profile\u2019s int suites cover both.'; // EXEMPT_SETTLEMENT_REPORTING is GONE (M22 PR4c), and it left on the terms it
 // set for itself: "when PR4 lands, this constant goes with its last entry."
 // All seven settlement routes it once covered now name a consumer — four to
 // PR3 (the case list, the kill switch, both settings routes) and the last
@@ -725,6 +728,12 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'profile DELETE /v1/role-assignments/:id/permissions/:grantId': consumed(
     `${BFF}/profile-client.ts`,
   ),
+  // THE EXECUTOR'S OWN ROUTE (M23 PR4a) — a different authority (settlement's
+  // staged grant, not a permission grant), a different audit action
+  // (`contact.estate.viewed`), and a different reason to exist (docs/03 §5.4's
+  // verified contact cards). Modelled on assets' `GET /v1/estates/:id/assets`,
+  // which split for the same reason rather than branching inside the owner path.
+  'profile GET /v1/estates/:ownerUserId/contacts': consumed(`${BFF}/profile-client.ts`),
   'profile GET /v1/profiles/:ownerUserId/contacts': { exempt: EXEMPT_EXECUTOR_SURFACE },
   'profile GET /v1/profiles/:ownerUserId/contacts/:contactId': {
     exempt: EXEMPT_EXECUTOR_SURFACE,

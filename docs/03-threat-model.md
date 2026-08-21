@@ -206,7 +206,7 @@ shipped noting that a hold outlives case close with no way to release it
 
 ### 5.1 Fraudulent death trigger ("kill them on paper")
 **Attack:** Adversary (often a would-be heir or an account-takeover attacker who wants executor-level access) reports the owner dead with a forged certificate or exploits a false-positive from a death-data provider.
-**Controls:** (1) No automated trigger from any single source — provider matches only open a *case*. (2) Mandatory human review of certified evidence. (3) Waiting period (default 5 days, configurable up) during which the platform aggressively attempts owner contact through every channel including hardware-key challenge; any owner sign-in with step-up MFA instantly voids the case and flags the reporter. (4) Account enters `deceased_pending` — reads freeze for role-holders; nothing unlocks early. (5) Executor access post-verification is *staged*: inventory first, vault emergency-access last, each stage separately approved. (6) The reporter's identity is verified and recorded; fraudulent reports are preserved for law enforcement.
+**Controls:** (1) No automated trigger from any single source — provider matches only open a *case*. (2) Mandatory human review of certified evidence. (3) Waiting period (default 5 days, configurable up) during which the platform aggressively attempts owner contact through every channel including hardware-key challenge; any owner sign-in with step-up MFA instantly voids the case and flags the reporter. (4) Account enters `deceased_pending` — reads freeze for role-holders and do not thaw. This is a control on grants the owner made *while living*, and a death report is the reason they stop. It is not the control that governs the EXECUTOR, whose authority arrives only on verification and is governed by (5); reading control 4 as covering them left an executor unable to see the estate's contacts at any point, ever. (5) Executor access post-verification is *staged*: inventory first, vault emergency-access last, each stage separately approved — and the estate's CONTACTS are one of the things it stages, released with the documents rung, because who the decedent named is disclosure about living third parties rather than about the estate's holdings. (6) The reporter's identity is verified and recorded; fraudulent reports are preserved for law enforcement.
 
 ### 5.2 Emergency-access abuse
 **Attack:** A designated emergency contact invokes vault access while the owner is alive but unaware (hospitalized, traveling, cognitively declining).
@@ -373,7 +373,37 @@ control specification; this delta records how each control landed.
   regardless of what settlement asks. The lock call happens INSIDE the case
   transaction — an unconfirmable lock rolls the transition back. During
   deceased_pending the OWNER's login and sessions stay alive (the rescue
-  path) while profile's role-holder contact grants freeze. At verified the
+  path) while profile's role-holder contact grants freeze.
+
+  NARROWED BY M23 PR4a, because the sentence above described a control the
+  code did not implement. `RolesRepo.effectiveContactReadGrants` carried a
+  predicate excluding every owner with a case in `waiting_period`, `verified`,
+  `active` OR `distributing` — so the freeze began at the waiting period, as
+  written, and then NEVER LIFTED. Combined with the same query's
+  `effective_condition = 'immediate'`, which an executor's `on_death_verified`
+  designation never satisfies, an executor could not read the estate's contacts
+  at any point, ever. Control 4 was silently answering a question that belongs
+  to control 5, and answering it "no" forever.
+
+  The narrowing is SCOPED TO THE EXECUTOR, and the scoping is the point. The
+  grant query is untouched: an ordinary role-holder's `immediate`
+  `contact:read` grant stays frozen from the waiting period onward, exactly as
+  before, because that is a permission the owner gave while living and control
+  4 is the reason it stops at a death report. What changes is that the
+  executor no longer travels that road at all. Their authority is a
+  `role_assignment`, not a `permission_grant` — the owner never granted them
+  `contact:read` and `ENFORCED_GRANTS` should not grow a row claiming they did
+  — so they get a SEPARATE arm, gated on control 5's ladder: the estate's
+  contacts open when the DOCUMENTS rung is approved, asked of settlement on the
+  executor's own forwarded bearer through the same `checkStageAccess` port
+  assets uses for the inventory, and refused when settlement cannot be reached.
+
+  Two arms rather than one widened query, because widening
+  `effective_condition` or lifting the freeze predicate would have thawed every
+  `on_death_verified` grant for every caller of profile's only grant reader —
+  a blast radius nobody asked for, to serve one role.
+
+  At verified the
   status becomes `settlement`, every session is revoked, live-token lookups
   fail via a status allowlist in the session SQL, and re-login gets the
   generic 401 with a distinct recorded reason (`account_settled` — decedent-

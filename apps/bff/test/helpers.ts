@@ -1063,6 +1063,47 @@ export class FakeProfileClient implements ProfileClient {
     return this.reject() ?? Promise.resolve(this.linkedEstatesResult);
   }
 
+  /**
+   * THE ESTATE'S CONTACTS (M23 PR4a), two of them, both professionals.
+   *
+   * `professionalKind` is set on both because these rows are what docs/03 §5.4
+   * calls "verified contact cards for the estate's attorney/CPA" — a control
+   * against grief-window phishing. A fixture of unlabelled relatives would
+   * exercise the list and none of the reason it exists.
+   */
+  estateContactsResult: ContactSummary[] = [
+    {
+      id: 'a2c2e6a4-0000-4000-8000-000000000021',
+      ownerUserId: 'a2c2e6a4-0000-4000-8000-00000000000e',
+      name: 'Grace Hopper',
+      relationship: null,
+      professionalKind: 'attorney',
+      hasEmail: true,
+      hasPhone: true,
+      hasAddress: false,
+      hasNotes: false,
+      linked: true,
+    },
+    {
+      id: 'a2c2e6a4-0000-4000-8000-000000000022',
+      ownerUserId: 'a2c2e6a4-0000-4000-8000-00000000000e',
+      name: 'Charles Babbage',
+      relationship: 'child',
+      professionalKind: null,
+      hasEmail: false,
+      hasPhone: false,
+      hasAddress: false,
+      hasNotes: false,
+      linked: false,
+    },
+  ];
+  estateContactsCalls: Array<{ accessToken: string; ownerUserId: string }> = [];
+
+  estateContacts(accessToken: string, ownerUserId: string): Promise<ContactSummary[]> {
+    this.estateContactsCalls.push({ accessToken, ownerUserId });
+    return this.reject() ?? Promise.resolve(this.estateContactsResult);
+  }
+
   profile(accessToken: string): Promise<Profile | null> {
     this.profileCalls.push(accessToken);
     return this.reject() ?? Promise.resolve(this.profileResult);

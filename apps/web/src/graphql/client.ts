@@ -115,6 +115,7 @@ export const GQL_ERROR_CODES = [
   'EVIDENCE_WINDOW_CLOSED',
   /** An earlier rung of the staged-access ladder is not approved yet (M23 PR2). */
   'STAGE_OUT_OF_ORDER',
+  'STAGE_NOT_APPROVED',
   /** A live request for this stage already exists. A control firing, not an outage. */
   'STAGE_ALREADY_REQUESTED',
   /** A real case, really this caller's to administer, not yet at a status that has one. */
@@ -855,6 +856,10 @@ interface OperationSignatures {
   RequestEstateAccess: {
     variables: { caseId: string; stage: AccessStage };
     data: { requestEstateAccess: EstateAccessStageInfo };
+  };
+  EstateContacts: {
+    variables: { caseId: string };
+    data: { estateContacts: ContactSummaryInfo[] };
   };
   EstateTasks: {
     variables: { caseId: string };

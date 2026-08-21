@@ -443,6 +443,11 @@ services:
       EMAIL_INDEX_KEY_HEX: ${PROFILE_EMAIL_INDEX_KEY_HEX}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       IDENTITY_URL: http://identity:3001
+      # M23 PR4a: the executor staged-access question, asked on the CALLER'S OWN
+      # forwarded bearer — so this is a URL and not a credential, and profile's
+      # row in the credential graph is unchanged. Same route and same client
+      # assets uses for the estate inventory.
+      SETTLEMENT_URL: http://settlement:3007
       # M13: profile's FIRST outbound credential and first non-identity peer. It
       # tells an owner when somebody claimed a link to one of their contacts —
       # the SEND surface plus (M14) the read-only RECIPIENT-STATUS surface, so
