@@ -76,6 +76,7 @@ import type {
   SettlementClient,
   SettlementSettings,
   SettlementStage,
+  SettlementTask,
 } from '../src/settlement-client';
 
 export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
@@ -1352,6 +1353,58 @@ export class FakeSettlementClient implements SettlementClient {
         status: 'requested',
         requestedAt: '2026-08-20T00:00:00.000Z',
         decidedAt: null,
+      })
+    );
+  }
+
+  /**
+   * TWO ITEMS, and each one carries an arm a checklist is likely to drop.
+   *
+   * The FIRST is somebody else's move — a step the attorney owns. It is still
+   * the executor's list: the person answerable for the administration is the
+   * person who has to know a filing is outstanding, whoever files it.
+   *
+   * The SECOND is ALREADY DONE, because "what is left" reads like the point of
+   * a list and a completed row reads like noise. An estate checklist is a
+   * record of administration, not a to-do app.
+   */
+  tasksResult: SettlementTask[] = [
+    {
+      taskId: 'task-1',
+      title: 'File the petition for probate with the county court',
+      category: 'legal',
+      assignedRole: 'attorney',
+      dueAt: '2026-09-02T00:00:00.000Z',
+      completedAt: null,
+    },
+    {
+      taskId: 'task-2',
+      title: 'Obtain certified copies of the death certificate',
+      category: 'administrative',
+      assignedRole: 'executor',
+      dueAt: null,
+      completedAt: '2026-08-20T00:00:00.000Z',
+    },
+  ];
+  tasksCalls: Array<{ accessToken: string; caseId: string }> = [];
+  completeTaskCalls: Array<{ accessToken: string; taskId: string; completed: boolean }> = [];
+
+  listTasks(accessToken: string, caseId: string): Promise<SettlementTask[]> {
+    this.tasksCalls.push({ accessToken, caseId });
+    return this.reject() ?? Promise.resolve(this.tasksResult);
+  }
+
+  completeTask(accessToken: string, taskId: string, completed: boolean): Promise<SettlementTask> {
+    this.completeTaskCalls.push({ accessToken, taskId, completed });
+    const found = this.tasksResult.find((t) => t.taskId === taskId) ?? this.tasksResult[0];
+    return (
+      this.reject() ??
+      Promise.resolve({
+        ...(found as SettlementTask),
+        // FAITHFUL ABOUT THE EFFECT, both ways: unticking CLEARS the
+        // timestamp. A double that always returned a completed task would let
+        // a resolver that dropped `completed: false` pass.
+        completedAt: completed ? '2026-08-21T00:00:00.000Z' : null,
       })
     );
   }

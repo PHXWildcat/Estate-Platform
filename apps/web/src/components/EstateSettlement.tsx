@@ -12,6 +12,7 @@ import {
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
 import type { StepUpRetryOutcome } from '../lib/step-up';
+import { EstateChecklist } from './EstateChecklist';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
 import { estateName } from './SettlingEstatesPanel';
@@ -336,6 +337,15 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
 
         <FormStatus tone="error" message={formError} />
       </section>
+
+      {/*
+        BEFORE THE INVENTORY, deliberately. The checklist needs no stage, so on
+        day one — every rung shut, an operator yet to look at anything — it is
+        the only section here that works, and it is what somebody newly handed
+        an estate actually needs. Putting a locked panel above it would open
+        this screen with a refusal.
+      */}
+      <EstateChecklist caseId={caseId} />
 
       <section aria-labelledby="inventory-heading" className="card p-6">
         <h2 id="inventory-heading" className="text-lg font-semibold">

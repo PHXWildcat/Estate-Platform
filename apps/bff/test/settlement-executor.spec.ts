@@ -48,6 +48,12 @@ const INVENTORY_QUERY = `query EstateInventory($caseId: ID!) {
 const REQUEST_MUTATION = `mutation RequestEstateAccess($caseId: ID!, $stage: AccessStage!) {
   requestEstateAccess(caseId: $caseId, stage: $stage) { stage status decidedAt }
 }`;
+const TASKS_QUERY = `query EstateTasks($caseId: ID!) {
+  estateTasks(caseId: $caseId) { taskId title category assignedRole dueAt completedAt }
+}`;
+const TICK_MUTATION = `mutation SetEstateTaskCompletion($taskId: ID!, $completed: Boolean!) {
+  setEstateTaskCompletion(taskId: $taskId, completed: $completed) { taskId completedAt }
+}`;
 
 /**
  * THE ENUM IS DERIVED, NOT RESTATED.
@@ -265,6 +271,120 @@ describe('executor resolvers', () => {
       // The refusal happens HERE, so an id with no authority behind it never
       // becomes a user id and never reaches another service.
       expect(assets.listEstateCalls).toEqual([]);
+    });
+  });
+
+  /**
+   * THE CHECKLIST (M23 PR3).
+   *
+   * Two properties. The first is that a task is PROCEDURAL state, not access:
+   * it is forwarded like the ladder, because settlement's `assertCaseVisible`
+   * decides who may read it, and it needs no approved stage at all. The second
+   * is that the tick is reversible by the same call that made it — a checklist
+   * an executor can complete but not correct turns an honest mistake into a
+   * permanent one.
+   */
+  describe('the estate checklist', () => {
+    it('forwards the case id and exposes no actor id or court-document id', async () => {
+      const res = await gql(
+        app,
+        { query: TASKS_QUERY, variables: { caseId: 'case-1' } },
+        { cookie: COOKIE },
+      );
+      expect(settlement.tasksCalls).toEqual([
+        { accessToken: TOKENS.accessToken, caseId: 'case-1' },
+      ]);
+      const list = rows(res, 'estateTasks');
+      expect(list).toHaveLength(2);
+      expect(list[0]).toMatchObject({ taskId: 'task-1', assignedRole: 'attorney' });
+      // A step aimed at somebody else is still SHOWN — the executor is the
+      // person who has to know it is the attorney's move.
+      expect(list.map((r) => r['assignedRole'])).toEqual(['attorney', 'executor']);
+      expect(JSON.stringify(list)).not.toContain('completedBy');
+      expect(JSON.stringify(list)).not.toContain('courtDocVersionId');
+    });
+
+    it('does NOT resolve the case id first — settlement owns who may read tasks', async () => {
+      // Same argument as the ladder: `assertCaseVisible` admits the decedent's
+      // reader, the reporter, the executor and an operator, and a resolve-first
+      // check here would refuse three of the four.
+      await gql(app, { query: TASKS_QUERY, variables: { caseId: 'case-1' } }, { cookie: COOKIE });
+      expect(settlement.executorCasesCalls).toEqual([]);
+    });
+
+    it('reports a task that is already done as done, not as a fresh one', async () => {
+      const list = rows(
+        await gql(app, { query: TASKS_QUERY, variables: { caseId: 'case-1' } }, { cookie: COOKIE }),
+        'estateTasks',
+      );
+      expect(list[0]?.['completedAt']).toBeNull();
+      expect(list[1]?.['completedAt']).toBe('2026-08-20T00:00:00.000Z');
+    });
+
+    it('ticks and UNTICKS through the one mutation', async () => {
+      const done = gqlBody(
+        await gql(
+          app,
+          { query: TICK_MUTATION, variables: { taskId: 'task-1', completed: true } },
+          { cookie: COOKIE },
+        ),
+      ).data?.['setEstateTaskCompletion'];
+      expect(done).toMatchObject({ taskId: 'task-1' });
+      expect((done as Record<string, unknown>)['completedAt']).not.toBeNull();
+
+      const undone = gqlBody(
+        await gql(
+          app,
+          { query: TICK_MUTATION, variables: { taskId: 'task-2', completed: false } },
+          { cookie: COOKIE },
+        ),
+      ).data?.['setEstateTaskCompletion'];
+      // `task-2` arrives ALREADY COMPLETED in the fixture, so this is a real
+      // reversal rather than a no-op on a task that was never ticked.
+      expect(undone).toMatchObject({ taskId: 'task-2', completedAt: null });
+
+      expect(settlement.completeTaskCalls).toEqual([
+        { accessToken: TOKENS.accessToken, taskId: 'task-1', completed: true },
+        { accessToken: TOKENS.accessToken, taskId: 'task-2', completed: false },
+      ]);
+    });
+
+    it('serves an UNELEVATED session — this layer adds no freshness of its own', async () => {
+      /*
+       * WHICH LAYER THIS PROVES. The BFF evaluates no step-up anywhere; it
+       * forwards the caller's bearer and maps a downstream 403. So the half
+       * provable here is that the checklist resolvers do not invent a
+       * freshness requirement the services never asked for — a session with no
+       * second factor at all reads and ticks.
+       *
+       * The other half — that settlement's own two task routes carry no
+       * `StepUpGuard` — is a claim about decorators, and is asserted against
+       * the real metadata in `settlement/test/session-audience.spec.ts`.
+       *
+       * The property both halves are for: a tick moves no access and no money,
+       * and an executor days after a death should not meet an MFA prompt to
+       * say they have found the will.
+       */
+      identity.sessionResult = {
+        userId: TOKENS.userId,
+        sessionId: TOKENS.sessionId,
+        mfaLevel: 'none',
+        stepupExpiresAt: null,
+        audience: 'account',
+      };
+      const read = await gql(
+        app,
+        { query: TASKS_QUERY, variables: { caseId: 'case-1' } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(read).errors).toBeUndefined();
+      const tick = await gql(
+        app,
+        { query: TICK_MUTATION, variables: { taskId: 'task-1', completed: true } },
+        { cookie: COOKIE },
+      );
+      expect(gqlBody(tick).errors).toBeUndefined();
+      expect(settlement.completeTaskCalls).toHaveLength(1);
     });
   });
 });
