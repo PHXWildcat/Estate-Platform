@@ -84,6 +84,11 @@ function handlers(
         jsonResponse({
           data: { requestEstateAccess: stage({ status: 'requested', decidedAt: null }) },
         })),
+    // `StepUpPrompt` elevates through identity BEFORE re-running the refused
+    // action. Without this the prompt stalls on its own first request and a
+    // test reads it as the surface failing to close the prompt — which is what
+    // it did read as, until the harness was fixed rather than the component.
+    StepUp: () => jsonResponse({ data: { stepUp: { ok: true } } }),
   };
 }
 
@@ -328,10 +333,92 @@ describe('the estate screen', () => {
     expect(await screen.findByRole('button', { name: /try again/i })).toBeInTheDocument();
   });
 
+  /**
+   * THE STEP-UP PATH, FOUND BY DRIVING THE APP AND NOT BY ANY TEST HERE.
+   *
+   * `POST /cases/:caseId/stages` is step-up gated at the service, and this
+   * screen rendered the refusal as a dead-end message — "for your security,
+   * this action needs a fresh identity check" — with nothing to click, on the
+   * one action the whole surface exists to offer. No unit test could see it:
+   * the fixtures decide what the session is, so a suite can be entirely green
+   * about a screen that strands every real user.
+   */
+  describe('the step-up the ladder request needs', () => {
+    function refusingOnce(): Record<string, OperationHandler> {
+      let asked = 0;
+      return handlers({
+        request: () => {
+          asked += 1;
+          return asked === 1
+            ? graphqlError('STEPUP_REQUIRED')
+            : jsonResponse({
+                data: { requestEstateAccess: stage({ status: 'requested', decidedAt: null }) },
+              });
+        },
+      });
+    }
+
+    it('raises the PROMPT rather than a message with nothing to click', async () => {
+      installGraphqlFetchMock(refusingOnce());
+      render(<EstateSettlement caseId={CASE_ID} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Request access' }));
+      expect(await screen.findByLabelText('Confirm it’s you')).toBeInTheDocument();
+      // Anchored on the dead end that shipped: the bare refusal copy, alone.
+      expect(screen.queryByText(/needs a fresh identity check\.?$/i)).not.toBeInTheDocument();
+    });
+
+    it('REPLACES the request button while it is open', async () => {
+      // Two live paths to one action let somebody answer the prompt while a
+      // second request is already in flight — the rule every other caller of
+      // this component holds to.
+      installGraphqlFetchMock(refusingOnce());
+      render(<EstateSettlement caseId={CASE_ID} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Request access' }));
+      await screen.findByLabelText('Confirm it’s you');
+      expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument();
+    });
+
+    it('retries the SAME stage the server refused, and clears the prompt', async () => {
+      const { requests } = installGraphqlFetchMock(refusingOnce());
+      render(<EstateSettlement caseId={CASE_ID} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Request access' }));
+      fireEvent.change(await screen.findByLabelText('Confirm it’s you'), {
+        target: { value: '123456' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /confirm and request access/i }));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+      });
+      const sent = requests
+        .filter((r) => r.body.query?.includes('RequestEstateAccess'))
+        .map((r) => (r.body.variables as { stage: string }).stage);
+      // BOTH attempts name INVENTORY, and the retry really is a SECOND request
+      // rather than the prompt closing on the strength of the elevation alone.
+      //
+      // This does NOT discriminate `request(stepUpFor)` from
+      // `request(requestableStage(stages))` — the two agree while nothing
+      // reloads the ladder mid-prompt, which is the component's shape today.
+      // See the `stepUpFor` docstring: the carrier is a rule about how a
+      // retried action is written, not a property this fixture can prove.
+      expect(sent).toEqual(['INVENTORY', 'INVENTORY']);
+    });
+
+    it('Cancel puts the button back and files nothing more', async () => {
+      const { requests } = installGraphqlFetchMock(refusingOnce());
+      render(<EstateSettlement caseId={CASE_ID} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Request access' }));
+      fireEvent.click(await screen.findByRole('button', { name: /cancel/i }));
+      expect(await screen.findByRole('button', { name: 'Request access' })).toBeInTheDocument();
+      expect(screen.queryByLabelText('Confirm it’s you')).not.toBeInTheDocument();
+      expect(requests.filter((r) => r.body.query?.includes('RequestEstateAccess'))).toHaveLength(1);
+    });
+  });
+
   it('renders STAGE_OUT_OF_ORDER as the ladder working, not as a failure', async () => {
     installGraphqlFetchMock(handlers({ request: () => graphqlError('STAGE_OUT_OF_ORDER') }));
     render(<EstateSettlement caseId={CASE_ID} />);
-    fireEvent.click(await screen.findByRole('button', { name: /request access/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Request access' }));
     expect(
       await screen.findByText(/stage before this one hasn’t been approved/i),
     ).toBeInTheDocument();

@@ -11,7 +11,9 @@ import {
 } from '../graphql/client';
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
+import type { StepUpRetryOutcome } from '../lib/step-up';
 import { FormStatus } from './FormStatus';
+import { StepUpPrompt } from './StepUpPrompt';
 import { estateName } from './SettlingEstatesPanel';
 
 /**
@@ -131,6 +133,32 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
   const [inventory, setInventory] = useState<Inventory>({ kind: 'locked' });
   const [pending, setPending] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  /**
+   * The stage a step-up is open FOR — a discriminated carrier, not a boolean.
+   *
+   * FOUND BY DRIVING THE APP. `POST /cases/:caseId/stages` is step-up gated at
+   * the service (the controller's docstring: everything that MOVES access is),
+   * and this screen rendered the refusal as a MESSAGE — "for your security,
+   * this action needs a fresh identity check" — with nothing to click. A dead
+   * end, on the one action the whole surface exists to offer. No unit test
+   * could see it: the harness has no session, so every test session is
+   * whatever the fixture says.
+   *
+   * It holds the STAGE rather than a flag because the retried action must
+   * CARRY ITS OWN ARGUMENTS (`.claude/rules/frontend.md`) — the M13 review
+   * found a caller retrying a different action than the one refused.
+   *
+   * A MUTATION SURVIVES HERE AND THE CHANGE IS STILL RIGHT. Swapping
+   * `request(stepUpFor)` for `request(requestableStage(stages))` keeps every
+   * test green, because the two cannot disagree TODAY: the ladder is only
+   * re-read on a successful request, so nothing moves while a prompt is open.
+   * That is the third kind of surviving mutation — not a weak test and not an
+   * unfaithful edit, but a change that is not load-bearing yet. It is written
+   * this way so that adding any reload on this screen (a poll for an
+   * operator's decision is the obvious one) cannot quietly turn "the rung you
+   * were refused" into "whatever rung is next now".
+   */
+  const [stepUpFor, setStepUpFor] = useState<AccessStage | null>(null);
 
   const loadInventory = useCallback(async (): Promise<void> => {
     setInventory({ kind: 'loading' });
@@ -184,16 +212,26 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
     void load();
   }, [load]);
 
-  const request = async (stage: AccessStage): Promise<void> => {
+  const request = async (stage: AccessStage): Promise<StepUpRetryOutcome> => {
     setPending(true);
     setFormError(null);
     const result = await gqlRequest('RequestEstateAccess', { caseId, stage });
     setPending(false);
     if (result.ok && result.data.requestEstateAccess) {
+      setStepUpFor(null);
       await load();
-      return;
+      return 'applied';
+    }
+    if (!result.ok && result.code === 'STEPUP_REQUIRED') {
+      setStepUpFor(stage);
+      // `stale`, not a failure: peers learn of an elevation through a
+      // short-TTL POSITIVE introspection cache, so for up to one TTL after a
+      // genuine step-up settlement still answers from the un-elevated session.
+      // The prompt polls to the documented deadline.
+      return 'stale';
     }
     setFormError(result.ok ? messageFor('UNKNOWN') : messageFor(result.code));
+    return 'applied';
   };
 
   if (screen.kind === 'loading') {
@@ -255,7 +293,7 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
                     {STAGE_COPY[stage].blurb}
                   </span>
                 </span>
-                {next === stage ? (
+                {next === stage && stepUpFor === null ? (
                   <button
                     type="button"
                     className="btn btn-secondary"
@@ -269,6 +307,32 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
             );
           })}
         </ol>
+
+        {stepUpFor !== null ? (
+          /*
+           * REPLACES the request button rather than sitting beside it — the
+           * rule the other four callers hold to, and the reason is that two
+           * live paths to the same action let somebody answer the prompt while
+           * a second request is already in flight.
+           *
+           * `onElevated` retries `stepUpFor`, the stage that was actually
+           * refused, never `requestableStage(stages)`: the ladder is re-read on
+           * every reload and the next rung is not necessarily the refused one.
+           */
+          <StepUpPrompt
+            idPrefix="estate-stage-stepup"
+            hint={
+              'Asking for access to someone’s estate needs a fresh check — it’s the first step ' +
+              'toward opening what they left behind. Enter the six-digit code from your ' +
+              'authenticator.'
+            }
+            submitLabel="Confirm and request access"
+            onElevated={() => request(stepUpFor)}
+            onCancel={() => {
+              setStepUpFor(null);
+            }}
+          />
+        ) : null}
 
         <FormStatus tone="error" message={formError} />
       </section>

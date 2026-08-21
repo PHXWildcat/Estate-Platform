@@ -7327,6 +7327,37 @@ when it goes, the mechanism goes with it. The `AccessStage` enum is derived
 from `ACCESS_STAGES` in both directions, and its ORDER is checked separately
 because `enum-parity.test.ts` sorts.
 
+**THE BROWSER FOUND THE DEFECT AGAIN — eleven milestones running.**
+`POST /cases/:caseId/stages` is step-up gated at the service (the controller's
+docstring: everything that MOVES access is), and this screen rendered the
+refusal as a MESSAGE — *"for your security, this action needs a fresh identity
+check"* — with nothing to click. A dead end, on the one action the whole
+surface exists to offer. **No unit test could have seen it**: the fixtures
+decide what the session is, so the suite was entirely green about a screen that
+stranded every real user. `StepUpPrompt` is now raised, replacing the request
+button while it is open, and the retried action carries the stage it was
+refused with rather than re-reading the next rung.
+
+**A mutation on that carrier SURVIVES, and the change is still right.** Swapping
+`request(stepUpFor)` for `request(requestableStage(stages))` keeps every test
+green, because the two cannot disagree today — the ladder is only re-read after
+a SUCCESSFUL request, so nothing moves while a prompt is open. That is the third
+kind of survivor: not a weak test, not an unfaithful edit, but a change that is
+not load-bearing yet. It is written this way so that adding any reload here (a
+poll for the operator's decision is the obvious one) cannot quietly turn "the
+rung you were refused" into "whatever rung is next now".
+
+**Driven end to end on the running stack**: a designated executor sees NOTHING
+while the case is merely reported (`{"data":{"executorCases":[]}}` at 200, a real
+empty answer); the panel appears when it is verified, named from profile; the
+ladder renders all three rungs; the step-up completes; the rung reads "with our
+team"; an operator approval moves the button to DOCUMENTS and opens the
+inventory. The wire carries no `decedentUserId`, no `requestedBy`/`decidedBy`,
+and `estValue` as the decimal string `"450000.00"`. The audit trail records
+`asset.estate.viewed` — actor the executor, `on_behalf_of` the decedent, detail
+`{caseId, count}` — which is docs/03 §5.1 control 5 executing outside a test for
+the first time since M7 built it.
+
 **An anti-vacuity floor was replaced rather than lowered.** Flipping two routes
 to `consumed` dropped a `>= 20` count below its floor, and editing a number
 down is the ratchet running backwards. The check now asserts the SET of
