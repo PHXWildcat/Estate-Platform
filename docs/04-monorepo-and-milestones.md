@@ -6837,9 +6837,9 @@ decision booked as progress is how a queue stays untouched.**
 |---|---|---|
 | M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
-| M23 | Executor surface | In progress (PR1, PR2, PR3). §5.1 control 5 now executes outside a test, and the checklist has a caller. What is left is the DISTRIBUTION ladder — count it from `EXEMPT_EXECUTOR_CASEWORK` in `packages/auth-guard/test/route-consumers.spec.ts`, never from a number in this table, which carried "3 routes" for two milestones while the real count was eight |
-| M24 | Dashboard, computable subset | **Flip-trigger: jumps to the front on a demo date or a signed customer** |
-| M25 | Crypto-shredding execution path | `destroyDek` has no production caller; must precede any new encrypted data class |
+| M23 | Executor surface | **COMPLETE** (PR1–PR4b, #141). `EXEMPT_EXECUTOR_CASEWORK` is deleted and every executor-casework route names a consumer. This row read "In progress (PR1, PR2, PR3)" after the milestone finished, which is the same stale-prose defect the exemption reasons keep producing |
+| M24 | Dashboard, computable subset | Flip-trigger **CHECKED 2026-08-21 and NOT FIRED** — no demo date, no signed customer — so this row is a proposal, not a decision. Re-sequenced BEHIND M25; reasoning in the M25 section below. Owns two docs/03 §6v residuals already |
+| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below.** PR0 shipped: the boundary, the fence, and the corrections. `destroyDek` still has no production caller — PR3 is where that changes. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
 | M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
 | M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
@@ -7644,3 +7644,142 @@ reads `apps/services/settlement/src/admin.service.ts`, outside its own package �
 the staleness class 0da89bc closed. Measured: web's test task cached, appending
 a comment to that service file busted it, restoring returned it to a cached
 hash.
+
+### M25 — crypto-shredding execution path (scoped 2026-08-21)
+
+**Why this moved ahead of M24.** The queue put the dashboard next with a written
+flip-trigger — it jumps the queue the moment a demo date or a signed customer
+exists. That was CHECKED rather than assumed on 2026-08-21 and it has not fired,
+which leaves M24's position a proposal. The re-sequence was then argued on the
+same three lenses the 2026-08-17 selection used:
+
+- *Risk.* The selection's own reasoning was that pre-launch this lens reasons
+  about a world that does not exist. M23 PR4b changed that once: the product now
+  makes a CLAIM to a user — `content_erased`, 410, "permanent, never retry" —
+  in three services, the BFF, the web client and the operator console, and
+  nothing can produce it. Not live harm, but the first queue item whose defect
+  is measurable today rather than contingent on a launch.
+- *Value.* The lens with no inputs, so M24 gets no promotion from it. It is not
+  neutral either: every tile M24 would show is already reachable from the rail
+  (`netWorth` on `/assets`, `readiness` on `/assistant`, settling estates on the
+  home page), so M24 improves how fast a customer finishes rather than what they
+  can finish. M25 adds a thing they currently cannot finish at all.
+- *Dependency,* the only lens with real inputs. M25 is a chokepoint with named
+  dependents — M32 and M33 are both routed through it in the queue above — and
+  M24 has none. And M24 is the FIRST milestone in this queue with no unconsumed
+  backend routes waiting for it: the surviving exemptions in
+  `route-consumers.spec.ts` belong to M21 PR5, M31, the ABAC demonstrator and
+  two machine-to-machine ingresses, none of them M24's. The
+  fastest-compounding-debt argument that put settlement in all three judges'
+  top third does not apply to the dashboard at all.
+
+**The counter-argument, recorded because a refutation is worth as much as a
+confirmation.** M24 does carry a dependency claim: a shared client read cache,
+which both of its docs/03 §6v residuals need and which M28, M30 and M31 would
+also use. It is real and small, and it does not need the dashboard to justify it
+— the cache can ship in whichever frontend milestone runs first.
+
+**What M25 is: wiring, not construction.** Four artifacts are present and
+unreachable — `destroyDek` (one definition, one test caller), `users.status =
+'closed'` (in the DDL CHECK, read as a login refusal, never written),
+`crypto.dek.destroyed` (in `AUDIT_ACTIONS`, zero producers), and the
+`content_erased` arms. `markDestroyed` is implemented in all eight DEK-holding
+services. The storage layer is finished and has never been called.
+
+**Scope decision (2026-08-21): OWNER-INITIATED ONLY, STEP-UP GATED, NO
+PRIVILEGED ROLE.** It does NOT ship an operator-executed erasure, a privileged
+database role, or any path to erase a decedent's estate. Each is named with its
+disposition in docs/03 §6kk rather than left to whoever builds the next surface
+— the TB7 lesson, where twelve deferrals accumulated under one unsized owner.
+
+**The participant set is DERIVED and is the milestone's central fence.** Eight
+services across four clusters, cross-derived from `topology.ts`'s `kekAlias` and
+from the migrations' DEK tables, compared as SETS. That is what turns the
+queue's "must precede any new encrypted data class" from a sentence into a
+mechanism: a ninth KEK-holding service with no DEK table, or one with a table
+and no `markDestroyed`, turns it red. Both proved by mutation.
+
+#### The PR split
+
+- **PR0 — the design delta and the erasure fence. SHIPPED** (docs plus one
+  fence, no runtime code; the M21 PR0 shape). This section, docs/03 §6kk, the
+  fence, and the two corrected comments below.
+- **PR1 — the version-capture redaction, and it goes FIRST.** `users.email_bidx`
+  out of the `users` capture image, plus an answer on
+  `document_versions.content_sha256`. Ordering is the control, exactly as
+  migration 008 argued for `password_hash`: `CREATE OR REPLACE FUNCTION`
+  affects only future captures, so this ships in or before the first
+  `destroyDek` caller or no later migration can retract what erasure wrote.
+- **PR2 — the erasure record and the driver.** Request, refusal set, per-domain
+  progress, resumable; the `SettlementWorkflowDriver` shape (the approved
+  Temporal deviation). NO DEK destroyed — an inert terminal step, reviewable on
+  its own, on the M21 PR3a/PR3b precedent. PR2 must say out loud how it relates
+  to that driver's stated rule that "case state never advances on a timer": the
+  erasure driver's job is FAN-OUT, which is resumption rather than decision,
+  because the owner already decided under step-up.
+- **PR3 — the destroy leg, and nothing else shares it.** First production caller
+  of `destroyDek` (added to `ERASURE_COMPONENTS` in the same change), first
+  producer of `crypto.dek.destroyed`, first writer of `users.status = 'closed'`,
+  sessions revoked. **Verify the deployed audit consumer knows the action before
+  this ships** — M23 PR4a watched a consumer silently drop an event it predated,
+  and this is the event least survivable as a silent drop. Also splits the login
+  refusal reason: `'closed'` currently maps to `account_settled`, which tells an
+  erased account it was settled — two failures with different remedies sharing
+  one token.
+- **PR4 — the owner request surface**, step-up gated, web only. This is what
+  makes the `content_erased` arms reachable and closes the `[OWNER: M25]`
+  residual in §6v, which predicts its own resolution as a consequence: a closed
+  account cannot reach a ceremony route at all.
+- **PR5 — the security review**, plus a `grantStepUp` caller fence. That surface
+  is currently clean — two callers, both real factor proofs — and account
+  erasure raises the cost of it widening from "one zone" (the M15 PR4 handoff
+  escalation) to everything.
+
+**Refusal set, determined by the scope decision:** `deceased_pending`,
+`settlement`, `closed`, and any document under `legal_hold` — which today is a
+per-document flag with no account-level equivalent. Each refusal names its own
+remedy: a living owner wrongly reported dead must be told to void the open case,
+not shown something that reads as an outage. **Cancel is one click and ungated**
+— the protective action must never be harder than the permissive one, which here
+inverts the usual shape because the permissive action is the destructive one.
+
+#### M25 PR0 — the erasure boundary (2026-08-21)
+
+**The fence is the deliverable and it is cross-derived, not listed.**
+`packages/contracts/test/erasure-domains.spec.ts` derives the participant set
+twice — `topology.ts` entries with a non-null `kekAlias`, and services whose
+migrations create a table ending in `deks` — and compares SETS. The two are
+genuinely independent because the eight services do not agree on a table name:
+`deks` in three, `settlement_deks`, `document_deks`, `notification_deks`,
+`plaid_deks` and `assistant_deks` in the rest. A fence anchored on one spelling
+would have found three of eight and gone green.
+
+**THE ABSENCE ASSERTION NEEDED A POSITIVE CONTROL, and the mutation proved it.**
+The caller allowlist asserts that nothing outside a declared erasure component
+calls `destroyDek`, and the declared set is EMPTY — an assertion about an
+absence, which is the shape that passes when the walker is broken. Renaming the
+identifier the AST walker matches left that assertion GREEN and turned only the
+control red. Without the control, a typo would have disarmed the fence silently.
+
+**Four mutations, each reddening a named assertion**: a ninth KEK-holding
+service with no DEK table (set disagreement AND the storage-primitive leg), a
+renamed `markDestroyed` (the storage leg alone), an undeclared production caller
+of `destroyDek` (the allowlist), and the broken walker above. The positive
+control that stays GREEN throughout is the vault/audit exclusion — an
+edit-sensitive fence would have moved it too.
+
+**TWO COMMENTS ASSERTED A CONTROL THAT HAS NEVER EXISTED.** docs/02
+§conventions and `packages/crypto/src/dek.ts` both said crypto-shredding is
+performed by "a privileged retention job (not the app role)". There is no such
+role — no `CREATE ROLE` or `GRANT` outside test files — and M25 is not building
+one. Both are corrected to report the tree rather than describe an intention,
+and both now name what stands in for the boundary and how it is weaker.
+A comment justifying an omission by asserting a fact about the tree is a test
+nobody runs.
+
+**MIGRATION 008 IS NOT EDITED, deliberately.** Its comment claims
+`password_hash` is "the ONE column in `users`" the shred does not reach, and
+`email_bidx` is a second — but the file is applied and checksummed, and editing
+it raises `MigrationDriftError` and blocks the next migration. The correction
+lives in docs/03 §6kk and in PR1's new migration, which is where the redaction
+ships anyway.

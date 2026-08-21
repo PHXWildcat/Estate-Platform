@@ -4594,3 +4594,102 @@ test — retargeted at the real line, it went red.
   improvement and is not attempted here.
 - **[ACCEPTED]** The window and ceiling caveats from §6ii stand unchanged and are
   not restated: one residual, one place.
+
+## 6kk. Threat-model delta — M25 PR0, the erasure boundary (2026-08-21)
+
+**The product can say "this was erased" and cannot erase anything.** M23 PR4b
+gave the distribution amount route a `content_erased` arm at 410 — permanent,
+never a retry — and the same spelling already sits in three `DocumentsService`
+paths, in the BFF's error vocabulary, in the web client's closed code set and on
+the operator console. Nothing produces it. `destroyDek`
+(`packages/crypto/src/dek.ts`) has one definition and one caller, a test. This
+delta records the boundary the milestone that fixes that must respect, before
+any of it is built.
+
+**FOUR ARTIFACTS ARE PRESENT AND UNREACHABLE**, which is why M25 is a wiring
+milestone rather than a construction one: `destroyDek` itself; `users.status =
+'closed'`, which is in the DDL CHECK and is READ as a login refusal
+(`auth.service.ts`) while nothing writes it; `crypto.dek.destroyed`, which is in
+`AUDIT_ACTIONS` with zero producers; and the `content_erased` arms above.
+`markDestroyed` is implemented in all eight DEK-holding services. The storage
+layer for erasure is finished and has never been called.
+
+**THE PARTICIPANT SET IS DERIVED, TWICE, AND THE FENCE IS THIS PR'S ONLY CODE.**
+An erasure must reach every domain holding key material for the user: eight
+services across four clusters, derived from `apps/stack/src/topology.ts` as the
+`SERVICES` entries with a non-null `kekAlias`, and independently from the
+migrations as the services creating a table whose name ends in `deks`. The two
+are compared as SETS. They are genuinely independent because the eight do not
+agree on a table name — `deks` in three, `settlement_deks`, `document_deks`,
+`notification_deks`, `plaid_deks` and `assistant_deks` in the others — so a
+fence keyed on one spelling would have found three of eight and gone green.
+`vault` and `audit` are excluded with their reasons asserted rather than
+assumed: Zone A holds no server-side key material and its shred is
+`POST /v1/vault/reset`, which already exists; audit holds entity ids and enums.
+
+**WHAT THE QUEUE ANNOTATION MEANT, NOW MECHANISED.** docs/04 has said "must
+precede any new encrypted data class" since the sequence was selected, with
+nothing behind it. A ninth service arriving with a KEK and no DEK table now
+turns the fence red, and so does one with a DEK table and no `markDestroyed`.
+Both were proved by mutation.
+
+**OWNER-INITIATED ONLY, STEP-UP GATED, NO PRIVILEGED ROLE** (decision
+2026-08-21). The consequences are not all obvious and are recorded as residuals
+below rather than discovered later — in particular that owner-initiated-only
+means no path erases a decedent's estate, ever, and that the "privileged
+retention job" docs/02 and `dek.ts` have both described since M1 does not exist
+and is not being built.
+
+**THE ERASURE ACT WOULD IMMORTALISE THE IDENTIFIER IT ERASES.** This is the
+finding scoping produced, and it sets PR1 before PR3. `users.email_bidx` is an
+HMAC under a service-wide blind-index key, not a `*_ct` + `dek_id` pair, so the
+shred does not reach it. Migration 008's own justification says `password_hash`
+is "the ONE column in `users` for which that is false" — there are two. And
+`users_capture_version()` is `to_jsonb(OLD) - 'password_hash'`, so every `users`
+UPDATE writes a full row image into `users_versions`, which carries
+`REVOKE UPDATE, DELETE`. Erasure must UPDATE `users` to set `status = 'closed'`.
+Nulling the live column does not help: the trigger captures `OLD`. That is
+migration 008's argument verbatim, with its ordering constraint intact —
+`CREATE OR REPLACE FUNCTION` affects only future captures, so the redaction
+ships in or before the first `destroyDek` caller or no later migration can
+retract what erasure wrote. **Migration 008 is not edited**: it is applied and
+checksummed, and editing it raises `MigrationDriftError`. The correction lives
+here and in PR1's new migration.
+
+### Residuals
+
+- **[OWNER: M25]** *The shred does not reach `users.email_bidx`, live or
+  captured.* Given the blind-index key and a candidate address, an erased
+  account can still be confirmed to have existed, and every historical value
+  sits in an INSERT-only version table. PR1 redacts it from the `users` capture;
+  the live column is `NOT NULL` and unique-where-not-deleted, so whether erasure
+  overwrites it with random bytes or the column becomes nullable is PR1's to
+  decide and to state. The threat model is an insider with the blind-index key
+  and direct cluster read, not an external attacker — this is erasure
+  COMPLETENESS, not a confidentiality break, and it should not be read as the
+  latter.
+- **[OWNER: M25]** *`document_versions.content_sha256` is a hash of the
+  PLAINTEXT, in an append-only table, and the shred does not reach it either.*
+  Same class as the blind index: it lets a held candidate document be confirmed
+  against an erased estate. Not fixed here because the column is the
+  disaster-recovery integrity check (decrypt-then-hash) and removing it costs
+  something real; PR1 answers it either way rather than leaving it unstated.
+- **[ACCEPTED]** *There is no privileged database role, and M25 is not building
+  one.* docs/02 and `packages/crypto/src/dek.ts` have both described "a
+  privileged retention job (not the app role)" since M1; no `CREATE ROLE` or
+  `GRANT` exists outside test files. Both sentences are corrected in this PR.
+  What replaces the boundary is the declared caller allowlist in
+  `packages/contracts/test/erasure-domains.spec.ts`, and the asymmetry is the
+  point: a role stops a compromised app process from destroying keys at
+  RUNTIME, the allowlist stops a second caller arriving in REVIEW. The runtime
+  direction is uncovered. Accepted because the decision was taken deliberately
+  rather than missed, and because a role nobody has costed is exactly the shape
+  of deferral §6 exists to make visible — a later milestone may add one, and
+  none is owed.
+- **[ACCEPTED]** *No path erases a decedent's estate.* Owner-initiated-only
+  means the requester must be alive and signed in, and an account at
+  `settlement` cannot request anything, so a decedent's PII is retained
+  indefinitely by design. Coherent — an executor erasing the estate they
+  administer is not a capability to add casually — but it is a choice, and it is
+  recorded here so it is not mistaken for an oversight when someone asks why
+  erasure has no estate path.

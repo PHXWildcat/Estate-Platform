@@ -24,7 +24,16 @@ export interface DekRepository {
   findActiveByUser(userId: string): Promise<DekRecord | null>;
   findById(dekId: string): Promise<DekRecord | null>;
   insert(record: DekRecord): Promise<void>;
-  /** Crypto-shredding: only a privileged retention job may call this. */
+  /**
+   * Crypto-shredding. This said "only a privileged retention job may call
+   * this" and there is no such role — no `CREATE ROLE` or `GRANT` exists
+   * outside test files, so the sentence described a control rather than
+   * reporting one. M25 ships erasure under the app role by decision
+   * (docs/06, 2026-08-21); what bounds the callers instead is the declared
+   * allowlist in `packages/contracts/test/erasure-domains.spec.ts`, which
+   * stops a second caller arriving in review and does NOT stop a compromised
+   * process at runtime. That difference is docs/03 §6kk.
+   */
   markDestroyed(dekId: string, at: Date): Promise<void>;
 }
 
