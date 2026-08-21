@@ -383,6 +383,25 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
    * test's leftovers is a control that reports on test ORDER.
    */
   it('the executor worklist join admits exactly the live, on-death executor designations', async () => {
+    /*
+     * SEARCH_PATH, and it is not boilerplate.
+     *
+     * Every UPDATE below fires a `<table>_capture_version` trigger, whose body
+     * says `INSERT INTO role_assignments_versions (...)` UNQUALIFIED — resolved
+     * at execution time against the caller's `search_path`, not against the
+     * schema the trigger was created in. The `admin` client connects with the
+     * default path, so those inserts look for the version tables in `public`.
+     *
+     * THIS TEST PASSED LOCALLY AND FAILED IN CI, and the local pass was the
+     * wrong observation: `PG_TEST_URL` here points at the running stack's own
+     * `core` database, which HAS those tables in `public` from the real
+     * migrations. CI's database does not, so the trigger had nowhere to write.
+     * A green run against a polluted database is not evidence about a clean one.
+     *
+     * Restored afterwards so the setting cannot leak into a later test — the
+     * rest of this file fully qualifies its names and must keep doing so.
+     */
+    await admin.query(`SET search_path TO ${schema}`);
     const cases = new CasesRepo();
     const owner = randomUUID();
     const heir = randomUUID();
@@ -489,5 +508,7 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       contactId,
     ]);
     expect(await seen()).toEqual([]);
+
+    await admin.query(`SET search_path TO "$user", public`);
   }, 60_000);
 });

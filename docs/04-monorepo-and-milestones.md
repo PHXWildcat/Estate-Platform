@@ -7358,6 +7358,16 @@ and `estValue` as the decimal string `"450000.00"`. The audit trail records
 `{caseId, count}` — which is docs/03 §5.1 control 5 executing outside a test for
 the first time since M7 built it.
 
+**A GREEN LOCAL INT RUN WAS THE WRONG OBSERVATION.** The executor-join spec
+passed here and failed in CI with `relation "role_assignments_versions" does not
+exist`. Every `<table>_capture_version` trigger inserts into its version table
+UNQUALIFIED, resolved at execution time through `search_path` — and the local
+`PG_TEST_URL` points at the running stack's own `core` database, which has those
+tables in `public` from the real migrations. CI's database does not. Proven by
+running the same reverted code against both: green on the polluted database, red
+on a clean one. A green run against a polluted database is not evidence about a
+clean one.
+
 **An anti-vacuity floor was replaced rather than lowered.** Flipping two routes
 to `consumed` dropped a `>= 20` count below its floor, and editing a number
 down is the ratchet running backwards. The check now asserts the SET of
