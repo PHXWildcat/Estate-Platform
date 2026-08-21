@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  waitForElementToBeRemoved,
+} from '@testing-library/react';
 import {
   graphqlError,
   installGraphqlFetchMock,
@@ -63,10 +69,27 @@ describe('AccountSecurity', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm new address' }));
 
+    // WAITED FOR IN TWO STEPS, and that is a flake fix rather than a style
+    // choice. Between the click and the confirmed banner sit five hops — the
+    // mutation resolves, the page bumps the key, the panel unmounts and
+    // remounts into `Checking your email address…`, its effect re-asks, that
+    // answer renders — and a single `findByText` gives the whole chain ONE
+    // budget. Under a loaded CI runner (this suite's sibling `SecurityPanel`
+    // spec takes 45s there against ~2s here) that budget ran out mid-chain,
+    // with the DOM parked on `Checking your email address…`: the panel had
+    // remounted and was still waiting on the second read. Each hop now has its
+    // own budget, and the stall names WHICH hop it was.
+    //
+    // The stale claim going away is the first hop AND a property this test
+    // already owns — a page that says both at once is worse than one that says
+    // the wrong thing — so waiting on it costs nothing and asserts something.
+    await waitForElementToBeRemoved(() =>
+      screen.queryByText('Your email address hasn’t been confirmed yet.'),
+    );
     expect(await screen.findByText('Your email address is confirmed.')).toBeInTheDocument();
     expect(verificationReads).toBeGreaterThan(readsBefore);
-    // And the stale claim is GONE, not merely joined by a newer one — a page
-    // that says both at once is worse than one that says the wrong thing.
+    // Still gone once the newer sentence is up: removal proved the moment, this
+    // proves the resting state.
     expect(
       screen.queryByText('Your email address hasn’t been confirmed yet.'),
     ).not.toBeInTheDocument();
