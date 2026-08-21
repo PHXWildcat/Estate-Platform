@@ -453,6 +453,101 @@ describe('the executor edge (M23 PR2)', () => {
   });
 });
 
+describe('the checklist edge (M23 PR3)', () => {
+  const TASK = {
+    taskId: '55555555-5555-4555-8555-555555555555',
+    title: 'Obtain certified copies of the death certificate',
+    category: 'administrative',
+    assignedRole: 'executor',
+    dueAt: '2026-09-01T00:00:00.000Z',
+    completedAt: null,
+    // Two fields the service answers with that this edge must not model.
+    completedBy: '66666666-6666-4666-8666-666666666666',
+    courtDocVersionId: '77777777-7777-4777-8777-777777777777',
+  };
+
+  it('carries the bearer and keeps the raw actor id out of the parsed value', async () => {
+    const { client, calls } = clientWith([response(200, [TASK])]);
+    const [parsed] = await client.listTasks(TOKEN, CASE.caseId);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/settlement/cases/${CASE.caseId}/tasks`);
+    expect((calls[0]?.init.headers as Record<string, string>)['authorization']).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    /*
+     * ASSERTED ON THE PARSED VALUE, not on the query: zod strips what it does
+     * not declare, so a resolver added later has no `completedBy` to select
+     * even if it asks. Absence over filter, one layer earlier than the SDL.
+     */
+    expect(parsed).toEqual({
+      taskId: TASK.taskId,
+      title: TASK.title,
+      category: TASK.category,
+      assignedRole: TASK.assignedRole,
+      dueAt: TASK.dueAt,
+      completedAt: null,
+    });
+    // Anti-vacuity: the fixture really did carry both, so their absence above
+    // is a strip rather than a fixture that never had them.
+    expect(Object.keys(TASK)).toContain('completedBy');
+    expect(Object.keys(TASK)).toContain('courtDocVersionId');
+  });
+
+  it('sends the boolean BOTH ways and never a court-document id', async () => {
+    const { client, calls } = clientWith([
+      response(200, { ...TASK, completedAt: '2026-08-20T00:00:00.000Z' }),
+      response(200, TASK),
+    ]);
+    await client.completeTask(TOKEN, TASK.taskId, true);
+    await client.completeTask(TOKEN, TASK.taskId, false);
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/v1/settlement/tasks/${TASK.taskId}/completion`,
+      `${BASE}/v1/settlement/tasks/${TASK.taskId}/completion`,
+    ]);
+    /*
+     * The UNTICK is the half that matters. Completing and correcting are one
+     * route with a boolean, so a surface cannot grow a path to tick that has
+     * no matching path to untick — an executor's honest mistake stays fixable.
+     */
+    const bodies = calls.map((c) => (c.init.body as string | undefined) ?? '');
+    expect(bodies.map((body) => JSON.parse(body) as unknown)).toEqual([
+      { completed: true },
+      { completed: false },
+    ]);
+    expect(bodies[0]).not.toContain('courtDocVersionId');
+  });
+
+  it('tells "the case is no longer verified" apart from an outage', async () => {
+    const { client } = clientWith([response(409, { error: 'case_not_verified' })]);
+    // Different remedies, so never the same token: one is "this case closed",
+    // whose remedy is nothing, and the other is "try again".
+    await expect(client.completeTask(TOKEN, TASK.taskId, true)).rejects.toMatchObject({
+      extensions: { code: 'CASE_NOT_VERIFIED' },
+    });
+  });
+
+  it('answers a UNIFORM not-found on both verbs, and never quotes the service', async () => {
+    const { client } = clientWith([
+      response(404, { error: 'not_found', detail: 'settlement_cases row 42 missing' }),
+      response(404, { error: 'not_found', detail: 'settlement_cases row 42 missing' }),
+    ]);
+    for (const call of [
+      () => client.listTasks(TOKEN, CASE.caseId),
+      () => client.completeTask(TOKEN, TASK.taskId, true),
+    ]) {
+      const err = await call().catch((e: unknown) => e);
+      expect(err).toMatchObject({ extensions: { code: 'NOT_FOUND' } });
+      expect(JSON.stringify(err)).not.toContain('settlement_cases');
+    }
+  });
+
+  it('refuses a malformed task rather than half-trusting it', async () => {
+    const { client } = clientWith([response(200, [{ ...TASK, taskId: '' }])]);
+    await expect(client.listTasks(TOKEN, CASE.caseId)).rejects.toThrow(
+      'settlement response failed validation',
+    );
+  });
+});
+
 describe('what the client refuses to carry', () => {
   it('parses evidence as opaque and keeps ids out of the parsed value', async () => {
     const { client } = clientWith([

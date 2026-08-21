@@ -85,6 +85,35 @@ export function reportSourceLabel(reportSource: string): string {
   }
 }
 
+/**
+ * A CALENDAR DAY, rendered in the day it actually names.
+ *
+ * FOUND BY DRIVING THE APP (M23 PR3). `settlement_tasks.due_at` is a Postgres
+ * `date` — a calendar day with no time and no zone — which the service widens
+ * to an instant at UTC midnight before it reaches the wire. Handing that to
+ * `formatDate` below renders it in the READER's zone, so a due date stored as
+ * the 3rd showed as "September 2" to anyone west of UTC. Confirmed in the
+ * browser at `America/Phoenix`: the wire said `2026-09-03T00:00:00.000Z` and
+ * the screen said September 2.
+ *
+ * `formatDate` is NOT changed to match. The two functions answer different
+ * questions and both answers are right: `verifiedAt` and `waitingPeriodEnds`
+ * are genuine instants, and a reader in Phoenix should see those in Phoenix
+ * time. A calendar day has no instant to convert.
+ */
+export function formatCalendarDate(iso: string | null): string | null {
+  const parsed = iso === null ? Number.NaN : Date.parse(iso);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return new Date(parsed).toLocaleDateString(undefined, {
+    timeZone: 'UTC',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
 /** A wire timestamp as a plain date, or null when it is absent or unparseable. */
 export function formatDate(iso: string | null): string | null {
   if (iso === null) {

@@ -496,14 +496,16 @@ const EXEMPT_PROVIDER_INTAKE =
   'a person\u2019s browser, which is why `reportProvider` is deliberately absent from the operator ' +
   'audience list. No single source triggers anything — mandatory human review follows it.';
 const EXEMPT_EXECUTOR_CASEWORK =
-  'The executor’s CHECKLIST and the distribution ladder — procedural state about an estate’s ' +
-  'administration, which needs no access stage at all, and the slice after M23 PR2’s. That PR ' +
-  'built the front door: the worklist, the stage ladder, and the inventory behind an approved ' +
-  'INVENTORY rung. These three are the work an executor does once inside. The reason no longer ' +
-  'cites docs/04’s "3 routes", which was wrong — count them from the EXEMPT_EXECUTOR_* entries ' +
-  'here instead. The operator console deliberately does not carry them: an executor is a ' +
-  'grieving family member, not a platform operator, and the two surfaces have different ' +
-  'ceremonies.';
+  'The distribution ladder \u2014 recording what an estate paid out and moving it through ' +
+  'approval. NARROWED TWICE NOW. M23 PR2 took the stage ladder and the inventory out of this ' +
+  'reason; M23 PR3 took the CHECKLIST out, and the checklist was the half this constant was ' +
+  'named for. What is left is the money, which is M23 PR4\u2019s slice and the last of it: when ' +
+  'the two distribution routes find their consumer, delete this constant rather than leave it ' +
+  'for the next milestone. The reason no longer cites docs/04\u2019s "3 routes", which was ' +
+  'wrong \u2014 count them from the entries that name this constant instead. The operator ' +
+  'console deliberately does not carry them: an executor is a grieving family member, not a ' +
+  'platform operator, and the two surfaces have different ceremonies.';
+
 const EXEMPT_PLAID_UI =
   'M3 PR2 shipped the Plaid isolate deliberately backend-only (decision log 2026-07-21); the ' +
   'account-linking UI is a later milestone and the plaid e2e drives link/sync/revoke end to end.';
@@ -769,8 +771,18 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement POST /v1/settlement/cases/:caseId/verify': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/cases/:caseId/close': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/cases/:caseId/timeline': consumed(`${OW}/server.ts`, OW_CLIENT),
-  'settlement GET /v1/settlement/cases/:caseId/tasks': { exempt: EXEMPT_EXECUTOR_CASEWORK },
-  'settlement POST /v1/settlement/tasks/:taskId/completion': { exempt: EXEMPT_EXECUTOR_CASEWORK },
+  // THE CHECKLIST, CONSUMED (M23 PR3). Both halves in one change: reading the
+  // list and ticking an item are the same surface, and shipping the read alone
+  // would have left a mutation nobody calls — the gap this fence exists for.
+  //
+  // NEITHER IS ON THE CONSOLE, and that is not an omission. A task is
+  // procedural state about an administration, so it needs no access stage; it
+  // is also nobody's business but the estate's, so an operator has no reason to
+  // read one and no route to tick one.
+  'settlement GET /v1/settlement/cases/:caseId/tasks': consumed(`${BFF}/settlement-client.ts`),
+  'settlement POST /v1/settlement/tasks/:taskId/completion': consumed(
+    `${BFF}/settlement-client.ts`,
+  ),
   // TWO SURFACES, and the route was built for both: `assertCaseVisible` admits
   // the operator console AND the estate's executor. M23 PR2 added the second.
   'settlement GET /v1/settlement/cases/:caseId/stages': consumed(

@@ -195,6 +195,26 @@ export interface EstateAccessStageInfo {
   decidedAt: string | null;
 }
 
+/**
+ * One item on the estate's administration checklist (M23 PR3).
+ *
+ * NO `completedBy`, because the BFF has no such field: settlement answers it
+ * with a raw user UUID, which tells a reader nothing they can act on.
+ *
+ * `completedAt` is the WHOLE of "done" — there is no separate boolean, so a
+ * row cannot be marked complete with no time on it, or timed with no mark.
+ */
+export interface EstateTaskInfo {
+  taskId: string;
+  title: string;
+  /** 'legal' | 'financial' | 'administrative' | 'notification', or null. */
+  category: string | null;
+  /** 'executor' | 'attorney' | 'cpa', or null. A step aimed elsewhere is still shown. */
+  assignedRole: string | null;
+  dueAt: string | null;
+  completedAt: string | null;
+}
+
 export interface LinkedEstateInfo {
   ownerUserId: string;
   contactId: string;
@@ -835,6 +855,14 @@ interface OperationSignatures {
   RequestEstateAccess: {
     variables: { caseId: string; stage: AccessStage };
     data: { requestEstateAccess: EstateAccessStageInfo };
+  };
+  EstateTasks: {
+    variables: { caseId: string };
+    data: { estateTasks: EstateTaskInfo[] };
+  };
+  SetEstateTaskCompletion: {
+    variables: { taskId: string; completed: boolean };
+    data: { setEstateTaskCompletion: EstateTaskInfo };
   };
   SetSettlementWaitingPeriod: {
     variables: { days: number };
