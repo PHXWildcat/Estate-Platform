@@ -182,11 +182,10 @@ export class SettlementAdminService {
   ): Promise<StageDto> {
     const now = this.clock();
     const row = await this.db.withTransaction(actor, async (tx) => {
-      const kase = await this.requireAdministrableCase(tx, caseId);
-      if (!(await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))) {
-        // Not the estate's executor: uniform 403, no hint about the case.
-        throw new ForbiddenException({ error: 'forbidden' });
-      }
+      // Authority and location in one step, answering a uniform 404 to anyone
+      // without it — see `administrableCaseFor`. The 403 that used to live here
+      // was the last of three distinguishable answers this route gave.
+      await this.administrableCaseFor(tx, caseId, actor);
       const existing = await this.stages.findLive(tx, caseId, stage);
       if (existing) {
         throw new ConflictException({ error: 'stage_exists' });
@@ -376,12 +375,12 @@ export class SettlementAdminService {
     const now = this.clock();
     const row = await this.db.withTransaction(actor, async (tx) => {
       const locked = await this.tasks.lockById(tx, taskId);
-      if (!locked) {
+      // A missing task and a task on somebody else's estate answer the SAME
+      // 404 — `administrableCaseFor` handles the null, so there is no early
+      // return here that would answer before authority is established.
+      await this.administrableCaseFor(tx, locked?.case_id ?? null, actor);
+      if (locked === null) {
         throw new NotFoundException({ error: 'not_found' });
-      }
-      const kase = await this.requireAdministrableCase(tx, locked.case_id);
-      if (!(await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))) {
-        throw new ForbiddenException({ error: 'forbidden' });
       }
       await this.tasks.setCompletion(
         tx,
@@ -416,8 +415,20 @@ export class SettlementAdminService {
     },
   ): Promise<DistributionDto> {
     // Resolve the estate BEFORE the transaction so the KMS round trip for the
-    // DEK does not sit inside an open one.
-    const decedent = await this.requireDecedentFor(caseId);
+    // DEK does not sit inside an open one — and AUTHORISE before that round
+    // trip happens at all (M23 PR1). `requireDecedentFor` answered 404-or-not
+    // to anyone, and then this method sealed a caller-supplied plaintext under
+    // the DECEDENT's DEK before ever asking whether the caller was the estate's
+    // executor: a stranger holding a case id could spend a KMS operation on
+    // somebody else's estate key. Measured, not inferred — the harness recorded
+    // `{userId: <decedent>, field: 'distributions.amount', plaintext: '1000.00'}`
+    // sealed on behalf of an account that was refused a moment later.
+    //
+    // This pre-check gates the SEAL and nothing else. The authority that gates
+    // the WRITE is re-established under the row lock below, because a
+    // pre-transaction read and the transaction it guards are separated by every
+    // commit that lands between them.
+    const decedent = await this.requireAdministeredDecedentFor(caseId, actor);
     let amountCt: Buffer | null = null;
     let dekId: string | null = null;
     if (input.amount !== null) {
@@ -434,10 +445,7 @@ export class SettlementAdminService {
     }
 
     const row = await this.db.withTransaction(actor, async (tx) => {
-      const kase = await this.requireAdministrableCase(tx, caseId);
-      if (!(await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))) {
-        throw new ForbiddenException({ error: 'forbidden' });
-      }
+      const kase = await this.administrableCaseFor(tx, caseId, actor);
       const created = await this.distributions.insert(tx, {
         caseId,
         assetId: input.assetId ?? null,
@@ -523,8 +531,16 @@ export class SettlementAdminService {
       // distribution UUID was therefore enough to track an estate's settlement
       // progress after losing authority over it — a former or replaced executor
       // is the concrete holder, and the id is a v4 UUID so this was never blind
-      // enumeration. Every sibling verb gates first; this one looked the row up
-      // first, and `approveDistribution` twenty lines above does not.
+      // enumeration.
+      //
+      // THIS COMMENT ONCE CLAIMED "every sibling verb gates first". It was
+      // false when written: `requestStage`, `completeTask` and
+      // `recordDistribution` all looked the row up first too, by way of
+      // `requireAdministrableCase`, and went on leaking for two milestones
+      // behind a sentence asserting they did not. M23 PR1 fixed all three
+      // through `administrableCaseFor`. A rule applied to one member of a
+      // category is a rule half-applied — and prose that asserts a fact about
+      // the rest of the file is a test nobody runs.
       //
       // The lookup CANNOT move: the executor arm of the authority test needs
       // the case to know whose estate it is. So the refusals are what get
@@ -750,6 +766,13 @@ export class SettlementAdminService {
   }
 
   /** The estate a case belongs to, for key selection outside a transaction. */
+  /**
+   * Whose estate this case settles, for an ALREADY-AUTHORISED operator path.
+   *
+   * `revokeStage` is its only caller and reaches it after `gate.assertIn`, at a
+   * point where the case id came from a row it just locked rather than from the
+   * caller. The executor-facing variant below is the one that authorises.
+   */
   private async requireDecedentFor(caseId: string): Promise<string> {
     const kase = await this.cases.findById(this.db, caseId);
     if (!kase) {
@@ -758,9 +781,88 @@ export class SettlementAdminService {
     return kase.decedent_user_id;
   }
 
+  /**
+   * Whose estate this case settles — answered ONLY to its executor.
+   *
+   * Was `requireDecedentFor`, which answered to anybody and existed purely to
+   * name the DEK subject for an encrypt that happens outside the transaction.
+   * That made an unauthorised caller's refusal cost a KMS operation on the
+   * decedent's key. Same uniform 404 as everywhere else in this file.
+   */
+  private async requireAdministeredDecedentFor(caseId: string, actor: string): Promise<string> {
+    const kase = await this.cases.findById(this.db, caseId);
+    const authorised =
+      kase !== null && (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor));
+    if (kase === null || !authorised) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    return kase.decedent_user_id;
+  }
+
+  /**
+   * Check a case is administrable, for a caller whose authority is ALREADY
+   * ESTABLISHED.
+   *
+   * Every remaining caller is an operator path that has passed
+   * `OperatorGate.assertIn` before reaching this line, so answering
+   * `case_not_verified` here tells them nothing they were not entitled to
+   * know. THAT PRECONDITION IS THE WHOLE CONTRACT: this helper looks safe and
+   * is not, which is how `requestStage`, `completeTask` and
+   * `recordDistribution` came to leak — they called it FIRST and tested
+   * authority afterwards. An executor-facing caller wants
+   * `administrableCaseFor`, which establishes authority itself.
+   */
   private async requireAdministrableCase(tx: Queryable, caseId: string): Promise<CaseRow> {
     const locked = await this.cases.lockById(tx, caseId);
     if (!locked) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    if (!ADMINISTRABLE.includes(locked.status)) {
+      throw new ConflictException({ error: 'case_not_verified' });
+    }
+    return locked;
+  }
+
+  /**
+   * Locate a case, ESTABLISH AUTHORITY OVER IT, and only then say anything
+   * about it (M23 PR1).
+   *
+   * This used to be `requireAdministrableCase`, which answered 404 for an
+   * unknown id and 409 `case_not_verified` for a real pre-verification case
+   * BEFORE its callers tested whether the caller was the estate's executor —
+   * so `requestStage` refused three distinguishable ways and a caller holding
+   * a case UUID with no authority over it learned both that the case was real
+   * and roughly what state it was in. Case ids are v4 UUIDs, so this was never
+   * blind enumeration: the concrete holder is a former or replaced executor,
+   * or the reporter, and what they could track is an estate's settlement
+   * progress after losing any right to it.
+   *
+   * M21 PR4d fixed exactly this on `setDistributionStatus` and said in a
+   * comment that "every sibling verb gates first". That was not true —
+   * `requestStage`, `completeTask` and `recordDistribution` all looked the row
+   * up first — and the prose has been corrected where it sits. Fixing one
+   * member of a category is fixing it half.
+   *
+   * WHAT IS DELIBERATELY STILL SPECIFIC: `case_not_verified`, once authority
+   * is established. It is reachable only by this estate's executor, their
+   * remedy genuinely differs from a 404's, and fail-closed means DE-ESCALATE
+   * rather than withhold the answer from the person entitled to it.
+   *
+   * NOT `assertCaseVisible`: that admits the decedent and the reporter too, and
+   * neither of them may administer an estate. Same refusal shape, narrower
+   * authority — PR4d's own distinction.
+   */
+  private async administrableCaseFor(
+    tx: Queryable,
+    caseId: string | null,
+    actor: string,
+  ): Promise<CaseRow> {
+    const locked = caseId === null ? null : await this.cases.lockById(tx, caseId);
+    const authorised =
+      locked !== null && (await this.coreReads.isExecutorOf(locked.decedent_user_id, actor));
+    if (locked === null || !authorised) {
+      // The SAME answer an unknown id gets. A caller without authority learns
+      // nothing about whether the id names anything.
       throw new NotFoundException({ error: 'not_found' });
     }
     if (!ADMINISTRABLE.includes(locked.status)) {

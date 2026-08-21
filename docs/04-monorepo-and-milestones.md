@@ -6836,8 +6836,8 @@ decision booked as progress is how a queue stays untouched.**
 | # | Milestone | Status |
 |---|---|---|
 | M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
-| M22 | Settlement reporter/owner surface | Complete backend; the unconsumed routes are the `EXEMPT_SETTLEMENT_REPORTING` entries in `packages/auth-guard/test/route-consumers.spec.ts` — PR3 shipped the owner's half |
-| M23 | Executor surface | 3 routes; §5.1 control 5 has never executed outside a test |
+| M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
+| M23 | Executor surface | In progress. EIGHT routes, not the 3 this table said — count them from `EXEMPT_EXECUTOR_*` in `packages/auth-guard/test/route-consumers.spec.ts` rather than from here. §5.1 control 5 has never executed outside a test |
 | M24 | Dashboard, computable subset | **Flip-trigger: jumps to the front on a demo date or a signed customer** |
 | M25 | Crypto-shredding execution path | `destroyDek` has no production caller; must precede any new encrypted data class |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
@@ -7172,3 +7172,73 @@ Five mutations, each reddening its own named assertion: the review step skipped,
 the contact id trusted instead of resolved, the join made an inner join,
 `invalid_transition` given back its default, and the attach offered on a case
 settlement would refuse.
+
+### M23 PR1 — one refusal for the three executor write verbs (2026-08-20)
+
+No surface. Settlement only, and shipped before the executor screens rather than
+with them, because the screens would have been built on top of it.
+
+**M21 PR4d fixed this on one verb and asserted in a comment that the others did
+not need it.** The comment read *"Every sibling verb gates first; this one
+looked the row up first"*. That sentence was false when it was written:
+`requestStage`, `completeTask` and `recordDistribution` all reached
+`requireAdministrableCase` before testing authority, and went on leaking for two
+milestones behind prose asserting they did not. A comment that justifies an
+omission by asserting a fact about the rest of the tree is a test nobody runs —
+so the claim is gone and the mechanism is a helper all three now call.
+
+**What leaked.** A caller holding a case UUID got three distinguishable answers
+from `requestStage`: 404 for an unknown id, 409 `case_not_verified` for a real
+case not yet administrable, 403 for a real administrable case they had no
+authority over. `completeTask` and `recordDistribution` split two ways on the
+same ladder, keyed on a task and a case id. Case ids are v4 UUIDs, so this was
+never blind enumeration — the concrete holder is somebody who was GIVEN the id
+and then lost authority: a replaced or former executor, or a reporter who is not
+the executor. What it bought them is an estate's settlement progress, read from
+outside, after every right to it had ended.
+
+**`administrableCaseFor(tx, caseId | null, actor)`** locates the row, tests
+authority, and only then says anything. It takes a nullable id so `completeTask`
+can hand it `locked?.case_id ?? null` — a missing task and a task on somebody
+else's estate leave through the same line, with no early return above it that
+would answer first.
+
+**`case_not_verified` deliberately survives, for the estate's own executor.**
+Fail closed means DE-ESCALATE, not withhold: their remedy genuinely differs from
+a 404's, and they are the one party entitled to the distinction. Not
+`assertCaseVisible`, which admits the decedent and the reporter — neither may
+administer an estate. Same refusal shape, narrower authority; PR4d's own
+distinction.
+
+**The old helper stays, with its precondition written down.** Three operator
+paths pass `OperatorGate.assertIn` before reaching it, so `case_not_verified`
+tells them nothing they were not entitled to know. Forcing six callers through
+one shape would have made the operator paths pay for a check they already
+passed. The docstring says what the contract is and that *this helper looks safe
+and is not* — it is how all three verbs came to leak.
+
+**`recordDistribution` was also spending the decedent's DEK on strangers.** It
+seals the amount OUTSIDE the transaction, which is right — a KMS round trip does
+not belong inside an open one — but it did so before asking who the caller was.
+A stranger holding a case id could therefore drive a KMS operation on the
+DECEDENT's key with a plaintext of their choosing. Measured, not inferred: the
+crypto double recorded `{userId: <decedent>, plaintext: '1000.00'}` for an
+account refused a moment later. `requireAdministeredDecedentFor` now authorises
+before the seal, and the in-transaction check STAYS — a pre-transaction read and
+the transaction it guards are separated by every commit that lands between them.
+
+**Five mutations; the fifth is why this section is longer than the fix.**
+Reverting the in-transaction gate left all 43 tests green, because every test
+authorised once and nothing moved underneath it. A survivor means the test is
+weak, the mutation is unfaithful, or the change does not matter — this was the
+first. `re-tests authority UNDER THE LOCK, not only before the seal` revokes the
+executor's designation between the two reads and now reddens both directions:
+drop the pre-transaction gate and it fails on the call count, drop the locked
+one and it fails on the write landing.
+
+The e2e proves it through the real stack, with the reporter's own 201 as the
+anti-vacuity control — `seedEstate` names them executor, so their success is
+what distinguishes two refusals from two mistyped paths. With the fix reverted
+and `dist` rebuilt, the outsider's request answers 403 where the fence demands
+404.
+
