@@ -17,6 +17,9 @@ import {
 } from '@estate/notifications-client';
 import type { PoolConfig } from 'pg';
 import { AuthController } from './auth.controller';
+import { ErasureController } from './erasure.controller';
+import { ErasureRepo } from './erasure.repo';
+import { ErasureService } from './erasure.service';
 import { AuthEventsRepo } from './auth-events.repo';
 import { EmailVerificationRepo } from './email-verification.repo';
 import { EmailVerificationService } from './email-verification.service';
@@ -73,8 +76,10 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
 }
 
 @Module({
-  controllers: [AuthController, SettlementLockController],
+  controllers: [AuthController, ErasureController, SettlementLockController],
   providers: [
+    ErasureRepo,
+    ErasureService,
     { provide: CONFIG, useFactory: (): IdentityConfig => loadConfig() },
     { provide: CLOCK, useValue: (): Date => new Date() },
     {

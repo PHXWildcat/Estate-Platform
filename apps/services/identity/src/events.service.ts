@@ -754,4 +754,60 @@ export class EventsService {
       detail: { reason },
     });
   }
+
+  /**
+   * M25 PR2 — the owner asked for their account to be erased.
+   *
+   * AUDIT ONLY, NO DOMAIN EVENT, and that is a decision rather than an
+   * omission. The M9/M13 rule is that a topic gets a payload when something
+   * consumes one, and nothing does: the fan-out to the other seven DEK domains
+   * is PR3's, and publishing a bus event now would be a capability with no
+   * caller — announcing an intent to destroy data to consumers that do not
+   * exist. PR3 decides its own transport with its own consumers.
+   *
+   * Ids only. There is no PII in an erasure request, which is the one mercy of
+   * the subject matter.
+   */
+  async accountErasureRequested(
+    userId: string,
+    sessionId: string | null,
+    requestId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.account.erasure_requested',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: { requestId },
+    });
+  }
+
+  /**
+   * M25 PR2 — the owner withdrew the request.
+   *
+   * NOT THE MIRROR OF THE ONE ABOVE, and the asymmetry is the control. The
+   * request is step-up gated; this is not, because the protective action must
+   * never be harder than the permissive one. A reader tallying the two as a
+   * matched pair would conclude the ceremony is symmetric, and it is
+   * deliberately not.
+   */
+  async accountErasureCancelled(
+    userId: string,
+    sessionId: string | null,
+    requestId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.account.erasure_cancelled',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: { requestId },
+    });
+  }
 }

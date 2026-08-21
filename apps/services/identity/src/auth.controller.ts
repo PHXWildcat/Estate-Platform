@@ -27,7 +27,7 @@ import { HandoffService, type MintedHandoff } from './handoff.service';
 import { PasswordResetService } from './password-reset.service';
 import { EmailChangeService } from './email-change.service';
 import { AllowSessionAudiences } from './session-audience.decorator';
-import { SessionGuard, type AuthedRequest, type SessionContext } from './session.guard';
+import { requireAuth, SessionGuard, type AuthedRequest } from './session.guard';
 import { StepUpGuard } from './stepup.guard';
 import { WebAuthnService } from './webauthn.service';
 
@@ -183,15 +183,6 @@ function parseBody<T extends z.ZodTypeAny>(schema: T, body: unknown): z.infer<T>
     throw new BadRequestException({ error: 'invalid_request' });
   }
   return parsed.data as z.infer<T>;
-}
-
-function requireAuth(request: AuthedRequest): SessionContext {
-  const auth = request.auth;
-  if (!auth) {
-    // Unreachable behind SessionGuard; guards against wiring mistakes.
-    throw new BadRequestException({ error: 'invalid_request' });
-  }
-  return auth;
 }
 
 @Controller('v1/auth')
