@@ -7704,12 +7704,15 @@ and no `markDestroyed`, turns it red. Both proved by mutation.
 - **PR0 — the design delta and the erasure fence. SHIPPED** (docs plus one
   fence, no runtime code; the M21 PR0 shape). This section, docs/03 §6kk, the
   fence, and the two corrected comments below.
-- **PR1 — the version-capture redaction, and it goes FIRST.** `users.email_bidx`
-  out of the `users` capture image, plus an answer on
-  `document_versions.content_sha256`. Ordering is the control, exactly as
-  migration 008 argued for `password_hash`: `CREATE OR REPLACE FUNCTION`
-  affects only future captures, so this ships in or before the first
-  `destroyDek` caller or no later migration can retract what erasure wrote.
+- **PR1 — the version-capture redaction, and it goes FIRST. SHIPPED** (record
+  below), **and it is THREE tables, not one.** This line said
+  `users.email_bidx`; deriving the category found `contacts` and `plaid_items`
+  too, and the member this line missed is the sharper one. Ordering is the
+  control, exactly as migration 008 argued for `password_hash`:
+  `CREATE OR REPLACE FUNCTION` affects only future captures, so this ships in or
+  before the first `destroyDek` caller or no later migration can retract what
+  erasure wrote. The scope change is recorded rather than silently absorbed —
+  the M21 PR2 rule that a plan which quietly re-aims is a plan nobody can audit.
 - **PR2 — the erasure record and the driver.** Request, refusal set, per-domain
   progress, resumable; the `SettlementWorkflowDriver` shape (the approved
   Temporal deviation). NO DEK destroyed — an inert terminal step, reviewable on
@@ -7783,3 +7786,58 @@ nobody runs.
 it raises `MigrationDriftError` and blocks the next migration. The correction
 lives in docs/03 §6kk and in PR1's new migration, which is where the redaction
 ships anyway.
+
+#### M25 PR1 — the capture stops keeping blind indexes (2026-08-21)
+
+**PR0's residual named one column; the category has three.** `users.email_bidx`
+was the one the erasure path walked into. Deriving the question from the schema
+— every table with a `*_bidx` AND a `<table>_versions` shadow — found `users`
+(identity), `contacts` (profile) and `plaid_items` (plaid). Three migrations,
+one per service, each replacing that table's capture function.
+
+**AND THE MISSED MEMBER IS THE SHARPER ONE.** `contacts.email_bidx` indexes a
+LIVING THIRD PARTY's address rather than the account holder's, so the severity
+ordering is the reverse of the discovery ordering. That is the argument for
+deriving a category instead of fixing the instance in front of you, and it is
+the second time in two PRs that a derived set came back bigger than the sentence
+describing it.
+
+**THE REDACTION IS DERIVED FROM THE ROW**, not from a column name: each function
+drops every key in its own captured image ending in `_bidx`. A version naming
+`email_bidx` literally would pass a naive test and leave the next blind index on
+that table captured, so the fence asserts the mechanism reads
+`jsonb_object_keys(image)` and REFUSES a hand-named key — the weaker fix cannot
+land wearing the stronger one's face.
+
+**TWO FENCES, NEITHER SUFFICIENT ALONE, AND EACH SAYS WHICH HALF IT PROVES.**
+`packages/contracts/test/version-capture-redaction.spec.ts` reads the migrations
+and proves a redaction was WRITTEN; it cannot see whether it was applied.
+`blindIndexCaptureGaps` (`@estate/db`, called by identity, profile and plaid on
+their own migrated schemas) asks the DATABASE what function it is running via
+`pg_get_functiondef`, derived from `information_schema`. It lives in one package
+with three thin call sites on the `@estate/config/ci-guard` precedent — eleven
+packages once carried a drifted copy of that rule while nothing tested it.
+
+**PROVED BY EXECUTION, and the mutations were targeted.** Identity's
+`password-change.int.spec.ts` drives a real service UPDATE and reads the image
+back: the key is gone, NO key ending in `_bidx` survives under any name, and the
+seeded index VALUE appears nowhere in the serialized image. Removing migration
+013 reddens exactly that assertion while the `password_hash` test beside it
+stays GREEN — the positive control proving the mutation was aimed and migration
+008 still works. Removing profile's 006 makes `blindIndexCaptureGaps` name
+`contacts` with `reason: 'no_redaction'`. The `@estate/db` int suite carries its
+own NEGATIVE control: a `legacy` table deliberately left on the pre-M25 capture
+body, which the detector must name while clearing the redacting one — a detector
+that sees nothing and a schema with nothing to see are otherwise identical.
+
+**THE POSITIVE CONTROL FOR THE CATEGORY is `document_search_tokens`**: a blind
+index with no version shadow, which must be SEEN by the column scan and EXCLUDED
+by the shadow predicate. It is also the residual — its tokens derive from
+content the DEK destruction erases, nothing purges them, and that is PR3's.
+
+**A THIRD RETENTION-JOB COMMENT, after PR0 said there were two.**
+`documents.service.ts`'s `softDelete` docstring claimed "the retention job owns
+crypto-shredding"; corrected. A fourth is in
+`documents/migrations/002_document_vault.sql`, applied and checksummed, so it is
+recorded in docs/03 §6ll rather than edited. PR0's own count was one short,
+which is the defect it was written about.

@@ -499,10 +499,18 @@ export class DocumentsService {
   }
 
   /**
-   * Soft delete (docs/02: no hard deletes; the retention job owns
-   * crypto-shredding). Step-up gated at the controller — deletion requests
-   * are a mandatory step-up action (docs/01 §5). Legal hold wins over the
-   * owner: a held document cannot be deleted by anyone through the API.
+   * Soft delete (docs/02: no hard deletes). Step-up gated at the controller —
+   * deletion requests are a mandatory step-up action (docs/01 §5). Legal hold
+   * wins over the owner: a held document cannot be deleted by anyone through
+   * the API.
+   *
+   * THIS SAID "the retention job owns crypto-shredding" AND THERE IS NO
+   * RETENTION JOB — the third comment in the repo to describe one, after
+   * docs/02 §conventions and `packages/crypto/src/dek.ts` (both corrected in
+   * M25 PR0, which counted two and was itself one short). Crypto-shredding is
+   * owned by the M25 erasure path, which is owner-initiated and runs under the
+   * app role; `destroyDek` still has no production caller until M25 PR3.
+   * Soft delete does not shred anything and never did.
    */
   async softDelete(actor: string, documentId: string): Promise<void> {
     await this.db.withTransaction(actor, async (tx) => {

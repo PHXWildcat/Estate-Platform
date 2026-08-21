@@ -4693,3 +4693,94 @@ here and in PR1's new migration.
   administer is not a capability to add casually — but it is a choice, and it is
   recorded here so it is not mistaken for an oversight when someone asks why
   erasure has no estate path.
+
+## 6ll. Threat-model delta — M25 PR1, the capture stops keeping blind indexes (2026-08-21)
+
+**PR0 recorded one column and the category has three.** §6kk named
+`users.email_bidx` — the one the erasure path walked into. Deriving the same
+question from the schema instead of remembering it found THREE tables carrying
+both a `*_bidx` and a `<table>_versions` shadow that captures it, in three
+different services: `users` (identity), `contacts` (profile) and `plaid_items`
+(plaid). A rule applied to one member of a category is a rule half-applied, and
+this is the second time in two PRs that deriving a set found it bigger than the
+sentence describing it.
+
+**AND THE MEMBER PR0 MISSED IS THE SHARPER ONE.** `users.email_bidx` indexes the
+account holder's own address. `contacts.email_bidx` indexes a LIVING THIRD
+PARTY's — the attorney, the beneficiary, the family member the owner named.
+Erasing an account should not leave a searchable index of the people that
+account knew, and those people never had a say in the account existing. The
+severity ordering is the reverse of the discovery ordering, which is the argument
+for deriving categories rather than fixing the instance in front of you.
+
+**THE REDACTION IS DERIVED FROM THE ROW.** Each capture function drops every key
+in its own image ending in `_bidx`, rather than naming a column. A capture that
+named `email_bidx` literally would pass a test and leave the NEXT blind index on
+that table captured; the fence asserts the mechanism reads
+`jsonb_object_keys(image)` and REFUSES a hand-named key, so the weaker fix
+cannot land looking like the stronger one.
+
+**TWO HALVES, AND NEITHER IS THE WHOLE.** The static fence
+(`packages/contracts/test/version-capture-redaction.spec.ts`) reads the
+migrations and proves a redaction was WRITTEN — it cannot see whether it was
+applied. `blindIndexCaptureGaps` in `@estate/db` asks the RUNNING DATABASE what
+function it is executing, via `pg_get_functiondef`, derived from
+`information_schema`; identity, profile and plaid each call it on their own
+migrated schema. The end-to-end proof is identity's `password-change.int.spec.ts`,
+which drives a real service UPDATE and reads the captured image back — asserting
+the key is gone, that no key ending in `_bidx` survives under any name, and that
+the seeded index VALUE does not appear anywhere in the serialized image.
+
+**THE POSITIVE CONTROL IS `document_search_tokens`**, and it is what makes the
+shadow predicate a predicate. It carries `token_bidx` — per-user HMACs of
+document CONTENT, the most sensitive blind index in the repo — and deliberately
+has no version shadow, being a rebuildable projection. It must be SEEN by the
+column scan and EXCLUDED by the shadow test. A predicate matching everything
+sweeps it in; one matching nothing empties the category and passes.
+
+**A THIRD COMMENT DESCRIBED THE RETENTION JOB.** PR0 corrected docs/02
+§conventions and `packages/crypto/src/dek.ts` and said there were two. There were
+three: `documents.service.ts`'s `softDelete` docstring said "the retention job
+owns crypto-shredding". Corrected here. A fourth sits in
+`documents/migrations/002_document_vault.sql`, which is applied and checksummed
+and cannot be edited — recorded below rather than left to be rediscovered.
+
+### Residuals
+
+- **[ACCEPTED]** *`document_versions.content_sha256` stays, and the shred does
+  not reach it.* It is a hash of the PLAINTEXT in an append-only table, so it
+  lets someone holding a candidate document confirm an erased estate once held
+  those exact bytes. Kept for three reasons: it is the disaster-recovery
+  integrity check (decrypt-then-hash, rebuild-and-diff), `document_versions` is
+  append-only by design so the no-hard-deletes rule forbids removing the rows,
+  and the attack needs the exact plaintext — a far smaller class than an email
+  HMAC, where the candidate space is guessable. What would change this answer is
+  a rebuild check that does not need a plaintext hash; until one exists the cost
+  of removing it is a real capability for a marginal gain.
+- **[OWNER: M25]** *`document_search_tokens` is not purged by anything.* Its
+  `token_bidx` rows are HMACs derived from document content — the DEK
+  destruction erases the content and leaves the tokens, which is the same defect
+  class as the blind indexes this PR closed and is NOT closed by it. The table's
+  own comment says legal erasure "purges a document's rows via the privileged
+  retention job", which is the fourth description of a job that does not exist
+  and sits in an applied, checksummed migration that cannot be corrected in
+  place. PR3 owns the purge.
+- **[OWNER: M25]** *What the LIVE blind-index column holds after an erasure is
+  undecided, and that category is WIDER than this PR's.* This PR stops the
+  CAPTURE; it does not say what erasure writes to `users.email_bidx`, which is
+  `NOT NULL` with a unique index partial on `deleted_at IS NULL`.
+  `contacts.email_bidx` is already nullable with a matching partial index, so
+  the two do not need the same answer — and PR3 must state which it takes rather
+  than letting the column types decide for it. **`email_changes.new_email_bidx`
+  belongs to this question too and to no fence here**: it is `NOT NULL` in a
+  table carrying `REVOKE DELETE`, so its rows persist without being a version
+  shadow at all. The capture category and the live-column category are not the
+  same set, and reading a green run of the PR1 fences as covering both is the
+  mistake this bullet exists to prevent.
+- **[ACCEPTED]** *`versionsTableSql` is a template with no runtime caller.* Its
+  output was copied into `.sql` files once and the migrations are the deployed
+  truth, so updating the helper fixes nothing already deployed — the three
+  migrations do that. It is updated anyway so the next table copied from it is
+  born correct, and the fences read the MIGRATIONS rather than the helper for
+  exactly this reason. Recorded because "the helper is fixed" is the tempting
+  and wrong summary of this change.
