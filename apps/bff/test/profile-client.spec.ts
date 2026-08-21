@@ -65,6 +65,48 @@ describe('FetchProfileClient', () => {
     expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
   });
 
+  /**
+   * THE ONE ROUTE WHOSE 403 IS NOT A NOT-FOUND (M23 PR4a).
+   *
+   * Every other route on this client is about the caller's own data, where
+   * "not yours" and "no such row" must stay indistinguishable or an id becomes
+   * a probe. `estateContacts` is about an estate the caller was HANDED — they
+   * reached it from a list of the estates they are settling — so collapsing the
+   * refusal would tell an executor that a case in front of them does not exist.
+   * A control firing must not read as an outage, and it must not read as an
+   * absence either.
+   */
+  it('maps a shut rung to STAGE_NOT_APPROVED, not to the uniform not-found', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(403, { error: 'forbidden' }));
+    await expect(client(fetchFn).estateContacts(TOKEN, 'owner-1')).rejects.toMatchObject({
+      extensions: { code: 'STAGE_NOT_APPROVED' },
+    });
+    expect(callOf(fetchFn).url).toBe(`${BASE}/v1/estates/owner-1/contacts`);
+  });
+
+  it('still collapses a 403 to NOT_FOUND on every OTHER route', async () => {
+    /*
+     * THE POSITIVE CONTROL, and the reason it is here rather than assumed: the
+     * `meaning` parameter defaults to empty, so a route that declares nothing
+     * keeps the collapsed answer. Without this, widening the mapping for every
+     * route would satisfy the test above.
+     */
+    const fetchFn = jest.fn().mockResolvedValue(response(403, { error: 'forbidden' }));
+    await expect(client(fetchFn).contacts(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+  });
+
+  it('a step-up refusal still wins over the route’s own meaning', async () => {
+    // Ordering inside `mapError`: `stepup_required` is checked first, because a
+    // route that needs a fresh factor has a remedy the reader can act on and
+    // the rung message would send them to wait for something instead.
+    const fetchFn = jest.fn().mockResolvedValue(response(403, { error: 'stepup_required' }));
+    await expect(client(fetchFn).estateContacts(TOKEN, 'owner-1')).rejects.toMatchObject({
+      extensions: { code: 'STEPUP_REQUIRED' },
+    });
+  });
+
   it('reads a 404 not_found as "nothing on file", not as a failure', async () => {
     // The M10 lesson, verbatim: profile answers 404 for a user who never saved
     // one, and treating that as an outage made three analyses a permanent 503

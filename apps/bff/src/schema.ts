@@ -797,6 +797,20 @@ export const typeDefs = /* GraphQL */ `
     template. Generic administration steps, never legal advice.
     """
     estateTasks(caseId: ID!): [EstateTask!]!
+    """
+    The estate's contacts, under an APPROVED 'DOCUMENTS' stage (M23 PR4a).
+
+    docs/03 §5.4's named control against grief-window phishing: an executor
+    days after a death is the ideal target for "probate portal fee required",
+    and the answer is that the estate's real attorney and accountant are
+    already on a screen they trust. Reading it emits 'contact.estate.viewed'
+    naming the case that authorised it.
+
+    NOT the caller's own contacts, and not a merged view: every row is the
+    DECEDENT's. Who they named is disclosure about living third parties, which
+    is why the rung is DOCUMENTS rather than the lighter INVENTORY.
+    """
+    estateContacts(caseId: ID!): [ContactSummary!]!
   }
 
   """
@@ -2432,6 +2446,24 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           const token = requireAccessToken(ctx);
           const estate = await administeredEstate(token, args.caseId);
           return assets.listEstate(token, estate.decedentUserId);
+        },
+        /**
+         * RESOLVE-FIRST, like `estateInventory` and NOT like `estateTasks`
+         * below. Profile keys this route on `ownerUserId`, and no
+         * `decedentUserId` may reach the browser — so turning the case id back
+         * into an estate against settlement's own list is both the translation
+         * and the check that the caller holds a case with authority behind it.
+         * A case id with none never becomes a user id and never reaches
+         * profile at all.
+         */
+        estateContacts: async (
+          _parent: unknown,
+          args: { caseId: string },
+          ctx: RequestContext,
+        ): Promise<ContactSummary[]> => {
+          const token = requireAccessToken(ctx);
+          const estate = await administeredEstate(token, args.caseId);
+          return profile.estateContacts(token, estate.decedentUserId);
         },
         /**
          * FORWARDED, like `estateStages` and for the same reason: settlement's

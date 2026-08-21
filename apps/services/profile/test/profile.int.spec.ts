@@ -22,6 +22,12 @@ import { canonicalCode } from '../src/contact-links.service';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { PgDekRepository } from '../src/dek.repository';
 import { AUDIT_PRODUCER, PG_POOL_CONFIG } from '../src/di-tokens';
+import {
+  SETTLEMENT_AUTHORITY,
+  type AccessStage,
+  type SettlementStageAuthority,
+  type StageAccessAuthority,
+} from '@estate/settlement-client';
 
 const describeIfPg = process.env['PG_TEST_URL'] ? describe : describe.skip;
 
@@ -52,6 +58,28 @@ const fakeVerifier: SessionVerifier = {
   },
 };
 
+/**
+ * SETTLEMENT'S ANSWER, stubbed for the int suite — see the override below.
+ * Defaults to REFUSING, exactly as the real client does on any failure, so an
+ * "executor is refused" assertion cannot pass because nobody wired anything.
+ */
+class StubStageAuthority implements SettlementStageAuthority {
+  allowed = false;
+  calls: AccessStage[] = [];
+  checkStageAccess(input: {
+    bearerToken: string;
+    ownerUserId: string;
+    stage: AccessStage;
+  }): Promise<StageAccessAuthority> {
+    this.calls.push(input.stage);
+    return Promise.resolve(
+      this.allowed
+        ? { allowed: true, caseId: '00000000-0000-4000-8000-0000000000ca' }
+        : { allowed: false, caseId: null },
+    );
+  }
+}
+
 const OWNER = randomUUID();
 const GRANTEE = randomUUID();
 const STRANGER = randomUUID();
@@ -68,6 +96,7 @@ describeIfPg('profile & contacts service end to end', () => {
   let app: INestApplication;
   let server: Server;
   let producer: InMemoryAuditProducer;
+  let stageAuthority: StubStageAuthority;
 
   beforeAll(async () => {
     admin = new Client({ connectionString: pgUrl });
@@ -102,6 +131,7 @@ describeIfPg('profile & contacts service end to end', () => {
     delete process.env['KAFKA_BROKERS'];
 
     producer = new InMemoryAuditProducer();
+    stageAuthority = new StubStageAuthority();
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(AUDIT_PRODUCER)
       .useValue(producer)
@@ -109,6 +139,20 @@ describeIfPg('profile & contacts service end to end', () => {
       .useValue({ connectionString: pgUrl, options: `-c search_path=${schema}` })
       .overrideProvider(SESSION_VERIFIER)
       .useValue(fakeVerifier)
+      /*
+       * SETTLEMENT IS STUBBED, and only settlement (M23 PR4a). The real client
+       * would reach for a service this suite does not run, and the point of
+       * this file is the DATABASE half — that the executor's contacts really
+       * come back from real Postgres once the answer is yes, and that the
+       * grant query really refuses them when it is no. Whether settlement gives
+       * the right answer is settlement's own suite, and whether this service
+       * asks it correctly is `contacts.service.spec.ts`.
+       *
+       * It DEFAULTS TO REFUSING, like the real client on any failure, so a test
+       * that wants the estate open has to say so.
+       */
+      .overrideProvider(SETTLEMENT_AUTHORITY)
+      .useValue(stageAuthority)
       .compile();
     app = moduleRef.createNestApplication({ logger: false });
     await app.init();
@@ -379,6 +423,82 @@ describeIfPg('profile & contacts service end to end', () => {
       .set('authorization', asUser(OWNER));
     expect(list.status).toBe(200);
     expect((list.body as unknown[]).length).toBe(3);
+  });
+
+  /**
+   * THE THAW, AGAINST REAL POSTGRES (M23 PR4a).
+   *
+   * The doubles in `contacts.service.spec.ts` prove the decision; this proves
+   * the DATABASE half, which is where the defect actually lived. Before this
+   * PR an executor's `on_death_verified` designation resolved to nothing on
+   * `effectiveContactReadGrants` — the query filters
+   * `effective_condition = 'immediate'` and carried a freeze predicate over
+   * exactly the case states an executor administers. That is real SQL against
+   * real rows, and no in-memory roles double could have shown it.
+   */
+  describe('the estate’s contacts, for a verified executor', () => {
+    it('refuses on the GRANT path even with the rung open — two arms, no overlap', async () => {
+      /*
+       * THE ANTI-VACUITY CONTROL for everything below, and the property the
+       * two-arm design exists for: opening the ladder must not thaw the grant
+       * query. `STRANGER` holds no grant, and the cross-owner ABAC route
+       * refuses them whatever settlement would say — because that route never
+       * asks settlement at all.
+       */
+      stageAuthority.allowed = true;
+      const viaGrantPath = await request(server)
+        .get(`/v1/profiles/${OWNER}/contacts`)
+        .set('authorization', asUser(STRANGER));
+      expect(viaGrantPath.status).toBe(403);
+      expect(stageAuthority.calls).toEqual([]);
+    });
+
+    it('refuses the estate route while the rung is shut', async () => {
+      stageAuthority.allowed = false;
+      const refused = await request(server)
+        .get(`/v1/estates/${OWNER}/contacts`)
+        .set('authorization', asUser(STRANGER));
+      expect(refused.status).toBe(403);
+      expect(refused.body).toEqual({ error: 'forbidden' });
+    });
+
+    it('returns the estate’s real contacts once the DOCUMENTS rung is approved', async () => {
+      stageAuthority.allowed = true;
+      stageAuthority.calls = [];
+      const opened = await request(server)
+        .get(`/v1/estates/${OWNER}/contacts`)
+        .set('authorization', asUser(STRANGER));
+      expect(opened.status).toBe(200);
+      /*
+       * THE ROWS ARE REAL, and the count is the anti-vacuity floor: this suite
+       * seeded three contacts for OWNER, so a route that silently returned an
+       * empty list — the shape a still-frozen query would produce — cannot pass.
+       */
+      const rows = opened.body as Array<{ name: string; ownerUserId: string }>;
+      expect(rows).toHaveLength(3);
+      expect(rows.every((r) => r.ownerUserId === OWNER)).toBe(true);
+      // THE RUNG IS ASSERTED. "Gated on a stage" and "gated on the DOCUMENTS
+      // stage" are different claims, and only the second is docs/03 §5.1's.
+      expect(stageAuthority.calls).toEqual(['documents']);
+    });
+
+    it('audits the disclosure, naming the case and no contact', async () => {
+      stageAuthority.allowed = true;
+      await request(server)
+        .get(`/v1/estates/${OWNER}/contacts`)
+        .set('authorization', asUser(STRANGER));
+      const viewed = producer.messages
+        .filter((m) => m.topic === TOPICS.auditEvents)
+        .map((m) => JSON.parse(m.value) as { action: string; detail?: unknown })
+        .filter((e) => e.action === 'contact.estate.viewed');
+      expect(viewed.length).toBeGreaterThan(0);
+      expect(viewed.at(-1)?.detail).toMatchObject({
+        caseId: '00000000-0000-4000-8000-0000000000ca',
+        count: '3',
+      });
+      // Entity ids, enums and counts only — never the names it disclosed.
+      expect(JSON.stringify(viewed)).not.toContain('Named Contact');
+    });
   });
 
   it('refuses a permission grant nothing honours, storing nothing', async () => {

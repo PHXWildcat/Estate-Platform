@@ -7465,3 +7465,87 @@ green as the control: always sending `completed: true` at the client and at the
 checkbox (the untick becomes a silent no-op), modelling `completedBy` in the
 schema, dropping `requestStage`'s guard, ADDING one to `completeTask`, applying
 the tick optimistically, and putting the two routes back behind the exemption.
+### M23 PR4a — the thaw, and the estate's people (2026-08-20)
+
+docs/03 §5.1's controls 4 and 5 contradicted each other, and the code
+implemented the contradiction. Control 4 freezes role-holder contact reads at a
+death report; control 5 stages executor access after verification. For
+profile's contact reads, control 4 was answering control 5's question — and
+answering it "no" forever: `RolesRepo.effectiveContactReadGrants` filters
+`effective_condition = 'immediate'`, which an executor's `on_death_verified`
+designation never satisfies, AND carried a freeze predicate excluding owners
+with a case in `waiting_period`, `verified`, `active` or `distributing` — every
+state an executor administers. **An executor could not read the estate's
+contacts at any point, ever.**
+
+**THE NARROWING IS SCOPED TO THE EXECUTOR**, and the scoping is the design. The
+grant query is untouched: an ordinary role-holder's `immediate` grant stays
+frozen from the waiting period onward, because that is a permission the owner
+gave while living and a death report is the reason it stops. What changes is
+that the executor no longer travels that road. Their authority is a
+`role_assignment`, not a `permission_grant` — the owner never granted them
+`contact:read` and `ENFORCED_GRANTS` must not grow a row claiming they did — so
+they get a SEPARATE route, `GET /v1/estates/:ownerUserId/contacts`, gated on
+settlement's staged grant. Widening `effective_condition` or lifting the freeze
+would have thawed every `on_death_verified` grant for profile's only grant
+reader: a blast radius nobody asked for, to serve one role.
+
+**THE SPLIT FOLLOWS ASSETS**, which drew the same line for the same stated
+reason — merging a non-owner branch into the owner path puts two authorization
+models on one route. Different authority (settlement's staged grant), different
+audit action (`contact.estate.viewed`, the sibling of `asset.estate.viewed`),
+different reason to exist.
+
+**THE DOCUMENTS RUNG, NOT INVENTORY.** Who the decedent named is disclosure
+about living third parties rather than about the estate's holdings, and the
+people named as beneficiaries are named in the estate's documents. The knock-on
+is deliberate: recording a distribution names a beneficiary contact, so PR4b's
+distributions will in practice need DOCUMENTS approved — which matches the
+checklist template's own ordering, letters testamentary before distributions.
+
+**THE ROUTE SHIPS WITH ITS CONSUMER, and the consumer is a control docs/03 has
+specified since it was written.** §5.4 says the executor dashboard "shows
+verified contact cards for the estate's attorney/CPA" — the defence against
+grief-window phishing, where an attacker claims to act for the estate and asks
+for a fee. The panel names them, professionals first, and SAYS WHAT THE LIST IS
+FOR: a list of names with no stated purpose is a directory, and a reader who
+does not know why it is there cannot use it to recognise an impostor. Names and
+roles only — no email, phone or address, each of which is another audited
+decrypt on a dead person's trail, and recognising an impostor needs to know WHO
+the attorney is, not how to call them.
+
+**ONE ROUTE'S 403 IS NOT A NOT-FOUND.** The BFF's profile client narrows every
+403 to the uniform not-found, right for routes about the caller's own data.
+This one is about an estate the caller was HANDED, so collapsing the refusal
+would tell an executor that a case in front of them does not exist — a control
+firing wearing the face of an absence. `STAGE_NOT_APPROVED` is its own code,
+declared per route, and a route that declares nothing keeps the collapsed
+answer.
+
+**A FENCE'S REASON WAS THE FALSE CLAIM.** M23 PR2's exemption text for
+profile's two cross-owner reads asserted they "resolve through the same
+settlement staged grant the inventory does... behind the DOCUMENTS rung". They
+never did — no ladder had any bearing on them at all — and that sentence is
+what sent this slice looking. Prose beside a mechanism is where this repo's
+false claims keep surviving; the reason now says what those routes are.
+
+**THE CLOSED-VOCABULARY AUDIT RULE FIRED FOR REAL**, observed rather than
+cited for the first time. `contact.estate.viewed` was emitted by a rebuilt
+profile into an audit consumer that predated the action: the consumer logged
+`audit_event_rejected reason=schema_violation rejectedTotal=1` and dropped the
+disclosure silently while the read itself succeeded. Rebuilding the consumer
+FIRST and re-driving produced the full record — actor the executor,
+`on_behalf_of` the decedent, `{caseId, count}` and no names.
+
+**Driven end to end on the running stack**: the panel reads "opens once the
+documents stage above is approved" while the rung is shut, with no retry button
+because there is nothing to retry; approving DOCUMENTS opens it; the wire
+carries no `ownerUserId` and no contact values, only the `has` flags; the
+attorney and the accountant sort above the family member, which is the
+component's re-ordering and not the server's.
+
+**Four mutations, each reddening a named assertion**: the rung becomes
+INVENTORY, the gate is dropped entirely, the audit event moves after the decrypt
+loop, and the estate route is rewired through the grant path. The positive
+control that matters is its own test — opening the ladder must not thaw the
+grant query, so a role-holder with no grant stays refused either way.

@@ -24,11 +24,28 @@ import {
 } from './contacts.service';
 import { ContactSchema, parse, UuidSchema } from './schemas';
 
+/** Raw bearer token, re-extracted for forwarding to settlement. CallerGuard
+ * already validated the header shape; '' only means a wiring anomaly and fails
+ * closed inside the settlement client. Same helper, same words, as
+ * `assets.controller.ts` — the two forward to the same route. */
+function bearerTokenOf(req: CallerRequest): string {
+  const raw = req.headers['authorization'];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  return typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
+}
+
 /**
  * Contact endpoints. Writes (`/v1/contacts`) are owner-only. The cross-owner
  * reads under `/v1/profiles/:ownerUserId/contacts` are the docs/03 §5.5 ABAC
  * boundary: they return data only when the ProfileAuthz PEP allows — owner, or
  * a role-holder whose effective grant names the resource.
+ *
+ * `/v1/estates/:ownerUserId/contacts` is a THIRD thing and deliberately not on
+ * either path above: a different authority (settlement's staged grant, not a
+ * permission grant), a different audit action, and a different reason to
+ * exist. Assets made the same split for the same reason — merging a non-owner
+ * branch into the owner path is how one route ends up carrying two
+ * authorization models.
  */
 @Controller('v1')
 @UseGuards(CallerGuard)
@@ -124,6 +141,37 @@ export class ContactsController {
     @Param('ownerUserId') ownerUserId: string,
   ): Promise<ContactSummary[]> {
     return this.contacts.listForOwner(requireCaller(req).userId, parse(UuidSchema, ownerUserId));
+  }
+
+  /**
+   * THE ESTATE'S CONTACTS, for a verified executor (M23 PR4a).
+   *
+   * The path says `estates`, not `profiles`, because the subject is an estate
+   * under administration rather than a living person's profile — the same
+   * distinction `GET /v1/estates/:ownerUserId/assets` draws in the assets
+   * service, which is the route this one is modelled on down to the bearer
+   * forwarding.
+   *
+   * NO `@AllowSessionAudiences`: the service-wide `account` is right. An
+   * operator has no business in a decedent's address book, and there is no
+   * console surface that asks.
+   *
+   * NO STEP-UP. It is a read, and a read that an operator has already reviewed
+   * and approved as a whole rung — putting a second factor in front of it would
+   * gate the same disclosure twice while leaving the first gate's decision
+   * untouched.
+   */
+  @Get('estates/:ownerUserId/contacts')
+  @HttpCode(200)
+  listEstateContacts(
+    @Req() req: CallerRequest,
+    @Param('ownerUserId') ownerUserId: string,
+  ): Promise<ContactSummary[]> {
+    return this.contacts.listEstateContacts(
+      requireCaller(req).userId,
+      bearerTokenOf(req),
+      parse(UuidSchema, ownerUserId),
+    );
   }
 
   /** ABAC single read: allowed only for the owner or a named grant-holder. */

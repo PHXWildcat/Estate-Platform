@@ -34,7 +34,13 @@ const PEERS: Record<string, readonly string[]> = {
   // M13: profile tells an owner when somebody claimed a link to one of their
   // contacts. Send-only — it holds the SEND credential and not the recipients
   // one, so it cannot repoint where anybody's notifications go.
-  profile: ['identity', 'notifications'],
+  //
+  // M23 PR4a adds SETTLEMENT, and it is a peer of a different kind: profile
+  // holds no credential for it and never will, because the one question it
+  // asks — may this executor read this estate's contacts — travels on the
+  // CALLER'S OWN forwarded bearer. A wrong URL here fails closed and refuses
+  // the read; it can never widen one. Same edge assets has for the inventory.
+  profile: ['identity', 'notifications', 'settlement'],
   assets: ['identity', 'settlement'],
   plaid: ['identity'],
   documents: ['identity', 'settlement'],

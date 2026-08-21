@@ -4,6 +4,11 @@ import { KMSClient } from '@aws-sdk/client-kms';
 import type { AuditProducer } from '@estate/audit-emitter';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
 import {
+  HttpSettlementAuthority,
+  SETTLEMENT_AUTHORITY,
+  type SettlementStageAuthority,
+} from '@estate/settlement-client';
+import {
   FieldCrypto,
   LocalKmsProvider,
   type DekRepository,
@@ -106,6 +111,22 @@ function kmsProviderFor(config: ProfileConfig): KmsKeyProvider {
           : new StubLinkNotifier(),
     },
     { provide: DEK_REPOSITORY, useExisting: PgDekRepository },
+    /*
+     * M23 PR4a: settlement answers the executor staged-access question, the
+     * SAME port and the same client assets uses for the estate inventory. One
+     * behaviour, one spelling — a second implementation of "may this executor
+     * read this estate" would be a second place for the answer to drift.
+     *
+     * The client fails closed on any failure (network, non-2xx, unparseable
+     * body), so an unreachable settlement REFUSES the contact read rather than
+     * widening it.
+     */
+    {
+      provide: SETTLEMENT_AUTHORITY,
+      inject: [CONFIG],
+      useFactory: (config: ProfileConfig): SettlementStageAuthority =>
+        new HttpSettlementAuthority({ settlementUrl: config.settlementUrl }),
+    },
     {
       provide: AUDIT_PRODUCER,
       inject: [CONFIG],

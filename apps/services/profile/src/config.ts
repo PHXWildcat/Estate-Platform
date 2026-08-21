@@ -70,6 +70,13 @@ const EnvSchema = z
     // (CallerGuard introspects the caller's token). Required IN production; dev
     // defaults to localhost.
     IDENTITY_URL: z.string().url().optional(),
+    // Base URL of the settlement service. Profile asks it ONE question, on the
+    // caller's own forwarded bearer: does an approved DOCUMENTS stage let this
+    // executor read the estate's contacts (docs/03 §5.1 control 5). Required
+    // IN production; dev defaults to localhost. The client fails closed, so a
+    // wrong value disables executor reads rather than widening them — which is
+    // the property that makes a default safe here at all.
+    SETTLEMENT_URL: z.string().url().optional(),
     /*
      * OWNER NOTIFICATIONS for the M13 contact link ceremony. Profile's first
      * outbound service credential, and its first peer of any kind.
@@ -182,6 +189,13 @@ const EnvSchema = z
           message: 'IDENTITY_URL is required in production (cross-service session verification)',
         });
       }
+      if (!env.SETTLEMENT_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SETTLEMENT_URL'],
+          message: 'SETTLEMENT_URL is required in production (executor staged-access checks)',
+        });
+      }
     }
     // Mode-conditional requirements, enforced in EVERY environment — the
     // shape the other adapter selectors already use. Combined with the
@@ -235,6 +249,8 @@ export interface ProfileConfig {
   readonly kekAlias: string;
   /** Identity service base URL for cross-service session verification. */
   readonly identityUrl: string;
+  /** Settlement base URL — the executor staged-access question (M23 PR4a). */
+  readonly settlementUrl: string;
   /** Owner-notification adapter selection (M13 link ceremony). */
   readonly notify: { readonly mode: 'stub' | 'http' };
   readonly notificationsUrl: string;
@@ -289,6 +305,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProfileConfig 
     kekAlias: 'core/kek',
     // superRefine requires IDENTITY_URL in production; dev falls back to local.
     identityUrl: e.IDENTITY_URL ?? 'http://localhost:3001',
+    settlementUrl: e.SETTLEMENT_URL ?? 'http://localhost:3007',
     notify: { mode: e.NOTIFY_MODE },
     notificationsUrl: e.NOTIFICATIONS_URL ?? 'http://localhost:3008',
     notificationsInternalToken: e.NOTIFICATIONS_INTERNAL_TOKEN ?? '',

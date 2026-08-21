@@ -207,6 +207,17 @@ export type LinkedEstate = z.infer<typeof LinkedEstateSchema>;
 export interface ProfileClient {
   /** The estates that name the caller — contact→owner, the reverse of every other read here. */
   linkedEstates(accessToken: string): Promise<LinkedEstate[]>;
+  /**
+   * The ESTATE's contacts, for a verified executor (M23 PR4a).
+   *
+   * The SAME `ContactSummary` shape the owner's own list uses, because it is
+   * the same projection — one audited decrypt per row, no email, phone,
+   * address or notes. What differs is the authorization behind it: profile
+   * forwards this caller's bearer to settlement and answers only under an
+   * approved DOCUMENTS rung. A separate narrower type would have been a second
+   * thing to keep in step with a decrypt budget that is already decided.
+   */
+  estateContacts(accessToken: string, ownerUserId: string): Promise<ContactSummary[]>;
   /** The caller's own profile, or null when they have never saved one. */
   profile(accessToken: string): Promise<Profile | null>;
   saveProfile(accessToken: string, input: SaveProfileInput): Promise<void>;
@@ -310,6 +321,30 @@ export class FetchProfileClient implements ProfileClient {
       throw await this.mapError(res);
     }
     return this.parseBody(res, z.array(LinkedEstateSchema));
+  }
+
+  async estateContacts(accessToken: string, ownerUserId: string): Promise<ContactSummary[]> {
+    const res = await this.request(
+      'GET',
+      `/v1/estates/${encodeURIComponent(ownerUserId)}/contacts`,
+      accessToken,
+    );
+    if (!res.ok) {
+      /*
+       * THE 403 IS NOT A NOT-FOUND HERE. Every other route on this client is
+       * about the caller's own data, where "not yours" must be
+       * indistinguishable from "no such row"; this one is about an estate the
+       * caller was HANDED, so collapsing the refusal would tell an executor
+       * that a case they are looking at does not exist — a control firing
+       * wearing the face of an outage.
+       *
+       * ONE token for both halves of the refusal, though: profile answers the
+       * same 403 for "the rung is not approved" and for "settlement could not
+       * be reached", so there is no distinction here for this edge to claim.
+       */
+      throw await this.mapError(res, { forbidden: 'STAGE_NOT_APPROVED' });
+    }
+    return this.parseBody(res, z.array(ContactSummarySchema));
   }
 
   async contacts(accessToken: string): Promise<ContactSummary[]> {
@@ -481,13 +516,25 @@ export class FetchProfileClient implements ProfileClient {
     }
   }
 
-  private async mapError(res: Response): Promise<Error> {
+  /**
+   * `meaning` lets ONE route re-read a status this client otherwise collapses,
+   * the shape `settlement-client.ts` already uses. A route that declares
+   * nothing keeps the collapsed answer, so adding a route without thinking
+   * about this says something uniform rather than something confidently wrong.
+   */
+  private async mapError(
+    res: Response,
+    meaning: { readonly forbidden?: 'STAGE_NOT_APPROVED' } = {},
+  ): Promise<Error> {
     const token = await errorTokenOf(res);
     if (res.status === 401) {
       return bffError('UNAUTHENTICATED');
     }
     if (res.status === 403 && token === 'stepup_required') {
       return bffError('STEPUP_REQUIRED');
+    }
+    if (res.status === 403 && meaning.forbidden !== undefined) {
+      return bffError(meaning.forbidden);
     }
     /*
      * A 403 becomes the uniform not-found AT THE EDGE, the M12 rule. Every route

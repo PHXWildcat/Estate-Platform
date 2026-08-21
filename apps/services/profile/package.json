@@ -21,6 +21,7 @@
     "@estate/kafka": "workspace:*",
     "@estate/kms-aws": "workspace:*",
     "@estate/notifications-client": "workspace:*",
+    "@estate/settlement-client": "workspace:*",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",

@@ -68,6 +68,15 @@ export const AUDIT_ACTIONS = [
   // and nowhere else, since naming them here would put the very PII the event
   // records the disclosure of into the audit trail.
   'contact.link.estates_read',
+  // AN EXECUTOR READING THE ESTATE'S CONTACTS through the staged-access grant
+  // (M23 PR4a) — the sibling of `asset.estate.viewed`, and here for the same
+  // reason that one exists: the per-name `crypto.field.decrypted` events fire
+  // either way, and without this there is no record of WHICH settlement case
+  // authorised them, in precisely the docs/03 §5.1 scenario these trails are
+  // kept for. `resourceId` is the DECEDENT, whose contacts were disclosed;
+  // the contacts themselves appear only as `detail.count`, since naming them
+  // would put the PII this event records the disclosure of into the trail.
+  'contact.estate.viewed',
   // Asset service (financial cluster).
   'asset.created',
   'asset.updated',

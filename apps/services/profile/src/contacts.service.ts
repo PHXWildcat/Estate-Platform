@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { emailBlindIndex } from '@estate/crypto';
+import { SETTLEMENT_AUTHORITY, type SettlementStageAuthority } from '@estate/settlement-client';
 import { coreResource, ProfileAuthz } from './authz.service';
 import { CLOCK, CONFIG, type Clock } from './di-tokens';
 import type { ProfileConfig } from './config';
@@ -109,6 +110,7 @@ export class ContactsService {
     private readonly cipher: FieldCipher,
     private readonly authz: ProfileAuthz,
     private readonly events: EventsService,
+    @Inject(SETTLEMENT_AUTHORITY) private readonly settlement: SettlementStageAuthority,
     @Inject(CONFIG) private readonly config: ProfileConfig,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
@@ -257,6 +259,83 @@ export class ContactsService {
       );
     });
     return Promise.all(visible.map((row) => this.toSummary(callerUserId, row)));
+  }
+
+  /**
+   * THE ESTATE'S CONTACTS, read by a VERIFIED EXECUTOR rather than by the owner
+   * or a grant-holder (docs/03 §5.1 control 5, and the §5.4 control that says
+   * an executor dashboard shows verified contact cards for the estate's
+   * attorney and CPA — specified since the threat model was written, unbuilt
+   * until now).
+   *
+   * A SEPARATE METHOD, not a branch inside `listForOwner`, and the separation
+   * is the design. Three reasons, in order of how badly merging them would go:
+   *
+   * 1. THE AUTHORITY IS A DIFFERENT KIND. `listForOwner` resolves
+   *    `permission_grants` — things the owner handed out WHILE LIVING, which
+   *    control 4 freezes at a death report precisely because a fraudulent
+   *    report must buy the reporter nothing. An executor holds no such grant:
+   *    their authority is a `role_assignment` that only becomes real on
+   *    verification. Widening the grant query to admit them would have thawed
+   *    every `on_death_verified` grant for profile's only grant reader, and
+   *    would have needed a row in `ENFORCED_GRANTS` asserting the owner
+   *    conferred something they never did.
+   * 2. THE DECISION IS NOT PROFILE'S. Settlement owns it, and answers on the
+   *    executor's OWN forwarded bearer: a verified case naming this caller as
+   *    executor, with the DOCUMENTS rung separately approved by an operator.
+   *    The same `checkStageAccess` port assets uses for the inventory.
+   * 3. IT AUDITS DIFFERENTLY. A third party read another person's contacts,
+   *    which is `contact.estate.viewed` — the sibling of
+   *    `asset.estate.viewed`, and absent from the owner path by construction.
+   *
+   * WHY THE DOCUMENTS RUNG AND NOT INVENTORY. Who the decedent named is
+   * disclosure about LIVING THIRD PARTIES, not about the estate's holdings, and
+   * the people named as beneficiaries are named in the estate's documents. The
+   * ladder's own order agrees: inventory is the least dangerous rung, and this
+   * is not it.
+   *
+   * A REFUSAL IS A UNIFORM 403, including an unreachable settlement — the
+   * client fails closed, so the answer to "we could not ask" is the same as
+   * "no". That is the one place this differs from the repo's uniform-404 rule,
+   * and it matches `listEstateAssets` deliberately: the caller already knows
+   * the estate exists, because they were handed a case for it.
+   */
+  async listEstateContacts(
+    callerUserId: string,
+    bearerToken: string,
+    ownerUserId: string,
+  ): Promise<ContactSummary[]> {
+    const authority = await this.settlement.checkStageAccess({
+      bearerToken,
+      ownerUserId,
+      stage: 'documents',
+    });
+    if (!authority.allowed) {
+      throw new ForbiddenException({ error: 'forbidden' });
+    }
+    const rows = await this.repo.listByOwner(ownerUserId);
+    /*
+     * THE AUTHORITY IS RECORDED BEFORE THE PLAINTEXT IS RELEASED, the M19 PR4
+     * ordering `listEstateAssets` learned the hard way: emitted after the
+     * decrypt loop, a failure part-way through leaves executor-attributed
+     * `crypto.field.decrypted` events on the decedent's trail with NO record of
+     * what authorised them — in exactly the §5.1 case the trail is kept for.
+     * The count is the AUTHORISED scope, not the delivered one.
+     */
+    await this.events.contactEstateViewed(callerUserId, ownerUserId, {
+      caseId: authority.caseId,
+      count: rows.length,
+    });
+    /*
+     * NO PEP LOOP HERE, and that is not an omission. `coreResource` builds a
+     * Contact whose grantee set comes from `permission_grants`; an executor is
+     * in nobody's grantee set, so running the PEP would deny every row and the
+     * only way to make it pass would be to feed it a grantee set this service
+     * invented. A fabricated PEP argument is the M11 defect — a policy
+     * evaluated against a constant denies nothing — so the decision stays
+     * whole, in one place, with settlement.
+     */
+    return Promise.all(rows.map((row) => this.toSummary(callerUserId, row)));
   }
 
   /**
