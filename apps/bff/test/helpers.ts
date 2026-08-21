@@ -69,11 +69,13 @@ import type {
 } from '../src/profile-client';
 import type {
   DocumentEvidence,
+  ExecutorCase,
   ReportableEstate,
   ReportSource,
   SettlementCase,
   SettlementClient,
   SettlementSettings,
+  SettlementStage,
 } from '../src/settlement-client';
 
 export function testConfig(overrides: Partial<BffConfig> = {}): BffConfig {
@@ -473,6 +475,25 @@ export class FakeAssetsClient implements AssetsClient {
   list(accessToken: string, includeRetired = false): Promise<Asset[]> {
     this.listCalls.push({ accessToken, includeRetired });
     return this.listError ? Promise.reject(this.listError) : Promise.resolve(this.listResult);
+  }
+
+  /**
+   * A SEPARATE RESULT from `listResult`, deliberately.
+   *
+   * The owner's list and an estate's inventory are two routes with two
+   * authorization models, and a double that answered both from one array would
+   * let a resolver reading the wrong one pass — the failure mode being an
+   * executor served their OWN assets under a decedent's heading.
+   */
+  listEstateCalls: Array<{ accessToken: string; ownerUserId: string }> = [];
+  listEstateResult: Asset[] = [{ ...ASSET, assetId: 'estate-asset-1', title: 'Estate asset' }];
+  listEstateError: Error | null = null;
+
+  listEstate(accessToken: string, ownerUserId: string): Promise<Asset[]> {
+    this.listEstateCalls.push({ accessToken, ownerUserId });
+    return this.listEstateError
+      ? Promise.reject(this.listEstateError)
+      : Promise.resolve(this.listEstateResult);
   }
 
   netWorth(accessToken: string): Promise<NetWorth> {
@@ -1263,6 +1284,74 @@ export class FakeSettlementClient implements SettlementClient {
         // length. A double that returned an unchanged case would let a
         // resolver that silently dropped the attach pass.
         evidence: [...this.reportResult.evidence, evidence],
+      })
+    );
+  }
+
+  /**
+   * TWO ESTATES AGAIN, and the second is the one that matters: `contact-9`
+   * appears on BOTH this list and `reportableResult`, so a resolver that
+   * resolved a contact id against the wrong list would still find a row. The
+   * `decedentUserId` values differ between the two entries here, so a
+   * resolver that returned the first row rather than the MATCHING one is
+   * visible.
+   */
+  executorCasesResult: ExecutorCase[] = [
+    {
+      caseId: 'case-1',
+      contactId: 'contact-1',
+      decedentUserId: 'user-1',
+      status: 'verified',
+      verifiedAt: '2026-08-19T00:00:00.000Z',
+      createdAt: '2026-08-18T00:00:00.000Z',
+    },
+    {
+      caseId: 'case-9',
+      contactId: 'contact-9',
+      decedentUserId: 'user-9',
+      status: 'active',
+      verifiedAt: '2026-08-19T00:00:00.000Z',
+      createdAt: '2026-08-18T00:00:00.000Z',
+    },
+  ];
+  executorCasesCalls: string[] = [];
+  stagesCalls: Array<{ accessToken: string; caseId: string }> = [];
+  requestStageCalls: Array<{ accessToken: string; caseId: string; stage: string }> = [];
+  stagesResult: SettlementStage[] = [
+    {
+      stageId: 'stage-1',
+      caseId: 'case-1',
+      stage: 'inventory',
+      status: 'approved',
+      requestedAt: '2026-08-19T00:00:00.000Z',
+      decidedAt: '2026-08-19T01:00:00.000Z',
+    },
+  ];
+
+  executorCases(accessToken: string): Promise<ExecutorCase[]> {
+    this.executorCasesCalls.push(accessToken);
+    return this.reject() ?? Promise.resolve(this.executorCasesResult);
+  }
+
+  listStages(accessToken: string, caseId: string): Promise<SettlementStage[]> {
+    this.stagesCalls.push({ accessToken, caseId });
+    // FAITHFUL ABOUT SCOPE: a stage belongs to one case, and a double that
+    // returned every stage regardless would hide a resolver passing the wrong
+    // case id — which is exactly the id this surface resolves from a handle.
+    return this.reject() ?? Promise.resolve(this.stagesResult.filter((st) => st.caseId === caseId));
+  }
+
+  requestStage(accessToken: string, caseId: string, stage: string): Promise<SettlementStage> {
+    this.requestStageCalls.push({ accessToken, caseId, stage });
+    return (
+      this.reject() ??
+      Promise.resolve({
+        stageId: `stage-${stage}`,
+        caseId,
+        stage,
+        status: 'requested',
+        requestedAt: '2026-08-20T00:00:00.000Z',
+        decidedAt: null,
       })
     );
   }

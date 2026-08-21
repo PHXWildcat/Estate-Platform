@@ -367,4 +367,148 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
     const mine = estates.find((e) => e.decedentUserId === DECEDENT);
     expect(mine?.roles).toEqual(['executor']);
   });
+
+  /**
+   * THE EXECUTOR WORKLIST JOIN, AGAINST REAL POSTGRES (M23 PR2).
+   *
+   * `listAdministeredBy` is three tables wide — settlement_cases, contacts,
+   * role_assignments — and the in-memory double for it is a hand-written
+   * predicate that agrees with whatever the double's author believed. A join
+   * is exactly what a double cannot prove, so the discriminating cases live
+   * here where Postgres answers: a contact link with no designation, a role on
+   * the WRONG effective_condition, and a soft-deleted contact.
+   *
+   * Seeded entirely inside the test rather than reusing the suite's DECEDENT,
+   * whose status the earlier specs own — a control that depends on another
+   * test's leftovers is a control that reports on test ORDER.
+   */
+  it('the executor worklist join admits exactly the live, on-death executor designations', async () => {
+    /*
+     * SEARCH_PATH, and it is not boilerplate.
+     *
+     * Every UPDATE below fires a `<table>_capture_version` trigger, whose body
+     * says `INSERT INTO role_assignments_versions (...)` UNQUALIFIED — resolved
+     * at execution time against the caller's `search_path`, not against the
+     * schema the trigger was created in. The `admin` client connects with the
+     * default path, so those inserts look for the version tables in `public`.
+     *
+     * THIS TEST PASSED LOCALLY AND FAILED IN CI, and the local pass was the
+     * wrong observation: `PG_TEST_URL` here points at the running stack's own
+     * `core` database, which HAS those tables in `public` from the real
+     * migrations. CI's database does not, so the trigger had nowhere to write.
+     * A green run against a polluted database is not evidence about a clean one.
+     *
+     * Restored afterwards so the setting cannot leak into a later test — the
+     * rest of this file fully qualifies its names and must keep doing so.
+     */
+    await admin.query(`SET search_path TO ${schema}`);
+    const cases = new CasesRepo();
+    const owner = randomUUID();
+    const heir = randomUUID();
+    const contactId = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [contactId, owner, Buffer.from('ct'), heir, randomUUID()],
+    );
+    // The review columns are not decoration: `settlement_cases_review_before_
+    // privilege` refuses a verified case that nobody reviewed, and
+    // `reviewer <> reporter` refuses one the reporter reviewed themselves.
+    // Seeding through the DDL rather than around it is the point of being here.
+    const inserted = await admin.query<{ id: string }>(
+      `INSERT INTO ${schema}.settlement_cases
+         (decedent_user_id, status, reported_by, report_source,
+          human_review_by, human_review_at, verified_at)
+       VALUES ($1, 'verified', $2, 'trusted_contact', $3, now(), now()) RETURNING id`,
+      [owner, REPORTER, OPERATOR],
+    );
+    const caseId = inserted.rows[0]?.id as string;
+
+    const seen = async (): Promise<string[]> =>
+      (await cases.listAdministeredBy(db, heir)).map((r) => r.id);
+
+    // 1. LINKED, with no designation at all. Being named in somebody's contact
+    //    repository is not being named their executor.
+    expect(await seen()).toEqual([]);
+
+    // 2. Designated, but on the 'immediate' condition — the M2 role model's
+    //    other arm, which grants during life and says nothing about death.
+    const ra = await admin.query<{ id: string }>(
+      `INSERT INTO ${schema}.role_assignments
+         (owner_user_id, contact_id, role, scope_type, effective_condition)
+       VALUES ($1, $2, 'executor', 'estate', 'immediate') RETURNING id`,
+      [owner, contactId],
+    );
+    expect(await seen()).toEqual([]);
+
+    // 3. THE POSITIVE CONTROL. Corrected to on_death_verified and the case
+    //    appears — which is what makes the two refusals above statements about
+    //    `effective_condition` rather than about a query that finds nothing.
+    await admin.query(
+      `UPDATE ${schema}.role_assignments SET effective_condition = 'on_death_verified'
+        WHERE id = $1`,
+      [ra.rows[0]?.id],
+    );
+    expect(await seen()).toEqual([caseId]);
+
+    // The row carries the CONTACT id — the handle the BFF gives the browser —
+    // and it is the same one `reportableEstates` resolves for the same pair.
+    const [row] = await cases.listAdministeredBy(db, heir);
+    const estates = await service.reportableEstates(heir);
+    expect(row?.contact_id).toBe(estates.find((e) => e.decedentUserId === owner)?.contactId);
+
+    // 4. A pre-verification case is invisible even to a live designated
+    //    executor: until an operator verifies the death there is nothing to
+    //    administer, and the list must not announce a report about somebody
+    //    who may well be alive.
+    //
+    //    A SECOND estate rather than winding this one back — the DDL refuses
+    //    `status = 'reported'` with `verified_at` set
+    //    (`settlement_cases_verified_at_matches`), which is the state machine
+    //    saying a verified case does not un-verify. A fixture that had to
+    //    fight a CHECK to arrange its scenario is arranging a state the
+    //    product cannot reach.
+    const living = randomUUID();
+    const livingContact = randomUUID();
+    await admin.query(
+      `INSERT INTO ${schema}.contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [livingContact, living, Buffer.from('ct'), heir, randomUUID()],
+    );
+    await admin.query(
+      `INSERT INTO ${schema}.role_assignments
+         (owner_user_id, contact_id, role, scope_type, effective_condition)
+       VALUES ($1, $2, 'executor', 'estate', 'on_death_verified')`,
+      [living, livingContact],
+    );
+    await admin.query(
+      `INSERT INTO ${schema}.settlement_cases (decedent_user_id, status, reported_by, report_source)
+       VALUES ($1, 'reported', $2, 'trusted_contact')`,
+      [living, REPORTER],
+    );
+    // Still only the verified one — the designation on the living owner's
+    // estate is real and grants nothing.
+    expect(await seen()).toEqual([caseId]);
+
+    // 5. And a CLOSED case leaves the list at the other end: terminal statuses
+    //    appear on no worklist, the operator's or the executor's.
+    await admin.query(`UPDATE ${schema}.settlement_cases SET status = 'closed' WHERE id = $1`, [
+      caseId,
+    ]);
+    expect(await seen()).toEqual([]);
+    await admin.query(`UPDATE ${schema}.settlement_cases SET status = 'active' WHERE id = $1`, [
+      caseId,
+    ]);
+    expect(await seen()).toEqual([caseId]);
+
+    // 6. Soft-deleting the CONTACT withdraws the grant. There are no hard
+    //    deletes anywhere, so `deleted_at IS NULL` is the only thing between a
+    //    removed executor and a live one.
+    await admin.query(`UPDATE ${schema}.contacts SET deleted_at = now() WHERE id = $1`, [
+      contactId,
+    ]);
+    expect(await seen()).toEqual([]);
+
+    await admin.query(`SET search_path TO "$user", public`);
+  }, 60_000);
 });

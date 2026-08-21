@@ -150,6 +150,31 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   EVIDENCE_WINDOW_CLOSED:
     'This case has moved too far along for anything more to be added to it. If there’s something ' +
     'we should see, contact us and we’ll take it from there.',
+  /*
+   * M23 PR2. The ladder exists so access is granted in stages, so a refusal
+   * here is the ladder WORKING — the sentence names the next step rather than
+   * reporting a failure, because there is nothing wrong to fix.
+   */
+  STAGE_OUT_OF_ORDER:
+    'Access is granted one stage at a time, and the stage before this one hasn’t been approved ' +
+    'yet. Request that one first.',
+  /*
+   * Reachable only by the estate's own executor (M23 PR1) — everyone else gets
+   * a uniform not-found. It is a fact about WHEN, not about permission, and
+   * the copy says so: there is nothing for them to do differently.
+   */
+  /*
+   * Reachable only by a race the UI does not offer — the ladder hides a stage
+   * that already has a live request. It still needs its own sentence: "we're
+   * already looking at it" and "something went wrong" send a person to two
+   * different places.
+   */
+  STAGE_ALREADY_REQUESTED:
+    'You’ve already asked for this stage, and it’s with our team. We’ll let you know as soon as ' +
+    'it’s been reviewed.',
+  CASE_NOT_VERIFIED:
+    'This case hasn’t reached the point where the estate can be administered yet. We’ll let you ' +
+    'know when it has — there’s nothing you need to do.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
   // M20 PR4, CORRECTED BY THE PR5 REVIEW, which found this sentence claiming

@@ -34,6 +34,24 @@ export interface StageDto {
   decidedAt: string | null;
 }
 
+/**
+ * One estate the caller has been designated executor of, on a case an operator
+ * has already verified (M23 PR2).
+ *
+ * `contactId` is here so the BFF can name the estate to a browser without a
+ * raw user id; `decedentUserId` is here because the BFF has to reach assets
+ * and profile with it. Both come from the same row, so the pair cannot
+ * disagree the way two lookups could.
+ */
+export interface ExecutorCaseDto {
+  caseId: string;
+  contactId: string;
+  decedentUserId: string;
+  status: string;
+  verifiedAt: string | null;
+  createdAt: string;
+}
+
 export interface TaskDto {
   taskId: string;
   title: string;
@@ -169,6 +187,40 @@ export class SettlementAdminService {
   ) {}
 
   // ------------------------------------------------------------ staged access
+
+  /**
+   * THE EXECUTOR'S FRONT DOOR (M23 PR2).
+   *
+   * Until this route existed, a designated executor could reach every verb in
+   * this file only by holding a case id from somewhere else — the same gap
+   * M21 PR3b closed for operators, whose three post-verification verbs had no
+   * listing that could return a case to use them on.
+   *
+   * NOT A WIDENED `listMyCases`: see `CasesRepo.listAdministeredBy`. That list
+   * is "cases about me, and cases I filed", and the web renders it as two
+   * panels off one boolean.
+   *
+   * NO AUDIT EVENT, and the omission is argued rather than overlooked. It
+   * would have to be a new `AUDIT_ACTIONS` member — `settlement.queue.viewed`
+   * hardcodes `actorType: 'operator'` and an executor is not one, so reusing it
+   * would put a false actor type on the trail, which is worse than no event.
+   * A new member costs a consumer deployment ahead of this producer, and buys
+   * a record that somebody read their OWN worklist. The reads that disclose
+   * anything are audited where they happen: `asset.estate.viewed` names the
+   * case that authorised an inventory read, and `settlement.case.viewed`
+   * covers operator reads of a single case.
+   */
+  async executorCases(actor: string): Promise<ExecutorCaseDto[]> {
+    const rows = await this.cases.listAdministeredBy(this.db, actor);
+    return rows.map((row) => ({
+      caseId: row.id,
+      contactId: row.contact_id,
+      decedentUserId: row.decedent_user_id,
+      status: row.status,
+      verifiedAt: row.verified_at?.toISOString() ?? null,
+      createdAt: row.created_at.toISOString(),
+    }));
+  }
 
   /**
    * The executor requests the next stage. Refuses a stage whose predecessor is

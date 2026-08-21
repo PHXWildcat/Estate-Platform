@@ -517,6 +517,29 @@ export type BffErrorCode =
   | 'CASE_ALREADY_REPORTED'
   | 'EVIDENCE_WINDOW_CLOSED'
   /**
+   * The staged-access ladder cannot be climbed out of order (M23 PR2):
+   * documents needs inventory approved, and vault needs documents. Its own
+   * code because its remedy is a SPECIFIC next step — request the stage below
+   * this one — rather than "that was not allowed".
+   */
+  | 'STAGE_OUT_OF_ORDER'
+  /**
+   * A live request for this stage already exists — `requested` or `approved`
+   * (M23 PR2). A CONTROL FIRING and not an outage: the remedy is to wait, and
+   * letting it fall through to the generic status error would render "we are
+   * already reviewing this" as "something went wrong on our side", which sends
+   * an executor to support over software working correctly.
+   */
+  | 'STAGE_ALREADY_REQUESTED'
+  /**
+   * A real case, the caller really is its executor, and it has not reached a
+   * status with an administration surface (M23 PR2). The one refusal
+   * settlement still answers specifically to an estate's own executor: fail
+   * closed means DE-ESCALATE, not withhold from the person entitled to know.
+   * Everyone else gets NOT_FOUND, and this code must never reach them.
+   */
+  | 'CASE_NOT_VERIFIED'
+  /**
    * A settlement transition rolled back because identity or documents could
    * not be reached (M22 PR3). NOTHING HAPPENED and the remedy is to try again.
    *
@@ -563,6 +586,9 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   CASE_NOT_VOIDABLE: 'This case has moved past the point where you can close it yourself',
   CASE_ALREADY_REPORTED: 'A case is already open on this estate',
   EVIDENCE_WINDOW_CLOSED: 'This case has moved past the point where more can be attached to it',
+  STAGE_OUT_OF_ORDER: 'An earlier stage of access has to be approved first',
+  STAGE_ALREADY_REQUESTED: 'This stage has already been requested',
+  CASE_NOT_VERIFIED: 'This case is not yet ready to be administered',
   SETTLEMENT_UNAVAILABLE: 'We could not complete that right now — nothing has changed',
 };
 

@@ -464,9 +464,12 @@ const ANALYSIS_BY_NAME =
   'so the one call site genuinely addresses each of them.';
 
 const EXEMPT_EXECUTOR_SURFACE =
-  'Executor reads resolve through settlement staged grants (M7 PR2, docs/03 §5.1 control 5); ' +
-  'the executor-facing product surface is its own milestone. First-ever route tests landed in ' +
-  'M19 PR1 for assets; profile’s executor contact reads are covered by its int suites.';
+  'Profile’s two executor contact reads, and the LAST entries under this reason — M23 PR2 took ' +
+  'the assets one, and the sentence has narrowed with it rather than being left to cover a ' +
+  'smaller set than it describes. They resolve through the same settlement staged grant the ' +
+  'inventory does (docs/03 §5.1 control 5, which executes outside a test as of that PR), but ' +
+  'behind the DOCUMENTS rung rather than INVENTORY, and the screen for that rung is the next ' +
+  'slice. Profile’s int suites cover both routes.';
 // EXEMPT_SETTLEMENT_REPORTING is GONE (M22 PR4c), and it left on the terms it
 // set for itself: "when PR4 lands, this constant goes with its last entry."
 // All seven settlement routes it once covered now name a consumer — four to
@@ -493,9 +496,14 @@ const EXEMPT_PROVIDER_INTAKE =
   'a person\u2019s browser, which is why `reportProvider` is deliberately absent from the operator ' +
   'audience list. No single source triggers anything — mandatory human review follows it.';
 const EXEMPT_EXECUTOR_CASEWORK =
-  'Executor-facing, owned by M23 (docs/04 — "Executor surface | 3 routes", which is exactly these ' +
-  'three). The operator console deliberately does not carry them: an executor is a grieving ' +
-  'family member, not a platform operator, and the two surfaces have different ceremonies.';
+  'The executor’s CHECKLIST and the distribution ladder — procedural state about an estate’s ' +
+  'administration, which needs no access stage at all, and the slice after M23 PR2’s. That PR ' +
+  'built the front door: the worklist, the stage ladder, and the inventory behind an approved ' +
+  'INVENTORY rung. These three are the work an executor does once inside. The reason no longer ' +
+  'cites docs/04’s "3 routes", which was wrong — count them from the EXEMPT_EXECUTOR_* entries ' +
+  'here instead. The operator console deliberately does not carry them: an executor is a ' +
+  'grieving family member, not a platform operator, and the two surfaces have different ' +
+  'ceremonies.';
 const EXEMPT_PLAID_UI =
   'M3 PR2 shipped the Plaid isolate deliberately backend-only (decision log 2026-07-21); the ' +
   'account-linking UI is a later milestone and the plaid e2e drives link/sync/revoke end to end.';
@@ -599,7 +607,11 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   // PR3") to consumers in the same change as the ceremony's client.
   'assets POST /v1/assets/:assetId/beneficiaries': consumed(`${BFF}/assets-client.ts`),
   'assets DELETE /v1/assets/:assetId/beneficiaries/:contactId': consumed(`${BFF}/assets-client.ts`),
-  'assets GET /v1/estates/:ownerUserId/assets': { exempt: EXEMPT_EXECUTOR_SURFACE },
+  // FLIPPED IN M23 PR2, in the same change as the screen that reads it. This
+  // was the FIRST entry `EXEMPT_EXECUTOR_SURFACE` was ever written about (M19
+  // PR1), and the staged-access mechanism behind it — docs/03 §5.1 control 5 —
+  // had never executed outside a test until now.
+  'assets GET /v1/estates/:ownerUserId/assets': consumed(`${BFF}/assets-client.ts`),
 
   // --------------------------------------------------------------- documents
   'documents GET /v1/documents': consumed(
@@ -744,6 +756,11 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement POST /v1/settlement/cases/report-provider': { exempt: EXEMPT_PROVIDER_INTAKE },
   'settlement GET /v1/settlement/queue': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/administrable': consumed(`${OW}/server.ts`, OW_CLIENT),
+  // The EXECUTOR's worklist, shipped with its consumer in one change (M23 PR2).
+  // Deliberately not a widened `administrable`, which is the console's listing
+  // of the same estates from the other side — two audiences, two routes,
+  // neither borrowing the other's answer.
+  'settlement GET /v1/settlement/executor-cases': consumed(`${BFF}/settlement-client.ts`),
   'settlement POST /v1/settlement/cases/:caseId/review/start': consumed(
     `${OW}/server.ts`,
     OW_CLIENT,
@@ -754,13 +771,20 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'settlement GET /v1/settlement/cases/:caseId/timeline': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/cases/:caseId/tasks': { exempt: EXEMPT_EXECUTOR_CASEWORK },
   'settlement POST /v1/settlement/tasks/:taskId/completion': { exempt: EXEMPT_EXECUTOR_CASEWORK },
-  'settlement GET /v1/settlement/cases/:caseId/stages': consumed(`${OW}/server.ts`, OW_CLIENT),
-  'settlement POST /v1/settlement/cases/:caseId/stages': pathSharedWith(
-    'settlement GET /v1/settlement/cases/:caseId/stages',
-    'The EXECUTOR stage request. The operator console proxies the GET on this path and not the ' +
-      'POST — PROXY_ROUTES names a method per row — and the operator audience admits listStages ' +
-      'and not requestStage. The executor-facing surface is its own milestone.',
+  // TWO SURFACES, and the route was built for both: `assertCaseVisible` admits
+  // the operator console AND the estate's executor. M23 PR2 added the second.
+  'settlement GET /v1/settlement/cases/:caseId/stages': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+    `${BFF}/settlement-client.ts`,
   ),
+  // BACK TO `consumed` FROM `pathSharedWith` (M23 PR2) — the M22 PR4c move on
+  // `POST /cases`, for the same reason. The weaker claim was true only while
+  // nothing asked. The console still proxies the GET on this path and not the
+  // POST, which has not changed; what changed is that `requestEstateAccess`
+  // exists, and a `pathSharedWith` that has become untrue reads as a route
+  // still waiting for its consumer.
+  'settlement POST /v1/settlement/cases/:caseId/stages': consumed(`${BFF}/settlement-client.ts`),
   'settlement POST /v1/settlement/stages/:stageId/decision': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement POST /v1/settlement/stages/:stageId/revoke': consumed(`${OW}/server.ts`, OW_CLIENT),
   'settlement GET /v1/settlement/cases/:caseId/distributions': consumed(
@@ -907,7 +931,13 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
         siblingConsumed: true,
       });
     }
-    expect(checked).toBeGreaterThanOrEqual(2);
+    // ONE LEFT (M23 PR2 flipped `POST /cases/:caseId/stages` to `consumed`).
+    // A floor of one still catches the failure this guards — a predicate that
+    // stopped matching gives zero — and when the last entry goes, the
+    // `pathSharedWith` MECHANISM goes with it, on the
+    // EXEMPT_SETTLEMENT_REPORTING precedent: a declaration form with no
+    // instances is a shape the next person reaches for without a reason to.
+    expect(checked).toBeGreaterThanOrEqual(1);
   });
 
   it('NO EDGE TABLE NAMES A pathSharedWith ROUTE — the method really is unreachable', () => {
@@ -979,9 +1009,20 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
       expect(`${key}: ${reason}`.length).toBeGreaterThanOrEqual(80);
       expect(reason.length).toBeGreaterThanOrEqual(60);
     }
-    // Anti-vacuity: both kinds exist on this tree, so a predicate that stopped
-    // matching either would show up here rather than pass silently.
-    expect(checked).toBeGreaterThanOrEqual(20);
+    // Anti-vacuity, as SETS rather than as a total. The comment above says the
+    // claim is that BOTH KINDS are covered, and a count cannot say that: 19
+    // exemptions and no `pathSharedWith` clears any floor a mixed corpus does.
+    // Stated this way it also stops eroding — M23 PR2 flipped two routes to
+    // consumers and a bare number had to be edited down, which is the ratchet
+    // running the wrong way.
+    const kinds = new Set(
+      Object.values(ROUTE_CONSUMERS).map((decl) =>
+        'exempt' in decl ? 'exempt' : 'pathSharedWith' in decl ? 'pathSharedWith' : 'enumerated',
+      ),
+    );
+    kinds.delete('enumerated');
+    expect([...kinds].sort()).toEqual(['exempt', 'pathSharedWith']);
+    expect(checked).toBeGreaterThanOrEqual(10);
     expect(
       Object.values(ROUTE_CONSUMERS).filter((d) => 'enumerated' in d).length,
     ).toBeGreaterThanOrEqual(1);

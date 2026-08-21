@@ -313,6 +313,146 @@ describe('the reporter edge', () => {
   });
 });
 
+describe('the executor edge (M23 PR2)', () => {
+  const EXECUTOR_CASE = {
+    caseId: CASE.caseId,
+    contactId: '44444444-4444-4444-8444-444444444444',
+    decedentUserId: CASE.decedentUserId,
+    status: 'verified',
+    verifiedAt: '2026-08-19T00:00:00.000Z',
+    createdAt: '2026-08-18T00:00:00.000Z',
+  };
+  const STAGE = {
+    stageId: '55555555-5555-4555-8555-555555555555',
+    caseId: CASE.caseId,
+    stage: 'inventory',
+    status: 'requested',
+    requestedBy: CASE.reportedBy,
+    requestedAt: '2026-08-20T00:00:00.000Z',
+    decidedBy: null,
+    decidedAt: null,
+  };
+
+  it('addresses the three routes and forwards the caller’s own bearer', async () => {
+    const { client, calls } = clientWith([
+      response(200, [EXECUTOR_CASE]),
+      response(200, [STAGE]),
+      response(201, STAGE),
+    ]);
+    await client.executorCases(TOKEN);
+    await client.listStages(TOKEN, CASE.caseId);
+    await client.requestStage(TOKEN, CASE.caseId, 'inventory');
+
+    expect(calls.map((c) => `${String(c.init.method)} ${c.url}`)).toEqual([
+      `GET ${BASE}/v1/settlement/executor-cases`,
+      `GET ${BASE}/v1/settlement/cases/${CASE.caseId}/stages`,
+      `POST ${BASE}/v1/settlement/cases/${CASE.caseId}/stages`,
+    ]);
+    for (const call of calls) {
+      const headers = call.init.headers as Record<string, string>;
+      expect(headers['authorization']).toBe(`Bearer ${TOKEN}`);
+      expect(Object.keys(headers).join(',')).not.toMatch(/internal|x-estate-service|api-key/i);
+    }
+    // The stage crosses the wire in the SERVICE's vocabulary. The GraphQL enum
+    // is uppercase and the lowering happens one layer up; this asserts the
+    // shape that actually leaves the process.
+    expect(JSON.parse((calls[2]?.init.body as string) ?? '{}')).toEqual({ stage: 'inventory' });
+  });
+
+  it('DROPS the actor ids the service puts on a stage', async () => {
+    const { client } = clientWith([response(200, [STAGE])]);
+    const [stage] = await client.listStages(TOKEN, CASE.caseId);
+    // `requestedBy` and `decidedBy` are raw user UUIDs. Neither is modelled, so
+    // no later resolver can project one into a grieving family member's
+    // browser — the absence-over-filter rule, applied to two fields.
+    expect(Object.keys(stage ?? {}).sort()).toEqual([
+      'caseId',
+      'decidedAt',
+      'requestedAt',
+      'stage',
+      'stageId',
+      'status',
+    ]);
+    expect(JSON.stringify(stage)).not.toContain(CASE.reportedBy);
+  });
+
+  it('encodes the case id on both stage routes', async () => {
+    const { client, calls } = clientWith([response(200, []), response(201, STAGE)]);
+    await client.listStages(TOKEN, '../../queue');
+    await client.requestStage(TOKEN, '../../queue', 'inventory');
+    for (const call of calls) {
+      expect(call.url).toContain('%2F');
+      expect(call.url).not.toContain('/../');
+    }
+  });
+
+  /**
+   * THE THREE 409s ON ONE ROUTE, which is the whole reason `mapError` takes a
+   * per-route meaning. They arrive with the same status and three different
+   * remedies: request the rung below, wait for a review already under way, and
+   * wait for a case to reach a status it has not reached. Collapsing any pair
+   * sends an executor somewhere useless — and letting one fall through to the
+   * generic status error renders a control firing as an outage.
+   */
+  const STAGE_REFUSALS: ReadonlyArray<{ token: string; code: string }> = [
+    { token: 'stage_out_of_order', code: 'STAGE_OUT_OF_ORDER' },
+    { token: 'stage_exists', code: 'STAGE_ALREADY_REQUESTED' },
+    { token: 'case_not_verified', code: 'CASE_NOT_VERIFIED' },
+  ];
+
+  it.each(STAGE_REFUSALS)('maps $token to $code on the stage request', async ({ token, code }) => {
+    const { client } = clientWith([response(409, { error: token })]);
+    await expect(client.requestStage(TOKEN, CASE.caseId, 'inventory')).rejects.toMatchObject({
+      extensions: { code },
+    });
+  });
+
+  it('checked every row, and they are three DISTINCT codes', () => {
+    // Anti-vacuity: `it.each` over an empty table is a green suite, and three
+    // rows collapsed onto one code would pass the table above.
+    expect(STAGE_REFUSALS).toHaveLength(3);
+    expect(new Set(STAGE_REFUSALS.map((r) => r.code)).size).toBe(3);
+  });
+
+  it('does NOT lend those sentences to the routes that never declared them', async () => {
+    // `voidCase` and `listStages` declare no meaning for a 409, so they get the
+    // generic status error rather than borrowing whichever sentence was
+    // written first. Fail closed: vague, never confidently wrong.
+    const { client } = clientWith([
+      response(409, { error: 'stage_out_of_order' }),
+      response(409, { error: 'stage_exists' }),
+    ]);
+    await expect(client.voidCase(TOKEN, CASE.caseId)).rejects.not.toMatchObject({
+      extensions: { code: 'STAGE_OUT_OF_ORDER' },
+    });
+    await expect(client.listStages(TOKEN, CASE.caseId)).rejects.not.toMatchObject({
+      extensions: { code: 'STAGE_ALREADY_REQUESTED' },
+    });
+  });
+
+  it('refuses a malformed downstream answer rather than half-trusting it', async () => {
+    const { client } = clientWith([response(200, [{ caseId: EXECUTOR_CASE.caseId }])]);
+    await expect(client.executorCases(TOKEN)).rejects.toBeDefined();
+  });
+
+  it('answers the uniform 404 on every executor route', async () => {
+    const { client } = clientWith([
+      response(404, { error: 'not_found' }),
+      response(404, { error: 'not_found' }),
+      response(404, { error: 'not_found' }),
+    ]);
+    await expect(client.executorCases(TOKEN)).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+    await expect(client.listStages(TOKEN, CASE.caseId)).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+    await expect(client.requestStage(TOKEN, CASE.caseId, 'inventory')).rejects.toMatchObject({
+      extensions: { code: 'NOT_FOUND' },
+    });
+  });
+});
+
 describe('what the client refuses to carry', () => {
   it('parses evidence as opaque and keeps ids out of the parsed value', async () => {
     const { client } = clientWith([

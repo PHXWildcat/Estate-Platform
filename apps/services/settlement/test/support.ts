@@ -12,6 +12,7 @@ import {
   type CaseRow,
   type CaseStatus,
   type EvidenceEntry,
+  type ExecutorCaseRow,
 } from '../src/cases.repo';
 import type { SettlementConfig } from '../src/config';
 import type { ContactAttemptsRepo, ContactChannel } from '../src/contact-attempts.repo';
@@ -62,6 +63,17 @@ export function fakeDb(): Db {
 
 export class InMemoryCases {
   readonly rows = new Map<string, CaseRow>();
+
+  /**
+   * The core-cluster half of `listAdministeredBy`'s join (M23 PR2).
+   *
+   * Set by the harness to the SAME `FakeCoreReads` the service's own authority
+   * checks consult, rather than a second executor list kept here. A double
+   * that answered "yes, an executor" to the listing and "no" to
+   * `administrableCaseFor` would be a fixture agreeing with itself about a
+   * disagreement the real join cannot have.
+   */
+  executorLookup: FakeCoreReads | null = null;
 
   constructor(private readonly clock: () => Date) {}
 
@@ -116,6 +128,25 @@ export class InMemoryCases {
         (r) => r.decedent_user_id === userId || r.reported_by === userId,
       ),
     );
+  }
+
+  listAdministeredBy(_q: unknown, userId: string): Promise<ExecutorCaseRow[]> {
+    const out: ExecutorCaseRow[] = [];
+    for (const row of this.rows.values()) {
+      if (!ADMINISTRABLE_STATUSES.includes(row.status)) continue;
+      const core = this.executorLookup;
+      // BOTH halves of the real join, off the ONE fake: a live contact link
+      // AND an executor designation on it. A contact who is merely linked is
+      // not an executor, and reading the designation from a set kept here
+      // would let this listing and `administrableCaseFor` disagree about a
+      // caller — which the real query and `isExecutorOf` cannot do, since they
+      // read the same two tables.
+      const contactId = core?.contactIdFor(row.decedent_user_id, userId) ?? null;
+      if (contactId === null) continue;
+      if (!core?.executors.has(`${row.decedent_user_id}:${userId}`)) continue;
+      out.push({ ...row, contact_id: contactId });
+    }
+    return Promise.resolve(out);
   }
 
   // Both worklists filter on the REAL status sets rather than a list retyped
@@ -397,10 +428,25 @@ export class FakeCoreReads {
   /** `${decedent}:${user}` pairs designated executor on_death_verified. */
   readonly executors = new Set<string>();
 
+  /** `${decedent}:${user}` -> the contact row id, stable across reads. */
+  readonly contactIds = new Map<string, string>();
+
   link(decedentUserId: string, userId: string): void {
     const set = this.links.get(decedentUserId) ?? new Set<string>();
     set.add(userId);
     this.links.set(decedentUserId, set);
+    // A contact id that changed per read would let a test pass while the real
+    // query returns a different row each time — `reportableEstates` used to
+    // mint one with `randomUUID()` inside the loop.
+    const key = `${decedentUserId}:${userId}`;
+    if (!this.contactIds.has(key)) {
+      this.contactIds.set(key, randomUUID());
+    }
+  }
+
+  /** The contact id the real join would return, or null if no link exists. */
+  contactIdFor(decedentUserId: string, userId: string): string | null {
+    return this.contactIds.get(`${decedentUserId}:${userId}`) ?? null;
   }
 
   isLinkedContact(decedentUserId: string, userId: string): Promise<boolean> {
@@ -415,7 +461,11 @@ export class FakeCoreReads {
     const estates: ReportableEstate[] = [];
     for (const [decedent, users] of this.links) {
       if (users.has(userId)) {
-        estates.push({ decedentUserId: decedent, contactId: randomUUID(), roles: [] });
+        estates.push({
+          decedentUserId: decedent,
+          contactId: this.contactIdFor(decedent, userId) as string,
+          roles: [],
+        });
       }
     }
     return Promise.resolve(estates);
@@ -538,6 +588,8 @@ export function buildHarness(
   const settings = new InMemorySettings();
   const tasks = new InMemoryTasks();
   const coreReads = new FakeCoreReads();
+  // ONE source for the executor join — see `InMemoryCases.executorLookup`.
+  cases.executorLookup = coreReads;
   const identity = new FakeIdentityLock();
   const documentsHold = new FakeDocumentsHold();
   const notifier = new StubNotifier();
@@ -783,6 +835,8 @@ export function buildAdminHarness(monitor?: OperatorBreadthMonitor): AdminHarnes
   const distributions = new InMemoryDistributions(clockFn);
   const operators = new InMemoryOperators();
   const coreReads = new FakeCoreReads();
+  // ONE source for the executor join — see `InMemoryCases.executorLookup`.
+  cases.executorLookup = coreReads;
   const crypto = new FakeFieldCrypto();
   const producer = new InMemoryAuditProducer();
   const events = new EventsService(producer, clockFn);

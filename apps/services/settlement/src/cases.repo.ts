@@ -75,6 +75,15 @@ export interface CaseRow {
   updated_at: Date;
 }
 
+/**
+ * A case joined to the contact row that names the caller its executor
+ * (M23 PR2). `contact_id` is the handle the BFF gives the browser — a raw
+ * `decedent_user_id` never leaves the BFF.
+ */
+export interface ExecutorCaseRow extends CaseRow {
+  contact_id: string;
+}
+
 const COLUMNS = `id, decedent_user_id, status, reported_by, report_source,
        verification_evidence, human_review_by, human_review_at,
        claimed_by, claimed_at,
@@ -169,6 +178,54 @@ export class CasesRepo {
          FROM settlement_cases
         WHERE status IN (${statusList(ADMINISTRABLE_STATUSES)})
         ORDER BY verified_at DESC, id`,
+    );
+  }
+
+  /**
+   * THE EXECUTOR'S OWN WORKLIST (M23 PR2).
+   *
+   * A THIRD listing rather than a widened `listForUser`, for the reason M21
+   * PR3b gave when it split `administrable` off `queue`: the two answer
+   * different questions for different people. `listForUser` is
+   * `decedent_user_id = $1 OR reported_by = $1` — cases ABOUT you and cases you
+   * FILED — and the web splits its result on `aboutMe` to render two panels of
+   * one list. Adding a third OR arm would have put somebody else's estate into
+   * both panels, under a heading that says it is yours.
+   *
+   * The status filter is `ADMINISTRABLE_STATUSES`, the same constant
+   * `listAdministrable` uses and the same one every executor verb tests, so a
+   * ninth case status cannot appear on this list without appearing on the
+   * operator's too. A pre-verification case is deliberately invisible here:
+   * until an operator verifies a death, a designated executor is a living
+   * person's nominee with nothing to administer, and listing the case would
+   * tell them a report exists about somebody who may well be alive.
+   *
+   * The join is the M2 dormant role model — `role = 'executor'` with
+   * `effective_condition = 'on_death_verified'` — and it is the SAME predicate
+   * `isExecutorOf` tests one case at a time. `contacts.id` comes back with each
+   * row because the BFF names an estate to the browser by contact id and never
+   * by user id; returning it here saves a second lookup that could disagree.
+   */
+  async listAdministeredBy(q: Queryable | Db, userId: string): Promise<ExecutorCaseRow[]> {
+    return q.query<ExecutorCaseRow>(
+      `SELECT ${COLUMNS.split(',')
+        .map((c) => `sc.${c.trim()}`)
+        .join(', ')},
+              c.id AS contact_id
+         FROM settlement_cases sc
+         JOIN contacts c
+           ON c.owner_user_id = sc.decedent_user_id
+          AND c.linked_user_id = $1
+          AND c.deleted_at IS NULL
+         JOIN role_assignments ra
+           ON ra.contact_id = c.id
+          AND ra.owner_user_id = sc.decedent_user_id
+          AND ra.role = 'executor'
+          AND ra.effective_condition = 'on_death_verified'
+          AND ra.deleted_at IS NULL
+        WHERE sc.status IN (${statusList(ADMINISTRABLE_STATUSES)})
+        ORDER BY sc.verified_at DESC, sc.id`,
+      [userId],
     );
   }
 

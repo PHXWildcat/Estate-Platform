@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 import { SessionCard } from '../../components/SessionCard';
+import { SettlingEstatesPanel } from '../../components/SettlingEstatesPanel';
 
 export default function HomePage(): ReactElement {
   return (
@@ -14,6 +15,13 @@ export default function HomePage(): ReactElement {
           audited, and the most private items only you can unlock.
         </p>
       </section>
+      {/*
+        M23 PR2, ABOVE the session card and SELF-HIDING: it renders nothing at
+        all unless settlement returns an estate this person is settling. An
+        executor arrives here days after a death and should not have to hunt;
+        everybody else never learns the panel exists.
+      */}
+      <SettlingEstatesPanel />
       <SessionCard />
     </div>
   );

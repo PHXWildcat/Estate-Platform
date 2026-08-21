@@ -45,9 +45,11 @@ import type {
   SaveProfileInput,
 } from './profile-client';
 import type {
+  ExecutorCase,
   SettlementCase as SettlementCaseDto,
   SettlementClient,
   SettlementSettings,
+  SettlementStage,
 } from './settlement-client';
 import {
   ACCESS_COOKIE,
@@ -750,6 +752,94 @@ export const typeDefs = /* GraphQL */ `
     because somebody else never filled in their profile.
     """
     reportableEstates: [ReportableEstate!]!
+    """
+    The estates this caller is SETTLING as a designated executor (M23 PR2).
+
+    A different question from 'settlementCases', which is "cases about me, and
+    cases I filed". Settlement answers it with a third listing rather than a
+    widened one, because a third arm on that OR would have put somebody else's
+    estate into a panel headed "Reports about you".
+
+    Only cases an operator has already verified appear. A designated executor
+    of a living person has nothing to administer, and listing a case before
+    verification would announce a death report about somebody who may be alive.
+    """
+    executorCases: [ExecutorCase!]!
+    """
+    The staged-access ladder on one estate (docs/03 §5.1 control 5).
+
+    Every rung an executor has requested and what an operator decided. Requested
+    is not approved and approved is not permanent — a stage can be revoked, and
+    this list says so rather than caching a grant.
+    """
+    estateStages(caseId: ID!): [EstateAccessStage!]!
+    """
+    A decedent's asset inventory, under an APPROVED 'INVENTORY' stage.
+
+    Not the caller's own assets — a separate service route with its own
+    authorization model, which re-asks settlement on every call and audits the
+    read as 'asset.estate.viewed' naming the case that authorised it. The BFF
+    adds nothing to that decision: it resolves the case id to an estate, and
+    forwards the caller's own bearer.
+    """
+    estateInventory(caseId: ID!): [Asset!]!
+  }
+
+  """
+  One rung of the staged-access ladder, as an EXECUTOR needs to see it.
+
+  NO ACTOR IDS. The service's own shape carries 'requestedBy' and 'decidedBy'
+  as raw user UUIDs; neither is projected. The executor cannot act on either,
+  and naming the operator who decided a stage would put a staff member's id in
+  a grieving family member's browser.
+  """
+  type EstateAccessStage {
+    stage: AccessStage!
+    """
+    'requested', 'approved', 'denied' or 'revoked' — the service's own
+    vocabulary as a string, for the reason every other status field here is
+    one: the DDL owns the list, and a serialised enum turns a value this build
+    has not learned yet into a hard execution failure.
+    """
+    status: String!
+    requestedAt: String!
+    decidedAt: String
+  }
+
+  """
+  The staged-access ladder, IN ORDER. Vault is last by design: Zone A is the
+  sealed material, and it is never released alongside the inventory.
+
+  Mirrors 'ACCESS_STAGES' in '@estate/settlement-client', which is the runtime's
+  own list — 'apps/bff/test/settlement-executor.spec.ts' derives this enum's
+  members from it rather than restating them.
+  """
+  enum AccessStage {
+    INVENTORY
+    DOCUMENTS
+    VAULT
+  }
+
+  """
+  One estate this caller is settling (M23 PR2).
+
+  NO USER ID, the same rule 'ReportableEstate' holds: settlement identifies an
+  estate by 'decedentUserId' and this type carries 'caseId' instead. Every
+  executor query takes the case id and the BFF re-reads THIS list to resolve
+  it, so a handle the browser supplies is checked against the service rather
+  than trusted — and a case id names something only to a caller with authority
+  over it (M23 PR1).
+  """
+  type ExecutorCase {
+    caseId: ID!
+    """
+    The decedent's legal name, or NULL when they never saved a profile. Null is
+    a real answer — say so in words, never render "Unknown".
+    """
+    ownerName: String
+    "'verified', 'active' or 'distributing' — see EstateAccessStage.status."
+    status: String!
+    verifiedAt: String
   }
 
   """
@@ -1435,6 +1525,16 @@ export const typeDefs = /* GraphQL */ `
     """
     reportDeath(contactId: ID!, documentId: ID, documentVersion: Int): SettlementCase!
     """
+    Ask an operator to approve one rung of staged access (M23 PR2).
+
+    STEP-UP GATED at the service, and unlike most step-ups on this schema the
+    reason is not that the action is dangerous on its own — it grants nothing —
+    but that it is the first move in a sequence that ends at a dead person's
+    vault. The ladder cannot be skipped: requesting DOCUMENTS before INVENTORY
+    is approved answers STAGE_OUT_OF_ORDER.
+    """
+    requestEstateAccess(caseId: ID!, stage: AccessStage!): EstateAccessStage!
+    """
     Attach a further document to a case you reported (M22 PR4c).
 
     DOCUMENTS ONLY. Settlement refuses a non-operator's provider match (M22
@@ -1622,6 +1722,20 @@ interface ReportableEstatePayload {
   readonly roles: readonly string[];
 }
 
+interface ExecutorCasePayload {
+  readonly caseId: string;
+  readonly ownerName: string | null;
+  readonly status: string;
+  readonly verifiedAt: string | null;
+}
+
+interface EstateAccessStagePayload {
+  readonly stage: string;
+  readonly status: string;
+  readonly requestedAt: string;
+  readonly decidedAt: string | null;
+}
+
 interface SettlementCasePayload {
   readonly caseId: string;
   readonly status: string;
@@ -1675,6 +1789,23 @@ export function toSettlementCasePayload(
     createdAt: dto.createdAt,
     aboutMe,
     voidable: aboutMe && VOIDABLE_STATUSES.includes(dto.status),
+  };
+}
+
+/**
+ * The service's stage shape, narrowed. `requestedBy` and `decidedBy` are
+ * dropped here rather than filtered at the edge of a resolver, so there is one
+ * place where an actor id could ever be added back.
+ */
+function toStagePayload(dto: SettlementStage): EstateAccessStagePayload {
+  return {
+    // Back UP to the enum's member name. GraphQL serialises an enum as its
+    // NAME, so a lowercase value here would fail serialisation outright rather
+    // than compare permanently false — noisy, which is the good direction.
+    stage: dto.stage.toUpperCase(),
+    status: dto.status,
+    requestedAt: dto.requestedAt,
+    decidedAt: dto.decidedAt,
   };
 }
 
@@ -1822,6 +1953,45 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
       throw bffError('UNAUTHENTICATED');
     }
     return session.userId;
+  };
+
+  /**
+   * Decedent names, keyed by contact id — DECORATION, never authority.
+   *
+   * A failed profile read answers an EMPTY map rather than throwing, so an
+   * executor whose estates cannot be named still reaches every one of them.
+   * The alternative fails in the direction that matters: `Promise.all` with
+   * settlement would render a profile outage as "you are settling nothing",
+   * which is a failed read wearing the face of a real empty answer.
+   *
+   * It cannot fail open, because it grants nothing. A name is the only thing
+   * on this path, and the absence of one renders as words rather than a
+   * guess (never "Unknown").
+   */
+  const namesByContact = async (token: string): Promise<Map<string, string | null>> => {
+    try {
+      const named = await profile.linkedEstates(token);
+      return new Map(named.map((row) => [row.contactId, row.ownerName]));
+    } catch {
+      return new Map();
+    }
+  };
+
+  /**
+   * Turn a case id from the browser back into the estate it names, against
+   * settlement's own list of what this caller may administer.
+   *
+   * The 404 is the same one settlement gives, and for the same reason: a case
+   * id the caller has no authority over must not be distinguishable from one
+   * that names nothing (M23 PR1). This lookup is what keeps a `decedentUserId`
+   * out of the browser without trusting an argument in its place.
+   */
+  const administeredEstate = async (token: string, caseId: string): Promise<ExecutorCase> => {
+    const estate = (await settlement.executorCases(token)).find((row) => row.caseId === caseId);
+    if (estate === undefined) {
+      throw bffError('NOT_FOUND');
+    }
+    return estate;
   };
 
   return createSchema<RequestContext>({
@@ -2121,6 +2291,64 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
             ownerName: nameByContact.get(estate.contactId) ?? null,
             roles: estate.roles,
           }));
+        },
+        /**
+         * SETTLEMENT IS THE SPINE, profile decorates — the reportable-estates
+         * join, held to on the other surface. Settlement decides which estates
+         * this caller may administer; profile only holds the decedent's name,
+         * and an estate whose owner never saved a profile keeps its place and
+         * loses only that name.
+         *
+         * A FAILED PROFILE READ MUST NOT EMPTY THIS LIST, so the two are not
+         * awaited together: an executor whose estates cannot be named still
+         * needs to reach them, and `Promise.all` would turn a decoration
+         * failure into "you are settling nothing".
+         */
+        executorCases: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<ExecutorCasePayload[]> => {
+          const token = requireAccessToken(ctx);
+          const cases = await settlement.executorCases(token);
+          const nameByContact = await namesByContact(token);
+          return cases.map((row) => ({
+            caseId: row.caseId,
+            ownerName: nameByContact.get(row.contactId) ?? null,
+            status: row.status,
+            verifiedAt: row.verifiedAt,
+          }));
+        },
+        /**
+         * FORWARDED, NOT RESOLVED. Settlement's own `assertCaseVisible` decides
+         * who may read a case's stages and answers the uniform 404 otherwise,
+         * so re-reading `executorCases` here would be a second authority check
+         * that can only disagree with the authoritative one — and would refuse
+         * the decedent's own reader and the operator console, who are admitted
+         * on that route by design.
+         */
+        estateStages: async (
+          _parent: unknown,
+          args: { caseId: string },
+          ctx: RequestContext,
+        ): Promise<EstateAccessStagePayload[]> =>
+          (await settlement.listStages(requireAccessToken(ctx), args.caseId)).map(toStagePayload),
+        /**
+         * RESOLVE FIRST, and here the resolve is load-bearing rather than
+         * belt-and-braces: assets identifies an estate by `ownerUserId` and
+         * this schema never lets one into the browser, so the case id has to
+         * become a user id somewhere. Doing it against settlement's own list
+         * means a case id the caller has no authority over never reaches
+         * assets at all, and answers the same NOT_FOUND settlement would.
+         */
+        estateInventory: async (
+          _parent: unknown,
+          args: { caseId: string },
+          ctx: RequestContext,
+        ): Promise<Asset[]> => {
+          const token = requireAccessToken(ctx);
+          const estate = await administeredEstate(token, args.caseId);
+          return assets.listEstate(token, estate.decedentUserId);
         },
         linkedEstates: async (
           _parent: unknown,
@@ -2724,6 +2952,24 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
               : [],
           });
           return toSettlementCasePayload(reported, callerUserId);
+        },
+        /**
+         * The stage vocabulary crosses the wire as a GraphQL enum, which
+         * serialises as the member NAME — `INVENTORY`, not `inventory`. The
+         * service's own vocabulary is lowercase, so the lowering happens HERE,
+         * once, rather than in three call sites; `settlement-executor.spec.ts`
+         * derives the enum's members from `ACCESS_STAGES` so the two lists
+         * cannot drift apart into a permanently-false comparison (the M20 PR1
+         * `MfaLevel` defect).
+         */
+        requestEstateAccess: async (
+          _parent: unknown,
+          args: { caseId: string; stage: string },
+          ctx: RequestContext,
+        ): Promise<EstateAccessStagePayload> => {
+          const token = requireAccessToken(ctx);
+          const stage = await settlement.requestStage(token, args.caseId, args.stage.toLowerCase());
+          return toStagePayload(stage);
         },
         attachCaseEvidence: async (
           _parent: unknown,

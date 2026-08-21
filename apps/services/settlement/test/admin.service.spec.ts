@@ -80,6 +80,112 @@ async function readyCase(h: AdminHarness): Promise<string> {
   return caseId;
 }
 
+/**
+ * THE EXECUTOR'S FRONT DOOR (M23 PR2).
+ *
+ * Until this route existed, every verb in `admin.service.ts` was reachable
+ * only by a caller who already held a case id — the gap M21 PR3b closed for
+ * operators, keyed on the other audience. The properties that matter are what
+ * it LEAVES OUT: a case an operator has not verified, an estate that links the
+ * caller without designating them executor, and anybody else's estate at all.
+ */
+describe('the estates an executor is settling', () => {
+  it('names a verified estate, with the CONTACT id the browser will use', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+
+    const mine = await h.admin.executorCases(EXECUTOR);
+    // EQUALITY on everything but the timestamp the fixture does not fix, so a
+    // field added to the DTO — a `decedentUserId` sibling, say — fails here
+    // rather than sliding through a `toMatchObject`.
+    expect(mine.map(({ createdAt, ...rest }) => rest)).toEqual([
+      {
+        caseId,
+        contactId: h.coreReads.contactIdFor(DECEDENT, EXECUTOR),
+        decedentUserId: DECEDENT,
+        status: 'verified',
+        verifiedAt: NOW.toISOString(),
+      },
+    ]);
+    expect(typeof mine[0]?.createdAt).toBe('string');
+    // The contact id is the estate's handle end to end, so it must be the
+    // one the reportable list gives for the same pair — two lookups that
+    // could disagree is what returning it on the case row avoids.
+    const [estate] = await h.coreReads.reportableEstates(EXECUTOR);
+    expect(mine[0]?.contactId).toBe(estate?.contactId);
+  });
+
+  it('is EMPTY before an operator verifies the death', async () => {
+    const h = buildAdminHarness();
+    const row = await h.cases.insert(undefined as never, {
+      decedentUserId: DECEDENT,
+      reportedBy: REPORTER,
+      source: 'trusted_contact',
+      evidence: [],
+    });
+    h.coreReads.link(DECEDENT, EXECUTOR);
+    h.coreReads.executors.add(`${DECEDENT}:${EXECUTOR}`);
+
+    // A designated executor of a LIVING person has nothing to administer, and
+    // listing the case would tell them a death report exists about somebody
+    // who may well be alive — the reporter's own disclosure to make, not ours.
+    expect(await h.admin.executorCases(EXECUTOR)).toEqual([]);
+
+    // Positive control: the same case, once verified, DOES appear — so the
+    // assertion above is about the status filter and not about the join
+    // failing to match anything at all.
+    markCaseVerified(h.cases, row.id, NOW);
+    expect((await h.admin.executorCases(EXECUTOR)).map((c) => c.caseId)).toEqual([row.id]);
+  });
+
+  it('a LINKED contact who was never designated executor sees nothing', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+    // The reporter is linked to this estate — they had to be, to file — and
+    // holds no executor designation. Being trusted enough to report a death is
+    // not being trusted to settle the estate.
+    h.coreReads.link(DECEDENT, REPORTER);
+    expect(await h.admin.executorCases(REPORTER)).toEqual([]);
+    expect(await h.admin.executorCases(STRANGER)).toEqual([]);
+    // Positive control on the same fixture.
+    expect((await h.admin.executorCases(EXECUTOR)).map((c) => c.caseId)).toEqual([caseId]);
+  });
+
+  it('does not leak one estate into another executor’s list', async () => {
+    const h = buildAdminHarness();
+    const mine = await verifiedCase(h);
+    const otherDecedent = randomUUID();
+    const otherExecutor = randomUUID();
+    const other = await h.cases.insert(undefined as never, {
+      decedentUserId: otherDecedent,
+      reportedBy: REPORTER,
+      source: 'trusted_contact',
+      evidence: [],
+    });
+    markCaseVerified(h.cases, other.id, NOW);
+    h.coreReads.link(otherDecedent, otherExecutor);
+    h.coreReads.executors.add(`${otherDecedent}:${otherExecutor}`);
+
+    // SETS, not counts: a join that matched the wrong contact row would
+    // return one case to each caller and preserve every count in sight.
+    expect((await h.admin.executorCases(EXECUTOR)).map((c) => c.caseId)).toEqual([mine]);
+    expect((await h.admin.executorCases(otherExecutor)).map((c) => c.caseId)).toEqual([other.id]);
+  });
+
+  it('emits NO audit event — the reads that disclose something audit themselves', async () => {
+    const h = buildAdminHarness();
+    await verifiedCase(h);
+    const before = auditActions(h.producer).length;
+    await h.admin.executorCases(EXECUTOR);
+    expect(auditActions(h.producer)).toHaveLength(before);
+    // Positive control: this harness DOES record settlement events, so the
+    // assertion above is about this route and not about a silent producer.
+    const caseId = (await h.admin.executorCases(EXECUTOR))[0]?.caseId as string;
+    await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    expect(auditActions(h.producer)).toContain('settlement.stage.requested');
+  });
+});
+
 describe('staged executor access (docs/03 §5.1 control 5)', () => {
   it('the ladder cannot be skipped: documents needs inventory approved first', async () => {
     const h = buildAdminHarness();

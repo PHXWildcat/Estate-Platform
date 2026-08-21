@@ -48,6 +48,9 @@ const ACK = {
   replayed: false,
 };
 
+/** The decedent whose estate an executor reads — never the caller. */
+const OWNER = '9f9f9f9f-0000-4000-8000-00000000000b';
+
 describe('FetchAssetsClient', () => {
   it('sends the bearer on list, and parses the array', async () => {
     const fetchFn = jest.fn().mockResolvedValue(response(200, [ASSET]));
@@ -65,6 +68,55 @@ describe('FetchAssetsClient', () => {
     expect((fetchFn.mock.calls[0] as [string, RequestInit])[0]).toBe(
       `${BASE}/v1/assets?includeRetired=true`,
     );
+  });
+
+  /**
+   * ANOTHER PERSON'S ESTATE, under a settlement staged grant (M23 PR2).
+   *
+   * A separate METHOD for a separate ROUTE, and the separation is the point:
+   * `/v1/estates/:ownerUserId/assets` carries its own authorization model
+   * (assets asks settlement for an approved `inventory` stage) and its own
+   * audit action naming the case that authorised the read. Merging it into
+   * `list` would have put a non-owner branch inside the owner's hot path.
+   */
+  it('GETs the ESTATE route, and never the owner’s own list', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, [ASSET]));
+    const client = new FetchAssetsClient(BASE, fetchFn);
+    await expect(client.listEstate(TOKEN, OWNER)).resolves.toEqual([ASSET]);
+    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE}/v1/estates/${OWNER}/assets`);
+    expect(url).not.toContain('/v1/assets');
+    expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
+    // The BFF adds nothing to settlement's decision and cannot: it forwards
+    // the caller's own bearer and holds no credential of its own.
+    expect(Object.keys(init.headers as Record<string, string>).join(',')).not.toMatch(
+      /internal|x-estate-service|api-key/i,
+    );
+  });
+
+  it('encodes the owner id rather than interpolating it into the path', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, []));
+    await new FetchAssetsClient(BASE, fetchFn).listEstate(TOKEN, '../../assets');
+    const [url] = fetchFn.mock.calls[0] as [string];
+    expect(url).toContain('%2F');
+    expect(url).not.toContain('/../');
+  });
+
+  it('refuses a malformed estate list rather than half-trusting it', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(response(200, [{ assetId: ASSET.assetId }]));
+    await expect(
+      new FetchAssetsClient(BASE, fetchFn).listEstate(TOKEN, OWNER),
+    ).rejects.toBeDefined();
+  });
+
+  it('maps a refused stage to a refusal, not to an empty estate', async () => {
+    // Assets answers 403 when settlement says no approved `inventory` stage.
+    // An empty array here would render as "this estate holds nothing", which is
+    // a statement about a dead person's affairs made on no evidence at all.
+    const fetchFn = jest.fn().mockResolvedValue(response(403, { error: 'forbidden' }));
+    await expect(
+      new FetchAssetsClient(BASE, fetchFn).listEstate(TOKEN, OWNER),
+    ).rejects.toBeDefined();
   });
 
   it('GETs the detail and parses the full shape (list shape is refused there)', async () => {

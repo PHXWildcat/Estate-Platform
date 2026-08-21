@@ -612,6 +612,52 @@ describeIfPg('settlement (M7): fraudulent-death-trigger controls end to end', ()
     expect(refusal(onReal)).toEqual({ status: 404, body: { error: 'not_found' } });
     expect(refusal(onReal)).toEqual(refusal(onAbsent));
 
+    // AND THE EXECUTOR CAN NOW FIND THIS CASE WITHOUT HOLDING ITS ID (M23 PR2).
+    //
+    // Every verb above is keyed on a case id, and until this route the only
+    // way a designated executor could obtain one was from somewhere outside
+    // the product. The join behind it is three tables wide — settlement_cases,
+    // contacts, role_assignments — and this is the only place it runs against
+    // real Postgres THROUGH the HTTP stack, on rows the flow above created
+    // rather than rows a fixture inserted.
+    const mine = await settlement
+      .get('/v1/settlement/executor-cases')
+      .set(reporter.bearer)
+      .expect(200);
+    expect((mine.body as Array<{ caseId: string }>).map((row) => row.caseId)).toEqual([caseId]);
+    // The contact id is the handle the BFF gives a browser, and it is the same
+    // one the reportable list resolves for this pair — two reads that could
+    // disagree is what returning it on the case row avoids.
+    const reportable = await settlement
+      .get('/v1/settlement/reportable-estates')
+      .set(reporter.bearer)
+      .expect(200);
+    const estate = (reportable.body as Array<{ decedentUserId: string; contactId: string }>).find(
+      (row) => row.decedentUserId === owner.userId,
+    );
+    expect((mine.body as Array<{ contactId: string }>)[0]?.contactId).toBe(estate?.contactId);
+
+    // The outsider is settling nothing — an EMPTY list, not a refusal, because
+    // "you administer no estates" is a true answer to a question anybody may
+    // ask about themselves.
+    const theirs = await settlement
+      .get('/v1/settlement/executor-cases')
+      .set(outsider.bearer)
+      .expect(200);
+    expect(theirs.body).toEqual([]);
+
+    // ...and the ladder they just climbed reads back, on the same case.
+    const ladder = await settlement
+      .get(`/v1/settlement/cases/${caseId}/stages`)
+      .set(reporter.bearer)
+      .expect(200);
+    expect(
+      (ladder.body as Array<{ stage: string; status: string }>).map((row) => ({
+        stage: row.stage,
+        status: row.status,
+      })),
+    ).toEqual([{ stage: 'inventory', status: 'requested' }]);
+
     // Verified ⇒ no decedent credential survives: the live token dies via
     // the session-status allowlist, re-login gets the generic 401, and the
     // settled account cannot be unlocked by the service API.

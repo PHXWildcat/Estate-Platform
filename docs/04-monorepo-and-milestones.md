@@ -6837,7 +6837,7 @@ decision booked as progress is how a queue stays untouched.**
 |---|---|---|
 | M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
-| M23 | Executor surface | In progress. EIGHT routes, not the 3 this table said — count them from `EXEMPT_EXECUTOR_*` in `packages/auth-guard/test/route-consumers.spec.ts` rather than from here. §5.1 control 5 has never executed outside a test |
+| M23 | Executor surface | In progress (PR1, PR2). §5.1 control 5 now executes outside a test. What is left is the executor's CASEWORK — count it from `EXEMPT_EXECUTOR_*` in `packages/auth-guard/test/route-consumers.spec.ts`, never from a number in this table, which carried "3 routes" for two milestones while the real count was eight |
 | M24 | Dashboard, computable subset | **Flip-trigger: jumps to the front on a demo date or a signed customer** |
 | M25 | Crypto-shredding execution path | `destroyDek` has no production caller; must precede any new encrypted data class |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
@@ -7241,4 +7241,135 @@ anti-vacuity control — `seedEstate` names them executor, so their success is
 what distinguishes two refusals from two mistyped paths. With the fix reverted
 and `dist` rebuilt, the outsider's request answers 403 where the fence demands
 404.
+
+### M23 PR2 — staged access, end to end (2026-08-20)
+
+docs/03 §5.1 control 5 has existed since M7 and had never run outside a test.
+An executor could not find a case, could not ask for a stage, and could not
+read anything a stage opened. All three shipped here, in one change, because
+each is useless without the others.
+
+**THE FRONT DOOR WAS THE MISSING PIECE.** Every verb in `admin.service.ts` is
+keyed on a case id, and until `GET /v1/settlement/executor-cases` the only way
+a designated executor could get one was from outside the product. Exactly the
+gap M21 PR3b closed for operators, whose three post-verification verbs had no
+listing that could return a case to use them on.
+
+**A THIRD LISTING, NOT A WIDENED ONE.** `listForUser` selects
+`decedent_user_id = $1 OR reported_by = $1` — cases about you, and cases you
+filed — and the web splits that one list into two panels on `aboutMe`. A third
+OR arm would have put somebody else's estate into both, under a heading that
+says it is yours. The status filter is `ADMINISTRABLE_STATUSES`, the same
+constant the operator's worklist uses, so a ninth case status cannot appear on
+one list without appearing on the other. **A pre-verification case is invisible
+even to a live designated executor**: until an operator verifies a death there
+is nothing to administer, and listing it would announce a death report about
+somebody who may be alive.
+
+**NO AUDIT EVENT, argued rather than overlooked.** It would need a new
+`AUDIT_ACTIONS` member — `settlement.queue.viewed` hardcodes
+`actorType: 'operator'`, and putting a false actor type on the trail is worse
+than no event. A new member costs a consumer deployment ahead of its producer
+and buys a record that somebody read their own worklist. The reads that
+disclose something are audited where they happen: `asset.estate.viewed` names
+the case that authorised an inventory read.
+
+**THE JOIN IS PROVEN AGAINST REAL POSTGRES**, because a join is exactly what a
+double cannot prove. `settlement.int.spec.ts` walks a contact link with no
+designation, a designation on the `immediate` condition rather than
+`on_death_verified`, a pre-verification case, a closed one, and a soft-deleted
+contact — each against a positive control on the same connection. The first
+attempt seeded through a status the DDL refuses
+(`settlement_cases_verified_at_matches`), which is the state machine saying a
+verified case does not un-verify; a fixture that has to fight a CHECK is
+arranging a state the product cannot reach.
+
+**THE LADDER IS THE PRODUCT, not a permissions detail.** The screen renders all
+three rungs including the shut ones, because an executor who cannot see the
+shape of it reads a closed door as a broken page. **Exactly one rung is ever
+offered** — the first with no live request whose predecessors are all approved,
+which is `stage_exists` and `assertPredecessorApproved` restated to decide
+whether to OFFER, never to decide authority. A revoked stage takes the
+inventory away with it: access is a grant, not a fact.
+
+**ONE FIXTURE WAS A DATABASE THAT CANNOT EXIST.** A test arranged an approved
+row AND a revoked row for the same stage. Revocation updates the grant in
+place, and `stage_exists` refuses a second row while the first is live, so
+those two rows cannot coexist — the assertion was wrong, not the code.
+
+**NO USER ID REACHES THE BROWSER**, on a surface whose central read is keyed on
+one. `estateInventory(caseId)` resolves the case id against settlement's own
+list to get `decedentUserId`, so a handle the browser supplies is checked
+rather than trusted and an id with no authority behind it never reaches assets
+at all. `estateStages` deliberately does NOT resolve first: settlement's
+`assertCaseVisible` admits the decedent, the reporter, the executor and an
+operator, and a second check here could only disagree with the authoritative
+one.
+
+**THE PANEL IS SELF-HIDING, including on failure.** It sits on the overview
+page and renders nothing at all — no error card — unless settlement returns an
+estate. This is the one place the "a failed read is not an empty one" rule
+bends, and deliberately: the alternative is an error about death cases on the
+first screen after sign-in for ten million people who are settling nothing.
+
+**`STAGE_ALREADY_REQUESTED` exists for a race the UI does not offer.** Without
+it, `stage_exists` fell through to the generic status error and rendered "we
+are already reviewing this" as "something went wrong on our side" — a control
+firing wearing the face of an outage, which sends an executor to support over
+software working correctly.
+
+**Fences.** `EXEMPT_EXECUTOR_SURFACE` lost the assets route and its reason
+narrowed to profile's two contact reads rather than being left describing a
+larger set than it covers; `EXEMPT_EXECUTOR_CASEWORK`'s reason stopped citing
+this document's own wrong route count. `POST /cases/:caseId/stages` moved from
+`pathSharedWith` back to `consumed`, leaving ONE instance of that mechanism —
+when it goes, the mechanism goes with it. The `AccessStage` enum is derived
+from `ACCESS_STAGES` in both directions, and its ORDER is checked separately
+because `enum-parity.test.ts` sorts.
+
+**THE BROWSER FOUND THE DEFECT AGAIN — eleven milestones running.**
+`POST /cases/:caseId/stages` is step-up gated at the service (the controller's
+docstring: everything that MOVES access is), and this screen rendered the
+refusal as a MESSAGE — *"for your security, this action needs a fresh identity
+check"* — with nothing to click. A dead end, on the one action the whole
+surface exists to offer. **No unit test could have seen it**: the fixtures
+decide what the session is, so the suite was entirely green about a screen that
+stranded every real user. `StepUpPrompt` is now raised, replacing the request
+button while it is open, and the retried action carries the stage it was
+refused with rather than re-reading the next rung.
+
+**A mutation on that carrier SURVIVES, and the change is still right.** Swapping
+`request(stepUpFor)` for `request(requestableStage(stages))` keeps every test
+green, because the two cannot disagree today — the ladder is only re-read after
+a SUCCESSFUL request, so nothing moves while a prompt is open. That is the third
+kind of survivor: not a weak test, not an unfaithful edit, but a change that is
+not load-bearing yet. It is written this way so that adding any reload here (a
+poll for the operator's decision is the obvious one) cannot quietly turn "the
+rung you were refused" into "whatever rung is next now".
+
+**Driven end to end on the running stack**: a designated executor sees NOTHING
+while the case is merely reported (`{"data":{"executorCases":[]}}` at 200, a real
+empty answer); the panel appears when it is verified, named from profile; the
+ladder renders all three rungs; the step-up completes; the rung reads "with our
+team"; an operator approval moves the button to DOCUMENTS and opens the
+inventory. The wire carries no `decedentUserId`, no `requestedBy`/`decidedBy`,
+and `estValue` as the decimal string `"450000.00"`. The audit trail records
+`asset.estate.viewed` — actor the executor, `on_behalf_of` the decedent, detail
+`{caseId, count}` — which is docs/03 §5.1 control 5 executing outside a test for
+the first time since M7 built it.
+
+**A GREEN LOCAL INT RUN WAS THE WRONG OBSERVATION.** The executor-join spec
+passed here and failed in CI with `relation "role_assignments_versions" does not
+exist`. Every `<table>_capture_version` trigger inserts into its version table
+UNQUALIFIED, resolved at execution time through `search_path` — and the local
+`PG_TEST_URL` points at the running stack's own `core` database, which has those
+tables in `public` from the real migrations. CI's database does not. Proven by
+running the same reverted code against both: green on the polluted database, red
+on a clean one. A green run against a polluted database is not evidence about a
+clean one.
+
+**An anti-vacuity floor was replaced rather than lowered.** Flipping two routes
+to `consumed` dropped a `>= 20` count below its floor, and editing a number
+down is the ratchet running backwards. The check now asserts the SET of
+declaration kinds present, which is what its own comment always claimed it did.
 
