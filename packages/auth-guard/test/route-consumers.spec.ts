@@ -495,6 +495,17 @@ const EXEMPT_PROVIDER_INTAKE =
 // inventory, PR3 the checklist, PR4b the money) and then removed, which is what
 // an exemption is for.
 
+const EXEMPT_ACCOUNT_ERASURE =
+  'M25 PR2 ships the DECISION half of account erasure \u2014 the request record, the status ' +
+  'allowlist and the withdrawal \u2014 with nothing behind it, on the M21 PR3a precedent that a ' +
+  'boundary reviews better alone than bolted to the screens it will carry. Its consumer is M25 ' +
+  'PR4 (the owner surface, web only; the operator half is NOT being built \u2014 docs/03 \u00a76kk). ' +
+  'Nothing here destroys anything: `destroyDek` still has no production caller and the fan-out ' +
+  'across the eight DEK domains is PR3. WHEN PR4 LANDS, DELETE THIS CONSTANT WITH ITS LAST ENTRY ' +
+  'rather than leaving it for the next milestone \u2014 the EXEMPT_EXECUTOR_CASEWORK precedent, ' +
+  'where an exemption that outlived its reason was read by a reviewer as a true sentence about ' +
+  'the wrong thing.';
+
 const EXEMPT_PLAID_UI =
   'M3 PR2 shipped the Plaid isolate deliberately backend-only (decision log 2026-07-21); the ' +
   'account-linking UI is a later milestone and the plaid e2e drives link/sync/revoke end to end.';
@@ -678,6 +689,9 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'identity POST /v1/auth/email/change': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/email/change/request': consumed(`${BFF}/identity-client.ts`),
   'identity DELETE /v1/auth/email/change': consumed(`${BFF}/identity-client.ts`),
+  'identity GET /v1/account/erasure': { exempt: EXEMPT_ACCOUNT_ERASURE },
+  'identity POST /v1/account/erasure': { exempt: EXEMPT_ACCOUNT_ERASURE },
+  'identity DELETE /v1/account/erasure': { exempt: EXEMPT_ACCOUNT_ERASURE },
 
   // ------------------------------------------------------------------- plaid
   'plaid POST /v1/plaid/link-token': { exempt: EXEMPT_PLAID_UI },

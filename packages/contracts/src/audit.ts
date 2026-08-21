@@ -20,6 +20,18 @@ export const AUDIT_ACTIONS = [
   // verb in the product, step-up gated at its route; the event is what an
   // owner's after-the-fact review keys on.
   'auth.webauthn.revoked',
+  // M25 PR2: the owner asked for their account to be erased, or withdrew the
+  // ask. The REQUEST is step-up gated and the WITHDRAWAL is not — so these two
+  // are not a symmetric pair and should not be read as one. Both carry the
+  // request id and nothing else: there is no PII in an erasure, which is the
+  // one mercy of the subject matter.
+  //
+  // DEPLOY THE CONSUMER BEFORE THE PRODUCER. `AUDIT_ACTIONS` is closed, and a
+  // consumer that predates a member drops every instance as a schema_violation
+  // — observed for real in M23 PR4a. The event that says an account was marked
+  // for destruction is the least survivable silent drop in the catalog.
+  'auth.account.erasure_requested',
+  'auth.account.erasure_cancelled',
   'crypto.field.decrypted',
   'crypto.dek.destroyed',
   // M18: the decrypt-rate baseline (docs/03 §4 TB4). Emitted by the audit

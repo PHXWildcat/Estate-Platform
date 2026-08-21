@@ -4784,3 +4784,83 @@ and cannot be edited — recorded below rather than left to be rediscovered.
   born correct, and the fences read the MIGRATIONS rather than the helper for
   exactly this reason. Recorded because "the helper is fixed" is the tempting
   and wrong summary of this change.
+
+## 6mm. Threat-model delta — M25 PR2, the erasure decision record (2026-08-21)
+
+**AN OWNER CAN NOW ASK TO BE ERASED, AND NOTHING CAN ERASE THEM.** That is the
+deliberate shape of this PR. `destroyDek` still has no production caller; the
+fan-out across the eight DEK domains and the destroy leg are PR3. What ships is
+the record that decides whether the irreversible half ever runs — the M21 PR3a
+precedent, where a boundary reviewed better alone than bolted to the screens it
+would carry.
+
+**THE ALLOWLIST RIDES INSIDE THE STATEMENT.** `insertIfPermitted` is an
+`INSERT ... SELECT ... WHERE EXISTS` naming the permitted statuses, not a read
+above a write. A pre-transaction check and the write it guards are separated by
+every commit that lands between them, and what this record arms is the most
+irreversible process in the product. The suite proves the property rather than
+the shape: it moves the account's status and watches the identical call refuse,
+with no pre-check for a commit to race.
+
+**DENY BY DEFAULT, AND ONLY ONE REFUSAL IS REACHABLE.**
+`ERASURE_PERMITTED_STATUSES` is `['active']`. The other five statuses in the
+`users` CHECK are refused, and four of them cannot reach the code at all:
+`SessionsRepo.findLiveByAccessHash` resolves a session only while the account is
+`active` or `deceased_pending`, so a caller with a live session is necessarily
+one of those two. Knowing WHICH refusal a real person hits is what makes the
+copy decidable, and the allowlist still refuses the unreachable four because
+deny-by-default costs nothing and the reachable set is not a constant.
+
+**TWO REFUSALS, TWO TOKENS.** `open_death_report` for a living owner reported
+dead — a control firing, with a remedy that is theirs to take: sign in, void the
+case, come back. `erasure_not_permitted` for everything else. Collapsing them
+would tell somebody whose account is being taken from them that the product is
+broken, which is the failure the "a control firing must not read as an outage"
+rule names.
+
+**THE PROTECTIVE VERB IS THE UNGATED ONE, and the asymmetry inverts the usual
+shape.** Normally the permissive action is step-up gated and the protective one
+is free (grant vs revoke). Here the permissive action IS the destructive one, so
+`POST` carries `StepUpGuard` and `DELETE` does not. An owner who armed this by
+accident — or whose session was briefly taken — must be able to disarm it with
+nothing but the session they already hold. The cancel also carries NO status
+allowlist: an account that became ineligible to REQUEST erasure while a request
+was live must still be able to withdraw it, or a control meant to protect the
+owner strands the most dangerous record in the system in its armed state. That
+is "fail closed means DE-ESCALATE, not refuse everything", and it is the
+assertion a mutation reddens on its own.
+
+**AUDIT ONLY, NO DOMAIN EVENT.** `auth.account.erasure_requested` and
+`auth.account.erasure_cancelled` join the closed catalog; nothing is published
+to a topic, because nothing consumes one and PR3 will choose its own transport
+with its own consumers. The two are NOT a symmetric pair and the catalog says
+so — one is step-up gated and the other deliberately is not, so a reader tallying
+them as a matched pair would conclude the ceremony is symmetric.
+
+### Residuals
+
+- **[OWNER: M25]** *Three routes ship with no consumer,* declared in the
+  route↔consumer fence under `EXEMPT_ACCOUNT_ERASURE` with PR4 named as the
+  owner and an instruction to delete the constant with its last entry. This is
+  the staged-surface pattern the fence exists to make visible rather than an
+  exception to it — but a route nobody calls is a capability whose behaviour no
+  product path exercises, and that is true here until PR4 lands.
+- **[OWNER: M25]** *Legal hold is not checked at request time, and that is a
+  decision rather than a gap.* `legal_hold` is a per-document flag in the
+  documents cluster with no account-level equivalent, so identity cannot see it
+  without a cross-cluster call — and a hold placed AFTER a request would make
+  any answer given here stale. The check belongs at execution, inside the
+  statement that acts, which is PR3's. Recorded because "erasure was requested"
+  will read to a reviewer as "erasure was permitted", and on this point it is
+  not the same claim.
+- **[ACCEPTED]** *There is no waiting period between request and execution.*
+  The scope decision was owner-initiated and step-up gated (docs/06,
+  2026-08-21); a cancel window was offered and not taken. The cancel is
+  therefore bounded by how quickly PR3's fan-out runs rather than by a policy,
+  and PR3 owns saying what that means. The repo already gates an irreversible
+  crypto-shred on step-up alone — `POST /v1/vault/reset` — so this is
+  consistent with a decision already taken rather than a new exposure.
+- **[OWNER: M25]** *Nothing revokes sessions on request.* An armed account keeps
+  every live credential, which is correct while the request is cancellable and
+  wrong the moment it is not. PR3 owns session revocation, alongside the
+  `users.status = 'closed'` write it belongs with.

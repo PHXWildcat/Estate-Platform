@@ -7713,13 +7713,17 @@ and no `markDestroyed`, turns it red. Both proved by mutation.
   before the first `destroyDek` caller or no later migration can retract what
   erasure wrote. The scope change is recorded rather than silently absorbed —
   the M21 PR2 rule that a plan which quietly re-aims is a plan nobody can audit.
-- **PR2 — the erasure record and the driver.** Request, refusal set, per-domain
-  progress, resumable; the `SettlementWorkflowDriver` shape (the approved
-  Temporal deviation). NO DEK destroyed — an inert terminal step, reviewable on
-  its own, on the M21 PR3a/PR3b precedent. PR2 must say out loud how it relates
-  to that driver's stated rule that "case state never advances on a timer": the
-  erasure driver's job is FAN-OUT, which is resumption rather than decision,
-  because the owner already decided under step-up.
+- **PR2 — the erasure DECISION record. SHIPPED** (record below), **and it is
+  NOT what this line said.** It said "the erasure record and the driver ...
+  per-domain progress, resumable", with an inert terminal step. Building it
+  showed the driver has nothing to drive: with no waiting period in scope, a
+  request becomes eligible the moment it is made, and per-domain progress rows
+  only mean something once a fan-out writes them. An inert driver walking rows
+  to nowhere is dead code wearing a design's clothes. So PR2 became the DECISION
+  half — may this account be erased, and has its owner changed their mind — and
+  the driver moves to PR3 with the fan-out it exists to run. Recorded here
+  rather than silently absorbed, on the M21 PR2 precedent: a plan that quietly
+  re-aims is a plan nobody can audit.
 - **PR3 — the destroy leg, and nothing else shares it.** First production caller
   of `destroyDek` (added to `ERASURE_COMPONENTS` in the same change), first
   producer of `crypto.dek.destroyed`, first writer of `users.status = 'closed'`,
@@ -7841,3 +7845,50 @@ crypto-shredding"; corrected. A fourth is in
 `documents/migrations/002_document_vault.sql`, applied and checksummed, so it is
 recorded in docs/03 §6ll rather than edited. PR0's own count was one short,
 which is the defect it was written about.
+
+#### M25 PR2 — the erasure decision record (2026-08-21)
+
+**An owner can now ask to be erased, and nothing can erase them.** That is the
+deliberate shape. `destroyDek` still has no production caller; the fan-out and
+the destroy leg are PR3. What ships is the record that decides whether the
+irreversible half ever runs.
+
+**THE SCOPE CHANGED AND THE REASON IS MEASURED.** This slot said "the erasure
+record and the driver ... per-domain progress, resumable". The driver has
+nothing to drive: no waiting period is in scope, so a request is eligible the
+moment it exists, and per-domain rows only mean something once a fan-out writes
+them. Shipping an inert driver would have been dead code that reads as design.
+The driver goes to PR3 with the work it exists to do.
+
+**THE ALLOWLIST RIDES INSIDE THE STATEMENT** — `INSERT ... SELECT ... WHERE
+EXISTS`, not a read above a write, because a pre-transaction check and the write
+it guards are separated by every commit that lands between them. The test proves
+the PROPERTY rather than the shape: it moves the account's status and watches the
+identical call refuse.
+
+**DENY BY DEFAULT, AND ONLY ONE REFUSAL IS REACHABLE.** The permitted set is
+`['active']`. Four of the other five statuses cannot reach this code with a live
+session at all, because `findLiveByAccessHash` admits only `active` and
+`deceased_pending` — so `deceased_pending` is the refusal a real person hits, and
+it is the one that gets a remedy (`open_death_report`: sign in, void the case)
+rather than the generic `erasure_not_permitted`. Two remedies, two tokens.
+
+**THE PROTECTIVE VERB IS THE UNGATED ONE.** `POST` carries `StepUpGuard`,
+`DELETE` does not, and the cancel carries no status allowlist either — an owner
+who becomes ineligible to REQUEST erasure while a request is live must still be
+able to withdraw it. Fail closed means de-escalate, not refuse everything.
+
+**FOUR MUTATIONS, AND ONE OF THEM WAS THROWN AWAY FOR BEING UNFAITHFUL.**
+Deleting the allowlist predicate from the SQL reddened all nine assertions —
+which is a type error, not a removed control, and "everything went red" is
+equally consistent with a suite that fails on any edit. The faithful version
+widens `ERASURE_PERMITTED_STATUSES` to every status: exactly the three refusal
+assertions redden and the six others stay green. Giving the CANCEL the same
+allowlist reddens exactly the de-escalation assertion. The mutation that was
+discarded is recorded because discarding it, rather than keeping its red as
+evidence, is the part that is easy to skip.
+
+**THREE ROUTES SHIP WITH NO CONSUMER,** under `EXEMPT_ACCOUNT_ERASURE` naming
+PR4, with the instruction to delete the constant with its last entry — the
+`EXEMPT_EXECUTOR_CASEWORK` precedent. Named as a residual in docs/03 §6mm rather
+than treated as free: until PR4, no product path exercises these routes.

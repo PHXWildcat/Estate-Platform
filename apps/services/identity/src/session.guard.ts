@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   UnauthorizedException,
@@ -26,6 +27,21 @@ export interface SessionContext {
 export interface AuthedRequest {
   headers: Record<string, string | string[] | undefined>;
   auth?: SessionContext;
+}
+
+/**
+ * The session a guarded handler is entitled to assume. Lives here rather than
+ * in a controller because both controllers behind `SessionGuard` need it and a
+ * second copy is a copy that drifts (M25 PR2 moved it; `auth.controller.ts`
+ * held the only definition).
+ */
+export function requireAuth(request: AuthedRequest): SessionContext {
+  const auth = request.auth;
+  if (!auth) {
+    // Unreachable behind SessionGuard; guards against wiring mistakes.
+    throw new BadRequestException({ error: 'invalid_request' });
+  }
+  return auth;
 }
 
 /**
