@@ -17,6 +17,7 @@
   "26d43b8055a8bb9c346f72f51e1797ab5691b4b2421fcc3e00f12014d2510854": "mutation VerifyEmail($code: String!) {\n  verifyEmail(code: $code) {\n    ok\n  }\n}",
   "2713395ac384776576c6ba6ef93d68e09642d00d2eb229a6145c167ccb9a6fc1": "mutation SendMessage($conversationId: ID!, $text: String!) {\n  sendMessage(conversationId: $conversationId, text: $text) {\n    conversationId\n    messageId\n    text\n    toolCalls\n  }\n}",
   "2866167e1011dacdf7395735ec1e0df6d8ca2b058d01fe460f3e132bb27a07d1": "mutation RevokeConsent($scope: String!) {\n  revokeConsent(scope: $scope)\n}",
+  "29b04b540822836a60dbc840878e891f3ae8ca1a108d289024a170ac2dfb0990": "query EstateTasks($caseId: ID!) {\n  estateTasks(caseId: $caseId) {\n    taskId\n    title\n    category\n    assignedRole\n    dueAt\n    completedAt\n  }\n}",
   "2a2cbe2851cab9334d65c0fc9687573b9facba92e5b6d854070cec0f29143932": "query Assets($includeRetired: Boolean) {\n  assets(includeRetired: $includeRetired) {\n    assetId\n    category\n    title\n    estValue\n    valuationAsOf\n    valuationSource\n    ownershipPct\n    inTrust\n    fundingStatus\n    status\n    retiredAt\n    version\n  }\n}",
   "2cd78825bd002daddee5ebd28c3ddf19bd8e0d792396ed2b3b5f0c838be875e6": "mutation CancelEmailChange {\n  cancelEmailChange {\n    ok\n  }\n}",
   "2eb60bf2944d7c3b9ef09c5d77d16447512f1c6eb96bf845e9cfbe00362145c6": "mutation RenamePasskey($id: ID!, $nickname: String!) {\n  renamePasskey(id: $id, nickname: $nickname) {\n    ok\n  }\n}",
@@ -92,5 +93,6 @@
   "f54513e0d0d94b2673e63ff2ac268be037239ee5810423263dcf074419aff096": "mutation WebauthnRegister($response: JSON!) {\n  webauthnRegister(response: $response) {\n    ok\n  }\n}",
   "f56f52808162be4be6b0adfd2c5990c47ff260cab14d567ea675a592e788189a": "query NetWorth {\n  netWorth {\n    totalValue\n    assetCount\n    valuedAssetCount\n    inTrustValue\n  }\n}",
   "f7a2f194e484be4ed73c539486f911bc670d9b36b6fe9804a66575da71820851": "mutation AddFamilyMember($relation: String!, $name: String!, $dob: String, $isMinor: Boolean, $notes: String) {\n  addFamilyMember(relation: $relation, name: $name, dob: $dob, isMinor: $isMinor, notes: $notes) {\n    id\n    relation\n    name\n    dob\n    isMinor\n    notes\n  }\n}",
+  "f8d53d73b4b3a9a572fa557a8aa879ff0e113610b34ee1a2aba8c94e7963682b": "mutation SetEstateTaskCompletion($taskId: ID!, $completed: Boolean!) {\n  setEstateTaskCompletion(taskId: $taskId, completed: $completed) {\n    taskId\n    title\n    category\n    assignedRole\n    dueAt\n    completedAt\n  }\n}",
   "fa2442afd29e978f10a05baeda3dd8772fd6f250496bcce75cc51376e1903c2c": "query RoleAssignments {\n  roleAssignments {\n    id\n    contactId\n    role\n    scopeType\n    scopeId\n    effectiveCondition\n    startsAt\n    endsAt\n  }\n}"
 }

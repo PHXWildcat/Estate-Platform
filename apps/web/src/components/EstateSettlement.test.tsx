@@ -71,6 +71,7 @@ function handlers(
     stages?: OperationHandler;
     inventory?: OperationHandler;
     request?: OperationHandler;
+    tasks?: OperationHandler;
   } = {},
 ): Record<string, OperationHandler> {
   return {
@@ -84,6 +85,13 @@ function handlers(
         jsonResponse({
           data: { requestEstateAccess: stage({ status: 'requested', decidedAt: null }) },
         })),
+    /*
+     * THE CHECKLIST RENDERS ON THIS SCREEN TOO (M23 PR3), so every test here
+     * dispatches it. It is answered EMPTY by default rather than stubbed out:
+     * this file's properties are about the ladder, and a checklist with rows
+     * in it would put its own text on the screen for every query below.
+     */
+    EstateTasks: options.tasks ?? (() => jsonResponse({ data: { estateTasks: [] } })),
     // `StepUpPrompt` elevates through identity BEFORE re-running the refused
     // action. Without this the prompt stalls on its own first request and a
     // test reads it as the surface failing to close the prompt — which is what

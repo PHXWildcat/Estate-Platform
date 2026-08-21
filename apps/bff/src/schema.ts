@@ -50,6 +50,7 @@ import type {
   SettlementClient,
   SettlementSettings,
   SettlementStage,
+  SettlementTask,
 } from './settlement-client';
 import {
   ACCESS_COOKIE,
@@ -783,6 +784,53 @@ export const typeDefs = /* GraphQL */ `
     forwards the caller's own bearer.
     """
     estateInventory(caseId: ID!): [Asset!]!
+    """
+    The estate's administration checklist (M23 PR3).
+
+    NEEDS NO ACCESS STAGE, and that is a decision rather than an oversight: a
+    task is procedural state about the administration itself — "obtain
+    certified copies of the death certificate" — not access to anything the
+    decedent kept. Staging it would gate an executor's own worklist behind an
+    operator's review of a request to see their own worklist.
+
+    Generated once when the case is verified, from a versioned in-repo
+    template. Generic administration steps, never legal advice.
+    """
+    estateTasks(caseId: ID!): [EstateTask!]!
+  }
+
+  """
+  One item on the estate checklist.
+
+  NO 'completedBy'. An estate can name co-executors, so "who ticked this" is a
+  real question — but the service answers it with a raw user UUID, which tells
+  a reader nothing they can act on, and resolving it to a name would mean a
+  cross-cluster read this surface has no other reason to make. The same call
+  'EstateAccessStage' makes about the operator who decided a rung.
+
+  NO 'courtDocVersionId' either: attaching letters testamentary needs the
+  executor's documents surface, which is behind the DOCUMENTS rung.
+  """
+  type EstateTask {
+    taskId: ID!
+    "A template constant, never user input — safe to render as plain text."
+    title: String!
+    "'legal', 'financial', 'administrative', 'notification', or null."
+    category: String
+    """
+    Which role the step is aimed at — 'executor', 'attorney', 'cpa'. A step
+    aimed at the attorney is still SHOWN: the executor is the person who has to
+    know it is somebody else's move.
+    """
+    assignedRole: String
+    """
+    Due date, offset from VERIFICATION rather than from a date of death — the
+    platform deliberately never records one (docs/03 §5.1), because it is not a
+    fact the platform can observe. Null where the template sets no deadline.
+    """
+    dueAt: String
+    "When it was ticked, or null. Null is the whole of 'not done yet'."
+    completedAt: String
   }
 
   """
@@ -1535,6 +1583,16 @@ export const typeDefs = /* GraphQL */ `
     """
     requestEstateAccess(caseId: ID!, stage: AccessStage!): EstateAccessStage!
     """
+    Tick a checklist item, or untick it (M23 PR3).
+
+    NOT STEP-UP GATED, deliberately, and the settlement controller says why:
+    everything that MOVES access or money is gated, and a task tick does
+    neither. Untick is the same one mutation as tick, so undoing is exactly as
+    easy as doing — a checklist that could be completed but not corrected would
+    make an executor's honest mistake permanent.
+    """
+    setEstateTaskCompletion(taskId: ID!, completed: Boolean!): EstateTask!
+    """
     Attach a further document to a case you reported (M22 PR4c).
 
     DOCUMENTS ONLY. Settlement refuses a non-operator's provider match (M22
@@ -1736,6 +1794,15 @@ interface EstateAccessStagePayload {
   readonly decidedAt: string | null;
 }
 
+interface EstateTaskPayload {
+  readonly taskId: string;
+  readonly title: string;
+  readonly category: string | null;
+  readonly assignedRole: string | null;
+  readonly dueAt: string | null;
+  readonly completedAt: string | null;
+}
+
 interface SettlementCasePayload {
   readonly caseId: string;
   readonly status: string;
@@ -1806,6 +1873,22 @@ function toStagePayload(dto: SettlementStage): EstateAccessStagePayload {
     status: dto.status,
     requestedAt: dto.requestedAt,
     decidedAt: dto.decidedAt,
+  };
+}
+
+/**
+ * The service's task shape, narrowed. `completedBy` and `courtDocVersionId`
+ * are dropped HERE rather than at the edge of each resolver, so there is one
+ * place where either could ever be added back.
+ */
+function toTaskPayload(dto: SettlementTask): EstateTaskPayload {
+  return {
+    taskId: dto.taskId,
+    title: dto.title,
+    category: dto.category,
+    assignedRole: dto.assignedRole,
+    dueAt: dto.dueAt,
+    completedAt: dto.completedAt,
   };
 }
 
@@ -2350,6 +2433,19 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           const estate = await administeredEstate(token, args.caseId);
           return assets.listEstate(token, estate.decedentUserId);
         },
+        /**
+         * FORWARDED, like `estateStages` and for the same reason: settlement's
+         * `assertCaseVisible` decides who may read a case's tasks and answers
+         * the uniform 404 otherwise. A resolve-first check here would refuse
+         * the decedent's own reader and the operator console, both admitted to
+         * that route by design.
+         */
+        estateTasks: async (
+          _parent: unknown,
+          args: { caseId: string },
+          ctx: RequestContext,
+        ): Promise<EstateTaskPayload[]> =>
+          (await settlement.listTasks(requireAccessToken(ctx), args.caseId)).map(toTaskPayload),
         linkedEstates: async (
           _parent: unknown,
           _args: unknown,
@@ -2971,6 +3067,14 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           const stage = await settlement.requestStage(token, args.caseId, args.stage.toLowerCase());
           return toStagePayload(stage);
         },
+        setEstateTaskCompletion: async (
+          _parent: unknown,
+          args: { taskId: string; completed: boolean },
+          ctx: RequestContext,
+        ): Promise<EstateTaskPayload> =>
+          toTaskPayload(
+            await settlement.completeTask(requireAccessToken(ctx), args.taskId, args.completed),
+          ),
         attachCaseEvidence: async (
           _parent: unknown,
           args: { caseId: string; documentId: string; version: number },

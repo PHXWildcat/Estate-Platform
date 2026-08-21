@@ -6837,7 +6837,7 @@ decision booked as progress is how a queue stays untouched.**
 |---|---|---|
 | M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
-| M23 | Executor surface | In progress (PR1, PR2). §5.1 control 5 now executes outside a test. What is left is the executor's CASEWORK — count it from `EXEMPT_EXECUTOR_*` in `packages/auth-guard/test/route-consumers.spec.ts`, never from a number in this table, which carried "3 routes" for two milestones while the real count was eight |
+| M23 | Executor surface | In progress (PR1, PR2, PR3). §5.1 control 5 now executes outside a test, and the checklist has a caller. What is left is the DISTRIBUTION ladder — count it from `EXEMPT_EXECUTOR_CASEWORK` in `packages/auth-guard/test/route-consumers.spec.ts`, never from a number in this table, which carried "3 routes" for two milestones while the real count was eight |
 | M24 | Dashboard, computable subset | **Flip-trigger: jumps to the front on a demo date or a signed customer** |
 | M25 | Crypto-shredding execution path | `destroyDek` has no production caller; must precede any new encrypted data class |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
@@ -7373,3 +7373,82 @@ to `consumed` dropped a `>= 20` count below its floor, and editing a number
 down is the ratchet running backwards. The check now asserts the SET of
 declaration kinds present, which is what its own comment always claimed it did.
 
+### M23 PR3 — the executor's checklist (2026-08-20)
+
+`GET /v1/settlement/cases/:caseId/tasks` and
+`POST /v1/settlement/tasks/:taskId/completion` have existed since M21 with no
+caller. This PR gives them one — a BFF edge, an SDL type, and a panel on
+`/estates/[caseId]` — and takes the checklist out of the
+`EXEMPT_EXECUTOR_CASEWORK` exemption it had been sitting behind. Both routes in
+the same change, because a read shipped without its write is a mutation nobody
+calls, which is the gap that fence exists to find.
+
+**IT NEEDS NO ACCESS STAGE, and that is the design.** A task is procedural
+state about the administration itself — "obtain certified copies of the death
+certificate" — not access to anything the decedent kept. Staging it would put
+an operator's review in front of an executor seeing their own worklist. The
+practical consequence is that on day one, with every rung of the ladder still
+shut, the checklist is the only section of the estate screen that works, so it
+renders ABOVE the inventory: opening this screen with a locked panel would open
+it with a refusal.
+
+**THE UNTICK IS THE PROTECTIVE ACTION.** One checkbox, both directions, one
+mutation carrying a boolean. A checklist that could be completed but not
+corrected would turn an executor's mis-click into a permanent claim that a step
+was taken, and the protective action must never be harder than the permissive
+one. Nothing is applied optimistically either: a tick the server refused is a
+tick the reader never sees.
+
+**NO STEP-UP ON THE TICK**, and it is now fenced rather than asserted. The
+service's step-up fence walked `OPERATOR_ROUTES` and stopped, so every
+EXECUTOR route on the admin controller — `requestStage` included — carried its
+guard with nothing checking. The block added here derives the executor set as
+"every admin-controller route the console cannot reach", asserts the two halves
+are disjoint, and pairs the three gated writes with `completeTask` as a
+POSITIVE CONTROL that must stay ungated: without it, a `stepUpGuarded` that had
+started answering `true` for everything would satisfy the whole block.
+
+**TWO FIELDS ARE ABSENT RATHER THAN FILTERED.** `completedBy` is a raw user
+UUID — the same call `EstateAccessStage` makes about the operator who decided a
+rung — and `courtDocVersionId` needs the executor's documents surface, which is
+behind the DOCUMENTS rung. Neither is in the zod schema, so no resolver added
+later has a field to select even if it asks.
+
+**A BFF TEST WAS MEASURING THE WRONG LAYER.** The first version asserted that
+ticking raised no second session check; it passed for a reason unrelated to the
+claim, because the BFF evaluates no step-up anywhere — it forwards a bearer and
+maps a downstream 403. What this layer can prove is that the resolvers invent no
+freshness requirement of their own (a session with no second factor reads and
+ticks), and the test now says so and points at the service fence for the other
+half. When a guard exists at two layers, a test must say which layer it proves.
+
+**Driven on the running stack**, and it found a defect no test could: a due
+date stored as the 3rd rendered as "September 2". `due_at` is a Postgres `date`
+widened to UTC midnight on the way out, so rendering it as an instant in the
+reader's zone loses a day west of UTC — the browser was at `America/Phoenix`
+and the wire said `2026-09-03T00:00:00.000Z`. Fixed with a calendar-day
+formatter beside the instant one rather than by changing the instant one, whose
+callers are genuine timestamps. The regression test FORCES the zone, because a
+suite running in UTC cannot see this defect at all. The tick and the untick then
+round-tripped to Postgres through the real stack, and
+`settlement_tasks_versions` holds both transitions.
+
+**A FLAGGED ASYMMETRY, not fixed here.** The service emits
+`settlement.task.completed` on a tick and nothing on an untick, and this is the
+PR that makes unticking reachable. The reversal is not lost — the version table
+records it with the actor — but the legible record would be a new
+`AUDIT_ACTIONS` member, and that costs an audit-consumer deployment ahead of its
+producer, which does not belong in a slice that also ships a UI. It is M23 PR4's
+first candidate.
+
+**The verification TRIGGER was simulated, and the data was not.** An operator
+session needs a handoff code the console mints, so the checklist on the driven
+case was materialised by the product's own `generateTasks` through the repo's
+own INSERT column list — the same shortcut, and the same disclosure, PR2 made
+for the case verification itself.
+
+**Seven mutations, each reddening a named assertion**, with the restored tree
+green as the control: always sending `completed: true` at the client and at the
+checkbox (the untick becomes a silent no-op), modelling `completedBy` in the
+schema, dropping `requestStage`'s guard, ADDING one to `completeTask`, applying
+the tick optimistically, and putting the two routes back behind the exemption.

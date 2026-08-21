@@ -148,6 +148,32 @@ const SettingsSchema = z.object({
 });
 export type SettlementSettings = z.infer<typeof SettingsSchema>;
 
+/**
+ * One item on the estate checklist (M23 PR3).
+ *
+ * TWO FIELDS ON THE WIRE ARE DELIBERATELY NOT MODELLED.
+ *
+ * `completedBy` is a raw user UUID. An estate can name co-executors, so "who
+ * ticked this" is a real question — but a bare UUID does not answer it, and
+ * resolving it to a name means a cross-cluster read on a surface that has no
+ * other reason to make one. Same call the stage list makes about `decidedBy`.
+ *
+ * `courtDocVersionId` points at a `document_versions` row — letters
+ * testamentary and the like. Nothing in settlement READS it; attaching one
+ * needs the executor's documents surface, which sits behind the DOCUMENTS rung
+ * and is a later slice. A field the BFF never parses is a field no resolver
+ * can leak, so it is absent rather than filtered.
+ */
+const TaskSchema = z.object({
+  taskId: z.string().min(1),
+  title: z.string().min(1),
+  category: z.string().nullable(),
+  assignedRole: z.string().nullable(),
+  dueAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+});
+export type SettlementTask = z.infer<typeof TaskSchema>;
+
 export interface SettlementClient {
   /**
    * Every case this caller can see: one about them, one they filed, or both.
@@ -179,6 +205,15 @@ export interface SettlementClient {
   listStages(accessToken: string, caseId: string): Promise<SettlementStage[]>;
   /** Ask an operator for one rung. Step-up gated at the service. */
   requestStage(accessToken: string, caseId: string, stage: string): Promise<SettlementStage>;
+  /** The estate checklist. Needs no access stage — it is procedural state. */
+  listTasks(accessToken: string, caseId: string): Promise<SettlementTask[]>;
+  /**
+   * Tick a checklist item, or untick it. NOT step-up gated, and the
+   * settlement controller's docstring is the argument: a task tick neither
+   * widens access nor transfers value, and a grieving executor should not face
+   * an MFA prompt to say they have found the will.
+   */
+  completeTask(accessToken: string, taskId: string, completed: boolean): Promise<SettlementTask>;
   getSettings(accessToken: string): Promise<SettlementSettings>;
   updateSettings(accessToken: string, waitingPeriodDays: number): Promise<SettlementSettings>;
 }
@@ -307,6 +342,40 @@ export class FetchSettlementClient implements SettlementClient {
       });
     }
     return this.parseBody(res, StageSchema);
+  }
+
+  async listTasks(accessToken: string, caseId: string): Promise<SettlementTask[]> {
+    const res = await this.request(
+      'GET',
+      `/v1/settlement/cases/${encodeURIComponent(caseId)}/tasks`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(TaskSchema));
+  }
+
+  async completeTask(
+    accessToken: string,
+    taskId: string,
+    completed: boolean,
+  ): Promise<SettlementTask> {
+    const res = await this.request(
+      'POST',
+      `/v1/settlement/tasks/${encodeURIComponent(taskId)}/completion`,
+      accessToken,
+      // `courtDocVersionId` is deliberately never sent — see `TaskSchema`.
+      { completed },
+    );
+    if (!res.ok) {
+      // `case_not_verified` reaches only the estate's own executor (M23 PR1),
+      // so naming it is not a leak — and a checklist that has stopped
+      // accepting ticks because the case closed is a fact about WHEN, whose
+      // remedy is nothing, not the generic failure's "try again".
+      throw await this.mapError(res, { caseNotVerified: 'CASE_NOT_VERIFIED' });
+    }
+    return this.parseBody(res, TaskSchema);
   }
 
   async getSettings(accessToken: string): Promise<SettlementSettings> {

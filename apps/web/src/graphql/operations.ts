@@ -899,6 +899,38 @@ export const REQUEST_ESTATE_ACCESS_MUTATION = `mutation RequestEstateAccess($cas
   }
 }`;
 
+/**
+ * THE ESTATE CHECKLIST (M23 PR3).
+ *
+ * `completedAt` and nothing about WHO — the BFF has no such field to ask for,
+ * because settlement answers it with a raw user UUID. Co-executors are real, so
+ * the question is real, but a UUID is not an answer a reader can use.
+ *
+ * The tick and the untick are ONE mutation with a boolean, not two, so the
+ * server cannot grow a path to complete that has no matching path to correct.
+ */
+export const ESTATE_TASKS_QUERY = `query EstateTasks($caseId: ID!) {
+  estateTasks(caseId: $caseId) {
+    taskId
+    title
+    category
+    assignedRole
+    dueAt
+    completedAt
+  }
+}`;
+
+export const SET_ESTATE_TASK_COMPLETION_MUTATION = `mutation SetEstateTaskCompletion($taskId: ID!, $completed: Boolean!) {
+  setEstateTaskCompletion(taskId: $taskId, completed: $completed) {
+    taskId
+    title
+    category
+    assignedRole
+    dueAt
+    completedAt
+  }
+}`;
+
 export const SETTLEMENT_SETTINGS_QUERY = `query SettlementSettings {
   settlementSettings {
     waitingPeriodDays
@@ -1073,6 +1105,8 @@ export const operations = {
   EstateStages: ESTATE_STAGES_QUERY,
   EstateInventory: ESTATE_INVENTORY_QUERY,
   RequestEstateAccess: REQUEST_ESTATE_ACCESS_MUTATION,
+  EstateTasks: ESTATE_TASKS_QUERY,
+  SetEstateTaskCompletion: SET_ESTATE_TASK_COMPLETION_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

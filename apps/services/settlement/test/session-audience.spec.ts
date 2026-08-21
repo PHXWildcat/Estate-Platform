@@ -316,6 +316,71 @@ describe('settlement route audiences match the declaration', () => {
       expect(gated).toBe(OPERATOR_ROUTES.filter((r) => r.route in UNGATED === false).length);
     });
 
+    /**
+     * THE OTHER HALF OF THE SAME CATEGORY (M23 PR3).
+     *
+     * The block above walks `OPERATOR_ROUTES` and stops. That left the
+     * EXECUTOR's routes on this controller — the ones an operator is refused —
+     * with no declaration at all: `requestStage` could have lost its guard and
+     * nothing here would have said so. A rule applied to one member of a
+     * category is a rule half-applied.
+     *
+     * The set is DERIVED, not listed: every route on the admin controller that
+     * the console cannot reach. A route added to that controller therefore
+     * arrives here needing a decision, which is the point.
+     */
+    const UNGATED_EXECUTOR: Readonly<Record<string, string>> = {
+      executorCases: 'a read',
+      listStages: 'a read',
+      listTasks: 'a read',
+      stageAccess: "a read, and asked by ASSETS on the executor's forwarded bearer",
+      completeTask:
+        'ticking a checklist item moves no access and transfers no value, and the UNTICK is the ' +
+        'same route — gating it would put a factor in front of correcting a mis-click, which is ' +
+        'the protective action here. See this block.',
+    };
+
+    it('every EXECUTOR route is gated or declared ungated with a reason', () => {
+      const consoleRoutes = new Set(OPERATOR_ROUTES.map((r) => r.route));
+      const executorRoutes = routeNames(SettlementAdminController).filter(
+        (route) => !consoleRoutes.has(route),
+      );
+      // Anti-vacuity, at the LEVEL of the scan and not only its total: a
+      // prototype walk that started returning nothing would make the loop below
+      // pass with an empty body.
+      expect(executorRoutes.length).toBeGreaterThanOrEqual(5);
+      // ...and the two halves really are disjoint: an overlap would mean this
+      // block was silently re-checking the console's routes.
+      expect(executorRoutes.filter((route) => consoleRoutes.has(route))).toEqual([]);
+
+      const surprises: string[] = [];
+      let gated = 0;
+      for (const route of executorRoutes) {
+        if (stepUpGuarded(SettlementAdminController, route)) {
+          gated += 1;
+          if (route in UNGATED_EXECUTOR) surprises.push(`${route} is gated but declared ungated`);
+        } else if (!(route in UNGATED_EXECUTOR)) {
+          surprises.push(`${route} carries no StepUpGuard and no declared reason`);
+        }
+      }
+      expect(surprises).toEqual([]);
+      expect(gated).toBeGreaterThan(0);
+    });
+
+    it('the executor verbs that MOVE something are gated, one at a time', () => {
+      // Named as well as derived: asking for a rung opens somebody's estate,
+      // and both distribution verbs move money. A failure here should say
+      // which, not just that a count changed.
+      for (const route of ['requestStage', 'recordDistribution', 'setDistributionStatus']) {
+        expect(stepUpGuarded(SettlementAdminController, route)).toBe(true);
+      }
+      // POSITIVE CONTROL, and it is the whole point of the pair: `completeTask`
+      // sits on the same controller and is NOT gated. Without this, a
+      // `stepUpGuarded` that had started answering `true` for everything would
+      // satisfy every assertion above.
+      expect(stepUpGuarded(SettlementAdminController, 'completeTask')).toBe(false);
+    });
+
     it('the destructive verbs are gated, one at a time', () => {
       // Named as well as derived, because a failure saying `verify` must need a
       // factor tells the next person WHY — confirming a verification locks an
