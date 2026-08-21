@@ -65,12 +65,32 @@ CREATE TABLE IF NOT EXISTS ${table}_versions (
 REVOKE UPDATE, DELETE ON ${table}_versions FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION ${table}_capture_version() RETURNS trigger AS $$
+DECLARE
+  image jsonb := to_jsonb(OLD);
+  blind text[];
 BEGIN
+  -- Blind indexes are dropped from the captured image (M25 PR1). A \`*_bidx\`
+  -- is an HMAC under a SERVICE-WIDE key, not a \`*_ct\` + \`dek_id\` pair, so
+  -- crypto-shredding does not reach it — and this table REVOKEs UPDATE and
+  -- DELETE, so a captured one is permanent. Erasure must UPDATE its row to
+  -- close the account, which is the moment that would immortalise the very
+  -- identifier being erased.
+  --
+  -- DERIVED FROM THE ROW, never a column list: the keys come from the image
+  -- itself, so a blind index added to this table later is redacted without
+  -- anyone remembering to come back here.
+  SELECT array_agg(k) INTO blind
+  FROM jsonb_object_keys(image) AS k
+  WHERE right(k, 5) = '_bidx';
+  IF blind IS NOT NULL THEN
+    image := image - blind;
+  END IF;
+
   INSERT INTO ${table}_versions (row_id, operation, row_data, actor_id, reason)
   VALUES (
     OLD.id,
     TG_OP,
-    to_jsonb(OLD),
+    image,
     NULLIF(current_setting('app.actor_id', true), '')::uuid,
     NULLIF(current_setting('app.change_reason', true), '')
   );

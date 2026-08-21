@@ -11,7 +11,12 @@ import type { Server } from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
-import { checkConventions, Migrator } from '@estate/db';
+import {
+  blindIndexCaptureCorpus,
+  blindIndexCaptureGaps,
+  checkConventions,
+  Migrator,
+} from '@estate/db';
 import { TOPICS, type MfaLevel } from '@estate/contracts';
 import { DekConflictError } from '@estate/crypto';
 import { SESSION_VERIFIER, type SessionContext, type SessionVerifier } from '@estate/auth-guard';
@@ -1037,6 +1042,20 @@ describeIfPg('profile & contacts service end to end', () => {
       expect(message.value).not.toContain(NAMED_CONTACT);
       expect(message.value).not.toContain(OTHER_CONTACT);
     }
+  });
+
+  it('no version capture in this schema keeps a blind index (M25 PR1)', async () => {
+    // Asks the DATABASE what function it is running, not what the migration
+    // says — a redaction written and never applied, or superseded by a later
+    // CREATE OR REPLACE that lost it, is invisible to a text scan. The static
+    // half is `packages/contracts/test/version-capture-redaction.spec.ts`.
+    //
+    // THE CORPUS IS ASSERTED FIRST, because an empty corpus and a clean one
+    // produce the same empty gap list. `contacts` carries the blind index this
+    // milestone is about.
+    const corpus = await blindIndexCaptureCorpus(admin, schema);
+    expect([...corpus.keys()]).toContain('contacts');
+    expect(await blindIndexCaptureGaps(admin, schema)).toEqual([]);
   });
 
   it('the migrated core schema satisfies the docs/02 conventions (checkConventions)', async () => {

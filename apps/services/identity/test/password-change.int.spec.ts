@@ -200,6 +200,29 @@ describeIfPg('password change (auth cluster)', () => {
     expect(JSON.stringify(versions[0]?.row_data)).not.toContain('NEW_HASH_SENTINEL');
   });
 
+  it('THE BLIND INDEX IS NOT KEPT either — migration 008 was one column short', async () => {
+    // M25 PR1. 008's comment calls `password_hash` "the ONE column in `users`"
+    // the shred does not reach; `email_bidx` is a second. It is an HMAC under a
+    // SERVICE-WIDE key rather than a `*_ct` + `dek_id` pair, so destroying every
+    // DEK leaves it readable, and this table REVOKEs UPDATE and DELETE. Erasure
+    // must UPDATE `users` to close the account — which is the write that would
+    // have immortalised the identifier it claims to erase.
+    await service.changePassword(user, ownSession, {} as never, 'old', 'a-new-long-password');
+
+    const versions = await versionRows();
+    expect(versions).toHaveLength(1);
+    const image = versions[0]?.row_data ?? {};
+    expect(image).not.toHaveProperty('email_bidx');
+    // DERIVED, not one named key: the redaction reads the image's own keys, so
+    // a second blind index added to `users` later is covered by the same
+    // function. This assertion is what would notice if it were not.
+    expect(Object.keys(image).filter((k) => k.endsWith('_bidx'))).toEqual([]);
+    // And the VALUE is gone, not merely the key — the seeded index as Postgres
+    // serializes bytea, so a surviving copy under any other name still fails.
+    const seededBidx = Buffer.from(`bidx-${user}`).toString('hex');
+    expect(JSON.stringify(image).toLowerCase()).not.toContain(seededBidx.toLowerCase());
+  });
+
   it('KEEPS what the capture is FOR — the DEK-wrapped columns and the actor', async () => {
     // Redaction is only defensible if what survives has audit value. `email_ct`
     // and `dek_id` stay because they ARE under the envelope, so the shred
