@@ -79,11 +79,22 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   {
-    // CommonJS tooling files (jest configs, presets).
-    files: ['**/jest.config.js', 'packages/config/jest.js'],
+    // CommonJS tooling files (jest configs, setups, presets).
+    //
+    // The glob covers the CATEGORY, not one filename: it was
+    // `**/jest.config.js` until `jest.global-setup.js` arrived and had to be
+    // hand-added. A hand-maintained list beside a thing that grows is this
+    // repo's most repeated defect, and the next jest tooling file should not
+    // have to edit this line to be lintable.
+    files: ['**/jest.*.js', 'packages/config/jest.js'],
     languageOptions: {
       sourceType: 'commonjs',
-      globals: { require: 'readonly', module: 'writable', __dirname: 'readonly' },
+      globals: {
+        require: 'readonly',
+        module: 'writable',
+        __dirname: 'readonly',
+        process: 'readonly',
+      },
     },
     rules: {
       '@typescript-eslint/no-require-imports': 'off',

@@ -95,49 +95,50 @@ describe('what a row says', () => {
   });
 
   /**
-   * FOUND BY DRIVING THE APP, and the reason this test exists at all.
+   * FOUND BY DRIVING THE APP, and the reason this block exists at all.
    *
    * `due_at` is a Postgres `date` — a calendar day — that the service widens to
    * UTC midnight before the wire. Rendered as an instant in the reader's zone
    * it loses a day for everyone west of UTC: the screen said "September 2" for
    * a date stored as the 3rd, at `America/Phoenix`.
    *
-   * The zone is FORCED here rather than inherited, because a suite running in
-   * UTC cannot see this defect at all — which is exactly why no existing test
-   * caught it.
+   * THE ZONE IS THE PRECONDITION, and it is asserted rather than assumed. In
+   * UTC the correct and incorrect renderings AGREE, so every test below would
+   * pass against the defect — which is exactly what happened to the first
+   * version of this block: it set `process.env.TZ` in a `beforeAll`, which is
+   * inert inside jsdom, and passed locally only because the machine already sat
+   * in Phoenix. The zone is pinned in `jest.global-setup.js` now; if that ever
+   * stops working, the first assertion here fails loudly instead of the rest
+   * passing vacuously.
    */
   describe('a due date is a calendar day, not an instant', () => {
-    const original = process.env.TZ;
-    beforeAll(() => {
-      process.env.TZ = 'America/Phoenix';
-    });
-    afterAll(() => {
-      process.env.TZ = original;
+    it('runs somewhere a calendar day and a moment can DISAGREE', () => {
+      // Anti-vacuity for the two tests below, and for the control after them.
+      expect(new Date('2026-08-21T02:00:00.000Z').getTimezoneOffset()).not.toBe(0);
     });
 
-    it('names the day the service stored, west of UTC', () => {
+    it('names the day the service stored, not the reader’s local one', () => {
       expect(dueLabel(task({ dueAt: '2026-09-03T00:00:00.000Z' }))).toBe(
         'Suggested by September 3, 2026',
       );
     });
 
-    it('and east of it', () => {
-      process.env.TZ = 'Asia/Tokyo';
-      // The other direction fails differently — a naive local render would gain
-      // a day here rather than lose one — so both arms are named.
-      expect(dueLabel(task({ dueAt: '2026-09-03T00:00:00.000Z' }))).toBe(
-        'Suggested by September 3, 2026',
+    it('holds for a date whose UTC instant falls on a different local day', () => {
+      // Midnight UTC on the 1st is the previous MONTH at UTC-7 — the arm where
+      // a naive local render is most obviously wrong.
+      expect(dueLabel(task({ dueAt: '2026-10-01T00:00:00.000Z' }))).toBe(
+        'Suggested by October 1, 2026',
       );
-      process.env.TZ = 'America/Phoenix';
     });
 
     it('leaves a real INSTANT in the reader’s own zone', () => {
       /*
        * The positive control, and the reason `formatDate` was not simply
        * changed to match: `completedAt` is a genuine timestamp, and a reader in
-       * Phoenix should see it in Phoenix time. Late UTC on the 20th is still
+       * Phoenix should see it in Phoenix time. Late UTC on the 21st is still
        * the 20th at UTC-7, so this asserts the CONVERSION happened rather than
-       * that it was skipped.
+       * that it was skipped — and it is the assertion that would redden if the
+       * calendar-day fix were applied to the instant formatter too.
        */
       expect(dueLabel(task({ completedAt: '2026-08-21T02:00:00.000Z' }))).toBe(
         'Done August 20, 2026',

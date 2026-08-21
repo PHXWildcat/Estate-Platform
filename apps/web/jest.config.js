@@ -5,6 +5,9 @@ const createJestConfig = nextJest({ dir: __dirname });
 module.exports = createJestConfig({
   testEnvironment: 'jsdom',
   setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
+  // Pins the suite's timezone before the workers fork — see the file's
+  // docstring for why it cannot live in a test or a setup file.
+  globalSetup: '<rootDir>/jest.global-setup.js',
   // NOTE: no <rootDir>-prefixed testMatch globs — on Windows worktree paths
   // containing "\." jest's glob normalization breaks them. Jest's default
   // testMatch already picks up src/**/*.test.ts(x).

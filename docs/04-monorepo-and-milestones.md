@@ -7428,8 +7428,21 @@ widened to UTC midnight on the way out, so rendering it as an instant in the
 reader's zone loses a day west of UTC — the browser was at `America/Phoenix`
 and the wire said `2026-09-03T00:00:00.000Z`. Fixed with a calendar-day
 formatter beside the instant one rather than by changing the instant one, whose
-callers are genuine timestamps. The regression test FORCES the zone, because a
-suite running in UTC cannot see this defect at all. The tick and the untick then
+callers are genuine timestamps.
+
+The regression test has to FORCE the zone, because in UTC the correct and
+incorrect renderings AGREE — and the first attempt at forcing it did nothing.
+`process.env.TZ = …` inside a jest jsdom test is INERT: the environment's `Intl`
+has already resolved its default, and the assignment changes neither
+`resolvedOptions()` nor `toLocaleDateString`. Probed directly rather than
+assumed — plain Node reports the new zone, jsdom reports the old one. Those
+tests passed locally only because the machine already sat in Phoenix, which is
+the same class of mistake as the defect they were written for: an observer that
+cannot fail. The zone is pinned in `jest.global-setup.js` now, which runs before
+the workers fork, and the block asserts the zone is non-UTC first, so the
+pinning going inert fails loudly instead of the rest passing vacuously. Both
+directions proven under a UTC runner: the defect reddens, and so does the guard
+when the pin is emptied. The tick and the untick then
 round-tripped to Postgres through the real stack, and
 `settlement_tasks_versions` holds both transitions.
 
