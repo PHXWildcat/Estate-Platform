@@ -415,6 +415,33 @@ export async function revokeStage(stageId: string): Promise<ApiResult<StageView>
   );
 }
 
+/**
+ * REVEAL ONE RECORDED AMOUNT (M23 PR4b).
+ *
+ * ONE ROW, ON DEMAND, NEVER WITH THE LIST. Each reveal is an audited decrypt on
+ * the decedent's own DEK and emits `settlement.distribution.amount_viewed`, so
+ * a console that fetched every amount while rendering a case would spend N
+ * decrypts on a dead person's trail for a page nobody had asked a question
+ * about (docs/03 §6f).
+ *
+ * A NULL AMOUNT IS AN ANSWER, not a failure: `amount_ct` is nullable by design
+ * because a distribution may name an asset rather than a sum.
+ */
+export async function distributionAmount(
+  distributionId: string,
+): Promise<ApiResult<{ amount: string | null }>> {
+  const result = await request<unknown>(
+    `/api/settlement/distributions/${encodeURIComponent(distributionId)}/amount`,
+  );
+  if (!result.ok) return result;
+  const raw = result.data;
+  if (typeof raw !== 'object' || raw === null) return { ok: false, code: 'UNKNOWN' };
+  const amount = (raw as Record<string, unknown>)['amount'];
+  // A decimal STRING or null — never coerced, never parsed to a number.
+  if (typeof amount !== 'string' && amount !== null) return { ok: false, code: 'UNKNOWN' };
+  return { ok: true, data: { amount } };
+}
+
 export async function approveDistribution(
   distributionId: string,
 ): Promise<ApiResult<DistributionView>> {

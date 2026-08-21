@@ -7549,3 +7549,98 @@ INVENTORY, the gate is dropped entirely, the audit event moves after the decrypt
 loop, and the estate route is rewired through the grant path. The positive
 control that matters is its own test — opening the ladder must not thaw the
 grant query, so a role-holder with no grant stays refused either way.
+
+### M23 PR4b — the money, and the figure behind the approval (2026-08-21)
+
+The distributions ladder had shipped its dual control in M7 PR2 and had never
+had a reader. **The amount was write-only**: `recordDistribution` sealed it
+under the DECEDENT's DEK and no route in the product could open it again. So
+`settlement.distribution.approved` — step-up gated, dual-control gated, named in
+docs/03 as a control — was an operator approving a number nobody could see. A
+control whose subject is invisible to the person exercising it is a ceremony,
+and that is what this slice found rather than what it set out to build.
+
+**THE READ ROUTE IS ONE AUDITED DECRYPT, AND THE RECORD GOES FIRST.**
+`GET /v1/settlement/distributions/:distributionId/amount` gates on
+`assertCaseVisible` — the same four parties `listDistributions` admits, DERIVED
+in the test by comparing the two admitted SETS rather than by listing four
+`resolves` — because this reveals a field of a row that route already returns,
+and a narrower gate would leave the approving operator still unable to look. It
+emits `settlement.distribution.amount_viewed` BEFORE the decrypt, the rule
+`estatesNaming` states: an event written afterwards is one a crash can lose
+while the plaintext already exists. The ordering costs a false positive in the
+shred arm — a recorded view of a value that turned out unreadable — and an
+over-record is the safe direction.
+
+**THREE FACTS, THREE ANSWERS.** `{amount: null}` is "no sum was recorded",
+which is a normal state because a distribution may name an asset; a uniform 404
+is "no such row, or not yours"; and a crypto-shredded estate is `content_erased`
+at 410 — the spelling `DocumentsService` already uses, permanent, never a retry.
+That third answer did not exist until a faithful double forced it: the test
+`FakeFieldCrypto` was extended to REFUSE a DEK it never minted, throwing the
+real `DekDestroyedError`, and the service had no arm for it.
+
+**NO STEP-UP ON THE READ, deliberately.** `listDistributions` already tells the
+same caller the row exists and carries an amount, ungated. A factor in front of
+the LAST step of a disclosure whose earlier steps are free would make checking
+what you are about to approve harder than approving it.
+
+**THE SCHEMA OFFERS ONLY WHAT THE SERVER WOULD ALLOW.**
+`EstateDistributionStatusChange` carries the three moves an executor may make
+and not `PLANNED` or `APPROVED`, so dual control is not a thing the browser can
+spell. The fence does not check that the three exist — it accounts for the DDL
+CHECK constraint's WHOLE vocabulary, splitting it into executor-reachable and
+not, so a sixth status added to the database turns it red and forces somebody to
+say which side it lands on. On the web side the transition table itself is
+derived from `AdminService.setDistributionStatus`'s own `from` expression and
+inverted, so a button that would answer `DISTRIBUTION_NOT_APPROVED` every time
+it was pressed cannot be drawn.
+
+**NO ACTOR IDS, and this is the type where it was most tempting.** The service
+answers with `createdBy` and `approvedBy`; `approvedBy` names a member of staff,
+and "who approved it" reads like a reasonable thing to show a family member.
+Both are stripped at the BFF's zod schema — asserted on the PARSED value, so a
+resolver added later has no field to select — and `approvedAt` survives because
+WHETHER and WHEN name nobody.
+
+**MONEY NEVER MEETS A NUMBER.** The end-to-end fixture is
+`999999999999999.99`, `AmountSchema`'s widest legal value, chosen because
+`String(Number(x))` is `'1000000000000000'` — a cent light and rounded to a
+figure nobody recorded. Asserted at the service, at the BFF client (which also
+REFUSES an amount that arrived as a JSON number), and in the browser.
+
+**A 410 WAS RENDERING AS "SOMETHING WENT WRONG" ON THE OPERATOR CONSOLE.**
+`failureFor` had no arm for it, so a permanently erased value invited an
+operator to keep pressing. `CONTENT_ERASED` joined `ApiFailure`, and the copy
+fence — which derives its code set from the union's own declaration — demanded
+the sentence. The web's existing `CONTENT_ERASED` copy said "this version's
+contents" and "the text", false of a sum of money; it is surface-neutral now,
+the move `VERSION_CONFLICT` made in M19.
+
+**TWO FENCE EXEMPTIONS RETIRED, one on its own written instruction.**
+`EXEMPT_EXECUTOR_CASEWORK` said "when the two distribution routes find their
+consumer, delete this constant rather than leave it for the next milestone" —
+they have, so it is gone after three narrowings. And `pathSharedWith`'s last
+instance flipped to `consumed`, so the MECHANISM went with it, on the precedent
+its own test stated in advance: a declaration form with no instances is a shape
+the next person reaches for without a reason to. Its two tests and the
+`EDGE_ROWS` alias that only they read went too.
+
+**Fourteen mutations, each reddening only its named assertion.** At the
+service: the audit event moves after the decrypt, the gate narrows to the
+executor alone, the shred mapping is dropped, the no-amount early return is
+dropped. At the BFF: the enum member name is sent unconverted, a null `assetId`
+is forwarded into a `.strict()` parser, the 410 mapping is dropped, and
+`APPROVED` is added to the status enum. In the browser: `COMPLETED` is offered
+straight from `approved`, a move is offered from `planned`, every amount is
+prefetched with the list, and the contacts read is made to GATE the list instead
+of decorating it. One mutation was UNFAITHFUL and is recorded as such —
+substituting `requireAdministeredDecedentFor` for `assertCaseVisible` does not
+type-check, so its seven failures were noise; the faithful narrowing reddened
+exactly one.
+
+**The turbo-input claim was verified rather than trusted.** The new web fence
+reads `apps/services/settlement/src/admin.service.ts`, outside its own package —
+the staleness class 0da89bc closed. Measured: web's test task cached, appending
+a comment to that service file busted it, restoring returned it to a cached
+hash.

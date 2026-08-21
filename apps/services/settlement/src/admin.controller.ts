@@ -198,6 +198,36 @@ export class SettlementAdminController {
     );
   }
 
+  /**
+   * REVEAL ONE RECORDED AMOUNT (M23 PR4b).
+   *
+   * `@AllowSessionAudiences('operator')` because the console needs it most:
+   * the operator approving a distribution is the person the dual-control gate
+   * exists for, and until this route they approved a figure they could not
+   * see. The service-wide `account` audience still admits the executor.
+   *
+   * NO `StepUpGuard`, and the reason is the M6 rule rather than an oversight:
+   * `listDistributions` already tells this caller the row exists and carries
+   * an amount, ungated. Gating the figure alone would put a factor in front of
+   * the LAST step of a disclosure whose earlier steps are free — and, worse,
+   * in front of the operator's ability to check what they are approving, which
+   * makes the protective act harder than the permissive one.
+   */
+  @Get('distributions/:distributionId/amount')
+  @AllowSessionAudiences('operator')
+  @HttpCode(200)
+  distributionAmount(
+    @Req() req: CallerRequest,
+    @Param('distributionId') distributionId: string,
+  ): Promise<{ amount: string | null }> {
+    const caller = requireCaller(req);
+    return this.admin.distributionAmount(
+      caller.userId,
+      caller.sessionId,
+      parse(UuidSchema, distributionId),
+    );
+  }
+
   @Post('distributions/:distributionId/status')
   @UseGuards(StepUpGuard)
   @HttpCode(200)

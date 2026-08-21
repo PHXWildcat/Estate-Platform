@@ -214,6 +214,35 @@ export const AUDIT_ACTIONS = [
   'settlement.distribution.recorded',
   'settlement.distribution.approved',
   'settlement.distribution.completed',
+  /*
+   * READING A RECORDED AMOUNT (M23 PR4b) — the only event in this group that
+   * records a DISCLOSURE rather than a movement.
+   *
+   * The amount is sealed under the DECEDENT's DEK, so revealing one is an
+   * audited decrypt on a dead person's trail exactly like any other Zone B
+   * read, and it is the reason the field is worth having at all: until this
+   * route existed the figure was write-only, which made the dual-control
+   * approval on `settlement.distribution.approved` an approval of a number
+   * nobody could see.
+   *
+   * `resourceId` is the DISTRIBUTION. The amount itself never appears — that
+   * is the whole point of the event — and neither does a count, because one
+   * event is one amount.
+   */
+  'settlement.distribution.amount_viewed',
+  /*
+   * UNTICKING A CHECKLIST ITEM (deferred from M23 PR3, landed here with the
+   * consumer change it needs).
+   *
+   * PR3 shipped the untick with no event: `completeTask` emitted
+   * `settlement.task.completed` on the tick and nothing on the reversal, so an
+   * executor withdrawing a claim that a step was taken left no trace outside
+   * the version table. The reversal matters as much as the claim — it is the
+   * half somebody would later be asked about — and the reason it waited is
+   * that a new member costs an audit-consumer deployment ahead of its
+   * producer, which did not belong in a slice that also shipped a UI.
+   */
+  'settlement.task.reopened',
   // An executor read the estate inventory through the staged-access grant.
   'asset.estate.viewed',
   // Legal hold set by settlement at verification (the M4 setting surface).

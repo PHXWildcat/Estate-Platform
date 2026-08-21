@@ -276,12 +276,13 @@ const EDGE_SERVERS: ReadonlyArray<{ edge: string; source: string }> = [
  */
 const EDGE_REWRITES: ReadonlyArray<EdgeRewrite> = deriveEdgeRewrites();
 
-/**
- * The same rows, named for what the method-aware checks below use them as: the
- * complete set of (method, upstream path) pairs any isolated origin can
- * address.
+/*
+ * `EDGE_ROWS` — an alias of the rows above, named for the METHOD-AWARE checks
+ * that used them — is gone with `pathSharedWith` (M23 PR4b). It had exactly one
+ * reader: the test asserting no edge table named a declaring method on a shared
+ * path. `EDGE_REWRITES` itself stays, along with the test that every rewrite row
+ * in every edge source was read.
  */
-const EDGE_ROWS = EDGE_REWRITES;
 
 /**
  * DERIVED FROM THE EDGE'S OWN TABLES, never hand-written (M19 PR4 review).
@@ -393,38 +394,25 @@ function fileMatchesPath(file: string, path: string, enumerated = false): boolea
 
 type RouteDecl =
   | { readonly consumers: readonly string[]; readonly enumerated?: string }
-  | { readonly exempt: string }
-  | { readonly pathSharedWith: string; readonly reason: string };
+  | { readonly exempt: string };
 
 const consumed = (...files: string[]): RouteDecl => ({ consumers: files });
 
-/**
- * A route with NO consumer of its own, whose PATH is addressed by a consumer of
- * a SIBLING route — same path, different method.
+/*
+ * `pathSharedWith` IS GONE (M23 PR4b), with its last instance.
  *
- * This fence matches by PATH (its header says so: "two methods sharing one path
- * are covered by one literal"), and until M21 PR3b that imprecision cost
- * nothing, because no consumer had ever addressed one verb of a shared path
- * while the other stayed unconsumed. The operator edge does exactly that:
- * `GET cases/:caseId/stages` is proxied to the console and `POST` on the same
- * path is the EXECUTOR's request, which the operator audience does not admit
- * and the edge's table does not carry.
+ * It declared a route with no consumer of its own whose PATH was addressed by a
+ * consumer of a sibling — same path, different method — because this fence
+ * matches by path and could not see the method. M21 PR3b built it for
+ * `POST /cases/:caseId/stages`; M23 PR2 flipped that one, and PR4b flipped
+ * `POST /cases/:caseId/distributions`, the last.
  *
- * The two honest answers were both wrong. `consumed()` would claim a caller
- * that does not exist. `{ exempt }` would be flagged STALE, because the
- * sibling's literal really is in the corpus — correctly, since the check cannot
- * see a method. So the collision is DECLARED, with the sibling named, and three
- * assertions make the declaration checkable rather than a way out: the sibling
- * must exist, must share the path, must differ in method and must really be
- * consumed — and no edge table may name THIS method on THIS path, which is the
- * property that makes the route genuinely unreachable rather than merely
- * undeclared. That last one is the `consumedByName` precedent: a declared
- * exception with a checked reason, never a matcher loosened globally.
+ * Removed rather than left standing, on the EXEMPT_SETTLEMENT_REPORTING
+ * precedent that the test below stated in advance: a declaration form with no
+ * instances is a shape the next person reaches for without a reason to. If a
+ * genuine method-level collision appears again, the form is in this file's
+ * history along with the four assertions that made it checkable.
  */
-const pathSharedWith = (sibling: string, reason: string): RouteDecl => ({
-  pathSharedWith: sibling,
-  reason,
-});
 
 /**
  * A consumer that addresses this route through an INTERPOLATION WHOSE VALUES
@@ -498,16 +486,14 @@ const EXEMPT_PROVIDER_INTAKE =
   'Machine-to-machine intake: a death signal arrives from the data-provider isolate, never from ' +
   'a person\u2019s browser, which is why `reportProvider` is deliberately absent from the operator ' +
   'audience list. No single source triggers anything — mandatory human review follows it.';
-const EXEMPT_EXECUTOR_CASEWORK =
-  'The distribution ladder \u2014 recording what an estate paid out and moving it through ' +
-  'approval. NARROWED TWICE NOW. M23 PR2 took the stage ladder and the inventory out of this ' +
-  'reason; M23 PR3 took the CHECKLIST out, and the checklist was the half this constant was ' +
-  'named for. What is left is the money, which is M23 PR4\u2019s slice and the last of it: when ' +
-  'the two distribution routes find their consumer, delete this constant rather than leave it ' +
-  'for the next milestone. The reason no longer cites docs/04\u2019s "3 routes", which was ' +
-  'wrong \u2014 count them from the entries that name this constant instead. The operator ' +
-  'console deliberately does not carry them: an executor is a grieving family member, not a ' +
-  'platform operator, and the two surfaces have different ceremonies.';
+// EXEMPT_EXECUTOR_CASEWORK is GONE (M23 PR4b), on the instruction it carried
+// itself: "when the two distribution routes find their consumer, delete this
+// constant rather than leave it for the next milestone." Both have one now —
+// `recordEstateDistribution` and `setEstateDistributionStatus` — so the last
+// executor-casework route in this fence is consumed and the reason has nothing
+// left to explain. Narrowed three times (M23 PR2 took the stage ladder and the
+// inventory, PR3 the checklist, PR4b the money) and then removed, which is what
+// an exemption is for.
 
 const EXEMPT_PLAID_UI =
   'M3 PR2 shipped the Plaid isolate deliberately backend-only (decision log 2026-07-21); the ' +
@@ -812,18 +798,27 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     `${OW}/server.ts`,
     OW_CLIENT,
   ),
-  'settlement POST /v1/settlement/cases/:caseId/distributions': pathSharedWith(
-    'settlement GET /v1/settlement/cases/:caseId/distributions',
-    'Recording a distribution is the executor write; the console proxies the GET on this path ' +
-      'and approves through distributions/:distributionId/approval, which is a path of its own.',
+  // BACK TO `consumed` FROM `pathSharedWith` (M23 PR4b) — and it was the LAST
+  // one, so the mechanism went with it. `recordEstateDistribution` exists, so
+  // the weaker claim ("no consumer of MY method") has become untrue, and a
+  // `pathSharedWith` that has become untrue reads as a route still waiting.
+  'settlement POST /v1/settlement/cases/:caseId/distributions': consumed(
+    `${BFF}/settlement-client.ts`,
   ),
   'settlement POST /v1/settlement/distributions/:distributionId/approval': consumed(
     `${OW}/server.ts`,
     OW_CLIENT,
   ),
-  'settlement POST /v1/settlement/distributions/:distributionId/status': {
-    exempt: EXEMPT_EXECUTOR_CASEWORK,
-  },
+  // TWO SURFACES: the console reveals what it is about to approve, and the
+  // executor reveals what they recorded. Both spend one audited decrypt.
+  'settlement GET /v1/settlement/distributions/:distributionId/amount': consumed(
+    `${OW}/server.ts`,
+    OW_CLIENT,
+    `${BFF}/settlement-client.ts`,
+  ),
+  'settlement POST /v1/settlement/distributions/:distributionId/status': consumed(
+    `${BFF}/settlement-client.ts`,
+  ),
 
   // ------------------------------------------------------------------- vault
   'vault GET /v1/vault/keyset': consumed(`${VW}/client/vault-session.ts`, `${VX}/popup.ts`),
@@ -928,63 +923,18 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     expect(consumedCount).toBeGreaterThanOrEqual(80);
   });
 
-  it('every pathSharedWith names a real, consumed sibling on the same path', () => {
-    /*
-     * The declaration is only honest if all four of its parts are true, so all
-     * four are checked. Without them it would be a way to silence the fence by
-     * pointing at a name.
-     */
-    let checked = 0;
-    for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
-      if (!('pathSharedWith' in decl)) continue;
-      checked += 1;
-      const sibling = ROUTE_CONSUMERS[decl.pathSharedWith];
-      expect({ key, siblingExists: sibling !== undefined }).toEqual({ key, siblingExists: true });
-      // Same PATH, different METHOD — which is the whole claim.
-      const path = key.slice(key.lastIndexOf(' ') + 1);
-      const siblingPath = decl.pathSharedWith.slice(decl.pathSharedWith.lastIndexOf(' ') + 1);
-      expect({ key, path, siblingPath }).toEqual({ key, path, siblingPath: path });
-      expect({ key, sameKey: decl.pathSharedWith === key }).toEqual({ key, sameKey: false });
-      // …and the sibling really is CONSUMED. Pointing at another exemption, or
-      // at another pathSharedWith, would be a chain with nothing at the end.
-      expect({ key, siblingConsumed: sibling !== undefined && 'consumers' in sibling }).toEqual({
-        key,
-        siblingConsumed: true,
-      });
-    }
-    // ONE LEFT (M23 PR2 flipped `POST /cases/:caseId/stages` to `consumed`).
-    // A floor of one still catches the failure this guards — a predicate that
-    // stopped matching gives zero — and when the last entry goes, the
-    // `pathSharedWith` MECHANISM goes with it, on the
-    // EXEMPT_SETTLEMENT_REPORTING precedent: a declaration form with no
-    // instances is a shape the next person reaches for without a reason to.
-    expect(checked).toBeGreaterThanOrEqual(1);
-  });
-
-  it('NO EDGE TABLE NAMES A pathSharedWith ROUTE — the method really is unreachable', () => {
-    /*
-     * The property that makes the declaration a fact rather than a convenience.
-     * `pathSharedWith` says "no consumer of MY method"; the corpus check cannot
-     * see a method, but the edge tables DO carry one, so an edge row naming
-     * this exact (method, path) is the one way the claim could be false while
-     * every other assertion passed.
-     */
-    const claims: string[] = [];
-    for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
-      if (!('pathSharedWith' in decl)) continue;
-      const method = key.slice(key.indexOf(' ') + 1, key.lastIndexOf(' '));
-      const path = key.slice(key.lastIndexOf(' ') + 1);
-      for (const row of EDGE_ROWS) {
-        if (row.method === method && templateMatchesPath(row.to, path)) {
-          claims.push(`${key} is proxied by ${row.edge} — it has a consumer, so flip it`);
-        }
-      }
-    }
-    expect(claims).toEqual([]);
-    // Anti-vacuity: the rows really were read, and they really carry methods.
-    expect(EDGE_ROWS.length).toBeGreaterThanOrEqual(16);
-    expect(EDGE_ROWS.filter((r) => r.method !== null).length).toBeGreaterThanOrEqual(16);
-  });
+  /*
+   * THE TWO `pathSharedWith` TESTS ARE GONE WITH THE MECHANISM (M23 PR4b).
+   *
+   * One checked that every such declaration named a real, consumed sibling on
+   * the same path with a different method; the other checked that NO EDGE TABLE
+   * named the declaring method on that path, which is what made "unreachable" a
+   * fact rather than a claim. Both had a floor of one, and the first said in
+   * its own comment that when the last entry went the mechanism went with it.
+   * It has. A test that can only iterate over an empty set is a green tick that
+   * proves nothing, and leaving it would advertise a declaration form nobody
+   * should reach for.
+   */
 
   it('EVERY REWRITE ROW IN EVERY EDGE SOURCE WAS READ (completeness, not a floor)', () => {
     /*
@@ -1016,33 +966,35 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
   it('every declared reason is substantive — exemptions AND enumerations', () => {
     // M20 PR1: this used to guard on `'exempt' in decl` alone, so the OTHER
     // kind of reason — `consumedByName`'s `enumerated` — was checked by
-    // nothing. `pathSharedWith`'s reason joined them in M21 PR3b for the same
-    // reason: it is what a reader has instead of a consumer file. That string is not decoration: its mere PRESENCE widens
+    // nothing. (`pathSharedWith`'s reason joined them in M21 PR3b and left with
+    // the mechanism in M23 PR4b.) That string is not decoration: its mere PRESENCE widens
     // `templateMatchesPath`'s wildcard to reach literal route segments, which
     // is the relaxation the M19 PR4 review added deliberately and narrowly. An
     // empty string bought the relaxation and stayed green.
     let checked = 0;
     for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
-      const reason =
-        'exempt' in decl ? decl.exempt : 'pathSharedWith' in decl ? decl.reason : decl.enumerated;
+      const reason = 'exempt' in decl ? decl.exempt : decl.enumerated;
       if (reason === undefined) continue;
       checked += 1;
       expect(`${key}: ${reason}`.length).toBeGreaterThanOrEqual(80);
       expect(reason.length).toBeGreaterThanOrEqual(60);
     }
-    // Anti-vacuity, as SETS rather than as a total. The comment above says the
-    // claim is that BOTH KINDS are covered, and a count cannot say that: 19
-    // exemptions and no `pathSharedWith` clears any floor a mixed corpus does.
-    // Stated this way it also stops eroding — M23 PR2 flipped two routes to
-    // consumers and a bare number had to be edited down, which is the ratchet
-    // running the wrong way.
+    /*
+     * Anti-vacuity, as SETS rather than as a total — the comment above says the
+     * claim is that BOTH KINDS of reason are covered, and a count cannot say
+     * that: 19 exemptions and no enumerations clears any floor a mixed corpus
+     * does. Stated this way it also stops eroding, where a bare number had to
+     * be edited down every time a route found a consumer — the ratchet running
+     * the wrong way.
+     *
+     * TWO KINDS NOW, not three: `pathSharedWith` went with its last instance in
+     * M23 PR4b, so the set it used to contribute is gone rather than merely
+     * empty.
+     */
     const kinds = new Set(
-      Object.values(ROUTE_CONSUMERS).map((decl) =>
-        'exempt' in decl ? 'exempt' : 'pathSharedWith' in decl ? 'pathSharedWith' : 'enumerated',
-      ),
+      Object.values(ROUTE_CONSUMERS).map((decl) => ('exempt' in decl ? 'exempt' : 'enumerated')),
     );
-    kinds.delete('enumerated');
-    expect([...kinds].sort()).toEqual(['exempt', 'pathSharedWith']);
+    expect([...kinds].sort()).toEqual(['enumerated', 'exempt']);
     expect(checked).toBeGreaterThanOrEqual(10);
     expect(
       Object.values(ROUTE_CONSUMERS).filter((d) => 'enumerated' in d).length,

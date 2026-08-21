@@ -45,6 +45,9 @@ describe('what the client makes of a wire answer', () => {
     [400, { error: 'invalid_request' }, 'INVALID_REQUEST'],
     // The cap. Its remedy is the only one in the union that is "wait".
     [429, { error: 'too_many_attempts' }, 'TOO_MANY_ATTEMPTS'],
+    // Crypto-shredded, and PERMANENT: kept off UNKNOWN so the console does not
+    // invite a retry for a key that was destroyed on purpose.
+    [410, { error: 'content_erased' }, 'CONTENT_ERASED'],
     [502, { error: 'upstream_unavailable' }, 'UNAVAILABLE'],
     [503, { error: 'unavailable' }, 'UNAVAILABLE'],
     [418, { error: 'teapot' }, 'UNKNOWN'],

@@ -389,19 +389,66 @@ function stageControls(kase: CaseSummary): (stage: StageView) => readonly HTMLEl
   };
 }
 
+/**
+ * AMOUNTS THIS REVIEWER HAS REVEALED, keyed by distribution id.
+ *
+ * DROPPED WHEN THE CASE SCREEN IS LEFT (see `onBack`). It exists so a re-render
+ * does not silently re-spend an audited decrypt on the decedent's trail — the
+ * one narrow case where a cache is the honest choice rather than the forbidden
+ * one. The M12 rule is that a cache must not make a REPEAT READ invisible; a
+ * reviewer coming back to the case is asking again, and that really is another
+ * read, so the map does not survive the trip.
+ */
+let revealedAmounts = new Map<string, string | null>();
+
 function distributionControls(): (distribution: DistributionView) => readonly HTMLElement[] {
   return (distribution) => {
-    if (distribution.approvedBy !== null) return [];
-    return [
-      button('Approve distribution', `approve-distribution-${distribution.distributionId}`, () => {
-        void guarded(
-          'distribution',
-          'Approving a distribution is the second half of a dual control: the operator who recorded it cannot be the one who approves it. Confirm it is you.',
+    const controls: HTMLElement[] = [];
+    /*
+     * REVEAL BEFORE APPROVE, in that order on the row, because that is the
+     * order a reviewer should work in. Until M23 PR4b this console offered only
+     * the approval — a dual-control, step-up-gated act over a figure sealed
+     * under the decedent's DEK that nobody could read. The approval was a
+     * ceremony; the amount is what it is about.
+     */
+    if (distribution.hasAmount && !revealedAmounts.has(distribution.distributionId)) {
+      controls.push(
+        button('Show amount', `show-amount-${distribution.distributionId}`, () => {
+          void (async (): Promise<void> => {
+            const result = await settlement.distributionAmount(distribution.distributionId);
+            if (!result.ok) {
+              // Through `failed`, so the refusal reaches the reviewer as
+              // whatever the shared copy table says that code means — a
+              // bespoke sentence here would be a second spelling of an error
+              // the console already knows how to describe. A failed reveal
+              // changes nothing else: the row keeps saying an amount is
+              // recorded, which is still true.
+              failed(result.code);
+            } else {
+              revealedAmounts.set(distribution.distributionId, result.data.amount);
+            }
+            await render();
+          })();
+        }),
+      );
+    }
+    if (distribution.approvedBy === null) {
+      controls.push(
+        button(
           'Approve distribution',
-          () => settlement.approveDistribution(distribution.distributionId),
-        );
-      }),
-    ];
+          `approve-distribution-${distribution.distributionId}`,
+          () => {
+            void guarded(
+              'distribution',
+              'Approving a distribution is the second half of a dual control: the operator who recorded it cannot be the one who approves it. Confirm it is you.',
+              'Approve distribution',
+              () => settlement.approveDistribution(distribution.distributionId),
+            );
+          },
+        ),
+      );
+    }
+    return controls;
   };
 }
 
@@ -495,11 +542,16 @@ async function renderCase(caseId: string): Promise<void> {
       actions: pending ? [] : caseActions(kase.data),
       stageActions: pending ? () => [] : stageControls(kase.data),
       distributionActions: pending ? () => [] : distributionControls(),
+      revealedAmounts,
       notice,
       prompt: pending?.form ?? null,
       onBack: () => {
         view = { kind: 'worklists' };
         notice = null;
+        // Leaving the case DROPS every revealed amount. A reviewer who comes
+        // back is asking again, and asking again really is another audited
+        // decrypt on the decedent's trail — which is the honest count.
+        revealedAmounts = new Map();
         dismissPrompt();
         void render();
       },

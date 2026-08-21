@@ -400,6 +400,70 @@ export class EventsService {
     });
   }
 
+  /**
+   * An executor UNTICKED a checklist item (M23 PR4b, deferred from PR3).
+   *
+   * THE SAME SHAPE AS `taskCompleted`, deliberately: an investigator asking
+   * "what did this executor claim, and did they take it back" reads two events
+   * of one form rather than one event plus an inference from its absence.
+   *
+   * PR3 shipped the untick with no event at all. The reversal was not lost —
+   * `settlement_tasks_versions` is trigger-maintained and append-only and
+   * records both transitions with the actor — but the version table is a
+   * database artifact and the audit chain is the record somebody is answerable
+   * to. The delay was the closed vocabulary: a new member costs an
+   * audit-consumer deployment ahead of its producer, so it waited for a change
+   * that was already paying that cost.
+   */
+  async taskReopened(
+    executorId: string,
+    sessionId: string,
+    caseId: string,
+    taskId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.task.reopened',
+      actorId: executorId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'settlement_task',
+      resourceId: taskId,
+      sessionId,
+      detail: { caseId },
+    });
+  }
+
+  /**
+   * An executor or operator REVEALED a recorded amount (M23 PR4b).
+   *
+   * The one event in this group that records a DISCLOSURE rather than a
+   * movement, and the reason the amount is worth recording at all: until the
+   * read route existed the figure was write-only, which made the dual-control
+   * approval an approval of a number nobody could see.
+   *
+   * The amount does not appear, which is the point. `onBehalfOf` names the
+   * DECEDENT — the DEK subject whose trail this decrypt belongs on — so the
+   * read is findable from the side of the person whose estate it was.
+   */
+  async distributionAmountViewed(
+    actorId: string,
+    sessionId: string,
+    decedentUserId: string,
+    caseId: string,
+    distributionId: string,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'settlement.distribution.amount_viewed',
+      actorId,
+      actorType: 'user',
+      onBehalfOf: decedentUserId,
+      resourceType: 'distribution',
+      resourceId: distributionId,
+      sessionId,
+      detail: { caseId },
+    });
+  }
+
   /** Amounts are ciphertext and NEVER appear here — only who and which. */
   async distributionRecorded(
     executorId: string,

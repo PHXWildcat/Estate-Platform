@@ -650,6 +650,183 @@ describe('distributions under dual control (docs/02 §7)', () => {
     expect(dto.hasAmount).toBe(false);
     expect(h.crypto.sealed).toEqual([]);
   });
+
+  /**
+   * READING ONE BACK (M23 PR4b).
+   *
+   * Until this route the amount was WRITE-ONLY — sealed under the decedent's
+   * DEK at `recordDistribution` and readable by nobody, which made the
+   * dual-control, step-up-gated approval above an approval of a number the
+   * approver could not see.
+   */
+  describe('revealing a recorded amount', () => {
+    /** A ready case carrying one distribution of `amount`. */
+    async function recorded(
+      h: AdminHarness,
+      amount: string | null,
+    ): Promise<{ caseId: string; id: string }> {
+      const caseId = await readyCase(h);
+      const dto = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+        beneficiaryContactId: CONTACT,
+        amount,
+      });
+      return { caseId, id: dto.distributionId };
+    }
+
+    it('returns the sealed decimal EXACTLY, as a string', async () => {
+      const h = buildAdminHarness();
+      /*
+       * THE LARGEST AMOUNT THE ROUTE ACCEPTS, and it does not survive a float:
+       * `String(Number('999999999999999.99'))` is '1000000000000000', so a
+       * parse anywhere on this path changes the answer by a cent and rounds an
+       * estate's largest distribution up to a round number.
+       *
+       * Fifteen digits and two places because that is `AmountSchema`'s own
+       * bound — a fixture wider than the schema would prove a round trip the
+       * controller refuses to start.
+       */
+      expect(String(Number('999999999999999.99'))).not.toBe('999999999999999.99');
+      const { id } = await recorded(h, '999999999999999.99');
+      await expect(h.admin.distributionAmount(EXECUTOR, SESSION, id)).resolves.toEqual({
+        amount: '999999999999999.99',
+      });
+    });
+
+    /**
+     * THE SAME PARTIES AS THE LIST, DERIVED rather than hand-listed.
+     *
+     * The claim is not "these four can read" — it is that this route's
+     * authority IS `listDistributions`'s, because it reveals a field of a row
+     * that route already returns. Comparing the two admitted SETS says that;
+     * four `resolves` assertions would say something weaker and would not
+     * notice a fifth party gaining one route and not the other.
+     */
+    it('admits exactly the callers `listDistributions` admits', async () => {
+      const h = buildAdminHarness();
+      h.operators.active.add(OPERATOR);
+      const { caseId, id } = await recorded(h, '42.00');
+      const parties = { DECEDENT, REPORTER, EXECUTOR, OPERATOR, STRANGER };
+
+      const admits = async (call: (who: string) => Promise<unknown>): Promise<string[]> => {
+        const out: string[] = [];
+        for (const [name, who] of Object.entries(parties)) {
+          const ok = await call(who).then(
+            () => true,
+            () => false,
+          );
+          if (ok) out.push(name);
+        }
+        return out;
+      };
+
+      const onList = await admits((who) => h.admin.listDistributions(who, SESSION, caseId));
+      const onAmount = await admits((who) => h.admin.distributionAmount(who, SESSION, id));
+      expect(onAmount).toEqual(onList);
+      // ANTI-VACUITY: two empty sets are also equal. These are the parties the
+      // route exists for, and a stranger is not among them.
+      expect(onAmount).toEqual(expect.arrayContaining(['EXECUTOR', 'OPERATOR']));
+      expect(onAmount).not.toContain('STRANGER');
+    });
+
+    it('answers a stranger the same way for a real id and an unknown one', async () => {
+      const h = buildAdminHarness();
+      const { id } = await recorded(h, '42.00');
+      const onReal = await refusalOf(() => h.admin.distributionAmount(STRANGER, SESSION, id));
+      const onAbsent = await refusalOf(() =>
+        h.admin.distributionAmount(STRANGER, SESSION, randomUUID()),
+      );
+      expect(onReal).toEqual(onAbsent);
+      expect(onReal).toEqual({ status: 404, body: { error: 'not_found' } });
+    });
+
+    it('does not open the estate’s DEK for a caller it is about to refuse', async () => {
+      const h = buildAdminHarness();
+      const { id } = await recorded(h, '42.00');
+      await refusalOf(() => h.admin.distributionAmount(STRANGER, SESSION, id));
+      expect(h.crypto.opened).toEqual([]);
+      // Positive control: the same id under the executor DOES open it, so the
+      // assertion above is about authority and not about a double that never
+      // decrypts.
+      await h.admin.distributionAmount(EXECUTOR, SESSION, id);
+      expect(h.crypto.opened).toHaveLength(1);
+    });
+
+    /**
+     * THE RECORD GOES FIRST. Both orderings return the same amount, so only an
+     * ORDER assertion can see this: an event written after the decrypt is one a
+     * crash can lose while the plaintext already exists, leaving an
+     * actor-attributed `crypto.field.decrypted` on a dead person's trail with
+     * nothing saying what authorised it.
+     */
+    it('records the disclosure BEFORE it reads the plaintext', async () => {
+      const h = buildAdminHarness();
+      const { id } = await recorded(h, '42.00');
+      const truthful = h.crypto.decryptField.bind(h.crypto);
+      let actionsAtDecrypt: string[] = [];
+      h.crypto.decryptField = (input): Promise<Buffer> => {
+        // Snapshot the trail AS THE DECRYPT HAPPENS — asserting on the final
+        // order of two lists would measure the fixture's own events too.
+        actionsAtDecrypt = auditActions(h.producer);
+        return truthful(input);
+      };
+
+      await h.admin.distributionAmount(EXECUTOR, SESSION, id);
+      expect(actionsAtDecrypt).toContain('settlement.distribution.amount_viewed');
+    });
+
+    it('never writes the amount into the audit trail', async () => {
+      const h = buildAdminHarness();
+      const { id } = await recorded(h, '98765.43');
+      await h.admin.distributionAmount(EXECUTOR, SESSION, id);
+
+      const viewed = auditEvents(h.producer).filter(
+        (e) => e.action === 'settlement.distribution.amount_viewed',
+      );
+      expect(viewed).toHaveLength(1);
+      expect(viewed[0]).toMatchObject({
+        resourceType: 'distribution',
+        resourceId: id,
+        onBehalfOf: DECEDENT,
+        actorId: EXECUTOR,
+      });
+      // Entity ids and enums only — the value this event records the reading
+      // of appears in NO payload on the trail.
+      for (const message of h.producer.messages) {
+        expect(message.value).not.toContain('98765.43');
+      }
+    });
+
+    /**
+     * THREE FACTS, THREE ANSWERS. "Nothing was recorded", "you may not look"
+     * and "it was erased" have different remedies, and the first is not a
+     * failure at all — `amount_ct` is nullable by design, because a
+     * distribution may name an asset rather than a sum.
+     */
+    it('answers null for a row with no amount, spending nothing to do it', async () => {
+      const h = buildAdminHarness();
+      const { id } = await recorded(h, null);
+      const before = auditActions(h.producer).length;
+      await expect(h.admin.distributionAmount(EXECUTOR, SESSION, id)).resolves.toEqual({
+        amount: null,
+      });
+      // No decrypt and no disclosure event: there was no disclosure.
+      expect(h.crypto.opened).toEqual([]);
+      expect(auditActions(h.producer)).toHaveLength(before);
+    });
+
+    it('answers a crypto-shredded estate `content_erased`, not null and not 500', async () => {
+      const h = buildAdminHarness();
+      const { id } = await recorded(h, '42.00');
+      // Legal erasure destroyed the decedent's DEK. The ledger row survives —
+      // no hard deletes anywhere — but the sum it carried does not.
+      for (const dekId of h.crypto.dekIds()) h.crypto.shredded.add(dekId);
+
+      const refusal = await refusalOf(() => h.admin.distributionAmount(EXECUTOR, SESSION, id));
+      expect(refusal).toEqual({ status: 410, body: { error: 'content_erased' } });
+      // The spelling `DocumentsService` already uses for exactly this — one
+      // behaviour, one spelling — and distinct from the `null` above.
+    });
+  });
 });
 
 describe('case close', () => {

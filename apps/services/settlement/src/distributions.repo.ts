@@ -67,6 +67,22 @@ export class DistributionsRepo {
     );
   }
 
+  /**
+   * One row, unlocked (M23 PR4b's amount read).
+   *
+   * NOT `lockById`: this is a read outside any transaction, and `FOR UPDATE`
+   * on a plain pool connection takes a row lock nothing releases until the
+   * statement's implicit transaction ends — a cost with no purpose on a path
+   * that writes nothing.
+   */
+  async findById(q: Queryable | Db, distributionId: string): Promise<DistributionRow | null> {
+    const rows = await q.query<DistributionRow>(
+      `SELECT ${COLUMNS} FROM distributions WHERE id = $1`,
+      [distributionId],
+    );
+    return rows[0] ?? null;
+  }
+
   async lockById(tx: Queryable, distributionId: string): Promise<DistributionRow | null> {
     const rows = await tx.query<DistributionRow>(
       `SELECT ${COLUMNS} FROM distributions WHERE id = $1 FOR UPDATE`,

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { loadBundledPolicies, PolicyDecisionPoint } from '@estate/authz';
-import type { FieldCrypto } from '@estate/crypto';
+import { DekDestroyedError, type FieldCrypto } from '@estate/crypto';
 import { SettlementAdminService } from '../src/admin.service';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import type { DistributionRow } from '../src/distributions.repo';
@@ -762,6 +762,10 @@ export class InMemoryDistributions {
     return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
   }
 
+  findById(_q: unknown, id: string): Promise<DistributionRow | null> {
+    return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
+  }
+
   approve(_tx: unknown, id: string, approvedBy: string, approvedAt: Date): Promise<boolean> {
     const row = this.rows.find((r) => r.id === id);
     if (!row || row.status !== 'planned') {
@@ -799,9 +803,27 @@ export class InMemoryDistributions {
   }
 }
 
-/** A FieldCrypto stand-in: records what was sealed, returns a marker buffer. */
+/**
+ * A FieldCrypto stand-in: records what was sealed, returns a marker buffer.
+ *
+ * FAITHFUL ABOUT WHAT IT REFUSES (M23 PR4b), not only about what it returns.
+ * `decryptField` opens only a DEK this instance issued, and throws otherwise —
+ * because the real `FieldCrypto.decryptField` goes through `requireActiveDek`,
+ * which refuses a DEK that has been crypto-shredded. An estate whose key was
+ * destroyed is the one case where a recorded amount is genuinely gone, and a
+ * double that answered anyway would let a service forget to handle it.
+ *
+ * It also binds on the (userId, field) AAD pair, so a ciphertext replayed as
+ * another field or against another user's key fails here exactly as it would
+ * in `open()`.
+ */
 export class FakeFieldCrypto {
   readonly sealed: Array<{ userId: string; field: string; plaintext: string }> = [];
+  readonly opened: Array<{ userId: string; field: string; actorId: string; purpose: string }> = [];
+  /** DEKs this instance minted, and what each one sealed. */
+  private readonly deks = new Map<string, { userId: string; field: string; plaintext: string }>();
+  /** Ids treated as crypto-shredded — `decryptField` refuses them. */
+  readonly shredded = new Set<string>();
 
   encryptField(
     userId: string,
@@ -809,7 +831,44 @@ export class FakeFieldCrypto {
     plaintext: string,
   ): Promise<{ ciphertext: Buffer; dekId: string }> {
     this.sealed.push({ userId, field, plaintext });
-    return Promise.resolve({ ciphertext: Buffer.from(`sealed:${field}`), dekId: randomUUID() });
+    const dekId = randomUUID();
+    this.deks.set(dekId, { userId, field, plaintext });
+    return Promise.resolve({ ciphertext: Buffer.from(`sealed:${field}`), dekId });
+  }
+
+  /** Every DEK this instance has minted — the shred test's input. */
+  dekIds(): string[] {
+    return [...this.deks.keys()];
+  }
+
+  decryptField(input: {
+    userId: string;
+    dekId: string;
+    field: string;
+    ciphertext: Buffer;
+    actorId: string;
+    actorType: string;
+    purpose: string;
+  }): Promise<Buffer> {
+    const record = this.deks.get(input.dekId);
+    if (record === undefined || this.shredded.has(input.dekId)) {
+      // The REAL error class, not a stand-in `Error` — a service that maps
+      // this to its own answer is mapping on `instanceof`, and a double that
+      // threw something else would let that mapping be wrong and still green.
+      return Promise.reject(new DekDestroyedError());
+    }
+    if (record.userId !== input.userId || record.field !== input.field) {
+      // The AAD binding: a ciphertext cannot be replayed as another field or
+      // under another user's key.
+      return Promise.reject(new Error('aad mismatch'));
+    }
+    this.opened.push({
+      userId: input.userId,
+      field: input.field,
+      actorId: input.actorId,
+      purpose: input.purpose,
+    });
+    return Promise.resolve(Buffer.from(record.plaintext, 'utf8'));
   }
 }
 

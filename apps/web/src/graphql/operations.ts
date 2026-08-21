@@ -954,6 +954,79 @@ export const SET_ESTATE_TASK_COMPLETION_MUTATION = `mutation SetEstateTaskComple
   }
 }`;
 
+/**
+ * WHAT THE ESTATE HAS PLANNED OR PAID OUT (M23 PR4b).
+ *
+ * NO AMOUNT IN THE SELECTION SET, and that is a decrypt-budget decision rather
+ * than a secrecy one: `hasAmount` is a boolean the service reads off a column,
+ * while the figure is one audited decrypt on the DECEDENT's own key plus an
+ * event on their trail. A list of eight distributions rendered with amounts
+ * would spend eight of both for a page nobody had asked a question about
+ * (docs/03 §6f — no content field on a list type, no prefetch).
+ *
+ * NO ACTOR IDS either, because the BFF has none to give: settlement answers
+ * with `createdBy` and `approvedBy`, and the second names a member of staff.
+ */
+export const ESTATE_DISTRIBUTIONS_QUERY = `query EstateDistributions($caseId: ID!) {
+  estateDistributions(caseId: $caseId) {
+    distributionId
+    beneficiaryContactId
+    assetId
+    status
+    approvedAt
+    hasAmount
+    createdAt
+  }
+}`;
+
+/**
+ * ONE AMOUNT, ASKED FOR DELIBERATELY (M23 PR4b).
+ *
+ * Its own document, so a reveal is always an act somebody took rather than a
+ * side effect of a list rendering. The id comes BACK with the figure, so the
+ * screen cannot pin an amount to a row it was not read from.
+ */
+export const ESTATE_DISTRIBUTION_AMOUNT_QUERY = `query EstateDistributionAmount($distributionId: ID!) {
+  estateDistributionAmount(distributionId: $distributionId) {
+    distributionId
+    amount
+  }
+}`;
+
+/**
+ * RECORD ONE (M23 PR4b). Step-up gated — it plans a transfer of value out of a
+ * dead person's estate.
+ *
+ * It records; it never approves. The row comes back 'planned' and stays there
+ * until an operator clears it under dual control, which is why the selection
+ * set asks for `status` — the screen shows what the server actually did rather
+ * than what the form assumed.
+ */
+export const RECORD_ESTATE_DISTRIBUTION_MUTATION = `mutation RecordEstateDistribution($caseId: ID!, $beneficiaryContactId: ID!, $assetId: ID, $amount: String) {
+  recordEstateDistribution(caseId: $caseId, beneficiaryContactId: $beneficiaryContactId, assetId: $assetId, amount: $amount) {
+    distributionId
+    beneficiaryContactId
+    assetId
+    status
+    approvedAt
+    hasAmount
+    createdAt
+  }
+}`;
+
+/** Move an APPROVED distribution on, or dispute it (M23 PR4b). Step-up gated. */
+export const SET_ESTATE_DISTRIBUTION_STATUS_MUTATION = `mutation SetEstateDistributionStatus($distributionId: ID!, $status: EstateDistributionStatusChange!) {
+  setEstateDistributionStatus(distributionId: $distributionId, status: $status) {
+    distributionId
+    beneficiaryContactId
+    assetId
+    status
+    approvedAt
+    hasAmount
+    createdAt
+  }
+}`;
+
 export const SETTLEMENT_SETTINGS_QUERY = `query SettlementSettings {
   settlementSettings {
     waitingPeriodDays
@@ -1131,6 +1204,10 @@ export const operations = {
   EstateContacts: ESTATE_CONTACTS_QUERY,
   EstateTasks: ESTATE_TASKS_QUERY,
   SetEstateTaskCompletion: SET_ESTATE_TASK_COMPLETION_MUTATION,
+  EstateDistributions: ESTATE_DISTRIBUTIONS_QUERY,
+  EstateDistributionAmount: ESTATE_DISTRIBUTION_AMOUNT_QUERY,
+  RecordEstateDistribution: RECORD_ESTATE_DISTRIBUTION_MUTATION,
+  SetEstateDistributionStatus: SET_ESTATE_DISTRIBUTION_STATUS_MUTATION,
 } as const;
 
 export type OperationName = keyof typeof operations;

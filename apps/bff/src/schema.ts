@@ -48,6 +48,7 @@ import type {
   ExecutorCase,
   SettlementCase as SettlementCaseDto,
   SettlementClient,
+  SettlementDistribution,
   SettlementSettings,
   SettlementStage,
   SettlementTask,
@@ -811,6 +812,27 @@ export const typeDefs = /* GraphQL */ `
     is why the rung is DOCUMENTS rather than the lighter INVENTORY.
     """
     estateContacts(caseId: ID!): [ContactSummary!]!
+    """
+    What this estate has planned or paid out (M23 PR4b).
+
+    NEVER CARRIES AN AMOUNT — see 'EstateDistribution.hasAmount'. Reading one
+    is an audited decrypt on the decedent's own key, so it has its own query
+    and is asked for a row at a time.
+    """
+    estateDistributions(caseId: ID!): [EstateDistribution!]!
+    """
+    ONE recorded amount, revealed deliberately (M23 PR4b).
+
+    Its own query rather than a field on 'EstateDistribution', because every
+    call emits 'settlement.distribution.amount_viewed' and spends a KMS
+    operation on the decedent's DEK. A field would make a page load spend one
+    per row for a question nobody asked (docs/03 §6f).
+
+    Null 'amount' is an ANSWER, not a refusal: a distribution may name an asset
+    rather than a sum. A crypto-shredded estate is the third answer and arrives
+    as CONTENT_ERASED — permanent, never a retry.
+    """
+    estateDistributionAmount(distributionId: ID!): EstateDistributionAmount!
   }
 
   """
@@ -845,6 +867,89 @@ export const typeDefs = /* GraphQL */ `
     dueAt: String
     "When it was ticked, or null. Null is the whole of 'not done yet'."
     completedAt: String
+  }
+
+  """
+  One planned or completed distribution from the estate (M23 PR4b, docs/02 §7).
+
+  NO ACTOR IDS, the rule 'EstateAccessStage' and 'EstateTask' already hold, and
+  this type is where it is most tempting to break: the service's shape carries
+  'createdBy' (the recorder) and 'approvedBy' (the operator who cleared it).
+  Neither is projected. A raw UUID tells a person nothing they can act on, and
+  the second would put a staff member's id in a grieving family member's
+  browser. 'approvedAt' survives because WHETHER and WHEN are the facts the
+  surface needs and neither names anybody.
+
+  NO 'caseId' either: this list is read per case, so echoing the argument back
+  adds a second place for the two to disagree.
+  """
+  type EstateDistribution {
+    distributionId: ID!
+    """
+    Who it goes to, as the contact handle 'ContactSummary.id' already uses —
+    NOT a user id. The executor's own contacts panel resolves it to a name, so
+    the browser can say who a distribution names without settlement ever
+    telling it who that person is.
+    """
+    beneficiaryContactId: ID!
+    "The asset it comes from, where one was named. Null is common and normal."
+    assetId: ID
+    """
+    'planned', 'approved', 'in_progress', 'completed' or 'disputed' — the
+    service's own vocabulary as a string, for the reason every other status
+    field here is one: the DDL owns the list, and a serialised enum turns a
+    value this build has not learned yet into a hard execution failure.
+
+    Nothing moves past 'planned' until an OPERATOR approves it. That is the
+    dual-control gate in docs/02 §7 and it is not the executor's to perform.
+    """
+    status: String!
+    "When an operator approved it, or null while it is still 'planned'."
+    approvedAt: String
+    """
+    Whether a sum is recorded — NEVER the sum. Ask 'estateDistributionAmount'
+    for the figure itself, one row at a time and once per question.
+
+    False is a real state and not a gap: a distribution may name an asset
+    rather than an amount.
+    """
+    hasAmount: Boolean!
+    createdAt: String!
+  }
+
+  """
+  One revealed amount (M23 PR4b).
+
+  CARRIES ITS OWN ID BACK so a caller cannot mis-attribute the figure to
+  another row — the one place in this schema where a value and the row it
+  belongs to arrive separately.
+  """
+  type EstateDistributionAmount {
+    distributionId: ID!
+    """
+    A decimal STRING, at the wire's own precision, or null when none was
+    recorded. Never a Float: money and binary floating point do not mix, and
+    '999999999999999.99' through a Float comes back a cent light.
+    """
+    amount: String
+  }
+
+  """
+  The status moves an EXECUTOR may make, which is not the whole vocabulary.
+
+  'planned' is where a distribution starts and 'approved' is an OPERATOR's act
+  under dual control (docs/02 §7) — neither is offered here, because a schema
+  that let the browser ask for them would be offering an action the server
+  will always refuse.
+
+  'apps/bff/test/settlement-distributions.spec.ts' derives these members from
+  the settlement migration's own CHECK constraint rather than restating them,
+  and accounts for every status the DDL allows.
+  """
+  enum EstateDistributionStatusChange {
+    IN_PROGRESS
+    COMPLETED
+    DISPUTED
   }
 
   """
@@ -1607,6 +1712,42 @@ export const typeDefs = /* GraphQL */ `
     """
     setEstateTaskCompletion(taskId: ID!, completed: Boolean!): EstateTask!
     """
+    Record a distribution from the estate (M23 PR4b, docs/02 §7).
+
+    STEP-UP GATED at the service, and this one is gated for the plainest reason
+    on the schema: it plans a transfer of value out of a dead person's estate.
+
+    IT DOES NOT APPROVE ANYTHING. A recorded distribution is 'planned' and
+    stays there until an OPERATOR clears it, and a DDL CHECK forbids the
+    approver being the recorder — dual control the browser cannot reach and
+    this mutation deliberately does not pretend to.
+
+    'amount' is a decimal STRING and is never parsed to a number anywhere on
+    the path. Omit it where a distribution names an asset rather than a sum;
+    that is a normal state, not a missing field.
+    """
+    recordEstateDistribution(
+      caseId: ID!
+      beneficiaryContactId: ID!
+      assetId: ID
+      amount: String
+    ): EstateDistribution!
+    """
+    Move an APPROVED distribution on, or dispute it (M23 PR4b).
+
+    STEP-UP GATED at the service — 'completed' is the executor saying money
+    left the estate.
+
+    DISTRIBUTION_NOT_APPROVED is the refusal that matters here and its remedy
+    is a SECOND PERSON, not a second attempt: nothing moves off 'planned' until
+    an operator approves it. The enum offers only the three moves an executor
+    may make, so the other two are absent rather than refused.
+    """
+    setEstateDistributionStatus(
+      distributionId: ID!
+      status: EstateDistributionStatusChange!
+    ): EstateDistribution!
+    """
     Attach a further document to a case you reported (M22 PR4c).
 
     DOCUMENTS ONLY. Settlement refuses a non-operator's provider match (M22
@@ -1815,6 +1956,34 @@ interface EstateTaskPayload {
   readonly assignedRole: string | null;
   readonly dueAt: string | null;
   readonly completedAt: string | null;
+}
+
+/**
+ * The service's distribution shape, narrowed. `createdBy` and `approvedBy` are
+ * dropped HERE rather than at the edge of each resolver, so there is exactly
+ * one place where an actor id could ever be added back — the same containment
+ * `toStagePayload` and `toTaskPayload` use.
+ */
+interface EstateDistributionPayload {
+  readonly distributionId: string;
+  readonly beneficiaryContactId: string;
+  readonly assetId: string | null;
+  readonly status: string;
+  readonly approvedAt: string | null;
+  readonly hasAmount: boolean;
+  readonly createdAt: string;
+}
+
+function toDistributionPayload(dto: SettlementDistribution): EstateDistributionPayload {
+  return {
+    distributionId: dto.distributionId,
+    beneficiaryContactId: dto.beneficiaryContactId,
+    assetId: dto.assetId,
+    status: dto.status,
+    approvedAt: dto.approvedAt,
+    hasAmount: dto.hasAmount,
+    createdAt: dto.createdAt,
+  };
 }
 
 interface SettlementCasePayload {
@@ -2478,6 +2647,37 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<EstateTaskPayload[]> =>
           (await settlement.listTasks(requireAccessToken(ctx), args.caseId)).map(toTaskPayload),
+        /**
+         * FORWARDED, like `estateStages` and `estateTasks`. Settlement's
+         * `assertCaseVisible` decides who may read a case's distributions and
+         * answers the uniform 404 otherwise; a resolve-first check here would
+         * refuse the decedent's own reader and the operator console, both
+         * admitted to that route by design.
+         */
+        estateDistributions: async (
+          _parent: unknown,
+          args: { caseId: string },
+          ctx: RequestContext,
+        ): Promise<EstateDistributionPayload[]> =>
+          (await settlement.listDistributions(requireAccessToken(ctx), args.caseId)).map(
+            toDistributionPayload,
+          ),
+        /**
+         * ONE ROW, ONE DECRYPT, and the id travels BACK with the figure so a
+         * caller cannot pin the amount to a different row than the one it was
+         * read from.
+         */
+        estateDistributionAmount: async (
+          _parent: unknown,
+          args: { distributionId: string },
+          ctx: RequestContext,
+        ): Promise<{ distributionId: string; amount: string | null }> => {
+          const { amount } = await settlement.distributionAmount(
+            requireAccessToken(ctx),
+            args.distributionId,
+          );
+          return { distributionId: args.distributionId, amount };
+        },
         linkedEstates: async (
           _parent: unknown,
           _args: unknown,
@@ -3106,6 +3306,46 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         ): Promise<EstateTaskPayload> =>
           toTaskPayload(
             await settlement.completeTask(requireAccessToken(ctx), args.taskId, args.completed),
+          ),
+        recordEstateDistribution: async (
+          _parent: unknown,
+          args: {
+            caseId: string;
+            beneficiaryContactId: string;
+            assetId?: string | null;
+            amount?: string | null;
+          },
+          ctx: RequestContext,
+        ): Promise<EstateDistributionPayload> =>
+          toDistributionPayload(
+            await settlement.recordDistribution(requireAccessToken(ctx), args.caseId, {
+              beneficiaryContactId: args.beneficiaryContactId,
+              // NULL AND ABSENT ARE THE SAME REQUEST here, and both mean "not
+              // given". GraphQL hands an omitted nullable argument through as
+              // undefined and an explicit `null` as null; forwarding the null
+              // would put `"assetId": null` in a body the service parses with
+              // `.strict()` against a `.uuid().optional()`, which refuses it.
+              ...(args.assetId == null ? {} : { assetId: args.assetId }),
+              ...(args.amount == null ? {} : { amount: args.amount }),
+            }),
+          ),
+        setEstateDistributionStatus: async (
+          _parent: unknown,
+          args: { distributionId: string; status: string },
+          ctx: RequestContext,
+        ): Promise<EstateDistributionPayload> =>
+          toDistributionPayload(
+            await settlement.setDistributionStatus(
+              requireAccessToken(ctx),
+              args.distributionId,
+              // DOWN to the service's vocabulary, the mirror of
+              // `toStagePayload`'s way back UP. GraphQL delivers an enum as its
+              // member NAME, so this is 'IN_PROGRESS' and the DDL's value is
+              // 'in_progress' — a comparison that would be permanently false if
+              // either side skipped the conversion (the M20 PR1 `MfaLevel`
+              // defect).
+              args.status.toLowerCase(),
+            ),
           ),
         attachCaseEvidence: async (
           _parent: unknown,
