@@ -40,6 +40,7 @@ export type ApiFailure =
   | 'STATE_CHANGED'
   | 'CONFLICT'
   | 'TOO_MANY_ATTEMPTS'
+  | 'CONTENT_ERASED'
   | 'UNAVAILABLE'
   | 'NETWORK'
   | 'UNKNOWN';
@@ -99,6 +100,16 @@ function failureFor(status: number, token: string | null): ApiFailure {
   // answers 429, and "wait" is a different remedy from every other refusal in
   // this union.
   if (status === 429) return 'TOO_MANY_ATTEMPTS';
+  /*
+   * PERMANENT, and that is why it is not UNKNOWN (M23 PR4b). A 410
+   * `content_erased` is a crypto-shredded DEK: the estate's key was destroyed
+   * under a legal erasure and no retry by anyone will ever open the ciphertext.
+   * Falling through to UNKNOWN rendered that as "something went wrong", which
+   * on this console invites an operator to keep asking for a value that was
+   * deliberately made unreadable. The BFF's documents client separates the same
+   * status for the same reason — one behaviour, one spelling.
+   */
+  if (status === 410) return 'CONTENT_ERASED';
   if (status === 502 || status === 503) return 'UNAVAILABLE';
   return 'UNKNOWN';
 }

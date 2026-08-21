@@ -155,6 +155,21 @@ const PROXY_ROUTES: readonly ProxyRoute[] = [
     upstream: 'settlement',
     rewriteTo: '/v1/settlement/distributions/:distributionId/approval',
   },
+  /*
+   * THE AMOUNT AN OPERATOR IS ABOUT TO APPROVE (M23 PR4b), and it ships in the
+   * same change as the approval it makes meaningful. Until this route the row
+   * above asked a reviewer to exercise a dual-control, step-up-gated approval
+   * over a figure sealed under the decedent's DEK and readable by nobody.
+   *
+   * Every reveal is an audited decrypt on a dead person's trail, so the console
+   * asks for one row at a time and never as part of loading the list.
+   */
+  {
+    method: 'GET',
+    path: '/api/settlement/distributions/:distributionId/amount',
+    upstream: 'settlement',
+    rewriteTo: '/v1/settlement/distributions/:distributionId/amount',
+  },
 ];
 
 /**

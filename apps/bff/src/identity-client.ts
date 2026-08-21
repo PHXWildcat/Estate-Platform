@@ -541,6 +541,17 @@ export type BffErrorCode =
    */
   | 'CASE_NOT_VERIFIED'
   /**
+   * A distribution cannot move until an OPERATOR has approved it (M23 PR4b) —
+   * the dual-control gate in docs/02 §7, enforced by a DDL CHECK so no
+   * service-layer bug can defeat it.
+   *
+   * Its own code because its remedy is a SECOND PERSON, not a second attempt
+   * and not a reload. The generic conflict would tell an executor their screen
+   * was stale when it was current, and send them to refresh a page that will
+   * say exactly the same thing.
+   */
+  | 'DISTRIBUTION_NOT_APPROVED'
+  /**
    * A settlement transition rolled back because identity or documents could
    * not be reached (M22 PR3). NOTHING HAPPENED and the remedy is to try again.
    *
@@ -600,6 +611,7 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   STAGE_NOT_APPROVED: 'This stage of access has not been approved yet',
   STAGE_ALREADY_REQUESTED: 'This stage has already been requested',
   CASE_NOT_VERIFIED: 'This case is not yet ready to be administered',
+  DISTRIBUTION_NOT_APPROVED: 'This distribution has not been approved yet',
   SETTLEMENT_UNAVAILABLE: 'We could not complete that right now — nothing has changed',
 };
 

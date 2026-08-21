@@ -150,7 +150,11 @@ describe('every path this client asks for is a path the edge forwards', () => {
   it('asks for exactly the settlement paths the edge allowlists', () => {
     const edge = [...edgePaths()].map((p) => p.replace(/:[A-Za-z]+/g, ':p')).sort();
     const asked = [...clientPaths()].sort();
-    expect(edge.length).toBe(13);
+    // 14 since M23 PR4b added the amount read. An exact number, not a floor:
+    // this assertion is meant to break when the edge grows, because that is
+    // when somebody has to decide whether the console should reach a route at
+    // all. The SET equality below is the real claim; this is its anti-vacuity.
+    expect(edge.length).toBe(14);
     expect(asked).toEqual(edge);
   });
 });

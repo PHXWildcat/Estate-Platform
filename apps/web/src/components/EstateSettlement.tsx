@@ -14,6 +14,7 @@ import { formatMoney } from '../lib/money';
 import type { StepUpRetryOutcome } from '../lib/step-up';
 import { EstateChecklist } from './EstateChecklist';
 import { EstateContacts } from './EstateContacts';
+import { EstateDistributions } from './EstateDistributions';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
 import { estateName } from './SettlingEstatesPanel';
@@ -402,6 +403,15 @@ export function EstateSettlement({ caseId }: { caseId: string }): ReactElement {
       </section>
 
       <EstateContacts caseId={caseId} />
+
+      {/*
+        LAST, and behind no rung of its own. Distributions need no access stage
+        — `assertCaseVisible` gates them, not the ladder — but the panel is most
+        useful once there are people to name, and its beneficiary picker needs
+        the contacts above. It sits after them for that reason rather than
+        because it is gated.
+      */}
+      <EstateDistributions caseId={caseId} />
     </div>
   );
 }

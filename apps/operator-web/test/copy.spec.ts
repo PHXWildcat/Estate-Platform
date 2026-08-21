@@ -36,7 +36,7 @@ describe('every failure code has a sentence of its own', () => {
 
   it('derives the whole union', () => {
     // Anti-vacuity: a scan that matched nothing agrees with any table.
-    expect(codes.length).toBeGreaterThanOrEqual(13);
+    expect(codes.length).toBeGreaterThanOrEqual(15);
     expect(codes).toContain('OWNER_ALIVE');
     expect(codes).toContain('SEPARATION_OF_DUTIES');
   });
@@ -64,6 +64,9 @@ describe('every failure code has a sentence of its own', () => {
     ['TOO_MANY_ATTEMPTS', /wait/i, /wrong/i],
     ['NETWORK', /has not ended/i, /sign in again/i],
     ['UNAVAILABLE', /nothing was changed/i, /sign in again/i],
+    // PERMANENT, so it must not offer a next attempt — the failure this row
+    // exists for is an erased value reading as a transient fault.
+    ['CONTENT_ERASED', /nobody can recover/i, /try again|reload/i],
   ])('%s says what happened and not what did not', (code, says, never) => {
     const text = messageFor(code as ApiFailure);
     expect(text).toMatch(says);

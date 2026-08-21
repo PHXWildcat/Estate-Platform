@@ -120,6 +120,12 @@ export const GQL_ERROR_CODES = [
   'STAGE_ALREADY_REQUESTED',
   /** A real case, really this caller's to administer, not yet at a status that has one. */
   'CASE_NOT_VERIFIED',
+  /**
+   * A distribution cannot move until an OPERATOR approves it (M23 PR4b) — the
+   * dual-control gate in docs/02 §7. The remedy is a second PERSON, so it is
+   * kept apart from every refusal whose remedy is another attempt.
+   */
+  'DISTRIBUTION_NOT_APPROVED',
 ] as const;
 
 /** Error codes the BFF contract defines. */
@@ -214,6 +220,53 @@ export interface EstateTaskInfo {
   assignedRole: string | null;
   dueAt: string | null;
   completedAt: string | null;
+}
+
+/**
+ * The status moves an executor may make on a distribution (M23 PR4b).
+ *
+ * DERIVED FROM THE SDL's `EstateDistributionStatusChange` enum by
+ * `enum-parity.test.ts` — UPPERCASE because GraphQL serialises an enum as its
+ * member NAME, and a lowercase union here would compare permanently false.
+ *
+ * IT IS NOT THE WHOLE VOCABULARY, and that is the point. 'planned' is where a
+ * distribution starts and 'approved' is an OPERATOR's act under dual control
+ * (docs/02 §7); neither is here, so this app has no way to spell an action the
+ * server would refuse. `EstateDistributionInfo.status` below is a plain string
+ * because it must be able to REPORT all five.
+ */
+export type EstateDistributionStatusChange = 'IN_PROGRESS' | 'COMPLETED' | 'DISPUTED';
+
+/**
+ * One planned or completed distribution from an estate (M23 PR4b).
+ *
+ * NO ACTOR IDS, because the BFF has no such fields: settlement answers with
+ * `createdBy` and `approvedBy`, and the second is a member of staff.
+ *
+ * NO AMOUNT. `hasAmount` says whether there is a figure to ask for; the figure
+ * itself is a separate query, because each read is an audited decrypt on the
+ * decedent's own key. Never fetch one while rendering a list.
+ */
+export interface EstateDistributionInfo {
+  distributionId: string;
+  /** The CONTACT handle, resolvable against `estateContacts` — not a user id. */
+  beneficiaryContactId: string;
+  assetId: string | null;
+  /**
+   * 'planned' | 'approved' | 'in_progress' | 'completed' | 'disputed' — a
+   * STRING and not a union, because the DDL owns this vocabulary and an
+   * app-side copy would be a third list neither of the other two derives.
+   */
+  status: string;
+  approvedAt: string | null;
+  hasAmount: boolean;
+  createdAt: string;
+}
+
+/** One revealed amount — a decimal STRING, or null where none was recorded. */
+export interface EstateDistributionAmountInfo {
+  distributionId: string;
+  amount: string | null;
 }
 
 export interface LinkedEstateInfo {
@@ -868,6 +921,29 @@ interface OperationSignatures {
   SetEstateTaskCompletion: {
     variables: { taskId: string; completed: boolean };
     data: { setEstateTaskCompletion: EstateTaskInfo };
+  };
+  EstateDistributions: {
+    variables: { caseId: string };
+    data: { estateDistributions: EstateDistributionInfo[] };
+  };
+  EstateDistributionAmount: {
+    variables: { distributionId: string };
+    data: { estateDistributionAmount: EstateDistributionAmountInfo };
+  };
+  RecordEstateDistribution: {
+    variables: {
+      caseId: string;
+      beneficiaryContactId: string;
+      /** Omitted or null alike mean "no asset named" — the BFF drops both. */
+      assetId?: string | null;
+      /** A decimal STRING, never a number. Null where none is recorded. */
+      amount?: string | null;
+    };
+    data: { recordEstateDistribution: EstateDistributionInfo };
+  };
+  SetEstateDistributionStatus: {
+    variables: { distributionId: string; status: EstateDistributionStatusChange };
+    data: { setEstateDistributionStatus: EstateDistributionInfo };
   };
   SetSettlementWaitingPeriod: {
     variables: { days: number };

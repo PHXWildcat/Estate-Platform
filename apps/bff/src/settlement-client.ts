@@ -164,6 +164,57 @@ export type SettlementSettings = z.infer<typeof SettingsSchema>;
  * and is a later slice. A field the BFF never parses is a field no resolver
  * can leak, so it is absent rather than filtered.
  */
+/**
+ * One distribution as the EXECUTOR'S SURFACE needs it (M23 PR4b).
+ *
+ * NO 'createdBy' AND NO 'approvedBy'. Both are raw user UUIDs and both are
+ * dropped for the reason `CaseSchema` drops `reportedBy`: a bare UUID tells a
+ * person nothing they can act on, and resolving one to a name would mean a
+ * cross-cluster read this edge has no business making. `approvedBy` is the
+ * more tempting of the two — it names the operator who cleared the payment —
+ * and it is exactly the id that must not reach a grieving family member's
+ * browser. `approvedAt` survives because WHETHER it was approved and WHEN are
+ * the facts the surface needs, and neither names anybody.
+ *
+ * NO AMOUNT, deliberately absent rather than filtered. Revealing one is an
+ * audited decrypt on the decedent's own DEK, so it has its own route and its
+ * own query; a field here would spend N of them on every page load (docs/03
+ * §6f). `hasAmount` is the flag that lets the surface say whether there is
+ * anything to ask for.
+ *
+ * `beneficiaryContactId` and `assetId` DO cross. Neither is a user id: they
+ * are the same handles `ContactSummary.id` and the estate inventory already
+ * put in this browser, so the surface can name a beneficiary from PR4a's list
+ * without settlement ever telling it who that person is.
+ */
+const DistributionSchema = z.object({
+  distributionId: z.string().min(1),
+  caseId: z.string().min(1),
+  assetId: z.string().nullable(),
+  beneficiaryContactId: z.string().min(1),
+  /**
+   * 'planned', 'approved', 'in_progress', 'completed' or 'disputed' — carried
+   * as a STRING for the reason every other status on this edge is one: the DDL
+   * owns the vocabulary, and a value this build has not learned yet must not
+   * become a hard parse failure.
+   */
+  status: z.string().min(1),
+  approvedAt: z.string().nullable(),
+  hasAmount: z.boolean(),
+  createdAt: z.string().min(1),
+});
+export type SettlementDistribution = z.infer<typeof DistributionSchema>;
+
+/**
+ * ONE REVEALED AMOUNT. A decimal STRING or null, never a number — `z.string()`
+ * and not `z.coerce.number()` is the whole point: JSON.parse would already
+ * have destroyed '999999999999999.99' if this edge had modelled it as one.
+ *
+ * Null is an ANSWER (`amount_ct` is nullable by design — a distribution may
+ * name an asset rather than a sum), not a refusal.
+ */
+const DistributionAmountSchema = z.object({ amount: z.string().nullable() });
+
 const TaskSchema = z.object({
   taskId: z.string().min(1),
   title: z.string().min(1),
@@ -214,6 +265,28 @@ export interface SettlementClient {
    * an MFA prompt to say they have found the will.
    */
   completeTask(accessToken: string, taskId: string, completed: boolean): Promise<SettlementTask>;
+  /** Every distribution recorded on one case. Never carries an amount. */
+  listDistributions(accessToken: string, caseId: string): Promise<SettlementDistribution[]>;
+  /** Record one. Step-up gated at the service — it plans a transfer of value. */
+  recordDistribution(
+    accessToken: string,
+    caseId: string,
+    input: { beneficiaryContactId: string; assetId?: string; amount?: string },
+  ): Promise<SettlementDistribution>;
+  /** Move an APPROVED distribution on, or dispute it. Step-up gated. */
+  setDistributionStatus(
+    accessToken: string,
+    distributionId: string,
+    status: string,
+  ): Promise<SettlementDistribution>;
+  /**
+   * Reveal ONE recorded amount. Each call is an audited decrypt on the
+   * decedent's DEK, so it is a deliberate per-row act and never a list field.
+   */
+  distributionAmount(
+    accessToken: string,
+    distributionId: string,
+  ): Promise<{ amount: string | null }>;
   getSettings(accessToken: string): Promise<SettlementSettings>;
   updateSettings(accessToken: string, waitingPeriodDays: number): Promise<SettlementSettings>;
 }
@@ -356,6 +429,85 @@ export class FetchSettlementClient implements SettlementClient {
     return this.parseBody(res, z.array(TaskSchema));
   }
 
+  async listDistributions(accessToken: string, caseId: string): Promise<SettlementDistribution[]> {
+    const res = await this.request(
+      'GET',
+      `/v1/settlement/cases/${encodeURIComponent(caseId)}/distributions`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, z.array(DistributionSchema));
+  }
+
+  async recordDistribution(
+    accessToken: string,
+    caseId: string,
+    input: { beneficiaryContactId: string; assetId?: string; amount?: string },
+  ): Promise<SettlementDistribution> {
+    const res = await this.request(
+      'POST',
+      `/v1/settlement/cases/${encodeURIComponent(caseId)}/distributions`,
+      accessToken,
+      {
+        beneficiaryContactId: input.beneficiaryContactId,
+        ...(input.assetId === undefined ? {} : { assetId: input.assetId }),
+        // The amount travels as the STRING it arrived as. It is never widened,
+        // rounded or normalised here — the service's own regex is the only
+        // thing that decides whether it is a well-formed decimal.
+        ...(input.amount === undefined ? {} : { amount: input.amount }),
+      },
+    );
+    if (!res.ok) {
+      // `case_not_verified` reaches only the estate's own executor (M23 PR1),
+      // and its remedy is to wait rather than to retry.
+      throw await this.mapError(res, { caseNotVerified: 'CASE_NOT_VERIFIED' });
+    }
+    return this.parseBody(res, DistributionSchema);
+  }
+
+  async setDistributionStatus(
+    accessToken: string,
+    distributionId: string,
+    status: string,
+  ): Promise<SettlementDistribution> {
+    const res = await this.request(
+      'POST',
+      `/v1/settlement/distributions/${encodeURIComponent(distributionId)}/status`,
+      accessToken,
+      { status },
+    );
+    if (!res.ok) {
+      /*
+       * `invalid_transition` HERE MEANS ONE THING and it is not "reload".
+       * Settlement refuses every move off 'planned' until an OPERATOR has
+       * approved the distribution — the dual-control gate — so the executor
+       * who meets this refusal is waiting on a second person, not on a stale
+       * page. That is the same distinction `SEPARATION_OF_DUTIES` draws on the
+       * operator console, and collapsing it into the generic conflict would
+       * send someone to reload a screen that was never out of date.
+       */
+      throw await this.mapError(res, { invalidTransition: 'DISTRIBUTION_NOT_APPROVED' });
+    }
+    return this.parseBody(res, DistributionSchema);
+  }
+
+  async distributionAmount(
+    accessToken: string,
+    distributionId: string,
+  ): Promise<{ amount: string | null }> {
+    const res = await this.request(
+      'GET',
+      `/v1/settlement/distributions/${encodeURIComponent(distributionId)}/amount`,
+      accessToken,
+    );
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return this.parseBody(res, DistributionAmountSchema);
+  }
+
   async completeTask(
     accessToken: string,
     taskId: string,
@@ -439,7 +591,8 @@ export class FetchSettlementClient implements SettlementClient {
   private async mapError(
     res: Response,
     meaning: {
-      readonly invalidTransition?: 'CASE_NOT_VOIDABLE' | 'EVIDENCE_WINDOW_CLOSED';
+      readonly invalidTransition?:
+        'CASE_NOT_VOIDABLE' | 'EVIDENCE_WINDOW_CLOSED' | 'DISTRIBUTION_NOT_APPROVED';
       readonly caseExists?: 'CASE_ALREADY_REPORTED';
       readonly stageOutOfOrder?: 'STAGE_OUT_OF_ORDER';
       readonly stageExists?: 'STAGE_ALREADY_REQUESTED';
@@ -516,6 +669,17 @@ export class FetchSettlementClient implements SettlementClient {
        * the calling route's decision — see `mapError`'s own docstring.
        */
       return bffError(meaning.invalidTransition);
+    }
+    if (res.status === 410) {
+      /*
+       * CRYPTO-SHREDDED, AND PERMANENT. The estate's DEK was destroyed under a
+       * legal erasure request, so the recorded amount is unreadable to
+       * everyone for ever. It gets its own code — the spelling the documents
+       * edge already uses for the same status and the same cause — because
+       * rendering it as a transient failure invites someone to retry until
+       * they give up on a key that was destroyed on purpose.
+       */
+      return bffError('CONTENT_ERASED');
     }
     if (res.status === 503) {
       /*

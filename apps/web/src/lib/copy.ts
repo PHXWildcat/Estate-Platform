@@ -23,8 +23,16 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   // why the BFF kept them apart instead of collapsing them into one conflict.
   TEMPLATE_NOT_FOUND:
     'We don’t have an attorney-reviewed template for that document in that state yet.',
+  /*
+   * SURFACE-NEUTRAL since M23 PR4b, the same move `VERSION_CONFLICT` made in
+   * M19 and for the same reason: one code now covers a document version AND a
+   * distribution amount, and the remedy is identical because there is none.
+   * The sentence used to say "this version's contents" and "the text", which
+   * is simply false of a sum of money.
+   */
   CONTENT_ERASED:
-    'This version’s contents were permanently erased. The record of it remains, but the text cannot be recovered.',
+    'This was permanently erased at someone’s request. The record that it existed remains, but ' +
+    'what it held can’t be recovered — by us or by anyone.',
   // Surface-neutral on purpose (M19): the same stale-If-Match refusal now
   // covers documents AND assets, and the remedy is identical — re-read, then
   // decide again. Never auto-retry over someone else's newer change.
@@ -178,6 +186,15 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   CASE_NOT_VERIFIED:
     'This case hasn’t reached the point where the estate can be administered yet. We’ll let you ' +
     'know when it has — there’s nothing you need to do.',
+  /*
+   * THE REMEDY IS A SECOND PERSON, so the sentence must not end in "try
+   * again". Distributions are dual-controlled (docs/02 §7): the executor
+   * records one and somebody on our side approves it, and no amount of
+   * retrying by the person reading this will move it.
+   */
+  DISTRIBUTION_NOT_APPROVED:
+    'This distribution is still waiting on our review. It can’t be marked as started or paid ' +
+    'out until then — nothing’s gone wrong, and there’s nothing you need to do.',
   NETWORK: 'We couldn’t reach the server. Check your connection and try again.',
   UNKNOWN: 'Something went wrong on our side. Please try again in a moment.',
   // M20 PR4, CORRECTED BY THE PR5 REVIEW, which found this sentence claiming

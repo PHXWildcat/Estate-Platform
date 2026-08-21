@@ -436,6 +436,13 @@ profile's `contacts`/`role_assignments`, which is why settlement lives in core):
   ALLOWLIST ('active','deceased_pending') so verification kills every token.
 - `settlement_tasks`/`distributions` (+`created_by` for the dual-control
   trigger) and `settlement_deks` ship with PR2 — no dormant schema.
+- `distributions.amount_ct` travels with `dek_id` (a CHECK keeps the pair
+  together) and the DEK is the DECEDENT'S, not settlement's: crypto-shredding
+  an estate retires every amount recorded against it, and the read route
+  answers `content_erased` rather than a null when it has been. Readable one
+  row at a time since M23 PR4b — before that the column had no reader in the
+  product, which made the dual-control approval above an approval of an
+  invisible figure.
 
 ## 8. Design notes worth arguing about
 

@@ -91,6 +91,12 @@ export function messageFor(code: ApiFailure): string {
       return 'Estate is not answering just now. Your session has not ended and nothing was changed — try again in a moment.';
     case 'TOO_MANY_ATTEMPTS':
       return 'Too many attempts. Wait a few minutes and try again.';
+    case 'CONTENT_ERASED':
+      // NOT a fault and NOT a refusal of this operator — the estate's key was
+      // destroyed on a legal erasure request, so the value is gone for
+      // everyone, permanently. The sentence has to close the question rather
+      // than leave someone reloading for a key that no longer exists.
+      return 'This was erased under a data-deletion request: the key that could read it was destroyed, so nobody can recover the value. The record that it exists remains.';
     case 'FORBIDDEN':
       return 'This account is not on the settlement operator list, so it cannot work cases. Reaching this console does not grant that — an operator is added by the platform team, not by signing in here.';
     case 'NOT_FOUND':
@@ -238,6 +244,11 @@ export interface CaseScreenOptions {
    */
   readonly stageActions: (stage: StageView) => readonly HTMLElement[];
   readonly distributionActions: (distribution: DistributionView) => readonly HTMLElement[];
+  /**
+   * Amounts this reviewer has revealed (M23 PR4b). Absent means none — the
+   * screen renders "Recorded — use Show amount" rather than inventing a figure.
+   */
+  readonly revealedAmounts?: ReadonlyMap<string, string | null>;
   readonly notice: string | null;
   readonly prompt: HTMLElement | null;
   readonly onBack: () => void;
@@ -282,6 +293,19 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
     ]);
   });
 
+  /** What the Amount row says, given what this reviewer has revealed so far. */
+  function amountFact(
+    distribution: DistributionView,
+    revealed: ReadonlyMap<string, string | null> | undefined,
+  ): string {
+    if (!distribution.hasAmount) return 'None recorded';
+    const value = revealed?.get(distribution.distributionId);
+    if (value === undefined) return 'Recorded — use Show amount';
+    // A revealed null is the service saying the row carries no sum after all,
+    // which `hasAmount` should already have said; say so rather than "null".
+    return value === null ? 'None recorded' : value;
+  }
+
   const distributionRows = (options.distributions ?? []).map((distribution) => {
     const controls = options.distributionActions(distribution);
     return el('li', { class: 'row' }, [
@@ -291,13 +315,20 @@ export function caseScreen(options: CaseScreenOptions): readonly Node[] {
         ...fact('Status', distribution.status),
         ...fact('Recorded by', distribution.createdBy),
         ...fact('Approved by', distribution.approvedBy ?? 'Not approved'),
-        // The AMOUNT is never returned by settlement — recording is write-only
-        // under its own KEK. Saying "an amount is recorded" is the whole truth
-        // this console has, and inventing a placeholder figure would be worse.
-        ...fact(
-          'Amount',
-          distribution.hasAmount ? 'Recorded (not readable here)' : 'None recorded',
-        ),
+        /*
+         * THE AMOUNT, once this reviewer has asked for it (M23 PR4b).
+         *
+         * This row used to read "Recorded (not readable here)", and the comment
+         * beside it said the amount was write-only "under its own KEK". Both
+         * were half wrong: it is sealed under the DECEDENT's DEK, and the
+         * reason it was unreadable was that no route existed — which made the
+         * approval below a dual control over a figure nobody could see.
+         *
+         * Revealing one is a deliberate per-row act, one audited decrypt on the
+         * decedent's trail, never something loading a case spends N of. The
+         * value is a decimal STRING rendered as it arrived; never parsed.
+         */
+        ...fact('Amount', amountFact(distribution, options.revealedAmounts)),
       ]),
       ...(controls.length > 0 ? [el('p', { class: 'actions' }, controls)] : []),
     ]);

@@ -280,7 +280,19 @@ describe('opening a case', () => {
     await until(() => copy().includes('Review queue'));
   });
 
-  it('shows a distribution as RECORDED, never as an amount it cannot read', async () => {
+  /**
+   * THE AMOUNT AN OPERATOR IS ABOUT TO APPROVE (M23 PR4b).
+   *
+   * This test used to assert "Recorded (not readable here)" — the honest
+   * rendering of a figure settlement had no route to return. That made the
+   * approval below it a dual-control, step-up-gated act over a number the
+   * approver could not see, which is a ceremony rather than a control.
+   *
+   * What survives is the property that was always the point: the console never
+   * shows an amount it has not been given. It just can now ask for one, once,
+   * per row.
+   */
+  it('shows a distribution as RECORDED until the reviewer asks for the amount', async () => {
     transport({
       ...WORKLISTS([REPORTED], []),
       ...CASE_ROUTES({ ...REPORTED, status: 'active' }),
@@ -299,10 +311,53 @@ describe('opening a case', () => {
           },
         ],
       },
+      '/api/settlement/distributions/d-1/amount': { status: 200, body: { amount: '4500.00' } },
     });
     await render();
     await openCase();
-    expect(copy()).toMatch(/Recorded \(not readable here\)/);
+    // NOT FETCHED WITH THE LIST. Every reveal is an audited decrypt on the
+    // decedent's trail, so loading a case must never spend one.
+    expect(copy()).toMatch(/Recorded — use Show amount/);
+    expect(copy()).not.toMatch(/4500\.00/);
+
+    await pressing('Show amount');
+    await until(() => copy().includes('4500.00'));
+    // A decimal STRING, rendered as it arrived — never parsed, so no float
+    // ever prints `4499.999999`.
+    expect(copy()).toMatch(/4500\.00/);
+    // ...and the control is gone, because asking again would be another
+    // audited decrypt and the answer is already on screen.
+    expect(copy()).not.toMatch(/Show amount/);
+  });
+
+  it('a REFUSED reveal leaves the row saying an amount is recorded', async () => {
+    transport({
+      ...WORKLISTS([REPORTED], []),
+      ...CASE_ROUTES({ ...REPORTED, status: 'active' }),
+      [`/api/settlement/cases/${CASE_ID}/distributions`]: {
+        status: 200,
+        body: [
+          {
+            distributionId: 'd-1',
+            beneficiaryContactId: 'c-1',
+            assetId: null,
+            status: 'pending',
+            createdBy: 'u-op1',
+            approvedBy: null,
+            hasAmount: true,
+            createdAt: '2026-08-02T00:00:00.000Z',
+          },
+        ],
+      },
+      '/api/settlement/distributions/d-1/amount': { status: 503, body: { error: 'unavailable' } },
+    });
+    await render();
+    await openCase();
+    await pressing('Show amount');
+    // The row's claim is still true, and the control stays: a failed read is
+    // not an answer, so the reviewer can try again.
+    await until(() => copy().includes('Recorded — use Show amount'));
+    expect(copy()).toMatch(/Show amount/);
   });
 
   it('renders an UNKNOWN status token as itself rather than blanking the row', async () => {

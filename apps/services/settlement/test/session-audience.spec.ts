@@ -100,6 +100,10 @@ const OPERATOR_ROUTES: ReadonlyArray<{ controller: Ctor; route: string }> = [
   { controller: SettlementAdminController, route: 'decideStage' },
   { controller: SettlementAdminController, route: 'revokeStage' },
   { controller: SettlementAdminController, route: 'approveDistribution' },
+  // M23 PR4b: the console needs this one MOST. The operator approving a
+  // distribution is the person dual control exists for, and until this route
+  // they approved a figure nobody could see.
+  { controller: SettlementAdminController, route: 'distributionAmount' },
 ];
 
 /**
@@ -200,10 +204,13 @@ describe('settlement route audiences match the declaration', () => {
     // assertion below pass — the credential-graph anti-drop lesson.
     const counts = CONTROLLERS.map((c) => routeNames(c.ctor).length);
     expect(counts.every((n) => n > 0)).toBe(true);
-    // 30 across four controllers. Asserted so the next person MEASURES rather
-    // than remembering: the decision log carried a wrong route count for
-    // settlement for four milestones (M21 PR2.5).
-    expect(counts.reduce((a, b) => a + b, 0)).toBe(30);
+    // 31 across four controllers (M23 PR4b added the amount read). Asserted so
+    // the next person MEASURES rather than remembering: the decision log
+    // carried a wrong route count for settlement for four milestones
+    // (M21 PR2.5). An EXACT number and not a floor — this one is meant to
+    // break when a route arrives, because that is when someone has to decide
+    // its audience and its guard.
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(31);
   });
 
   it('exactly the console routes admit an operator session', () => {
@@ -267,6 +274,11 @@ describe('settlement route audiences match the declaration', () => {
       timeline: 'a read',
       listStages: 'a read',
       listDistributions: 'a read',
+      distributionAmount:
+        'a read, and gating it would put a factor in front of the LAST step of a disclosure ' +
+        'whose earlier steps are free — `listDistributions` already says the amount exists. ' +
+        'It would also make the operator checking what they approve work harder than the ' +
+        'operator approving blind. See this block.',
       startReview:
         'claiming a case commits to nothing and the decision after it is gated — see this block',
     };

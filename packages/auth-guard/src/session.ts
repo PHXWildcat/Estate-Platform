@@ -298,6 +298,14 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    *     payment-progress ladder are M23's surface. This is the one group whose
    *     absence is a product decision rather than an authorization one, which
    *     is worth saying rather than letting the list imply otherwise.
+   *   · `distributionAmount` JOINED THIS LIST in M23 PR4b, and it is the one
+   *     addition that widens what a console session can DECRYPT rather than
+   *     read. It is admitted for the reason the dual control exists: an
+   *     approver who cannot see the figure is performing a ceremony. It is not
+   *     step-up gated, because `listDistributions` — ungated and already here —
+   *     tells the same caller the row exists and carries an amount, and a
+   *     factor in front of the last step of a disclosure whose earlier steps
+   *     are free makes the checking act harder than the approving one.
    */
   operator: [
     'identity:session',
@@ -309,6 +317,14 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
     'settlement:timeline',
     'settlement:listStages',
     'settlement:listDistributions',
+    // THE FIGURE BEHIND THE APPROVAL (M23 PR4b). The console admits this one
+    // because the operator approving a distribution under dual control is
+    // precisely the person who must be able to see what they are approving —
+    // until PR4b the amount was write-only and the ceremony had an invisible
+    // subject. It reads ONE row and emits
+    // `settlement.distribution.amount_viewed` naming the estate, so a console
+    // that looked is a console that left a record of looking.
+    'settlement:distributionAmount',
     'settlement:startReview',
     'settlement:decideReview',
     'settlement:verify',

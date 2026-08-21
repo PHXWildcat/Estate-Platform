@@ -41,6 +41,7 @@ import type {
   UploadInput,
   UploadResult,
 } from '../src/documents-client';
+import { bffError } from '../src/identity-client';
 import type {
   IdentityClient,
   IdentitySession,
@@ -74,6 +75,7 @@ import type {
   ReportSource,
   SettlementCase,
   SettlementClient,
+  SettlementDistribution,
   SettlementSettings,
   SettlementStage,
   SettlementTask,
@@ -1447,6 +1449,137 @@ export class FakeSettlementClient implements SettlementClient {
         // a resolver that dropped `completed: false` pass.
         completedAt: completed ? '2026-08-21T00:00:00.000Z' : null,
       })
+    );
+  }
+
+  /**
+   * THREE DISTRIBUTIONS, each carrying an arm this surface is likely to drop.
+   *
+   * The FIRST is 'planned' with an amount: not yet approved, so the executor
+   * can do nothing to it but look — the state the dual-control gate produces
+   * and the one a screen is tempted to offer buttons on.
+   *
+   * The SECOND is 'approved' with NO amount, because `amount_ct` is nullable
+   * by design (a distribution may name an ASSET rather than a sum) and "no
+   * amount recorded" reads like an error to anyone who assumed one was there.
+   *
+   * The THIRD belongs to ANOTHER CASE, so a resolver passing the wrong case id
+   * is visible rather than silently plausible.
+   */
+  distributionsResult: SettlementDistribution[] = [
+    {
+      distributionId: 'dist-1',
+      caseId: 'case-1',
+      assetId: null,
+      beneficiaryContactId: 'contact-1',
+      status: 'planned',
+      approvedAt: null,
+      hasAmount: true,
+      createdAt: '2026-08-20T00:00:00.000Z',
+    },
+    {
+      distributionId: 'dist-2',
+      caseId: 'case-1',
+      assetId: 'asset-1',
+      beneficiaryContactId: 'contact-9',
+      status: 'approved',
+      approvedAt: '2026-08-20T02:00:00.000Z',
+      hasAmount: false,
+      createdAt: '2026-08-20T01:00:00.000Z',
+    },
+    {
+      distributionId: 'dist-9',
+      caseId: 'case-9',
+      assetId: null,
+      beneficiaryContactId: 'contact-9',
+      status: 'completed',
+      approvedAt: '2026-08-20T02:00:00.000Z',
+      hasAmount: true,
+      createdAt: '2026-08-20T01:00:00.000Z',
+    },
+  ];
+  distributionsCalls: Array<{ accessToken: string; caseId: string }> = [];
+  recordDistributionCalls: Array<{
+    accessToken: string;
+    caseId: string;
+    input: { beneficiaryContactId: string; assetId?: string; amount?: string };
+  }> = [];
+  distributionStatusCalls: Array<{
+    accessToken: string;
+    distributionId: string;
+    status: string;
+  }> = [];
+  amountCalls: Array<{ accessToken: string; distributionId: string }> = [];
+  /**
+   * KEYED BY ROW, and the second entry is a NULL that is an ANSWER rather than
+   * a failure — a double that answered every id with the same string could not
+   * tell a resolver that ignored its argument from one that used it.
+   */
+  amountResult = new Map<string, string | null>([
+    ['dist-1', '999999999999999.99'],
+    ['dist-2', null],
+  ]);
+
+  listDistributions(accessToken: string, caseId: string): Promise<SettlementDistribution[]> {
+    this.distributionsCalls.push({ accessToken, caseId });
+    // FAITHFUL ABOUT SCOPE, like `listStages`: a distribution belongs to one
+    // case, and a double returning every row regardless would hide a resolver
+    // passing a case id it resolved wrongly.
+    return (
+      this.reject() ?? Promise.resolve(this.distributionsResult.filter((d) => d.caseId === caseId))
+    );
+  }
+
+  recordDistribution(
+    accessToken: string,
+    caseId: string,
+    input: { beneficiaryContactId: string; assetId?: string; amount?: string },
+  ): Promise<SettlementDistribution> {
+    this.recordDistributionCalls.push({ accessToken, caseId, input });
+    return (
+      this.reject() ??
+      Promise.resolve({
+        distributionId: 'dist-new',
+        caseId,
+        assetId: input.assetId ?? null,
+        beneficiaryContactId: input.beneficiaryContactId,
+        // FAITHFUL ABOUT THE STATE IT PRODUCES: a newly recorded distribution
+        // is 'planned' and unapproved. A double that answered 'approved' would
+        // let a screen offering the next step past the dual-control gate pass.
+        status: 'planned',
+        approvedAt: null,
+        // ...and about the amount, which is a FLAG here and never a value.
+        hasAmount: input.amount !== undefined,
+        createdAt: '2026-08-21T00:00:00.000Z',
+      })
+    );
+  }
+
+  setDistributionStatus(
+    accessToken: string,
+    distributionId: string,
+    status: string,
+  ): Promise<SettlementDistribution> {
+    this.distributionStatusCalls.push({ accessToken, distributionId, status });
+    const found =
+      this.distributionsResult.find((d) => d.distributionId === distributionId) ??
+      this.distributionsResult[0];
+    return this.reject() ?? Promise.resolve({ ...(found as SettlementDistribution), status });
+  }
+
+  distributionAmount(
+    accessToken: string,
+    distributionId: string,
+  ): Promise<{ amount: string | null }> {
+    this.amountCalls.push({ accessToken, distributionId });
+    // FAITHFUL ABOUT WHAT IT REFUSES: an id this double knows nothing about
+    // gets the service's uniform 404, not a cheerful null. "No amount
+    // recorded" and "no such distribution" are different facts.
+    if (!this.amountResult.has(distributionId)) {
+      return this.reject() ?? Promise.reject(bffError('NOT_FOUND'));
+    }
+    return (
+      this.reject() ?? Promise.resolve({ amount: this.amountResult.get(distributionId) ?? null })
     );
   }
 

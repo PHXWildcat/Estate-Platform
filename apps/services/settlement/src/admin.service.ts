@@ -1,11 +1,12 @@
 import {
   ConflictException,
   ForbiddenException,
+  GoneException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { FieldCrypto } from '@estate/crypto';
+import { DekDestroyedError, type FieldCrypto } from '@estate/crypto';
 import { ADMINISTRABLE_STATUSES, CasesRepo, type CaseRow, type CaseStatus } from './cases.repo';
 import { OperatorBreadthMonitor } from './operator-breadth.monitor';
 import { OPERATOR_BREADTH_MAX_CASES, OPERATOR_BREADTH_WINDOW_MS } from './operator-breadth';
@@ -72,11 +73,23 @@ export interface DistributionDto {
   createdBy: string;
   approvedBy: string | null;
   approvedAt: string | null;
-  /** Whether an encrypted amount is recorded. The amount itself is never
-   * returned anywhere: settlement has NO amount read route — recording is
-   * write-only (sealed at write under settlement's own KEK), and a future
-   * read surface must add its own audited decrypt route rather than assume
-   * one exists. */
+  /**
+   * Whether an encrypted amount is recorded — never the amount itself.
+   *
+   * A LIST FIELD CANNOT CARRY IT, and that is a decrypt-budget decision rather
+   * than a secrecy one (docs/03 §6f): revealing an amount is one audited
+   * decrypt on the DECEDENT's trail, so it is a deliberate per-row act on
+   * `GET /distributions/:id/amount` and never something a page load spends N
+   * of.
+   *
+   * THIS COMMENT ONCE SAID the amount was "sealed at write under settlement's
+   * own KEK" and that "settlement has NO amount read route". The first half was
+   * false when written — `recordDistribution` calls
+   * `encryptField(decedent, ...)`, so it is the DECEDENT's DEK and shredding
+   * the estate retires every amount recorded against it — and the second was
+   * true until M23 PR4b, which added the route because a write-only figure made
+   * the dual-control approval an approval of a number nobody could see.
+   */
   hasAmount: boolean;
   createdAt: string;
 }
@@ -89,6 +102,17 @@ export interface TimelineEntry {
 
 /** AAD field label for an encrypted distribution amount (docs/02 conventions). */
 const DISTRIBUTION_AMOUNT_FIELD = 'distributions.amount';
+
+/**
+ * The case id used when a distribution id names nothing.
+ *
+ * A CONSTANT, not a skipped check: `assertCaseVisible` must run before the
+ * missing-row branch or an unknown id would refuse differently from one on
+ * somebody else's case — the M23 PR1 defect, in the shape it takes when the
+ * lookup cannot move. This value names no case, so it takes the same
+ * uniform-404 path every unauthorised caller does.
+ */
+const MISSING_CASE = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Case statuses at which post-verification administration is permitted.
@@ -442,8 +466,17 @@ export class SettlementAdminService {
       );
       return (await this.tasks.lockById(tx, taskId)) as TaskRow;
     });
+    /*
+     * BOTH DIRECTIONS ARE RECORDED (M23 PR4b). PR3 emitted on the tick and
+     * nothing on the untick, so an executor withdrawing a claim that a step
+     * was taken left no trace outside the version table. Two events of one
+     * shape, so the trail answers "what did they claim, and did they take it
+     * back" without inferring anything from an absence.
+     */
     if (input.completed) {
       await this.events.taskCompleted(actor, sessionId, row.case_id, taskId);
+    } else {
+      await this.events.taskReopened(actor, sessionId, row.case_id, taskId);
     }
     return taskDto(row);
   }
@@ -567,6 +600,91 @@ export class SettlementAdminService {
   }
 
   /** Post-approval movement: in_progress → completed, or disputed. */
+  /**
+   * REVEAL ONE RECORDED AMOUNT (M23 PR4b) — one audited decrypt, one act.
+   *
+   * WHY IT EXISTS. Until this route the amount was write-only: sealed at
+   * `recordDistribution` under the DECEDENT's DEK and readable by nobody. That
+   * made `settlement.distribution.approved` — dual-control AND step-up gated,
+   * and named in docs/03 §5.4 as a control — an approval of a number the
+   * approver could not see. A control whose subject is invisible to the person
+   * exercising it is a ceremony, not a control.
+   *
+   * `assertCaseVisible`, NOT the narrower executor test. The same four parties
+   * `listDistributions` admits — the decedent's own reader, the reporter, the
+   * executor and an operator — because this route reveals a field of a row
+   * that route already returns, and a reader who may see that a distribution
+   * exists and carries an amount is the reader who may see which amount. A
+   * narrower gate here would mean the operator approving still could not look.
+   *
+   * ONE AT A TIME, never a list field. Every reveal is an audited decrypt on a
+   * dead person's trail, so the cost is per row and the caller has to ask for
+   * each one (docs/03 §6f — no content field on a list type, no prefetch).
+   *
+   * THE RECORD GOES FIRST, because it records a disclosure — the rule
+   * `ContactLinksService.estatesNaming` states and this service now shares
+   * (docs/06, 2026-08-20). An event written after the decrypt is an event a
+   * crash can lose while the plaintext already exists, and here that would
+   * leave an actor-attributed `crypto.field.decrypted` on a dead person's
+   * trail with nothing saying what authorised it. The ordering costs a
+   * false positive in the shred arm below — a recorded view of a value that
+   * turned out to be unreadable — and an over-record is the safe direction:
+   * the failure it prevents is a disclosure with no record at all.
+   *
+   * NULL FOR A ROW WITH NO AMOUNT, which is not a refusal: `amount_ct` is
+   * nullable by design (a distribution may name an asset rather than a sum), so
+   * "nothing was recorded" is an answer and must not read as one of the two
+   * failures around it. A CRYPTO-SHREDDED estate is the THIRD fact and gets
+   * its own answer — `content_erased`, the spelling `DocumentsService` already
+   * uses for exactly this, because "never recorded" and "erased under a legal
+   * request" are different truths and 500 is neither.
+   */
+  async distributionAmount(
+    actor: string,
+    sessionId: string,
+    distributionId: string,
+  ): Promise<{ amount: string | null }> {
+    const row = await this.distributions.findById(this.db, distributionId);
+    // Authority BEFORE anything is said about this row (M23 PR1): a missing
+    // distribution and one on a case this caller cannot see leave through the
+    // same line, so holding an id proves nothing about whether it names
+    // anything.
+    const { kase } = await this.assertCaseVisible(actor, row?.case_id ?? MISSING_CASE);
+    if (row === null) {
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    if (row.amount_ct === null || row.dek_id === null) {
+      return { amount: null };
+    }
+    await this.events.distributionAmountViewed(
+      actor,
+      sessionId,
+      kase.decedent_user_id,
+      kase.id,
+      distributionId,
+    );
+    let plaintext: Buffer;
+    try {
+      plaintext = await this.fieldCrypto.decryptField({
+        userId: kase.decedent_user_id,
+        dekId: row.dek_id,
+        field: DISTRIBUTION_AMOUNT_FIELD,
+        ciphertext: row.amount_ct,
+        actorId: actor,
+        actorType: 'user',
+        purpose: 'distribution_amount',
+      });
+    } catch (err) {
+      if (err instanceof DekDestroyedError) {
+        // Crypto-shredded: the ledger row survives, the sum does not.
+        throw new GoneException({ error: 'content_erased' });
+      }
+      throw err;
+    }
+    // A decimal STRING end to end — never parsed to a number at any layer.
+    return { amount: plaintext.toString('utf8') };
+  }
+
   async setDistributionStatus(
     actor: string,
     sessionId: string,

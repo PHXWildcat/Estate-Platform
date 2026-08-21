@@ -548,6 +548,142 @@ describe('the checklist edge (M23 PR3)', () => {
   });
 });
 
+describe('the distributions edge (M23 PR4b)', () => {
+  const DIST = {
+    distributionId: '88888888-8888-4888-8888-888888888888',
+    caseId: CASE.caseId,
+    assetId: null,
+    beneficiaryContactId: '99999999-9999-4999-8999-999999999999',
+    status: 'planned',
+    approvedAt: null,
+    hasAmount: true,
+    createdAt: '2026-08-20T00:00:00.000Z',
+    // The two actor ids the service answers with that this edge must not
+    // model. `approvedBy` is a member of STAFF.
+    createdBy: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    approvedBy: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  };
+
+  it('keeps BOTH actor ids out of the parsed value', async () => {
+    const { client, calls } = clientWith([response(200, [DIST])]);
+    const [parsed] = await client.listDistributions(TOKEN, CASE.caseId);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/settlement/cases/${CASE.caseId}/distributions`);
+    // On the PARSED value: zod strips what it does not declare, so a resolver
+    // added later has no `approvedBy` to select even if it asks.
+    expect(parsed).toEqual({
+      distributionId: DIST.distributionId,
+      caseId: DIST.caseId,
+      assetId: null,
+      beneficiaryContactId: DIST.beneficiaryContactId,
+      status: 'planned',
+      approvedAt: null,
+      hasAmount: true,
+      createdAt: DIST.createdAt,
+    });
+    // Anti-vacuity: the fixture really carried both.
+    expect(Object.keys(DIST)).toContain('createdBy');
+    expect(Object.keys(DIST)).toContain('approvedBy');
+  });
+
+  /**
+   * THE AMOUNT SURVIVES AS A STRING, and this is the assertion that would
+   * catch the one mistake that matters on this path: `z.coerce.number()` here,
+   * or a `JSON.parse` reviver anywhere, silently turns the largest amount the
+   * service accepts into a different, rounder number.
+   */
+  it('carries a decimal amount EXACTLY, never as a number', async () => {
+    const { client, calls } = clientWith([response(200, { amount: '999999999999999.99' })]);
+    const result = await client.distributionAmount(TOKEN, DIST.distributionId);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/settlement/distributions/${DIST.distributionId}/amount`);
+    expect(result).toEqual({ amount: '999999999999999.99' });
+    expect(typeof result.amount).toBe('string');
+    // The failure this guards: the same value through a Float.
+    expect(String(Number(result.amount))).not.toBe(result.amount);
+  });
+
+  it('treats a null amount as an ANSWER, not a failure', async () => {
+    const { client } = clientWith([response(200, { amount: null })]);
+    await expect(client.distributionAmount(TOKEN, DIST.distributionId)).resolves.toEqual({
+      amount: null,
+    });
+  });
+
+  /**
+   * A CRYPTO-SHREDDED ESTATE IS PERMANENT, and gets a code that says so. The
+   * failure being prevented is a 410 falling through to the generic error,
+   * which reads as "try again" for a key that was destroyed on purpose.
+   */
+  it('maps 410 to CONTENT_ERASED — the spelling the documents edge already uses', async () => {
+    const { client } = clientWith([response(410, { error: 'content_erased' })]);
+    await expect(client.distributionAmount(TOKEN, DIST.distributionId)).rejects.toMatchObject({
+      extensions: { code: 'CONTENT_ERASED' },
+    });
+  });
+
+  it('sends an omitted asset and amount as ABSENT keys, not as nulls', async () => {
+    const { client, calls } = clientWith([response(201, DIST)]);
+    await client.recordDistribution(TOKEN, CASE.caseId, {
+      beneficiaryContactId: DIST.beneficiaryContactId,
+    });
+    // Settlement parses this body with `.strict()` against `.optional()`
+    // fields, which refuse an explicit null. A JSON `null` here would turn the
+    // commonest request there is into INVALID_REQUEST.
+    const body = JSON.parse((calls[0]?.init.body as string) ?? '{}') as Record<string, unknown>;
+    expect(body).toEqual({ beneficiaryContactId: DIST.beneficiaryContactId });
+    expect(Object.keys(body)).not.toContain('assetId');
+    expect(Object.keys(body)).not.toContain('amount');
+  });
+
+  it('tells the dual-control refusal apart from a stale page', async () => {
+    const { client } = clientWith([response(409, { error: 'invalid_transition' })]);
+    /*
+     * TWO REMEDIES, so never one token. `invalid_transition` on the kill
+     * switch means "too late to void this yourself"; here it means "an
+     * operator has not approved it yet", whose remedy is a second PERSON. The
+     * calling route decides which sentence it becomes — the reason `mapError`
+     * takes the meaning as an argument rather than reading the token alone.
+     */
+    await expect(
+      client.setDistributionStatus(TOKEN, DIST.distributionId, 'completed'),
+    ).rejects.toMatchObject({ extensions: { code: 'DISTRIBUTION_NOT_APPROVED' } });
+  });
+
+  it('answers a UNIFORM not-found across all four verbs, and never quotes the service', async () => {
+    const notFound = (): Response =>
+      response(404, { error: 'not_found', detail: 'distributions row 42 missing' });
+    const { client } = clientWith([notFound(), notFound(), notFound(), notFound()]);
+    for (const call of [
+      () => client.listDistributions(TOKEN, CASE.caseId),
+      () => client.distributionAmount(TOKEN, DIST.distributionId),
+      () =>
+        client.recordDistribution(TOKEN, CASE.caseId, {
+          beneficiaryContactId: DIST.beneficiaryContactId,
+        }),
+      () => client.setDistributionStatus(TOKEN, DIST.distributionId, 'completed'),
+    ]) {
+      const err = await call().catch((e: unknown) => e);
+      expect(err).toMatchObject({ extensions: { code: 'NOT_FOUND' } });
+      expect(JSON.stringify(err)).not.toContain('distributions row');
+    }
+  });
+
+  it('refuses a malformed distribution rather than half-trusting it', async () => {
+    const { client } = clientWith([response(200, [{ ...DIST, hasAmount: 'yes' }])]);
+    await expect(client.listDistributions(TOKEN, CASE.caseId)).rejects.toThrow(
+      'settlement response failed validation',
+    );
+  });
+
+  it('refuses an amount that arrived as a NUMBER', async () => {
+    // The downstream shape that would mean money had already been through a
+    // float somewhere upstream. Refusing beats carrying it on.
+    const { client } = clientWith([response(200, { amount: 42.5 })]);
+    await expect(client.distributionAmount(TOKEN, DIST.distributionId)).rejects.toThrow(
+      'settlement response failed validation',
+    );
+  });
+});
+
 describe('what the client refuses to carry', () => {
   it('parses evidence as opaque and keeps ids out of the parsed value', async () => {
     const { client } = clientWith([
