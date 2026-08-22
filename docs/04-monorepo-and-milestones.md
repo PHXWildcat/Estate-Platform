@@ -6838,9 +6838,9 @@ decision booked as progress is how a queue stays untouched.**
 | M21 | TB7 operator platform, minimum slice | **APPROVED**, section above |
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
 | M23 | Executor surface | **COMPLETE** (PR1–PR4b, #141). `EXEMPT_EXECUTOR_CASEWORK` is deleted and every executor-casework route names a consumer. This row read "In progress (PR1, PR2, PR3)" after the milestone finished, which is the same stale-prose defect the exemption reasons keep producing |
-| M24 | Dashboard, computable subset | Flip-trigger **CHECKED 2026-08-21 and NOT FIRED** — no demo date, no signed customer — so this row is a proposal, not a decision. Re-sequenced BEHIND M25; reasoning in the M25 section below. Owns two docs/03 §6v residuals already |
+| M24 | Dashboard, computable subset | **APPROVED 2026-08-21, section below.** The flip-trigger was re-checked at kickoff and had STILL not fired — no demo date, no signed customer — so starting is the owner's recorded decision, not the trigger firing; the grounds are in the M24 section and docs/06 rather than silently replacing this row's earlier "a proposal, not a decision". Owns two docs/03 §6v residuals and ships the shared client read cache with its first consumer |
 | M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below. COMPLETE.** PR0-PR5 shipped: the boundary, the capture redaction, the decision record, the destroy leg, the owner's surface, the security review. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. PR5 closed the out-of-envelope category for identity's cluster (`password_hash`, `email_changes.new_email_bidx`) — every other domain's leg owns enumerating its OWN, and docs/03 §6pp says why building that list from column names is how PR4's sweep got it wrong. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
-| M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
+| M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete. **NAME COLLISION, flagged by M24 PR0 rather than inherited:** M25 re-owned the erasure fan-out "to M26" in nine `[OWNER: M26]` residual tags across docs/03 §§6ll–6pp — seven unreached domains, the search-token purge, the pre-shred notification ordering — while this row scopes M26 as audit completeness, which owns four earlier `[OWNER: M26]` tags of its own. Two bodies of work share one name; whoever scopes M26 splits them FIRST, and neither absorbs the other by default |
 | M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
 | M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
 | M29 | Passkey sign-in / passwordless discovery | Both authenticate routes carry `SessionGuard` |
@@ -8102,3 +8102,154 @@ out-of-envelope digest in this cluster and has no writer anywhere in the
 service. The table is dormant, so there is nothing to erase — and that answer
 expires the day something writes to it, which is why it is a residual in §6pp
 and not a comment.
+
+### M24 — the dashboard, computable subset (approved 2026-08-21)
+
+**THE FLIP-TRIGGER DID NOT FIRE, AND STARTING ANYWAY IS A DECISION SOMEBODY
+OWNS.** The queue row called itself "a proposal, not a decision" because M24's
+only written trigger — a demo date or a signed customer — was checked on
+2026-08-21 and had not fired. It was re-checked at kickoff: still nothing. The
+owner decided to run M24 next anyway, and this section records that as a
+decision with grounds rather than letting the work silently supersede the
+row's own sentence. The grounds: M25, the milestone the re-sequence preferred,
+is complete; M24 is next by queue number and nothing ahead of it unblocked in
+the interim (E1–E5 all still stand); and the one dependency claim M24 carries
+— the shared client read cache, which both of its docs/03 §6v residuals need
+and which M28, M30 and M31 would also consume — must ship with a first
+consumer, and M24 is the first consumer the queue offers. What did NOT change
+is the value lens: still no demo date, no signed customer. The trigger
+sentence stays in force and simply never fired — the queue reached M24 rather
+than M24 jumping the queue.
+
+**SCOPE: THE COMPUTABLE SUBSET, MEASURED RATHER THAN ASSUMED, AND PINNED BY A
+FENCE.** docs/00 names thirteen dashboard surfaces. Which of them the platform
+can compute was checked against the SDL the BFF serves
+(`apps/bff/src/schema.ts`) on 2026-08-21, and the split is data plus a test —
+`apps/bff/test/dashboard-computability.spec.ts` — because both halves are
+claims about a tree that grows: an IN tile's backing can be renamed away, and
+an OUT item's justifying absence can quietly stop being absent. Count the
+split from the fence, never from prose restating it.
+
+**IN — every tile backed by an operation that exists today:**
+
+- *Net worth* — `Query.netWorth` (`totalValue`, `assetCount`,
+  `valuedAssetCount`, `inTrustValue`). Money is a decimal string end to end;
+  tiles render through `@estate/money` and never parse it to a float, and any
+  COMPUTED number goes through a formatter.
+- *Assets* — `Query.assets`, `netWorth.assetCount`.
+- *Insurance* — as the data model has it: three asset CATEGORIES
+  (`life_insurance`, `ltc_insurance`, `annuity` — the `assets_view` CHECK owns
+  that vocabulary), rendered as a facet of the assets/net-worth tile. A
+  policy-level insurance tile — coverage, premiums, term — has no model
+  anywhere and is out of scope.
+- *Estate funding %* — `netWorth.inTrustValue` against `totalValue`, plus
+  `readiness.funding`; `assets_view.in_trust`'s own DDL comment says it exists
+  to drive this metric.
+- *Document completion %* — `Query.documents` counted by `executionStatus`,
+  plus `readiness.missingDocuments`.
+- *Beneficiary health* — `readiness.beneficiaryConflicts`: docs/00's name for
+  an analysis that already exists, not a new computation.
+- *Estate readiness* — `Query.readiness`, rendered as the FOUR ANALYSES and
+  their statuses (`funding`, `missingDocuments`, `beneficiaryConflicts`,
+  `estateTax`), never folded into a composite. docs/00 says "score"; the
+  platform computes analyses, and the no-invented-scores decision below
+  applies.
+- *Security posture* — FACTS, not a score: `session` (`mfaLevel`,
+  `stepUpFresh`), `passkeys`, `sessions`, `emailVerification`. The decision
+  below.
+- *Settling estates* — the existing self-hiding `SettlingEstatesPanel`, kept
+  exactly as is (`executorCases`). An executor arriving days after a death
+  should not have to hunt; everybody else never learns the panel exists.
+
+**OUT — each with its reason, the checkable reasons pinned by the fence:**
+
+- *Liabilities* — no data model anywhere in the platform.
+- *Password health* — Zone A is zero-knowledge: THE SERVER CANNOT COMPUTE IT,
+  by design, and a server-side password-health read would BE the boundary
+  violation, so the fence's probe here is a tripwire rather than the control.
+  Never weaken a zone boundary for a feature. (A client-side computation with
+  the vault open would be a different milestone, if ever.)
+- *Outstanding tasks* — `estateTasks` exists only per settlement case, an
+  executor's worklist; owners have no task system. The fence pins the exact
+  boundary this reason decides: `estateTasks(caseId: ID!)` stays case-scoped.
+- *Notifications* — M30 owns the in-app feed. The fence's probe reddening on a
+  root `notifications` field is the designed tripwire for revisiting this row.
+- *Timeline* — no backing anywhere.
+
+**A DECISION, NOT A TILE: NO INVENTED SCORES.** docs/00 asks for a "security
+score" and an "estate readiness score". No service computes either, and a
+number invented at the edge is a methodology nobody can defend: it moves when
+the weighting changes, which reads as a security change that did not happen,
+and it flattens facts with different remedies into one digit. The dashboard
+shows the facts the platform can stand behind — factor level, step-up state,
+passkey and session inventories, address verification; the four readiness
+analyses and their statuses. A real scoring methodology, if ever, is product
+work with an owner, not a frontend PR's private arithmetic.
+
+**WHAT M24 OWNS BEYOND TILES.** The two `[OWNER: M24]` residuals in docs/03
+§6v, and the dependency claim the M25 section recorded:
+
+1. *The app-shell `UnverifiedAddressBanner` goes stale until the next
+   navigation* — closing it needs the shared client read cache. PR1's work.
+2. *No surface shows the address currently on file* — closing it means
+   identity decrypts and returns the account email: a Zone B disclosure, so a
+   LOGGED decrypt whose record is emitted BEFORE the decrypt, and if it needs
+   a new `AUDIT_ACTIONS` member the audit consumer deploys before its
+   producers. PR2's work.
+3. *The shared client read cache* — small, and it ships WITH its first
+   consumer (PR1), never as a zero-caller capability. M28, M30 and M31 are its
+   named later consumers.
+
+**THE M26 NAME IS CLAIMED TWICE, FLAGGED RATHER THAN INHERITED.** M25 re-owned
+the erasure fan-out "to M26" in nine `[OWNER: M26]` residual tags across
+docs/03 §§6ll–6pp, while the queue row scopes M26 as forensic audit
+completeness, which owns four earlier `[OWNER: M26]` tags of its own. Two
+different bodies of work share one name. Not M24's to resolve, and not M24's
+to inherit silently either: the queue row now carries the flag, and whoever
+scopes M26 splits the two FIRST. Neither absorbs the other by default.
+
+#### The PR split
+
+- **PR0 — the design delta and the computability fence** (docs plus one
+  fence, no runtime code; the M21/M25 PR0 shape). This section, the M24 and
+  M26 queue-row corrections, the docs/06 entries, and
+  `apps/bff/test/dashboard-computability.spec.ts`.
+- **PR1 — the shared client read cache, plus its first consumer.** Closes §6v
+  residual 1 (the stale banner) in the same change. Capability and caller
+  together.
+- **PR2 — the address on file.** Identity route (record-first audited
+  decrypt), BFF field, web surface — likely /security, which already owns the
+  address-change ceremony. Closes §6v residual 2. Route and consumer in the
+  same change.
+- **PR3 — the dashboard page itself.** The home page becomes the dashboard;
+  tiles consume the SAME persisted operations the existing pages use, through
+  the cache — one behaviour, one spelling — and anything new regenerates the
+  persisted manifest. Distinct loading, error and empty states per tile: A
+  FAILED READ MUST NOT RENDER AS ZERO — a $0 net worth on a failed read is
+  "we could not ask" wearing "nothing is here"'s face (M25 PR4's rule). WCAG
+  AA+, dark mode, and a real-browser drive before it is called done.
+- **PR4 — the security review**, ending the milestone the way M25 PR5 did:
+  that review found two live gaps after the milestone looked finished, and
+  the question that found them — what else is in this category — gets asked
+  of this milestone too.
+
+#### M24 PR0 — the design delta (2026-08-21)
+
+**The fence is the deliverable, and it states which layer it proves.**
+`dashboard-computability.spec.ts` holds docs/00's thirteen surfaces as data —
+IN entries with the (type, field) pairs their tiles read, OUT entries with a
+reason from a closed vocabulary and the root fields whose ABSENCE keeps the
+reason true — and checks that mapping against the parsed `typeDefs` string
+the executable schema is built from. The transcription of the thirteen names
+from docs/00 is a citation the fence cannot derive (the list is prose); what
+it pins is the mapping against the SDL. Controls: the corpus is asserted at
+thirteen with no duplicates, every entry must carry at least one check, the
+Query type must parse with more than thirty fields, and the lookup helper is
+proved able to find AND to fail before its answers are believed.
+
+**Three mutations, each reddening exactly the assertion named for it.**
+Renaming `netWorth` reddens the IN-backing scan and the positive control that
+names it, with the other five tests green; adding a root `liabilities` field
+reddens the OUT-probe scan alone; loosening `estateTasks(caseId: ID!)` to an
+optional argument reddens the case-scoped boundary test alone. Restores
+verified with `cmp -s` against a scratchpad copy on absolute paths.
