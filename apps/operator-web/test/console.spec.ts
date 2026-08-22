@@ -360,6 +360,125 @@ describe('opening a case', () => {
     expect(copy()).toMatch(/Show amount/);
   });
 
+  it('DROPS a revealed amount on the failed-case exit too, not only the case screen’s own', async () => {
+    /*
+     * M24 PR4 review, reproduced before it was fixed.
+     *
+     * Leaving the case drops every revealed amount, because a reviewer coming
+     * back is asking again and asking again really is another audited decrypt
+     * on the decedent's trail. That rule was applied at ONE of the two exits.
+     * The other is this screen: `renderCase` reads the case four independent
+     * ways, each awaiting its own audit emit, so one can refuse while the
+     * others answer — and when `getCase` is the one that refuses, the screen
+     * becomes a message plus a Back control that set the view and kept the map.
+     *
+     * The consequence was not a stale figure but a MISSING RECORD: on the
+     * second visit the decrypted amount rendered again with no new
+     * `settlement.distribution.amount_viewed` on the decedent's trail, and the
+     * Show-amount control was suppressed (its own presence check reads the
+     * map), so there was no way left to ask honestly. The reviewer could then
+     * approve a distribution against a figure nobody had re-read.
+     */
+    let caseAnswers = 0;
+    const distributions = [
+      {
+        distributionId: 'd-1',
+        beneficiaryContactId: 'c-1',
+        assetId: null,
+        status: 'pending',
+        createdBy: 'u-op1',
+        approvedBy: null,
+        hasAmount: true,
+        createdAt: '2026-08-02T00:00:00.000Z',
+      },
+    ];
+    transport({
+      ...WORKLISTS([REPORTED], []),
+      ...CASE_ROUTES({ ...REPORTED, status: 'active' }),
+      // The transient refusal the file's own comment calls routine: the case
+      // read fails on the SECOND ask, which is the one the reveal triggers.
+      [`/api/settlement/cases/${CASE_ID}`]: () => {
+        caseAnswers += 1;
+        return caseAnswers === 2
+          ? { status: 503, body: { error: 'unavailable' } }
+          : { status: 200, body: { ...REPORTED, status: 'active' } };
+      },
+      [`/api/settlement/cases/${CASE_ID}/distributions`]: { status: 200, body: distributions },
+      '/api/settlement/distributions/d-1/amount': { status: 200, body: { amount: '4500.00' } },
+    });
+    await render();
+    await openCase();
+
+    await pressing('Show amount');
+    await until(() => copy().includes('Back to worklists'));
+    const revealCalls = calls.filter((c) => c.includes('/amount')).length;
+    // Anti-vacuity: the reveal really happened and really was refused after —
+    // otherwise this test would prove nothing about either exit.
+    expect(revealCalls).toBe(1);
+    expect(copy()).toMatch(/Estate is not answering just now/);
+
+    await pressing('Back to worklists');
+    await until(() => copy().includes('Review queue'));
+    await openCase();
+
+    // Asking again costs another audited decrypt, so the control is BACK and
+    // the figure is not on screen until it is spent.
+    await until(() => copy().includes('Recorded — use Show amount'));
+    expect(copy()).not.toMatch(/4500\.00/);
+    expect(calls.filter((c) => c.includes('/amount')).length).toBe(1);
+  });
+
+  it('a signed-out console holds no decedent’s figure in memory', async () => {
+    // The third exit, and the reason both now go through one function: this
+    // origin's session cannot be renewed, so every operator meets this arm.
+    let alive = true;
+    transport({
+      ...WORKLISTS([REPORTED], []),
+      ...CASE_ROUTES({ ...REPORTED, status: 'active' }),
+      '/api/auth/session': () =>
+        alive
+          ? { status: 200, body: SESSION }
+          : { status: 401, body: { error: 'unauthenticated' } },
+      [`/api/settlement/cases/${CASE_ID}/distributions`]: {
+        status: 200,
+        body: [
+          {
+            distributionId: 'd-1',
+            beneficiaryContactId: 'c-1',
+            assetId: null,
+            status: 'pending',
+            createdBy: 'u-op1',
+            approvedBy: null,
+            hasAmount: true,
+            createdAt: '2026-08-02T00:00:00.000Z',
+          },
+        ],
+      },
+      '/api/settlement/distributions/d-1/amount': { status: 200, body: { amount: '4500.00' } },
+      'POST /api/auth/logout': { status: 200, body: { ok: true } },
+    });
+    await render();
+    await openCase();
+    await pressing('Show amount');
+    await until(() => copy().includes('4500.00'));
+
+    // The session dies and the console re-renders — the path every operator
+    // meets, since this origin's 15-minute session cannot be renewed.
+    alive = false;
+    await render();
+    await until(
+      () => copy().includes('Sign in from Estate') || copy().includes('Operator console'),
+    );
+    expect(copy()).not.toMatch(/4500\.00/);
+
+    // And on the next authenticated render the console is back at the
+    // worklists rather than re-rendering the case it was on.
+    alive = true;
+    await render();
+    await until(() => copy().includes('Review queue'));
+    expect(copy()).not.toMatch(/4500\.00/);
+  });
+
   it('renders an UNKNOWN status token as itself rather than blanking the row', async () => {
     // A service deployed ahead of this client must not blank a worklist (the
     // M10 PR4 rule); the raw token is at least true.

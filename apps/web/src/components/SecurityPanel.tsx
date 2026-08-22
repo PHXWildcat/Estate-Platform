@@ -12,6 +12,7 @@ import {
   stepUpMessageFor,
 } from '../lib/copy';
 import { formatDateTime } from '../lib/datetime';
+import { factorChip, stepUpChip } from '../lib/session';
 import { audienceCopy } from '../lib/sessions';
 import { SESSION_CACHE_TTL_MS, type StepUpRetryOutcome } from '../lib/step-up';
 import { PASSWORD_MIN_LENGTH, validatePassword, validateTotpCode } from '../lib/validation';
@@ -24,6 +25,15 @@ import {
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
 import { StepUpPrompt } from './StepUpPrompt';
+
+/**
+ * `SecondFactorGate` refuses BOTH enrolment paths with the same code and for
+ * the same reason, so they say the same sentence — and it names the next step,
+ * which the shared copy table cannot: `messageFor('STEPUP_REQUIRED')` is
+ * written for every surface at once and can only state the rule (M24 PR4).
+ */
+const ADDING_A_FACTOR_NEEDS_STEP_UP =
+  'Adding a factor to an account that has one needs a fresh identity check — verify below, then try again.';
 
 type SessionState =
   | { kind: 'loading' }
@@ -350,6 +360,16 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
     setEnrollBusy(false);
     if (result.ok) {
       setOtpauthUri(result.data.totpEnroll.otpauthUri);
+    } else if (result.code === 'STEPUP_REQUIRED') {
+      // THE SAME REFUSAL, THE SAME REMEDY (M24 PR4). `SecondFactorGate`
+      // refuses both enrolment paths identically — adding a factor to an
+      // account that already holds one needs a fresh check — but this arm fell
+      // through to the generic copy, which states the rule and names no next
+      // step, while the passkey caller four hundred lines down said where to
+      // go. Two spellings of one refusal is one of them going stale; and for
+      // this button the sentence carries a second fact the page cannot render
+      // on its own — that the account HAS a factor already.
+      setEnrollError(ADDING_A_FACTOR_NEEDS_STEP_UP);
     } else {
       setEnrollError(messageFor(result.code));
     }
@@ -459,9 +479,7 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
     if (!optionsResult.ok || options === undefined || options === null) {
       setPasskeyBusy(false);
       if (!optionsResult.ok && optionsResult.code === 'STEPUP_REQUIRED') {
-        setPasskeyError(
-          'Adding a factor to an account that has one needs a fresh identity check — verify below, then try again.',
-        );
+        setPasskeyError(ADDING_A_FACTOR_NEEDS_STEP_UP);
       } else {
         setPasskeyError(messageFor(optionsResult.ok ? 'UNKNOWN' : optionsResult.code));
       }
@@ -950,16 +968,18 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
           Session
         </h2>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {session.mfaLevel === 'NONE' ? (
-            <span className="chip chip-warn">MFA not enrolled</span>
-          ) : (
-            <span className="chip chip-success">MFA enrolled</span>
-          )}
-          {session.stepUpFresh ? (
-            <span className="chip chip-success">Step-up fresh</span>
-          ) : (
-            <span className="chip">Step-up not fresh</span>
-          )}
+          {/* SESSION facts under a SESSION heading (M24 PR4). These chips
+              stated the ACCOUNT's enrolment — a claim `mfaLevel` cannot
+              support, and one this page made loudest for the accounts it was
+              most wrong about: every TOTP-holding owner, on every
+              password-only sign-in. lib/session.ts owns the wording for this
+              surface and the dashboard alike, and lib/session.test.ts fails on
+              a re-introduction of the old spellings anywhere in this tree. */}
+          {[factorChip(session.mfaLevel), stepUpChip(session.stepUpFresh)].map((chip) => (
+            <span className={chip.className} key={chip.label}>
+              {chip.label}
+            </span>
+          ))}
         </div>
         <p className="mt-3 font-mono text-xs text-ink-muted">{session.userId}</p>
       </section>
@@ -1064,11 +1084,20 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
         <div className="mt-4">
           {addressOnFile.kind === 'hidden' || addressOnFile.kind === 'loading' ? (
             <>
+              {/* aria-disabled, NEVER the native attribute (M24 PR4). This is
+                  the control PR2's review learned the announce-and-focus
+                  lesson from, and PR3 applied the OTHER half of that lesson to
+                  its own new card while leaving this one native: `disabled`
+                  lands on the element that currently has focus and the browser
+                  blurs it to <body> for the whole round trip — a network hop, a
+                  KMS unwrap, a decrypt and two audit emits. The handler guard
+                  is what actually refuses the second press. */}
               <button
+                aria-disabled={addressOnFile.kind === 'loading'}
                 className="btn btn-secondary"
                 type="button"
-                disabled={addressOnFile.kind === 'loading'}
                 onClick={() => {
+                  if (addressOnFile.kind === 'loading') return;
                   void revealAddress();
                 }}
               >
@@ -1243,11 +1272,16 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
               void beginEnrollment();
             }}
           >
-            {enrollBusy
-              ? 'Preparing…'
-              : session.mfaLevel === 'NONE'
-                ? 'Set up authenticator app'
-                : 'Re-enroll authenticator app'}
+            {/* ONE LABEL, BECAUSE THE PAGE CANNOT KNOW WHICH IS TRUE (M24
+                PR4). This read `session.mfaLevel === 'NONE' ? 'Set up' :
+                'Re-enroll'` — a session fact deciding a sentence about the
+                account, so a TOTP-holding owner on a password-only session
+                was offered a FIRST enrolment for a factor they already have,
+                and refused when they took it. Never offer an action the
+                server would refuse; where the app cannot tell, it says the
+                thing that is true either way and lets the refusal below
+                explain the rest. */}
+            {enrollBusy ? 'Preparing…' : 'Add an authenticator app'}
           </button>
         ) : (
           <div className="mt-4 space-y-4">

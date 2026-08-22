@@ -5349,6 +5349,13 @@ and renders nothing); the signed-in mount issues that probe plus the /assets
 page's own sanctioned shape (Assets + NetWorth, the per-valued-row
 `est_value` decrypts) plus decrypt-free reads
 (Documents, Sessions, Passkeys, and the cache-shared EmailVerification); and
+**[CORRECTED BY PR4, §6tt]** — the probe was decrypt-free only for the caller
+with no linked estate. Its resolver named the decedents unconditionally,
+spending one audited cross-user `legal_name` decrypt per linked estate on
+every landing, for a panel that rendered nothing; PR4 skips the naming when
+settlement returns no case, so the sentence above is now true for every
+signed-in caller who is settling nothing, and an executor WITH cases spends
+those decrypts to render the estates they are settling. And
 the four readiness analyses — per-row asset decrypts times four, two full
 profile PII fans, a family read, an audit event per analyser — run ON DEMAND,
 once per press of the estate-checks button, never per landing. The enrollment
@@ -5374,3 +5381,108 @@ neither constant moved.
   the full surface. The alternative (stored analysis state with an
   invalidation surface) contradicts the analyses' own no-stored-state posture
   and would spend the four-analyser decrypt fan on every landing.
+
+## 6tt. Threat-model delta — M24 PR4, the security review (2026-08-22)
+
+**THE MILESTONE'S OWN CONTROLS, ASKED THE M25 PR5 QUESTION: *what else is in
+this category?*** Four file-scoped lenses ran against the merged M24 surface,
+each finding refuted twice by independent verifiers. Nine claims were made and
+seven survived; the two that did not were framings of a real mechanism whose
+scope the lens had misread, and the refutations are why the mechanism below is
+described as a signed-IN exposure rather than the signed-out one §6ss discusses.
+Every surviving finding was the same shape: **a rule this repo had already
+written down, applied to one member of its category.**
+
+**A CROSS-USER PII DECRYPT ON EVERY LANDING, TO DECORATE AN EMPTY LIST.** The
+BFF's `executorCases` resolver read settlement's case list and then
+*unconditionally* called `profile.linkedEstates` to name the decedents. That
+profile read is an audited cross-user disclosure: it emits
+`contact.link.estates_read` and one `crypto.field.decrypted` of another
+person's `legal_name`, **on that person's trail, naming the caller as the
+actor**. Since M24 PR3 the dashboard is the home page and it mounts the
+self-hiding executor panel on every landing, so every account that had ever
+redeemed a contact link — an executor-designate, a named beneficiary, a spouse,
+with the estate's owner alive and well — spent one such disclosure per linked
+estate per home-page visit, for a panel that then rendered nothing. The rule
+against exactly this was already written, four functions away, in
+`reportableEstates`' own comment ("never prefetched — the
+audited-volume-is-a-UI-constraint rule") — and enforced in neither member of
+the category: that resolver's `Promise.all` spent the same disclosure before
+knowing whether any row would use it. Both now read the settlement list first
+and return early when it is empty. The volume itself predates PR3 (the panel is
+M23's); what PR3 changed is that the panel moved onto the page everybody lands
+on, and what this PR changes is that the disclosure is spent only when a name
+will be rendered.
+
+**A SESSION-STATE INDICATOR THAT COULD ONLY BE STALE IN THE PERMISSIVE
+DIRECTION.** PR3 gave the dashboard an escalation: a tile read surviving to
+UNAUTHENTICATED collapses the page to its signed-out arm. That fixed the page
+and reached nothing else — the app shell's `RailAccount` reads `Session` once
+at mount, has no subscription, and went on rendering a green dot and the word
+"Signed in" beside a page that had just given up. Pressing its Sign-out control
+then made the claim explicit: `Logout` answers UNAUTHENTICATED for an
+already-dead session, and the button's failure arm announced *"you are still
+signed in"* in a `role="alert"` — a positive assertion that a revoked
+credential is live, shown to somebody who may have pressed it precisely because
+they believed it was compromised. Three changes, one mechanism: the transport
+announces `sessionEnded` from the ONE place the app learns a session is dead
+rather than merely unreachable (a REFUSED refresh — an unavailable one says
+nothing, and announcing there would sign people out during an outage); the rail
+subscribes and de-escalates; and Logout treats an already-dead session as the
+outcome it wanted. The dashboard's signed-out arm also stopped handing a person
+whose session just died the anonymous first-visit hero, which states nothing
+about what happened to their credential.
+
+**`mfaLevel` IS THE SESSION'S FACTOR LEVEL, AND THIS IS THE THIRD TIME THAT
+SENTENCE HAS COST SOMETHING.** M20 found the union declared in lowercase, which
+made every comparison permanently false, fixed the enum and left the WORDING.
+M24 PR3's live drive found the wording still on `SessionCard` and corrected it
+on the dashboard. This review found /security — the older and larger consumer —
+still saying it: `chip-warn` "MFA not enrolled" under a heading reading
+"Session", loudest for the accounts it was most wrong about, since
+`AuthService.login` never asks for a factor and every TOTP-holding owner starts
+every sign-in at `NONE`. The same field also chose the enrolment button's
+label, so that owner was offered a FIRST enrolment for a factor they already
+held — and refused by `SecondFactorGate` when they took it, into an arm that
+named no next step while the passkey caller of the same refusal named one. The
+chips now live in one place for both surfaces, the label states what is true
+either way, and the refusal carries the fact the page cannot know. The test
+that had kept the false wording green was named for a property its fixture
+could not decide — `mfaLevel: 'NONE'` is byte-identical for a factorless
+account and a TOTP-holding one — which is why a human had to find this twice.
+
+**AND IN THE OPERATOR CONSOLE, THE SAME SHAPE AGAIN.** Revealed distribution
+amounts are held in a module map so that a re-render cannot silently re-spend
+an audited decrypt on the decedent's trail, and they are dropped when the
+reviewer leaves the case — through one of the two exits. The other is the
+failed-case screen, reached whenever `getCase` is the one of four reads that
+refuses, which that file's own comment calls routine. Through it the map
+survived: on the next visit the decedent's decrypted figure rendered again with
+NO new `settlement.distribution.amount_viewed`, and the Show-amount control was
+suppressed (its own presence check reads the map), so nothing was left to ask
+honestly with — an undercount of who read that estate's sealed money, and a
+stale figure a reviewer could then approve a distribution against. Both exits
+now go through one `leaveCase()`, and so does the signed-out arm: a console
+holding no session holds no decedent's figures.
+
+### Residuals
+
+- **[ACCEPTED]** *An executor WITH cases still spends one cross-user decrypt
+  per linked estate, not per case.* `profile.linkedEstates` answers the
+  caller's whole linked set and the BFF joins it down to the cases; narrowing
+  it would need a contact-id-scoped profile route. The disclosure is now bounded
+  by "this person is genuinely settling something", which is the population the
+  panel exists for, and every one of those decrypts is on the trail as it always
+  was.
+- **[ACCEPTED]** *The wording fence catches re-introductions of KNOWN
+  spellings, not new inventions of the same claim.* `lib/session.test.ts` scans
+  the component tree for the three sentences this defect has actually been
+  written in; a fourth phrasing of "your account has no second factor" would
+  pass. No client-side fence can derive the account's factor set — the SDL
+  exposes none — so the durable half is that the chips have one implementation
+  and the label no longer branches on a session field.
+- **[ACCEPTED]** *`sessionEnded` is in-tab, like the read cache's boundary
+  (§6qq residual 1).* A sibling tab learns on its own next request. The
+  announcement corrects a chrome that would otherwise never be corrected at
+  all; a cross-tab channel for it would be the same BroadcastChannel that
+  residual already declines, for the same reason.

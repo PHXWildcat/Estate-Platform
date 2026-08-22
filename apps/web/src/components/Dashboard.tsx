@@ -20,6 +20,7 @@ import { SECTIONS } from '../lib/findings';
 import { trustFundingPct } from '../lib/funding';
 import { formatMoney } from '../lib/money';
 import { formatPct } from '../lib/percent';
+import { factorChip, stepUpChip } from '../lib/session';
 import { STAT_LABEL } from '../lib/stat';
 import { SettlingEstatesPanel } from './SettlingEstatesPanel';
 
@@ -61,9 +62,19 @@ import { SettlingEstatesPanel } from './SettlingEstatesPanel';
  * the signed-out arm (one mechanism — see the escalation in the loaders).
  */
 
+/**
+ * `ended` distinguishes the two ways to be signed out, because they are two
+ * different facts and only one of them is news (M24 PR4). A first-time visitor
+ * gets the product hero; somebody whose live session just died mid-visit is
+ * TOLD SO — before this they were handed the anonymous marketing page, which
+ * states nothing about what just happened to their credential and reads as a
+ * glitch. The flag is set only by the escalation, never by the mount gate: at
+ * mount, "no session" and "never had one" are indistinguishable and claiming
+ * otherwise would invent an event.
+ */
 type Gate =
   | { kind: 'loading' }
-  | { kind: 'signedOut' }
+  | { kind: 'signedOut'; ended: boolean }
   | { kind: 'error' }
   | { kind: 'signedIn'; session: SessionInfo };
 
@@ -113,7 +124,7 @@ export function Dashboard(): ReactElement {
       if (result.ok && result.data.session !== null) {
         setGate({ kind: 'signedIn', session: result.data.session });
       } else if (result.ok || result.code === 'UNAUTHENTICATED') {
-        setGate({ kind: 'signedOut' });
+        setGate({ kind: 'signedOut', ended: false });
       } else {
         setGate({ kind: 'error' });
       }
@@ -137,7 +148,7 @@ export function Dashboard(): ReactElement {
      */
     const escalate = (code: string): boolean => {
       if (code !== 'UNAUTHENTICATED') return false;
-      setGate({ kind: 'signedOut' });
+      setGate({ kind: 'signedOut', ended: true });
       return true;
     };
     // Concurrent, and each lands in its own state: one backing failing costs
@@ -196,7 +207,7 @@ export function Dashboard(): ReactElement {
     } else if (!result.ok && result.code === 'UNAUTHENTICATED') {
       // Same escalation as the tile reads: a dead session is the page's
       // fact, not this card's.
-      setGate({ kind: 'signedOut' });
+      setGate({ kind: 'signedOut', ended: true });
     } else {
       setChecks({ kind: 'error', code: result.ok ? 'UNKNOWN' : result.code });
     }
@@ -205,6 +216,21 @@ export function Dashboard(): ReactElement {
   if (gate.kind === 'signedOut') {
     return (
       <div className="space-y-10">
+        {gate.ended ? (
+          /*
+           * THE SESSION DIED WHILE THEY WERE LOOKING AT IT, and that is an
+           * event rather than a page state (M24 PR4). Handing this person the
+           * first-visit hero says nothing about what happened to their
+           * credential — and the likeliest reasons they are seeing it are a
+           * revocation they performed from another device and an expiry, both
+           * of which are the controls WORKING. `role="status"` because it
+           * announces on arrival; the sign-in link below is the remedy.
+           */
+          <p className="notice" role="status">
+            Your session has ended, so this page stopped showing your estate. Sign in again to pick
+            up where you left off.
+          </p>
+        ) : null}
         <section>
           <h1 className="text-3xl font-semibold tracking-tight">
             Your estate, in order. Your wishes, protected.
@@ -510,20 +536,18 @@ function SecurityTile({
     <section aria-label="Security" className="card p-5">
       <h2 className={STAT_LABEL}>Security</h2>
       <div className="mt-2 flex flex-wrap gap-2">
-        {/* mfaLevel is the SESSION's factor level, not account enrollment —
-            SessionCard's old "MFA not enrolled" wording was falsified the
-            first time the M24 PR3 drive signed a TOTP-enrolled account in
-            with password only. Say what the value actually measures. */}
-        {session.mfaLevel === 'NONE' ? (
-          <span className="chip chip-warn">Password-only session</span>
-        ) : (
-          <span className="chip chip-success">Second factor verified</span>
-        )}
-        {session.stepUpFresh ? (
-          <span className="chip chip-success">Step-up fresh</span>
-        ) : (
-          <span className="chip">Step-up not fresh</span>
-        )}
+        {/* mfaLevel is the SESSION's factor level, not account enrolment —
+            SessionCard's old enrolment wording was falsified the first time
+            the M24 PR3 drive signed a TOTP-holding account in with a password
+            only. The chips moved to lib/session.ts in PR4, when the review
+            found /security still carrying that sentence: one spelling, two
+            surfaces, and lib/session.test.ts scans the component tree for the
+            old spellings (which is why none appears here). */}
+        {[factorChip(session.mfaLevel), stepUpChip(session.stepUpFresh)].map((chip) => (
+          <span className={chip.className} key={chip.label}>
+            {chip.label}
+          </span>
+        ))}
       </div>
       <ul className="mt-3 space-y-1 text-[0.8125rem] text-ink-muted">
         <li>

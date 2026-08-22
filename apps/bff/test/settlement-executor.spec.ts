@@ -173,6 +173,38 @@ describe('executor resolvers', () => {
       expect(list.every((r) => r['ownerName'] === null)).toBe(true);
     });
 
+    it('settling NOTHING costs no cross-user disclosure at all', async () => {
+      /*
+       * THE FINDING THIS PINS (M24 PR4 review). Since M24 PR3 the dashboard is
+       * the home page, and it mounts the self-hiding panel this resolver backs
+       * on EVERY landing. The resolver read profile unconditionally, so every
+       * person who had ever redeemed a contact link — an executor-designate, a
+       * named beneficiary, a spouse, with the estate's owner alive and well —
+       * spent one `contact.link.estates_read` plus one audited decrypt of that
+       * owner's `legal_name`, ON THE OWNER'S TRAIL, naming the reader as the
+       * actor, every time they opened the home page, to decorate a list that
+       * was empty. Settlement is the spine: no case, no name, no disclosure.
+       */
+      settlement.executorCasesResult = [];
+      const res = await gql(app, { query: CASES_QUERY }, { cookie: COOKIE });
+      expect(rows(res, 'executorCases')).toEqual([]);
+      expect(profile.linkedEstatesCalls).toEqual([]);
+    });
+
+    it('POSITIVE CONTROL: an estate that IS being settled still gets its name', async () => {
+      // Paired with the test above so that "profile was never called" cannot
+      // be satisfied by a resolver that stopped naming anything.
+      profile.linkedEstatesResult = [
+        { ownerUserId: 'user-1', contactId: 'contact-1', ownerName: 'Ada Lovelace', roles: [] },
+      ];
+      const list = rows(
+        await gql(app, { query: CASES_QUERY }, { cookie: COOKIE }),
+        'executorCases',
+      );
+      expect(list[0]).toMatchObject({ ownerName: 'Ada Lovelace' });
+      expect(profile.linkedEstatesCalls).toHaveLength(1);
+    });
+
     it('a failed SETTLEMENT read is an error, never an empty list', async () => {
       // The opposite direction from the test above, and the reason they are
       // not the same rule: settlement is the AUTHORITY on this list, so an

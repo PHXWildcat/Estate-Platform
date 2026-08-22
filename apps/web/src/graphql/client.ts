@@ -12,7 +12,7 @@
  *   and the UI maps codes to its own copy.
  */
 import manifest from '../../persisted-manifest.json';
-import { notifyOperationSuccess } from './operation-events';
+import { notifyOperationSuccess, notifySessionEnded } from './operation-events';
 import { operations, type OperationName } from './operations';
 
 export const GQL_ERROR_CODES = [
@@ -1451,7 +1451,12 @@ async function performRequest<Name extends OperationName>(
   const refreshed = await refreshSession();
   if (refreshed.status === 'refused') {
     // Genuinely signed out. The original UNAUTHENTICATED is the honest answer
-    // and the surfaces already render it as "your session has ended".
+    // and the surfaces already render it as "your session has ended" — but
+    // only the surface that happened to make THIS request could see it, so
+    // the app-wide chrome went on asserting the opposite (M24 PR4). Announced
+    // here, at the one point where the app knows the session is dead rather
+    // than merely unreachable.
+    notifySessionEnded();
     return first;
   }
   if (refreshed.status === 'unavailable') {

@@ -114,18 +114,59 @@ describe('SecurityPanel', () => {
     expect(exportCalls).toBe(2);
   });
 
-  it('tells an account with no second factor that it has none, and offers to set one up', async () => {
+  /**
+   * WHAT THIS FIXTURE CAN AND CANNOT DECIDE (M24 PR4 review).
+   *
+   * The test that stood here was named "tells an account with no second factor
+   * that it has none" and its only input was `mfaLevel: 'NONE'` — a SESSION
+   * field, byte-identical for a factorless account and for a TOTP-holding one
+   * signing in with a password. So it was named for a property its fixture
+   * cannot decide, and it stayed green on the arm where the wording was wrong.
+   * That is why the same defect had to be found by a human signing in, twice,
+   * in two milestones.
+   *
+   * `AuthService.login` never asks for a factor, so `mfaLevel: 'NONE'` on a
+   * fresh sign-in is the NORMAL state of a well-protected account. The page can
+   * therefore say only what the field measures.
+   */
+  it('describes the SESSION, and claims nothing about what the account has enrolled', async () => {
     installGraphqlFetchMock({ Session: factorlessSessionHandler, Sessions: sessionsHandler() });
     render(<SecurityPanel />);
 
-    expect(await screen.findByText('MFA not enrolled')).toBeInTheDocument();
-    expect(screen.queryByText('MFA enrolled')).not.toBeInTheDocument();
-    // "Re-enroll" would tell somebody who has never enrolled that they are
-    // replacing something, which is how a factorless account concludes it is
-    // protected. Measured live before the fix: this said "Re-enroll".
+    expect(await screen.findByText('Password-only session')).toBeInTheDocument();
+    expect(screen.queryByText('Second factor verified')).not.toBeInTheDocument();
+  });
+
+  it('offers ONE authenticator label, because this session cannot tell which is true', async () => {
+    // The label was keyed on `mfaLevel`, so a TOTP-holding owner on a
+    // password-only session was offered a FIRST enrolment — and refused when
+    // they took it, by `SecondFactorGate`. THE DISAGREEING ARM is the point of
+    // this test: the session says NONE while the account holds a factor, which
+    // is exactly what the server's refusal below reveals.
+    installGraphqlFetchMock({
+      Session: factorlessSessionHandler,
+      Sessions: sessionsHandler(),
+      TotpEnroll: () => graphqlError('STEPUP_REQUIRED'),
+    });
+    render(<SecurityPanel />);
+
+    const enroll = await screen.findByRole('button', { name: 'Add an authenticator app' });
+    expect(screen.queryByRole('button', { name: /Set up authenticator app/ })).toBeNull();
+    fireEvent.click(enroll);
+
+    // The refusal names the remedy AND carries the fact the page could not:
+    // this account already has a factor. The generic copy states the rule and
+    // stops there, which is where this arm used to dead-end.
     expect(
-      await screen.findByRole('button', { name: 'Set up authenticator app' }),
+      await screen.findByText(/Adding a factor to an account that has one needs a fresh/),
     ).toBeInTheDocument();
+    expect(screen.queryByText(errorCopy.STEPUP_REQUIRED)).not.toBeInTheDocument();
+  });
+
+  it('an ELEVATED session reads as verified — the other arm of the same field', async () => {
+    installGraphqlFetchMock({ Session: sessionHandler, Sessions: sessionsHandler() });
+    render(<SecurityPanel />);
+    expect(await screen.findByText('Second factor verified')).toBeInTheDocument();
   });
 
   it('treats a MISSING session field as no data, never as a signed-in session', async () => {
@@ -171,7 +212,7 @@ describe('SecurityPanel', () => {
     });
     render(<SecurityPanel />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Re-enroll authenticator app' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add an authenticator app' }));
 
     const uriField = await screen.findByLabelText('Enrollment link (otpauth URI)');
     expect(uriField).toHaveValue('otpauth://totp/Estate:demo?secret=ABC123');
@@ -195,7 +236,7 @@ describe('SecurityPanel', () => {
     });
     render(<SecurityPanel />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Re-enroll authenticator app' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add an authenticator app' }));
     fireEvent.change(await screen.findByLabelText('6-digit code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm enrollment' }));
 
@@ -1397,6 +1438,54 @@ describe('SecurityPanel — the address on file', () => {
     const region = answer.closest('[role="status"]');
     expect(region).not.toBeNull();
     await waitFor(() => expect(region).toHaveFocus());
+  });
+
+  it('keeps keyboard focus THROUGH the round trip, and refuses a second press', async () => {
+    /*
+     * M24 PR4 review — the other half of PR3's own lesson, applied back to the
+     * control it was learned from. This button carried the native `disabled`
+     * attribute while the reveal was in flight, and `disabled` lands on the
+     * element that currently HAS focus: the browser blurs it to <body> for the
+     * whole round trip (a network hop, a KMS unwrap, a decrypt, two audit
+     * emits). Worse, on the discard path the button never unmounts and the
+     * outcome effect deliberately skips `hidden`, so focus was never restored
+     * at all. `aria-disabled` plus a handler guard keeps the element focusable
+     * and still refuses the second press — which is the property that actually
+     * matters, since a second press is a second audited decrypt.
+     */
+    let reads = 0;
+    let release: ((response: Response) => void) | null = null;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      AccountEmail: () => {
+        reads += 1;
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      },
+    });
+    render(<SecurityPanel />);
+
+    const button = await screen.findByRole('button', { name: 'Show the address on file' });
+    button.focus();
+    fireEvent.click(button);
+
+    const busy = await screen.findByRole('button', { name: 'Retrieving…' });
+    expect(busy).toHaveFocus();
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    // The guard, not the attribute, is what refuses: a second press must not
+    // spend a second audited decrypt on the owner's trail.
+    fireEvent.click(busy);
+    expect(reads).toBe(1);
+
+    // POSITIVE CONTROL: the flow still completes and still moves focus to the
+    // outcome when the button unmounts.
+    (release as unknown as (response: Response) => void)(
+      jsonResponse({ data: { accountEmail: ON_FILE } }),
+    );
+    const answer = await screen.findByText(ON_FILE);
+    await waitFor(() => expect(answer.closest('[role="status"]')).toHaveFocus());
   });
 
   it('a reveal still in flight when the change completes is DISCARDED, not resurrected', async () => {

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState, type ReactElement } from 'react';
 import { gqlRequest } from '../graphql/client';
+import { onSessionEnded } from '../graphql/operation-events';
 import { SignOutButton } from './SignOutButton';
 
 type SessionState = 'loading' | 'signedOut' | 'error' | 'signedIn';
@@ -34,6 +35,18 @@ export function RailAccount(): ReactElement {
       cancelled = true;
     };
   }, []);
+
+  /**
+   * DE-ESCALATE WHEN THE SESSION DIES, wherever it was noticed (M24 PR4).
+   *
+   * This read runs once at mount and the rail lives for the whole visit, so
+   * before this the chrome asserted "Signed in" for as long as the tab stayed
+   * open — including after another device revoked this session, and including
+   * after the page's own content had already collapsed to its signed-out arm.
+   * A security-state indicator that is stale in the PERMISSIVE direction is
+   * the one direction that matters.
+   */
+  useEffect(() => onSessionEnded(() => setState('signedOut')), []);
 
   if (state === 'loading') {
     return (

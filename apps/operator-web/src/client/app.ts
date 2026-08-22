@@ -392,14 +392,38 @@ function stageControls(kase: CaseSummary): (stage: StageView) => readonly HTMLEl
 /**
  * AMOUNTS THIS REVIEWER HAS REVEALED, keyed by distribution id.
  *
- * DROPPED WHEN THE CASE SCREEN IS LEFT (see `onBack`). It exists so a re-render
- * does not silently re-spend an audited decrypt on the decedent's trail — the
- * one narrow case where a cache is the honest choice rather than the forbidden
- * one. The M12 rule is that a cache must not make a REPEAT READ invisible; a
- * reviewer coming back to the case is asking again, and that really is another
- * read, so the map does not survive the trip.
+ * DROPPED WHEN THE CASE SCREEN IS LEFT — through `leaveCase()`, which is the
+ * only way to leave it. It exists so a re-render does not silently re-spend an
+ * audited decrypt on the decedent's trail — the one narrow case where a cache
+ * is the honest choice rather than the forbidden one. The M12 rule is that a
+ * cache must not make a REPEAT READ invisible; a reviewer coming back to the
+ * case is asking again, and that really is another read, so the map does not
+ * survive the trip.
+ *
+ * THE EXIT WAS A CATEGORY WITH TWO MEMBERS AND THE RULE REACHED ONE (M24 PR4).
+ * The case screen's own Back control cleared the map; the Back control on the
+ * FAILED-CASE screen — reached whenever `getCase` is the one of four reads that
+ * refuses, which this file's own comment calls routine — set the view and left
+ * the map. A reviewer who revealed an amount, hit a transient refusal, went
+ * back and returned then saw the decedent's decrypted figure again with NO new
+ * `settlement.distribution.amount_viewed` on their trail, and no Show-amount
+ * control left to ask with (its presence is what suppresses the button). The
+ * trail undercounted who read that estate's sealed money, and the figure shown
+ * was a stale one the reviewer could then approve against. Both exits now go
+ * through one function, so a third exit cannot be written that forgets.
  */
 let revealedAmounts = new Map<string, string | null>();
+
+/**
+ * Leave the case screen. Every exit runs this and nothing else resets these
+ * four pieces of state — one behaviour, one spelling.
+ */
+function leaveCase(): void {
+  view = { kind: 'worklists' };
+  notice = null;
+  revealedAmounts = new Map();
+  dismissPrompt();
+}
 
 function distributionControls(): (distribution: DistributionView) => readonly HTMLElement[] {
   return (distribution) => {
@@ -546,13 +570,10 @@ async function renderCase(caseId: string): Promise<void> {
       notice,
       prompt: pending?.form ?? null,
       onBack: () => {
-        view = { kind: 'worklists' };
-        notice = null;
         // Leaving the case DROPS every revealed amount. A reviewer who comes
         // back is asking again, and asking again really is another audited
         // decrypt on the decedent's trail — which is the honest count.
-        revealedAmounts = new Map();
-        dismissPrompt();
+        leaveCase();
         void render();
       },
     }),
@@ -562,9 +583,7 @@ async function renderCase(caseId: string): Promise<void> {
 function backControl(): HTMLElement {
   return el('p', { class: 'actions' }, [
     button('Back to worklists', 'back', () => {
-      view = { kind: 'worklists' };
-      notice = null;
-      dismissPrompt();
+      leaveCase();
       void render();
     }),
   ]);
@@ -600,6 +619,13 @@ export async function render(): Promise<void> {
   const result = await request<unknown>('/api/auth/session');
   if (!result.ok) {
     if (result.code === 'UNAUTHENTICATED') {
+      // A CONSOLE WITH NO SESSION HOLDS NO DECEDENT'S FIGURES (M24 PR4). This
+      // origin's 15-minute session cannot be renewed, so every operator meets
+      // this arm; leaving a revealed amount in module memory across it would
+      // keep a decrypted figure alive for a screen that is no longer entitled
+      // to render one. It is also the third exit from the case screen, and the
+      // reason the exits now share one function rather than one convention.
+      leaveCase();
       replaceChildren(app, ...signedOutScreen(arrivalNotice));
       return;
     }

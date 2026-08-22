@@ -36,6 +36,29 @@ describe('SignOutButton', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  it('treats an ALREADY-DEAD session as the outcome it wanted, not as a failure', async () => {
+    /*
+     * M24 PR4 review. A session revoked from another device — or simply
+     * expired — answers UNAUTHENTICATED here, and this button used to render
+     * "you are still signed in" in a role="alert": a positive claim that a
+     * dead credential is live, shown to somebody who may have pressed Sign out
+     * precisely because they believed the session was compromised. Fail closed
+     * means DE-ESCALATE, and there is nothing left to revoke.
+     *
+     * The distinction is load-bearing, which is why the test above stays: a
+     * refusal where the credential SURVIVES still says so.
+     */
+    installGraphqlFetchMock({ Logout: () => graphqlError('UNAUTHENTICATED') });
+    render(<SignOutButton />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/login');
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('disables itself while in flight, so a double-click cannot double-revoke', async () => {
     installGraphqlFetchMock({
       // Never settles during the assertion window.

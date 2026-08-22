@@ -2647,6 +2647,13 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
          * `contact.link.estates_read` and one `crypto.field.decrypted` per
          * owner), so this query is asked when the reporting screen opens and
          * never prefetched — the audited-volume-is-a-UI-constraint rule.
+         *
+         * AND NOT EVEN THEN, IF THERE IS NOTHING TO NAME (M24 PR4). The
+         * settlement list is read FIRST and the profile fan is skipped when it
+         * is empty, at the cost of one serial hop on a screen the owner
+         * deliberately navigated to. `Promise.all` spent the disclosure before
+         * knowing whether any row would use it; the rule this comment states
+         * was written here and enforced in neither member of its category.
          */
         reportableEstates: async (
           _parent: unknown,
@@ -2654,10 +2661,11 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<ReportableEstatePayload[]> => {
           const token = requireAccessToken(ctx);
-          const [estates, named] = await Promise.all([
-            settlement.reportableEstates(token),
-            profile.linkedEstates(token),
-          ]);
+          const estates = await settlement.reportableEstates(token);
+          if (estates.length === 0) {
+            return [];
+          }
+          const named = await profile.linkedEstates(token);
           const nameByContact = new Map(named.map((row) => [row.contactId, row.ownerName]));
           return estates.map((estate) => ({
             contactId: estate.contactId,
@@ -2676,6 +2684,19 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
          * awaited together: an executor whose estates cannot be named still
          * needs to reach them, and `Promise.all` would turn a decoration
          * failure into "you are settling nothing".
+         *
+         * NO CASES, NO DISCLOSURE (M24 PR4). The profile read is an audited
+         * CROSS-USER PII disclosure — one `contact.link.estates_read` plus one
+         * `crypto.field.decrypted` of somebody else's `legal_name`, on THEIR
+         * trail, naming this caller as the actor. This resolver backs the
+         * self-hiding panel that the dashboard mounts on every landing, so
+         * before this guard every linked contact — anyone who ever redeemed a
+         * contact link, whose estate owner is alive and well — spent one such
+         * disclosure per estate per home-page visit to decorate a list that was
+         * empty. Settlement is the spine: with no case to name, no name is
+         * needed, and the cheapest disclosure is the one never made (prefer an
+         * ABSENCE to a filter). `reportableEstates` states the same rule below
+         * and now enforces it the same way — this is that rule's other member.
          */
         executorCases: async (
           _parent: unknown,
@@ -2684,6 +2705,9 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
         ): Promise<ExecutorCasePayload[]> => {
           const token = requireAccessToken(ctx);
           const cases = await settlement.executorCases(token);
+          if (cases.length === 0) {
+            return [];
+          }
           const nameByContact = await namesByContact(token);
           return cases.map((row) => ({
             caseId: row.caseId,
