@@ -72,6 +72,13 @@ export interface IdentityClient {
   exportDemo(accessToken: string): Promise<void>;
   /** M14: has this user proved they receive mail at the stored address? */
   emailVerificationStatus(accessToken: string): Promise<EmailVerificationStatus>;
+  /**
+   * M24 PR2: the address on file — identity decrypts it as an audited
+   * disclosure (record-first `auth.email.viewed`, then the automatic decrypt
+   * event). Throws CONTENT_ERASED when the account's DEK was destroyed while
+   * a session was still live: permanent, never a retry.
+   */
+  accountEmail(accessToken: string): Promise<string>;
   /** M14: mail another code to the address already on file for this user. */
   resendEmailVerification(accessToken: string): Promise<ResendOutcome>;
   /**
@@ -684,6 +691,11 @@ const VerificationStatusSchema = z.object({
   status: z.enum(['verified', 'unverified', 'unavailable']),
 });
 
+/** M24 PR2. Shape only — the value is PII and validation must not describe it. */
+const AccountEmailSchema = z.object({
+  email: z.string().min(1),
+});
+
 const ResendSchema = z.object({
   outcome: z.enum(['sent', 'too_soon', 'already_verified', 'unavailable']),
 });
@@ -902,6 +914,18 @@ export class FetchIdentityClient implements IdentityClient {
       throw await this.mapError(res);
     }
     return (await this.parseBody(res, VerificationStatusSchema)).status;
+  }
+
+  async accountEmail(accessToken: string): Promise<string> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/v1/auth/email',
+      accessToken,
+    });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, AccountEmailSchema)).email;
   }
 
   async resendEmailVerification(accessToken: string): Promise<ResendOutcome> {
@@ -1485,6 +1509,14 @@ export class FetchIdentityClient implements IdentityClient {
     // answering correctly as an opaque server error.
     if (res.status === 404) {
       return bffError('NOT_FOUND');
+    }
+    // M24 PR2: identity's first 410 — a decrypt racing a legal erasure. The
+    // spelling every other PII-serving edge uses for the same status and the
+    // same cause; left to the generic branch, the erasure control firing would
+    // wear an outage's face and invite retries against a key destroyed on
+    // purpose. Status-keyed like the 429: 410 means one thing on every route.
+    if (res.status === 410) {
+      return bffError('CONTENT_ERASED');
     }
     return new Error(`identity responded with status ${res.status}`);
   }

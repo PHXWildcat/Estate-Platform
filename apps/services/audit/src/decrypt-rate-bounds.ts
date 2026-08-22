@@ -105,7 +105,7 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     principal: 'user',
     measuredPerMinute: 0,
     maxPerWindow: 60,
-    note: 'email decrypts on the change/notice paths only — rare by design',
+    note: 'exactly TWO producers: the change ceremony decrypting its staged copy, and the M24 PR2 reveal-on-demand address read — each a user-initiated act (no mount-time read, no list field), so the ceiling stays a hand-review number rather than a throughput grant. The M18 original said "change/notice paths only"; its notice producer never existed under this prefix — the old-address notice resolves through the notifications recipient store, whose decrypt is its own row below (M24 PR2 review)',
   },
   {
     prefix: 'mfa_methods',

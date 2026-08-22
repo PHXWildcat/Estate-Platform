@@ -84,6 +84,7 @@
   "cca8c38e25aff471cd9ea6a440927f22deb37e32157dde3ebddc06dd71afeb48": "mutation StartVaultHandoff {\n  startVaultHandoff {\n    code\n    expiresAt\n    vaultOrigin\n  }\n}",
   "ce2e0501d94f23209c74d387b4b1737279b5867e6c118343dee3b9480f2e877b": "mutation RetireAsset($assetId: ID!, $expectedVersion: String!, $reason: String, $clientEventId: ID) {\n  retireAsset(assetId: $assetId, expectedVersion: $expectedVersion, reason: $reason, clientEventId: $clientEventId) {\n    assetId\n    eventId\n    version\n    replayed\n  }\n}",
   "ce896b219223935f93f484fa07390af3d4a0490aeb5fbfdb271ad8f9e4ab2380": "mutation SetSettlementWaitingPeriod($days: Int!) {\n  setSettlementWaitingPeriod(days: $days) {\n    waitingPeriodDays\n  }\n}",
+  "d2bd37728757a4977032ca4a6930af607974413f10e480c4bbee61f93e59fafe": "query AccountEmail {\n  accountEmail\n}",
   "d30a1364b2b4e5799499550e6ce8b531ccdafee6aeb3da70e35c9576a3a6d752": "mutation RedeemContactLink($code: String!) {\n  redeemContactLink(code: $code) {\n    ok\n  }\n}",
   "d39cf996e9de384c16d42951bc39aebaba26c08c5a5db8a80d95988d10e6e435": "query Sessions {\n  sessions {\n    sessionId\n    audience\n    createdAt\n    expiresAt\n    current\n  }\n}",
   "d3a204809c8a0c63b1ce80023fe77b65abb0cd8cb1af0f5d729edd759efc2735": "mutation RequestEstateAccess($caseId: ID!, $stage: AccessStage!) {\n  requestEstateAccess(caseId: $caseId, stage: $stage) {\n    stage\n    status\n    requestedAt\n    decidedAt\n  }\n}",

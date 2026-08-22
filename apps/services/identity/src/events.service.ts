@@ -406,6 +406,28 @@ export class EventsService {
     });
   }
 
+  /**
+   * M24 PR2 — the owner read the address on file. A DISCLOSURE record, and the
+   * caller must emit it BEFORE the decrypt (the `estatesNaming` rule): an
+   * event written after is one a crash can lose while the plaintext already
+   * exists. `sessionId` is the point — `crypto.field.decrypted` will say a key
+   * was used, this says which session's owner asked. No detail: the address
+   * cannot ride here (SAFE_TOKEN_PATTERN rejects '@'), and there is no other
+   * fact about this read that is not already in the envelope.
+   */
+  async emailViewed(userId: string, sessionId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.email.viewed',
+      actorId: userId,
+      actorType: 'user',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId,
+      detail: {},
+    });
+  }
+
   /** The per-destination bound refused a challenge mint — a control firing,
    * with its own action so it never reads as an outage (the M9 rule). */
   async emailChangeThrottled(): Promise<void> {

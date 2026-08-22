@@ -72,6 +72,7 @@ function makeFakes(): Fakes {
       refresh: fn({ accessToken: 'a', refreshToken: 'r', sessionId: 's', userId: 'u' }),
       logout: fn(undefined),
       logoutByRefreshToken: fn(undefined),
+      emailOnFile: fn({ email: 'owner@example.com' }),
       enrollTotp: fn({ methodId: 'm', otpauthUri: 'otpauth://totp/x?secret=Y' }),
       verifyTotp: fn(undefined),
       stepUp: fn({ mfaLevel: 'stepup', stepupExpiresAt: '2026-08-12T00:05:00.000Z' }),
@@ -146,6 +147,11 @@ describe('AuthController takes the subject from the verified session', () => {
       name: 'emailVerificationStatus',
       run: (c) => c.emailVerificationStatus(authed()),
       called: (f) => f.emailVerification['status'] as jest.Mock,
+    },
+    {
+      name: 'emailOnFile',
+      run: (c) => c.emailOnFile(authed()),
+      called: (f) => f.auth['emailOnFile'] as jest.Mock,
     },
     {
       name: 'resendEmailVerification',
@@ -302,6 +308,7 @@ describe('AuthController fails closed on bad input and bad wiring', () => {
   const UNGUARDED: ReadonlyArray<{ name: string; run: (c: AuthController) => unknown }> = [
     { name: 'logout', run: (c) => c.logout(unauthed()) },
     { name: 'session', run: (c) => c.session(unauthed()) },
+    { name: 'emailOnFile', run: (c) => c.emailOnFile(unauthed()) },
     { name: 'enrollTotp', run: (c) => c.enrollTotp(unauthed()) },
     { name: 'stepUp', run: (c) => c.stepUp(unauthed(), { code: '123456' }) },
     { name: 'listSessions', run: (c) => c.listSessions(unauthed()) },

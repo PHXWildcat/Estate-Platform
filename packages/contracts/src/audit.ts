@@ -363,6 +363,14 @@ export const AUDIT_ACTIONS = [
   'auth.email.change_denied',
   'auth.email.change_failed',
   'auth.email.change_throttled',
+  // M24 PR2 — the owner read the address on file (docs/03 §6v residual 2's
+  // closure). A DISCLOSURE event on the estates_read/amount_viewed pattern:
+  // emitted BEFORE the decrypt, so a crash cannot leave plaintext with no
+  // record, and carrying the SESSION that authorised it — the automatic
+  // `crypto.field.decrypted` says a key was used; this says who asked. The
+  // address itself structurally cannot ride here: SAFE_TOKEN_PATTERN rejects
+  // '@', so the detail could not carry an email even by mistake.
+  'auth.email.viewed',
   // The per-address bound on the REQUEST route refusing. No actor and no
   // subject: the address was never resolved to a user.
   'auth.password.reset_throttled',

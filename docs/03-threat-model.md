@@ -555,9 +555,11 @@ rest on. Controls shipped, each mapped to what this document demanded:
 - **Recipient addresses never cross a cluster boundary (§5.3).** The service
   keeps its own store, AEAD under its own `notifications/kek` (core
   co-tenants cannot unwrap it), fed by identity at the two plaintext moments
-  (registration, login). No email-ciphertext read path exists anywhere; no
-  blind index exists on the store (nothing legitimate asks "which user has
-  this address"). Every send's decrypt is a logged event.
+  (registration, login). No email-ciphertext read path feeds this store —
+  the one reader `users.email_ct` has (identity's M24 PR2 owner-disclosure
+  route, §6rr) answers its owner and feeds nothing; no blind index exists on
+  the store (nothing legitimate asks "which user has this address"). Every
+  send's decrypt is a logged event.
 - **The gates stay, and became visible.** The per-route 503s remain as
   defense in depth behind the production adapter pins (`NOTIFY_MODE=http`,
   `EMAIL_MODE=ses`), and now emit `vault.emergency.notifications_refused` /
@@ -3307,12 +3309,15 @@ SERVER rather than a boolean passed between siblings.
   per-navigation freshness is otherwise unchanged, and the authority stays the
   server: an invalidation discards an answer and asks again, never patches
   one.
-- **[OWNER: M24]** *No surface shows the address currently on file.* Neither `session` nor the
-  verification query returns it, so the "if it's the one you already sign in
-  with" reading of identity's conflated `invalid_request` cannot be pre-empted
-  by the UI. Identity genuinely does not distinguish a malformed address from
-  the account's own, so the copy names the actionable possibility without
-  asserting which applied.
+- **[CLOSED: §6rr]** ~~*No surface shows the address currently on file.*~~ **CLOSED by
+  M24 PR2 (§6rr)**, which gave `users.email_ct` its first reader ever, end to
+  end: an account-audience-only identity GET that records `auth.email.viewed`
+  BEFORE the decrypt, a dedicated BFF query, and a reveal-on-demand control on
+  /security that never asks on mount. An owner wondering whether a refused
+  change was "the one you already sign in with" can now look. Identity's
+  conflated `invalid_request` itself is unchanged — the copy still names the
+  possibility without asserting which applied — but the fact needed to resolve
+  it is one click away, disclosed on the owner's own audit trail.
 - **[OWNER: M21]** *§6n's own remaining residuals are untouched:* an honest user typing a taken
   address still waits for a mail that never comes, and
   `identity.email_changed`'s reader still has no self-service response — the
@@ -5243,3 +5248,75 @@ first consumer, and the closure was driven live in that item's own scenario
   visible and deliberate, which is the reviewable half; judging a candidate
   against the bar stays with the reviewer reading the written bar beside the
   diff.
+
+## 6rr. Threat-model delta — M24 PR2, the address on file (2026-08-21)
+
+M24 PR2 gives `users.email_ct` its first reader ever — from M1 until now the
+column was write-only (set at INSERT, replaced at the change switch, decrypted
+never; login resolves by blind index, and the change ceremony decrypts its own
+STAGED copy). A first reader of sealed PII is exactly where controls are
+decided, so this delta records them:
+
+**THE RECORD GOES FIRST, AND FAILS CLOSED IN BOTH DIRECTIONS.** Every read
+lands TWO events on the owner's trail: a route-level `auth.email.viewed` (new
+`AUDIT_ACTIONS` member) naming the SESSION that asked, emitted BEFORE the
+decrypt — the `estatesNaming`/`distributionAmount` rule, so a crash cannot
+leave plaintext with no record — and then FieldCrypto's automatic
+`crypto.field.decrypted`. If the route-level emit refuses, the decrypt never
+runs, matching the sink's own posture with plaintext it cannot log. The
+ordering's accepted false positive (a recorded view of a value the shred race
+made unreadable) is the safe direction.
+
+**A DEDICATED, ACCOUNT-ONLY ROUTE — never a field on `session`.** `GET
+/v1/auth/session` is the cross-service introspection hot path admitting every
+audience: an email field there would spend a logged KMS decrypt on every
+guarded request in the product and disclose PII to vault/extension/operator
+sessions. The new GET is undecorated — account audience only, deny by
+default. NO STEP-UP, deliberately: reading one's own PII follows the profile
+contact-detail precedent, the step-up list names no self-disclosure case, and
+the control is the trail plus the M18 decrypt-rate bound on the `users`
+prefix — whose reviewed note now names the prefix's two REAL producers (the
+change ceremony's staged-copy decrypt, and this read). Its M18 sentence was
+doubly wrong: this PR falsified its "only", and this PR's own review found
+its "notice" producer had never existed under the prefix at all — the
+old-address notice resolves through the notifications store.
+
+**THE CLIENT ASKS ONLY WHEN THE OWNER ASKS.** The /security surface is
+reveal-on-demand: no mount-time read (the no-prefetch rule — a page visit is
+not consent to a recorded disclosure), no enrollment in the §6qq read cache
+(its written bar excludes decrypted PII precisely so a repeat read can never
+be served invisibly from memory), and a completed address change DISCARDS a
+revealed answer rather than re-reading it — the fresh disclosure stays the
+owner's explicit, separately-recorded act.
+
+**ERASED IS ITS OWN ANSWER, ALL THE WAY TO THE BROWSER.** A decrypt racing a
+crypto-shred answers identity's first 410 `content_erased`
+(`distributionAmount`'s arm), and the BFF's shared identity mapper gained its
+first 410 arm to carry it as `CONTENT_ERASED` — without that arm the erasure
+control firing would mask into a generic outage and invite retries against a
+key destroyed on purpose. The web renders it as erasure with no retry
+affordance in either spelling.
+
+**THE ADDRESS STRUCTURALLY CANNOT RIDE THE TRAIL.** `SAFE_TOKEN_PATTERN`
+rejects `@` in audit detail keys and values, so the disclosure event could
+not carry the email even by mistake — the absence-over-filter shape. The int
+suite's PII firewall sweeps every emitted message for the address and
+password besides.
+
+**THE §6v ADDRESS-ON-FILE ITEM IS CLOSED BY THIS DELTA.**
+
+### Residuals
+
+- **[ACCEPTED]** *`auth.email.viewed` requires the audit consumer to deploy
+  before identity.* The closed-vocabulary rule: an older consumer drops every
+  unknown-action event as `schema_violation`, silently, and nothing enforces
+  the ordering. With nothing deployed anywhere the rule costs one sentence in
+  the deploy runbook rather than a deployment — recorded here so the first
+  real rollout inherits it as a constraint, not a surprise.
+- **[ACCEPTED]** *The reveal control renders whenever the section does, even
+  for a session whose read would answer 410.* The page cannot know the
+  account was shredded without asking — asking IS the disclosure event — so
+  "never offer an action the server would refuse" yields here to the
+  no-prefetch rule, and the refusal is rendered honestly as erasure when the
+  owner does ask. The window is the erasure grace race and nothing else: a
+  closed account cannot hold a session at all.

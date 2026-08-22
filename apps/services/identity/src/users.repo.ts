@@ -63,6 +63,25 @@ export class UsersRepo {
   }
 
   /**
+   * The live address's ciphertext (M24 PR2) — the FIRST reader `email_ct` has
+   * ever had. From M1 until now the column was write-only: set at INSERT,
+   * replaced at the change switch, decrypted never — login resolves by
+   * `email_bidx`, and the change ceremony decrypts its own STAGED copy in
+   * `email_changes`. Deliberately NOT folded into `findById`: ciphertext in
+   * the common row shape would hand it to every caller, and the disclosure
+   * route is the only one with a reason to hold it.
+   */
+  async findEmailCiphertext(userId: string): Promise<{ email_ct: Buffer; dek_id: string } | null> {
+    const rows = await this.db.query<{ email_ct: Buffer; dek_id: string }>(
+      `SELECT email_ct, dek_id
+         FROM users
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [userId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
    * Replace the password hash (M17 PR2) — the FIRST write this column has ever
    * had. It was set once at INSERT and read twice at login, and nothing else.
    *

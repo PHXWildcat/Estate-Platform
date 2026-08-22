@@ -119,6 +119,7 @@ export class FakeIdentityClient implements IdentityClient {
   emailVerificationCalls: string[] = [];
   resendEmailVerificationCalls: string[] = [];
   verifyEmailCalls: Array<{ accessToken: string; code: string }> = [];
+  accountEmailCalls: string[] = [];
 
   loginResult: IssuedTokens = TOKENS;
   refreshResult: IssuedTokens = TOKENS;
@@ -127,6 +128,14 @@ export class FakeIdentityClient implements IdentityClient {
   emailVerificationResult: EmailVerificationStatus = 'unverified';
   resendEmailVerificationResult: ResendOutcome = 'sent';
   verifyEmailError: Error | null = null;
+  accountEmailResult = 'owner@example.com';
+  /**
+   * M24 PR2. The error slot matters here for one refusal in particular:
+   * CONTENT_ERASED, which the real client mints from identity's 410 when a
+   * decrypt races a legal erasure — a surface that treats it as a retryable
+   * outage would pass against a double faithful only about values.
+   */
+  accountEmailError: Error | null = null;
 
   /**
    * ACCOUNT ERASURE (M25 PR4). Modelled as three independently settable
@@ -213,6 +222,13 @@ export class FakeIdentityClient implements IdentityClient {
   emailVerificationStatus(accessToken: string): Promise<EmailVerificationStatus> {
     this.emailVerificationCalls.push(accessToken);
     return Promise.resolve(this.emailVerificationResult);
+  }
+
+  accountEmail(accessToken: string): Promise<string> {
+    this.accountEmailCalls.push(accessToken);
+    return this.accountEmailError
+      ? Promise.reject(this.accountEmailError)
+      : Promise.resolve(this.accountEmailResult);
   }
 
   resendEmailVerification(accessToken: string): Promise<ResendOutcome> {
