@@ -194,6 +194,8 @@ const config: IdentityConfig = {
   databaseUrl: 'postgres://unused',
   kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
   emailIndexKey: Buffer.alloc(32, 9),
+  erasureGracePeriodMs: 7 * 24 * 60 * 60 * 1000,
+  erasureDriverIntervalMs: 60_000,
   kafkaBrokers: null,
   kekAlias: 'test/kek',
   rpId: 'localhost',
@@ -310,6 +312,48 @@ describe('AuthService.login timing equalization', () => {
     ).resolves.toEqual({ error: 'invalid_credentials' });
     expect(fakes.events.loginFailed).toHaveBeenCalledWith('u-1', 'account_settled');
     expect(fakes.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it('EVERY non-signable status records its own reason, and they do not collide', async () => {
+    // M25 PR3 split 'closed' out of `account_settled`. The category matters
+    // more than the member: a rule applied to one status is a rule half
+    // applied, so this walks the whole `users.status` CHECK vocabulary that
+    // login refuses and asserts the mapping as a table.
+    //
+    // 'closed' is the one that changed, and the reason it needs its own token
+    // is that an erased account and a settled estate need OPPOSITE responses —
+    // one is a person signing in to something they destroyed, the other is a
+    // possible decedent-credential replay worth investigating.
+    const expected: Array<[string, string]> = [
+      ['locked', 'account_locked'],
+      ['suspended', 'account_locked'],
+      ['settlement', 'account_settled'],
+      ['closed', 'account_closed'],
+    ];
+    const recorded: Array<[string, string]> = [];
+    for (const [status] of expected) {
+      const fakes = makeFakes();
+      fakes.users.findByEmailBidx.mockResolvedValue({
+        id: 'u-1',
+        password_hash: 'argon2-hash',
+        status,
+        dek_id: 'dek-1',
+      });
+      fakes.hasher.verifyPassword.mockResolvedValue(true);
+      const service = makeService(fakes);
+      // The WIRE answer is identical for every one of them — the split decides
+      // what is RECORDED, never what is disclosed.
+      await expect(
+        service
+          .login('user@example.com', 'correct-password')
+          .catch((e: UnauthorizedException) => e.getResponse()),
+      ).resolves.toEqual({ error: 'invalid_credentials' });
+      const call = fakes.events.loginFailed.mock.calls.at(-1) as [string, string];
+      recorded.push([status, call[1]]);
+    }
+    expect(recorded).toEqual(expected);
+    // And the two that must never merge again.
+    expect(new Set(recorded.map(([, reason]) => reason)).size).toBe(3);
   });
 
   it('successful login creates a session storing only token hashes', async () => {

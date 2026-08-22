@@ -11,6 +11,7 @@ export {
   AuthEventSchema,
   DEFAULT_SESSION_AUDIENCE,
   LoginFailedEvent,
+  LoginFailureReasonSchema,
   LoginSucceededEvent,
   MfaLevelSchema,
   SESSION_AUDIENCES,
@@ -19,9 +20,18 @@ export {
   StepUpGrantedEvent,
   UserRegisteredEvent,
   type AuthEvent,
+  type LoginFailureReason,
   type MfaLevel,
   type SessionAudience,
 } from './auth-events';
+export {
+  ERASURE_DOMAINS,
+  ERASURE_DOMAIN_STATES,
+  ERASURE_REQUEST_STATUSES,
+  type ErasureDomain,
+  type ErasureDomainState,
+  type ErasureRequestStatus,
+} from './erasure';
 export {
   ASSET_CATEGORIES,
   ASSET_EVENT_TYPES,

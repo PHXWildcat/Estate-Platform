@@ -105,6 +105,7 @@ describe('account erasure handlers', () => {
         seen.push({ fn: 'cancel', userId, sessionId });
         return Promise.resolve(null);
       },
+      runDueErasures: () => Promise.resolve(0),
     };
     return {
       ctl: new ErasureController(service as never),
@@ -126,13 +127,23 @@ describe('account erasure handlers', () => {
     expect(seen.filter((s) => s.fn !== 'get').every((s) => s.sessionId === SESSION)).toBe(true);
   });
 
-  it('wraps the state under `erasure`, and cancel always answers null', async () => {
+  it('wraps the state under `erasure`, and passes the cancel answer through', async () => {
     const { ctl } = controller();
     await expect(ctl.get(req)).resolves.toEqual({ erasure: state });
     await expect(ctl.request(req)).resolves.toEqual({ erasure: state });
-    // Null rather than the cancelled row: a client cannot tell a real cancel
-    // from a no-op, and has no reason to need to.
+    // Null when nothing is outstanding — a client cannot tell a real cancel
+    // from a no-op and has no reason to need to. Since M25 PR3 the handler no
+    // longer HARD-CODES that null: a cancel that came too late answers with the
+    // executing request, and a controller that discarded it would tell the
+    // owner "withdrawn" about an erasure that is destroying keys.
     await expect(ctl.cancel(req)).resolves.toEqual({ erasure: null });
+  });
+
+  it('does not swallow a cancel that came too late', async () => {
+    const late = { ...state, status: 'executing' as const };
+    const service = { cancel: () => Promise.resolve(late) };
+    const gate = new ErasureController(service as never);
+    await expect(gate.cancel(req)).resolves.toEqual({ erasure: late });
   });
 
   it('refuses a request with no attached session — the wiring-mistake guard', async () => {

@@ -18,6 +18,7 @@ import {
 import type { PoolConfig } from 'pg';
 import { AuthController } from './auth.controller';
 import { ErasureController } from './erasure.controller';
+import { ErasureDriver } from './erasure.driver';
 import { ErasureRepo } from './erasure.repo';
 import { ErasureService } from './erasure.service';
 import { AuthEventsRepo } from './auth-events.repo';
@@ -78,6 +79,7 @@ function kmsProviderFor(config: IdentityConfig): KmsKeyProvider {
 @Module({
   controllers: [AuthController, ErasureController, SettlementLockController],
   providers: [
+    ErasureDriver,
     ErasureRepo,
     ErasureService,
     { provide: CONFIG, useFactory: (): IdentityConfig => loadConfig() },

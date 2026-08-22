@@ -80,6 +80,40 @@ export const LoginSucceededEvent = defineEvent(
   }),
 );
 
+/**
+ * Why a login was refused, as recorded on `estate.auth.events.v1` and in the
+ * audit trail. NAMED rather than inline so identity's own signatures derive
+ * from this enum instead of restating it — a second spelling of a closed
+ * vocabulary is a second thing to forget to widen.
+ */
+// 'account_settled': correct password against an account in settlement
+// status (M7) — either the verification was wrong or the decedent's
+// credentials are being replayed; a detection-worthy signal either way.
+//
+// 'account_closed' (M25 PR3) is SPLIT OUT of it, because 'closed' used to
+// ride along with 'settlement' here and now has a second, entirely
+// different cause: an account the OWNER erased. Two failures needing
+// different remedies must not share a token — one is a detection signal
+// about a possible decedent-credential replay, the other is a person
+// signing in to an account they deliberately destroyed, and an analyst who
+// cannot tell them apart will investigate the wrong one.
+//
+// REACHABLE ONLY IN THE WINDOW WHERE ERASURE HALF-HAPPENED, which is the
+// window worth naming. A completed erasure re-indexes `email_bidx`, so the
+// address no longer resolves to a row and login stops before any status is
+// read. This token fires when the account was closed but the process did
+// not get as far as the address — exactly the state an operator needs to
+// find, and one that would otherwise be filed as a settlement anomaly.
+export const LoginFailureReasonSchema = z.enum([
+  'bad_credentials',
+  'account_locked',
+  'risk_blocked',
+  'account_settled',
+  'account_closed',
+]);
+
+export type LoginFailureReason = z.infer<typeof LoginFailureReasonSchema>;
+
 export const LoginFailedEvent = defineEvent(
   'auth.login.failed',
   1,
@@ -87,10 +121,7 @@ export const LoginFailedEvent = defineEvent(
     // null when the identifier did not resolve to a user; we never echo the
     // attempted identifier itself.
     userId: z.string().uuid().nullable(),
-    // 'account_settled': correct password against an account in settlement
-    // status (M7) — either the verification was wrong or the decedent's
-    // credentials are being replayed; a detection-worthy signal either way.
-    reason: z.enum(['bad_credentials', 'account_locked', 'risk_blocked', 'account_settled']),
+    reason: LoginFailureReasonSchema,
   }),
 );
 

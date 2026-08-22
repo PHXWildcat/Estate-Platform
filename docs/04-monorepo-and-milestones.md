@@ -6839,7 +6839,7 @@ decision booked as progress is how a queue stays untouched.**
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
 | M23 | Executor surface | **COMPLETE** (PR1–PR4b, #141). `EXEMPT_EXECUTOR_CASEWORK` is deleted and every executor-casework route names a consumer. This row read "In progress (PR1, PR2, PR3)" after the milestone finished, which is the same stale-prose defect the exemption reasons keep producing |
 | M24 | Dashboard, computable subset | Flip-trigger **CHECKED 2026-08-21 and NOT FIRED** — no demo date, no signed customer — so this row is a proposal, not a decision. Re-sequenced BEHIND M25; reasoning in the M25 section below. Owns two docs/03 §6v residuals already |
-| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below.** PR0 shipped: the boundary, the fence, and the corrections. `destroyDek` still has no production caller — PR3 is where that changes. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
+| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below.** PR0-PR3 shipped: the boundary, the capture redaction, the decision record, the destroy leg. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
 | M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
 | M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
@@ -7724,15 +7724,28 @@ and no `markDestroyed`, turns it red. Both proved by mutation.
   the driver moves to PR3 with the fan-out it exists to run. Recorded here
   rather than silently absorbed, on the M21 PR2 precedent: a plan that quietly
   re-aims is a plan nobody can audit.
-- **PR3 — the destroy leg, and nothing else shares it.** First production caller
-  of `destroyDek` (added to `ERASURE_COMPONENTS` in the same change), first
-  producer of `crypto.dek.destroyed`, first writer of `users.status = 'closed'`,
-  sessions revoked. **Verify the deployed audit consumer knows the action before
-  this ships** — M23 PR4a watched a consumer silently drop an event it predated,
-  and this is the event least survivable as a silent drop. Also splits the login
-  refusal reason: `'closed'` currently maps to `account_settled`, which tells an
-  erased account it was settled — two failures with different remedies sharing
-  one token.
+- **PR3 — the destroy leg. SHIPPED** (record below), **and it reaches ONE
+  domain of eight.** This line named four things and all four landed: the first
+  production caller of `destroyDek` (added to `ERASURE_COMPONENTS` in the same
+  change), the first producer of `crypto.dek.destroyed`, the first writer of
+  `users.status = 'closed'`, and session revocation. The audit-consumer check it
+  demanded came back clean — `crypto.dek.destroyed` has been in the closed
+  `AUDIT_ACTIONS` vocabulary since M4, so no consumer predates it. The
+  `account_settled` split landed as `account_closed`.
+  **THREE THINGS THIS LINE DID NOT SAY, recorded rather than absorbed** (the M21
+  PR2 rule: a plan that quietly re-aims is a plan nobody can audit):
+  1. *A seven-day grace period.* §6mm recorded "no waiting period" as an
+     ACCEPTED trade-off and building the driver showed the tag was wrong —
+     without a window the driver executes the instant a request exists, and
+     PR2's ungated cancel is a button nobody can press in time.
+  2. *A per-domain progress ledger.* PR2 retracted a driver with nothing to
+     drive; PR3's driver destroys something real, and the ledger is what makes
+     "one domain of eight" a queryable fact rather than a sentence in docs/03.
+     Seven rows sit at `pending` and a request does not reach `completed` in
+     M25. That is the honest answer, not a gap.
+  3. *`document_search_tokens` is NOT purged.* PR1's fence names that as PR3's
+     work. It is documents' domain, which has no transport, so it moves to M26
+     with the rest of the fan-out (docs/03 §6nn).
 - **PR4 — the owner request surface**, step-up gated, web only. This is what
   makes the `content_erased` arms reachable and closes the `[OWNER: M25]`
   residual in §6v, which predicts its own resolution as a consequence: a closed
@@ -7892,3 +7905,81 @@ evidence, is the part that is easy to skip.
 PR4, with the instruction to delete the constant with its last entry — the
 `EXEMPT_EXECUTOR_CASEWORK` precedent. Named as a residual in docs/03 §6mm rather
 than treated as free: until PR4, no product path exercises these routes.
+
+#### M25 PR3 — the destroy leg (2026-08-21)
+
+**`destroyDek` HAS A PRODUCTION CALLER.** For twenty-one milestones the repo had
+a crypto-shredding primitive, a `deks.destroyed_at` column in eight services, a
+`markDestroyed` on eight repositories, and `content_erased` arms in the BFF, the
+documents client and the operator web app — and no code path anywhere that
+destroyed a key. `ErasureService.executeIdentityDomain` is the first, and it is
+declared in `ERASURE_COMPONENTS` in the same change as the call, which is what
+turned PR0's leg D from a claim about a vacuum into a real allowlist.
+
+**IT REACHES ONE DOMAIN OF EIGHT, and the ledger is how that is stated.**
+`erasure_domain_progress` opens a row per participant on every request; only
+`identity` advances. The other seven have no transport to ask —
+`estate.auth.events.v1` has a producer and no consumer, and the audit service is
+still the only Kafka consumer in the repo, so a fan-out means building the first
+inter-service consumer in seven services. That is not this PR. A request
+therefore does not reach `completed`, and `completed` keeps meaning EVERY
+domain: a terminal state defined as "as much as this build knows how to erase"
+would change meaning at the next deploy, which is worse than one that is
+honestly not yet reachable.
+
+**THE ORDER IS THE CONTROL, and it inverts the usual rule under the exception
+the rule already carries.** Close the account, revoke the sessions, THEN destroy
+the key. `getOrCreateDek` mints a DEK for a user who has no active one —
+correct for every other caller in the repo, catastrophic for this one: destroy
+first, and a session surviving the shred hands the account a brand-new key, the
+row is live again, everything written afterwards is readable, and the audit
+trail says the erasure succeeded. Asserted on a CALL LOG in the no-DB suite,
+because a database cannot observe sequence after the fact. Reversing the two
+blocks reddens four named assertions.
+
+**A SEVEN-DAY GRACE PERIOD, and §6mm was wrong to call its absence ACCEPTED.**
+The cancel window is the only defence against an erasure an owner did not ask
+for, since the act cannot be undone. The period lives in the claim's own
+`WHERE`, so a driver that never ticks, ticks twice, or runs in two processes at
+once cannot shorten it — availability is all a missed tick costs.
+
+**THE BLIND INDEX IS OVERWRITTEN, AND PR1 IS WHY THAT IS SAFE.** The live
+`users.email_bidx` becomes a real blind index of `<uuid>@erased.invalid` —
+through `emailBlindIndex`, so width, key and purpose cannot drift; under a
+reserved TLD, so it cannot collide. Random bytes were the tempting choice and
+the wrong one. Had PR1 not landed first this UPDATE would have copied the OLD
+index into `users_versions`, where `REVOKE UPDATE, DELETE` puts it beyond every
+later migration: erasure would have immortalised the value it was erasing. The
+int suite asserts both halves — the address stops resolving, and no captured
+image carries an `email_bidx` key while every one still carries `email_ct`.
+
+**A MUTATION THAT SURVIVED, AND WHAT IT MEANT.** Narrowing the live unique index
+back to `status = 'pending'` — exactly PR2's version — left all fifty tests
+green. The test named for it was reaching the branch by accident: by the time a
+second request can be made the account is already `closed`, so the STATUS
+allowlist refuses the insert and the index is never consulted. The third of the
+three explanations, then — the widening is a schema invariant no service path
+can currently violate — so the test was split in two and named for what each
+half actually proves, with the index one going to the constraint directly. It
+now reddens alone. A test named for the index and passing on the allowlist is a
+test that would have stayed green after the index was deleted.
+
+**FIVE MUTATIONS, FIVE KILLS, and the positive controls stayed green.** Destroy
+before close/revoke (4 red); no grace period (2 red); the index narrowed (1 red
+after the split); the ledger's `NOT EXISTS` completeness test removed (5 red);
+the caller allowlist emptied (1 red); a ninth domain in the DDL, and a domain
+dropped from the TS constant (1 red each, from opposite directions).
+
+**THE REFUSAL SPLIT IS A CATEGORY, NOT A MEMBER.** `closed` mapped to
+`account_settled`, telling an erased account it was settled. Rather than add one
+ternary arm, the mapping became a table over the whole non-signable status
+vocabulary, asserted as a table. The wire answer is unchanged and uniform — this
+decides what is RECORDED, never what is disclosed.
+
+**THE DRIVER ADVANCES STATE, AND SETTLEMENT'S DOES NOT.** Shaped on
+`SettlementWorkflowDriver` down to the unref'd interval and the test-mode
+bail-out, and different in the one way that matters, which the class docstring
+says out loud. Settlement's driver is powerless by design because a death claim
+is never fully automated. This one destroys a key, which is permitted because
+the human review already happened: the OWNER asked, with a fresh second factor,
+and the grace period is when they may change their mind.

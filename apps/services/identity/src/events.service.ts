@@ -8,6 +8,7 @@ import {
   StepUpGrantedEvent,
   TOPICS,
   UserRegisteredEvent,
+  type LoginFailureReason,
   type MfaLevel,
 } from '@estate/contracts';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
@@ -94,10 +95,7 @@ export class EventsService {
     });
   }
 
-  async loginFailed(
-    userId: string | null,
-    reason: 'bad_credentials' | 'account_locked' | 'risk_blocked' | 'account_settled',
-  ): Promise<void> {
+  async loginFailed(userId: string | null, reason: LoginFailureReason): Promise<void> {
     await this.publish(
       LoginFailedEvent,
       {
@@ -693,6 +691,74 @@ export class EventsService {
       resourceId: userId,
       sessionId,
       detail: { notified: notified ? 'delivered' : 'failed' },
+    });
+  }
+
+  /**
+   * M25 PR3 — the three events of the destroy leg.
+   *
+   * SEPARATE FROM THEIR SETTLEMENT COUSINS ON PURPOSE. `userStatusChanged` and
+   * `sessionsRevokedAll` below both put a settlement `caseId` in `detail`;
+   * reusing them would file an erasure request id under a key that means
+   * "settlement case", which is worse than a second spelling — an investigator
+   * reading the trail would join it to a case that does not exist. Same action
+   * token, same shape, a detail that says what actually caused it.
+   *
+   * `actorType` IS 'service' AND `actorId` IS NULL because the driver runs
+   * these, not a session. The owner's decision is already on the trail as
+   * `auth.account.erasure_requested`, carrying their id and the session that
+   * proved step-up; `requestId` is the join between the two halves, and it is
+   * the reason every event here carries it.
+   */
+  async userClosedForErasure(userId: string, from: string, requestId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.user.status_changed',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { from, to: 'closed', requestId, cause: 'erasure' },
+    });
+  }
+
+  async sessionsRevokedForErasure(userId: string, count: number, requestId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.sessions.revoked_all',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { count, requestId, reason: 'account_erased' },
+    });
+  }
+
+  /**
+   * The crypto-shred itself — the first producer of `crypto.dek.destroyed` in
+   * the repo. The action has been in the closed `AUDIT_ACTIONS` vocabulary
+   * since M4, so the deployed consumer already knows it; an action added and
+   * produced in the same change is what makes a consumer drop every instance
+   * silently, and this is the event least survivable as a silent drop.
+   *
+   * `resourceId` is the USER and `dekId` rides in `detail`, matching the
+   * `crypto.field.decrypted` sink in `app.module.ts`. Anchoring on the user is
+   * what lets one query show a key's whole life — created, unwrapped n times,
+   * destroyed — and a dek id as the resource would scatter that across a value
+   * nobody can look up afterwards.
+   */
+  async dekDestroyed(userId: string, dekId: string, requestId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'crypto.dek.destroyed',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'dek',
+      resourceId: userId,
+      sessionId: null,
+      detail: { dekId, requestId, domain: 'identity', cause: 'erasure' },
     });
   }
 

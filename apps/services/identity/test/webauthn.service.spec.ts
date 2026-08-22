@@ -106,6 +106,8 @@ const config: IdentityConfig = {
   databaseUrl: 'postgres://unused',
   kms: { mode: 'local', masterKey: Buffer.alloc(32, 7) },
   emailIndexKey: Buffer.alloc(32, 9),
+  erasureGracePeriodMs: 7 * 24 * 60 * 60 * 1000,
+  erasureDriverIntervalMs: 60_000,
   kafkaBrokers: null,
   kekAlias: 'test/kek',
   rpId: 'localhost',

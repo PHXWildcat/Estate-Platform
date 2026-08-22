@@ -58,10 +58,19 @@
  *    caller in review. The runtime direction is a residual, recorded in
  *    docs/03 §6kk, and nobody should read this fence as closing it.
  *
- *    The declared set is EMPTY today, which is the milestone's whole premise —
- *    `destroyDek` has one definition and one test caller, so the product can
- *    answer `content_erased` and cannot erase anything. M25 PR3 adds the
- *    erasure driver to `ERASURE_COMPONENTS` in the same change as the call.
+ *    THE SET IS NO LONGER EMPTY. M25 PR3 added identity's erasure service as
+ *    the first production caller, in the same change as the call, and that is
+ *    what turned this leg from a claim about a vacuum into a real allowlist:
+ *    until PR3 an assertion that "nothing undeclared calls destroyDek" was true
+ *    of a repo where nothing called it at all.
+ *
+ * E. THE PROGRESS VOCABULARY, added in PR3. `erasure_domain_progress.domain`
+ *    is a literal CHECK — Postgres cannot constrain against another project's
+ *    source — and `ERASURE_DOMAINS` in `packages/contracts/src/erasure.ts` is
+ *    the TypeScript the driver seeds rows from. Both are compared against A as
+ *    SETS, so a ninth KEK-holding service turns this red in both places until
+ *    it is named, and a domain named in one and not the other cannot ship.
+ *    Three spellings of one list, pinned to the thing the runtime reads.
  *
  * ANTI-VACUITY, because a scanner that sees nothing and a tree that contains
  * nothing look identical — and leg D asserts an ABSENCE, which is the shape
@@ -73,6 +82,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import * as ts from 'typescript';
+import { ERASURE_DOMAINS } from '../src/erasure';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const TOPOLOGY = join(REPO_ROOT, 'apps', 'stack', 'src', 'topology.ts');
@@ -88,11 +98,27 @@ const MIN_DOMAINS = 8;
 
 /**
  * Components permitted to call `FieldCrypto.destroyDek`, as repo-relative path
- * prefixes. Empty until M25 PR3, which adds the erasure driver here in the same
- * change as the first call — the route↔consumer discipline applied to the most
- * irreversible verb in the product.
+ * prefixes. Grown here in the same change as the call it permits — the
+ * route↔consumer discipline applied to the most irreversible verb in the
+ * product.
+ *
+ * ONE ENTRY, AND IT IS A FILE RATHER THAN A DIRECTORY. `apps/services/identity`
+ * would permit every future file in the service, which is the widening that
+ * costs nothing to write and everything to notice.
  */
-const ERASURE_COMPONENTS: readonly string[] = [];
+const ERASURE_COMPONENTS: readonly string[] = [
+  join('apps', 'services', 'identity', 'src', 'erasure.service.ts'),
+];
+
+/** The DDL that carries the progress ledger's domain vocabulary. */
+const PROGRESS_DDL = join(
+  REPO_ROOT,
+  'apps',
+  'services',
+  'identity',
+  'migrations',
+  '015_erasure_execution.sql',
+);
 
 /** The one call site that exists today, and the positive control for leg D. */
 const KNOWN_TEST_CALLER = join('packages', 'crypto', 'test', 'envelope.spec.ts');
@@ -253,6 +279,24 @@ function destroyDekCallers(): string[] {
   return [...callers].sort();
 }
 
+/**
+ * The `domain` CHECK vocabulary from the progress ledger's DDL.
+ *
+ * READS THE CONSTRAINT, not a comment beside it and not the seed statement: the
+ * CHECK is what Postgres enforces, so it is what a row can actually carry. A
+ * scan anchored on anything else would go green against a constraint that had
+ * quietly stopped matching.
+ */
+function progressDomainVocabulary(): string[] {
+  const sql = readFileSync(PROGRESS_DDL, 'utf8');
+  const check = /CHECK\s*\(domain\s+IN\s*\(([^)]*)\)\)/i.exec(sql);
+  const body = check?.[1];
+  if (body === undefined) {
+    return [];
+  }
+  return [...body.matchAll(/'([^']+)'/g)].flatMap((m) => (m[1] === undefined ? [] : [m[1]])).sort();
+}
+
 describe('the erasure boundary is derived, not listed', () => {
   const { withKek, withoutKek } = topologyServices();
 
@@ -276,6 +320,18 @@ describe('the erasure boundary is derived, not listed', () => {
     expect(servicesWithDekTable()).not.toContain('audit');
   });
 
+  it('the progress ledger names every participant and nothing else', () => {
+    // Leg E. Three spellings of one list — the topology (what the runtime
+    // wraps keys with), the DDL CHECK (what a row may carry), and the constant
+    // the driver seeds from — compared as sets so a swap cannot hide in a
+    // matching count. A ninth KEK-holding service turns this red in both
+    // places until it is named.
+    const vocabulary = progressDomainVocabulary();
+    expect(vocabulary.length).toBeGreaterThanOrEqual(MIN_DOMAINS);
+    expect(vocabulary).toEqual(withKek);
+    expect([...ERASURE_DOMAINS].sort()).toEqual(withKek);
+  });
+
   it('every participant can record a destruction — the storage primitive exists', () => {
     const missing = withKek.filter((service) => !implementsMarkDestroyed(service));
     expect(missing).toEqual([]);
@@ -286,6 +342,26 @@ describe('the erasure boundary is derived, not listed', () => {
     // the walker is broken. This points the same walker at the one call site
     // that exists and demands it be found.
     expect(destroyDekCallers()).toContain(KNOWN_TEST_CALLER);
+  });
+
+  it('the declared components exist — an allowlist of missing files permits nothing', () => {
+    // A prefix that matches no file refuses every caller and reads as a
+    // working control. Renaming the driver without touching this list is
+    // exactly the drift that would leave the fence green and the rule gone.
+    for (const component of ERASURE_COMPONENTS) {
+      expect(existsSync(join(REPO_ROOT, component))).toBe(true);
+    }
+  });
+
+  it('the production caller is inside a declared component (leg D is load-bearing)', () => {
+    // The counterpart to the positive control above: it proves the walker can
+    // SEE a call, this proves the allowlist is what PERMITS one. Together they
+    // rule out the two ways the absence assertion below could pass for free.
+    const production = destroyDekCallers().filter(
+      (file) => !file.startsWith(join('packages', 'crypto', 'test')),
+    );
+    expect(production).not.toEqual([]);
+    expect(production).toEqual([join('apps', 'services', 'identity', 'src', 'erasure.service.ts')]);
   });
 
   it('nothing outside a declared erasure component calls destroyDek', () => {
