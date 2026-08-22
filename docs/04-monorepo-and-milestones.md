@@ -6839,7 +6839,7 @@ decision booked as progress is how a queue stays untouched.**
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
 | M23 | Executor surface | **COMPLETE** (PR1–PR4b, #141). `EXEMPT_EXECUTOR_CASEWORK` is deleted and every executor-casework route names a consumer. This row read "In progress (PR1, PR2, PR3)" after the milestone finished, which is the same stale-prose defect the exemption reasons keep producing |
 | M24 | Dashboard, computable subset | Flip-trigger **CHECKED 2026-08-21 and NOT FIRED** — no demo date, no signed customer — so this row is a proposal, not a decision. Re-sequenced BEHIND M25; reasoning in the M25 section below. Owns two docs/03 §6v residuals already |
-| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below.** PR0-PR3 shipped: the boundary, the capture redaction, the decision record, the destroy leg. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
+| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below.** PR0-PR4 shipped: the boundary, the capture redaction, the decision record, the destroy leg, the owner's surface. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
 | M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
 | M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
@@ -7746,10 +7746,15 @@ and no `markDestroyed`, turns it red. Both proved by mutation.
   3. *`document_search_tokens` is NOT purged.* PR1's fence names that as PR3's
      work. It is documents' domain, which has no transport, so it moves to M26
      with the rest of the fan-out (docs/03 §6nn).
-- **PR4 — the owner request surface**, step-up gated, web only. This is what
-  makes the `content_erased` arms reachable and closes the `[OWNER: M25]`
-  residual in §6v, which predicts its own resolution as a consequence: a closed
-  account cannot reach a ceremony route at all.
+- **PR4 — the owner request surface. SHIPPED** (record below), **and the
+  residual it named is in §6p, not §6v.** The line said "closes the
+  `[OWNER: M25]` residual in §6v"; §6v is M20 PR2's address-change delta and
+  holds no M25 residual. The prediction actually inherited — that an erased
+  account cannot reach a ceremony route — lives in §6p, and PR4 checked it
+  rather than assuming it: TRUE, for two separate reasons the guess did not
+  distinguish. It also does NOT make the `content_erased` arms reachable, which
+  that line claimed: those are documents' and settlement's DEKs, in domains M25
+  never reaches. Both corrections recorded rather than absorbed.
 - **PR5 — the security review**, plus a `grantStepUp` caller fence. That surface
   is currently clean — two callers, both real factor proofs — and account
   erasure raises the cost of it widening from "one zone" (the M15 PR4 handoff
@@ -7983,3 +7988,60 @@ says out loud. Settlement's driver is powerless by design because a death claim
 is never fully automated. This one destroys a key, which is permitted because
 the human review already happened: the OWNER asked, with a fresh second factor,
 and the grace period is when they may change their mind.
+
+#### M25 PR4 — the owner's erasure surface (2026-08-21)
+
+**THE ROUTES HAVE A CONSUMER AND THE EXEMPTION IS GONE.** A GraphQL query and
+two mutations at the BFF, an identity client for each, and a panel on /security.
+`EXEMPT_ACCOUNT_ERASURE` is deleted on the instruction it carried itself — the
+`EXEMPT_EXECUTOR_CASEWORK` precedent, where an exemption that outlived its
+reason was read by a reviewer as a true sentence about the wrong thing.
+
+**THE HARD PART WAS THE COPY, not the state machine.** Erasure reaches one
+domain of eight, so "your account has been erased" is a sentence this platform
+cannot support — and softening the half that IS true would be the kinder
+sentence and the crueller outcome. The panel says what is destroyed now, says
+the rest is queued and not yet erased, and says there is no undo. Both halves
+are asserted by tests, because copy is where a promise this size lives and the
+only place its drift would show.
+
+**A PR3 DEFECT, FOUND BY ASKING WHAT THE COPY COULD HONESTLY PROMISE.** Writing
+"the rest is queued" meant checking that a queued request is ever revisited — and
+it is not. PR3's `claimDue` took only `pending` requests, so a process killed
+between the claim and the shred left one in `executing` that nothing ever
+returned to: uncancellable by design, blocked from re-request by the live index,
+holding an account promised destruction that did not get it. The per-step
+idempotence PR3 documented was real and **unreachable**. Proved by a test that
+produces the crash state through the real repo and went red before the fix.
+
+**AND THE FIX'S FIRST DRAFT HUNG.** The resume arm asked "does this request have
+unfinished work", which is permanently true while seven domains have no
+transport, so the sweep re-claimed one row forever. It asks about the CALLER'S
+OWN domain now. A `worked` set backs it up and has its own named test, because
+the failure mode is a driver that never returns — no assertion catches that, and
+a timeout names nothing.
+
+**TWO MUTATIONS THAT WERE NOT FAITHFUL, and what they cost.** Cutting the resume
+arm out of the SQL by hand produced malformed SQL and reddened everything, which
+proves nothing; the faithful version disables it with one `FALSE AND` and reddens
+exactly one named test. Pointing ONE erasure method at a wrong path did not move
+the route↔consumer fence — that fence matches by PATH and says so explicitly, so
+the mutation tested a method-level property it never claimed. Pointing all three
+at a wrong path reddens it, naming all three routes.
+
+**THE §6p PREDICTION IS CHECKED, NOT ASSUMED.** M17's review filed "a shredded
+account cannot reach a ceremony route at all" as a precondition on this
+milestone. It holds, and for TWO separate reasons the guess did not separate:
+session-guarded ceremonies are unreachable because a session resolves only for
+an 'active' or 'deceased_pending' account, while the UNAUTHENTICATED reset path
+holds a code that still names a user id and is stopped instead by the status
+allowlist inside `updatePasswordHash`'s own UPDATE. The test says which layer it
+proves and carries a positive control.
+
+**A RESIDUAL SWEEP, because four `[OWNER: M25]` items had outlived their
+sentences.** Two are closed (the live blind index, the three unconsumed routes);
+three are re-owned to M26 with a note saying who was named and why they could
+not (`document_search_tokens`, `document_versions.content_sha256`, and the wider
+live-blind-index category — all in domains M25 never reaches). A residual whose
+named owner has shipped and not done it is worse than an untagged one: it reads
+as covered.

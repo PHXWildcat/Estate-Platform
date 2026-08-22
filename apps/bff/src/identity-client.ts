@@ -160,6 +160,28 @@ export interface IdentityClient {
   changePassword(accessToken: string, currentPassword: string, newPassword: string): Promise<void>;
 
   /**
+   * ACCOUNT ERASURE (M25 PR4) — the owner's own crypto-shred.
+   *
+   * `getAccountErasure` and `cancelAccountErasure` need only a session;
+   * `requestAccountErasure` is step-up gated at identity. That asymmetry is
+   * INVERTED from the usual shape and it is deliberate: normally the permissive
+   * action is gated and the protective one is free, but here the permissive
+   * action IS the destructive one, so arming costs a fresh factor and
+   * disarming costs nothing. An owner whose session was briefly taken must be
+   * able to withdraw an erasure with what they already hold.
+   *
+   * Both read verbs answer `null` for "nothing outstanding". `cancel` answering
+   * a STATE means the withdrawal did not take — the driver has claimed the
+   * request — and callers must render that as "too late", never as success.
+   *
+   * `request` throws OPEN_DEATH_REPORT or ERASURE_NOT_PERMITTED. Two codes on
+   * purpose: the first is a control firing with a remedy the owner can take.
+   */
+  getAccountErasure(accessToken: string): Promise<ErasureStateDto | null>;
+  requestAccountErasure(accessToken: string): Promise<ErasureStateDto | null>;
+  cancelAccountErasure(accessToken: string): Promise<ErasureStateDto | null>;
+
+  /**
    * Stage a change of the account's sign-in address (M20 PR2, M17 PR4's
    * ceremony). VERIFY-THEN-SWITCH: nothing on file moves until a code mailed to
    * the NEW address comes back, because login resolves users by `email_bidx` and
@@ -452,6 +474,21 @@ export type BffErrorCode =
    */
   | 'WEBAUTHN_FAILED'
   /**
+   * Erasure was refused because the account is the subject of an open death
+   * report (M25 PR4). ITS OWN CODE, and this is the case the rule about two
+   * failures never sharing a token was written for: it is a CONTROL FIRING with
+   * a remedy the person can take — sign in, void the case, come back — and
+   * folding it into a generic refusal would tell somebody whose account is
+   * being settled out from under them that the product is broken.
+   */
+  | 'OPEN_DEATH_REPORT'
+  /**
+   * Erasure was refused for any other account status (M25 PR4). Separate from
+   * the above rather than merged, so the day a new status becomes
+   * session-bearing the copy is wrong loudly instead of quietly.
+   */
+  | 'ERASURE_NOT_PERMITTED'
+  /**
    * M19 PR4 review. A rate bound refused the request — identity's step-up cap
    * (M17 PR6's two-scope bound: a stolen credential exhausts its OWN budget
    * under an account ceiling) answers 429 `too_many_attempts`.
@@ -571,6 +608,8 @@ const ERROR_MESSAGES: Record<BffErrorCode, string> = {
   ASSISTANT_DISABLED: 'The assistant is switched off',
   TEMPLATE_NOT_FOUND: 'No template available',
   CONTENT_ERASED: 'This content has been erased',
+  OPEN_DEATH_REPORT: 'An open death report covers this account',
+  ERASURE_NOT_PERMITTED: 'This account cannot be erased right now',
   VERSION_CONFLICT: 'This changed since it was loaded',
   SHARE_SUM_EXCEEDED: 'Those shares would add past 100%',
   DOCUMENT_NOT_EDITABLE: 'This document can no longer be regenerated',
@@ -730,6 +769,24 @@ const StepUpResultSchema = z.object({
   mfaLevel: z.string(),
   stepupExpiresAt: z.string().min(1),
 });
+
+/**
+ * A live erasure request, as the account surface renders it (M25 PR4).
+ *
+ * THE STATUS IS CARRIED, not flattened to a boolean. 'pending' can still be
+ * withdrawn and 'executing' cannot, and a surface showing both as "requested"
+ * would offer a cancel button that silently does nothing.
+ */
+const ErasureStateSchema = z.object({
+  status: z.string(),
+  requestedAt: z.string(),
+});
+
+const ErasureEnvelopeSchema = z.object({
+  erasure: ErasureStateSchema.nullable(),
+});
+
+export type ErasureStateDto = z.infer<typeof ErasureStateSchema>;
 
 const ErrorBodySchema = z.object({ error: z.string() });
 
@@ -1068,6 +1125,54 @@ export class FetchIdentityClient implements IdentityClient {
     }
   }
 
+  /**
+   * The caller's live erasure request, or null (M25 PR4).
+   *
+   * SESSION ONLY, no step-up. Asking whether you are marked for erasure must
+   * not itself cost a factor — the answer is about the caller, and a check in
+   * front of it would make looking harder than the thing being looked at.
+   */
+  async getAccountErasure(accessToken: string): Promise<ErasureStateDto | null> {
+    const res = await this.request({ method: 'GET', path: '/v1/account/erasure', accessToken });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, ErasureEnvelopeSchema)).erasure;
+  }
+
+  /**
+   * Arm account erasure (M25 PR4). Step-up gated at identity.
+   *
+   * IDEMPOTENT: asking twice while a request is live answers with the SAME
+   * request rather than a conflict, because somebody pressing a button twice
+   * means the thing they meant the first time.
+   */
+  async requestAccountErasure(accessToken: string): Promise<ErasureStateDto | null> {
+    const res = await this.request({ method: 'POST', path: '/v1/account/erasure', accessToken });
+    if (!res.ok) {
+      throw await this.mapErasureError(res);
+    }
+    return (await this.parseBody(res, ErasureEnvelopeSchema)).erasure;
+  }
+
+  /**
+   * Withdraw the live request (M25 PR4). NOT step-up gated, and that asymmetry
+   * is the control rather than an oversight — see the SDL.
+   *
+   * ANSWERS WHAT IS STILL LIVE. `null` means nothing is outstanding; a state
+   * means the cancel did not take, which since PR3 has exactly one cause: the
+   * driver has claimed the request and is destroying keys. Passed through
+   * rather than collapsed, because telling an owner "withdrawn" about an
+   * erasure already in progress would be the worst lie this product could tell.
+   */
+  async cancelAccountErasure(accessToken: string): Promise<ErasureStateDto | null> {
+    const res = await this.request({ method: 'DELETE', path: '/v1/account/erasure', accessToken });
+    if (!res.ok) {
+      throw await this.mapError(res);
+    }
+    return (await this.parseBody(res, ErasureEnvelopeSchema)).erasure;
+  }
+
   async changePassword(
     accessToken: string,
     currentPassword: string,
@@ -1305,6 +1410,32 @@ export class FetchIdentityClient implements IdentityClient {
         return bffError('VERIFICATION_UNAVAILABLE');
       }
       return bffError('INVALID_VERIFICATION_CODE');
+    }
+    return this.mapError(res);
+  }
+
+  /**
+   * Identity's two erasure refusals, kept apart all the way to the browser
+   * (M25 PR4).
+   *
+   * TOKEN-FIRST AND ROUTE-SCOPED, on the `mapCodeRedemptionError` precedent.
+   * Both arrive as 409, so a status-keyed rule could not tell them apart, and
+   * folding them into one code would undo at this edge exactly the split
+   * identity's service went to the trouble of making — one is a control firing
+   * with a remedy the owner can take, the other is a plain refusal. A 409 this
+   * edge has NOT learned falls through to the shared mapper rather than being
+   * guessed at, so a future refusal token surfaces as an unmapped failure
+   * instead of wearing the wrong remedy.
+   */
+  private async mapErasureError(res: Response): Promise<Error> {
+    if (res.status === 409) {
+      const token = await readErrorToken(res.clone());
+      if (token === 'open_death_report') {
+        return bffError('OPEN_DEATH_REPORT');
+      }
+      if (token === 'erasure_not_permitted') {
+        return bffError('ERASURE_NOT_PERMITTED');
+      }
     }
     return this.mapError(res);
   }

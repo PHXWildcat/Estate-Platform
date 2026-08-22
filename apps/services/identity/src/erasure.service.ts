@@ -185,14 +185,34 @@ export class ErasureService {
    */
   async runDueErasures(now: Date): Promise<number> {
     const cutoff = new Date(now.getTime() - this.config.erasureGracePeriodMs);
+    // EVERY REQUEST THIS SWEEP HAS ALREADY WORKED.
+    //
+    // The loop's termination rests on a claim predicate going false once this
+    // domain reports, and PR4 found how easily that reasoning breaks: the first
+    // draft of the resume arm asked "does this request have unfinished work",
+    // which is PERMANENTLY TRUE while seven domains have no transport, and the
+    // sweep spun forever re-claiming the same row. The predicate is fixed —
+    // it asks about THIS domain — and this set is the backstop, because the
+    // failure mode of getting it wrong again is a driver that never returns,
+    // which no assertion can catch and no test can name. A second sighting is
+    // impossible if the predicate is right, so this converts a future
+    // regression from a hang into a value a test can read.
+    const worked = new Set<string>();
     let carried = 0;
     for (;;) {
       const claimed = await this.db.withTransaction(DRIVER_ACTOR, async (tx) => {
-        const request = await this.repo.claimDue(tx, cutoff, now, ERASURE_PERMITTED_STATUSES);
+        const request = await this.repo.claimDue(
+          tx,
+          cutoff,
+          now,
+          ERASURE_PERMITTED_STATUSES,
+          THIS_DOMAIN,
+        );
         if (request !== null) {
           // Seeded inside the CLAIM transaction. A crash between the two would
           // leave a request executing with an empty ledger, which
-          // `completeIfAllDone` would read as "every domain is done".
+          // `completeIfAllDone` would read as "every domain is done" — and
+          // which the resume arm, keyed on a ledger row, could never re-claim.
           await this.repo.seedDomains(tx, request.id, ERASURE_DOMAINS);
         }
         return request;
@@ -200,6 +220,13 @@ export class ErasureService {
       if (claimed === null) {
         return carried;
       }
+      if (worked.has(claimed.id)) {
+        // Re-claimed inside one sweep: the predicate has stopped narrowing.
+        // Stop rather than spin — the requests already carried are done and
+        // durable, and the next tick will find whatever is genuinely left.
+        return carried;
+      }
+      worked.add(claimed.id);
       await this.executeIdentityDomain(claimed, now);
       carried += 1;
     }

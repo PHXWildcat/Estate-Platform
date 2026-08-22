@@ -112,8 +112,28 @@ export class ErasureRepo {
   }
 
   /**
-   * Claim ONE request that is due for execution, moving it 'pending' →
-   * 'executing'. Returns null when nothing is due.
+   * Claim ONE request the driver should work: a due 'pending' request, or an
+   * 'executing' one a previous driver never finished. Returns null when there
+   * is nothing to do.
+   *
+   * THE SECOND ARM IS NOT AN OPTIMISATION. Every step of the destroy leg is
+   * individually idempotent, and that is worth nothing if nothing ever
+   * RE-DRIVES them — a process killed between the claim and the shred leaves a
+   * request in 'executing' that is uncancellable by design, blocked from being
+   * re-requested by the live index, and holding an account that was promised
+   * destruction and did not get it. The worst state this feature can reach,
+   * arrived at by a restart.
+   *
+   * IT KEYS ON THE CALLER'S OWN DOMAIN, and that is what makes the loop
+   * terminate. Written first as "any ledger row not done", it re-claimed the
+   * same request forever — seven of the eight domains have no transport and sit
+   * at 'pending' permanently, so "this request has unfinished work" is
+   * permanently true and is the wrong question. The right one is "is MY work on
+   * this request unfinished", which goes false the moment this domain reports.
+   *
+   * `started_at` is COALESCEd rather than overwritten: it answers "executing
+   * since when", and a resume that reset it would erase the very evidence that
+   * something had stalled.
    *
    * THE GRACE PERIOD IS WHAT MAKES CANCEL MEAN ANYTHING. `requested_at <= $1`
    * is the whole waiting period: without it the driver would execute a request
@@ -135,24 +155,40 @@ export class ErasureRepo {
     cutoff: Date,
     at: Date,
     permittedStatuses: readonly string[],
+    domain: ErasureDomain,
   ): Promise<ErasureRequestRow | null> {
     const rows = await tx.query<ErasureRequestRow>(
       `UPDATE erasure_requests
-          SET status = 'executing', started_at = $2
+          SET status = 'executing', started_at = COALESCE(started_at, $2)
         WHERE id = (
                 SELECT r.id
                   FROM erasure_requests r
                   JOIN users u ON u.id = r.user_id
-                 WHERE r.status = 'pending'
-                   AND r.deleted_at IS NULL
-                   AND r.requested_at <= $1
+                 WHERE r.deleted_at IS NULL
                    AND u.deleted_at IS NULL
-                   AND u.status = ANY($3)
+                   AND (
+                         -- Due for the first time.
+                         (r.status = 'pending'
+                            AND r.requested_at <= $1
+                            AND u.status = ANY($3))
+                         -- OR STALLED: claimed by a driver that never finished.
+                         -- No grace period and no status allowlist on this arm:
+                         -- the account is already 'closed' by the leg that ran,
+                         -- so the allowlist would refuse every resume, and the
+                         -- waiting period was already served before the first
+                         -- claim. Re-imposing either would strand exactly the
+                         -- request this arm exists to rescue.
+                         OR (r.status = 'executing'
+                               AND EXISTS (SELECT 1 FROM erasure_domain_progress
+                                            WHERE request_id = r.id
+                                              AND domain = $4
+                                              AND state <> 'done'))
+                       )
                  ORDER BY r.requested_at
                    FOR UPDATE OF r SKIP LOCKED
                  LIMIT 1)
        RETURNING ${REQUEST_COLUMNS}`,
-      [cutoff, at, [...permittedStatuses]],
+      [cutoff, at, [...permittedStatuses], domain],
     );
     return rows[0] ?? null;
   }

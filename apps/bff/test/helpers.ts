@@ -43,6 +43,7 @@ import type {
 } from '../src/documents-client';
 import { bffError } from '../src/identity-client';
 import type {
+  ErasureStateDto,
   IdentityClient,
   IdentitySession,
   IssuedTokens,
@@ -127,8 +128,46 @@ export class FakeIdentityClient implements IdentityClient {
   resendEmailVerificationResult: ResendOutcome = 'sent';
   verifyEmailError: Error | null = null;
 
+  /**
+   * ACCOUNT ERASURE (M25 PR4). Modelled as three independently settable
+   * outcomes rather than one shared flag, because the three verbs disagree in
+   * ways the surface depends on: `get` and `cancel` may answer null, `cancel`
+   * answering a STATE means "too late", and only `request` refuses.
+   *
+   * THE ERROR SLOTS ARE THE POINT. A double faithful only about values would
+   * let a component that mishandles OPEN_DEATH_REPORT pass — and that refusal
+   * is the one carrying a remedy the owner has to be told about.
+   */
+  erasureCalls: Array<{ verb: 'get' | 'request' | 'cancel'; accessToken: string }> = [];
+  erasureResult: ErasureStateDto | null = null;
+  erasureRequestResult: ErasureStateDto | null = null;
+  erasureCancelResult: ErasureStateDto | null = null;
+  erasureError: Error | null = null;
+  erasureRequestError: Error | null = null;
+
   loginError: Error | null = null;
   refreshError: Error | null = null;
+
+  getAccountErasure(accessToken: string): Promise<ErasureStateDto | null> {
+    this.erasureCalls.push({ verb: 'get', accessToken });
+    return this.erasureError
+      ? Promise.reject(this.erasureError)
+      : Promise.resolve(this.erasureResult);
+  }
+
+  requestAccountErasure(accessToken: string): Promise<ErasureStateDto | null> {
+    this.erasureCalls.push({ verb: 'request', accessToken });
+    return this.erasureRequestError
+      ? Promise.reject(this.erasureRequestError)
+      : Promise.resolve(this.erasureRequestResult);
+  }
+
+  cancelAccountErasure(accessToken: string): Promise<ErasureStateDto | null> {
+    this.erasureCalls.push({ verb: 'cancel', accessToken });
+    return this.erasureError
+      ? Promise.reject(this.erasureError)
+      : Promise.resolve(this.erasureCancelResult);
+  }
 
   register(email: string, password: string): Promise<void> {
     this.registerCalls.push({ email, password });

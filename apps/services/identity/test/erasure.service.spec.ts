@@ -406,7 +406,11 @@ describe('the destroy leg (no database)', () => {
       repo: {
         claimDue: (() => {
           let n = 0;
-          return () => Promise.resolve(n++ < 2 ? row({ status: 'executing' }) : null);
+          // DISTINCT IDS, because the driver refuses to work one request twice
+          // in a sweep. A fake handing back the same row is not modelling a
+          // queue, it is modelling the bug the backstop exists to stop.
+          return () =>
+            Promise.resolve(n < 2 ? row({ id: `req-${n++}`, status: 'executing' }) : null);
         })(),
       },
     });
@@ -469,9 +473,30 @@ describe('the destroy leg (no database)', () => {
   it('drains the queue rather than taking one request per tick', async () => {
     let n = 0;
     const h = harness({
-      repo: { claimDue: () => Promise.resolve(n++ < 3 ? row({ status: 'executing' }) : null) },
+      repo: {
+        claimDue: () =>
+          Promise.resolve(n < 3 ? row({ id: `req-${n++}`, status: 'executing' }) : null),
+      },
     });
     await expect(h.service.runDueErasures(NOW)).resolves.toBe(3);
     expect(h.audited.filter((a) => a === 'dek_destroyed')).toHaveLength(3);
+  });
+
+  it('STOPS rather than spins when the claim predicate stops narrowing', async () => {
+    // The named test for the backstop, and the reason it exists: the failure it
+    // guards is a driver that never returns, which no assertion can catch —
+    // a hung sweep looks like a slow one until a timeout, and a timeout names
+    // nothing. PR4's first draft of the resume arm did exactly this, asking
+    // "does this request have unfinished work" when seven domains are
+    // permanently unfinished.
+    //
+    // A repo that keeps handing back the SAME request is that regression
+    // exactly. One pass, then stop — and the request it did carry is finished
+    // and durable, so stopping costs nothing.
+    const h = harness({
+      repo: { claimDue: () => Promise.resolve(row({ status: 'executing' })) },
+    });
+    await expect(h.service.runDueErasures(NOW)).resolves.toBe(1);
+    expect(h.audited.filter((a) => a === 'dek_destroyed')).toHaveLength(1);
   });
 });

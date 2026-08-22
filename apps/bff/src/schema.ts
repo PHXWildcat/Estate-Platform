@@ -60,7 +60,7 @@ import {
   parseCookies,
   setSessionCookies,
 } from './cookies';
-import { bffError, type IdentityClient } from './identity-client';
+import { bffError, type ErasureStateDto, type IdentityClient } from './identity-client';
 
 /**
  * Auth slice of the BFF schema (Milestone 1). Deliberately small: login and
@@ -104,6 +104,30 @@ export const typeDefs = /* GraphQL */ `
 
   type Ok {
     ok: Boolean!
+  }
+
+  """
+  A live account-erasure request (M25 PR4).
+
+  Null, wherever a field returns this, means NOTHING IS OUTSTANDING.
+  """
+  type ErasureRequest {
+    """
+    "pending" — armed, and still withdrawable.
+    "executing" — the driver has claimed it and is destroying keys. Nothing can
+    stop it, and a surface must not offer a cancel that would do nothing.
+
+    A STRING rather than an enum, deliberately. The states are identity's DDL
+    vocabulary and that vocabulary will grow ("completed" exists already and is
+    not yet reachable); an enum here would be a second copy free to drift, and a
+    client meeting an unknown value must degrade to "in progress" rather than
+    fail to parse the whole response.
+    """
+    status: String!
+    """
+    When the owner asked, ISO-8601. Not when it will run.
+    """
+    requestedAt: String!
   }
 
   type TotpEnroll {
@@ -617,6 +641,14 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type Query {
+    """
+    The caller's live erasure request, or null (M25 PR4).
+
+    SESSION ONLY. Asking whether you are marked for erasure must not itself
+    cost a factor — the answer is about the caller, and a check in front of it
+    would make looking harder than the thing being looked at.
+    """
+    accountErasure: ErasureRequest
     """
     Current session; null when there is nothing to authenticate WITH. A dead
     access token with a refresh cookie behind it errors UNAUTHENTICATED
@@ -1334,6 +1366,48 @@ export const typeDefs = /* GraphQL */ `
     protective action must never be harder than the permissive one.
     """
     cancelEmailChange: Ok!
+    """
+    Arm account erasure (M25 PR4) — the owner's own crypto-shred.
+
+    WHAT THIS ACTUALLY DOES, because copy built on it must not overstate it.
+    After a waiting period the account is closed, every session is revoked, the
+    sign-in address stops resolving, and identity's per-user key is DESTROYED,
+    which makes everything sealed under it permanently unreadable. It is not a
+    deactivation, and there is no undo once it runs.
+
+    IT REACHES ONE DOMAIN OF EIGHT TODAY. The other services holding this
+    account's encrypted data have no erasure transport yet (docs/03 section
+    6nn), so a surface must not tell an owner their account HAS BEEN erased —
+    only that erasure has begun, and what it has reached.
+
+    STEP-UP GATED at identity, unlike the withdrawal below. That asymmetry is
+    INVERTED from the usual shape on purpose: normally the permissive action is
+    gated and the protective one is free, but here the permissive action IS the
+    destructive one.
+
+    IDEMPOTENT: asking again while a request is live answers with the SAME
+    request rather than a conflict, because somebody pressing a button twice
+    means the thing they meant the first time.
+
+    Refuses OPEN_DEATH_REPORT when a death report is open on the account — a
+    control firing, with a remedy the owner can take: sign in, void the case,
+    come back — and ERASURE_NOT_PERMITTED otherwise. Two codes, because the two
+    need different things from the reader.
+    """
+    requestAccountErasure: ErasureRequest
+    """
+    Withdraw a live erasure request (M25 PR4). Idempotent, and NOT step-up
+    gated: the protective action must never be harder than the permissive one,
+    and an owner whose session was briefly taken must be able to disarm this
+    with nothing but the session they already hold.
+
+    THE RESULT IS NOT A SUCCESS FLAG. Null means nothing is outstanding —
+    withdrawn, or there was none, and a caller has no reason to tell those
+    apart. A RETURNED REQUEST means the cancel did NOT take, which has exactly
+    one cause: the driver had already claimed it. Render that as "too late",
+    never as success.
+    """
+    cancelAccountErasure: ErasureRequest
     """
     Ask for a password-reset code (M20 PR3). UNAUTHENTICATED — the caller has
     forgotten the credential that would authenticate them.
@@ -2264,6 +2338,18 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
     typeDefs,
     resolvers: {
       Query: {
+        /**
+         * The caller's live erasure request (M25 PR4). `requireAccessToken`
+         * rather than a null-on-anonymous read: an unauthenticated caller has
+         * no erasure state, and answering null would make "not signed in"
+         * indistinguishable from "nothing outstanding" on the one surface
+         * where that difference decides what the page renders.
+         */
+        accountErasure: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<ErasureStateDto | null> => identity.getAccountErasure(requireAccessToken(ctx)),
         session: async (
           _parent: unknown,
           _args: unknown,
@@ -3585,6 +3671,30 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           await identity.cancelEmailChange(requireAccessToken(ctx));
           return OK;
         },
+        /**
+         * ACCOUNT ERASURE (M25 PR4). No arguments on either verb, and that is
+         * the design rather than an omission: the subject is always the caller,
+         * resolved from their own session at identity. A `userId` argument here
+         * would be a field this edge would then have to prove nobody may set.
+         */
+        requestAccountErasure: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<ErasureStateDto | null> =>
+          identity.requestAccountErasure(requireAccessToken(ctx)),
+        /**
+         * The result is PASSED THROUGH, never collapsed to `Ok`. A returned
+         * request means the withdrawal did not take because the driver already
+         * claimed it, and an edge that answered `{ok:true}` here would tell an
+         * owner "withdrawn" about an erasure that is destroying keys.
+         */
+        cancelAccountErasure: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<ErasureStateDto | null> =>
+          identity.cancelAccountErasure(requireAccessToken(ctx)),
         requestPasswordReset: async (
           _parent: unknown,
           args: { email: string },

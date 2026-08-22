@@ -2491,7 +2491,7 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
 
 ### Residuals
 
-- **[OWNER: M25]** **One novel-but-unreachable candidate is recorded rather than fixed.** A
+- **[CLOSED: §6oo]** **One novel-but-unreachable candidate is recorded rather than fixed.** A
   crypto-shredded DEK at email-change completion would surface as a 500 rather
   than the uniform `invalid_code` — no code path destroys a DEK today
   (`destroyDek` still has zero callers). It is NOT fixed here on purpose:
@@ -2502,7 +2502,14 @@ Ten candidates were refuted, and two of the refutations are load-bearing:
   off the live allowlist, at which point the 500 disappears as a consequence).
   A wrong answer pinned by a test is harder to displace than an absent one, so
   this is filed as a PRECONDITION on the erasure milestone rather than a
-  floating residual.
+  floating residual. **M25 PR4 CHECKED THE PREDICTION AND IT HOLDS — for two
+  separate reasons, which the guess did not distinguish.** Session-guarded
+  ceremonies are unreachable because a session resolves only for an 'active' or
+  'deceased_pending' account. The UNAUTHENTICATED ones hold a code that still
+  names a user id, so no session check protects them; what refuses them is the
+  status allowlist riding inside `updatePasswordHash`'s own UPDATE, which turns
+  the redeem into the same uniform `invalid_code` as every other failure. Both
+  layers are now asserted, and the test says which is which.
 - **[OWNER: M26]** **Clone detection was the review's other recorded item and is now ANSWERED,
   differently from how it was proposed.** The suggested fix was to revoke the
   credential; the fix taken is to NOTIFY THE OWNER and keep rejecting. The
@@ -4658,8 +4665,11 @@ here and in PR1's new migration.
 
 ### Residuals
 
-- **[OWNER: M25]** *The shred does not reach `users.email_bidx`, live or
-  captured.* Given the blind-index key and a candidate address, an erased
+- **[CLOSED: §6nn]** *The shred does not reach `users.email_bidx`, live or
+  captured.* PR1 closed the capture half; PR3 closed the live half by
+  overwriting the column with a real blind index of an address nobody holds.
+  The original text follows.
+  * Given the blind-index key and a candidate address, an erased
   account can still be confirmed to have existed, and every historical value
   sits in an INSERT-only version table. PR1 redacts it from the `users` capture;
   the live column is `NOT NULL` and unique-where-not-deleted, so whether erasure
@@ -4668,12 +4678,16 @@ here and in PR1's new migration.
   and direct cluster read, not an external attacker — this is erasure
   COMPLETENESS, not a confidentiality break, and it should not be read as the
   latter.
-- **[OWNER: M25]** *`document_versions.content_sha256` is a hash of the
+- **[OWNER: M26]** *`document_versions.content_sha256` is a hash of the
   PLAINTEXT, in an append-only table, and the shred does not reach it either.*
   Same class as the blind index: it lets a held candidate document be confirmed
   against an erased estate. Not fixed here because the column is the
   disaster-recovery integrity check (decrypt-then-hash) and removing it costs
   something real; PR1 answers it either way rather than leaving it unstated.
+  **PR1 DID NOT ANSWER IT, and PR4 is recording that rather than letting the
+  sentence stand.** PR1's category was blind indexes in tables identity, profile
+  and plaid own; this column is in the documents cluster, which M25 never
+  reaches. RE-OWNED TO M26 with the rest of the fan-out.
 - **[ACCEPTED]** *There is no privileged database role, and M25 is not building
   one.* docs/02 and `packages/crypto/src/dek.ts` have both described "a
   privileged retention job (not the app role)" since M1; no `CREATE ROLE` or
@@ -4757,16 +4771,25 @@ and cannot be edited — recorded below rather than left to be rediscovered.
   HMAC, where the candidate space is guessable. What would change this answer is
   a rebuild check that does not need a plaintext hash; until one exists the cost
   of removing it is a real capability for a marginal gain.
-- **[OWNER: M25]** *`document_search_tokens` is not purged by anything.* Its
+- **[OWNER: M26]** *`document_search_tokens` is not purged by anything.* Its
   `token_bidx` rows are HMACs derived from document content — the DEK
   destruction erases the content and leaves the tokens, which is the same defect
   class as the blind indexes this PR closed and is NOT closed by it. The table's
   own comment says legal erasure "purges a document's rows via the privileged
   retention job", which is the fourth description of a job that does not exist
   and sits in an applied, checksummed migration that cannot be corrected in
-  place. PR3 owns the purge.
-- **[OWNER: M25]** *What the LIVE blind-index column holds after an erasure is
-  undecided, and that category is WIDER than this PR's.* This PR stops the
+  place. PR3 owns the purge. **PR3 DID NOT DO IT and could not: documents is
+  one of the seven domains with no erasure transport, so RE-OWNED TO M26**
+  (docs/03 §6nn). Recorded here as well as there, because this is the sentence
+  a reader checking "was the blind-index category finished" will land on.
+- **[OWNER: M26]** *What the LIVE blind-index column holds after an erasure is
+  undecided, and that category is WIDER than this PR's.* **PR3 ANSWERED IT FOR
+  `users.email_bidx` ONLY** — a real blind index of `<uuid>@erased.invalid`, so
+  the width, key and purpose label cannot drift and the value cannot collide.
+  `contacts.email_bidx`, `plaid_items` and `email_changes.new_email_bidx` are
+  untouched and belong to the domains M25 does not reach. The original text
+  follows.
+  * This PR stops the
   CAPTURE; it does not say what erasure writes to `users.email_bidx`, which is
   `NOT NULL` with a unique index partial on `deleted_at IS NULL`.
   `contacts.email_bidx` is already nullable with a matching partial index, so
@@ -4833,18 +4856,21 @@ assertion a mutation reddens on its own.
 **AUDIT ONLY, NO DOMAIN EVENT.** `auth.account.erasure_requested` and
 `auth.account.erasure_cancelled` join the closed catalog; nothing is published
 to a topic, because nothing consumes one and PR3 will choose its own transport
-with its own consumers. The two are NOT a symmetric pair and the catalog says
+with its own consumers. **THE AUDIT CONSUMER MUST DEPLOY BEFORE IDENTITY DOES**,
+and PR4 watched exactly that go wrong on the local stack: identity was rebuilt
+without the audit service, and the first erasure request was rejected
+`schema_violation` at the same millisecond it was made — the event produced, the
+trail silently empty. `AUDIT_ACTIONS` is closed, an older consumer drops every
+instance it does not know, and nothing enforces the ordering. The two are NOT a symmetric pair and the catalog says
 so — one is step-up gated and the other deliberately is not, so a reader tallying
 them as a matched pair would conclude the ceremony is symmetric.
 
 ### Residuals
 
-- **[OWNER: M25]** *Three routes ship with no consumer,* declared in the
-  route↔consumer fence under `EXEMPT_ACCOUNT_ERASURE` with PR4 named as the
-  owner and an instruction to delete the constant with its last entry. This is
-  the staged-surface pattern the fence exists to make visible rather than an
-  exception to it — but a route nobody calls is a capability whose behaviour no
-  product path exercises, and that is true here until PR4 lands.
+- **[CLOSED: §6oo]** *Three routes ship with no consumer,* declared under
+  `EXEMPT_ACCOUNT_ERASURE` with PR4 named as the owner and an instruction to
+  delete the constant with its last entry. PR4 landed, all three have a
+  consumer, and the constant is gone on its own instruction.
 - **[OWNER: M26]** *Legal hold is not checked at request time, and that is a
   decision rather than a gap.* `legal_hold` is a per-document flag in the
   documents cluster with no account-level equivalent, so identity cannot see it
@@ -4988,4 +5014,82 @@ ABOUT a person; erasure executes something FOR one.
   that held it is unreadable, so any notification must be sent BEFORE the shred
   or not at all. That ordering constraint is the real content of this residual,
   and it is easy to get wrong once notifications joins the fan-out.
+
+## 6oo. Threat-model delta — M25 PR4, the owner's erasure surface (2026-08-21)
+
+**THE THREE ROUTES HAVE A CONSUMER, and `EXEMPT_ACCOUNT_ERASURE` is deleted on
+its own instruction.** A GraphQL query and two mutations at the BFF, a panel on
+/security, and the same asymmetry carried through every layer: arming is
+step-up gated AND takes a deliberate confirmation, withdrawing is one button
+with neither.
+
+**THE COPY IS THE CONTROL ON THIS SURFACE, which is unusual and worth stating.**
+Erasure reaches ONE domain of eight (§6nn), so "your account has been erased" is
+a sentence the platform cannot support. The panel says what is destroyed now,
+says the rest is queued and not yet erased, and refuses to claim a completion
+the ledger cannot show. It also refuses to soften the half that IS true: the key
+is destroyed, there is no support path that restores it, and this is not a
+deactivation. A test asserts both sentences, because copy is the only place
+where a promise this large lives and the only thing that would catch its drift.
+
+**A CONTROL THAT CANNOT WORK IS WORSE THAN ITS ABSENCE.** No stop button is
+rendered once a request is `executing` — the driver has claimed it and nothing
+can halt it, so a button there would leave someone believing they had stopped an
+erasure that was destroying keys. The withdrawable set is an ALLOWLIST
+(`pending`), not a check for `executing`: identity owns that vocabulary and it
+grows, so a state this build has not met falls through to "cannot be stopped
+from here" rather than to an enabled button whose press would be refused.
+
+**A FAILED READ IS NOT "NOTHING SCHEDULED".** The panel renders neither the arm
+button nor a state when it could not ask — offering to start an erasure while
+unable to say whether one has already started is how a second request gets made
+against an account that already has one.
+
+**THE TWO REFUSALS STAY APART ACROSS FOUR HOPS.** Identity answers
+`open_death_report` and `erasure_not_permitted`; the BFF maps them TOKEN-FIRST
+(both arrive as 409, so a status-keyed rule could not tell them apart) to
+`OPEN_DEATH_REPORT` and `ERASURE_NOT_PERMITTED`; the web app carries both in
+`GQL_ERROR_CODES` and gives each its own sentence, one of which names a remedy
+the owner can take. A 409 token the edge has NOT learned falls through to the
+shared mapper rather than being guessed at, so a future refusal surfaces as an
+unmapped failure instead of wearing the wrong remedy.
+
+**A DEFECT IN PR3, FOUND BY ASKING WHAT THE COPY COULD PROMISE.** PR3's driver
+claimed only `pending` requests, so a process killed between the claim and the
+shred left a request in `executing` that NOTHING EVER RETURNED TO — uncancellable
+by design, blocked from being re-requested by the live unique index, holding an
+account that was promised destruction and did not get it. The per-step
+idempotence PR3 documented was real and unreachable. The claim now has a second
+arm for stalled requests, with no grace period and no status allowlist on it
+(the account is already `closed`, so the allowlist would refuse every resume,
+and the waiting period was served before the first claim).
+
+**AND THE FIX'S FIRST DRAFT WAS AN INFINITE LOOP,** which is the part worth
+keeping. It asked "does this request have unfinished work" — permanently true
+while seven domains have no transport — so the sweep re-claimed one row forever.
+The predicate now asks about the CALLER'S OWN domain, which goes false the
+moment that domain reports. A `worked` set backs it up, because the failure mode
+of getting this wrong is a driver that never returns, which no assertion can
+catch and no timeout can name.
+
+### Residuals
+
+- **[OWNER: M26]** *The surface can arm an erasure the platform cannot finish.*
+  Everything the panel says is true, and it is still offering a destructive
+  action whose reach is one domain of eight. The honest mitigation is the copy
+  and the ledger; the real one is the fan-out. Recorded as a residual rather
+  than treated as shipped scope, because "the user was told" is a weaker answer
+  than "the product does what its button says".
+- **[ACCEPTED]** *An owner with no second factor cannot arm erasure.*
+  `StepUpGuard` refuses and the prompt asks for a code they cannot produce.
+  Pre-existing across all six `StepUpPrompt` callers (M23 PR4c recorded it), and
+  it fails in the SAFE direction here — the one action that cannot be undone is
+  the one it is least costly to be unable to reach.
+- **[ACCEPTED]** *Nothing on the page warns that erasure is coming before it
+  runs.* The grace period is visible only to somebody who returns to /security.
+  A mailed warning would be the obvious addition and cannot be built here: the
+  notification would have to go out before the shred, and notifications is one
+  of the seven domains with no erasure transport, so wiring it for this alone
+  would build half the fan-out in the wrong PR. §6nn holds the ordering
+  constraint that makes it delicate.
 
