@@ -1,4 +1,4 @@
-import type { AnalysisStatus, FindingInfo } from '../graphql/client';
+import type { AnalysisStatus, FindingInfo, ReadinessInfo } from '../graphql/client';
 import { formatMoney } from './money';
 
 /**
@@ -309,6 +309,41 @@ export const STATUS_COPY: Record<Exclude<AnalysisStatus, 'OK'>, FindingCopy> = {
     body: 'Turn it on below to see this check. Nothing is analysed while it is off.',
   },
 };
+
+export interface AnalysisSection {
+  readonly key: keyof ReadinessInfo;
+  readonly title: string;
+  readonly blurb: string;
+}
+
+/**
+ * The four analyses, in reading order, with their display names — one
+ * spelling, since M24 PR3 gave `ReadinessPanel` a second consumer (the
+ * dashboard's estate-checks card): two surfaces naming the same analysis
+ * differently would read as two different checks.
+ */
+export const SECTIONS: readonly AnalysisSection[] = [
+  {
+    key: 'missingDocuments',
+    title: 'Documents',
+    blurb: 'Which instruments are on file, and whether they are actually in force.',
+  },
+  {
+    key: 'beneficiaryConflicts',
+    title: 'Beneficiaries',
+    blurb: 'Designations that do not add up, and assets that pass outside your trust.',
+  },
+  {
+    key: 'funding',
+    title: 'Trust funding',
+    blurb: 'Assets a trust was meant to hold that are not titled into it.',
+  },
+  {
+    key: 'estateTax',
+    title: 'Estate tax',
+    blurb: 'A gross estimate against federal and state thresholds.',
+  },
+];
 
 /** High first: the order a person should read them in. */
 export const SEVERITY_ORDER: Record<FindingInfo['severity'], number> = {

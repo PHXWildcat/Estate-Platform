@@ -5320,3 +5320,57 @@ password besides.
   no-prefetch rule, and the refusal is rendered honestly as erasure when the
   owner does ask. The window is the erasure grace race and nothing else: a
   closed account cannot hold a session at all.
+
+## 6ss. Threat-model delta — M24 PR3, the dashboard and the cache's auth boundary (2026-08-22)
+
+**THE §6qq CACHE SURVIVED A USER SWITCH, AND THAT IS CLOSED HERE AS DATA.**
+Sign-out and sign-in are both client-side navigations, the cache's entries are
+keyed by OPERATION NAME rather than principal and outlive their subscribers,
+and the only reset was harness-only — so on a shared browser, user B's first
+mount found user A's cached answer and rendered it WITH ZERO FETCHES. `Logout`
+was even the cache suite's own "invalidates nothing" negative control. Today
+the exposure was one email-verification enum; under any future enrollment it
+would have been that enrollment's data, cross-principal. The fix extends the
+§6qq invalidation map: `Login`, `Register` and `Logout` — the mutations that
+can change WHO the answers are about — each invalidate `CACHED_OPERATIONS`
+itself, BY REFERENCE, so every future enrollment inherits the boundary without
+anyone remembering it (`CompletePasswordReset` mints no session; the sign-in
+that follows it is a `Login`). The negative control moved to
+`CancelEmailChange`, and each door has its own behavior test. Found by the PR3
+design fan-out's completeness critic; no lens had asked what clears the cache
+at the auth boundary.
+
+**THE DASHBOARD READS ON THE OWNER'S TERMS.** The home page became the
+dashboard with NO new SDL surface and NO new decrypt class: the session read
+gates every tile read (a signed-out landing spends zero of them — the one
+query it still issues is the self-hiding executor panel's decrypt-free
+`ExecutorCases` probe, the M23 design kept verbatim, which answers a refusal
+and renders nothing); the signed-in mount issues that probe plus the /assets
+page's own sanctioned shape (Assets + NetWorth, the per-valued-row
+`est_value` decrypts) plus decrypt-free reads
+(Documents, Sessions, Passkeys, and the cache-shared EmailVerification); and
+the four readiness analyses — per-row asset decrypts times four, two full
+profile PII fans, a family read, an audit event per analyser — run ON DEMAND,
+once per press of the estate-checks button, never per landing. The enrollment
+set is UNCHANGED: NetWorth and Readiness fail the §6qq bar's first clause
+(decrypt-backed — a cache would make repeat reads invisible to the owner's
+trail), Assets fails its second (parameterized), and Session's `stepUpFresh`
+decays by clock, which no mutation-driven invalidation can announce. The M18
+asset decrypt-bound's page-shape note was re-derived with the dashboard shape;
+the distinct-subjects dimension already suppresses repeat browsing, and
+neither constant moved.
+
+### Residuals
+
+- **[ACCEPTED]** *`Session` is double-read on `/` (the shell's `RailAccount`
+  and the page gate).* Parity with the pre-PR3 page, where `RailAccount` and
+  `SessionCard` each read it. Enrolling `Session` to dedupe fails the bar's
+  spirit: `stepUpFresh` expires by clock and sessions change cross-client with
+  no announcing mutation in this app — two cheap introspections beat a cache
+  that can assert a step-up freshness that lapsed minutes ago.
+- **[ACCEPTED]** *The estate-checks statuses are point-in-time.* A later
+  mutation does not invalidate them; the owner re-runs on demand, and an owner
+  who never presses the button is never analysed — the assistant page remains
+  the full surface. The alternative (stored analysis state with an
+  invalidation surface) contradicts the analyses' own no-stored-state posture
+  and would spend the four-analyser decrypt fan on every landing.

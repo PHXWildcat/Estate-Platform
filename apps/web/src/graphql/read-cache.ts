@@ -56,15 +56,30 @@ void enrolledAreParameterless;
  * defect; a convention asking every future ceremony to remember an
  * invalidate call would rebuild it one ceremony later.
  *
- * Both entries vouch for an address: `VerifyEmail` redeems the verification
- * code, and `CompleteEmailChange` moves the address AND vouches for the new
- * one in the same statement (§6v — redeeming the code proved the mailbox).
- * `CancelEmailChange` and `ResendEmailVerification` are deliberately absent:
- * neither changes what `emailVerification` answers.
+ * The first two entries vouch for an address: `VerifyEmail` redeems the
+ * verification code, and `CompleteEmailChange` moves the address AND vouches
+ * for the new one in the same statement (§6v — redeeming the code proved the
+ * mailbox). `CancelEmailChange` and `ResendEmailVerification` are
+ * deliberately absent: neither changes what `emailVerification` answers.
+ *
+ * THE AUTH BOUNDARY (M24 PR3): `Login`, `Register` and `Logout` each
+ * invalidate EVERY enrolled read — the whole `CACHED_OPERATIONS` list, by
+ * reference, so a future enrollment inherits the boundary without anyone
+ * remembering it. The cache keys answers by operation name, not by principal,
+ * and its entries outlive their subscribers; sign-out and sign-in are both
+ * client-side navigations, so the module survives a user switch. Without
+ * these entries, user B's first mount on a shared browser finds user A's
+ * answer cached and renders it WITH ZERO FETCHES. The three mutations here
+ * are exactly the ones that can change WHO the answers are about
+ * (`CompletePasswordReset` returns only `ok` — it mints no session, and the
+ * sign-in that follows it is a `Login`).
  */
-const INVALIDATED_BY: Partial<Record<OperationName, readonly CachedOperationName[]>> = {
+export const INVALIDATED_BY: Partial<Record<OperationName, readonly CachedOperationName[]>> = {
   VerifyEmail: ['EmailVerification'],
   CompleteEmailChange: ['EmailVerification'],
+  Login: CACHED_OPERATIONS,
+  Register: CACHED_OPERATIONS,
+  Logout: CACHED_OPERATIONS,
 };
 
 type CachedResult = GqlResult<OperationSignatures[CachedOperationName]['data']>;

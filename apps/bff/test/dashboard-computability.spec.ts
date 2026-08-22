@@ -84,8 +84,11 @@ const DASHBOARD: readonly DashboardItem[] = [
     decision: 'in',
     backing: [
       { type: 'Query', field: 'netWorth' },
-      // Money is a decimal STRING end to end; the tile renders through
-      // @estate/money and never parses it to a float.
+      // Money is a decimal STRING end to end; the tile renders through the
+      // web app's own lib/money.ts formatMoney (display-only string grouping
+      // — apps/web deliberately has no runtime workspace deps, so
+      // @estate/money, the backend's arithmetic, is not available to it) and
+      // never parses it to a float.
       { type: 'NetWorth', field: 'totalValue' },
       { type: 'NetWorth', field: 'valuedAssetCount' },
     ],

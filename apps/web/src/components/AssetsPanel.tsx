@@ -3,10 +3,12 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type AssetInfo, type NetWorthInfo } from '../graphql/client';
+import { categoryLabel } from '../lib/categories';
 import { commandEventId, type CommandId } from '../lib/command-id';
 import { messageFor } from '../lib/copy';
 import { formatMoney } from '../lib/money';
 import { formatPct } from '../lib/percent';
+import { STAT_LABEL } from '../lib/stat';
 import { FormField } from './FormField';
 import { FormStatus } from './FormStatus';
 
@@ -36,30 +38,12 @@ type LoadState =
   | { kind: 'error' }
   | { kind: 'ready'; assets: AssetInfo[]; netWorth: NetWorthInfo };
 
-const CATEGORY_LABELS: Record<string, string> = {
-  cash: 'Cash',
-  real_estate: 'Real estate',
-  vehicle: 'Vehicle',
-  business: 'Business',
-  crypto: 'Crypto',
-  life_insurance: 'Life insurance',
-  digital_asset: 'Digital asset',
-  other: 'Other',
-};
-
-function categoryLabel(category: string): string {
-  return CATEGORY_LABELS[category] ?? category;
-}
-
 export const FUNDING_LABELS: Record<string, string> = {
   unfunded: 'Not yet in trust',
   in_progress: 'Retitling under way',
   funded: 'Funded to trust',
   na: 'Trust funding N/A',
 };
-
-/** Uppercase micro-label above a stat figure. */
-const STAT_LABEL = 'text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-muted';
 
 export function AssetsPanel(): ReactElement {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });

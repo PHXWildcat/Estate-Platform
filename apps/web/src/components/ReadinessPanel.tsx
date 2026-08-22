@@ -8,7 +8,14 @@ import {
   type FindingInfo,
   type ReadinessInfo,
 } from '../graphql/client';
-import { findingCopy, sortFindings, STATUS_COPY } from '../lib/findings';
+import {
+  findingCopy,
+  SECTIONS,
+  sortFindings,
+  STATUS_COPY,
+  type AnalysisSection,
+} from '../lib/findings';
+import { STAT_LABEL } from '../lib/stat';
 import { ConsentControls } from './ConsentControls';
 
 /**
@@ -28,35 +35,6 @@ import { ConsentControls } from './ConsentControls';
  * rather than showing an empty list that reads like a clean bill of health.
  */
 
-interface AnalysisSection {
-  readonly key: keyof ReadinessInfo;
-  readonly title: string;
-  readonly blurb: string;
-}
-
-const SECTIONS: readonly AnalysisSection[] = [
-  {
-    key: 'missingDocuments',
-    title: 'Documents',
-    blurb: 'Which instruments are on file, and whether they are actually in force.',
-  },
-  {
-    key: 'beneficiaryConflicts',
-    title: 'Beneficiaries',
-    blurb: 'Designations that do not add up, and assets that pass outside your trust.',
-  },
-  {
-    key: 'funding',
-    title: 'Trust funding',
-    blurb: 'Assets a trust was meant to hold that are not titled into it.',
-  },
-  {
-    key: 'estateTax',
-    title: 'Estate tax',
-    blurb: 'A gross estimate against federal and state thresholds.',
-  },
-];
-
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'signedOut' }
@@ -74,9 +52,6 @@ const SEVERITY_LABEL: Record<FindingInfo['severity'], string> = {
   medium: 'Worth a look',
   info: 'For information',
 };
-
-/** Uppercase micro-label, matching the assets surface. */
-const STAT_LABEL = 'text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-muted';
 
 function FindingRow({ finding }: { finding: FindingInfo }): ReactElement {
   const copy = findingCopy(finding);
