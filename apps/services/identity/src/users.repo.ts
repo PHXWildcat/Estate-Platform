@@ -157,6 +157,25 @@ export class UsersRepo {
    * reaching every copy — including the append-only ones — is the whole reason
    * this repo deletes keys instead of rows.
    *
+   * `password_hash` IS CLEARED, and migration 008 is the argument (M25 PR5).
+   * That migration redacted the verifier from the version shadow in M17 and
+   * said why in a sentence written eight milestones before erasure existed:
+   * `password_hash` "sits outside the envelope and erasure does not reach it.
+   * A row image that survives crypto-shredding must not contain a credential
+   * verifier." The reasoning was right and it was applied to ONE member of the
+   * category — the captured image — while the LIVE column was left to a
+   * milestone that had not been written yet. This is that milestone. An
+   * Argon2id verifier is not the password, but it is derived from a secret its
+   * owner may well have used elsewhere, and an erased account keeping one
+   * forever is the one thing left in this row that a database dump could still
+   * be worked on offline.
+   *
+   * SAFE BECAUSE THE COLUMN IS ALREADY NULLABLE — 001 declares it "NULL if
+   * passkey-only", so passkey-only accounts have lived with a null hash since
+   * M1 and every reader already guards it: `login` and `changePassword` both
+   * refuse on `password_hash === null` before reaching the verifier, and
+   * `updatePasswordHash`'s own allowlist excludes 'closed' anyway.
+   *
    * The `from` allowlist travels in the statement, as `updateStatusFrom`'s
    * does: the claim that made this account eligible was made before the grace
    * period, and a status that moved since must stop the write here rather than
@@ -170,7 +189,10 @@ export class UsersRepo {
   ): Promise<{ id: string; dek_id: string } | null> {
     const rows = await tx.query<{ id: string; dek_id: string }>(
       `UPDATE users
-          SET status = 'closed', email_bidx = $3, updated_at = now()
+          SET status = 'closed',
+              email_bidx = $3,
+              password_hash = NULL,
+              updated_at = now()
         WHERE id = $1 AND deleted_at IS NULL AND status = ANY($2)
        RETURNING id, dek_id`,
       [userId, [...from], emailBidx],

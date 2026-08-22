@@ -4,6 +4,7 @@ import { ERASURE_DOMAINS, type ErasureRequestStatus } from '@estate/contracts';
 import { emailBlindIndex, type FieldCrypto } from '@estate/crypto';
 import type { IdentityConfig } from './config';
 import { Db } from './db';
+import { EmailChangeRepo } from './email-change.repo';
 import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
 import type { PgDekRepository } from './dek.repository';
 import { ErasureRepo, type ErasureRequestRow } from './erasure.repo';
@@ -95,6 +96,7 @@ export class ErasureService {
     private readonly repo: ErasureRepo,
     private readonly events: EventsService,
     private readonly users: UsersRepo,
+    private readonly emailChanges: EmailChangeRepo,
     private readonly sessions: SessionsRepo,
     @Inject(FIELD_CRYPTO) private readonly crypto: FieldCrypto,
     @Inject(DEK_REPOSITORY) private readonly deks: PgDekRepository,
@@ -243,15 +245,20 @@ export class ErasureService {
    *      session can still act.
    *   2. Revoke every session. Until this lands, a request already in flight
    *      can still act.
-   *   3. Destroy the DEK.
+   *   3. Unlink every address this user ever STAGED (M25 PR5). Same category as
+   *      step 1's `email_bidx` — an HMAC under a service-wide key, so the shred
+   *      in step 4 does not reach it — but in `email_changes`, and it runs
+   *      after step 1 rather than inside it so that the ineligibility hand-back
+   *      above still leaves NOTHING destroyed.
+   *   4. Destroy the DEK.
    *
-   * REVERSING 1-2 AND 3 WOULD SILENTLY UN-ERASE THE ACCOUNT. `getOrCreateDek`
+   * REVERSING 1-3 AND 4 WOULD SILENTLY UN-ERASE THE ACCOUNT. `getOrCreateDek`
    * MINTS a key when the user has no active one — that is correct behaviour for
    * every other caller and a disaster for this one. Destroy first and any
    * surviving session that touches an encrypted field gives the account a
    * brand-new DEK, so the row is live again, the ciphertext written after it is
    * readable, and the audit trail says the erasure succeeded. Closing and
-   * revoking first is what makes step 3 the last thing that can happen.
+   * revoking first is what makes step 4 the last thing that can happen.
    *
    * NOTHING HERE ROLLS BACK, so each step is written to be safe to repeat and
    * each is guarded by a re-read of the fact it changes rather than by a flag.
@@ -289,6 +296,17 @@ export class ErasureService {
       await this.events.sessionsRevokedForErasure(request.user_id, revoked.length, request.id);
     }
 
+    // UNCONDITIONAL, NOT INSIDE THE CLOSE BLOCK ABOVE. A request that was
+    // claimed, closed and then interrupted resumes here with `status` already
+    // 'closed', so anything hung off the close guard is skipped on exactly the
+    // path the resume arm exists to serve — the same shape of unreachable
+    // idempotence M25 PR4 found in PR3's own leg. Repeating it is safe: each
+    // run re-indexes to another address nobody holds, and `revoked_at` is
+    // COALESCEd rather than overwritten.
+    await this.db.withTransaction(DRIVER_ACTOR, (tx) =>
+      this.emailChanges.unlinkAllForErasure(tx, request.user_id, this.erasedEmailIndex(), now),
+    );
+
     // The irreversible step, guarded by the fact rather than by a flag: a
     // second run finds `destroyedAt` set and emits nothing, so a retry cannot
     // reset the timestamp or double-file the event.
@@ -305,7 +323,8 @@ export class ErasureService {
   }
 
   /**
-   * The value that replaces `users.email_bidx`.
+   * The value that replaces a live blind index — `users.email_bidx`, and since
+   * M25 PR5 `email_changes.new_email_bidx`.
    *
    * A REAL BLIND INDEX OF AN ADDRESS NOBODY HOLDS, not random bytes. Building
    * it through `emailBlindIndex` means the width, the HMAC key and the purpose

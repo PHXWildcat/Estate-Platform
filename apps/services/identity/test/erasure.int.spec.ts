@@ -36,6 +36,7 @@ import { Client } from 'pg';
 import type { IdentityConfig } from '../src/config';
 import { Db } from '../src/db';
 import { PgDekRepository } from '../src/dek.repository';
+import { EmailChangeRepo } from '../src/email-change.repo';
 import { ErasureRepo } from '../src/erasure.repo';
 import { ErasureService } from '../src/erasure.service';
 import type { EventsService } from '../src/events.service';
@@ -139,6 +140,7 @@ describeIfPg('account erasure requests (auth cluster)', () => {
         },
       } as unknown as EventsService,
       users,
+      new EmailChangeRepo(db),
       new SessionsRepo(db),
       crypto,
       deks,
@@ -378,6 +380,123 @@ describeIfPg('account erasure requests (auth cluster)', () => {
         // including the append-only ones — is why this repo destroys keys
         // instead of rows.
         expect(Object.keys(captured.row_data)).toContain('email_ct');
+      }
+    });
+
+    it('UNLINKS EVERY STAGED ADDRESS TOO — the same category, a second table (M25 PR5)', async () => {
+      // `email_changes.new_email_bidx` is an HMAC under the same service-wide
+      // key as `users.email_bidx`, so the shred does not reach it either, and
+      // `REVOKE DELETE` means the row outlives everything. Left alone, an
+      // erased account still answers "was this address ever staged here" —
+      // the exact question PR3 removed from `users`, asked of a table in the
+      // same cluster.
+      //
+      // M25 PR4's residual sweep filed this under "domains M25 does not
+      // reach". That was wrong, and docs/03 section 6ll is corrected in this PR.
+      const { dekId } = await seedErasable('owner@example.test');
+      const staged = emailBlindIndex(INDEX_KEY, 'moving-to@example.test');
+      const done = emailBlindIndex(INDEX_KEY, 'previous@example.test');
+      await admin.query(
+        `INSERT INTO ${schema}.email_changes
+           (user_id, new_email_ct, new_email_bidx, dek_id, code_sha256, expires_at, completed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NULL),
+                ($1, $2, $7, $4, $5, $6, $8)`,
+        [
+          user,
+          Buffer.from('ct'),
+          staged,
+          dekId,
+          Buffer.from('sha'),
+          new Date(NOW.getTime() + 3_600_000),
+          done,
+          new Date(NOW.getTime() - 86_400_000),
+        ],
+      );
+
+      // POSITIVE CONTROL: both indexes really resolve to their addresses
+      // first, so the inequality below is this erasure and not a fixture that
+      // never wrote them.
+      const before = await admin.query<{ new_email_bidx: Buffer }>(
+        `SELECT new_email_bidx FROM ${schema}.email_changes WHERE user_id = $1 ORDER BY created_at`,
+        [user],
+      );
+      expect(before.rows.map((r) => r.new_email_bidx.toString('hex')).sort()).toEqual(
+        [staged.toString('hex'), done.toString('hex')].sort(),
+      );
+
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+      await service.runDueErasures(NOW);
+
+      const after = await admin.query<{
+        new_email_bidx: Buffer;
+        revoked_at: Date | null;
+        completed_at: Date | null;
+      }>(
+        `SELECT new_email_bidx, revoked_at, completed_at FROM ${schema}.email_changes
+          WHERE user_id = $1 ORDER BY created_at`,
+        [user],
+      );
+      expect(after.rows).toHaveLength(2);
+      const hexes = after.rows.map((r) => r.new_email_bidx.toString('hex'));
+      // Neither address is answerable any more...
+      expect(hexes).not.toContain(staged.toString('hex'));
+      expect(hexes).not.toContain(done.toString('hex'));
+      // ...and the replacement is a real blind index of the right WIDTH, not
+      // zeroes or random bytes, or every erased row would be identifiable by
+      // the shape of its own column.
+      for (const row of after.rows) {
+        expect(row.new_email_bidx).toHaveLength(staged.length);
+      }
+      // The live row is retired; the completed one keeps its own history,
+      // because it was completed and not revoked and this table is evidence.
+      expect(after.rows.filter((r) => r.completed_at === null)[0]?.revoked_at).toEqual(NOW);
+      expect(after.rows.filter((r) => r.completed_at !== null)[0]?.revoked_at).toBeNull();
+    });
+
+    it('CLEARS THE CREDENTIAL VERIFIER, which the shred cannot reach (M25 PR5)', async () => {
+      // Migration 008 made this argument in M17, about the version shadow:
+      // `password_hash` "sits outside the envelope and erasure does not reach
+      // it. A row image that survives crypto-shredding must not contain a
+      // credential verifier." The reasoning was right and was applied to one
+      // member of the category. This is the live column.
+      //
+      // It matters because everything else in this row is either destroyed with
+      // the DEK or is an opaque identifier. An Argon2id verifier is neither: it
+      // is derived from a secret its owner may have used elsewhere, and it is
+      // the one value left that a database dump could still be worked on
+      // offline, forever, for an account that asked to be erased.
+      await seedErasable('verifier@example.test');
+      await admin.query(`UPDATE ${schema}.users SET password_hash = $2 WHERE id = $1`, [
+        user,
+        '$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ]);
+      // POSITIVE CONTROL: it is really there before the erasure, so the null
+      // below is this UPDATE doing it and not a fixture that never set it.
+      const before = await admin.query<{ password_hash: string | null }>(
+        `SELECT password_hash FROM ${schema}.users WHERE id = $1`,
+        [user],
+      );
+      expect(before.rows[0]?.password_hash).toContain('argon2id');
+
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+      await service.runDueErasures(NOW);
+
+      const after = await admin.query<{ password_hash: string | null }>(
+        `SELECT password_hash FROM ${schema}.users WHERE id = $1`,
+        [user],
+      );
+      expect(after.rows[0]?.password_hash).toBeNull();
+
+      // AND THE SHADOW KEEPS NONE EITHER — migration 008's half of the same
+      // rule, still holding after this change touches the same statement.
+      const captured = await admin.query<{ row_data: Record<string, unknown> }>(
+        `SELECT row_data FROM ${schema}.users_versions ORDER BY version_seq`,
+      );
+      expect(captured.rows.length).toBeGreaterThan(0);
+      for (const row of captured.rows) {
+        expect(Object.keys(row.row_data)).not.toContain('password_hash');
       }
     });
 

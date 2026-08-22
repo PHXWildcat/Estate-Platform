@@ -116,6 +116,58 @@ export class EmailChangeRepo {
   }
 
   /**
+   * ERASURE (M25 PR5): unlink every staged address this user ever had, and
+   * retire anything still live.
+   *
+   * WHY THIS TABLE IS IN THE CATEGORY AND WAS MISSED. `new_email_bidx` is an
+   * HMAC under the same service-wide key as `users.email_bidx` — outside the
+   * per-user envelope, so destroying the DEK does not reach it — and this table
+   * carries `REVOKE DELETE`, so its rows outlive everything. An erased account
+   * therefore stayed answerable to "was this address ever staged here", which
+   * is the same question PR3 went to the trouble of removing from `users`,
+   * asked of a table in the SAME cluster and the same milestone's reach.
+   *
+   * M25 PR4's own residual sweep filed this under "domains M25 does not reach",
+   * which was wrong. `contacts` and `plaid_items` genuinely are other
+   * services'; this table is identity's own. The three were grouped by COLUMN
+   * NAME and the ownership question was never asked, which is exactly how a
+   * live gap ended up inside a residual that read as complete. The correction
+   * is in docs/03 §6ll.
+   *
+   * `new_email_ct` IS LEFT ALONE for `users.email_ct`'s reason — it is sealed
+   * under the DEK this erasure destroys, so the shred does reach it.
+   *
+   * A COMPLETED CHANGE IS NOT RETIRED, because it was not revoked and this
+   * table is evidence. Only the live row (and any already-retired one, which
+   * keeps its own timestamp) is touched — the partial unique index is on
+   * `revoked_at IS NULL AND completed_at IS NULL`, so a completed row is not
+   * occupying the slot and needs nothing done to it beyond the unlink.
+   *
+   * ONE REPLACEMENT VALUE FOR ALL THE USER'S ROWS is sufficient and stated so
+   * nobody has to wonder: the rows are already tied to each other by `user_id`,
+   * which erasure does not remove, so distinct values would hide nothing that
+   * is not already visible.
+   */
+  async unlinkAllForErasure(
+    tx: Queryable,
+    userId: string,
+    replacement: Buffer,
+    now: Date,
+  ): Promise<number> {
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE email_changes
+          SET new_email_bidx = $2,
+              revoked_at = CASE WHEN completed_at IS NULL
+                                THEN COALESCE(revoked_at, $3)
+                                ELSE revoked_at END
+        WHERE user_id = $1
+      RETURNING id`,
+      [userId, replacement, now],
+    );
+    return rows.length;
+  }
+
+  /**
    * The caller's live change, whatever its usability — the service decides
    * what is redeemable, so every dead reason collapses to one refusal in one
    * place. At most one row can match (the partial unique index).
