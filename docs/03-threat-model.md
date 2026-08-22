@@ -3297,12 +3297,16 @@ SERVER rather than a boolean passed between siblings.
 
 ### Residuals
 
-- **[OWNER: M24]** *The app-shell `UnverifiedAddressBanner` goes stale until the next
-  navigation.* It lives outside the page's tree and re-reads on `pathname`
-  change only, so after a completed change it can keep asking for a
-  confirmation that has just happened. The harmless direction — it nags about
-  something already done rather than hiding a real gap — and closing it
-  properly needs a shared client cache this app does not have.
+- **[CLOSED: §6qq]** ~~*The app-shell `UnverifiedAddressBanner` goes stale until the next
+  navigation.*~~ **CLOSED by M24 PR1 (§6qq)**, which built the shared client
+  read cache this line said the app does not have. The banner subscribes
+  through it; the transport announces every successful mutation; and both
+  vouching ceremonies — `VerifyEmail`, and `CompleteEmailChange`, which
+  vouches in the same statement that switches — invalidate the read, so the
+  banner re-ASKS the server without waiting for a navigation. Its
+  per-navigation freshness is otherwise unchanged, and the authority stays the
+  server: an invalidation discards an answer and asks again, never patches
+  one.
 - **[OWNER: M24]** *No surface shows the address currently on file.* Neither `session` nor the
   verification query returns it, so the "if it's the one you already sign in
   with" reading of identity's conflated `invalid_request` cannot be pre-empted
@@ -5188,3 +5192,54 @@ something writes to it, which is why this is here and not in a comment.
   and silently wrong the day it gets a writer. No fence derives "tables holding
   an out-of-envelope digest" from the DDL, so nothing would notice; the
   honest statement is that this rests on the reviewer of that future writer.
+
+## 6qq. Threat-model delta — M24 PR1, the shared client read cache (2026-08-21)
+
+**A CACHE IS AN AUDIT-EVASION PRIMITIVE UNLESS ENROLLMENT IS A CONTROL, which
+is why a frontend convenience gets a threat-model delta at all.** Every
+content/PII read in this platform spends a LOGGED KMS decrypt on the owner's
+trail; a client cache that served one from memory would make the repeat read
+invisible to that trail — the audited-decrypt UI constraint, violated by a
+mechanism rather than a mistake. So the cache
+(`apps/web/src/graphql/read-cache.ts`) enrolls reads by ALLOWLIST against a
+written bar: no audited decrypts, no decrypted PII, no variables. The enrolled
+set is pinned EXACTLY by a test (today: `EmailVerification`, an enum), so
+growth is a reviewed argument against the bar, and a compile-time check
+refuses a parameterized enrollment outright.
+
+**INVALIDATION IS STRUCTURAL — the transport announces, no ceremony
+remembers.** `gqlRequest` announces every successful MUTATION from the one
+place all mutations pass through; the cache maps announcements to reads as
+data (`VerifyEmail` and `CompleteEmailChange` → `EmailVerification` — both
+vouch for an address; cancel and resend deliberately absent — neither changes
+the answer). A refused mutation announces nothing, `SESSION_RENEWED` included:
+nothing was performed. The rejected design — each ceremony call site
+remembering an invalidate call — is the forgot-to-tell-the-reader class the
+§6v banner residual WAS.
+
+**THE AUTHORITY STAYS THE SERVER.** An invalidation discards an answer and
+re-asks; it never patches a value. A known-wrong answer (invalidated) stops
+rendering before the re-read lands; a merely-old one (navigation revalidate)
+keeps rendering until it does. Supersede tokens keep an answer fetched BEFORE
+a mutation from landing AFTER its invalidation, including when no subscriber
+is mounted to trigger a correcting refetch.
+
+**THE §6v BANNER-STALENESS ITEM IS CLOSED BY THIS DELTA.** The app-shell
+`UnverifiedAddressBanner` subscribing through the cache is the capability's
+first consumer, and the closure was driven live in that item's own scenario
+(docs/04, M24 PR1 record).
+
+### Residuals
+
+- **[ACCEPTED]** *The cache is tab-scoped: a ceremony completed in another tab
+  is not seen until this tab's next navigation.* The announcement channel is
+  in-process, and wiring a BroadcastChannel for it would add a cross-tab
+  invalidation path for one banner's edge case. Pre-cache behavior was
+  identically stale across tabs, and the direction is harmless — a banner
+  nagging about something already done, never hiding a real gap.
+- **[ACCEPTED]** *The enrollment bar is enforced by review, not derived.*
+  Whether an operation is an audited decrypt is a fact about the SERVICES, and
+  no client-side fence can derive it — the pinned-set test makes growth
+  visible and deliberate, which is the reviewable half; judging a candidate
+  against the bar stays with the reviewer reading the written bar beside the
+  diff.

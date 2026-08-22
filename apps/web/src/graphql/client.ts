@@ -12,6 +12,7 @@
  *   and the UI maps codes to its own copy.
  */
 import manifest from '../../persisted-manifest.json';
+import { notifyOperationSuccess } from './operation-events';
 import { operations, type OperationName } from './operations';
 
 export const GQL_ERROR_CODES = [
@@ -745,7 +746,12 @@ export interface PermissionGrantInfo {
 
 type EmptyVariables = Record<string, never>;
 
-interface OperationSignatures {
+/**
+ * Exported for the shared read cache (M24 PR1), which needs an operation's
+ * `data` shape to type what it serves — a TYPE-ONLY dependency; the transport
+ * never imports the cache.
+ */
+export interface OperationSignatures {
   Register: {
     variables: { email: string; password: string };
     data: { register: { ok: boolean } };
@@ -1405,6 +1411,23 @@ function refreshSession(): Promise<RefreshOutcome> {
  * looping would hammer a dead credential.
  */
 export async function gqlRequest<Name extends OperationName>(
+  operation: Name,
+  variables: OperationSignatures[Name]['variables'],
+): Promise<GqlResult<OperationSignatures[Name]['data']>> {
+  const result = await performRequest(operation, variables);
+  if (result.ok && !isQuery(operation)) {
+    // A mutation SUCCEEDED, so some cached read may now be describing the
+    // world it just changed. Announced from the one place every mutation
+    // passes through, so no ceremony call site is trusted to remember it —
+    // the §6v banner residual was exactly that forgotten call. Queries never
+    // announce (a read changes nothing), and a refused mutation announces
+    // nothing either: SESSION_RENEWED means it was never performed.
+    notifyOperationSuccess(operation);
+  }
+  return result;
+}
+
+async function performRequest<Name extends OperationName>(
   operation: Name,
   variables: OperationSignatures[Name]['variables'],
 ): Promise<GqlResult<OperationSignatures[Name]['data']>> {

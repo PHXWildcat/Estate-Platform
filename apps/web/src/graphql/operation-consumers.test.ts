@@ -65,14 +65,24 @@ describe('every GraphQL operation has a product caller', () => {
   const allCode = files.map(codeLines).join('\n');
   const names = Object.keys(operations);
 
-  function callersOf(name: string): number {
+  function occurrencesOf(needle: string): number {
     let count = 0;
-    let index = allCode.indexOf(`gqlRequest('${name}'`);
+    let index = allCode.indexOf(needle);
     while (index !== -1) {
       count += 1;
-      index = allCode.indexOf(`gqlRequest('${name}'`, index + 1);
+      index = allCode.indexOf(needle, index + 1);
     }
     return count;
+  }
+
+  /**
+   * TWO SPELLINGS OF "a product caller", since M24 PR1: a direct
+   * `gqlRequest('X', …)` and a shared-cache subscription `useSharedRead('X', …)`.
+   * The cache's own internal `gqlRequest(name, {})` is generic and correctly
+   * counts for nothing — a consumer is a call site that NAMES the operation.
+   */
+  function callersOf(name: string): number {
+    return occurrencesOf(`gqlRequest('${name}'`) + occurrencesOf(`useSharedRead('${name}'`);
   }
 
   it('finds no operation without a caller', () => {
@@ -112,5 +122,11 @@ describe('every GraphQL operation has a product caller', () => {
     // And the one this fence was built for: Refresh's caller is the client's
     // own refreshSession, which goes through the public gqlRequest entry.
     expect(callersOf('Refresh')).toBeGreaterThanOrEqual(1);
+    // Positive control for the SECOND spelling (M24 PR1): the app-shell
+    // banner subscribes to EmailVerification through the shared read cache.
+    // Without this, the useSharedRead half of the matcher could go blind —
+    // matching nothing — while every operation stayed green through its
+    // gqlRequest count.
+    expect(occurrencesOf(`useSharedRead('EmailVerification'`)).toBeGreaterThanOrEqual(1);
   });
 });

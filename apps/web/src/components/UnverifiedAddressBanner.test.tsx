@@ -1,14 +1,20 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { UnverifiedAddressBanner } from './UnverifiedAddressBanner';
 import { gqlRequest } from '../graphql/client';
+import { notifyOperationSuccess } from '../graphql/operation-events';
+import { resetSharedReadsForTests } from '../graphql/read-cache';
 
 jest.mock('../graphql/client', () => ({ gqlRequest: jest.fn() }));
-jest.mock('next/navigation', () => ({ usePathname: (): string => '/assets' }));
+
+let mockPathname = '/assets';
+jest.mock('next/navigation', () => ({ usePathname: (): string => mockPathname }));
 
 const mockedRequest = gqlRequest as unknown as jest.Mock;
 
 beforeEach(() => {
   mockedRequest.mockReset();
+  mockPathname = '/assets';
+  resetSharedReadsForTests();
 });
 
 describe('UnverifiedAddressBanner', () => {
@@ -52,12 +58,50 @@ describe('UnverifiedAddressBanner', () => {
 
   it('asks once per render, and never polls', async () => {
     // The read costs identity a notifications round trip, which is exactly why
-    // it is not a field on the session resolver that backs every request.
+    // it is not a field on the session resolver that backs every request. The
+    // shared cache must not change how often the server is asked — one mount,
+    // one question.
     mockedRequest.mockResolvedValue({ ok: true, data: { emailVerification: 'UNVERIFIED' } });
     render(<UnverifiedAddressBanner />);
 
     await screen.findByText(/isn’t confirmed/);
     expect(mockedRequest).toHaveBeenCalledTimes(1);
     expect(mockedRequest).toHaveBeenCalledWith('EmailVerification', {});
+  });
+
+  it('re-asks on navigation — the documented freshness, preserved through the cache', async () => {
+    mockedRequest.mockResolvedValue({ ok: true, data: { emailVerification: 'UNVERIFIED' } });
+    const { rerender } = render(<UnverifiedAddressBanner />);
+    await screen.findByText(/isn’t confirmed/);
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+
+    mockPathname = '/documents';
+    rerender(<UnverifiedAddressBanner />);
+
+    await waitFor(() => expect(mockedRequest).toHaveBeenCalledTimes(2));
+    // The old answer is merely old, not known wrong — it keeps rendering
+    // while the re-ask is in flight (exactly the pre-cache behavior).
+    expect(screen.getByText(/isn’t confirmed/)).toBeInTheDocument();
+  });
+
+  it('clears the moment a vouching ceremony completes — NO navigation needed', async () => {
+    // THE §6v RESIDUAL THIS PR CLOSES (docs/03, [OWNER: M24] #1): the banner
+    // lives outside the /security page's tree, so completing verification
+    // used to leave it asking for a confirmation that had just happened until
+    // the next navigation. The transport announces the mutation; the cache
+    // invalidates; the banner re-ASKS — the server stays the authority, no
+    // boolean is passed between trees.
+    mockedRequest.mockResolvedValue({ ok: true, data: { emailVerification: 'UNVERIFIED' } });
+    render(<UnverifiedAddressBanner />);
+    await screen.findByText(/isn’t confirmed/);
+
+    mockedRequest.mockResolvedValue({ ok: true, data: { emailVerification: 'VERIFIED' } });
+    act(() => {
+      notifyOperationSuccess('VerifyEmail');
+    });
+
+    await waitFor(() => expect(screen.queryByText(/isn’t confirmed/)).not.toBeInTheDocument());
+    // A re-read happened — the banner did not merely hide on a guess.
+    expect(mockedRequest).toHaveBeenCalledTimes(2);
   });
 });
