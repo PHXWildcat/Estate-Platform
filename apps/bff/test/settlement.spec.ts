@@ -377,6 +377,25 @@ describe('settlement resolvers', () => {
       expect(gqlBody(res).data?.['reportableEstates']).toBeFalsy();
       expect(gqlBody(res).errors).toBeDefined();
     });
+
+    it('spends NO cross-user PII disclosure when there is nothing to name', async () => {
+      // The profile read emits `contact.link.estates_read` and one
+      // `crypto.field.decrypted` of somebody else's `legal_name`, on THEIR
+      // trail. With no reportable estate there is no row for a name to
+      // decorate, so the disclosure buys nothing and must not happen (M24 PR4).
+      settlement.reportableResult = [];
+      const res = await gql(app, { query: REPORTABLE_QUERY }, { cookie: COOKIE });
+      expect(gqlBody(res).data?.['reportableEstates']).toEqual([]);
+      expect(profile.linkedEstatesCalls).toEqual([]);
+    });
+
+    it('POSITIVE CONTROL: it does spend it when a row needs naming', async () => {
+      // Without this the test above passes for a resolver that never reads
+      // profile at all — which would silently drop every owner's name.
+      const res = await gql(app, { query: REPORTABLE_QUERY }, { cookie: COOKIE });
+      expect(gqlBody(res).data?.['reportableEstates']).toHaveLength(2);
+      expect(profile.linkedEstatesCalls).toHaveLength(1);
+    });
   });
 
   describe('filing a report', () => {

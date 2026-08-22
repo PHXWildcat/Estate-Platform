@@ -22,7 +22,17 @@ export function SignOutButton({ tone = 'surface' }: { tone?: 'surface' | 'rail' 
     setBusy(true);
     setFailed(false);
     const result = await gqlRequest('Logout', {});
-    if (result.ok) {
+    if (result.ok || result.code === 'UNAUTHENTICATED') {
+      // AN ALREADY-DEAD SESSION IS THE OUTCOME THIS BUTTON WANTED (M24 PR4).
+      // A revoked-elsewhere or expired session answers UNAUTHENTICATED here,
+      // and the failure arm below then told the owner "you are still signed
+      // in" — a positive claim that a dead credential is live, made in a
+      // `role="alert"`, to somebody who may have pressed this precisely
+      // because they suspected the session was compromised. Fail closed means
+      // DE-ESCALATE: nothing is left to revoke, so the protective outcome
+      // already holds and the honest answer is the sign-in page. The failure
+      // arm keeps its meaning for what it was written for — a refusal where
+      // the credential SURVIVES.
       router.push('/login');
       router.refresh();
       return;

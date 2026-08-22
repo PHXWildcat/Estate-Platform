@@ -8237,10 +8237,10 @@ scopes M26 splits the two FIRST. Neither absorbs the other by default.
   read is "we could not ask" wearing "nothing is here"'s face (M25 PR4's
   rule). WCAG AA+, dark mode, and a real-browser drive before it is called
   done.
-- **PR4 — the security review**, ending the milestone the way M25 PR5 did:
-  that review found two live gaps after the milestone looked finished, and
-  the question that found them — what else is in this category — gets asked
-  of this milestone too.
+- **PR4 — the security review. SHIPPED** (record below). It ended the
+  milestone the way M25 PR5 did, and by asking the same question — *what else
+  is in this category* — of M24's own controls. Five gaps, every one of them a
+  rule this repo had already written applied to one member of its category.
 
 #### M24 PR0 — the design delta (2026-08-21)
 
@@ -8564,3 +8564,111 @@ screenshot impression — the first dark screenshot's "broken" buttons were a
 transient paint state a re-render dispelled); mobile stacks cleanly; console
 clean; Login after sign-out re-read the cache-shared email-verification fact
 in the same JS session — the auth boundary observed working live.
+
+#### M24 PR4 — the security review (2026-08-22)
+
+**FIVE GAPS, AND EVERY ONE OF THEM WAS A RULE THIS REPO HAD ALREADY WRITTEN
+DOWN, APPLIED TO ONE MEMBER OF ITS CATEGORY.** The M25 PR5 method reused
+verbatim — four file-scoped lenses in worktrees pinned to the merged commit,
+each with a licence to return clean, two refute-by-default verifiers per
+finding, then a completeness critic. Nine claims, seven confirmed 2–0, two
+refuted; the refutations mattered as much as the confirmations, because both
+refuted claims were misreadings of the SCOPE of a real mechanism, and getting
+that scope right is what made the headline finding a signed-IN exposure rather
+than the signed-out one the doc discusses. docs/03 §6tt holds the deltas.
+
+**THE ONE THAT COST DATA: an audited cross-user PII decrypt on every landing,
+to decorate an empty list.** `executorCases` named its decedents
+unconditionally, so every account that had ever redeemed a contact link spent
+one `contact.link.estates_read` plus one `crypto.field.decrypted` of somebody
+else's `legal_name` — on THAT person's trail, naming the reader as actor —
+every time they opened the home page, for a panel that rendered nothing. PR3
+did not create the volume (the panel is M23's) but it moved the panel onto the
+page everybody lands on. The rule against exactly this was already written four
+functions away, in `reportableEstates`' own comment, and enforced in NEITHER
+member: that resolver's `Promise.all` spent the same disclosure before knowing
+whether a row would use it. A comment that states a rule it does not enforce is
+the shape to look for; both resolvers now read the spine first and return early.
+
+**THE ONE THAT WOULD HAVE READ AS A LIE: a security-state indicator stale in
+the permissive direction.** PR3's escalation collapsed the page and reached
+nothing else, so the rail kept saying "Signed in" beside a page that had given
+up — and its Sign-out control then said "you are still signed in" about an
+already-revoked session, in a `role="alert"`, to somebody who may have pressed
+it because they suspected compromise. Fixed as ONE mechanism, not three
+sentences: the transport announces `sessionEnded` from the single point where a
+refresh is REFUSED (an unavailable refresh announces nothing — otherwise an
+outage signs people out, which the third rail test pins), the rail subscribes,
+and Logout treats a dead session as the outcome it wanted.
+
+**THE ONE THAT HAD ALREADY BEEN FOUND TWICE.** `mfaLevel` is the session's
+factor level; M20 fixed the enum and left the wording, PR3's drive fixed
+`SessionCard` and left /security. The chips now have one implementation for
+both surfaces, and the enrolment button stopped branching its LABEL on a
+session field — that branch offered a TOTP-holding owner a first enrolment and
+`SecondFactorGate` refused them, into the one of its two callers that named no
+next step. The test that had kept the wording green was named for a property
+its fixture could not decide (`mfaLevel: 'NONE'` is byte-identical for a
+factorless account and a TOTP-holding one on a password-only session) — the
+disagreeing arm is now the fixture, and the refusal carries the fact the page
+cannot know.
+
+**PLUS the operator console's revealed distribution amounts surviving one of
+the two exits from the case screen** (an undercounted trail and a stale figure
+a reviewer could approve against — both exits and the signed-out arm now share
+one `leaveCase()`), **and the reveal button still carrying the native
+`disabled`** that PR3's own review replaced with `aria-disabled` on its new
+card and never carried back to the control the lesson was learned from.
+
+**NINE MUTATIONS, each killed by exactly its named assertion.** Removing the
+`executorCases` guard reddens `settling NOTHING costs no cross-user
+disclosure at all` with its positive control green and 25 siblings passing;
+`backControl` bypassing `leaveCase` reddens the failed-case-exit test alone;
+the signed-out arm keeping the map reddens the signed-out test alone;
+unsubscribing the rail, announcing on ANY unauthenticated (which reddens the
+OUTAGE test — the guard's own direction), reverting Logout's arm, flattening
+the dashboard's `ended` flag, restoring the native `disabled`, and restoring
+the account-claiming chip label each redden one named test. Restores verified
+with `cmp -s` against scratchpad copies on absolute paths.
+
+**A FENCE THAT NEEDED ITS PARSER DELETED.** `lib/session.test.ts` scans the
+component tree — read from disk, never hand-listed — for the spellings this
+defect has been written in. The first draft exempted matches inside comments so
+the explaining comments could quote the bad wording, and that exemption had a
+bug in it (a block comment's continuation lines do not start with `*`), so the
+fence reported its own documentation. The fix was the repo's own rule: prefer
+an ABSENCE to a filter. Nothing in the component tree spells those strings at
+all, comments included, and the scan is a plain substring search with no parser
+to be wrong.
+
+**THE DRIVE, AND WHAT IT COULD NOT SEE.** Web, BFF and operator-web images
+rebuilt first, then driven at 1280×900 against the live stack. The session
+chips were the point: the drive account holds TOTP and signs in with a password,
+which is the exact state that falsifies the old wording — /security now reads
+"Password-only session" where it used to claim the account had no factor.
+Pressing "Add an authenticator app" on that account produced the refusal
+carrying its remedy ("Adding a factor to an account that has one needs a fresh
+identity check — verify below, then try again"), where the old arm gave the
+generic sentence with no next step. Then the session-death scenario, end to
+end: with the dashboard mounted and showing $250,000.00, the session was
+revoked from a second tab; the mounted tab kept rendering (nothing re-reads
+without interaction, as designed) until "Run the checks" was pressed, at which
+point the rail flipped from "Signed in" to "Sign in" and the page said "Your
+session has ended, so this page stopped showing your estate" — the two claims
+that used to contradict each other, now agreeing. A fresh no-session landing
+showed the hero with NO session-ended notice (the other arm), console clean,
+and signing back in restored the dashboard.
+
+**WHAT THE DRIVE COULD NOT PROVE, said plainly.** The `executorCases`
+disclosure skip is invisible on this stack: the drive account has no linked
+contacts, so `estatesNaming` early-returns with no event whether the guard is
+there or not, and the profile service logs no requests. That fix is proven at
+the BFF layer instead — a call-count assertion on the profile client with its
+own positive control, and a mutation that reddens exactly it. The operator
+console's `leaveCase()` is likewise proven by test rather than by drive: its
+new failed-case-exit test walks the same sequence a review verifier had already
+executed independently (reveal → transient `getCase` 503 → back → reopen), and
+driving it live would need a settlement-operator credential this session does
+not hold. Naming the layer is the point — eleven milestones of drives have
+found what suites could not, and a drive that cannot see a thing must not be
+cited as if it had.

@@ -254,6 +254,23 @@ describe('the tiles', () => {
     expect(screen.queryByText(/\$/)).toBeNull();
     expect(screen.queryByText(/could not load/)).toBeNull();
     expect(screen.queryByText(/This is not a statement/)).toBeNull();
+    // …and it SAYS SO (M24 PR4). The collapse used to hand this person the
+    // anonymous first-visit hero, which states nothing about what happened to
+    // their credential — the likeliest causes being a revocation they
+    // performed elsewhere and an expiry, i.e. the controls working.
+    expect(screen.getByRole('status')).toHaveTextContent(/Your session has ended/);
+  });
+
+  it('a FIRST-TIME visitor is not told a session ended — the two are different facts', async () => {
+    // The other arm, and the reason `ended` exists rather than a bare flag on
+    // the signed-out state: at mount, "no session" and "never had one" are
+    // indistinguishable, and announcing an event that did not happen would be
+    // its own false statement.
+    installGraphqlFetchMock(handlers({ Session: () => jsonResponse({ data: { session: null } }) }));
+    render(<Dashboard />);
+
+    await screen.findByRole('link', { name: 'Create account' });
+    expect(screen.queryByText(/session has ended/)).toBeNull();
   });
 
   it('an EMPTY estate is a real answer, distinct from a failed read', async () => {

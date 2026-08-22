@@ -45,3 +45,48 @@ export function notifyOperationSuccess(operation: OperationName): void {
     }
   }
 }
+
+type SessionEndedListener = () => void;
+
+const sessionEndedListeners = new Set<SessionEndedListener>();
+
+/**
+ * THE SECOND ANNOUNCEMENT, AND IT IS THE SAME ARGUMENT AS THE FIRST (M24 PR4).
+ *
+ * "This session is gone" is a fact about the whole app, and before this it was
+ * learned privately by whichever component happened to make the request that
+ * died. The dashboard's own escalation collapsed the PAGE to its signed-out
+ * arm while the rail — a separate component, one `Session` read at mount, no
+ * subscription — went on rendering a green dot and the word "Signed in" beside
+ * it. The page then asserted two contradictory session states at once, and the
+ * SECURITY-STATE INDICATOR was the wrong one; pressing its Sign-out control
+ * made the page say "you are still signed in" about a session that was already
+ * revoked. Fail closed means DE-ESCALATE.
+ *
+ * Announced from the transport's one refused-refresh point rather than from
+ * each surface's error arm — the same reasoning as the mutation channel above:
+ * a convention asking every future reader to notice a 401 and tell the chrome
+ * is the forgot-to-tell class, one component later.
+ */
+export function onSessionEnded(listener: SessionEndedListener): () => void {
+  sessionEndedListeners.add(listener);
+  return () => {
+    sessionEndedListeners.delete(listener);
+  };
+}
+
+/**
+ * Called by the transport only, and ONLY when the session is known dead: a
+ * refresh that was REFUSED. An unavailable refresh says nothing about the
+ * session (the credential may be perfectly alive behind an outage) and must
+ * never announce, or an outage would sign people out.
+ */
+export function notifySessionEnded(): void {
+  for (const listener of [...sessionEndedListeners]) {
+    try {
+      listener();
+    } catch {
+      // Best-effort, as above.
+    }
+  }
+}
