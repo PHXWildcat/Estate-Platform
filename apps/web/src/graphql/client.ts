@@ -27,6 +27,15 @@ export const GQL_ERROR_CODES = [
   'TEMPLATE_NOT_FOUND',
   /** The content DEK was destroyed. Permanent — never offer a retry (M12). */
   'CONTENT_ERASED',
+  /**
+   * Erasure refused because a death report is open on the account (M25 PR4).
+   * A CONTROL FIRING with a remedy the owner can take, which is why it is not
+   * folded into the refusal below — copy must send them to the case, not to
+   * support.
+   */
+  'OPEN_DEATH_REPORT',
+  /** Erasure refused for any other account status (M25 PR4). */
+  'ERASURE_NOT_PERMITTED',
   /** The document moved on between read and write. Reload, then retry (M12). */
   'VERSION_CONFLICT',
   /** Beneficiary shares for one class would pass 100% (M19 PR3). */
@@ -325,6 +334,19 @@ export type GqlResult<T> = { ok: true; data: T } | { ok: false; code: GqlFailure
  * now derives all five of these unions from the BFF's SDL.
  */
 export type MfaLevel = 'NONE' | 'MFA' | 'STEPUP';
+
+/**
+ * A live account-erasure request (M25 PR4).
+ *
+ * `status` is deliberately a plain string. Identity owns the vocabulary and it
+ * grows; a union here would make a state this build has not met a PARSE
+ * FAILURE, when the honest degradation is "something is in progress, and this
+ * build does not know enough to offer you a button".
+ */
+export interface ErasureRequestInfo {
+  status: string;
+  requestedAt: string;
+}
 
 export interface SessionInfo {
   userId: string;
@@ -1140,6 +1162,28 @@ interface OperationSignatures {
     data: { completeEmailChange: { ok: boolean } };
   };
   CancelEmailChange: { variables: EmptyVariables; data: { cancelEmailChange: { ok: boolean } } };
+  /**
+   * ACCOUNT ERASURE (M25 PR4). All three answer a NULLABLE request rather than
+   * `ok`, and the null carries meaning on each: no request outstanding on the
+   * read, and on the cancel "nothing left to withdraw". A non-null cancel means
+   * the withdrawal did NOT take.
+   *
+   * `status` is a plain string, mirroring the SDL: identity's vocabulary grows,
+   * and a union here would fail to parse a state this build has not met rather
+   * than degrading to "in progress".
+   */
+  AccountErasure: {
+    variables: EmptyVariables;
+    data: { accountErasure: ErasureRequestInfo | null };
+  };
+  RequestAccountErasure: {
+    variables: EmptyVariables;
+    data: { requestAccountErasure: ErasureRequestInfo | null };
+  };
+  CancelAccountErasure: {
+    variables: EmptyVariables;
+    data: { cancelAccountErasure: ErasureRequestInfo | null };
+  };
   RequestPasswordReset: {
     variables: { email: string };
     data: { requestPasswordReset: { ok: boolean } };

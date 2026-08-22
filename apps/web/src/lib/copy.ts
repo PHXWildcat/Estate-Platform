@@ -33,6 +33,15 @@ export const errorCopy: Record<GqlFailureCode, string> = {
   CONTENT_ERASED:
     'This was permanently erased at someone’s request. The record that it existed remains, but ' +
     'what it held can’t be recovered — by us or by anyone.',
+  // TWO REFUSALS, TWO REMEDIES (M25 PR4). Merging these would be the failure
+  // this whole file exists to prevent: one sends the owner somewhere they can
+  // act, the other does not, and a person being told their account cannot be
+  // erased deserves to know a death report is the reason.
+  OPEN_DEATH_REPORT:
+    'We can’t start this while a death report is open on your account. Void that case from your ' +
+    'security page first, then come back.',
+  ERASURE_NOT_PERMITTED:
+    'This account can’t be erased in its current state. Contact support if you think that’s wrong.',
   // Surface-neutral on purpose (M19): the same stale-If-Match refusal now
   // covers documents AND assets, and the remedy is identical — re-read, then
   // decide again. Never auto-retry over someone else's newer change.

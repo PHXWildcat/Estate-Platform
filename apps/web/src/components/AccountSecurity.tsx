@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type ReactElement } from 'react';
+import { AccountErasurePanel } from './AccountErasurePanel';
 import { EmailVerificationPanel } from './EmailVerificationPanel';
 import { SecurityPanel } from './SecurityPanel';
 import { WaitingPeriodPanel } from './WaitingPeriodPanel';
@@ -60,6 +61,13 @@ export function AccountSecurity(): ReactElement {
         it is the setting people revisit least.
       */}
       <WaitingPeriodPanel />
+      {/*
+        M25 PR4, and LAST on purpose. It is the only action on this page that
+        cannot be undone, so it sits below every protection someone might have
+        come here to adjust instead — nobody should meet it on the way to
+        changing a password.
+      */}
+      <AccountErasurePanel />
     </>
   );
 }

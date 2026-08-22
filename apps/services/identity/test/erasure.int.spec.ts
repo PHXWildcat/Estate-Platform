@@ -515,6 +515,82 @@ describeIfPg('account erasure requests (auth cluster)', () => {
       expect(await service.cancel(user, session)).toBeNull();
     });
 
+    it('RESUMES a request the driver claimed and never finished', async () => {
+      // THE CRASH CASE, produced honestly: claim the request through the real
+      // repo — which is exactly the state a process killed between the claim
+      // and the destroy leaves behind — and then ask the driver to sweep.
+      //
+      // Every step of the leg is individually idempotent, but that is worth
+      // nothing if nothing ever re-drives them. An erasure stuck in 'executing'
+      // is the state this whole design exists to prevent: uncancellable by
+      // construction, blocked from being re-requested by the live index, and
+      // holding an account that was promised destruction and did not get it.
+      await seedErasable('resumed@example.test');
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+
+      const claimed = await db.withTransaction('', async (tx) => {
+        const row = await repo.claimDue(tx, new Date(NOW.getTime()), NOW, ['active'], 'identity');
+        await repo.seedDomains(tx, row?.id as string, ERASURE_DOMAINS);
+        return row;
+      });
+      expect(claimed?.status).toBe('executing');
+      audited.length = 0;
+
+      expect(await service.runDueErasures(NOW)).toBe(1);
+      expect(await statusOf()).toBe('closed');
+
+      const { rows } = await admin.query<{ state: string }>(
+        `SELECT p.state FROM ${schema}.erasure_domain_progress p
+           JOIN ${schema}.erasure_requests r ON r.id = p.request_id
+          WHERE r.user_id = $1 AND p.domain = 'identity'`,
+        [user],
+      );
+      expect(rows[0]?.state).toBe('done');
+    });
+
+    it('AN ERASED ACCOUNT CANNOT BE REACHED by a ceremony holding a live code', async () => {
+      // THE §6p PREDICTION, CHECKED RATHER THAN ASSUMED. M17's review recorded
+      // a crypto-shredded DEK at email-change completion surfacing as a 500,
+      // and filed it as a PRECONDITION on this milestone with a guess attached:
+      // "once erasure exists, a shredded account cannot reach a ceremony route
+      // at all". A prediction is not a mechanism, and the milestone that
+      // inherits it owes an answer.
+      //
+      // IT IS TRUE, AND IT RESTS ON TWO SEPARATE THINGS. Session-guarded
+      // ceremonies are unreachable because `findLiveByAccessHash` resolves a
+      // session only for an 'active' or 'deceased_pending' account. The
+      // UNAUTHENTICATED ones — password reset — hold a code that still names a
+      // user id, so a session check protects nothing there; what stops them is
+      // the status allowlist riding inside `updatePasswordHash`'s own UPDATE,
+      // which is the layer this asserts. Named explicitly because the two
+      // guards are at different layers and a test that proved one would look
+      // like it had proved both.
+      await seedErasable('ceremony@example.test');
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+      await service.runDueErasures(NOW);
+
+      // The redeem path's write matches zero rows, which is what turns every
+      // failure on that route into one uniform `invalid_code` rather than a
+      // 500 about a destroyed key.
+      await expect(
+        db.withTransaction('', (tx) => users.updatePasswordHash(tx, user, 'argon2-whatever')),
+      ).resolves.toBe(false);
+
+      // And the request half never resolves the address to begin with.
+      expect(
+        await users.findByEmailBidx(emailBlindIndex(INDEX_KEY, 'ceremony@example.test')),
+      ).toBeNull();
+
+      // POSITIVE CONTROL: the same write succeeds on a live account, so the
+      // refusal above is the allowlist firing and not a broken fixture.
+      await seedUser();
+      await expect(
+        db.withTransaction('', (tx) => users.updatePasswordHash(tx, user, 'argon2-whatever')),
+      ).resolves.toBe(true);
+    });
+
     it('is SAFE TO RE-RUN: a second sweep shreds nothing and files nothing', async () => {
       const { dekId } = await seedErasable('resume@example.test');
       await service.request(user, session);

@@ -371,6 +371,27 @@ export const CANCEL_EMAIL_CHANGE_MUTATION = `mutation CancelEmailChange {
   }
 }`;
 
+export const ACCOUNT_ERASURE_QUERY = `query AccountErasure {
+  accountErasure {
+    status
+    requestedAt
+  }
+}`;
+
+export const REQUEST_ACCOUNT_ERASURE_MUTATION = `mutation RequestAccountErasure {
+  requestAccountErasure {
+    status
+    requestedAt
+  }
+}`;
+
+export const CANCEL_ACCOUNT_ERASURE_MUTATION = `mutation CancelAccountErasure {
+  cancelAccountErasure {
+    status
+    requestedAt
+  }
+}`;
+
 export const REQUEST_PASSWORD_RESET_MUTATION = `mutation RequestPasswordReset($email: String!) {
   requestPasswordReset(email: $email) {
     ok
@@ -1124,6 +1145,9 @@ export const operations = {
   RequestEmailChange: REQUEST_EMAIL_CHANGE_MUTATION,
   CompleteEmailChange: COMPLETE_EMAIL_CHANGE_MUTATION,
   CancelEmailChange: CANCEL_EMAIL_CHANGE_MUTATION,
+  AccountErasure: ACCOUNT_ERASURE_QUERY,
+  RequestAccountErasure: REQUEST_ACCOUNT_ERASURE_MUTATION,
+  CancelAccountErasure: CANCEL_ACCOUNT_ERASURE_MUTATION,
   RequestPasswordReset: REQUEST_PASSWORD_RESET_MUTATION,
   CompletePasswordReset: COMPLETE_PASSWORD_RESET_MUTATION,
   Session: SESSION_QUERY,
