@@ -4786,8 +4786,13 @@ and cannot be edited — recorded below rather than left to be rediscovered.
   undecided, and that category is WIDER than this PR's.* **PR3 ANSWERED IT FOR
   `users.email_bidx` ONLY** — a real blind index of `<uuid>@erased.invalid`, so
   the width, key and purpose label cannot drift and the value cannot collide.
-  `contacts.email_bidx`, `plaid_items` and `email_changes.new_email_bidx` are
-  untouched and belong to the domains M25 does not reach. The original text
+  `contacts.email_bidx` and `plaid_items` are untouched and belong to the
+  domains M25 does not reach. **`email_changes.new_email_bidx` DID NOT, AND
+  THAT SENTENCE WAS WRONG — CORRECTED BY PR5 (§6pp), WHICH CLOSES IT.** The
+  three were grouped by column name; `email_changes` is identity's own table,
+  in identity's own cluster, reachable by the leg PR3 already shipped. Grouping
+  a category by what its members are CALLED rather than by who OWNS them is how
+  a live gap left a residual sweep reading as complete. The original text
   follows.
   * This PR stops the
   CAPTURE; it does not say what erasure writes to `users.email_bidx`, which is
@@ -5093,3 +5098,93 @@ catch and no timeout can name.
   would build half the fan-out in the wrong PR. §6nn holds the ordering
   constraint that makes it delicate.
 
+
+## 6pp. Threat-model delta — M25 PR5, the security review (2026-08-21)
+
+**THE CORPUS, STATED, because a review whose reach is unstated reads as
+complete no matter what it covered.** Everything M25 shipped: identity's
+erasure controller, service, repos, driver and migrations 014-015; the
+contracts vocabulary and its fence; the BFF's erasure client, schema and
+resolvers; the web panel and its copy; and — because the review's first
+question was "what else is in this category" — every LIVE column in identity's
+own cluster that sits outside the per-user envelope. Not covered: the seven
+domains with no erasure transport, which have no code to review yet.
+
+**FINDING 1 — THE CREDENTIAL VERIFIER SURVIVED THE SHRED.** `users.password_hash`
+is a plain TEXT Argon2id verifier, outside the envelope, so destroying the DEK
+never reached it. An erased account's row still held a value derived from a
+secret its owner may have used elsewhere, workable offline, forever. What makes
+this one worth recording is that THE ARGUMENT WAS ALREADY IN THE TREE: migration
+008 excluded `password_hash` from the `users` version shadow in M17 with exactly
+this reasoning, and nobody applied it to the live column. A rule applied to one
+member of a category is a rule half-applied, and here the two members were four
+lines apart in the same file. `closeAndUnlinkEmail` now nulls it in the same
+statement that closes the account — the column was already nullable and every
+reader already guards it, so this cost nothing but noticing.
+
+**FINDING 2 — A SECOND LIVE BLIND INDEX, AND A RESIDUAL SWEEP THAT SAID
+OTHERWISE.** `email_changes.new_email_bidx` is an HMAC under the same
+service-wide key as `users.email_bidx`; the shred does not reach it, and the
+table carries `REVOKE DELETE`, so its rows outlive everything. An erased account
+still answered "was this address ever staged here" — the exact question PR3 went
+to the trouble of removing from `users`. §6ll's PR3 entry filed it under
+"belongs to the domains M25 does not reach", beside `contacts.email_bidx` and
+`plaid_items`, which are genuinely other services'. THE GROUPING WAS BY COLUMN
+NAME AND THE OWNERSHIP QUESTION WAS NEVER ASKED: `email_changes` is identity's
+own table, in identity's own cluster, reachable by the leg PR3 had already
+shipped. §6ll is corrected in place. The destroy leg now re-indexes every row of
+the user's, live or historical, to a blind index of `<uuid>@erased.invalid` —
+the same construction as `users.email_bidx` for the same reason, so no erased
+row is identifiable by the shape of its own column. A COMPLETED change keeps its
+`revoked_at` NULL: this table is evidence, and a completed change was not
+revoked.
+
+**THE UNLINK RUNS OUTSIDE THE CLOSE BLOCK, which is the whole of its
+correctness.** Hung off `status !== 'closed'` it would be skipped on exactly the
+path PR4's resume arm exists to serve — claimed, closed, interrupted. That is
+the same shape of unreachable idempotence PR4 found in PR3's leg, one milestone
+later, so it is asserted by a test that first proves the close really was
+skipped. It also runs AFTER the ineligibility hand-back, so the "nothing has
+been destroyed, hand the claim back" promise above it stays true.
+
+**A FENCE ON WHO MAY MINT A STEP-UP.** `grantStepUp` widens
+`sessions.stepup_expires_at`, which is what stands between a taken session and
+vault open, document generation, erasure and every trustee change. Two callers
+may do it and both are FACTOR PROOFS — TOTP verification and a passkey
+assertion. The fence anchors on the injected TYPE (`SessionsRepo`), not on a
+field name a caller chose, asserts set EQUALITY rather than a floor, and
+separately asserts that the five REDEMPTION services — which authenticate
+somebody without a second factor — contain no call to it at all. An
+unauthenticated redeem route granting step-up is the shape of the M14-era
+finding this repo has already met once; it is now data plus a test rather than
+prose. The window itself is pinned to a single extracted assignment expression,
+because the first draft asserted the file merely CONTAINED `STEPUP_WINDOW_MS`
+and a surviving mutation satisfied that from the import line.
+
+**A NON-FINDING, RECORDED BECAUSE THE ABSENCE IS THE ANSWER.**
+`devices.fingerprint_hash` is the third out-of-envelope digest in identity's
+cluster and it has NO WRITER anywhere in the service — the table is dormant. It
+needs no erasure leg, and the reason it needs none will stop being true the day
+something writes to it, which is why this is here and not in a comment.
+
+### Residuals
+
+- **[ACCEPTED]** *Repeatedly arming and withdrawing an erasure floods the audit
+  trail.* Each press emits `account_erasure_requested` or `_cancelled`, and
+  nothing bounds the pair. Accepted rather than fixed: the ceremony is step-up
+  gated on the arming half, the events carry entity IDs and enums only, and a
+  rate refusal here would have to be told apart from the two refusals §6oo
+  keeps deliberately distinct. The cost of getting a bound wrong on this route
+  is an owner who cannot withdraw, which is the direction that must never fail.
+- **[OWNER: M26]** *The out-of-envelope category is closed for identity's
+  cluster ONLY.* `users.email_bidx`, `users.password_hash` and
+  `email_changes.new_email_bidx` are the live members identity owns and all
+  three are now reached. `contacts.email_bidx`, `plaid_items`,
+  `document_search_tokens.token_bidx` and whatever the other five domains hold
+  are not — and this PR's finding 2 is the evidence that the way to be wrong
+  about that list is to build it from column names. Each domain's erasure leg
+  owns enumerating its OWN out-of-envelope columns.
+- **[ACCEPTED]** *A dormant `devices` table has no erasure leg.* Correct today
+  and silently wrong the day it gets a writer. No fence derives "tables holding
+  an out-of-envelope digest" from the DDL, so nothing would notice; the
+  honest statement is that this rests on the reviewer of that future writer.

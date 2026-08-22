@@ -6839,7 +6839,7 @@ decision booked as progress is how a queue stays untouched.**
 | M22 | Settlement reporter/owner surface | **COMPLETE** (PR1–PR4c). `EXEMPT_SETTLEMENT_REPORTING` is deleted; every reporter/owner route has a consumer |
 | M23 | Executor surface | **COMPLETE** (PR1–PR4b, #141). `EXEMPT_EXECUTOR_CASEWORK` is deleted and every executor-casework route names a consumer. This row read "In progress (PR1, PR2, PR3)" after the milestone finished, which is the same stale-prose defect the exemption reasons keep producing |
 | M24 | Dashboard, computable subset | Flip-trigger **CHECKED 2026-08-21 and NOT FIRED** — no demo date, no signed customer — so this row is a proposal, not a decision. Re-sequenced BEHIND M25; reasoning in the M25 section below. Owns two docs/03 §6v residuals already |
-| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below.** PR0-PR4 shipped: the boundary, the capture redaction, the decision record, the destroy leg, the owner's surface. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
+| M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below. COMPLETE.** PR0-PR5 shipped: the boundary, the capture redaction, the decision record, the destroy leg, the owner's surface, the security review. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. PR5 closed the out-of-envelope category for identity's cluster (`password_hash`, `email_changes.new_email_bidx`) — every other domain's leg owns enumerating its OWN, and docs/03 §6pp says why building that list from column names is how PR4's sweep got it wrong. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete |
 | M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
 | M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
@@ -7755,10 +7755,16 @@ and no `markDestroyed`, turns it red. Both proved by mutation.
   distinguish. It also does NOT make the `content_erased` arms reachable, which
   that line claimed: those are documents' and settlement's DEKs, in domains M25
   never reaches. Both corrections recorded rather than absorbed.
-- **PR5 — the security review**, plus a `grantStepUp` caller fence. That surface
-  is currently clean — two callers, both real factor proofs — and account
-  erasure raises the cost of it widening from "one zone" (the M15 PR4 handoff
-  escalation) to everything.
+- **PR5 — the security review. SHIPPED** (record below), plus a `grantStepUp`
+  caller fence. That surface is currently clean — two callers, both real factor
+  proofs — and account erasure raises the cost of it widening from "one zone"
+  (the M15 PR4 handoff escalation) to everything. **The fence was the cheap half
+  and the review found two live gaps**, both in the same category and both in
+  identity's own cluster: `users.password_hash` and
+  `email_changes.new_email_bidx` survived the shred. Neither was speculative and
+  neither was new — migration 008 had already written the argument for the first
+  in M17, and PR4's own residual sweep had filed the second under a domain M25
+  does not reach. Recorded rather than absorbed, on the M21 PR2 rule.
 
 **Refusal set, determined by the scope decision:** `deceased_pending`,
 `settlement`, `closed`, and any document under `legal_hold` — which today is a
@@ -8045,3 +8051,54 @@ not (`document_search_tokens`, `document_versions.content_sha256`, and the wider
 live-blind-index category — all in domains M25 never reaches). A residual whose
 named owner has shipped and not done it is worse than an untagged one: it reads
 as covered.
+
+#### M25 PR5 — the security review (2026-08-21)
+
+**THE FENCE THIS PR WAS PLANNED AROUND TOOK AN HOUR; THE REVIEW FOUND TWO LIVE
+GAPS.** `stepup-grant-paths.spec.ts` pins the `grantStepUp` caller set to the
+two factor proofs that may mint one — anchored on the injected TYPE, asserting
+set EQUALITY, and separately asserting that the five redemption services (which
+authenticate somebody WITHOUT a second factor) contain no call to it. Worth
+having; not what the milestone needed. The review's actual question was the one
+CLAUDE.md keeps repeating — *what else is in this category* — asked of "values
+the crypto-shred does not reach", and the answer was two columns in identity's
+own cluster.
+
+**`users.password_hash`, and the argument was already in the tree.** Migration
+008 excluded it from the `users` version shadow in M17 with the exact reasoning:
+it sits outside the envelope, and a row image surviving a shred must not contain
+a credential verifier. That reasoning was applied to the shadow and never to the
+LIVE column, four lines away in the same file. `closeAndUnlinkEmail` nulls it
+now, in the statement that already closes the account.
+
+**`email_changes.new_email_bidx`, and PR4's residual sweep said it was somebody
+else's.** §6ll listed it beside `contacts.email_bidx` and `plaid_items` as
+belonging to the domains M25 does not reach. The other two are genuinely other
+services'; this one is identity's own table, in identity's own cluster,
+reachable by the leg PR3 shipped. **The category had been grouped by column NAME
+and the ownership question was never asked** — which is the more useful finding
+than the column itself, because a residual that names a wrong owner reads as
+covered. §6ll is corrected in place rather than superseded.
+
+**THE PLACEMENT IS THE CORRECTNESS, and it is PR4's lesson applied one milestone
+later.** The unlink runs outside the `status !== 'closed'` block. Inside it, it
+would be skipped on exactly the path the resume arm exists to serve — claimed,
+closed, interrupted — which is the same unreachable idempotence PR4 found in
+PR3's leg. The test proves the close really WAS skipped before asserting the
+unlink happened, and the mutation that moves the call inside the block reddens
+two named tests.
+
+**THREE MUTATIONS, one of which found a hole in the fence rather than in the
+code.** Removing the unlink reddens one named int assertion with 59 green
+alongside it; moving it inside the close block reddens the two placement tests;
+removing `password_hash = NULL` reddens one named assertion carrying a positive
+control that the fixture really wrote a verifier first. The survivor was in the
+step-up window test — it asserted the FILE contained `STEPUP_WINDOW_MS`, which
+the surviving import line satisfies. Re-anchored on the extracted assignment
+expression with a count, then killed.
+
+**A NON-FINDING WORTH THE LINE.** `devices.fingerprint_hash` is the third
+out-of-envelope digest in this cluster and has no writer anywhere in the
+service. The table is dormant, so there is nothing to erase — and that answer
+expires the day something writes to it, which is why it is a residual in §6pp
+and not a comment.

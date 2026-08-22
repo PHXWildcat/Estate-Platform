@@ -29,6 +29,7 @@ import { emailBlindIndex, type FieldCrypto } from '@estate/crypto';
 import type { IdentityConfig } from '../src/config';
 import type { Db, Queryable } from '../src/db';
 import type { PgDekRepository } from '../src/dek.repository';
+import type { EmailChangeRepo } from '../src/email-change.repo';
 import { ErasureService } from '../src/erasure.service';
 import type { ErasureRepo, ErasureRequestRow } from '../src/erasure.repo';
 import type { EventsService } from '../src/events.service';
@@ -68,6 +69,7 @@ function user(over: Partial<UserRow> = {}): UserRow {
 interface Parts {
   repo?: Partial<ErasureRepo>;
   users?: Partial<UsersRepo>;
+  emailChanges?: Partial<EmailChangeRepo>;
   sessions?: Partial<SessionsRepo>;
   crypto?: Partial<FieldCrypto>;
   deks?: Partial<PgDekRepository>;
@@ -80,6 +82,8 @@ interface Harness {
   log: string[];
   seeded: ErasureDomain[][];
   bidx: Buffer[];
+  /** The replacements written over `email_changes.new_email_bidx` (PR5). */
+  stagedBidx: Buffer[];
   cutoffs: Date[];
 }
 
@@ -93,6 +97,7 @@ function harness(parts: Parts = {}): Harness {
   const log: string[] = [];
   const seeded: ErasureDomain[][] = [];
   const bidx: Buffer[] = [];
+  const stagedBidx: Buffer[] = [];
   const cutoffs: Date[] = [];
 
   const db = {
@@ -144,6 +149,14 @@ function harness(parts: Parts = {}): Harness {
     ...parts.users,
   } as unknown as UsersRepo);
 
+  const emailChanges = tracked('emailChanges', {
+    unlinkAllForErasure: (_tx: unknown, _id: string, b: Buffer) => {
+      stagedBidx.push(b);
+      return Promise.resolve(0);
+    },
+    ...parts.emailChanges,
+  } as unknown as EmailChangeRepo);
+
   const sessions = tracked('sessions', {
     revokeAllForUser: () => Promise.resolve([SESSION]),
     ...parts.sessions,
@@ -179,11 +192,23 @@ function harness(parts: Parts = {}): Harness {
   } as unknown as IdentityConfig;
 
   return {
-    service: new ErasureService(db, repo, events, users, sessions, crypto, deks, config, () => NOW),
+    service: new ErasureService(
+      db,
+      repo,
+      events,
+      users,
+      emailChanges,
+      sessions,
+      crypto,
+      deks,
+      config,
+      () => NOW,
+    ),
     audited,
     log,
     seeded,
     bidx,
+    stagedBidx,
     cutoffs,
   };
 }
@@ -440,6 +465,37 @@ describe('the destroy leg (no database)', () => {
     expect(h.audited).toEqual([]);
     // It still finishes the ledger — that is what makes the retry useful.
     expect(h.log).toContain('repo.markDomainDone');
+  });
+
+  it('UNLINKS STAGED ADDRESSES ON A RESUME, where the close block is skipped', async () => {
+    // The placement test for M25 PR5. Hung off the `status !== 'closed'` guard,
+    // the unlink would be skipped on exactly the path the resume arm exists to
+    // serve: a request claimed, closed, then interrupted before its domain was
+    // marked done. That is the shape of unreachable idempotence PR4 found in
+    // PR3's own leg, so it is asserted rather than trusted.
+    const h = harness({
+      repo: oneDue(),
+      users: { findById: () => Promise.resolve(user({ status: 'closed' })) },
+    });
+    await h.service.runDueErasures(NOW);
+    // Anti-vacuity in the same breath: the close really WAS skipped, so this is
+    // the resume path and not the ordinary one wearing its name.
+    expect(h.log).not.toContain('users.closeAndUnlinkEmail');
+    expect(h.log).toContain('emailChanges.unlinkAllForErasure');
+    expect(h.stagedBidx).toHaveLength(1);
+  });
+
+  it('UNLINKS STAGED ADDRESSES BEFORE THE SHRED, and never after it', async () => {
+    // Same reason the close and the revoke come first: nothing that can still
+    // be needed may run after the one step that cannot be undone.
+    const h = harness({ repo: oneDue() });
+    await h.service.runDueErasures(NOW);
+    const unlinked = h.log.indexOf('emailChanges.unlinkAllForErasure');
+    expect(unlinked).toBeGreaterThan(h.log.indexOf('sessions.revokeAllForUser'));
+    expect(h.log.indexOf('crypto.destroyDek')).toBeGreaterThan(unlinked);
+    // A REAL blind index of the live width, not zeroes — an erased row must not
+    // be identifiable by the shape of its own column.
+    expect(h.stagedBidx[0]).toHaveLength(emailBlindIndex(INDEX_KEY, 'x@example.test').length);
   });
 
   it('RELEASES the claim, destroying nothing, when the account became ineligible', async () => {
