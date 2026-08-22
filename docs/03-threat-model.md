@@ -4845,22 +4845,147 @@ them as a matched pair would conclude the ceremony is symmetric.
   the staged-surface pattern the fence exists to make visible rather than an
   exception to it — but a route nobody calls is a capability whose behaviour no
   product path exercises, and that is true here until PR4 lands.
-- **[OWNER: M25]** *Legal hold is not checked at request time, and that is a
+- **[OWNER: M26]** *Legal hold is not checked at request time, and that is a
   decision rather than a gap.* `legal_hold` is a per-document flag in the
   documents cluster with no account-level equivalent, so identity cannot see it
   without a cross-cluster call — and a hold placed AFTER a request would make
   any answer given here stale. The check belongs at execution, inside the
-  statement that acts, which is PR3's. Recorded because "erasure was requested"
-  will read to a reviewer as "erasure was permitted", and on this point it is
-  not the same claim.
-- **[ACCEPTED]** *There is no waiting period between request and execution.*
-  The scope decision was owner-initiated and step-up gated (docs/06,
-  2026-08-21); a cancel window was offered and not taken. The cancel is
-  therefore bounded by how quickly PR3's fan-out runs rather than by a policy,
-  and PR3 owns saying what that means. The repo already gates an irreversible
-  crypto-shred on step-up alone — `POST /v1/vault/reset` — so this is
-  consistent with a decision already taken rather than a new exposure.
-- **[OWNER: M25]** *Nothing revokes sessions on request.* An armed account keeps
-  every live credential, which is correct while the request is cancellable and
-  wrong the moment it is not. PR3 owns session revocation, alongside the
-  `users.status = 'closed'` write it belongs with.
+  statement that acts. **RE-OWNED TO M26 by PR3**, which reached identity's own
+  domain and no other: documents is one of the seven with no transport, so the
+  hold cannot be read from here yet and nothing M25 ships will change that.
+  Recorded because "erasure was requested" will read to a reviewer as "erasure
+  was permitted", and on this point it is not the same claim.
+- **[CLOSED: §6nn]** *There is no waiting period between request and execution.*
+  This was recorded as a permanent trade-off and PR3 reversed it, which is worth
+  saying plainly: building the driver showed the ACCEPTED tag was wrong. Without
+  a window the driver executes the instant a request exists, so the ungated
+  cancel PR2 shipped as a control would be a button nobody could press in
+  time — a protective action harder than the permissive one, arrived at by
+  omission. PR3 ships a seven-day grace period (`ERASURE_GRACE_PERIOD_MS`) that
+  travels in the claim's own `WHERE`.
+- **[CLOSED: §6nn]** *Nothing revokes sessions on request.* PR3 revokes at
+  EXECUTION rather than at request, which is the correct half of the window: an
+  armed request is still cancellable, so a credential is not yet wrong to hold.
+  Revocation lands with the `users.status = 'closed'` write and before the
+  shred, for the reason §6nn gives.
+
+## 6nn. Threat-model delta — M25 PR3, the destroy leg (2026-08-21)
+
+**THE PRODUCT CAN NOW ERASE SOMETHING.** `FieldCrypto.destroyDek` has a
+production caller for the first time since it was written in M4, and the
+`content_erased` arms M23 PR4b made real stop being decoration for identity's
+domain. What changed is small and one-way: an owner's request, once its grace
+period lapses, closes the account, revokes every session, unlinks the address
+and destroys the DEK that seals `users.email_ct` and `mfa_methods.secret_ct`.
+
+**IT REACHES ONE DOMAIN OF EIGHT, and the ledger says so rather than the prose.**
+`erasure_domain_progress` opens a row per participant on every request and only
+`identity` advances, because the other seven have no transport to ask —
+`estate.auth.events.v1` has a producer and no consumer, and the audit service is
+still the only Kafka consumer in the repo. A request therefore does not reach
+`completed` in M25. That is the honest answer and not a bug: `completed` is
+defined as *every* domain, and a terminal state meaning "as much as this build
+knows how to erase" would change meaning at the next deploy. **`documents` is
+the member that matters most** — `document_search_tokens` holds per-user HMACs
+of document CONTENT and is named in §6ll — and it sits at `pending`.
+
+**THE ORDER IS THE SECURITY PROPERTY.** Close and revoke run BEFORE the shred,
+which inverts "the step that cannot be undone runs last" under the exception
+that rule already carries: here the reversible step is the one that strands
+state. `getOrCreateDek` MINTS a key for a user with no active one — correct for
+every other caller, catastrophic for this one. Destroy first and any surviving
+session that touches an encrypted field hands the account a brand-new DEK: the
+row is live again, everything written afterwards is readable, and the trail says
+the erasure succeeded. Closing and revoking first is what makes the shred the
+last thing that can happen. The property is asserted on a call log, because a
+database cannot observe sequence after the fact.
+
+**THE BLIND INDEX IS OVERWRITTEN, AND PR1 IS WHY THAT IS SAFE.** `email_bidx` is
+an HMAC under a service-wide key, so it lives outside the envelope and survives
+the shred untouched — an erased account still answerable to "is this address
+registered". PR3 replaces it with a real blind index of `<uuid>@erased.invalid`:
+a reserved TLD, so it can never collide with a live address; built through
+`emailBlindIndex`, so width, key and purpose label cannot drift from the live
+ones. Random bytes would have been the tempting choice and the wrong one — a
+replacement of the wrong shape makes every erased row identifiable by its column
+alone. Had this UPDATE run under the pre-PR1 capture body it would have copied
+the OLD index into `users_versions`, where `REVOKE UPDATE, DELETE` means no
+later migration could retract it: erasure would have immortalised the value it
+was erasing. `email_ct` is deliberately left in the shadow — it is ciphertext
+under the destroyed DEK, and crypto-shredding reaching every copy is why this
+repo destroys keys instead of rows.
+
+**A SEVEN-DAY GRACE PERIOD, which §6mm recorded as ACCEPTED-not-needed and was
+wrong about.** The cancel window is the only defence an owner has against an
+erasure they did not ask for, since the act itself cannot be undone. Without it
+the driver executes the instant a request exists and PR2's ungated cancel is
+unpressable — a protective action harder than the permissive one, arrived at by
+omission. The period travels in the claim's own `WHERE`, so a driver that never
+ticks, ticks twice, or runs in two processes cannot shorten it.
+
+**CANCEL NARROWS, AND SAYS SO.** Only a `pending` request is cancellable; once
+claimed, keys are being destroyed. So the verb now answers WHAT IS STILL LIVE —
+`null` when nothing is outstanding, the executing request when the cancel came
+too late. Two outcomes with different remedies do not share an answer, and the
+verb stays ungated and non-failing: telling an owner "withdrawn" about an
+erasure in progress would be the worst lie this product could tell.
+
+**A CLAIM THAT CANNOT PROCEED IS RELEASED, NOT FAILED.** Eligibility is restated
+inside the claim because the request may be days old; if the account moved to
+`deceased_pending` or `settlement` in the window, nothing is destroyed and the
+request goes back to `pending`. Wedged in `executing` it would be uncancellable
+AND would block a new one through the live index — the erasure feature locked
+shut for that account, by a race.
+
+**THE REFUSAL TOKENS SPLIT.** `closed` mapped to `account_settled`, telling an
+erased account it was settled. They need opposite responses — one is a person
+signing in to something they destroyed, the other a possible
+decedent-credential replay worth investigating — so `account_closed` is its own
+recorded reason. The wire answer is unchanged and uniform: this decides what is
+RECORDED, never what is disclosed. It is reachable only in the window where
+erasure half-happened, since a completed one re-indexes the address and login
+stops before any status is read — which is exactly the state an operator needs
+to find.
+
+**THE DRIVER ADVANCES STATE ON A TIMER, and settlement's does not.**
+`ErasureDriver` is shaped on `SettlementWorkflowDriver` deliberately, and
+differs in the one way that matters. Settlement's is powerless by design: a
+death claim is never fully automated and a human confirms every step. This one
+destroys a key. That is permitted because the human review already happened —
+the account's OWNER asked, in a session that proved a fresh second factor, and
+the grace period is when they may still change their mind. No third party can
+arm it and no operator role exists that could. Settlement decides something
+ABOUT a person; erasure executes something FOR one.
+
+### Residuals
+
+- **[OWNER: M26]** *Seven of eight domains are never reached.* profile, assets,
+  plaid, documents, settlement, notifications and ai-assistant keep their DEKs
+  and their ciphertext after an "erasure". The ledger makes this queryable
+  rather than a sentence, and `erasure-domains.spec.ts` turns red if a ninth
+  participant appears — but a user told their account was erased has had one
+  domain of eight erased, and no product surface may claim otherwise until the
+  fan-out exists.
+- **[OWNER: M26]** *`document_search_tokens` is not purged.* Its `token_bidx`
+  values are per-user HMACs of document CONTENT under a service-wide key, so
+  they survive a DEK destruction exactly as `email_bidx` would have. §6ll named
+  this as PR3's; PR3 reached identity's domain and not documents', and the
+  correction is recorded here rather than left to a reader to discover.
+- **[ACCEPTED]** *A request that cannot be claimed sits at `pending`
+  indefinitely.* An account moved to `settlement` keeps a live erasure request
+  that will never execute and never expire. Deliberate: settlement outranks
+  erasure, the owner can still cancel, and inventing a `refused` request state
+  would be a terminal-looking status that invites somebody to stop retrying
+  something that should resume if the account becomes eligible again.
+- **[ACCEPTED]** *The caller allowlist is not a privilege boundary.*
+  `ERASURE_COMPONENTS` now has one real entry, which makes leg D load-bearing
+  for the first time — it stops a SECOND caller arriving in review. It does not
+  stop a compromised app process calling `destroyDek` at runtime, because the
+  privileged role docs/02 described has never existed. §6kk holds the runtime
+  direction; nothing here narrows it.
+- **[OWNER: M26]** *Nobody is told.* An erased owner receives no confirmation,
+  and cannot be told afterwards — the address is unlinked and the ciphertext
+  that held it is unreadable, so any notification must be sent BEFORE the shred
+  or not at all. That ordering constraint is the real content of this residual,
+  and it is easy to get wrong once notifications joins the fan-out.
+

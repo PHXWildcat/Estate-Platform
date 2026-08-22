@@ -169,7 +169,10 @@ describeIfPg('walking skeleton: identity → audit chain', () => {
       await expect(
         checkConventions(authCheck, {
           schema: authSchema,
-          businessTables: ['users'],
+          // `erasure_requests` (M25 PR2) is a mutable business table gating the
+          // most irreversible action in the product; it belongs under the
+          // convention checker for the same reason `users` does.
+          businessTables: ['users', 'erasure_requests'],
           appendOnlyTables: ['auth_events'],
         }),
       ).resolves.toEqual([]);

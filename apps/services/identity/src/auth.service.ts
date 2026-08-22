@@ -12,6 +12,7 @@ import {
   type SessionAudience,
   type SessionContext,
 } from '@estate/auth-guard';
+import type { LoginFailureReason } from '@estate/contracts';
 import {
   emailBlindIndex,
   normalizeEmail,
@@ -64,6 +65,25 @@ const TOTP_SECRET_FIELD = 'mfa_methods.totp_secret';
 function invalidCredentials(): UnauthorizedException {
   return new UnauthorizedException({ error: 'invalid_credentials' });
 }
+
+/**
+ * Which refusal a non-signable status records. An explicit map, not a pair of
+ * ternaries, because M25 PR3 made this a CATEGORY question rather than a
+ * special case: 'closed' had been riding on 'settlement' since M7, and the rule
+ * that two failures with different remedies never share a token applies to
+ * every member of the set at once. Statuses absent here fall back to
+ * 'account_locked' — deny-by-default in the copy as well as the control.
+ *
+ * The wire answer is UNCHANGED and uniform: every branch below throws the same
+ * 401 as a wrong password. This decides only what is RECORDED, so a status can
+ * never be read off a response.
+ */
+const LOGIN_REFUSAL_REASONS: Readonly<Record<string, LoginFailureReason>> = {
+  locked: 'account_locked',
+  suspended: 'account_locked',
+  settlement: 'account_settled',
+  closed: 'account_closed',
+};
 
 @Injectable()
 export class AuthService {
@@ -288,10 +308,7 @@ export class AuthService {
     // because decedent-credential replay post-verification is a detection
     // signal (docs/01 §6 settlement-trigger anomalies).
     if (user.status !== 'active' && user.status !== 'deceased_pending') {
-      const reason =
-        user.status === 'settlement' || user.status === 'closed'
-          ? 'account_settled'
-          : 'account_locked';
+      const reason = LOGIN_REFUSAL_REASONS[user.status] ?? 'account_locked';
       this.loginAddresses.record(emailBidx);
       await this.recordLoginFailure(user.id, reason);
       throw invalidCredentials();
@@ -820,7 +837,7 @@ export class AuthService {
 
   private async recordLoginFailure(
     userId: string | null,
-    reason: 'bad_credentials' | 'account_locked' | 'risk_blocked' | 'account_settled',
+    reason: LoginFailureReason,
   ): Promise<void> {
     await this.authEvents.insert({ userId, kind: 'login.failed', decision: reason });
     await this.events.loginFailed(userId, reason);

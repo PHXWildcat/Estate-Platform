@@ -1,8 +1,42 @@
+import { randomUUID } from 'node:crypto';
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
+import { ERASURE_DOMAINS, type ErasureRequestStatus } from '@estate/contracts';
+import { emailBlindIndex, type FieldCrypto } from '@estate/crypto';
+import type { IdentityConfig } from './config';
 import { Db } from './db';
-import { CLOCK, type Clock } from './di-tokens';
+import { CLOCK, CONFIG, DEK_REPOSITORY, FIELD_CRYPTO, type Clock } from './di-tokens';
+import type { PgDekRepository } from './dek.repository';
 import { ErasureRepo, type ErasureRequestRow } from './erasure.repo';
 import { EventsService } from './events.service';
+import { SessionsRepo } from './sessions.repo';
+import { UsersRepo } from './users.repo';
+
+/**
+ * This service's own domain in the erasure ledger. Identity is the one domain
+ * M25 can reach: it holds its own DEK in its own cluster, so its leg needs no
+ * transport and no second service to be deployed first.
+ */
+const THIS_DOMAIN = 'identity' as const;
+
+/**
+ * Reserved domain for the address an erased row is re-indexed to. `.invalid` is
+ * reserved by RFC 2606 and can never resolve or be registered, so the value can
+ * never collide with a real user's index.
+ */
+const ERASED_ADDRESS_DOMAIN = 'erased.invalid';
+
+/**
+ * The actor recorded on the driver's own transactions.
+ *
+ * EMPTY, WHICH THE CAPTURE TRIGGER TURNS INTO A NULL `actor_id` — every
+ * `*_capture_version` body reads `NULLIF(current_setting('app.actor_id', true),
+ * '')::uuid`. That is the accurate statement: no person performed these writes.
+ * Putting the owner's id here would read, in the version shadow, as the owner
+ * having closed their own account minutes ago, when what they actually did was
+ * ask days earlier. The join between the two is `requestId` on the audit trail,
+ * which is why every event in this leg carries it.
+ */
+const DRIVER_ACTOR = '';
 
 /**
  * Account statuses from which an owner may REQUEST erasure. An allowlist, not
@@ -21,14 +55,22 @@ import { EventsService } from './events.service';
  */
 export const ERASURE_PERMITTED_STATUSES: readonly string[] = ['active'];
 
-/** What the surface renders. `null` means no request is live. */
+/**
+ * What the surface renders. `null` means no request is live.
+ *
+ * THE STATUS IS CARRIED, not assumed. PR2 could hard-code 'pending' because it
+ * was the only live state; PR3 adds 'executing', and the difference is the one
+ * a user most needs to see — 'pending' can still be withdrawn, 'executing'
+ * cannot. A surface that rendered both as "requested" would offer a cancel
+ * button that silently does nothing.
+ */
 export interface ErasureState {
-  status: 'pending';
+  status: ErasureRequestStatus;
   requestedAt: string;
 }
 
 function toState(row: ErasureRequestRow): ErasureState {
-  return { status: 'pending', requestedAt: row.requested_at.toISOString() };
+  return { status: row.status, requestedAt: row.requested_at.toISOString() };
 }
 
 /**
@@ -52,6 +94,11 @@ export class ErasureService {
     private readonly db: Db,
     private readonly repo: ErasureRepo,
     private readonly events: EventsService,
+    private readonly users: UsersRepo,
+    private readonly sessions: SessionsRepo,
+    @Inject(FIELD_CRYPTO) private readonly crypto: FieldCrypto,
+    @Inject(DEK_REPOSITORY) private readonly deks: PgDekRepository,
+    @Inject(CONFIG) private readonly config: IdentityConfig,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
@@ -89,17 +136,160 @@ export class ErasureService {
 
   /**
    * Withdraw the live request. Safe to press twice: nothing to cancel is a
-   * normal answer, not an error, and it returns the same shape as a successful
-   * cancel so a client cannot tell a race from a no-op and does not need to.
+   * normal answer and not an error.
+   *
+   * IT ANSWERS WHAT IS STILL LIVE, which PR2 did not have to. Then 'pending'
+   * was the only live state and null was the whole truth. Now a cancel can fail
+   * for a reason the owner must be told about — the driver has claimed the
+   * request and is destroying keys — and "there was nothing to cancel" and "it
+   * is too late" are two outcomes with different remedies. Returning the
+   * remaining live request rather than a second error token keeps the
+   * protective verb ungated, unfailing and honest at once: null means nothing
+   * is outstanding, a state means it still is.
    */
-  async cancel(userId: string, sessionId: string | null): Promise<null> {
-    const cancelled = await this.db.withTransaction(userId, (tx) =>
-      this.repo.cancel(tx, userId, this.clock()),
-    );
+  async cancel(userId: string, sessionId: string | null): Promise<ErasureState | null> {
+    const { cancelled, remaining } = await this.db.withTransaction(userId, async (tx) => {
+      const row = await this.repo.cancel(tx, userId, this.clock());
+      if (row !== null) {
+        return { cancelled: row, remaining: null };
+      }
+      // Nothing moved. Either there was no request, or it is already
+      // executing — re-read INSIDE the transaction rather than inferring a
+      // reason from an affected-row count.
+      return { cancelled: null, remaining: await this.repo.findLive(tx, userId) };
+    });
+
     if (cancelled !== null) {
       await this.events.accountErasureCancelled(userId, sessionId, cancelled.id);
+      return null;
     }
-    return null;
+    return remaining === null ? null : toState(remaining);
+  }
+
+  /**
+   * THE DESTROY LEG (M25 PR3). Executes every request whose grace period has
+   * lapsed. Returns how many it carried through identity's domain.
+   *
+   * ONE REQUEST PER CLAIM, IN A LOOP, rather than a batch. A batch would hold
+   * one transaction open across n crypto-shreds, so a failure on the last would
+   * roll back the ledger for all of them while the destroyed keys stayed
+   * destroyed — a rollback that unwinds the record and not the act is worse
+   * than no transaction at all.
+   *
+   * IDEMPOTENT AND RESUMABLE BY CONSTRUCTION, because the steps below span four
+   * writes that cannot share a transaction (one of them is a KMS-adjacent key
+   * destruction). Every step re-reads the fact it needs instead of trusting the
+   * previous step to have happened, so a process killed anywhere in the middle
+   * is finished by the next tick rather than left half done with nothing saying
+   * where it stopped.
+   */
+  async runDueErasures(now: Date): Promise<number> {
+    const cutoff = new Date(now.getTime() - this.config.erasureGracePeriodMs);
+    let carried = 0;
+    for (;;) {
+      const claimed = await this.db.withTransaction(DRIVER_ACTOR, async (tx) => {
+        const request = await this.repo.claimDue(tx, cutoff, now, ERASURE_PERMITTED_STATUSES);
+        if (request !== null) {
+          // Seeded inside the CLAIM transaction. A crash between the two would
+          // leave a request executing with an empty ledger, which
+          // `completeIfAllDone` would read as "every domain is done".
+          await this.repo.seedDomains(tx, request.id, ERASURE_DOMAINS);
+        }
+        return request;
+      });
+      if (claimed === null) {
+        return carried;
+      }
+      await this.executeIdentityDomain(claimed, now);
+      carried += 1;
+    }
+  }
+
+  /**
+   * Identity's own domain of one erasure.
+   *
+   * THE ORDER IS THE SECURITY PROPERTY, and it is the documented exception to
+   * "the step that cannot be undone runs last" — here the REVERSIBLE steps are
+   * the ones that strand state, so they run first:
+   *
+   *   1. Close the account and unlink the address. Until this lands, a live
+   *      session can still act.
+   *   2. Revoke every session. Until this lands, a request already in flight
+   *      can still act.
+   *   3. Destroy the DEK.
+   *
+   * REVERSING 1-2 AND 3 WOULD SILENTLY UN-ERASE THE ACCOUNT. `getOrCreateDek`
+   * MINTS a key when the user has no active one — that is correct behaviour for
+   * every other caller and a disaster for this one. Destroy first and any
+   * surviving session that touches an encrypted field gives the account a
+   * brand-new DEK, so the row is live again, the ciphertext written after it is
+   * readable, and the audit trail says the erasure succeeded. Closing and
+   * revoking first is what makes step 3 the last thing that can happen.
+   *
+   * NOTHING HERE ROLLS BACK, so each step is written to be safe to repeat and
+   * each is guarded by a re-read of the fact it changes rather than by a flag.
+   */
+  private async executeIdentityDomain(request: ErasureRequestRow, now: Date): Promise<void> {
+    const user = await this.users.findById(request.user_id);
+    if (user === null) {
+      // The row is gone entirely — nothing this service can erase, and nothing
+      // it should invent. Leave the claim so a human sees an erasure that
+      // stopped; a request that quietly completed against a missing user is
+      // exactly the record that would be believed later.
+      return;
+    }
+
+    if (user.status !== 'closed') {
+      const closed = await this.db.withTransaction(DRIVER_ACTOR, (tx) =>
+        this.users.closeAndUnlinkEmail(
+          tx,
+          request.user_id,
+          ERASURE_PERMITTED_STATUSES,
+          this.erasedEmailIndex(),
+        ),
+      );
+      if (closed === null) {
+        // The account became ineligible between the claim and this write — a
+        // death report or a settlement lock landed in the gap. Nothing has been
+        // destroyed, so hand the claim back rather than wedging the request:
+        // on 'pending' the owner can still cancel it and the next tick retries.
+        await this.db.withTransaction(DRIVER_ACTOR, (tx) => this.repo.releaseClaim(tx, request.id));
+        return;
+      }
+      await this.events.userClosedForErasure(request.user_id, user.status, request.id);
+
+      const revoked = await this.sessions.revokeAllForUser(request.user_id, 'account_erased', now);
+      await this.events.sessionsRevokedForErasure(request.user_id, revoked.length, request.id);
+    }
+
+    // The irreversible step, guarded by the fact rather than by a flag: a
+    // second run finds `destroyedAt` set and emits nothing, so a retry cannot
+    // reset the timestamp or double-file the event.
+    const dek = await this.deks.findById(user.dek_id);
+    if (dek !== null && dek.destroyedAt === null) {
+      await this.crypto.destroyDek(user.dek_id);
+      await this.events.dekDestroyed(request.user_id, user.dek_id, request.id);
+    }
+
+    await this.db.withTransaction(DRIVER_ACTOR, async (tx) => {
+      await this.repo.markDomainDone(tx, request.id, THIS_DOMAIN);
+      await this.repo.completeIfAllDone(tx, request.id, now);
+    });
+  }
+
+  /**
+   * The value that replaces `users.email_bidx`.
+   *
+   * A REAL BLIND INDEX OF AN ADDRESS NOBODY HOLDS, not random bytes. Building
+   * it through `emailBlindIndex` means the width, the HMAC key and the purpose
+   * label can never drift from the live ones — a replacement of the wrong shape
+   * would make every erased row identifiable by its column alone, which is a
+   * worse leak than the lookup it removes. The address is a fresh uuid under a
+   * reserved TLD, so it is unlinkable to the erased owner, unlinkable to every
+   * other erased row, and cannot collide with `ux_users_email`.
+   */
+  private erasedEmailIndex(): Buffer {
+    return emailBlindIndex(this.config.emailIndexKey, `${randomUUID()}@${ERASED_ADDRESS_DOMAIN}`);
   }
 
   /** The caller's live request, or null. */

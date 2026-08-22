@@ -54,16 +54,21 @@ export class ErasureController {
 
   /**
    * Withdraw the request. NO `StepUpGuard`, and that is not an omission — see
-   * the class docstring. Safe to press twice: nothing to cancel answers 200
-   * with the same shape as a successful cancel, so a client cannot tell a race
-   * from a no-op and has no reason to need to.
+   * the class docstring. Safe to press twice.
+   *
+   * ANSWERS WHAT IS STILL OUTSTANDING (M25 PR3). `null` means nothing is live —
+   * either the request was withdrawn or there was none, and a client has no
+   * reason to tell those apart. A STATE means the cancel did not take, which
+   * since PR3 has exactly one cause: the driver has claimed the request and is
+   * destroying keys. Reporting it as data rather than as a second error token
+   * keeps the protective verb ungated and non-failing while still refusing to
+   * tell an owner "withdrawn" about an erasure already in progress.
    */
   @Delete()
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  async cancel(@Req() request: AuthedRequest): Promise<{ erasure: null }> {
+  async cancel(@Req() request: AuthedRequest): Promise<{ erasure: ErasureState | null }> {
     const auth = requireAuth(request);
-    await this.erasure.cancel(auth.userId, auth.sessionId);
-    return { erasure: null };
+    return { erasure: await this.erasure.cancel(auth.userId, auth.sessionId) };
   }
 }

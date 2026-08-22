@@ -131,6 +131,54 @@ export class UsersRepo {
   }
 
   /**
+   * ERASURE, THE PART THAT IS NOT THE KEY (M25 PR3). Closes the account and
+   * replaces the live blind index in ONE statement.
+   *
+   * WHY THE BLIND INDEX HAS TO BE OVERWRITTEN AT ALL. `email_bidx` is an HMAC
+   * under a service-wide key (`EMAIL_INDEX_KEY_HEX`), which puts it OUTSIDE the
+   * per-user envelope — so destroying the DEK erases `email_ct` and leaves the
+   * index that finds the row by address perfectly intact. An erased account
+   * still answerable to "is this address registered" is erased in the way that
+   * matters least. This is docs/03 §6kk's `[OWNER: M25]` residual, and it is
+   * the reason PR1 had to land first: `CREATE OR REPLACE FUNCTION` only affects
+   * FUTURE captures, so had this UPDATE run under the old capture body it would
+   * have copied the old `email_bidx` into `users_versions`, where REVOKE
+   * UPDATE, DELETE means no later migration could retract it. Erasure would
+   * have immortalised the very value it was erasing.
+   *
+   * THE REPLACEMENT IS RANDOM, NOT NULL OR A CONSTANT. `ux_users_email` is
+   * unique, so a constant would let the second erasure collide with the first
+   * and fail — and NULL would make every erased account match every other on an
+   * IS NULL scan. Random bytes of the same width are unlinkable to the address,
+   * unlinkable to each other, and indistinguishable in shape from a live row.
+   *
+   * `email_ct` IS DELIBERATELY LEFT ALONE, here and in the version shadow. It
+   * is ciphertext under the DEK this erasure destroys, and crypto-shredding
+   * reaching every copy — including the append-only ones — is the whole reason
+   * this repo deletes keys instead of rows.
+   *
+   * The `from` allowlist travels in the statement, as `updateStatusFrom`'s
+   * does: the claim that made this account eligible was made before the grace
+   * period, and a status that moved since must stop the write here rather than
+   * be trusted from a read above it.
+   */
+  async closeAndUnlinkEmail(
+    tx: Queryable,
+    userId: string,
+    from: readonly string[],
+    emailBidx: Buffer,
+  ): Promise<{ id: string; dek_id: string } | null> {
+    const rows = await tx.query<{ id: string; dek_id: string }>(
+      `UPDATE users
+          SET status = 'closed', email_bidx = $3, updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL AND status = ANY($2)
+       RETURNING id, dek_id`,
+      [userId, [...from], emailBidx],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
    * Compare-and-set status transition (M7 settlement lock). The allowed `from`
    * set travels in the SQL so a concurrent transition cannot be overwritten:
    * zero rows updated means the row was missing OR its status had already

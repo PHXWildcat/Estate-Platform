@@ -100,6 +100,28 @@ const EnvSchema = z
     // repoint any owner's alerts. Optional in dev/test — the client
     // short-circuits to a no-op while unset.
     NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN: z.string().optional(),
+    // M25: how long an erasure request waits before the driver may claim it.
+    //
+    // THIS IS THE CANCEL WINDOW, not a throttle. PR2 ships an ungated one-click
+    // cancel because the protective action must never be harder than the
+    // permissive one; a grace period shorter than the time it takes to notice a
+    // mistake makes that button unpressable, which is the same as not having
+    // it. Seven days is the interval a stolen session is most likely to be
+    // discovered in — a password change, a device check, a login alert — and it
+    // is the only defence an owner has against an erasure they did not ask for,
+    // since the act itself cannot be undone.
+    //
+    // Configurable because the int suite must exercise a lapsed period without
+    // waiting a week, and floored ABOVE zero: a zero here would silently turn
+    // "request" into "destroy now" with no diff to review.
+    ERASURE_GRACE_PERIOD_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(7 * 24 * 60 * 60 * 1000),
+    // How often the in-process driver looks for due requests. Liveness only —
+    // a longer interval delays an erasure and can never widen one.
+    ERASURE_DRIVER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
     // OUTBOUND (M14): what this service PRESENTS to the notifications
     // VERIFICATION-SEND route, to mail an address-verification code it minted.
     // Identity is the sole holder, and it is a THIRD secret rather than a reuse
@@ -306,6 +328,10 @@ export interface IdentityConfig {
   readonly kms: KmsConfig;
   /** 32-byte HMAC key for email blind indexes. */
   readonly emailIndexKey: Buffer;
+  /** M25: the window in which an owner may still withdraw an erasure request. */
+  readonly erasureGracePeriodMs: number;
+  /** M25: how often the erasure driver sweeps for due requests. */
+  readonly erasureDriverIntervalMs: number;
   /** Parsed broker list; null means "no Kafka" (never allowed in production). */
   readonly kafkaBrokers: string[] | null;
   /** KEK alias used when wrapping per-user DEKs. */
@@ -377,6 +403,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IdentityConfig
     databaseUrl: e.DATABASE_URL,
     kms,
     emailIndexKey: Buffer.from(e.EMAIL_INDEX_KEY_HEX, 'hex'),
+    erasureGracePeriodMs: e.ERASURE_GRACE_PERIOD_MS,
+    erasureDriverIntervalMs: e.ERASURE_DRIVER_INTERVAL_MS,
     kafkaBrokers: brokers.length > 0 ? brokers : null,
     kekAlias: 'local/auth-kek',
     // Dev/test localhost fallbacks; production is guaranteed non-default by the
