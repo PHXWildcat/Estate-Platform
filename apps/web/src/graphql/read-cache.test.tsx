@@ -8,6 +8,7 @@ import {
 import { gqlRequest } from './client';
 import {
   CACHED_OPERATIONS,
+  INVALIDATED_BY,
   invalidateSharedRead,
   resetSharedReadsForTests,
   useSharedRead,
@@ -112,15 +113,21 @@ describe('useSharedRead', () => {
   });
 
   it('a successful mutation OUTSIDE the map invalidates nothing (negative control)', async () => {
+    // CancelEmailChange is the map's own documented deliberate absence:
+    // cancelling a staged change alters nothing about what
+    // `emailVerification` answers. (Logout used to play this role — it joined
+    // the map when M24 PR3 made the auth boundary invalidate every enrolled
+    // read. ResendEmailVerification, the other documented absence, would
+    // collide with this file's substring matcher.)
     const { requests } = installGraphqlFetchMock({
       EmailVerification: () => jsonResponse({ data: { emailVerification: 'UNVERIFIED' } }),
-      Logout: () => jsonResponse({ data: { logout: { ok: true } } }),
+      CancelEmailChange: () => jsonResponse({ data: { cancelEmailChange: { ok: true } } }),
     });
     render(<Probe id="probe" />);
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('UNVERIFIED'));
 
     await act(async () => {
-      await gqlRequest('Logout', {});
+      await gqlRequest('CancelEmailChange', {});
     });
 
     expect(screen.getByTestId('probe')).toHaveTextContent('UNVERIFIED');
@@ -261,6 +268,73 @@ describe('useSharedRead', () => {
   });
 });
 
+describe('the auth boundary (M24 PR3)', () => {
+  // The cache keys answers by OPERATION NAME, not by principal, and its
+  // entries outlive their subscribers across client-side navigations. These
+  // three tests are the shared-browser scenario: without the boundary, user
+  // B's first mount finds user A's answer cached and renders it with ZERO
+  // fetches.
+
+  it('a successful Logout discards every enrolled answer — the next mount fetches fresh', async () => {
+    let answer: 'UNVERIFIED' | 'VERIFIED' = 'VERIFIED';
+    const { requests } = installGraphqlFetchMock({
+      EmailVerification: () => jsonResponse({ data: { emailVerification: answer } }),
+      Logout: () => jsonResponse({ data: { logout: { ok: true } } }),
+    });
+    // User A sees their answer, then leaves the page.
+    const { unmount } = render(<Probe id="userA" />);
+    await waitFor(() => expect(screen.getByTestId('userA')).toHaveTextContent('VERIFIED'));
+    unmount();
+
+    await act(async () => {
+      await gqlRequest('Logout', {});
+    });
+
+    // User B's mount must be served the SERVER's answer about user B, never
+    // user A's cached one.
+    answer = 'UNVERIFIED';
+    render(<Probe id="userB" />);
+    await waitFor(() => expect(screen.getByTestId('userB')).toHaveTextContent('UNVERIFIED'));
+    expect(verificationRequests(requests)).toBe(2);
+  });
+
+  it('a successful Login discards the previous principal’s answer', async () => {
+    let answer: 'UNVERIFIED' | 'VERIFIED' = 'VERIFIED';
+    const { requests } = installGraphqlFetchMock({
+      EmailVerification: () => jsonResponse({ data: { emailVerification: answer } }),
+      Login: () => jsonResponse({ data: { login: { ok: true } } }),
+    });
+    render(<Probe id="probe" />);
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('VERIFIED'));
+
+    answer = 'UNVERIFIED';
+    await act(async () => {
+      await gqlRequest('Login', { email: 'b@example.com', password: 'pw' });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('UNVERIFIED'));
+    expect(verificationRequests(requests)).toBe(2);
+  });
+
+  it('a successful Register discards it too — every door into a session is on the boundary', async () => {
+    let answer: 'UNVERIFIED' | 'VERIFIED' = 'VERIFIED';
+    const { requests } = installGraphqlFetchMock({
+      EmailVerification: () => jsonResponse({ data: { emailVerification: answer } }),
+      Register: () => jsonResponse({ data: { register: { ok: true } } }),
+    });
+    render(<Probe id="probe" />);
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('VERIFIED'));
+
+    answer = 'UNVERIFIED';
+    await act(async () => {
+      await gqlRequest('Register', { email: 'b@example.com', password: 'pw' });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('UNVERIFIED'));
+    expect(verificationRequests(requests)).toBe(2);
+  });
+});
+
 describe('the enrolled set', () => {
   it('is pinned EXACTLY, so growth is a reviewed decision against the written bar', () => {
     // The bar (read-cache.ts): no audited decrypts, no decrypted PII, no
@@ -268,5 +342,16 @@ describe('the enrolled set', () => {
     // contact detail, distribution amounts, asset history — must fail this
     // assertion loudly if someone enrolls it for a loading spinner.
     expect(CACHED_OPERATIONS).toEqual(['EmailVerification']);
+  });
+
+  it('every auth-boundary door maps to CACHED_OPERATIONS BY REFERENCE, not a copy', () => {
+    // The §6ss guarantee — "a future enrollment inherits the boundary
+    // without anyone remembering it" — is only true while these are the SAME
+    // list. A hand-copied literal equal to today's contents would pass every
+    // behavior test above and quietly stop covering the next enrollment, so
+    // this pins the reference itself (toBe, never toEqual).
+    expect(INVALIDATED_BY.Login).toBe(CACHED_OPERATIONS);
+    expect(INVALIDATED_BY.Register).toBe(CACHED_OPERATIONS);
+    expect(INVALIDATED_BY.Logout).toBe(CACHED_OPERATIONS);
   });
 });

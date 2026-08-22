@@ -7,12 +7,15 @@ import { messageFor } from '../lib/copy';
 import {
   documentKindLabel,
   documentSourceLabel,
+  documentsSummaryLine,
   executionStatusLabel,
   executionStatusMeaning,
   executionStatusTone,
   formatDateTime,
+  inForceCount,
   sortDocuments,
 } from '../lib/documents';
+import { STAT_LABEL } from '../lib/stat';
 import { DocumentUpload } from './DocumentUpload';
 
 /**
@@ -38,24 +41,6 @@ type LoadState =
   | { kind: 'signedOut' }
   | { kind: 'error' }
   | { kind: 'ready'; documents: DocumentInfo[] };
-
-/**
- * Built as ONE string rather than interpolated JSX fragments, so it reaches the
- * DOM as a single text node: a sentence split across elements is a sentence a
- * screen reader can announce in pieces, and one a test can only match by
- * accident.
- */
-function summaryLine(documents: readonly DocumentInfo[], inForce: number): string {
-  if (documents.length === 0) {
-    return 'Nothing on file yet.';
-  }
-  const pending = documents.length - inForce;
-  if (pending === 0) {
-    return 'Every document on file has been executed.';
-  }
-  const verb = pending === 1 ? 'it directs' : 'they direct';
-  return `${pending} of ${documents.length} not executed yet, so ${verb} nothing.`;
-}
 
 function DocumentRow({ document }: { document: DocumentInfo }): ReactElement {
   const meaning = executionStatusMeaning(document.executionStatus);
@@ -205,16 +190,16 @@ export function DocumentsPanel(): ReactElement {
   }
 
   const documents = sortDocuments(state.documents);
-  const inForce = documents.filter((doc) => doc.executionStatus === 'executed').length;
+  const inForce = inForceCount(documents);
 
   return (
     <div className="space-y-4">
       <section aria-label="Summary" className="card p-5">
-        <h2 className="text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-muted">
-          In force
-        </h2>
+        <h2 className={STAT_LABEL}>In force</h2>
         <p className="mt-1.5 text-4xl font-semibold tabular-nums tracking-tight">{inForce}</p>
-        <p className="mt-1.5 text-[0.8125rem] text-ink-muted">{summaryLine(documents, inForce)}</p>
+        <p className="mt-1.5 text-[0.8125rem] text-ink-muted">
+          {documentsSummaryLine(documents, inForce)}
+        </p>
       </section>
 
       <section aria-labelledby="documents-heading" className="card p-5 sm:p-6">

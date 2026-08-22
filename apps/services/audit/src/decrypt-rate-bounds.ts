@@ -156,8 +156,15 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
       'distinct assets, while a mass read of 1680 assets touches 1680. Re-reading a row you ' +
       'already read exfiltrates nothing new, so suppressing repetition costs no detection; ' +
       'the distinct bound sits at the count bound so a genuine mass read still breaches both. ' +
-      'Per-shape economics unchanged: asset_list=1/row, net_worth=1/valued row, asset_read=4 ' +
-      'per detail load; executor estate reads ride this class by design',
+      'Per-shape economics: asset_list=1/VALUED row (a null est_value_ct is skipped before the ' +
+      'sink, so no event is counted), net_worth=1/valued row, asset_read=4 per detail load; ' +
+      'executor estate reads ride this class by design. Page shapes (re-derived M24 PR3): the ' +
+      '/assets load issues Assets + NetWorth together (2 per valued asset), and the DASHBOARD — ' +
+      'the landing page since M24 PR3 — issues the same pair on every signed-in mount, so ' +
+      'ordinary sign-ins now spend that shape too; its estate-checks press adds four analyser ' +
+      'list reads ON DEMAND (4 per valued asset per press, the analysers each list on the ' +
+      'caller’s own bearer). All of these re-touch the SAME distinct assets, which is exactly ' +
+      'what the distinct dimension suppresses; neither shape moves either constant',
   },
   {
     prefix: 'asset_event',

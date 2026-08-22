@@ -8134,8 +8134,11 @@ split from the fence, never from prose restating it.
 
 - *Net worth* — `Query.netWorth` (`totalValue`, `assetCount`,
   `valuedAssetCount`, `inTrustValue`). Money is a decimal string end to end;
-  tiles render through `@estate/money` and never parse it to a float, and any
-  COMPUTED number goes through a formatter.
+  tiles render through the web app's own `lib/money.ts` `formatMoney` (PR3
+  correction: this section originally said `@estate/money`, which apps/web has
+  never depended on — that package is the BACKEND's arithmetic; the web's
+  formatter is display-only string grouping and parses nothing to a float),
+  and any COMPUTED number goes through a formatter.
 - *Assets* — `Query.assets`, `netWorth.assetCount`.
 - *Insurance* — as the data model has it: three asset CATEGORIES
   (`life_insurance`, `ltc_insurance`, `annuity` — the `assets_view` CHECK owns
@@ -8221,13 +8224,19 @@ scopes M26 splits the two FIRST. Neither absorbs the other by default.
   (record-first audited decrypt), BFF field, web surface on /security, which
   already owns the address-change ceremony. Closes §6v residual 2. Route and
   consumer in the same change.
-- **PR3 — the dashboard page itself.** The home page becomes the dashboard;
-  tiles consume the SAME persisted operations the existing pages use, through
-  the cache — one behaviour, one spelling — and anything new regenerates the
-  persisted manifest. Distinct loading, error and empty states per tile: A
-  FAILED READ MUST NOT RENDER AS ZERO — a $0 net worth on a failed read is
-  "we could not ask" wearing "nothing is here"'s face (M25 PR4's rule). WCAG
-  AA+, dark mode, and a real-browser drive before it is called done.
+- **PR3 — the dashboard page itself. SHIPPED** (record below). The home page
+  becomes the dashboard; tiles consume the SAME persisted operations the
+  existing pages use — one behaviour, one spelling — and anything new
+  regenerates the persisted manifest (nothing new was needed). PR3 AMENDS this
+  bullet's original "through the cache" phrasing, which collided with the
+  cache's own written enrollment bar: the page fetches each operation once
+  and passes props, and the cache carries only the shell-shared
+  `EmailVerification` — the enrolled set did not grow (the reasoning is the
+  PR3 record and docs/03 §6ss). Distinct loading, error and empty states per
+  tile: A FAILED READ MUST NOT RENDER AS ZERO — a $0 net worth on a failed
+  read is "we could not ask" wearing "nothing is here"'s face (M25 PR4's
+  rule). WCAG AA+, dark mode, and a real-browser drive before it is called
+  done.
 - **PR4 — the security review**, ending the milestone the way M25 PR5 did:
   that review found two live gaps after the milestone looked finished, and
   the question that found them — what else is in this category — gets asked
@@ -8413,3 +8422,145 @@ PR rewrote to purge a falsified clause had CARRIED HALF THE FALSEHOOD
 FORWARD — its "notice" producer never existed under the `users` prefix, at
 M18 or since; the note now names the prefix's two real producers and
 records the phantom's history.
+
+#### M24 PR3 — the dashboard (2026-08-22)
+
+**The home page becomes the dashboard, with NO new SDL surface, NO new
+persisted operation, and NO new decrypt class.** Every tile consumes an
+operation an existing page already uses (the computability fence's IN list,
+verbatim): the estate tile renders `NetWorth` (net worth + inventory) with
+the insurance facet counted from `Assets` by the DDL's three insurance
+categories; trust funding derives its percentage from `NetWorth`'s two money
+strings; document completion counts `Documents` by `executionStatus`;
+security shows the session facts, `Sessions`/`Passkeys` counts and the
+cache-shared `EmailVerification`; the estate-checks card runs `Readiness` on
+demand; `SettlingEstatesPanel` is kept exactly as pinned, above everything.
+`SessionCard` retires — the page's own gate read subsumes it (the
+`callersOf('Session') >= 3` floor holds through the swap: the page, the
+rail, /security). The rail label stays 'Overview' (AppShell's pin, kept
+deliberately — a cosmetic rename is not worth a reddened fence).
+
+**THE FETCH TOPOLOGY IS PAGE-LEVEL READS PLUS PRESENTATIONAL TILES, and the
+scope bullet's "through the cache" phrasing is amended in this change.** The
+design fan-out proved the phrase collided with the cache's own written bar:
+`Assets` is parameterized (compile-refused), `NetWorth` and `Readiness` are
+decrypt-backed (a cache re-serving them makes repeat reads invisible to the
+owner's trail — the bar's first clause), and `Session`'s `stepUpFresh`
+decays by clock, which no mutation announcement can see. Resolving the
+collision in the bar's favor is the only direction consistent with "never
+weaken a boundary to simplify a feature"; the page therefore fetches each
+operation ONCE and passes props (one `NetWorth` read feeds three figures),
+and the cache's role is exactly its designed-for case: the security tile is
+`EmailVerification`'s second subscriber beside the app-shell banner.
+
+**THE READINESS ANALYSES RUN ON DEMAND — the central cost decision.** One
+`Query.readiness` runs four analysers server-side: four asset-list reads
+(per-row audited `est_value` decrypts), two full profile PII fans
+(`ssn_last4` included), a family read, up to 100 sequential beneficiary
+sub-calls, and an audit event per analyser. On the page every sign-in lands
+on, a mount-time read would have institutionalised that fan per landing —
+against the written no-prefetch rule. The estate-checks card instead runs
+the four once per press, renders all four statuses (OK-with-findings
+counted, UNAVAILABLE/REFUSED/DISABLED each in their own words — the
+page-coupled `STATUS_COPY.DISABLED` "below" is NOT reused; the card links to
+/assistant), and shows the server's own disclaimer sentence. The M18 asset
+bound's page-shape note was re-derived with the new landing shape; the
+distinct-subjects dimension already suppresses repeat browsing and neither
+constant moved.
+
+**THE CACHE'S AUTH BOUNDARY SHIPS IN THE SAME CHANGE (docs/03 §6ss).** The
+fan-out's completeness critic found the shared read cache SURVIVES A USER
+SWITCH — sign-out/sign-in are client navigations, `Logout` was the suite's
+own "invalidates nothing" negative control, and user B's first mount
+rendered user A's cached answer with zero fetches. Fixed as data:
+`Login`/`Register`/`Logout` each invalidate `CACHED_OPERATIONS` itself, by
+reference, so any future enrollment inherits the boundary; the negative
+control moved to `CancelEmailChange`; each door has a behavior test.
+
+**Honest states, one spelling each.** A failed read renders an explicit
+non-statement, never a zero — and a session-ended failure keeps its own
+remedy by ONE mechanism: a tile read answering UNAUTHENTICATED (the client's
+silent refresh already retried) collapses the whole page to the signed-out
+arm rather than wording a per-tile sentence. The first draft gave three
+tiles a "sign in" arm while the security tile and the checks card wore an
+outage's face — the review's "rule half-applied" finding, fixed by
+escalation. An estate with assets but no recorded
+values renders "—", not "$0.00"; an empty estate is a real answer distinct
+from both. The funding percentage is a new `lib/funding.ts` pure function
+FAITHFUL to the service's own stripped `inTrustPct` (BigInt cents, half-up
+at 1dp, null on zero — mirrored boundary tests), rendered through
+`formatPct`. Document completion reuses the /documents page's own
+denominator via the hoisted `inForceCount`/`documentsSummaryLine` (revoked
+and superseded stay counted; the readiness analyser's opposite convention
+answers a different question and applies only inside its own findings).
+Insurance is a counts-only facet — client-side share sums would re-implement
+`ownedShareCents` in the browser — with `CATEGORY_LABELS` hoisted to
+`lib/categories.ts`, made TOTAL over the DDL's 21-member vocabulary and
+fenced against the migration itself in both directions. `STAT_LABEL`'s three
+verbatim copies (a fourth was imminent) hoisted to `lib/stat.ts`.
+
+**Five mutations, each killed by exactly its named assertion, all others
+green each time.** A failed NetWorth read rendering `formatMoney('0.00')`
+reddens exactly the failed-read-is-not-zero test (its positive control: the
+happy path proves the matcher sees real dollars). Readiness fired on mount
+reddens exactly the on-the-owner's-terms zero. `Logout` dropped from the
+auth boundary reddens exactly the Logout door test while Login/Register and
+the negative control stay green. The funding function's `+ total / 2n`
+dropped reddens exactly the half-up boundary. The documents denominator
+quietly switched to the analyser's convention reddens exactly the
+revoked-stays-counted test. Restores `cmp -s`-verified from scratchpad
+copies. The web coverage ratchet moved UP: functions 89→90, lines 92→93.
+After the review fixes, two more: the focus move deleted reddens exactly the
+landing-focus test, and the escalation disabled reddens exactly the
+page-collapse test — 18 green beside each.
+
+**The adversarial fan-out: four lenses at the PR3 commit, NINE findings, all
+confirmed 2–0 by refute-by-default verifiers, zero refuted, all fixed in the
+amend.** Two mediums, both DEMONSTRATED live by verifiers driving the real
+app: (1) the Run-checks button disabled itself under keyboard focus — a
+natively `disabled` control blurs to `<body>` the moment the attribute
+lands, so the docstring's "the button never unmounts, so focus never
+strands" was false by a second mechanism the M24 PR2 lesson's first half
+does not cover; fixed with `aria-disabled` plus a handler guard plus a focus
+move onto the landing outcome (the lesson's second half), and the fix's
+deletion reddens its named test. (2) The UNAUTHENTICATED distinction was
+half-applied — three tiles said "sign in" while the security rows and the
+checks card rendered outage copy inviting a retry that could only fail;
+fixed by the escalation above. The seven lows: an unknown analysis status
+rendered as "Assistant off" (an affirmative false claim under version skew —
+now a neutral "Unknown status" chip); "not executed yet" described revoked
+documents as pending (reworded to "not in force" in the ONE shared
+spelling); the session-end arm had no fixture reaching it (the escalation
+test now owns that boundary); the auth boundary's by-reference guarantee was
+prose (now pinned with `toBe` on all three doors); the categories fence read
+only the checksum-frozen 001 migration, so its ledger-side trigger could
+never fire (now scans the whole migrations corpus and asserts exactly ONE
+category CHECK exists — a redefining migration reddens it); the M18 note
+said "1/row" where the code decrypts only VALUED rows; and §6ss's "zero
+estate reads" overlooked the self-hiding executor panel's decrypt-free
+`ExecutorCases` probe (both sentences now say exactly what fires).
+
+**DRIVEN LIVE, and the drive found what the suites could not — the eleventh
+consecutive milestone it has.** Fresh web image on the stack, the PR2 drive
+account (post-ceremony address): the signed-out landing renders hero +
+get-started and issues NO tile read; every honest-empty arm rendered
+against the real BFF; two assets created through the product ($200,000 cash
+in trust, $50,000 term life policy) put real figures on every tile — net
+worth $250,000.00, funding 80% (the BigInt arithmetic against the service's
+own numbers), insurance "Life insurance (1)". The estate-checks press ran
+the four analyses ONCE: the audit DB shows `assistant.analysis.completed` in
+two bursts of exactly four (the /assistant page's own mount-read, then the
+dashboard press) with ZERO from the dashboard's mount — the on-demand claim
+observed on the real pipeline. TOTP was enrolled live and the step-up-gated
+consent grant driven end to end; DISABLED rendered its actionable line
+before the grant, real statuses with finding counts after. The drive's
+finding: the security tile said "MFA not enrolled" on an account that HAD
+just enrolled TOTP — `mfaLevel` is the SESSION's factor level, and
+SessionCard's decades-old wording conflated it with account enrollment the
+first time a TOTP-enrolled account signed in with password only. The chips
+now say what the value measures ("Password-only session" / "Second factor
+verified"). Dark and light modes verified by computed style (not by
+screenshot impression — the first dark screenshot's "broken" buttons were a
+transient paint state a re-render dispelled); mobile stacks cleanly; console
+clean; Login after sign-out re-read the cache-shared email-verification fact
+in the same JS session — the auth boundary observed working live.

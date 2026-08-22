@@ -206,6 +206,43 @@ export function sortDocuments(documents: readonly DocumentInfo[]): DocumentInfo[
   return [...documents].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/**
+ * How many documents are actually in force — and, load-bearing: what the
+ * DENOMINATOR of "N of M" is. This app counts EVERY document on file,
+ * including revoked and superseded ones, because that is what the /documents
+ * page shows a person scrolling their own list. The readiness analyser makes
+ * the opposite call (revoked/superseded are "not present at all") because it
+ * answers a different question — which instruments the estate still needs.
+ * Hoisted in M24 PR3 so the dashboard tile and the documents page compute the
+ * figure in ONE place and can never disagree with each other.
+ */
+export function inForceCount(documents: readonly DocumentInfo[]): number {
+  return documents.filter((doc) => doc.executionStatus === 'executed').length;
+}
+
+/**
+ * The one-line summary under the in-force figure. Built as ONE string rather
+ * than interpolated JSX fragments, so it reaches the DOM as a single text
+ * node: a sentence split across elements is a sentence a screen reader can
+ * announce in pieces, and one a test can only match by accident. (Moved from
+ * DocumentsPanel when the dashboard became its second consumer, M24 PR3.)
+ */
+export function documentsSummaryLine(documents: readonly DocumentInfo[], inForce: number): string {
+  if (documents.length === 0) {
+    return 'Nothing on file yet.';
+  }
+  const pending = documents.length - inForce;
+  if (pending === 0) {
+    return 'Every document on file has been executed.';
+  }
+  // "Not in force", NOT "not executed yet": the count includes revoked and
+  // superseded documents, and "yet" would describe a revoked will as pending
+  // future execution (the M24 PR3 review's wording finding).
+  const verb =
+    pending === 1 ? 'is not in force, so it directs' : 'are not in force, so they direct';
+  return `${pending} of ${documents.length} ${verb} nothing.`;
+}
+
 // Moved to lib/datetime.ts when the paired-devices list (M16) became its second
 // consumer. Re-exported rather than copied, and rather than churning every
 // import site: one implementation, whichever path a caller reaches it by.

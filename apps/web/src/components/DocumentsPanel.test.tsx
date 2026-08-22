@@ -78,7 +78,7 @@ describe('the list is metadata only', () => {
     mount([WILL, POA]);
     expect(await screen.findByText('In force')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
-    expect(screen.getByText('1 of 2 not executed yet, so it directs nothing.')).toBeInTheDocument();
+    expect(screen.getByText('1 of 2 is not in force, so it directs nothing.')).toBeInTheDocument();
   });
 
   it('flags a legal hold, because it changes what the owner can do', async () => {
