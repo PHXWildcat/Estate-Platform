@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState, type ReactElement } from 'react';
-import { gqlRequest } from '../graphql/client';
+import type { ReactElement } from 'react';
+import { useSharedRead } from '../graphql/read-cache';
 
 /**
  * A quiet, app-wide reminder that the platform cannot yet PROVE it reaches you.
@@ -26,30 +26,25 @@ import { gqlRequest } from '../graphql/client';
  * page says the same thing properly when they get there. This is the one place
  * in the milestone where the fail-closed direction is to say LESS.
  *
- * ONE QUERY PER NAVIGATION, and no polling. The read costs identity a
- * notifications round trip, so it is deliberately not on the session resolver
- * that backs every authenticated request (see the BFF schema).
+ * ONE QUERY PER NAVIGATION, and no polling — unchanged, now THROUGH the shared
+ * read cache (M24 PR1): the pathname is the revalidate key, so the server is
+ * asked exactly as often as before. What the cache adds is the ending of the
+ * §6v staleness residual — when either vouching ceremony completes
+ * (`VerifyEmail`, `CompleteEmailChange`), the transport's own announcement
+ * invalidates this read and the banner re-asks WITHOUT waiting for a
+ * navigation. The read still costs identity a notifications round trip, which
+ * is why it stays off the session resolver that backs every authenticated
+ * request (see the BFF schema).
  */
 export function UnverifiedAddressBanner(): ReactElement | null {
   const pathname = usePathname();
-  const [unverified, setUnverified] = useState(false);
+  const result = useSharedRead('EmailVerification', { revalidateKey: pathname });
 
-  useEffect(() => {
-    let live = true;
-    void (async () => {
-      const result = await gqlRequest('EmailVerification', {});
-      if (!live) {
-        return;
-      }
-      // Only the one state that is actionable. Signed-out callers get
-      // UNAUTHENTICATED here, which is not a state this banner has an opinion
-      // about — the app shell already handles that.
-      setUnverified(result.ok && result.data.emailVerification === 'UNVERIFIED');
-    })();
-    return () => {
-      live = false;
-    };
-  }, [pathname]);
+  // Only the one state that is actionable. Signed-out callers get
+  // UNAUTHENTICATED here, which is not a state this banner has an opinion
+  // about — the app shell already handles that. And null is NOTHING YET, not
+  // an answer: the banner stays down rather than guessing.
+  const unverified = result !== null && result.ok && result.data.emailVerification === 'UNVERIFIED';
 
   if (!unverified) {
     return null;

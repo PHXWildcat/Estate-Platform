@@ -6,6 +6,7 @@ import {
 } from '../test-utils/graphql-fetch-mock';
 import { errorCopy } from '../lib/copy';
 import { gqlRequest } from './client';
+import { onOperationSuccess } from './operation-events';
 import { EXPORT_DEMO_MUTATION, LOGIN_MUTATION } from './operations';
 
 describe('gqlRequest', () => {
@@ -401,5 +402,53 @@ describe('gqlRequest session continuity', () => {
     } finally {
       delete (globalThis.navigator as { locks?: unknown }).locks;
     }
+  });
+});
+
+describe('operation success announcements (M24 PR1)', () => {
+  // The transport is the ONE place every mutation passes through, which is why
+  // the announcement lives here and not in any ceremony call site — the shared
+  // read cache subscribes, and a cached read goes stale the moment a mutation
+  // it maps lands. These three cases are the whole contract: mutations that
+  // happened announce; reads and refusals never do.
+  let fetchMock: jest.Mock;
+  let seen: string[];
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    Object.defineProperty(globalThis, 'fetch', {
+      value: fetchMock,
+      writable: true,
+      configurable: true,
+    });
+    seen = [];
+    unsubscribe = onOperationSuccess((operation) => {
+      seen.push(operation);
+    });
+  });
+
+  afterEach(() => {
+    unsubscribe();
+  });
+
+  it('a successful MUTATION announces itself, after the result is final', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { login: { ok: true } } }));
+    await gqlRequest('Login', { email: 'person@example.com', password: 'correct-horse' });
+    expect(seen).toEqual(['Login']);
+  });
+
+  it('a successful QUERY announces nothing — a read changes nothing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: { session: { userId: 'u1', mfaLevel: 'NONE', stepUpFresh: false } } }),
+    );
+    await gqlRequest('Session', {});
+    expect(seen).toEqual([]);
+  });
+
+  it('a refused mutation announces nothing — nothing was performed', async () => {
+    fetchMock.mockResolvedValueOnce(graphqlError('INVALID_CREDENTIALS'));
+    await gqlRequest('Login', { email: 'person@example.com', password: 'wrong' });
+    expect(seen).toEqual([]);
   });
 });

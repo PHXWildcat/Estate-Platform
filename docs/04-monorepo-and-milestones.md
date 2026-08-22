@@ -8214,9 +8214,9 @@ scopes M26 splits the two FIRST. Neither absorbs the other by default.
   fence, no runtime code; the M21/M25 PR0 shape). This section, the M24 and
   M26 queue-row corrections, the docs/06 entries, and
   `apps/bff/test/dashboard-computability.spec.ts`.
-- **PR1 — the shared client read cache, plus its first consumer.** Closes §6v
-  residual 1 (the stale banner) in the same change. Capability and caller
-  together.
+- **PR1 — the shared client read cache, plus its first consumer. SHIPPED**
+  (record below). Closes §6v residual 1 (the stale banner) in the same change.
+  Capability and caller together.
 - **PR2 — the address on file.** Identity route (record-first audited
   decrypt), BFF field, web surface — likely /security, which already owns the
   address-change ceremony. Closes §6v residual 2. Route and consumer in the
@@ -8253,3 +8253,78 @@ names it, with the other five tests green; adding a root `liabilities` field
 reddens the OUT-probe scan alone; loosening `estateTasks(caseId: ID!)` to an
 optional argument reddens the case-scoped boundary test alone. Restores
 verified with `cmp -s` against a scratchpad copy on absolute paths.
+
+#### M24 PR1 — the shared client read cache (2026-08-21)
+
+**The capability and its first consumer, in one change.**
+`apps/web/src/graphql/read-cache.ts` is the shared client read cache docs/03
+§6v said the app does not have; `UnverifiedAddressBanner` is its first
+subscriber, and §6v residual 1 — the banner asking for a confirmation that
+had just happened, until the next navigation — is CLOSED by the pairing.
+docs/03 §6qq holds the threat-model delta (a cache is an audit-evasion
+primitive unless enrollment is a control). M28, M30 and M31 are the recorded
+later consumers.
+
+**ENROLLMENT IS AN ALLOWLIST WITH A WRITTEN BAR, pinned exactly by a test.**
+A read may enroll only if it is not an audited decrypt, carries no decrypted
+PII, and takes no variables. The first two are the audited-decrypt UI
+constraint: every content/PII read spends a logged KMS decrypt on the owner's
+trail, and a cache serving one from memory makes the repeat read invisible to
+that trail — so `Contact`, `DocumentContent`, `EstateDistributionAmount` and
+their kind can never enroll. The third means keying is by operation name
+alone: no serializer exists to be wrong, and a compile-time check refuses a
+parameterized enrollment. The enrolled set is `['EmailVerification']`,
+asserted with `toEqual` so growth is a reviewed decision against the bar.
+
+**INVALIDATION IS STRUCTURAL, NOT A CONVENTION.** The transport announces
+every successful mutation from the one place all mutations pass through
+(`gqlRequest`, via `operation-events.ts` — an emitter, so the client never
+imports the cache), and the cache holds the mutation→read map as data:
+`VerifyEmail` and `CompleteEmailChange` invalidate `EmailVerification`,
+because both vouch for an address; `CancelEmailChange` and
+`ResendEmailVerification` are deliberately absent because neither changes the
+answer. The alternative — each ceremony remembering an invalidate call — is
+the forgot-to-tell-the-reader class this residual WAS, rebuilt one ceremony
+later. A refused mutation announces nothing (`SESSION_RENEWED` included:
+nothing was performed), and queries never announce.
+
+**TWO KINDS OF STALE, KEPT APART.** An INVALIDATED answer is known wrong and
+is discarded before the re-read — the banner drops rather than render a lie
+for the round trip. A REVALIDATED answer (the banner's pathname key) is
+merely old and keeps rendering until the fresh one lands — exactly the
+pre-cache behavior. The server is asked exactly as often as before on
+navigation; what changed is who shares the answer and when it is discarded.
+Supersede tokens keep a response fetched BEFORE a mutation from landing
+AFTER its invalidation — including on the unwatched path (fetch in flight,
+subscriber unmounts, invalidation arrives), where there is no refetch to
+paper over a stale write.
+
+**`EmailVerificationPanel` IS DELIBERATELY NOT MIGRATED.** It reads directly
+and keeps the §6v remount wrapper: the key bump resets ceremony FORM state (a
+half-typed code) as well as re-reading, and those are two jobs — the cache
+refreshes a fact, the remount resets a ceremony. Its direct
+`gqlRequest('EmailVerification'` call also keeps the operation-consumers
+fence anchored; that fence now counts `useSharedRead('X'` as a second
+spelling of "a product caller", with a positive control on the banner's
+subscription so the new half of the matcher cannot go quietly blind.
+
+**DRIVEN LIVE, in the residual's own scenario.** Against the compose stack
+with the rebuilt web image: a fresh account (unverified) shows the banner
+through the cache-backed read; entering the mailed `EV1-` code on /security
+flips the panel to "confirmed" AND removes the banner from the DOM on the
+same page — `bannerPresent: false` measured over the whole body with
+`location.pathname` still `/security`, no navigation. A subsequent
+navigation keeps it gone (the fresh-read positive control) and the console
+is clean. This drive found no defect — noted because it is the first in
+some milestones that did not, and PR3's fuller drive is still owed.
+
+**Four mutations, each killed by the assertion named for it.** Dropping
+`CompleteEmailChange` from the map reddens the category test alone (17
+green). Disabling the transport announcement reddens the two real-transport
+invalidation tests plus the client's announcement test (41 green) — the
+banner tests stay green because they prove the cache layer, which is the
+point of testing the layers separately. Removing the invalidation refetch
+reddens three cache tests AND the banner's residual-closing test (14 green).
+Removing the supersede bump reddens only the unwatched-stale-landing test
+(10 green) — a test added when the first mutation plan showed that path had
+no coverage. Restores `cmp -s`-verified from scratchpad copies.

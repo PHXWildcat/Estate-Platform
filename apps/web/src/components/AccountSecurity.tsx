@@ -26,12 +26,18 @@ import { WaitingPeriodPanel } from './WaitingPeriodPanel';
  * an optimistic local one"). It costs one GraphQL round trip, and only on the
  * rare occasion an address actually changes.
  *
- * RESIDUAL, recorded in docs/03 §6n rather than papered over: the app-shell
- * `UnverifiedAddressBanner` is outside this tree and re-reads only on
- * navigation, so it can keep asking for a confirmation that has just happened
- * until the user moves to another page. That is the harmless direction — it
- * nags about something already done rather than hiding a real gap — and closing
- * it properly means a shared client cache this app does not have.
+ * THE BANNER OUTSIDE THIS TREE IS HANDLED ELSEWHERE (M24 PR1, closing the §6v
+ * residual once recorded here): the app-shell `UnverifiedAddressBanner` reads
+ * through the shared read cache, and the transport announces every successful
+ * mutation — so completing either vouching ceremony invalidates that read and
+ * the banner re-asks without waiting for a navigation. Nothing here needs to
+ * tell it; that is the point of the mechanism (see graphql/read-cache.ts).
+ *
+ * The remount below is NOT replaced by that cache, deliberately: this panel
+ * reads directly and holds form state (a half-typed code) that a completed
+ * address change makes stale, and the key bump resets both in one move. Two
+ * mechanisms, two jobs — the cache refreshes a fact, the remount resets a
+ * ceremony.
  */
 export function AccountSecurity(): ReactElement {
   // Not a counter of anything meaningful — only a remount token. Starts at 0
