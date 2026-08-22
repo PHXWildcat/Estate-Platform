@@ -1150,6 +1150,16 @@ export interface OperationSignatures {
     variables: EmptyVariables;
     data: { emailVerification: EmailVerificationStatus };
   };
+  /**
+   * M24 PR2. Every answer is an audited decrypt on the caller's own trail, so
+   * this is asked on an EXPLICIT REVEAL only — never on mount, never enrolled
+   * in the shared read cache (both bars written in read-cache.ts and the
+   * frontend rules). CONTENT_ERASED is a real answer here, not an outage.
+   */
+  AccountEmail: {
+    variables: EmptyVariables;
+    data: { accountEmail: string };
+  };
   ResendEmailVerification: {
     variables: EmptyVariables;
     data: { resendEmailVerification: ResendVerificationOutcome };

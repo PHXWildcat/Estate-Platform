@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  GoneException,
   HttpException,
   HttpStatus,
   Inject,
@@ -14,6 +15,7 @@ import {
 } from '@estate/auth-guard';
 import type { LoginFailureReason } from '@estate/contracts';
 import {
+  DekDestroyedError,
   emailBlindIndex,
   normalizeEmail,
   type DekRepository,
@@ -489,6 +491,56 @@ export class AuthService {
    */
   async logout(userId: string, sessionId: string): Promise<void> {
     await this.revokeSession(userId, sessionId);
+  }
+
+  /**
+   * THE ADDRESS ON FILE (M24 PR2) — identity's first read of `users.email_ct`,
+   * closing docs/03 §6v residual 2 ("no surface shows the address currently on
+   * file").
+   *
+   * THE RECORD GOES FIRST, because this is a disclosure — the rule
+   * `ContactLinksService.estatesNaming` states and `distributionAmount`
+   * shares: an event written after the decrypt is an event a crash can lose
+   * while the plaintext already exists. The ordering costs a false positive in
+   * the shred arm below — a recorded view of a value that turned out to be
+   * unreadable — and an over-record is the safe direction. It also fails
+   * CLOSED the other way round: if the emit refuses, the decrypt never runs,
+   * which is the same posture the FieldCrypto sink takes with plaintext it
+   * cannot log.
+   *
+   * A DECRYPT RACING A SHRED answers `content_erased`, never a 500 — "erased
+   * under a legal request" and "outage" are different truths with different
+   * remedies (`distributionAmount`'s arm, identity's first). The route is
+   * unreachable for a closed account (SessionGuard's status allowlist), so
+   * this arm exists only for the race between guard and read.
+   */
+  async emailOnFile(userId: string, sessionId: string): Promise<{ email: string }> {
+    const row = await this.users.findEmailCiphertext(userId);
+    if (row === null) {
+      // The guard resolved this user moments ago, so a missing row is a
+      // deletion racing the read. Nothing was disclosed, so nothing is
+      // recorded (the estatesNaming zero-rows rule).
+      throw new NotFoundException({ error: 'not_found' });
+    }
+    await this.events.emailViewed(userId, sessionId);
+    let plaintext: Buffer;
+    try {
+      plaintext = await this.fieldCrypto.decryptField({
+        userId,
+        dekId: row.dek_id,
+        field: EMAIL_FIELD,
+        ciphertext: row.email_ct,
+        actorId: userId,
+        actorType: 'user',
+        purpose: 'email_view',
+      });
+    } catch (err) {
+      if (err instanceof DekDestroyedError) {
+        throw new GoneException({ error: 'content_erased' });
+      }
+      throw err;
+    }
+    return { email: plaintext.toString('utf8') };
   }
 
   /**

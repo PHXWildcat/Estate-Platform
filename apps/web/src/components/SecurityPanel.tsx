@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { gqlRequest, type LiveSessionInfo, type SessionInfo } from '../graphql/client';
 import {
   addressChangeMessageFor,
@@ -88,6 +88,21 @@ interface EmailChangeAttempt {
   readonly currentPassword: string;
   readonly newEmail: string;
 }
+
+/**
+ * The address on file (M24 PR2) — five states, because four different facts
+ * can stand where the address would render and none may borrow another's
+ * face: not asked yet (the resting state — every reveal is an audited decrypt
+ * on the owner's trail, so the page never asks on its own), in flight, the
+ * answer, erased under a deletion request (CONTENT_ERASED — permanent, not a
+ * retry), and a failed read (which is not an empty one).
+ */
+type AddressOnFile =
+  | { kind: 'hidden' }
+  | { kind: 'loading' }
+  | { kind: 'shown'; email: string }
+  | { kind: 'erased' }
+  | { kind: 'error' };
 
 interface PasskeyInfo {
   id: string;
@@ -228,6 +243,37 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
   const [emailCodeError, setEmailCodeError] = useState<string | null>(null);
   const [emailCodeFailure, setEmailCodeFailure] = useState<string | null>(null);
   const [emailCodeNotice, setEmailCodeNotice] = useState<string | null>(null);
+
+  // The address on file (M24 PR2): REVEAL-ON-DEMAND, deliberately not loaded
+  // with the mount-time reads above. Every answer spends a logged KMS decrypt
+  // and lands two events on the owner's audit trail, so the read is the
+  // owner's explicit act — the no-prefetch rule (.claude/rules/frontend.md),
+  // and the reason this operation must never enroll in the shared read cache.
+  const [addressOnFile, setAddressOnFile] = useState<AddressOnFile>({ kind: 'hidden' });
+  /** Supersede token for the reveal — see `revealAddress`. */
+  const revealToken = useRef(0);
+  /**
+   * Focus target for the reveal's outcome (M24 PR2 review). The activated
+   * button unmounts when the answer replaces it, which would drop keyboard
+   * focus to <body>; moving focus onto the outcome keeps the keyboard user
+   * where their action landed, and reads the result to a screen reader. Only
+   * the loading→outcome transition focuses — the discard path (a completed
+   * change hiding a shown address) is not the reveal ceremony and must not
+   * steal focus from the code form that caused it.
+   */
+  const addressOutcomeRef = useRef<HTMLDivElement | null>(null);
+  const priorAddressKind = useRef<AddressOnFile['kind']>('hidden');
+  useEffect(() => {
+    const prior = priorAddressKind.current;
+    priorAddressKind.current = addressOnFile.kind;
+    if (
+      prior === 'loading' &&
+      addressOnFile.kind !== 'hidden' &&
+      addressOnFile.kind !== 'loading'
+    ) {
+      addressOutcomeRef.current?.focus();
+    }
+  }, [addressOnFile.kind]);
 
   const loadSession = useCallback(async (): Promise<void> => {
     const result = await gqlRequest('Session', {});
@@ -645,6 +691,36 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
     await sendAddressChange({ currentPassword: emailPassword, newEmail: trimmed });
   }
 
+  async function revealAddress(): Promise<void> {
+    // Supersede token, the read cache's own hazard (read-cache.ts): an answer
+    // read BEFORE the discard must never land AFTER it and be mistaken for
+    // fresh. The M24 PR2 review DEMONSTRATED the unguarded version — a reveal
+    // held in flight across a completed change resurrected the pre-change
+    // address beside the "has been changed" notice, and the re-armed button
+    // could race a second read against the first.
+    const token = (revealToken.current += 1);
+    setAddressOnFile({ kind: 'loading' });
+    const result = await gqlRequest('AccountEmail', {});
+    if (revealToken.current !== token) {
+      // Superseded — a discard (or a newer reveal) owns the slot now.
+      return;
+    }
+    // A MISSING FIELD IS NO DATA, NEVER DATA — the loaders' shape rule: a BFF
+    // predating this query answers `{"data":{}}`, and rendering `undefined`
+    // where an address belongs would be a claim about the account.
+    if (result.ok && typeof (result.data as { accountEmail?: unknown }).accountEmail === 'string') {
+      setAddressOnFile({ kind: 'shown', email: result.data.accountEmail });
+      return;
+    }
+    if (!result.ok && result.code === 'CONTENT_ERASED') {
+      // A real answer, not a failure: the account's key was destroyed under a
+      // deletion request. Its own state, because "try again" would be a lie.
+      setAddressOnFile({ kind: 'erased' });
+      return;
+    }
+    setAddressOnFile({ kind: 'error' });
+  }
+
   async function submitAddressCode(event: FormEvent): Promise<void> {
     event.preventDefault();
     const trimmed = emailCode.trim();
@@ -670,6 +746,14 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
       // The address AND its verified status both just moved. See
       // `SecurityPanelProps.onAddressChanged`.
       onAddressChanged?.();
+      // A revealed address is now KNOWN WRONG — discarded, never auto-re-read:
+      // a fresh disclosure costs an audited decrypt, so it stays the owner's
+      // explicit act (the reveal control is two lines above the code field).
+      // The token bump discards an IN-FLIGHT reveal too: its answer predates
+      // the switch, and letting it land would resurrect the old address
+      // beside this very notice.
+      revealToken.current += 1;
+      setAddressOnFile({ kind: 'hidden' });
       // …and so did every other session (M20 PR5): completion revokes them in
       // the same transaction as the switch, so the notice above would otherwise
       // sit over a devices list still calling them live. Same fix, same reason,
@@ -976,6 +1060,55 @@ export function SecurityPanel({ onAddressChanged }: SecurityPanelProps = {}): Re
           When it completes, your other devices are signed out and the new address counts as
           confirmed — entering the code is what proves it.
         </p>
+
+        <div className="mt-4">
+          {addressOnFile.kind === 'hidden' || addressOnFile.kind === 'loading' ? (
+            <>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={addressOnFile.kind === 'loading'}
+                onClick={() => {
+                  void revealAddress();
+                }}
+              >
+                {addressOnFile.kind === 'loading' ? 'Retrieving…' : 'Show the address on file'}
+              </button>
+              <p className="mt-2 max-w-prose text-xs text-ink-muted">
+                Shown only when you ask — each look is recorded on your account’s activity trail.
+              </p>
+            </>
+          ) : null}
+          {/*
+            ALWAYS-MOUNTED live region, the FormStatus pattern and its stated
+            reason: content that arrives AFTER a user action is announced only
+            if the region existed before it — a role inserted with the answer
+            is silent in most screen readers (the M24 PR2 review's finding; the
+            two failure arms had roles and the one arm carrying the answer had
+            nothing). tabIndex -1 is the focus target for the effect above.
+          */}
+          <div role="status" aria-live="polite" tabIndex={-1} ref={addressOutcomeRef}>
+            {addressOnFile.kind === 'shown' ? (
+              <p className="text-sm">
+                <span className="text-ink-muted">Currently on file: </span>
+                <span className="font-medium">{addressOnFile.email}</span>
+              </p>
+            ) : addressOnFile.kind === 'erased' ? (
+              <p className="max-w-prose text-sm text-ink-muted">
+                This account’s data has been erased under a deletion request, so there is no address
+                left to show.
+              </p>
+            ) : addressOnFile.kind === 'error' ? (
+              // Its own sentence, worded to collide with no other failed-read
+              // copy on this page (tests query these by text). The address is
+              // unchanged — only the LOOKING failed.
+              <p className="max-w-prose text-sm text-ink-muted">
+                We couldn’t retrieve the address on file just now. The address itself is unchanged —
+                reload the page to try again.
+              </p>
+            ) : null}
+          </div>
+        </div>
 
         {stepUp === 'email-change' ? (
           <StepUpPrompt

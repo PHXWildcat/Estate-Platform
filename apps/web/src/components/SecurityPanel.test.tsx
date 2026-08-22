@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { errorCopy, passwordChangeMessageFor, stepUpMessageFor } from '../lib/copy';
 import {
   SESSION_CACHE_TTL_MS,
@@ -1351,5 +1351,180 @@ describe('SecurityPanel — address change', () => {
 
     expect(await screen.findByText(errorCopy.UNKNOWN)).toBeInTheDocument();
     expect(screen.queryByText(/Your sign-in address has been changed/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * M24 PR2 — the address on file, revealed on demand (docs/03 §6v residual 2's
+ * closure).
+ *
+ * THE RESTING STATE IS THE PROPERTY. Every reveal spends a logged KMS decrypt
+ * and lands two events on the owner's audit trail, so the first assertion in
+ * this block is a NEGATIVE: rendering the page asks for nothing. The rest pin
+ * that four different facts — the answer, a failed read, an erased account,
+ * a version-skewed peer — each render as themselves and never as each other.
+ */
+describe('SecurityPanel — the address on file', () => {
+  const ON_FILE = 'owner@example.test';
+
+  it('asks for NOTHING on mount — the read is the owner’s explicit act', async () => {
+    let reads = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      AccountEmail: () => {
+        reads += 1;
+        return jsonResponse({ data: { accountEmail: ON_FILE } });
+      },
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    expect(screen.queryByText(ON_FILE)).not.toBeInTheDocument();
+    expect(reads).toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show the address on file' }));
+    const answer = await screen.findByText(ON_FILE);
+    expect(reads).toBe(1);
+    // The control is spent: the answer replaced it.
+    expect(
+      screen.queryByRole('button', { name: 'Show the address on file' }),
+    ).not.toBeInTheDocument();
+    // ANNOUNCED AND FOCUSED (the M24 PR2 review's finding): the answer landed
+    // inside the always-mounted polite region, and focus moved onto it —
+    // the activated button just unmounted, and without the move a keyboard
+    // user's focus would have fallen to <body>.
+    const region = answer.closest('[role="status"]');
+    expect(region).not.toBeNull();
+    await waitFor(() => expect(region).toHaveFocus());
+  });
+
+  it('a reveal still in flight when the change completes is DISCARDED, not resurrected', async () => {
+    // The review's demonstrated race: an answer read BEFORE the switch must
+    // never land AFTER its discard and be mistaken for fresh (the read
+    // cache's supersede rule, needed here by hand because this read is
+    // barred from the cache). Unguarded, the held-open reveal below rendered
+    // the PRE-change address beside "Your sign-in address has been changed".
+    let release: ((response: Response) => void) | null = null;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      AccountEmail: () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+      CompleteEmailChange: () => jsonResponse({ data: { completeEmailChange: { ok: true } } }),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show the address on file' }));
+    await waitFor(() => expect(release).not.toBeNull());
+
+    fireEvent.change(screen.getByLabelText('Code from the new address'), {
+      target: { value: 'EC1-ABCD' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new address' }));
+    await screen.findByText(/Your sign-in address has been changed/);
+    // The discard re-armed the control while the read is still outstanding.
+    expect(screen.getByRole('button', { name: 'Show the address on file' })).toBeInTheDocument();
+
+    await act(async () => {
+      release?.(jsonResponse({ data: { accountEmail: ON_FILE } }));
+      await Promise.resolve();
+    });
+
+    // The stale answer is exactly the address the discard called KNOWN WRONG
+    // — it must not render, and the control stays armed for a FRESH read.
+    expect(screen.queryByText(ON_FILE)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show the address on file' })).toBeInTheDocument();
+  });
+
+  it('renders a failed read as its OWN sentence — never an address, never silence', async () => {
+    // No AccountEmail handler: the mock's refusal reaches the client as a
+    // network failure, which is exactly the state under test.
+    installGraphqlFetchMock({ Session: sessionHandler, Sessions: sessionsHandler() });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show the address on file' }));
+
+    const failed = await screen.findByText(/We couldn’t retrieve the address on file just now/);
+    // Inside the ALWAYS-MOUNTED polite region (the FormStatus rule): a role
+    // inserted together with its content is silent in most screen readers.
+    expect(failed.closest('[role="status"]')).not.toBeNull();
+    // The remedy is honest: only the LOOKING failed.
+    expect(failed.textContent).toContain('The address itself is unchanged');
+  });
+
+  it('renders CONTENT_ERASED as erasure — a control firing, not an outage', async () => {
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      AccountEmail: () => graphqlError('CONTENT_ERASED'),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show the address on file' }));
+
+    const erased = await screen.findByText(/erased under a deletion request/);
+    expect(erased.textContent).toContain('no address left to show');
+    // No retry affordance in either spelling: the key was destroyed on
+    // purpose, so neither the reveal control nor the reload-remedy sentence
+    // may come back and invite one.
+    expect(
+      screen.queryByRole('button', { name: 'Show the address on file' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/retrieve the address on file/)).not.toBeInTheDocument();
+  });
+
+  it('treats a missing field as NO DATA — never rendered as an address', async () => {
+    // A BFF predating this query answers `{"data":{}}`, which `gqlRequest`
+    // admits as ok — and an `undefined` where the address belongs would be a
+    // rendered claim about the account on the strength of a version skew.
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      AccountEmail: () => jsonResponse({ data: {} }),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show the address on file' }));
+
+    await screen.findByText(/We couldn’t retrieve the address on file just now/);
+    expect(screen.queryByText(/Currently on file/)).not.toBeInTheDocument();
+  });
+
+  it('a completed change DISCARDS the revealed address rather than re-reading it', async () => {
+    let reads = 0;
+    installGraphqlFetchMock({
+      Session: sessionHandler,
+      Sessions: sessionsHandler(),
+      AccountEmail: () => {
+        reads += 1;
+        return jsonResponse({ data: { accountEmail: ON_FILE } });
+      },
+      CompleteEmailChange: () => jsonResponse({ data: { completeEmailChange: { ok: true } } }),
+    });
+    render(<SecurityPanel />);
+
+    await screen.findByRole('heading', { name: 'Sign-in address' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show the address on file' }));
+    await screen.findByText(ON_FILE);
+
+    fireEvent.change(screen.getByLabelText('Code from the new address'), {
+      target: { value: 'EC1-ABCD' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new address' }));
+    await screen.findByText(/Your sign-in address has been changed/);
+
+    // The old answer is KNOWN WRONG and gone — and NOT auto-re-read: a fresh
+    // disclosure costs an audited decrypt, so it stays the owner's explicit
+    // act. One read total is the proof.
+    expect(screen.queryByText(ON_FILE)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show the address on file' })).toBeInTheDocument();
+    expect(reads).toBe(1);
   });
 });

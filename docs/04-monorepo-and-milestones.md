@@ -8217,10 +8217,10 @@ scopes M26 splits the two FIRST. Neither absorbs the other by default.
 - **PR1 — the shared client read cache, plus its first consumer. SHIPPED**
   (record below). Closes §6v residual 1 (the stale banner) in the same change.
   Capability and caller together.
-- **PR2 — the address on file.** Identity route (record-first audited
-  decrypt), BFF field, web surface — likely /security, which already owns the
-  address-change ceremony. Closes §6v residual 2. Route and consumer in the
-  same change.
+- **PR2 — the address on file. SHIPPED** (record below). Identity route
+  (record-first audited decrypt), BFF field, web surface on /security, which
+  already owns the address-change ceremony. Closes §6v residual 2. Route and
+  consumer in the same change.
 - **PR3 — the dashboard page itself.** The home page becomes the dashboard;
   tiles consume the SAME persisted operations the existing pages use, through
   the cache — one behaviour, one spelling — and anything new regenerates the
@@ -8328,3 +8328,88 @@ reddens three cache tests AND the banner's residual-closing test (14 green).
 Removing the supersede bump reddens only the unwatched-stale-landing test
 (10 green) — a test added when the first mutation plan showed that path had
 no coverage. Restores `cmp -s`-verified from scratchpad copies.
+
+#### M24 PR2 — the address on file (2026-08-21)
+
+**`users.email_ct` gets its first reader ever, and §6v residual 2 closes.**
+From M1 the column was write-only: set at INSERT, replaced at the change
+switch, decrypted never (login resolves by blind index; the change ceremony
+decrypts its own STAGED copy). PR2 builds the disclosure end to end — repo
+read (`findEmailCiphertext`, deliberately NOT folded into `findById`),
+account-only `GET /v1/auth/email`, BFF `accountEmail` query, and a
+reveal-on-demand control in /security's Sign-in address section. docs/03
+§6rr holds the threat-model delta.
+
+**A NEW `AUDIT_ACTIONS` MEMBER, `auth.email.viewed`, record-FIRST.** No
+existing member honestly names an owner reading their own sign-in address
+(the auth.email.\* family covers only the change ceremony; the disclosure
+members all live in other services), so the closed vocabulary grows by one —
+which invokes the consumer-before-producers rule. With nothing deployed the
+rule costs a sentence (§6rr residual 1), exactly the cost the plan priced in.
+The route emits BEFORE the decrypt and fails closed in both directions: emit
+refused → no decrypt; decrypt unreadable after a shred race → the over-record
+stands (`distributionAmount`'s reasoning). The detail is empty because
+`SAFE_TOKEN_PATTERN` rejects `@` — the address structurally cannot ride the
+trail.
+
+**FOUR DESIGN DECISIONS THE UNDERSTAND FAN-OUT SURFACED, all taken.**
+Reveal-on-demand over mount-time (the no-prefetch rule, the read-cache
+enrollment bar, and the M18 `users` decrypt bound's "rare by design"
+calibration all point one way); the M18 bound's NOTE rewritten in the same
+change because this PR falsifies its "change/notice paths only" sentence
+(number kept: every read stays a user-initiated click); identity's first 410
+`content_erased` plus the BFF mapper's first 410 arm (status-keyed, the 429's
+reasoning), without which the erasure control would wear an outage's face;
+and a completed address change DISCARDS a revealed answer rather than
+auto-re-reading (a fresh disclosure stays the owner's explicit act).
+
+**Four mutations, each killed by its named assertion; layer precision held.**
+Reordering emit after decrypt reddens exactly the three ordering tests (41
+green). Dropping the mapper's 410 arm reddens the wire-half CONTENT_ERASED
+test alone — the graph half stays green because it proves the resolver layer
+through the double's error slot, which is the declared point of the two-half
+pattern. Mount-time fetch reddens the no-prefetch negative first (the named
+assertion) and the four sibling states behind it. Auto-refetch-on-complete
+reddens exactly the discard test. Positive control: a comment-only edit
+leaves both suites green (63/63). Restores `cmp -s`-verified from scratchpad
+copies.
+
+**DRIVEN LIVE, audit consumer rebuilt FIRST.** Because PR2 adds an
+`AUDIT_ACTIONS` member, the stack rebuild ordered audit ahead of
+identity/bff/web — the rule M25 PR4 watched fail. Fresh account on /security:
+the resting state renders the reveal control and no address; one click
+renders "Currently on file: <the registered address>"; the full change
+ceremony (code fetched from LocalStack SES) completes and the revealed
+address is DISCARDED — control back, old address gone from the DOM, still on
+/security; a re-reveal shows the NEW address. The consumer accepted
+everything: zero `schema_violation`, `auth.email.viewed` count exactly 2 (one
+per reveal), and the stored trail shows each viewed event timestamped BEFORE
+its paired `purpose=email_view` decrypt — the record-first ordering observed
+on the real pipeline, not just asserted in tests. Console clean; this drive
+found no defect.
+
+**The adversarial fan-out: four lenses at the PR2 commit, five findings, all
+confirmed 2–0 by refute-by-default verifiers, zero refuted, all fixed in the
+same change.** The BFF lens returned clean. The sharpest find was
+DEMONSTRATED twice over (a lens and a verifier each reproduced it with a
+held-open response): `revealAddress` had no supersede guard, so a reveal
+still in flight when the change ceremony completed landed AFTER the discard
+and rendered the known-wrong pre-change address beside the "has been
+changed" notice — the read cache's exact hazard, needed by hand in the one
+component whose read the cache is barred from holding. Fixed with a
+generation token bumped by both the discard and each new reveal; the
+mutation disabling the check reddens exactly the new race test. Second:
+the answer arm was announced to no one (the two FAILURE arms had roles, the
+arm carrying the answer had a bare `<p>`) and the activated control
+unmounted under keyboard focus — fixed with the FormStatus rule
+(always-mounted polite region) plus a focus move onto the landing outcome,
+scoped to the loading→outcome transition so the discard path steals nothing.
+Third: docs/03 §5.3's rewritten sentence overclaimed ("the one
+email-ciphertext read that exists ANYWHERE" — the change ceremony, profile
+contacts and notifications all decrypt email ciphertext; only the
+`users.email_ct`-column reading was true, and the sentence now says the
+column). Fourth and fifth (two lenses converged): the M18 bound note this
+PR rewrote to purge a falsified clause had CARRIED HALF THE FALSEHOOD
+FORWARD — its "notice" producer never existed under the `users` prefix, at
+M18 or since; the note now names the prefix's two real producers and
+records the phantom's history.

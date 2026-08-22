@@ -142,6 +142,34 @@ describeIfPg('identity service end to end', () => {
     expect(row.access_token_h.toString('utf8')).not.toContain(tokens.accessToken);
   });
 
+  it('reveals the address on file to its owner, record-first (M24 PR2)', async () => {
+    // No session, no address — and the guard's one generic refusal.
+    const denied = await request(server).get('/v1/auth/email');
+    expect(denied.status).toBe(401);
+
+    // The full round trip: the ciphertext register sealed, decrypted under the
+    // live DEK, answering the address the user registered with.
+    const res = await request(server)
+      .get('/v1/auth/email')
+      .set('Authorization', `Bearer ${tokens.accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ email: EMAIL });
+
+    // The disclosure record and the decrypt it authorised, IN THAT ORDER on
+    // the trail — the record-first rule, proven against the real emitter.
+    const audit = producer.messages
+      .filter((m) => m.topic === TOPICS.auditEvents)
+      .map((m) => JSON.parse(m.value) as { action: string; detail?: Record<string, string> });
+    const viewedAt = audit.findIndex((e) => e.action === 'auth.email.viewed');
+    const decryptAt = audit.findIndex(
+      (e) => e.action === 'crypto.field.decrypted' && e.detail?.['purpose'] === 'email_view',
+    );
+    expect(viewedAt).toBeGreaterThanOrEqual(0);
+    expect(decryptAt).toBeGreaterThan(viewedAt);
+    // The PII-firewall sweep at the end of this suite re-checks every message,
+    // this route's two events included, for the address itself.
+  });
+
   it('blocks the step-up-gated endpoint before step-up (403) and without a session (401)', async () => {
     const noStepup = await request(server)
       .post('/v1/auth/export-demo')

@@ -659,6 +659,9 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'identity GET /v1/auth/webauthn/credentials': consumed(`${BFF}/identity-client.ts`),
   'identity PATCH /v1/auth/webauthn/credentials/:id': consumed(`${BFF}/identity-client.ts`),
   'identity DELETE /v1/auth/webauthn/credentials/:id': consumed(`${BFF}/identity-client.ts`),
+  // M24 PR2: the address on file, flipped in the same change as its client —
+  // the M9 PR2 rule.
+  'identity GET /v1/auth/email': consumed(`${BFF}/identity-client.ts`),
   'identity GET /v1/auth/email/verification': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/email/verification/resend': consumed(`${BFF}/identity-client.ts`),
   'identity POST /v1/auth/email/verification/verify': consumed(`${BFF}/identity-client.ts`),

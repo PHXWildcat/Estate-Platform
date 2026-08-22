@@ -337,6 +337,10 @@ export const EMAIL_VERIFICATION_QUERY = `query EmailVerification {
   emailVerification
 }`;
 
+export const ACCOUNT_EMAIL_QUERY = `query AccountEmail {
+  accountEmail
+}`;
+
 export const RESEND_EMAIL_VERIFICATION_MUTATION = `mutation ResendEmailVerification {
   resendEmailVerification
 }`;
@@ -1139,6 +1143,7 @@ export const operations = {
   StartOperatorHandoff: START_OPERATOR_HANDOFF_MUTATION,
   ExportDemo: EXPORT_DEMO_MUTATION,
   EmailVerification: EMAIL_VERIFICATION_QUERY,
+  AccountEmail: ACCOUNT_EMAIL_QUERY,
   ResendEmailVerification: RESEND_EMAIL_VERIFICATION_MUTATION,
   VerifyEmail: VERIFY_EMAIL_MUTATION,
   ChangePassword: CHANGE_PASSWORD_MUTATION,

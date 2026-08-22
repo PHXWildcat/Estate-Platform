@@ -1,5 +1,5 @@
 import { ForbiddenException, HttpException, UnauthorizedException } from '@nestjs/common';
-import type { DekRepository, FieldCrypto } from '@estate/crypto';
+import { DekDestroyedError, type DekRepository, type FieldCrypto } from '@estate/crypto';
 import type { AuthEventsRepo } from '../src/auth-events.repo';
 import { AuthService } from '../src/auth.service';
 import type { AccountPasswordGate } from '../src/account-password-gate';
@@ -49,6 +49,7 @@ function makeFakes(): {
     findByEmailBidx: jest.Mock;
     insert: jest.Mock;
     findById: jest.Mock;
+    findEmailCiphertext: jest.Mock;
     updatePasswordHash: jest.Mock;
   };
   sessions: {
@@ -81,6 +82,7 @@ function makeFakes(): {
     registerRateLimited: jest.Mock;
     passwordChanged: jest.Mock;
     sessionRevoked: jest.Mock;
+    emailViewed: jest.Mock;
   };
   fieldCrypto: { getOrCreateDek: jest.Mock; encryptField: jest.Mock; decryptField: jest.Mock };
   deks: { findActiveByUser: jest.Mock };
@@ -103,6 +105,7 @@ function makeFakes(): {
       findByEmailBidx: jest.fn().mockResolvedValue(null),
       insert: jest.fn(),
       findById: jest.fn().mockResolvedValue(null),
+      findEmailCiphertext: jest.fn().mockResolvedValue(null),
       updatePasswordHash: jest.fn().mockResolvedValue(true),
     },
     sessions: {
@@ -147,6 +150,7 @@ function makeFakes(): {
       registerRateLimited: jest.fn(),
       passwordChanged: jest.fn(),
       sessionRevoked: jest.fn(),
+      emailViewed: jest.fn(),
     },
     fieldCrypto: {
       getOrCreateDek: jest.fn().mockResolvedValue('dek-1'),
@@ -1020,5 +1024,86 @@ describe('AuthService login → address verification (M14)', () => {
     ).resolves.toMatchObject({ userId: 'u-1' });
     await settle();
     expect(fakes.emailVerification.ensureVerificationRequested).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService.emailOnFile — the record goes first (M24 PR2)', () => {
+  const ROW = { email_ct: Buffer.from('sealed-bytes'), dek_id: 'dek-9' };
+
+  function primed(): ReturnType<typeof makeFakes> {
+    const fakes = makeFakes();
+    fakes.users.findEmailCiphertext.mockResolvedValue(ROW);
+    fakes.fieldCrypto.decryptField.mockResolvedValue(Buffer.from('owner@example.com'));
+    return fakes;
+  }
+
+  it('decrypts the LIVE ciphertext under the caller’s own identity', async () => {
+    const fakes = primed();
+    await expect(makeService(fakes).emailOnFile('u-1', 's-1')).resolves.toEqual({
+      email: 'owner@example.com',
+    });
+    expect(fakes.users.findEmailCiphertext).toHaveBeenCalledWith('u-1');
+    // The exact decrypt call is the claim: the SAME field id register and the
+    // change ceremony encrypt under (AAD compatibility), the row's own dek_id,
+    // and the caller as both subject and actor.
+    expect(fakes.fieldCrypto.decryptField).toHaveBeenCalledWith({
+      userId: 'u-1',
+      dekId: 'dek-9',
+      field: 'users.email',
+      ciphertext: ROW.email_ct,
+      actorId: 'u-1',
+      actorType: 'user',
+      purpose: 'email_view',
+    });
+  });
+
+  it('emits the disclosure record BEFORE the decrypt, naming the session', async () => {
+    const fakes = primed();
+    await makeService(fakes).emailOnFile('u-1', 's-1');
+    expect(fakes.events.emailViewed).toHaveBeenCalledWith('u-1', 's-1');
+    // Jest's invocationCallOrder is global and monotonically increasing, so
+    // this pins the ORDER, not just that both ran.
+    const emitAt = fakes.events.emailViewed.mock.invocationCallOrder[0] as number;
+    const decryptAt = fakes.fieldCrypto.decryptField.mock.invocationCallOrder[0] as number;
+    expect(emitAt).toBeLessThan(decryptAt);
+  });
+
+  it('a refused record means NO disclosure — the decrypt never runs', async () => {
+    // The record-first ordering fails closed in this direction too, matching
+    // the FieldCrypto sink's posture with plaintext it cannot log.
+    const fakes = primed();
+    fakes.events.emailViewed.mockRejectedValue(new Error('audit pipe refused'));
+    await expect(makeService(fakes).emailOnFile('u-1', 's-1')).rejects.toThrow(
+      'audit pipe refused',
+    );
+    expect(fakes.fieldCrypto.decryptField).not.toHaveBeenCalled();
+  });
+
+  it('a decrypt racing a shred answers content_erased — already recorded, and that is the design', async () => {
+    const fakes = primed();
+    fakes.fieldCrypto.decryptField.mockRejectedValue(new DekDestroyedError());
+    const refusal = await refusalFrom(makeService(fakes).emailOnFile('u-1', 's-1'));
+    expect(refusal.getStatus()).toBe(410);
+    expect(refusal.getResponse()).toEqual({ error: 'content_erased' });
+    // The over-record is the accepted false positive (`distributionAmount`'s
+    // reasoning): a recorded view of an unreadable value, never the reverse.
+    expect(fakes.events.emailViewed).toHaveBeenCalled();
+  });
+
+  it('any OTHER decrypt failure stays an outage — never dressed as erasure', async () => {
+    const fakes = primed();
+    fakes.fieldCrypto.decryptField.mockRejectedValue(new Error('kms unreachable'));
+    await expect(makeService(fakes).emailOnFile('u-1', 's-1')).rejects.toThrow('kms unreachable');
+  });
+
+  it('a row deleted mid-session answers not_found and records NOTHING', async () => {
+    // Nothing was disclosed, so nothing is recorded (the estatesNaming
+    // zero-rows rule) — findEmailCiphertext defaults to null in the fakes.
+    const fakes = makeFakes();
+    const refusal = await refusalFrom(makeService(fakes).emailOnFile('u-1', 's-1'));
+    expect(refusal.getStatus()).toBe(404);
+    expect(refusal.getResponse()).toEqual({ error: 'not_found' });
+    expect(fakes.events.emailViewed).not.toHaveBeenCalled();
+    expect(fakes.fieldCrypto.decryptField).not.toHaveBeenCalled();
   });
 });

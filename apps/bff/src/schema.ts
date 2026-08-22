@@ -667,6 +667,17 @@ export const typeDefs = /* GraphQL */ `
     """
     emailVerification: EmailVerificationStatus!
     """
+    The sign-in address on file (M24 PR2, docs/03 §6v residual 2's closure).
+
+    A DEDICATED query on emailVerification's reasoning, and one more: every
+    answer is an AUDITED DECRYPT on the caller's own trail (record-first
+    auth.email.viewed, then the decrypt event), so this must never ride a
+    query a page asks routinely. The client asks it on an explicit reveal —
+    never on mount, never enrolled in the shared read cache. Errors
+    CONTENT_ERASED when the account's DEK was destroyed mid-session.
+    """
+    accountEmail: String!
+    """
     Every live credential on the caller's account (M16) — the paired-devices
     surface. The first read of its kind in the product: until an extension
     credential could outlive the browser, a session was a cookie and there was
@@ -2395,6 +2406,16 @@ export function createBffSchema(deps: SchemaDeps): GraphQLSchema {
           ctx: RequestContext,
         ): Promise<string> =>
           (await identity.emailVerificationStatus(requireAccessToken(ctx))).toUpperCase(),
+        /**
+         * The address on file (M24 PR2), forwarded untouched: identity
+         * decrypted it as an audited disclosure and the value is the answer.
+         * CONTENT_ERASED surfaces with its own code; everything else masks.
+         */
+        accountEmail: async (
+          _parent: unknown,
+          _args: unknown,
+          ctx: RequestContext,
+        ): Promise<string> => identity.accountEmail(requireAccessToken(ctx)),
         sessions: async (
           _parent: unknown,
           _args: unknown,

@@ -293,6 +293,32 @@ export class AuthController {
   }
 
   /**
+   * The address on file (M24 PR2) — closes docs/03 §6v residual 2: until this
+   * route, no surface showed the address itself, only its verification status.
+   *
+   * A DEDICATED ROUTE, never a field on `GET /v1/auth/session`, for that
+   * route's own documented reason plus a sharper one: session is the
+   * cross-service introspection hot path admitting EVERY audience, so an email
+   * field there would spend a logged KMS decrypt on every guarded request in
+   * the product and disclose PII to vault/extension/operator sessions. This
+   * route is UNDECORATED — account audience only, deny by default.
+   *
+   * SESSION-ONLY, NO STEP-UP: reading one's own sign-in address follows the
+   * profile contact-detail precedent, and the step-up list (CLAUDE.md) names
+   * no self-disclosure case. The control is the trail instead — a record-first
+   * `auth.email.viewed` naming the session, then the automatic
+   * `crypto.field.decrypted` — and the M18 decrypt-rate bound on the `users`
+   * prefix caps the volume.
+   */
+  @Get('email')
+  @HttpCode(200)
+  @UseGuards(SessionGuard)
+  async emailOnFile(@Req() request: AuthedRequest): Promise<{ email: string }> {
+    const auth = requireAuth(request);
+    return this.auth.emailOnFile(auth.userId, auth.sessionId);
+  }
+
+  /**
    * Whether the delivery store can provably reach this user (M14).
    *
    * A DEDICATED ROUTE rather than a field on `GET /v1/auth/session`. That route
