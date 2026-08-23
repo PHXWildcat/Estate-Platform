@@ -672,8 +672,11 @@ export class EmergencyAccessService {
     policyId: string,
     ownerUserId: string,
   ): Promise<PolicyRow> {
-    const policy = await this.emergency.lockLiveById(tx, policyId);
+    const policy = await this.emergency.lockLiveByIdForOwner(tx, policyId, ownerUserId);
     if (!policy) throw new NotFoundException({ error: 'not_found' });
+    // Cedar still decides the ACTION on the owner's own vault; what it no
+    // longer decides is ownership, because a policy belonging to somebody else
+    // never arrives here to be refused distinguishably.
     this.authz.assertCan(ownerUserId, 'manage', vaultResource(policy.user_id));
     return policy;
   }
@@ -683,13 +686,13 @@ export class EmergencyAccessService {
     policyId: string,
     granteeUserId: string,
   ): Promise<PolicyRow> {
-    const policy = await this.emergency.lockLiveById(tx, policyId);
-    if (!policy) throw new NotFoundException({ error: 'not_found' });
     // Not a Cedar decision: the grantee is not the resource owner, and the
     // bundled owner policy would (correctly) deny. Designation IS the grant,
-    // and it is recorded on this row.
-    if (policy.grantee_user_id !== granteeUserId)
-      throw new NotFoundException({ error: 'not_found' });
+    // and it is recorded on this row — so the designation is the WHERE clause.
+    // This arm already answered a uniform 404 by comparing after the read; M27
+    // PR1a fused it so both arms of this file spell the rule one way.
+    const policy = await this.emergency.lockLiveByIdForGrantee(tx, policyId, granteeUserId);
+    if (!policy) throw new NotFoundException({ error: 'not_found' });
     return policy;
   }
 }

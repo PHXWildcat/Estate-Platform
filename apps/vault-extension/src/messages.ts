@@ -101,11 +101,18 @@ export type VaultRequest =
        * form the user did not fill cannot erase a password they cannot see. */
       readonly changes: Record<string, unknown>;
       /**
-       * The version the popup READ, sent on as `If-Match`. The blob is sealed
-       * for `blobVersion + 1`, because that is what the service will write and
-       * the number is inside the AEAD's AAD.
+       * The version the popup READ. The blob is sealed for `blobVersion + 1`,
+       * because that is what the service will write and the number is inside
+       * the AEAD's AAD. It is NOT what `If-Match` carries — see `revision`.
        */
       readonly blobVersion: number;
+      /**
+       * The concurrency token the popup read, sent on as `If-Match` (M27 PR1a).
+       * Separate from `blobVersion` because a version restore puts a captured
+       * version back, so a version can recur on a row and an equality check on
+       * a recurring value silently admits a stale write.
+       */
+      readonly revision: number;
     }
   | { readonly target: typeof OFFSCREEN; readonly kind: 'lock'; readonly bearer?: string };
 
@@ -114,8 +121,10 @@ export interface ItemSummary {
   readonly id: string;
   readonly itemType: string;
   readonly title: string;
-  /** The version this summary was read at; an edit sends it back as If-Match. */
+  /** The version this summary was read at; it opens the blob. */
   readonly blobVersion: number;
+  /** The concurrency token this summary was read at; an edit sends it back as If-Match. */
+  readonly revision: number;
   /**
    * The blob decrypted but its content did not parse. Listed rather than
    * hidden — a user must be able to see that something is there (M15 PR2).

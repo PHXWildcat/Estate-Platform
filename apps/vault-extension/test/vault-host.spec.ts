@@ -74,6 +74,7 @@ async function stubService(
           await encryptItem(masterKey, { userId: USER, itemId: id, blobVersion: 1 }, plaintext),
         ),
         blobVersion: 1,
+        revision: 41,
         updatedAt: '2026-08-10T00:00:00Z',
       };
     }),
@@ -137,20 +138,34 @@ async function stubService(
       const method = init.method ?? 'GET';
       if (method === 'POST') {
         const sent = JSON.parse(body) as { id: string; itemType: string };
-        // The service's own shape: version 1 on insert, echoed back.
-        return Promise.resolve(reply(201, { ...sent, blobVersion: 1 }));
+        // The service's own shape: version 1 on insert, echoed back — and a
+        // revision that is DELIBERATELY not 1, so a caller reading the wrong
+        // number off this response cannot pass by coincidence.
+        return Promise.resolve(reply(201, { ...sent, blobVersion: 1, revision: 41 }));
       }
       if (method === 'PUT') {
         const sent = JSON.parse(body) as { itemType: string };
         const headers = (init.headers ?? {}) as Record<string, string>;
-        // And the service's own rule: it writes `locked.blob_version + 1`,
-        // having first compared `If-Match` to the row it locked.
+        /*
+         * The service's own rule, and M27 PR1a moved half of it. `If-Match`
+         * carries `revision` and is compared to the row that was locked; the
+         * service then writes `locked.blob_version + 1` (the number the client
+         * sealed against) while the trigger advances `revision` on its own.
+         *
+         * This double therefore derives the new blob version from ITS OWN ROW
+         * rather than from the header. Deriving it from `If-Match + 1`, as it
+         * did while the two were one number, would keep passing if a caller
+         * sent the wrong one — the double would be agreeing with the mistake.
+         */
+        const id = path.split('/').pop();
+        const row = rows.find((r) => r.id === id);
         const ifMatch = Number(headers['if-match']);
         return Promise.resolve(
           reply(200, {
-            id: path.split('/').pop(),
+            id,
             itemType: sent.itemType,
-            blobVersion: ifMatch + 1,
+            blobVersion: (row?.blobVersion ?? 0) + 1,
+            revision: ifMatch + 1,
           }),
         );
       }
@@ -196,6 +211,7 @@ describe('unlocking through the host', () => {
           itemType: 'password',
           title: 'Bank login',
           blobVersion: 1,
+          revision: 41,
         },
       ],
     });
@@ -391,6 +407,7 @@ describe('unlocking through the host', () => {
                     itemType: 'password',
                     blob: 'AAAAAAAAAAAAAAAAAAAAAA==',
                     blobVersion: 1,
+                    revision: 41,
                     updatedAt: '2026-08-10T00:00:00Z',
                   },
                 ],
@@ -622,6 +639,7 @@ describe('writing an item through the host (M16 PR4a)', () => {
         itemType: 'password',
         changes: { title: 'x' },
         blobVersion: 3,
+        revision: 43,
       }),
     ).toEqual({ ok: false, code: 'VAULT_LOCKED' });
     // And crucially it did not hand plaintext to the holder on the way to
@@ -643,13 +661,22 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
     const made = await vault.createItem(BEARER, 'password', { title: 'Typed here' });
     expect(made.ok).toBe(true);
     const data = (
-      made as { data: { id: string; itemType: string; title: string; blobVersion: number } }
+      made as {
+        data: {
+          id: string;
+          itemType: string;
+          title: string;
+          blobVersion: number;
+          revision: number;
+        };
+      }
     ).data;
-    expect({ itemType: data.itemType, title: data.title, blobVersion: data.blobVersion }).toEqual({
-      itemType: 'password',
-      title: 'Typed here',
-      blobVersion: 1,
-    });
+    expect({
+      itemType: data.itemType,
+      title: data.title,
+      blobVersion: data.blobVersion,
+      revision: data.revision,
+    }).toEqual({ itemType: 'password', title: 'Typed here', blobVersion: 1, revision: 41 });
     // A UUID the HOST minted, not one the caller supplied.
     expect(data.id).toMatch(/^[0-9a-f-]{36}$/);
 
@@ -673,22 +700,34 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
       itemId: '05555555-0000-4000-8000-000000000000',
       itemType: 'password',
       changes: { title: 'Edited' },
-      blobVersion: 4,
+      // The two numbers the caller READ, and they disagree on purpose: 41 is
+      // the concurrency token, 1 is what the blob is sealed against.
+      blobVersion: 1,
+      revision: 41,
     });
 
     const put = calls.find((c) => c.method === 'PUT');
-    // The version the caller READ goes in the header...
-    expect(put?.headers['if-match']).toBe('4');
-    // ...and the service answers with its successor, which is what the blob was
-    // sealed for. If those two ever disagreed the row would land unopenable and
-    // nothing in the response would say so.
+    /*
+     * THE REVISION GOES IN THE HEADER, NOT THE BLOB VERSION — and this
+     * assertion is the client half of M27 PR1a. It read `'4'` from a fixture
+     * where the two numbers were the same value, so it could not have told the
+     * difference; sending `blobVersion` here now fails it outright.
+     */
+    expect(put?.headers['if-match']).toBe('41');
+    /*
+     * ...and the service answers with BOTH: the blob version it actually wrote,
+     * which is what the blob was sealed for (if those disagreed the row would
+     * land unopenable and nothing in the response would say so), and the next
+     * revision, which the caller must send on its next edit.
+     */
     expect(saved).toEqual({
       ok: true,
       data: {
         id: '05555555-0000-4000-8000-000000000000',
         itemType: 'password',
         title: 'Edited',
-        blobVersion: 5,
+        blobVersion: 2,
+        revision: 42,
       },
     });
   });
@@ -707,6 +746,7 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
         itemType: 'password',
         changes: { title: 'Edited' },
         blobVersion: 1,
+        revision: 41,
       }),
     ).toEqual({ ok: false, code: 'NOT_FOUND' });
     // And crucially it did not PUT anything: a merge that found nothing must not
@@ -735,6 +775,7 @@ describe('a write, sealed for the version the service will write (M16 PR4a)', ()
         itemType: 'password',
         changes: { title: 'Edited' },
         blobVersion: 1,
+        revision: 41,
       }),
     ).toEqual({ ok: false, code: 'VERSION_CONFLICT' });
     (globalThis as { fetch?: unknown }).fetch = previous;

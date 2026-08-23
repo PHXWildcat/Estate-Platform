@@ -65,7 +65,14 @@ export interface VaultItemDto {
   readonly id: string;
   readonly itemType: VaultItemType;
   readonly blob: string;
+  /**
+   * The version the blob is SEALED AGAINST. A client decrypts with this and
+   * re-seals against `blobVersion + 1`; it is not the concurrency token and a
+   * restore can move it backwards (migration 005).
+   */
   readonly blobVersion: number;
+  /** The concurrency token. This is what `If-Match` carries. */
+  readonly revision: number;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -81,6 +88,7 @@ function toDto(row: ItemRow): VaultItemDto {
     itemType: row.item_type,
     blob: row.blob_ct.toString('base64'),
     blobVersion: row.blob_version,
+    revision: row.revision,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -386,7 +394,7 @@ export class VaultService {
     accountSessionId: string,
     itemId: string,
   ): Promise<VaultItemDto> {
-    const row = await this.items.findLiveById(this.db, itemId);
+    const row = await this.items.findLiveById(this.db, actorUserId, itemId);
     if (!row) throw new NotFoundException({ error: 'not_found' });
     this.authz.assertCan(actorUserId, 'read', vaultItemResource(itemId, row.user_id));
 
@@ -395,9 +403,21 @@ export class VaultService {
   }
 
   /**
-   * Update an item. `If-Match` carries the blob version the client encrypted
-   * against; the new blob is bound by AAD to version N+1, so the server MUST
-   * store exactly that or the item stops decrypting.
+   * Update an item.
+   *
+   * TWO NUMBERS, TWO JOBS, and M27 PR1a split them because one value could not
+   * hold both. `If-Match` carries `revision` — the trigger-maintained counter
+   * that never repeats — and that is what decides whether this write races
+   * another. `blob_version` is the AEAD binding: the client sealed the new blob
+   * against `blob_version + 1`, so the server MUST store exactly that or the
+   * item stops decrypting.
+   *
+   * Equality on `revision` is a sound change detector because the schema, not a
+   * convention at this call site, guarantees the value is never reused. It was
+   * NOT sound on `blob_version`: M27's version restore puts a captured version
+   * back, so a row could return to a number a client still held and a stale
+   * write would pass this check with no conflict and silently overwrite the
+   * restore. Migration 005 carries the demonstration.
    */
   async updateItem(
     actorUserId: string,
@@ -407,10 +427,10 @@ export class VaultService {
     input: { itemType: VaultItemType; blob: string },
   ): Promise<VaultItemDto> {
     const row = await this.db.withTransaction(actorUserId, async (tx) => {
-      const locked = await this.items.lockLiveById(tx, itemId);
+      const locked = await this.items.lockLiveById(tx, actorUserId, itemId);
       if (!locked) throw new NotFoundException({ error: 'not_found' });
       this.authz.assertCan(actorUserId, 'update', vaultItemResource(itemId, locked.user_id));
-      if (locked.blob_version !== ifMatch) {
+      if (locked.revision !== ifMatch) {
         throw new ConflictException({ error: 'version_conflict' });
       }
       return this.items.update(tx, {
@@ -428,7 +448,7 @@ export class VaultService {
   async deleteItem(actorUserId: string, accountSessionId: string, itemId: string): Promise<void> {
     const now = this.clock();
     await this.db.withTransaction(actorUserId, async (tx) => {
-      const locked = await this.items.lockLiveById(tx, itemId);
+      const locked = await this.items.lockLiveById(tx, actorUserId, itemId);
       if (!locked) throw new NotFoundException({ error: 'not_found' });
       this.authz.assertCan(actorUserId, 'delete', vaultItemResource(itemId, locked.user_id));
       // 'user_delete': the keyset is untouched by this route, so the blob stays

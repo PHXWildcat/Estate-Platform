@@ -63,7 +63,10 @@ export interface VaultItemRow {
   readonly id: string;
   readonly itemType: string;
   readonly blob: string;
+  /** Feeds the AAD that opens `blob`. NOT the concurrency token. */
   readonly blobVersion: number;
+  /** The concurrency token, sent back as `If-Match` (M27 PR1a). */
+  readonly revision: number;
   readonly updatedAt: string;
 }
 
@@ -72,16 +75,26 @@ export interface OpenedSummary {
   readonly itemType: string;
   readonly title: string;
   /**
-   * The version this summary was read AT (M16 PR4a).
+   * The concurrency token this summary was read AT (M16 PR4a; split off
+   * `blobVersion` by M27 PR1a).
    *
    * An edit sends it back as `If-Match`, which is the whole of the optimistic
    * concurrency: the service compares it to the row it locks and answers 409
-   * `version_conflict` if they differ. Re-reading the version at write time
-   * instead would make the check pass every time and defeat it, so the number
-   * has to travel with the thing the user opened.
+   * `version_conflict` if they differ. Re-reading it at write time instead
+   * would make the check pass every time and defeat it, so the number has to
+   * travel with the thing the user opened.
    *
-   * Not a secret — a monotonic counter the service already returns on every
-   * list.
+   * It is a SEPARATE number from `blobVersion` because a version restore puts
+   * a captured version back on a row, so a blob version can recur — and an
+   * equality check on a value that can recur admits exactly the stale write it
+   * was there to refuse.
+   */
+  readonly revision: number;
+  /**
+   * The version the blob is SEALED against, which is what opens it.
+   *
+   * Not a secret, and no longer monotonic: a restore puts a captured version
+   * back, which is why it stopped being the concurrency token.
    */
   readonly blobVersion: number;
   readonly unreadable?: boolean;
@@ -200,7 +213,12 @@ export class VaultKeyHolder {
     if (!vault || !userId) throw new Error('vault is locked');
     const out: OpenedSummary[] = [];
     for (const row of rows) {
-      const base = { id: row.id, itemType: row.itemType, blobVersion: row.blobVersion };
+      const base = {
+        id: row.id,
+        itemType: row.itemType,
+        blobVersion: row.blobVersion,
+        revision: row.revision,
+      };
       let plaintext: Uint8Array | null = null;
       try {
         plaintext = await decryptItem(
@@ -255,6 +273,7 @@ export class VaultKeyHolder {
           itemType: row.itemType,
           title: titleOf(plaintext),
           blobVersion: row.blobVersion,
+          revision: row.revision,
           verdict,
         });
       } catch {

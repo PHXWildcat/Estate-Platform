@@ -522,9 +522,95 @@ describeIfPg('vault service end to end', () => {
         .expect(400, { error: 'invalid_request' });
     });
 
+    /*
+     * THE ARM WHERE THE TWO NUMBERS DISAGREE (M27 PR1a).
+     *
+     * Every test above it is blind to this change, and that is the point of
+     * writing it. On a row that has only ever been created and updated,
+     * `blob_version` and `revision` advance together and are always EQUAL — so
+     * an assertion driven through those states passes identically whether the
+     * service compares `If-Match` to one or to the other. The behaviour only
+     * becomes falsifiable once a row exists where they differ, which is exactly
+     * the state M27's version restore creates.
+     *
+     * The divergence is forced here with SQL rather than waited for, because
+     * PR1a ships the token and PR1b ships the restore that moves it: a change
+     * whose proof arrives a PR later is a change nobody checked.
+     */
+    it('compares If-Match to the REVISION, not to the blob version', async () => {
+      // Move blob_version somewhere revision is not. `vault_items` constrains
+      // it only to be positive, which is what lets a restore put a captured
+      // version back; the trigger advances revision on this write regardless.
+      await admin.query(`UPDATE vault_items SET blob_version = 9 WHERE id = $1`, [itemId]);
+      const state = await admin.query<{ blob_version: number; revision: number }>(
+        `SELECT blob_version, revision FROM vault_items WHERE id = $1`,
+        [itemId],
+      );
+      const { blob_version: blobVersion, revision } = state.rows[0]!;
+      // ANTI-VACUITY: if these were equal the rest of this test would pass for
+      // the wrong reason, which is the failure mode it exists to rule out.
+      expect(blobVersion).toBe(9);
+      expect(revision).not.toBe(blobVersion);
+
+      // The BLOB VERSION is refused as a concurrency token...
+      await request(server)
+        .put(`/v1/vault/items/${itemId}`)
+        .set({ ...unlocked(), 'if-match': String(blobVersion) })
+        .send({ itemType: 'password', blob: Buffer.alloc(64).toString('base64') })
+        .expect(409, { error: 'version_conflict' });
+
+      // ...and the REVISION is accepted. The blob is sealed against
+      // `blobVersion + 1` because that is what the service will store — the two
+      // numbers are used for two different things in this one request.
+      const blob = await encryptItem(
+        masterKey,
+        { userId: OWNER, itemId, blobVersion: blobVersion + 1 },
+        utf8('written against the revision'),
+      );
+      const res = await request(server)
+        .put(`/v1/vault/items/${itemId}`)
+        .set({ ...unlocked(), 'if-match': String(revision) })
+        .send({ itemType: 'password', blob: Buffer.from(blob).toString('base64') })
+        .expect(200);
+
+      const dto = res.body as VaultItemDto & { revision: number };
+      expect(dto.blobVersion).toBe(blobVersion + 1);
+      expect(dto.revision).toBe(revision + 1);
+      // And it still opens, which is the half the AAD binding is responsible for.
+      const plaintext = await decryptItem(
+        masterKey,
+        { userId: OWNER, itemId, blobVersion: dto.blobVersion },
+        new Uint8Array(Buffer.from(dto.blob, 'base64')),
+      );
+      expect(Buffer.from(plaintext).toString('utf8')).toBe('written against the revision');
+    });
+
+    it('will not let a writer choose its own revision', async () => {
+      const before = await admin.query<{ revision: number }>(
+        `SELECT revision FROM vault_items WHERE id = $1`,
+        [itemId],
+      );
+      // A statement that sets `revision` explicitly — the shape a future writer
+      // would reach for, and the shape that would let a restore reuse a token.
+      await admin.query(`UPDATE vault_items SET revision = 1 WHERE id = $1`, [itemId]);
+      const after = await admin.query<{ revision: number }>(
+        `SELECT revision FROM vault_items WHERE id = $1`,
+        [itemId],
+      );
+      // The trigger overrode it. Not "rejected the statement" — assigned the
+      // successor, so no caller has to remember and no caller can lie.
+      expect(after.rows[0]!.revision).toBe(before.rows[0]!.revision + 1);
+    });
+
     it('captures a version row attributed to the actor on update', async () => {
+      // ORDERED, because `rows[0]` of an unordered scan is whatever Postgres
+      // felt like returning — and this row is no longer the only one for this
+      // item now that the revision tests write to it. The keyset history query
+      // below has always ordered by `version_seq`; this one had not, so the two
+      // spellings of one question disagreed about whether order mattered.
       const rows = await admin.query<{ actor_id: string; operation: string }>(
-        `SELECT actor_id, operation FROM vault_items_versions WHERE row_id = $1`,
+        `SELECT actor_id, operation FROM vault_items_versions
+          WHERE row_id = $1 ORDER BY version_seq`,
         [itemId],
       );
       expect(rows.rows.length).toBeGreaterThan(0);
@@ -553,6 +639,82 @@ describeIfPg('vault service end to end', () => {
         .get(`/v1/vault/items/${randomUUID()}`)
         .set(unlocked())
         .expect(404, { error: 'not_found' });
+    });
+
+    /*
+     * ONE REFUSAL FOR "NO SUCH ITEM" AND "NOT YOUR ITEM" (M27 PR1a).
+     *
+     * Before this, every item route read the row by id ALONE and then asked
+     * Cedar, which answers `403 forbidden` — so a missing item gave 404 and
+     * somebody else's gave 403, and the pair is an existence oracle for any
+     * item UUID that leaks. docs/03's rule is a uniform 404 for both, and
+     * CLAUDE.md's is that a read placed before the authz gate has already
+     * answered a question about someone else's data.
+     *
+     * The fix is a fused predicate — `WHERE id = $1 AND user_id = $2` — so the
+     * row never arrives to be refused distinguishably. This test compares the
+     * two responses as WHOLE VALUES rather than asserting 404 twice: a status
+     * match with a different body would still be a discriminator.
+     */
+    it('answers a stranger-owned item exactly as it answers a missing one', async () => {
+      const strangersItem = randomUUID();
+      await admin.query(
+        `INSERT INTO vault_items (id, user_id, item_type, blob_ct, blob_version)
+         VALUES ($1, $2, 'password', $3, 1)`,
+        [strangersItem, STRANGER, Buffer.alloc(64, 7)],
+      );
+      // ANTI-VACUITY: the row has to actually exist, or both arms are the
+      // missing-row arm and the test compares a thing to itself.
+      const exists = await admin.query<{ n: string }>(
+        `SELECT count(*) AS n FROM vault_items WHERE id = $1 AND user_id = $2`,
+        [strangersItem, STRANGER],
+      );
+      expect(exists.rows[0]!.n).toBe('1');
+
+      const absent = randomUUID();
+      const probes: readonly { name: string; run: (id: string) => request.Test }[] = [
+        {
+          name: 'GET',
+          run: (id) => request(server).get(`/v1/vault/items/${id}`).set(unlocked()),
+        },
+        {
+          name: 'PUT',
+          run: (id) =>
+            request(server)
+              .put(`/v1/vault/items/${id}`)
+              .set({ ...unlocked(), 'if-match': '1' })
+              .send({ itemType: 'password', blob: Buffer.alloc(64).toString('base64') }),
+        },
+        {
+          name: 'DELETE',
+          run: (id) =>
+            request(server)
+              .delete(`/v1/vault/items/${id}`)
+              .set({ ...withStepUp(), [VAULT_SESSION_HEADER]: vaultToken }),
+        },
+      ];
+
+      for (const probe of probes) {
+        // Typed as `unknown` bodies on purpose: the assertion compares them as
+        // opaque values, and narrowing would invite asserting a shape instead.
+        const mine = (await probe.run(absent)) as { status: number; body: unknown };
+        const theirs = (await probe.run(strangersItem)) as { status: number; body: unknown };
+        expect({ route: probe.name, status: theirs.status, body: theirs.body }).toEqual({
+          route: probe.name,
+          status: mine.status,
+          body: mine.body,
+        });
+        // And the shared answer is the uniform one, not a shared 403.
+        expect(mine.status).toBe(404);
+      }
+
+      // The stranger's row is untouched by any of it — a refusal that wrote
+      // would be a worse leak than a refusal that answered.
+      const after = await admin.query<{ deleted_at: Date | null; revision: number }>(
+        `SELECT deleted_at, revision FROM vault_items WHERE id = $1`,
+        [strangersItem],
+      );
+      expect(after.rows[0]).toMatchObject({ deleted_at: null, revision: 1 });
     });
 
     it('requires step-up as well as an open vault to delete', async () => {

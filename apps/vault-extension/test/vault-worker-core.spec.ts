@@ -112,6 +112,9 @@ async function sealItem(
     itemType: 'password',
     blob: toBase64(blob),
     blobVersion: 1,
+    // Deliberately NOT 1: the two numbers must disagree or a call site
+    // that sends the wrong one is indistinguishable from a correct one.
+    revision: 41,
     updatedAt: '2026-08-10T12:00:00.000Z',
   };
 }
@@ -219,10 +222,11 @@ describe('the key holder', () => {
       itemType: 'password',
       blob,
       blobVersion: 1,
+      revision: 41,
       updatedAt: '2026-08-11T00:00:00.000Z',
     };
     expect(await holder.summarise([row])).toEqual([
-      { id: ITEM, itemType: 'password', title: 'Sealed here', blobVersion: 1 },
+      { id: ITEM, itemType: 'password', title: 'Sealed here', blobVersion: 1, revision: 41 },
     ]);
     // And the whole content survives, which `summarise` alone would not show.
     expect(await holder.fillFor([row], ITEM, 'https://bank.example.com/login')).toEqual({
@@ -249,12 +253,13 @@ describe('the key holder', () => {
       itemType: 'password',
       blob,
       blobVersion: 1,
+      revision: 41,
       updatedAt: 'now',
     };
     // Presented as version 1 it does not open — listed as unreadable rather than
     // silently accepted.
     expect(await holder.summarise([claimingV1])).toEqual([
-      { id: ITEM, itemType: 'password', title: '', blobVersion: 1, unreadable: true },
+      { id: ITEM, itemType: 'password', title: '', blobVersion: 1, revision: 41, unreadable: true },
     ]);
   });
 
@@ -302,7 +307,10 @@ describe('the key holder', () => {
     // ...and the untouched ones survived, including the url the fill depends on
     // and the title the list shows.
     expect(await holder.summarise([next])).toEqual([
-      { id: ITEM, itemType: 'password', title: 'Bank login', blobVersion: 2 },
+      // revision stays 41: the CLIENT bumped the blob version it seals against,
+      // and only the server (its trigger) advances the concurrency token. The
+      // two numbers moving independently here is the property, not a slip.
+      { id: ITEM, itemType: 'password', title: 'Bank login', blobVersion: 2, revision: 41 },
     ]);
   });
 
@@ -384,7 +392,7 @@ describe('the key holder', () => {
     const summaries = await holder.summarise([row]);
 
     expect(summaries).toEqual([
-      { id: row.id, itemType: 'password', title: 'Bank login', blobVersion: 1 },
+      { id: row.id, itemType: 'password', title: 'Bank login', blobVersion: 1, revision: 41 },
     ]);
     // THE SECRET HALF IS NOT IN THE RESPONSE. PR2b lists what a person is
     // choosing between; reading one is PR3's concern, with the gesture
@@ -430,7 +438,14 @@ describe('the key holder', () => {
     const summaries = await holder.summarise([rolledBack]);
 
     expect(summaries).toEqual([
-      { id: row.id, itemType: 'password', title: '', blobVersion: 2, unreadable: true },
+      {
+        id: row.id,
+        itemType: 'password',
+        title: '',
+        blobVersion: 2,
+        revision: 41,
+        unreadable: true,
+      },
     ]);
   });
 
@@ -471,7 +486,14 @@ describe('an item whose content is not what this build expects', () => {
     await unlock(holder, enrolled, enrolled.secretKey);
     const row = await sealItem(enrolled, '77777777-0000-4000-8000-000000000000', content);
     expect(await holder.summarise([row])).toEqual([
-      { id: row.id, itemType: 'password', title: '', blobVersion: 1, unreadable: true },
+      {
+        id: row.id,
+        itemType: 'password',
+        title: '',
+        blobVersion: 1,
+        revision: 41,
+        unreadable: true,
+      },
     ]);
   });
 
@@ -483,7 +505,7 @@ describe('an item whose content is not what this build expects', () => {
     await unlock(holder, enrolled, enrolled.secretKey);
     const row = await sealItem(enrolled, '88888888-0000-4000-8000-000000000000', { note: 'x' });
     expect(await holder.summarise([row])).toEqual([
-      { id: row.id, itemType: 'password', title: '', blobVersion: 1 },
+      { id: row.id, itemType: 'password', title: '', blobVersion: 1, revision: 41 },
     ]);
   });
 });

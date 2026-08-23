@@ -37,7 +37,9 @@ function openHolder(): KeyHolderPort {
     prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
     finish: () => Promise.resolve(),
     summarise: () =>
-      Promise.resolve([{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1 }]),
+      Promise.resolve([
+        { id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1, revision: 41 },
+      ]),
     matchesFor: () =>
       Promise.resolve([
         {
@@ -45,6 +47,7 @@ function openHolder(): KeyHolderPort {
           itemType: 'password',
           title: 'Zed',
           blobVersion: 1,
+          revision: 41,
           verdict: { kind: 'match' as const, domain: 'example.com' },
         },
       ]),
@@ -145,7 +148,7 @@ describe('the offscreen router', () => {
 
     expect(await deliver({ target: 'offscreen', kind: 'list', bearer: 'b' })).toEqual({
       ok: true,
-      items: [{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1 }],
+      items: [{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1, revision: 41 }],
     });
   });
 
@@ -210,6 +213,7 @@ describe('the offscreen router', () => {
           itemType: 'password',
           title: 'Zed',
           blobVersion: 1,
+          revision: 41,
           verdict: { kind: 'match', domain: 'example.com' },
         },
       ],
@@ -334,12 +338,15 @@ describe('the popup’s view of the vault', () => {
   it('returns items and the state on the happy paths', async () => {
     messaging((message) =>
       (message as { kind?: string }).kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1 }] }
+        ? {
+            ok: true,
+            items: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1, revision: 41 }],
+          }
         : { ok: true, state: { status: 'locked' } },
     );
     expect(await listItems('b')).toEqual({
       ok: true,
-      data: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1 }],
+      data: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1, revision: 41 }],
     });
     expect(await lockVault('b')).toEqual({ ok: true, data: { status: 'locked' } });
   });
@@ -592,10 +599,11 @@ describe('the router answers a write (M16 PR4a)', () => {
     itemType: 'password',
     content: { title: 'Edited' },
     blobVersion: 2,
+    revision: 42,
   };
 
   it('carries a created item back, and a refusal back as a code', async () => {
-    const made = { id: 'i-9', itemType: 'password', title: 'Typed', blobVersion: 1 };
+    const made = { id: 'i-9', itemType: 'password', title: 'Typed', blobVersion: 1, revision: 41 };
     const ok = routerFor({ createItem: () => Promise.resolve({ ok: true, data: made }) });
     expect(await ok(CREATE)).toEqual({ ok: true, item: made });
 
@@ -606,7 +614,13 @@ describe('the router answers a write (M16 PR4a)', () => {
   });
 
   it('carries an updated item back, and a version conflict as its own code', async () => {
-    const saved = { id: 'i-1', itemType: 'password', title: 'Edited', blobVersion: 3 };
+    const saved = {
+      id: 'i-1',
+      itemType: 'password',
+      title: 'Edited',
+      blobVersion: 3,
+      revision: 43,
+    };
     const ok = routerFor({ updateItem: () => Promise.resolve({ ok: true, data: saved }) });
     expect(await ok(UPDATE)).toEqual({ ok: true, item: saved });
 

@@ -183,7 +183,9 @@ describe('the port over the worker', () => {
       prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
       finish: () => Promise.resolve(),
       summarise: () =>
-        Promise.resolve([{ id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1 }]),
+        Promise.resolve([
+          { id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1, revision: 41 },
+        ]),
       matchesFor: () => Promise.resolve([]),
       fillFor: () => Promise.resolve(null),
       sealItem: () => Promise.resolve('c2VhbGVk'),
@@ -206,7 +208,7 @@ describe('the port over the worker', () => {
     ).resolves.toBeUndefined();
     expect(port.isUnlocked).toBe(true);
     expect(await port.summarise([])).toEqual([
-      { id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1 },
+      { id: 'i', itemType: 'password', title: 'Zed', blobVersion: 1, revision: 41 },
     ]);
 
     // Every message that crossed, searched: no key, no password, no secret.
@@ -229,6 +231,7 @@ describe('the port over the worker', () => {
             itemType: 'password',
             title: 'Bank',
             blobVersion: 1,
+            revision: 41,
             verdict: { kind: 'match' as const, domain: 'example.com' },
           },
         ]),
@@ -244,6 +247,7 @@ describe('the port over the worker', () => {
         itemType: 'password',
         title: 'Bank',
         blobVersion: 1,
+        revision: 41,
         verdict: { kind: 'match', domain: 'example.com' },
       },
     ]);

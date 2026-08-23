@@ -105,10 +105,11 @@ interface VaultItemDto {
   readonly id: string;
   readonly itemType: string;
   readonly blobVersion: number;
+  readonly revision: number;
 }
 
 function summaryOf(
-  dto: { id: string; itemType: string; blobVersion: number },
+  dto: { id: string; itemType: string; blobVersion: number; revision: number },
   content: Record<string, unknown>,
 ): ItemSummary {
   return {
@@ -116,6 +117,7 @@ function summaryOf(
     itemType: dto.itemType,
     title: typeof content['title'] === 'string' ? content['title'] : '',
     blobVersion: dto.blobVersion,
+    revision: dto.revision,
   };
 }
 
@@ -306,6 +308,7 @@ export class VaultHost {
     itemType: string;
     changes: Record<string, unknown>;
     blobVersion: number;
+    revision: number;
   }): Promise<ApiResult<ItemSummary>> {
     const token = this.#token;
     if (!token || !this.#holder.isUnlocked) return { ok: false, code: 'VAULT_LOCKED' };
@@ -333,7 +336,7 @@ export class VaultHost {
         body: { itemType: input.itemType, blob },
         bearer: input.bearer,
         vaultSession: token,
-        ifMatch: input.blobVersion,
+        ifMatch: input.revision,
       },
     );
     if (!saved.ok) return saved;

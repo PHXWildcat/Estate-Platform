@@ -6855,6 +6855,7 @@ decision booked as progress is how a queue stays untouched.**
 | M38 | Referral marketplace | Zero code, zero DDL, regulatory surface |
 | M39 | Zone A hardening — the SRP abuse bound and rollback detection | **ADDED BY M27 PR0**, and the addition is forced rather than tidy: `threat-model-residuals.spec.ts` derives its owner vocabulary from THIS TABLE in both directions, so re-owning a residual to anything not listed here is refused — which is the point of a closed vocabulary. Two §6a residuals, both vault-local and both unblocked: a caller holding a GENUINE step-up can still burn SRP handshakes (three tags, one residual, tracked at docs/03 §6a, §6j and §6k), and full-history rollback is detectable only by client-side last-seen state. Neither is either half of M27's name, and carrying them there was how M27 looked bigger than it is. **A THIRD residual joined M39 in the same commit and this row said "two" until the M27 PR0 review counted them:** §6uu's grantee-read detection gap — `vault.emergency.items_read` is watched by no detector, because `decrypt-rate-detector.ts` pins its counted set to `crypto.field.decrypted` alone. It is neither a §6a bullet nor vault-local (the detector is audit's), so the milestone is three residuals across two services, not two in one |
 | M40 | Residual ownership re-sweep | **ADDED BY M27 PR0**, which found the complementary hole to the one it was scoped to fix. PR0 closed the case of an UNTAGGED residual hiding outside the fence's corpus; this is the case of a TAGGED one whose owner has since shipped. Thirteen residuals in the fence's corpus name M22 or M23, whose docs/04 rows read COMPLETE, and `OWNERS` is derived from every row of this table including the closed ones — so a tag naming a finished milestone passes the vocabulary check exactly as a live one does. The count is now pinned by `threat-model-residuals.spec.ts` so it cannot grow in silence; deciding, one at a time, whether a later slice of the same programme still owes each item is the sweep this row owns. **It is larger than thirteen:** M21's eighteen and M24's are invisible to any derivation from this table, because those two rows say APPROVED and never gained a completion status — which is the same stale-prose defect the M23 row already records about itself |
+| M41 | Plaid item refusal, and the read-before-authz sweep | **ADDED BY M27 PR1a**, which fixed this defect in the vault and asked what else was in the category. `plaid`'s `sync` and `revoke` read an item by id, answer 404 when it is missing, then call `assertCan`, which answers 403 when it is not yours — the same existence oracle M27 PR1a closed on `vault_items` and `emergency_access_policies`. It is a row rather than a line in that PR because reaching from a vault change into the Plaid service is scope creep to propose, not to perform. `ai-assistant` was checked in the same pass and is already correct (its authz throws `NotFoundException`), so the sweep this row owns is: every service that reads a row by id before its authz gate, checked against that precedent |
 
 **Three corrections to the list this replaces**, each measured rather than
 argued:
@@ -8774,12 +8775,26 @@ paired CHECK and no writer is a broken table.
 - **PR0 — the design delta, the discriminator and two fences.** This section,
   docs/01, docs/03 §6uu, migration 004, the restorable-corpus fence, the
   residuals census, the audit vocabulary.
-- **PR1 — the restore READER and undelete.** The versions reader over
+- **PR1a — the concurrency token, and one refusal where there were two.**
+  SPLIT OUT OF PR1 DURING PR1's OWN DESIGN, because the restore PR0 specified
+  cannot be built safely on the token the service had. `blob_version` was both
+  the AEAD binding (so it must travel with its ciphertext, and a restore puts
+  a captured one back) and the entire `If-Match` comparison (so it must never
+  repeat). Migration 005 adds `revision`, trigger-assigned so no writer can
+  forget or choose it; `blob_version` keeps the binding alone and may now move
+  DOWN, which is the signal M39's rollback detection lacks. Both clients move
+  in the same change. The uniform-404 fix rides here too: every item route and
+  both `emergency_access_policies` arms now fuse ownership into the statement,
+  and the two unfused lookups are deleted. docs/03 §6vv.
+- **PR1b — the restore READER and undelete.** The versions reader over
   `vault_items_versions`, the restorable list keyed on `RESTORABLE_REASONS`
   (its first caller), and `vault.item.restored`'s first producer. Two shapes,
   and the tests say which is which: undelete flips `deleted_at`; version
   restore writes a prior row image forward. Only the second answers
-  `session.ts`.
+  `session.ts`. Migration 006 carries the two indexes with the queries that
+  need them — `vault_items_versions` has only its identity PK today, and
+  `ix_vault_items_user_live` is partial on `deleted_at IS NULL`, so the
+  restorable list is unindexed.
 - **PR2 — the owner's restore surface** on the vault origin.
 - **PR3 — the grantee READ.** The route authorized by the released policy row,
   the Cedar grantee attribute in the vault's own domain, release made

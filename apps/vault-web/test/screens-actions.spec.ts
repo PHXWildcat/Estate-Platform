@@ -126,7 +126,15 @@ function installService(): Service {
     }
     if (path.startsWith('/api/vault/items') && method === 'POST') {
       const parsed = JSON.parse(body) as Record<string, unknown>;
-      const row = { ...parsed, blobVersion: 1, createdAt: 'now', updatedAt: '2026-08-08' };
+      // `revision` is deliberately NOT equal to `blobVersion`: while the two
+      // were one number a caller sending the wrong one was undetectable.
+      const row = {
+        ...parsed,
+        blobVersion: 1,
+        revision: 41,
+        createdAt: 'now',
+        updatedAt: '2026-08-08',
+      };
       state.items.set(parsed['id'] as string, row);
       return Promise.resolve(reply(201, row));
     }
@@ -138,7 +146,10 @@ function installService(): Service {
         ...existing,
         ...parsed,
         id,
+        // The service writes the blob version the client sealed against, and
+        // its trigger advances the revision independently.
         blobVersion: ((existing['blobVersion'] as number) ?? 1) + 1,
+        revision: ((existing['revision'] as number) ?? 41) + 1,
         updatedAt: '2026-08-09',
       };
       state.items.set(id, row);
@@ -255,7 +266,9 @@ describe('the vault’s actions', () => {
     await waitForText('Bank — renamed');
 
     const put = service.calls.find((c) => c.method === 'PUT' && c.path.includes('/items/'));
-    expect(put?.headers['if-match']).toBe('1');
+    // THE REVISION, NOT THE BLOB VERSION (M27 PR1a). This read `'1'` from a
+    // fixture where both numbers were 1, so it could not have told them apart.
+    expect(put?.headers['if-match']).toBe('41');
     // And the ciphertext still carries none of the title.
     const payload = JSON.parse(put?.body ?? '{}') as { blob?: string };
     expect(payload.blob).toEqual(expect.any(String));

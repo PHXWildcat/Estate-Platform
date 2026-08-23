@@ -81,7 +81,8 @@ const OWNERS: readonly string[] = [
   'M37', // passkey provisioning (Estate as authenticator)
   'M38', // referral marketplace
   'M39', // Zone A hardening — SRP abuse bound + rollback detection (added M27 PR0)
-  'M40', // residual ownership re-sweep (added M27 PR0)
+  'M40',
+  'M41', // residual ownership re-sweep (added M27 PR0)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
