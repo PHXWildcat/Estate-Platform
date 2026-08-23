@@ -8801,10 +8801,17 @@ paired CHECK and no writer is a broken table.
   reader pages on `revision`, NOT `version_seq`, because the latter is a
   platform-wide BIGINT identity and this service's cursors are base64url of
   plaintext. Added during the PR by its own design fan-out: **PR0's
-  `deleted_reason` discriminator had a hole** — `softDeleteAllForUser` carries
-  `WHERE deleted_at IS NULL`, so rows retired BEFORE a reset kept `user_delete`
-  while their keyset was replaced, and the restorable list would have offered a
-  dead blob. `reset` now relabels them. docs/03 §6ww.
+  `deleted_reason` discriminator had a hole** — `reset` retired only the LIVE
+  rows, so rows retired BEFORE a reset kept `user_delete` while their keyset
+  was replaced, and the restorable list would have offered a dead blob. Its
+  review then found the first FIX wrong too: relabelling those rows in a second
+  statement opened a race with `undeleteItem`, this PR's own new verb, through
+  which a row could survive a reset live holding a dead blob. `reset` now
+  retires both populations in ONE statement. The review also closed an audit
+  gap four lenses raised independently — the restorable list returned whole
+  ciphertexts and emitted nothing — and replaced an index fence that was
+  EXPLAINing a query written out in the test rather than the one the repo
+  issues. docs/03 §6ww.
 - **A STATED DEVIATION, PR1b to PR2.** PR1b ships four routes whose consumer
   is PR2, against the repo's "ship a route in the same change as its consumer"
   rule. Recorded here rather than left to be discovered, and carried in

@@ -5965,17 +5965,22 @@ the audience that can overwrite is not the audience that can roll back.
 
 **PR0'S DISCRIMINATOR HAD A HOLE, AND THIS PR CLOSES IT.** Migration 004 added
 `deleted_reason` so a restore list would never offer a blob the keyset had
-outlived. `softDeleteAllForUser` carries `WHERE deleted_at IS NULL`, so an item
-the owner deleted BEFORE a reset was never touched by that reset and kept
-saying `user_delete` — restorable — while the keyset that opened it was
-replaced in the same transaction. The list would have offered it and the
-failure would have arrived as a silent AEAD error on click: a control firing
-wearing the face of an outage, which is the precise shape 004 exists to
-prevent. `reset` now relabels rows already retired, leaving their `deleted_at`
-alone because WHEN the owner retired a row stays true and only its
-decryptability changed. Found by PR1b's design fan-out, by two lenses
-independently, and proved by reverting the relabel and watching a named
-assertion redden.
+outlived. `reset` retired only the LIVE rows, so an item the owner deleted
+BEFORE a reset was never touched by it and kept saying `user_delete` —
+restorable — while the keyset that opened it was replaced in the same
+transaction. The list would have offered it and the failure would have arrived
+as a silent AEAD error on click: a control firing wearing the face of an
+outage, which is the precise shape 004 exists to prevent. Found by PR1b's
+design fan-out, by two lenses independently, and proved by reverting the fix
+and watching a named assertion redden.
+
+**AND THE FIRST FIX FOR IT WAS ITSELF WRONG,** which is why the mechanism is
+the single statement described above rather than the obvious one. Relabelling
+the already-retired rows in a SECOND statement closes the hole for a table
+nobody is writing to and opens a race for one somebody is: the two predicates
+tile only while no row moves between them, and this same PR shipped the verb
+that moves them. The review caught it; `reset-retirement.int.spec.ts` now
+drives the interleaving that used to be fatal.
 
 ### Residuals
 
