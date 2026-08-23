@@ -31,6 +31,28 @@ export type ApiFailure =
   // screen that cannot tell them apart must give the wrong one to somebody.
   | 'RECIPIENT_UNVERIFIED'
   | 'NOTIFICATIONS_UNAVAILABLE'
+  // M27 PR2's restore surface, and the same reasoning one milestone later. The
+  // four restore routes answer FIVE distinct refusals across two status codes,
+  // and until this PR three of them collapsed into `CONFLICT` and `NOT_FOUND` —
+  // which is not a naming problem, it is a WRONG REMEDY reaching the user:
+  //
+  //   · `item_unrestorable` means a reset destroyed the key that opened this
+  //     blob. It rendered as CONFLICT's "Reload and try again", which is advice
+  //     that can never succeed. A control firing wearing an outage's face.
+  //   · `version_conflict` is the one restore failure where reloading DOES
+  //     work, so it must not share copy with the one where nothing does.
+  //   · `version_not_found` rendered as NOT_FOUND's "That item is no longer
+  //     there" on a screen where the item is plainly present — a false
+  //     sentence, and the wrong thing to do about it.
+  | 'VERSION_CONFLICT'
+  | 'ITEM_UNRESTORABLE'
+  | 'VERSION_NOT_FOUND'
+  // A Cedar denial. It arrives as 403 with `forbidden` and fell through to
+  // UNKNOWN's "Something went wrong" — an authz control reading as a fault, on
+  // the first surface to name three new Cedar actions (`read_history`,
+  // `undelete`, `restore`). Unreachable while the owner is the only principal;
+  // named now because PR3 introduces one who is not.
+  | 'FORBIDDEN'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -44,10 +66,26 @@ function failureFor(status: number, token: string | null): ApiFailure {
   if (status === 403) {
     if (token === 'stepup_required') return 'STEPUP_REQUIRED';
     if (token === 'vault_locked') return 'VAULT_LOCKED';
+    if (token === 'forbidden') return 'FORBIDDEN';
     return 'UNKNOWN';
   }
-  if (status === 404) return 'NOT_FOUND';
-  if (status === 409 || status === 412) return 'CONFLICT';
+  if (status === 404) {
+    // The ITEM is missing versus THAT VERSION is missing. Different sentences
+    // and different remedies — one sends the reader back to the vault, the
+    // other leaves them on a screen whose item is still there.
+    if (token === 'version_not_found') return 'VERSION_NOT_FOUND';
+    return 'NOT_FOUND';
+  }
+  if (status === 409) {
+    if (token === 'version_conflict') return 'VERSION_CONFLICT';
+    if (token === 'item_unrestorable') return 'ITEM_UNRESTORABLE';
+    // `invalid_cursor` lands here deliberately. It can only fire if this client
+    // mangles a cursor the server handed it, which is a bug rather than a user
+    // condition — so it gets no name and no copy, and the spec asserts a cursor
+    // is round-tripped VERBATIM instead. Prefer the absence to the filter.
+    return 'CONFLICT';
+  }
+  if (status === 412) return 'CONFLICT';
   if (status === 400) return 'INVALID_REQUEST';
   if (status === 502 || status === 503) {
     if (token === 'recipient_unverified') return 'RECIPIENT_UNVERIFIED';

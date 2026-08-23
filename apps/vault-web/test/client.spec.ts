@@ -81,14 +81,29 @@ describe('api failure mapping', () => {
     [401, 'unauthorized', 'UNAUTHENTICATED'],
     [403, 'stepup_required', 'STEPUP_REQUIRED'],
     [403, 'vault_locked', 'VAULT_LOCKED'],
+    [403, 'forbidden', 'FORBIDDEN'],
     [403, 'something_else', 'UNKNOWN'],
     [404, 'not_found', 'NOT_FOUND'],
-    [409, 'version_conflict', 'CONFLICT'],
+    [404, 'version_not_found', 'VERSION_NOT_FOUND'],
+    [409, 'version_conflict', 'VERSION_CONFLICT'],
+    [409, 'item_unrestorable', 'ITEM_UNRESTORABLE'],
     [400, 'invalid_request', 'INVALID_REQUEST'],
     [502, 'upstream_unavailable', 'UNAVAILABLE'],
     [500, 'internal_error', 'UNKNOWN'],
+    // POSITIVE CONTROLS FOR THE TOKEN SWITCH ABOVE (M27 PR2). Both statuses
+    // now branch on the token, and a switch that answered a NEW code for every
+    // 409 or 404 would satisfy every named row above while being exactly the
+    // over-fitting this table exists to refuse. These two must keep landing on
+    // the fallback: an unrecognised 409 is still a CONFLICT, and a 404 with no
+    // token at all is still NOT_FOUND.
+    [409, 'something_else', 'CONFLICT'],
+    [409, null, 'CONFLICT'],
+    [404, null, 'NOT_FOUND'],
+    // 412 shares CONFLICT's remedy and carries no token — asserted so the
+    // split above cannot quietly capture it.
+    [412, null, 'CONFLICT'],
   ])('maps %s/%s to %s', async (status, token, expected) => {
-    stubFetch(() => json(status, { error: token }));
+    stubFetch(() => json(status, token === null ? {} : { error: token }));
     expect(await request('/api/vault/keyset')).toEqual({ ok: false, code: expected });
   });
 

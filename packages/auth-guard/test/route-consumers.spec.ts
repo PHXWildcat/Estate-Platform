@@ -478,40 +478,21 @@ const EXEMPT_EXECUTOR_SURFACE =
 // told the operator platform does not exist. Same standard as the
 // EXEMPT_RECOVERY_SURFACE note below — except the sentence had stopped being
 // true while the constant was still in use, which is the harder case to notice.
-/**
- * M27 PR1b's four restore routes, and this is a REAL deviation stated as one
- * rather than a category the rule never covered.
- *
- * The rule is "ship a route in the same change as its consumer", and these four
- * have no consumer: `apps/vault-web`'s owner restore surface is M27 PR2. The
- * milestone was split that way on purpose — PR1b is the reader, the two write
- * verbs, migration 006 and the reset relabel that makes the restorable list
- * honest, which is a security-shaped change with its own proofs, and PR2 is
- * screens. Bundling them would put a keyset-decidability fix and a UI in one
- * review.
- *
- * WHAT MAKES THIS DIFFERENT FROM THE ZERO-CALLER SURFACES THIS FENCE EXISTS TO
- * CATCH: the routes are not speculative. `packages/auth-guard/src/session.ts`
- * refuses `deleteItem` to the extension audience BECAUSE an overwrite is
- * "recoverable" — a live security argument that rested on a capability nobody
- * had built, from M16 until this PR. The consumer that argument needs is the
- * restore verb existing at all, and it exists now. docs/03 §6j stays OPEN and
- * owned by M27 on precisely the half that is still missing: an owner cannot
- * REACH these routes from a screen.
- *
- * THE TERMS THIS CONSTANT LEAVES ON, so it cannot outlive its reason the way
- * EXEMPT_SETTLEMENT_REPORTING nearly did: when PR2 lands the restore surface,
- * every entry below names `apps/vault-web/src/client/*` and this constant is
- * DELETED with its last entry. It is not to be reused for a fifth route.
- */
-const EXEMPT_RESTORE_SURFACE =
-  'M27 PR1b ships the restore reader and both restore verbs; the owner surface that calls them ' +
-  'is M27 PR2. Not a zero-caller surface: `packages/auth-guard/src/session.ts` has refused ' +
-  '`deleteItem` to the extension audience since M16 on the grounds that an overwrite is ' +
-  '"recoverable", and until these routes existed that was a security argument resting on a ' +
-  'capability nobody had built. docs/03 \u00a76j stays open and M27-owned on the half still ' +
-  'missing — reachable, not yet visible. This constant is deleted with its last entry when PR2 ' +
-  'lands, and is not to be reused.';
+// EXEMPT_RESTORE_SURFACE is GONE (M27 PR2), on the instruction it carried
+// itself: "when PR2 lands the restore surface, every entry below names
+// `apps/vault-web/src/client/*` and this constant is DELETED with its last
+// entry." All four routes have a consumer now — the owner's restore screens
+// call them through `vault-session.ts` — so the stated PR1b-to-PR2 deviation is
+// discharged and the exemption has nothing left to explain. The
+// EXEMPT_EXECUTOR_CASEWORK and EXEMPT_ACCOUNT_ERASURE precedents, both removed
+// the same way.
+//
+// WORTH KNOWING FOR THE NEXT EXEMPTION HERE: until this PR the stale sweep
+// below could not have forced this flip. It matched raw templates, so every
+// vault-web consumer — which addresses `/api/…` and reaches `/v1/…` only
+// through the edge rewrite — was invisible to it, and this exemption would have
+// sat green forever after its reason expired. The sweep now applies the
+// rewrites; see the note on `fileMatchesPath` at its call site.
 
 const EXEMPT_EVIDENCE_CONTENT =
   'Documents\u2019 own surface, not the console\u2019s: the operator reads a case timeline, never ' +
@@ -892,10 +873,10 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     `${VX}/vault-host.ts`,
   ),
   'vault DELETE /v1/vault/items/:itemId': consumed(`${VW}/client/vault-session.ts`),
-  'vault GET /v1/vault/items/restorable': { exempt: EXEMPT_RESTORE_SURFACE },
-  'vault GET /v1/vault/items/:itemId/versions': { exempt: EXEMPT_RESTORE_SURFACE },
-  'vault POST /v1/vault/items/:itemId/undelete': { exempt: EXEMPT_RESTORE_SURFACE },
-  'vault POST /v1/vault/items/:itemId/restore': { exempt: EXEMPT_RESTORE_SURFACE },
+  'vault GET /v1/vault/items/restorable': consumed(`${VW}/client/vault-session.ts`),
+  'vault GET /v1/vault/items/:itemId/versions': consumed(`${VW}/client/vault-session.ts`),
+  'vault POST /v1/vault/items/:itemId/undelete': consumed(`${VW}/client/vault-session.ts`),
+  'vault POST /v1/vault/items/:itemId/restore': consumed(`${VW}/client/vault-session.ts`),
   'vault POST /v1/vault/reset': consumed(`${VW}/client/vault-session.ts`),
   'vault GET /v1/vault/recovery-key': consumed(`${VW}/client/emergency.ts`),
   'vault POST /v1/vault/recovery-key': consumed(`${VW}/client/emergency.ts`),
@@ -1088,12 +1069,28 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
       if (!('exempt' in decl)) continue;
       const path = key.slice(key.lastIndexOf(' ') + 1);
-      for (const [file, templates] of templatesByFile) {
+      // Keys only: `fileMatchesPath` re-reads each file's templates itself, and
+      // `templatesByFile` stays for the anti-vacuity assertion below, which is
+      // the one thing that would notice the extraction going silent.
+      for (const file of templatesByFile.keys()) {
         // `enumerated: false` — the narrow matcher. A wildcard reaching a
         // literal here would accuse an exemption of being stale because some
         // unrelated call site happens to share its arity, which is the exact
         // inertness the M19 PR4 review removed.
-        if (templates.some((t) => templateMatchesPath(t, path))) {
+        //
+        // `fileMatchesPath` RATHER THAN `templateMatchesPath`, since M27 PR2,
+        // and the difference is the whole reach of this sweep. Raw templates
+        // are what a consumer WRITES; a vault-web consumer writes `/api/vault/…`
+        // and reaches `/v1/vault/…` only through the edge's rewrite tree, so
+        // comparing raw templates made every one of this origin's routes
+        // invisible here — and the header above claims this check "makes
+        // flipping each entry mandatory rather than remembered", which was
+        // false for all of them. `fileMatchesPath` applies EDGE_REWRITES, the
+        // same derived table the declared-consumer half already uses, so both
+        // halves now ask the same question. Measured on M27 PR2's own four
+        // routes: raw templates named none of them with the consumer written
+        // and in front of it; with the rewrites applied it named all four.
+        if (fileMatchesPath(file, path)) {
           stale.push(`${key} is addressed by ${file} — flip it to consumed()`);
         }
       }
