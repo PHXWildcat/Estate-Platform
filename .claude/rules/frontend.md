@@ -41,4 +41,11 @@ description: Web, BFF and GraphQL surface rules
   exit path from the screen. Peers learn of an elevation through a ~30s positive
   introspection cache, so the retry must poll to a deadline, not fire once.
 - Two form fields must never share a label. Name what the field IS, not which one.
+- **A className is a string, so a class nothing defines fails silently and renders as plain
+  text.** TypeScript, eslint and jest are all green over it; only a browser can see it. Every
+  class `apps/web/src` names must resolve to a rule in the stylesheet the browser receives
+  (`class-vocabulary.test.ts`, which compiles `globals.css` through the app's own PostCSS
+  pipeline rather than hand-listing Tailwind's grammar). Reach for the existing vocabulary —
+  `card`, `btn btn-primary`, `field-label`, `field-input`, `chip` — before defining a class:
+  a second spelling of `.card` is a copy that drifts.
 - Never offer an action the server would refuse.

@@ -306,12 +306,12 @@ export function SettlementCases(): ReactElement {
                           reported cases would otherwise put two fields called
                           "Document" on one page.
                         */}
-                        <label htmlFor={`attach-${row.caseId}`} className="label">
+                        <label htmlFor={`attach-${row.caseId}`} className="field-label">
                           Document to attach to this report
                         </label>
                         <select
                           id={`attach-${row.caseId}`}
-                          className="input"
+                          className="field-input"
                           value={attaching.documentId}
                           onChange={(event) => {
                             setAttaching({ ...attaching, documentId: event.target.value });

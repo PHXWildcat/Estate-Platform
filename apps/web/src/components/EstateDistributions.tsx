@@ -400,12 +400,12 @@ export function EstateDistributions({ caseId }: { caseId: string }): ReactElemen
           }}
         >
           <div>
-            <label htmlFor="distribution-beneficiary" className="label">
+            <label htmlFor="distribution-beneficiary" className="field-label">
               Who it goes to
             </label>
             <select
               id="distribution-beneficiary"
-              className="input"
+              className="field-input"
               value={contactId}
               onChange={(event) => setContactId(event.target.value)}
               required
@@ -419,12 +419,12 @@ export function EstateDistributions({ caseId }: { caseId: string }): ReactElemen
             </select>
           </div>
           <div>
-            <label htmlFor="distribution-amount" className="label">
+            <label htmlFor="distribution-amount" className="field-label">
               Amount (optional)
             </label>
             <input
               id="distribution-amount"
-              className="input"
+              className="field-input"
               // `inputMode` and not `type="number"`: a number input hands back
               // a value the browser has already coerced, and money is a
               // decimal string end to end.

@@ -226,7 +226,7 @@ export function Dashboard(): ReactElement {
            * of which are the controls WORKING. `role="status"` because it
            * announces on arrival; the sign-in link below is the remedy.
            */
-          <p className="notice" role="status">
+          <p className="card p-4 text-sm text-ink-muted" role="status">
             Your session has ended, so this page stopped showing your estate. Sign in again to pick
             up where you left off.
           </p>

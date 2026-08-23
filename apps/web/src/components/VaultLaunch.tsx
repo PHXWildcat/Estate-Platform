@@ -190,14 +190,14 @@ export function VaultLaunch(): ReactElement {
   }
 
   return (
-    <section className="panel">
-      <h1 className="panel-title">Open your vault</h1>
-      <p className="panel-note">
+    <section className="card p-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Open your vault</h1>
+      <p className="mt-2 max-w-prose text-sm text-ink-muted">
         Your vault lives on a separate, isolated address. Passwords, recovery codes and other
         secrets there are encrypted on your device — Estate stores only the encrypted result and
         cannot read them, even under a court order.
       </p>
-      <p className="panel-note">
+      <p className="mt-2 max-w-prose text-sm text-ink-muted">
         You will be asked to confirm your identity before the vault opens, and again for your vault
         password once you arrive. Estate never learns either one.
       </p>
@@ -214,7 +214,7 @@ export function VaultLaunch(): ReactElement {
 
       <button
         type="button"
-        className="button-primary"
+        className="btn btn-primary mt-4"
         disabled={busy}
         onClick={() => {
           // A fresh press is a fresh ceremony. Re-arming here rather than in
