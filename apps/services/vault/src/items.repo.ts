@@ -11,9 +11,64 @@ export interface ItemRow {
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
+  deleted_reason: DeletedReason | null;
 }
 
-const COLUMNS = `id, user_id, item_type, blob_ct, blob_version, created_at, updated_at, deleted_at`;
+/**
+ * WHY a soft-deleted item was retired, and therefore whether it can ever be
+ * decrypted again (migration 004, docs/03 §6uu).
+ *
+ * `user_delete` leaves the keyset alone, so the blob is still openable and the
+ * row is restorable. `vault_reset` replaces the keyset in the same transaction
+ * that retires the row, so the blob is cryptographically dead. `unknown_pre_m27`
+ * is the honest backfill for rows retired before the column existed.
+ *
+ * NOT the restorable set — that is DERIVED from the DDL by
+ * `test/restorable-corpus.spec.ts`. This union exists so a caller cannot pass a
+ * string the CHECK will refuse at runtime; asking it which rows may be restored
+ * would be a second copy of the answer.
+ */
+export const DELETED_REASONS = ['user_delete', 'vault_reset', 'unknown_pre_m27'] as const;
+export type DeletedReason = (typeof DELETED_REASONS)[number];
+
+/**
+ * Whether a retirement reason leaves a row a restore surface may offer.
+ *
+ * A TOTAL MAP, and the totality is the mechanism. The first draft of this was
+ * `RESTORABLE_REASONS = ['user_delete']` with the complement computed by
+ * `filter`, and its fence asserted "the partition is total" — which was true by
+ * CONSTRUCTION and therefore asserted nothing. A fourth DDL value would have
+ * defaulted silently to unrestorable while the comment claimed the decision was
+ * forced. Found by the M27 PR0 review, which is also the reason this now leans
+ * on the compiler rather than on a test: `Record<DeletedReason, …>` means a
+ * fourth member of `DELETED_REASONS` fails `pnpm typecheck` with TS2741 until
+ * somebody classifies it. A test can be satisfied by deleting a case; a missing
+ * key cannot be.
+ *
+ * ZERO RUNTIME CALLERS UNTIL M27 PR1, stated rather than left to be found. The
+ * repo's rule is to ship a capability with its caller; this ships a PR early
+ * because the fence's claim — "a restore may offer exactly these rows" — needs
+ * a subject that exists, and because the alternative is PR1 inventing the
+ * classification beside the query that reads it. docs/04's M27 PR split records
+ * the gap.
+ */
+export const REASON_DISPOSITION: Readonly<Record<DeletedReason, 'restorable' | 'unrestorable'>> = {
+  // The keyset is untouched by `deleteItem`, so the blob is still openable.
+  user_delete: 'restorable',
+  // `reset` replaces the keyset in the same transaction. Dead ciphertext.
+  vault_reset: 'unrestorable',
+  // Retired before the column existed, so the answer is not recoverable from
+  // the row. Unrestorable is the fail-closed direction: never offer a row whose
+  // decryptability nobody recorded.
+  unknown_pre_m27: 'unrestorable',
+};
+
+/** Derived, never hand-listed — the arms cannot drift from the map above. */
+export const RESTORABLE_REASONS: readonly DeletedReason[] = DELETED_REASONS.filter(
+  (r) => REASON_DISPOSITION[r] === 'restorable',
+);
+
+const COLUMNS = `id, user_id, item_type, blob_ct, blob_version, created_at, updated_at, deleted_at, deleted_reason`;
 
 /**
  * `vault_items` access. `blob_ct` is client ciphertext end to end: this service
@@ -100,20 +155,33 @@ export class ItemsRepo {
     return rows[0]!;
   }
 
-  async softDelete(tx: Queryable, id: string, at: Date): Promise<void> {
-    await tx.query(`UPDATE vault_items SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`, [
-      id,
-      at,
-    ]);
+  /**
+   * Retire one item. `reason` is REQUIRED and has no default on purpose: the
+   * two callers mean different things by a soft delete, and a default here
+   * would let a third caller inherit whichever one was written first. The
+   * paired CHECK in migration 004 refuses the row if this disagrees with
+   * `deleted_at`, so a forgotten reason is a failed statement, not a NULL.
+   */
+  async softDelete(tx: Queryable, id: string, at: Date, reason: DeletedReason): Promise<void> {
+    await tx.query(
+      `UPDATE vault_items SET deleted_at = $2, deleted_reason = $3
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [id, at, reason],
+    );
   }
 
   /** Soft-delete every live item for a user; returns how many were affected. */
-  async softDeleteAllForUser(tx: Queryable, userId: string, at: Date): Promise<number> {
+  async softDeleteAllForUser(
+    tx: Queryable,
+    userId: string,
+    at: Date,
+    reason: DeletedReason,
+  ): Promise<number> {
     const rows = await tx.query<{ id: string }>(
-      `UPDATE vault_items SET deleted_at = $2
+      `UPDATE vault_items SET deleted_at = $2, deleted_reason = $3
         WHERE user_id = $1 AND deleted_at IS NULL
         RETURNING id`,
-      [userId, at],
+      [userId, at, reason],
     );
     return rows.length;
   }

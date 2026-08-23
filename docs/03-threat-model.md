@@ -274,21 +274,30 @@ compromise, Critical) described something that did not exist yet.
 **Residuals accepted, and why.**
 - **[ACCEPTED]** *JS `bigint` is not constant-time.* True of every JavaScript SRP; bounded by
   network jitter, and no code path branches early on a secret comparison.
-- **[OWNER: M27]** *Full-history rollback.* A server that serves an old blob AND claims its old
+- **[OWNER: M39]** *Full-history rollback.* A server that serves an old blob AND claims its old
   version is detectable only by client-side last-seen state. Same class as every
   hosted zero-knowledge store. Per-version AAD binding stops the easier attack:
-  replaying a blob at a *different* version fails to decrypt.
-- **[OWNER: M27]** *Reset is token-gated.* A forgotten password cannot be proven, so the reset
+  replaying a blob at a *different* version fails to decrypt. RE-OWNED FROM M27 BY
+  M27 PR0: it is adjacent to the restore work — both read `blob_version` history —
+  but closing it needs persistent last-seen state on the vault origin, which is a
+  client-storage design M27 does not otherwise touch.
+- **[ACCEPTED]** *Reset is token-gated.* A forgotten password cannot be proven, so the reset
   route is the one place step-up-fresh stolen tokens can destroy — never read —
   a vault. Compensating: distinct audit action, step-up freshness, and owner
-  notification when the notification port lands.
-- **[OWNER: M27]** *No rate limiting on failed SRP proofs yet.* PARTIALLY closed twice over and
+  notification. RE-CLASSIFIED FROM `[OWNER: M27]` BY M27 PR0: every compensating
+  control this bullet names has since shipped — the notification port landed in M9
+  and `VaultService.reset` sends on it — and the residual that remains is the
+  permanent one, that knowledge of a lost password cannot be proven. There is no
+  work owed, which is what `[ACCEPTED]` means; carrying an owner said otherwise.
+- **[OWNER: M39]** *No rate limiting on failed SRP proofs yet.* PARTIALLY closed twice over and
   the remainder is named precisely. M16 capped step-up, which bounds both SRP
   legs transitively because both are step-up gated (§6j); M17 PR1 delivered the
   login bound this bullet was tracked against (§6k). What is still open is
   neither of those: a caller holding a GENUINE step-up can burn handshakes, and
   no bound on the SRP route itself exists. Handshakes burn on attempt in the
-  meantime.
+  meantime. RE-OWNED FROM M27 BY M27 PR0, together with its two continuation tags
+  in §6j and §6k — three tags, ONE residual, which is why counting tags overstated
+  M27's inherited scope by two.
 
 **§5.2 emergency-access controls, now shipped (M6 PR2).**
 - *Waiting period ≥24h, owner-configurable:* enforced by the platform half of a
@@ -585,10 +594,19 @@ rest on. Controls shipped, each mapped to what this document demanded:
   "every channel including hardware-key challenge" remain aspirational;
   the contact trail records channel INTENT (push/sms/voice) while delivery is
   email. SMS/push arrive with their own carriers and their own review.
-- **[OWNER: M27]** *No one-tap deny token yet.* Deny remains an in-app action ("open your
+- **[OWNER: M30]** *No one-tap deny token yet.* Deny remains an in-app action ("open your
   Estate app"); an email-borne deny capability needs the vault UI's isolated
   origin to exist and its own token design + review. Until then the
-  notification shortens discovery time but not the deny path.
+  notification shortens discovery time but not the deny path. RE-OWNED FROM M27 BY
+  M27 PR0, and the re-own is a design decision rather than a scheduling one. An
+  EMAIL-borne one-tap deny is a per-recipient URL, and this section's own next
+  paragraph records "no links at all" as a CLOSED half of the M6 leakage item,
+  enforced by a green fence (`apps/services/notifications/test/templates.spec.ts`
+  — "contains no links, anywhere, ever"). Building it inside M27 would mean
+  reversing that fence, or waiting on E4's carrier. An IN-APP one-tap deny needs
+  neither: it carries no URL and no carrier, and M30 is the milestone that builds
+  the in-app feed. The residual is real and stays open; what changes is that it is
+  owned by the milestone that can close it without reversing a control.
 - **[ACCEPTED]** *Repointing an EXISTING user's address needs identity's credential.* Since
   the M9 review's split this is true as written: only
   `NOTIFICATIONS_RECIPIENTS_INTERNAL_TOKEN`, held by identity alone, can
@@ -620,9 +638,14 @@ rest on. Controls shipped, each mapped to what this document demanded:
   not eliminate it. Closing it fully needs an out-of-band or encrypted push
   channel, i.e. the vault UI's isolated origin. SES supply-chain posture
   rides the existing AWS SDK pinning.
-- **[OWNER: M27]** *`emergency.reminder` is declared but never emitted* (vault has no
+- **[OWNER: M30]** *`emergency.reminder` is declared but never emitted* (vault has no
   scheduler); the sweep-driven reminder belongs with Temporal or a later
-  driver.
+  driver. RE-OWNED FROM M27 BY M27 PR0. `ScheduleModule|@Cron(` matches zero files
+  repo-wide and Temporal is planned-but-absent, so nothing in the tree can fire a
+  reminder today; M27 builds no scheduler and would have carried this untouched.
+  M30 owns notification DELIVERY, and it is M30's call whether the reminder needs a
+  real scheduler or can be emitted lazily when a request observes a `waiting`
+  policy past its reminder point — the second needs no new infrastructure at all.
 
 **The M6 delivery-channel identifier leakage item: PARTIALLY CLOSED.**
 Answered by the M9 security pass rather than left owed. Closed, by
@@ -1386,10 +1409,11 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **What M16 closes that predates it.**
 
-- **[OWNER: M27]** *§6a's rate-limiting residual, in part.* Step-up now carries an attempt cap
+- **[OWNER: M39]** *§6a's rate-limiting residual, in part.* Step-up now carries an attempt cap
   derived from the append-only `auth_events` ledger, which bounds the vault's SRP
   legs TRANSITIVELY because both are step-up gated. The half that remains open is
-  a caller with a genuine step-up burning handshakes.
+  a caller with a genuine step-up burning handshakes. RE-OWNED FROM M27 BY M27 PR0;
+  this is §6a's bullet, not a second residual.
 - *No user-reachable session revocation.* Before M16, `revokeAllForUser` had one
   caller behind a service credential, and identity exposed no session listing, no
   revoke-by-id and no password-change or password-reset route — so the only way
@@ -1418,6 +1442,21 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **Residuals carried, not closed.**
 
+- **[OWNER: M27]** *An unlocked extension can overwrite every item, and there is no restore
+  surface.* `deleteItem` stays refused, so the destructive verb is out, and
+  `vault_items_versions` captures BEFORE UPDATE OR DELETE — but NO PRODUCTION CODE
+  READS THAT TABLE. Recovery today means an operator with psql. "Recoverable" is
+  therefore true of the data and not of the product, and the two are recorded apart
+  rather than allowed to sound like one claim. MOVED HERE BY M27 PR0, from under
+  `**Added by PR3a (origin matching).**` where it had no tag at all and assigned
+  itself to "the operator platform (TB7)" — a milestone that shipped as M21 without
+  it. The bullet was invisible to the residuals fence for the whole of that time:
+  §6j organises by PR, and a lead-in that does not say "residual" was never
+  classified, so the single most load-bearing sentence about the restore half sat
+  outside the mechanism built to make deferrals visible. It is M27's headline scope,
+  and it is the security argument `packages/auth-guard/src/session.ts` rests
+  `deleteItem`'s refusal to the extension audience on — a refusal justified by a
+  capability nobody had built.
 - **[OWNER: M26]** *A paired-devices row cannot identify a device.* The
   headline residual it sits under — "no user-reachable session revocation" — is
   genuinely closed by PR1's list with per-row revoke, and by §6l and §6m for
@@ -1620,13 +1659,11 @@ CLAUDE.md decision log; the security-relevant shape is:
   was done, which reading does not. Treat "may write items" as equivalent to
   "may direct where those credentials go", and never grant one expecting the
   other to bound it.
-- *An unlocked extension can overwrite every item, and there is no restore
-  surface.* `deleteItem` stays refused, so the destructive verb is out, and
-  `vault_items_versions` captures BEFORE UPDATE OR DELETE — but NO PRODUCTION
-  CODE READS THAT TABLE. Recovery today means an operator with psql. "Recoverable"
-  is therefore true of the data and not of the product, and the two are recorded
-  apart rather than allowed to sound like one claim. A restore surface is the
-  obvious follow-up and belongs with the operator platform (TB7).
+- *An unlocked extension can overwrite every item.* The residual this used to
+  state — that no restore surface exists — was written here, under a PR lead-in,
+  where the residuals fence could not see it. It now sits in this section's
+  declared residual region, tagged and owned by M27; §6uu records both the move
+  and the fence change that makes the next one visible.
 - *An edit needs no read, and that was a choice rather than a limitation.* The
   popup cannot open an item: `summarise` yields titles and `fillFor` yields one
   credential for a page that matches. Editing normally requires reading the item
@@ -1980,10 +2017,11 @@ one closes the channel.
 
 ### What M17 PR1 closes that predates it
 
-- **[OWNER: M27]** *§6a's SRP rate-limiting residual — still only in part, and NOT by this change.*
+- **[OWNER: M39]** *§6a's SRP rate-limiting residual — still only in part, and NOT by this change.*
   M16 closed the step-up half transitively. Login now has its own bound, which is
   what §6a's sentence pointed at, but a caller holding a genuine step-up can
   still burn vault SRP handshakes. That half stays open and is tracked in §6a.
+  RE-OWNED FROM M27 BY M27 PR0; §6a's bullet again, tagged a third time.
 - *§6i's "no rate limiting on handoff minting" is UNCHANGED.* Minting is
   step-up gated and therefore already sits behind the M16 cap; the standing
   follow-up it named was login's, which is now delivered, so its cross-reference
@@ -5486,3 +5524,205 @@ holding no session holds no decedent's figures.
   announcement corrects a chrome that would otherwise never be corrected at
   all; a cross-tab channel for it would be the same BroadcastChannel that
   residual already declines, for the same reason.
+
+## 6uu. Threat-model delta — M27 PR0, the grantee read (2026-08-22)
+
+**THE CEREMONY IS SHIPPED, AND COMPLETING IT DELIVERS NOTHING WHILE SPENDING
+ITSELF.** A grantee who waits out the period, is not denied, and passes the
+settlement gate reaches `apps/vault-web/src/client/app.ts`, which reconstructs
+the owner's master key on their device, calls `wipe()` on it, and tells them
+the arrangement "is now spent". `emergency.service.ts` then refuses re-release
+at four sites with `already_released`. So in the ONE scenario §5.2 exists for
+— the owner dead or incapacitated — the grantee burns the escrow and receives
+no data, and the only recovery is the owner re-arming, which is precisely what
+they cannot do. This is not a missing feature at the edge of a control; it is
+a control whose success path is indistinguishable from its failure path, and
+it has been shipped since M6 PR2.
+
+**THE READ IS A ZONE A TRUST-BOUNDARY CHANGE AND IS TREATED AS ONE.** Every
+vault credential to date has had one subject: `vault-session.guard.ts` refuses
+whenever `row.user_id !== caller.userId`, and `vault_sessions` has no notion
+of acting for another user. M27 makes the server hand user B ciphertext
+belonging to user A for the first time in Zone A. **The credential layer does
+not change.** The rejected design was a `subject`/`on_behalf_of` column on
+`vault_sessions`: it would widen the guard every item route depends on, to
+serve one route, which is the "weaken a zone boundary to simplify a feature"
+move docs/01 forbids. Instead the grantee presents their OWN vault session —
+they must already have one, because their recovery private key is wrapped
+under their own master key — and the read's authority comes from the POLICY
+ROW: a row where `grantee_user_id = caller.userId` and `status = 'released'`,
+re-checked against the settlement gate inside the transaction. Subject and
+object differ in one handler's authorization, not in a credential.
+`authz.service.ts` already named this as the place it would happen: "there are
+no beneficiary or grantee reads in Zone A ... That changes when emergency
+access lands, and it changes here, not by loosening a policy elsewhere." The
+Cedar change is a grantee attribute in the vault's own domain; `owner.cedar`
+is not touched.
+
+**RELEASE BECOMES RE-COLLECTABLE, AND THE ARGUMENT IS THAT NOTHING WAS EVER
+DESTROYED.** `markReleased` is `UPDATE ... SET status = 'released',
+released_at = $2` and nothing else: `platform_part`,
+`wrapped_master_key_recovery` and `key_share_ct` all survive it untouched.
+"One-shot" was therefore a status check, never a cryptographic one-way door —
+and what it bought was that closing a tab spends an escrow for nothing.
+
+**THE DELTA IS TWO GUARDS, NOT ONE, AND THE FIRST DRAFT OF THIS SECTION SAID
+ONE.** Removing only the `already_released` throw at the release site drops
+the caller into the very next line — `status !== 'waiting' || !releases_at` →
+`not_requested` — so the escrow stays exactly as uncollectable and now reports
+it under a token that means something else, which is the
+two-failures-one-token defect this document forbids. `request` cannot rescue
+it either: `blockReason` returns `already_released`, and `markRequested` is
+the only writer of `status = 'waiting'` anywhere. So the release path must
+admit `status IN ('waiting','released')` with `releases_at` set and elapsed,
+and PR3 owns changing `emergency.int.spec.ts`'s `release › is one-shot: the
+escrow is spent`, which asserts today's dead end on both the second release
+AND the follow-up request. Found by the M27 PR0 review, which reproduced it
+against a real database rather than reading the guard order.
+
+**AND THE PROTECTIVE ACTION HAS TO MOVE WITH IT, WHICH THE FIRST DRAFT GOT
+BACKWARDS.** That draft argued the change was safe because `revoke` carries no
+status guard, so the owner can always revoke a released policy — true, and not
+the point. `revoke` is `@UseGuards(StepUpGuard)`; the ONE-TAP action is
+`deny`, deliberately `CallerGuard` only because "a step-up prompt between the
+owner and 'stop this' is a control that argues with itself" — and `deny`
+REFUSES on a released policy. Making release repeatable behind a bare account
+session while leaving the only ungated stop unavailable would put the
+permissive action one call away and the protective one behind fresh MFA: the
+docs/03 rule inverted, in the paragraph that cited it. **So `deny` is admitted
+on a released policy**, and it means what it has always meant — sticky, no
+cooldown, no further collection until the owner re-arms. It cannot un-release
+what the grantee already holds; what it does is end the arrangement's ability
+to hand over more, with one tap, which is exactly the property re-collection
+would otherwise have taken away.
+
+Every collection re-notifies the owner, re-emits `vault.emergency.released`,
+and re-runs the settlement gate inside the transaction, so a second collection
+is MORE visible than the first, not less.
+
+**THE RESTORE HALF IS TWO SHAPES, AND THE SECURITY ARGUMENT RESTS ON THE
+SECOND.** Undelete flips `deleted_at` back on a `vault_items` row. Version
+restore reads a prior full row image out of `vault_items_versions` and writes
+it forward — **the image INCLUDING its `blob_version`, which is the whole
+reason this works and is spelled out because a reader of the first draft (the
+author) took "writes it forward" to mean the ciphertext at a bumped version
+and convinced himself the design was broken.** `itemContentAad` binds
+`blob_version`, so a blob sealed at N opens only when the caller is told N;
+`to_jsonb(OLD)` captures `blob_ct` and `blob_version` as a MATCHED PAIR,
+`vault_items` constrains `blob_version` only to be positive, and the client
+builds its AAD from the version the SERVER served. Restore the pair and it
+decrypts; restore the ciphertext alone at a fresh version and it never will.
+The server therefore never moves a blob between versions, and no re-encryption
+step is needed — the shape that WOULD need one is the shape that does not
+work. Only the second one answers `packages/auth-guard/src/session.ts`, which
+refuses `deleteItem` to the extension audience BECAUSE an overwrite is
+"recoverable" — a refusal justified by a capability nobody has built, and the
+bullet recording that sat where the residuals fence could not see it (below,
+and §6j). An extension can overwrite every item and cannot delete one, so the
+recovery that argument needs is version restore specifically; a restore
+surface that only undeleted would leave the sentence exactly as unsupported as
+it is now.
+
+**A SOFT-DELETED ROW DOES NOT SAY WHETHER IT CAN STILL BE DECRYPTED, AND THAT
+IS WHAT PR0 FIXES.** `VaultService.reset` soft-deletes every item with the
+SAME `deleted_at` stamp `deleteItem` uses, then replaces the keyset and clears
+the recovery keypair — so those blobs are cryptographically dead, and no
+column distinguishes them from a row the owner deleted by hand a minute
+earlier. A restore list built as `WHERE deleted_at IS NOT NULL` would offer
+rows that can never decrypt, and the failure would arrive as a silent AEAD
+error on click: the shape where a control firing and an outage wear the same
+face. `vault_items` therefore gains `deleted_reason`, CHECK-tied to
+`deleted_at`, and the restorable corpus is DERIVED from that CHECK rather than
+hand-listed.
+
+**WHY A COLUMN AND NOT `app.change_reason`.** The version trigger already
+reads that GUC into `vault_items_versions.reason`
+(`packages/db/src/conventions.ts`), which looks like the same fact and is not.
+Three reasons, in order of weight. The GUC lands in the SHADOW table, and a
+restore LIST queries live rows — wrong table for the question. The shadow row
+for a soft delete is captured BEFORE the UPDATE, so it holds the image with
+`deleted_at` still NULL; the reason would describe a row that does not yet
+look deleted. And a GUC is per-transaction state somebody has to remember to
+set: no service in this repo sets it, in any cluster, after twenty-five
+milestones — `vault_items_versions.reason` has been NULL for every row ever
+captured, and nothing went red. A CHECK-enforced column cannot be forgotten.
+The GUC staying unset repo-wide is a separate observation and is not closed
+here.
+
+**THE FENCE BUILT TO MAKE DEFERRALS VISIBLE COULD NOT SEE THIS MILESTONE'S
+HEADLINE ITEM.** §6j:1623 recorded "there is no restore surface", assigned it
+to "the operator platform (TB7)", and carried no disposition tag — while
+`threat-model-residuals.spec.ts` stayed green. Two independent misses: TB7
+shipped as M21 without the surface, and the bullet was never in the fence's
+corpus at all. §6j organises by PR (`**Added by PR3a (origin matching).**`),
+that lead-in is in neither `REGION_MARKERS` nor `NON_REGION_LABELS`, and the
+classification assertion skips any lead-in whose label does not itself say
+"residual" — so the bullet was reachable only by the language rule, and it
+used none of the marker phrases. A fence whose input is narrower than its
+claim goes green for the same reason it is wrong. **The corpus is now stated
+rather than assumed:** every §6 bullet outside it is declared as data, per
+lead-in, with a count — 30 lead-ins, 132 bullets as PR0 measured them,
+overwhelmingly "controls now shipped" and "what PR N changes". A bullet added
+under any of them changes a count and turns the fence red, so the author must
+either tag it or record that they looked. The floor is per-lead-in rather than
+per-file, because a total passes happily while one lead-in goes blind.
+
+### Residuals
+
+- **[OWNER: M28]** *§5.2 scope limits stay deferred: the reader is
+  all-or-nothing.* A released grantee reads every item, because the master key
+  they reconstruct opens every item key. Per-item keys are in place, so
+  granting a contact a vault SUBSET is a later grant feature rather than a
+  re-architecture, and it is the same capability M28 builds for
+  owner-initiated sharing. Stated here rather than discovered during the
+  reader's own review: M27 ships the all-or-nothing read deliberately, and the
+  owner's compensating visibility is that the read is audited and notified.
+- **[OWNER: M39]** *A grantee enumerating a decedent's vault produces a clean,
+  quiet trail.* The decrypt-rate detector pins its counted set to exactly
+  `crypto.field.decrypted`, so `vault.emergency.items_read` is bounded by no
+  rate limit and watched by no detector anywhere. Logging it is not detecting
+  it, and the two are recorded apart. Sits with the other Zone A hardening
+  work rather than with the reader, because the detector is audit's, not the
+  vault's.
+- **[ACCEPTED]** *`emergency_access_policies` gets no discriminator, and the
+  category was checked rather than assumed.* It soft-deletes in two places —
+  `softDeleteAllForOwner` and, less visibly, `markRevoked`, which sets
+  `deleted_at` as a rider on a status update and carries no `AND deleted_at IS
+  NULL` guard. Both would need the same discrimination IF a policy restore
+  were ever built. None is, in M27 or in the queue, and a discriminator on a
+  table with no restore consumer is the zero-caller surface this repo keeps
+  paying for. The asymmetry is deliberate and named so the next person to
+  build a policy restore starts from it.
+- **[ACCEPTED]** *A restore cannot revive an escrow.* `reset` HARD-deletes
+  `emergency_access_configs`, so items and policies can come back while the
+  wrapping they were sealed under cannot. Restoring a policy whose config row
+  is gone would yield a policy pointing at a destroyed wrapping — which is
+  exactly why the restorable corpus excludes reset-retired rows rather than
+  filtering them at read time.
+- **[OWNER: M40]** *Thirteen residuals in the corpus are owned by a milestone
+  that has already shipped, and the true number is larger than the fence can
+  see.* PR0 closed the case of an UNTAGGED residual outside the corpus; this
+  is its mirror — a TAGGED one whose owner finished. `OWNERS` is derived from
+  every row of docs/04's table, closed rows included, so naming a completed
+  milestone passes the vocabulary check exactly as naming a live one does. The
+  count is pinned rather than driven to zero: deciding whether a later slice
+  of the same programme still owes each item is a sweep, not a line in this
+  PR. What the derivation CANNOT see is the sharper half — M21's eighteen and
+  M24's residuals, because those two queue rows say APPROVED and never gained
+  a completion status, so no scan of that column will ever find them.
+- **[ACCEPTED]** *The reason fence binds a route's label to its keyset
+  behaviour, not to which rows it retires.* A `deleteItem` that retired every
+  item a user owns would label them `user_delete`, which is CORRECT for a
+  route that leaves the keyset alone, and `restorable-corpus.spec.ts` would
+  stay green. The M27 PR0 review demonstrated that mutation; it survives
+  because it is unfaithful to the fence's claim rather than because the claim
+  is weak. No fence in M27 bounds the SCOPE of a retirement, and PR1's
+  undelete is where that question actually lands.
+- **[ACCEPTED]** *The out-of-corpus census counts bullets per lead-in, so a
+  one-for-one swap under the same lead-in preserves its count.* Deleting one
+  bullet and adding another beneath the same heading is invisible to it.
+  Keying the census on each bullet's opening phrase would close that and would
+  mean hand-listing 132 prose sentences beside a document that grows — the
+  defect this repo names most often. The bound is stated rather than left to
+  be found, on the same terms the fence's own docstring states its
+  predecessor.
