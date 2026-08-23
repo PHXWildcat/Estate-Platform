@@ -6841,10 +6841,10 @@ decision booked as progress is how a queue stays untouched.**
 | M24 | Dashboard, computable subset | **APPROVED 2026-08-21, section below.** The flip-trigger was re-checked at kickoff and had STILL not fired — no demo date, no signed customer — so starting is the owner's recorded decision, not the trigger firing; the grounds are in the M24 section and docs/06 rather than silently replacing this row's earlier "a proposal, not a decision". Owns two docs/03 §6v residuals and ships the shared client read cache with its first consumer |
 | M25 | Crypto-shredding execution path | **SCOPED 2026-08-21, section below. COMPLETE.** PR0-PR5 shipped: the boundary, the capture redaction, the decision record, the destroy leg, the owner's surface, the security review. `destroyDek` now has one production caller and identity's domain erases; the other participants do not, and the ledger says which. PR5 closed the out-of-envelope category for identity's cluster (`password_hash`, `email_changes.new_email_bidx`) — every other domain's leg owns enumerating its OWN, and docs/03 §6pp says why building that list from column names is how PR4's sweep got it wrong. Count the participant domains from `packages/contracts/test/erasure-domains.spec.ts`, never from a number in this table |
 | M26 | Forensic audit completeness | `auth_events` writes 4 of 9 columns; append-only, so history is permanently incomplete. **NAME COLLISION, flagged by M24 PR0 rather than inherited:** M25 re-owned the erasure fan-out "to M26" in nine `[OWNER: M26]` residual tags across docs/03 §§6ll–6pp — seven unreached domains, the search-token purge, the pre-shred notification ordering — while this row scopes M26 as audit completeness, which owns four earlier `[OWNER: M26]` tags of its own. Two bodies of work share one name; whoever scopes M26 splits them FIRST, and neither absorbs the other by default |
-| M27 | Emergency-access reader + vault item restore | Release reconstructs the master key and wipes it |
+| M27 | Emergency-access reader + vault item restore | **SCOPED 2026-08-22, section below.** Release reconstructs the master key and wipes it, so the ceremony spends the escrow and delivers nothing; and `deleteItem` is refused to the extension audience BECAUSE overwrites are "recoverable", a security argument resting on a restore surface nobody built. M27 owns exactly those two halves. The seven `[OWNER: M27]` tags in docs/03 were FIVE distinct residuals, none of them either half, and PR0 re-owned all five rather than let the headline scope keep living only in this row's prose |
 | M28 | Owner-initiated sharing (§5.5 / §6s) | `beneficiary.cedar` is loaded and structurally unmatchable |
 | M29 | Passkey sign-in / passwordless discovery | Both authenticate routes carry `SessionGuard` |
-| M30 | In-app notification feed + channel preferences | Additive only; must never satisfy `deliversToRealChannels` |
+| M30 | In-app notification feed + channel preferences | Additive only; must never satisfy `deliversToRealChannels`. **Gained two docs/03 residuals from M27 PR0**, both because the feed is the carrier that can close them without reversing a control: the §5.2 one-tap DENY token (docs/03 §6c — an email-borne deny is a per-recipient URL, which `templates.spec.ts` refuses outright and §6c cites as a CLOSED leakage half, and an SMS one needs E4), and `emergency.reminder`, declared since M9 and emitted by nothing because no service has a scheduler |
 | M31 | Plaid link surface | Needs E3 |
 | M32 | Subscription manager, manual half | After M25 |
 | M33 | Global search | After M25 — the index must purge with the DEK |
@@ -6853,6 +6853,8 @@ decision booked as progress is how a queue stays untouched.**
 | M36 | Plaid-assisted subscription detection | Three stacked prerequisites, **middle one absent** — no transaction data path exists |
 | M37 | Passkey provisioning (Estate as authenticator) | Reverses M16's central control |
 | M38 | Referral marketplace | Zero code, zero DDL, regulatory surface |
+| M39 | Zone A hardening — the SRP abuse bound and rollback detection | **ADDED BY M27 PR0**, and the addition is forced rather than tidy: `threat-model-residuals.spec.ts` derives its owner vocabulary from THIS TABLE in both directions, so re-owning a residual to anything not listed here is refused — which is the point of a closed vocabulary. Two §6a residuals, both vault-local and both unblocked: a caller holding a GENUINE step-up can still burn SRP handshakes (three tags, one residual, tracked at docs/03 §6a, §6j and §6k), and full-history rollback is detectable only by client-side last-seen state. Neither is either half of M27's name, and carrying them there was how M27 looked bigger than it is. **A THIRD residual joined M39 in the same commit and this row said "two" until the M27 PR0 review counted them:** §6uu's grantee-read detection gap — `vault.emergency.items_read` is watched by no detector, because `decrypt-rate-detector.ts` pins its counted set to `crypto.field.decrypted` alone. It is neither a §6a bullet nor vault-local (the detector is audit's), so the milestone is three residuals across two services, not two in one |
+| M40 | Residual ownership re-sweep | **ADDED BY M27 PR0**, which found the complementary hole to the one it was scoped to fix. PR0 closed the case of an UNTAGGED residual hiding outside the fence's corpus; this is the case of a TAGGED one whose owner has since shipped. Thirteen residuals in the fence's corpus name M22 or M23, whose docs/04 rows read COMPLETE, and `OWNERS` is derived from every row of this table including the closed ones — so a tag naming a finished milestone passes the vocabulary check exactly as a live one does. The count is now pinned by `threat-model-residuals.spec.ts` so it cannot grow in silence; deciding, one at a time, whether a later slice of the same programme still owes each item is the sweep this row owns. **It is larger than thirteen:** M21's eighteen and M24's are invisible to any derivation from this table, because those two rows say APPROVED and never gained a completion status — which is the same stale-prose defect the M23 row already records about itself |
 
 **Three corrections to the list this replaces**, each measured rather than
 argued:
@@ -8672,3 +8674,116 @@ driving it live would need a settlement-operator credential this session does
 not hold. Naming the layer is the point — eleven milestones of drives have
 found what suites could not, and a drive that cannot see a thing must not be
 cited as if it had.
+
+### M27 — emergency-access reader + vault item restore (scoped 2026-08-22)
+
+**Why this milestone, in one fact.** The emergency-access ceremony is SHIPPED
+and, completed, it delivers nothing while spending itself. A grantee who waits
+out the period, is not denied, and passes the settlement gate reaches
+`apps/vault-web/src/client/app.ts`, which reconstructs the owner's master key
+on their device, calls `wipe()` on it, and tells them the arrangement "is now
+spent"; `emergency.service.ts` then refuses re-release at four sites with
+`already_released`. In the ONE scenario §5.2 exists for — the owner dead or
+incapacitated — the grantee burns the escrow, receives no data, and the only
+recovery is the owner re-arming, which is exactly what they cannot do. Both
+halves were re-verified at kickoff rather than taken from the queue row.
+
+**And the second half has the same shape.**
+`packages/auth-guard/src/session.ts` refuses `deleteItem` to the extension
+audience BECAUSE an overwrite is "recoverable" — a security argument resting
+on a restore capability nobody has built. `vault_items_versions` has captured
+full row images since M6 (`001_vault_schema.sql`) and has no production
+reader. The refusal is correct; its stated justification is not yet true.
+
+**Scope, and it is exactly the two halves of the name.** The seven `[OWNER:
+M27]` tags in docs/03 were FIVE distinct residuals (three tags are one SRP
+bullet, cited from §6a, §6j and §6k), and not one of them is either half.
+Carrying them was how M27 looked bigger than it is, and how its actual
+headline scope came to live only in a queue-row sentence. PR0 re-owned all
+five:
+
+- The one-tap deny token and `emergency.reminder` → **M30**. An email-borne
+  deny is a per-recipient URL, which `templates.spec.ts` refuses outright and
+  which docs/03 §6c cites as a CLOSED half of the M6 leakage item; an SMS one
+  needs E4. An IN-APP deny needs neither, and M30 builds the in-app feed.
+  `emergency.reminder` needs something to fire it and `ScheduleModule|@Cron(`
+  matches zero files repo-wide, so M27 would have carried it untouched.
+- The SRP abuse bound and full-history rollback detection → **M39**, a queue
+  row this PR adds. Both are §6a Zone A hardening, both vault-local, both
+  unblocked, neither is a reader or a restore.
+- Token-gated reset → **`[ACCEPTED]`**. Every compensating control the bullet
+  names has shipped; what remains is the permanent fact that a lost password
+  cannot be proved. There is no work owed, which is what the tag means.
+
+**§5.2 vault subsets stay deferred and the reader ships all-or-nothing**
+(docs/03 §6uu, owned by M28). A released grantee reads every item, because the
+master key they reconstruct opens every item key.
+
+#### What PR0 changes
+
+- **`vault_items.deleted_reason`** (migration `004`), CHECK-tied to
+  `deleted_at`. `reset` soft-deletes with the SAME stamp `deleteItem` uses and
+  then replaces the keyset, so those blobs are cryptographically dead; nothing
+  distinguished them. A restore list built as `WHERE deleted_at IS NOT NULL`
+  would have offered rows that can never decrypt, failing as a silent AEAD
+  error on click. The version trigger could not have helped:
+  `app.change_reason` is read by `packages/db/src/conventions.ts` and SET BY
+  NO SERVICE, in any cluster, so `vault_items_versions.reason` has been NULL
+  for every row ever captured.
+- **`test/restorable-corpus.spec.ts`**, which derives the vocabulary from the
+  DDL across the whole migrations directory (one file may define it — the M24
+  `categories.test.ts` lesson, where a fence reading one checksummed migration
+  was frozen with it), asserts the restorable/unrestorable partition is total
+  with both arms populated, and anchors "every writer records why" on the SQL
+  rather than on a method name.
+- **The residuals fence learns its own reach.** docs/03 §6j:1623 recorded
+  "there is no restore surface", assigned it to TB7, carried no tag, and was
+  invisible to `threat-model-residuals.spec.ts` for five milestones — TB7 then
+  shipped as M21 without it. The bullet moves into §6j's declared residual
+  region tagged `[OWNER: M27]`, and the fence now declares, per lead-in, the
+  132 §6 bullets its corpus does NOT reach, so a residual written where that
+  one hid changes a count and goes red. Two parser defects surfaced doing it:
+  bold lead-ins whose run wraps across lines were read as half a sentence (one
+  such lead-in in §6pp had gone unclassified since M25), and `## 7. Validation
+  program` — which sits BETWEEN §6hh and §6ii — never ended §6, so its four
+  bullets were attributed to §6hh.
+- **`AUDIT_ACTIONS`** gains `vault.emergency.items_read` and
+  `vault.item.restored`, a milestone before their producers, because the
+  vocabulary is closed and an older consumer drops what it does not know with
+  no mark on the producer.
+- docs/01 (the Zone A boundary), docs/03 §6uu, this section, docs/06.
+
+**Two things PR0 deliberately does NOT ship.** The `vault.read_by_grantee`
+notification kind waits for the reader PR that emits it: adding it here would
+mean a kind, a template, and TWO DDL CHECKs (the notifications service's and
+vault's own `emergency_access_notifications`) with nothing to send them. And
+`RESTORABLE_REASONS` ships with zero callers — PR1's restore list is its first
+— which is the one place this PR breaks the ship-a-capability-with-its-caller
+rule; it is here because the fence's claim needs a subject, and the
+alternative is PR1 inventing the classification beside the query that reads
+it.
+
+**Off the M24/M25 PR0 shape, deliberately.** Both precedents were docs plus
+exactly one fence and no runtime code. This PR0 carries a migration, two repo
+signatures and two call sites, because the fence it owes DERIVES from the DDL
+— the column has to exist for the fence to have an input, and a column with a
+paired CHECK and no writer is a broken table.
+
+#### The PR split
+
+- **PR0 — the design delta, the discriminator and two fences.** This section,
+  docs/01, docs/03 §6uu, migration 004, the restorable-corpus fence, the
+  residuals census, the audit vocabulary.
+- **PR1 — the restore READER and undelete.** The versions reader over
+  `vault_items_versions`, the restorable list keyed on `RESTORABLE_REASONS`
+  (its first caller), and `vault.item.restored`'s first producer. Two shapes,
+  and the tests say which is which: undelete flips `deleted_at`; version
+  restore writes a prior row image forward. Only the second answers
+  `session.ts`.
+- **PR2 — the owner's restore surface** on the vault origin.
+- **PR3 — the grantee READ.** The route authorized by the released policy row,
+  the Cedar grantee attribute in the vault's own domain, release made
+  re-collectable, and the notification kind with its producer.
+- **PR4 — the grantee's reading surface** on the vault origin.
+- **PR5 — the security review**, asking the M25 PR5 question of M27's own
+  controls, plus the live drive on the isolated vault origin.

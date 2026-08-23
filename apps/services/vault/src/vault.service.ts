@@ -431,7 +431,9 @@ export class VaultService {
       const locked = await this.items.lockLiveById(tx, itemId);
       if (!locked) throw new NotFoundException({ error: 'not_found' });
       this.authz.assertCan(actorUserId, 'delete', vaultItemResource(itemId, locked.user_id));
-      await this.items.softDelete(tx, itemId, now);
+      // 'user_delete': the keyset is untouched by this route, so the blob stays
+      // openable and the row is restorable (migration 004, docs/03 §6uu).
+      await this.items.softDelete(tx, itemId, now, 'user_delete');
     });
 
     await this.events.itemDeleted(actorUserId, accountSessionId, itemId);
@@ -480,7 +482,16 @@ export class VaultService {
       const existing = await this.keysets.lockByUser(tx, actorUserId);
       if (!existing) throw new NotFoundException({ error: 'keyset_not_found' });
 
-      const itemsDestroyed = await this.items.softDeleteAllForUser(tx, actorUserId, now);
+      // 'vault_reset': the keyset is REPLACED four lines below, in this same
+      // transaction, so every blob retired here is cryptographically dead. This
+      // is the discriminator's whole reason for existing — the stamp above is
+      // byte-identical to `deleteItem`'s and means the opposite thing.
+      const itemsDestroyed = await this.items.softDeleteAllForUser(
+        tx,
+        actorUserId,
+        now,
+        'vault_reset',
+      );
       await this.keysets.replace(tx, {
         userId: actorUserId,
         srpVerifier: Buffer.from(payload.srpVerifier, 'base64'),

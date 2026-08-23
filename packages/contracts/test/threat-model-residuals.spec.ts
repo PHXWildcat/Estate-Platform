@@ -80,6 +80,8 @@ const OWNERS: readonly string[] = [
   'M36', // Plaid-assisted subscription detection
   'M37', // passkey provisioning (Estate as authenticator)
   'M38', // referral marketplace
+  'M39', // Zone A hardening — SRP abuse bound + rollback detection (added M27 PR0)
+  'M40', // residual ownership re-sweep (added M27 PR0)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -97,6 +99,23 @@ const OWNERS: readonly string[] = [
  */
 const MIN_SECTIONS = 24;
 const MIN_RESIDUALS = 95;
+/**
+ * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
+ * 30 lead-ins; set below those so ordinary editing does
+ * not trip them, and high enough that a parser which stopped collecting cannot
+ * pass. A census whose scan breaks reports an empty complement, which would
+ * otherwise agree perfectly with an emptied declaration.
+ */
+const MIN_OUT_OF_CORPUS = 120;
+const MIN_OUT_OF_CORPUS_LEADS = 25;
+const MIN_SECTION_SIX_BULLETS = 300;
+/** Bullets outside §6 (§§1-5 and §7), and completed milestones in docs/04. */
+const MIN_NON_SIX_BULLETS = 4;
+const MIN_QUEUE_ROWS = 15;
+const MIN_COMPLETED_MILESTONES = 3;
+/** Residuals owned by a milestone whose queue row is closed. Declared debt. */
+const STALE_OWNED = 13;
+const STALE_OWNERS = ['M22', 'M23'];
 
 /**
  * The bolded lead-ins that OPEN a residual region, as exact strings.
@@ -155,6 +174,22 @@ const NON_REGION_LABELS: readonly { readonly label: string; readonly why: string
       'the language rule instead, and §6j declares a real region below it.',
   },
   {
+    label: 'FINDING 2 — A SECOND LIVE BLIND INDEX, AND A RESIDUAL SWEEP THAT SAID OTHERWISE.',
+    why:
+      '§6pp — a FINDING lead-in, and the first one this list gained by MEASUREMENT rather ' +
+      'than by review. Its bold run wraps across two lines, so `boldLabel` returned null and ' +
+      'the classification scan skipped it for the whole of M25; the M27 PR0 multi-line fix ' +
+      'made it visible on the first run. What follows it is a defect that was FIXED — a sweep ' +
+      'that grouped by column name and never asked the ownership question — not work owed.',
+  },
+  {
+    label:
+      "THE FENCE BUILT TO MAKE DEFERRALS VISIBLE COULD NOT SEE THIS MILESTONE'S HEADLINE ITEM.",
+    why:
+      "§6uu — a prose lead-in describing this fence's own defect and the census that closes " +
+      'it. No bullets follow it; §6uu declares its residuals under `### Residuals`.',
+  },
+  {
     label: 'NOT closed by this PR, and stated so it is not assumed.',
     why:
       '§6u — a PROSE paragraph with no bullets under it. Its content is genuine residual ' +
@@ -170,9 +205,26 @@ interface Residual {
 }
 
 /** A bolded label at the start of a line, if there is one. */
-function boldLabel(line: string): string | null {
+function boldLabel(line: string, rest: readonly string[] = []): string | null {
   const m = /^\*\*(.+?)\*\*/.exec(line);
-  return m === null ? null : (m[1] as string);
+  if (m !== null) return m[1] as string;
+  // A BOLD RUN THAT WRAPS. `**A reset requires the mailed code and nothing
+  // else, even for an account holding\na verified TOTP or passkey.**` closes on
+  // its SECOND line, so the single-line regex returns null and both callers
+  // fell back to `line.trim()` — half a sentence, ending mid-clause. Harmless
+  // while nothing keyed on it; the M27 PR0 census keys on it, and half a
+  // sentence is a key that changes when somebody re-wraps a paragraph. It also
+  // means the classification scan below reads the whole label, so a lead-in
+  // whose word "residual" falls on its second line is no longer invisible.
+  if (!line.startsWith('**')) return null;
+  const buf = [line];
+  for (const next of rest) {
+    if (next.trim() === '') break;
+    buf.push(next);
+    const joined = /^\*\*(.+?)\*\*/.exec(buf.join(' '));
+    if (joined !== null) return joined[1] as string;
+  }
+  return null;
 }
 
 /** Does this line's label or heading mention a residual, in any of the doc's idioms? */
@@ -239,6 +291,7 @@ function residuals(): {
   declared: Set<string>;
   regions: Region[];
   interruptions: Array<{ section: string; line: number; label: string }>;
+  outside: Array<{ section: string; line: number; lead: string }>;
 } {
   const lines = readFileSync(DOC, 'utf8').split('\n');
   const blockHeading = (line: string): boolean =>
@@ -246,6 +299,7 @@ function residuals(): {
   const residualLanguage =
     /(recorded,? (?:rather than|not) (?:fixed|closed)|accepted residual|residual (?:is|here|accepted|stated|carried)|remains? open|stays open|is not closed|left open|still open|owed by|no (?:self-service|operator) remedy|until TB7|its own milestone|a later milestone|needs its own)/i;
   const items: Residual[] = [];
+  const outside: Array<{ section: string; line: number; lead: string }> = [];
   const sections = new Set<string>();
   const declared = new Set<string>();
   const interruptions: Array<{ section: string; line: number; label: string }> = [];
@@ -253,6 +307,10 @@ function residuals(): {
   let section: string | null = null;
   let inBlock = false;
   let region: Region | null = null;
+  // The most recent bolded lead-in or subheading, tracked UNCONDITIONALLY —
+  // `region` only exists while a residual block is open, and the bullets this
+  // census exists to see are the ones with no block open over them.
+  let lead: string | null = null;
 
   /** Open a region, or close the one in force. Both paths run for every line. */
   const setBlock = (open: boolean, line: number, label: string): void => {
@@ -277,9 +335,31 @@ function residuals(): {
       sections.add(section);
       inBlock = false;
       region = null;
+      lead = null;
+    } else if (/^## /.test(line)) {
+      // A TOP-LEVEL HEADING THAT IS NOT A §6 DELTA ENDS §6, and this parser did
+      // not say so. `## 7. Validation program` sits at docs/03:4523, BETWEEN
+      // §6hh and §6ii — the doc appends deltas after the numbered sections and
+      // §7 was overtaken — so `section` stayed '6hh' and §7's four bullets were
+      // attributed to it. The same mis-attribution class as the one-letter
+      // section regex, and invisible for the same reason: none of those bullets
+      // is tagged or uses residual language, so none reached the corpus and
+      // nothing went red. A residual written in §7 WOULD have been collected,
+      // and reported under a section that does not contain it. The
+      // classification scan below always had this clause; the parser did not.
+      // Found by the M27 PR0 census, which is the first assertion to look at
+      // the bullets the corpus rejects.
+      section = null;
+      inBlock = false;
+      region = null;
+      lead = null;
     }
     if (/^#{2,4}\s/.test(line)) {
       inBlock = blockHeading(line);
+      // A DELTA HEADING IS NOT A LEAD-IN. `## 6c.` already reset `lead` above;
+      // letting this branch set it again files §6c's four preamble bullets under
+      // the section's own title, which reads like a lead-in and is not one.
+      lead = delta === null ? line.replace(/^#+\s*/, '').trim() : null;
       setBlock(inBlock, index + 1, line.trim());
       if (inBlock && section !== null) declared.add(section);
     } else if (line.startsWith('**')) {
@@ -288,9 +368,10 @@ function residuals(): {
       // controls, now shipped**" — five bullets describing controls that
       // SHIPPED. Caught only because an independent classification of the
       // corpus disagreed with this parser about two bullets.
-      const label = boldLabel(line);
+      const label = boldLabel(line, lines.slice(index + 1, index + 4));
       const wasInBlock = inBlock;
       inBlock = label !== null && REGION_MARKERS.includes(label);
+      lead = label ?? line.trim();
       // A CLOSURE IS A LOSS, and it used to be a silent one. Every bullet after
       // this line leaves the corpus, but the region still reports the bullets
       // BEFORE it — so `count === 0`, the check this file calls its own silent
@@ -317,11 +398,14 @@ function residuals(): {
       if (inBlock || residualLanguage.test(text)) {
         items.push({ section, line: index + 1, text });
         if (region !== null) region.count += 1;
+      } else {
+        // NOT IN THE CORPUS. This is the half the fence used to leave unsaid.
+        outside.push({ section, line: index + 1, lead: lead ?? SECTION_PREAMBLE });
       }
     }
   });
 
-  return { items, sections, declared, regions, interruptions };
+  return { items, sections, declared, regions, interruptions, outside };
 }
 
 /**
@@ -367,10 +451,169 @@ const DECLARED_INTERRUPTIONS: ReadonlyArray<{ section: string; label: string }> 
   { section: '6t', label: 'Proven live, on the disagreeing arm.' },
 ];
 
+/** A §6 bullet standing under no lead-in at all, directly beneath the heading. */
+const SECTION_PREAMBLE = '(section preamble)';
+
+/**
+ * THE BULLETS THIS FENCE DOES NOT WATCH, STATED AS DATA INSTEAD OF AS PROSE.
+ *
+ * WHY THIS EXISTS, and it is the defect M27 PR0 was scoped from. §6j:1623
+ * recorded "there is no restore surface", assigned it to "the operator platform
+ * (TB7)", and carried NO disposition tag — while this file stayed green for
+ * five milestones. TB7 then shipped as M21 without the surface. The bullet was
+ * never in the corpus: §6j organises by PR, `**Added by PR3a (origin
+ * matching).**` is in neither `REGION_MARKERS` nor `NON_REGION_LABELS`, and the
+ * classification assertion below skips any lead-in whose LABEL does not itself
+ * say "residual" — so the bullet was reachable only by the language rule, and it
+ * used none of the marker phrases. The single most load-bearing sentence about
+ * M27's restore half was invisible to the mechanism built to make deferrals
+ * visible.
+ *
+ * The docstring at the top of `residuals()` already STATED this bound. A stated
+ * bound is not a mechanism: it tells a reader the gap exists and tells the next
+ * author nothing when they write into it.
+ *
+ * WHAT THIS ASSERTS. The corpus reaches most of §6's bullets. The rest are
+ * declared here, keyed by the lead-in they sit under and counted — and the
+ * shape of that list is itself the argument that the corpus is drawn in roughly
+ * the right place: the large entries are "Controls now shipped.", "What PR N
+ * changes", "The other confirmed findings". Bullets describing work that was
+ * DONE. A residual hiding among them is exactly what happened, and now it
+ * cannot happen silently: a bullet added under any declared lead-in changes that
+ * lead-in's count and turns this red, so the author either tags it (it moves
+ * into the corpus and the count drops) or bumps the number, which is a one-line
+ * diff saying "I looked at this bullet and it is not work owed".
+ *
+ * WHY PER LEAD-IN AND NOT PER FILE. A total passes happily while one lead-in
+ * goes blind — the level-vs-total rule this file already applies to reach and to
+ * owners. `kind` is required for the same reason `why` is required on
+ * `NON_REGION_LABELS`: it makes each entry a judgement somebody made rather than
+ * a number somebody pasted.
+ *
+ * THE BOUND, stated rather than discovered later — this is a COUNT per lead-in,
+ * so deleting one bullet and adding another beneath the same heading preserves
+ * it. Keying on each bullet's opening phrase would close that, and would mean
+ * hand-listing 132 prose sentences beside a document that grows, which is the
+ * defect this repo names most often. docs/03 §6uu records the trade.
+ *
+ * A RED ASSERTION HERE IS NOT NOISE. It means a bullet was written somewhere
+ * this fence cannot see a disposition. Tag it, or say here that you looked.
+ * Never delete an entry to make the number agree.
+ */
+const OUT_OF_CORPUS: ReadonlyArray<{
+  readonly section: string;
+  readonly label: string;
+  readonly bullets: number;
+  readonly kind: 'shipped' | 'decision' | 'evidence' | 'closure' | 'tracked-elsewhere';
+}> = [
+  { section: '6a', label: 'Controls now shipped.', bullets: 6, kind: 'shipped' },
+  {
+    section: '6a',
+    label: 'Not yet shipped, and therefore not yet mitigated.',
+    bullets: 3,
+    kind: 'tracked-elsewhere',
+  },
+  {
+    section: '6a',
+    label: '§5.2 emergency-access controls, now shipped (M6 PR2).',
+    bullets: 6,
+    kind: 'shipped',
+  },
+  { section: '6aa', label: 'What PR2 changes', bullets: 6, kind: 'shipped' },
+  {
+    section: '6b',
+    label: 'Control 5 — staged executor access — now shipped (PR2).',
+    bullets: 6,
+    kind: 'shipped',
+  },
+  {
+    section: '6b',
+    label: 'Controls now shipped (PR1: intake → review → waiting period → verified).',
+    bullets: 5,
+    kind: 'shipped',
+  },
+  {
+    section: '6bb',
+    label: 'The three decisions, and what each one is not',
+    bullets: 3,
+    kind: 'decision',
+  },
+  { section: '6bb', label: 'What PR3a changes', bullets: 5, kind: 'shipped' },
+  { section: '6c', label: '(section preamble)', bullets: 4, kind: 'shipped' },
+  { section: '6cc', label: 'What PR3b changes', bullets: 6, kind: 'shipped' },
+  {
+    section: '6f',
+    label: 'A §5.1 control was revocable by accident, twice.',
+    bullets: 2,
+    kind: 'evidence',
+  },
+  { section: '6g', label: 'The ceremony.', bullets: 3, kind: 'evidence' },
+  {
+    section: '6i',
+    label: 'The §4 TB6 controls, now shipped and their status.',
+    bullets: 7,
+    kind: 'shipped',
+  },
+  {
+    section: '6j',
+    label: 'Added by PR2a (the extension and its transport).',
+    bullets: 3,
+    kind: 'shipped',
+  },
+  { section: '6j', label: 'Added by PR2b (unlock and read).', bullets: 4, kind: 'shipped' },
+  { section: '6j', label: 'Added by PR3a (origin matching).', bullets: 6, kind: 'shipped' },
+  { section: '6j', label: 'Added by PR5 (the security review).', bullets: 12, kind: 'shipped' },
+  { section: '6j', label: 'Decisions and their residuals.', bullets: 4, kind: 'decision' },
+  { section: '6j', label: 'What M16 closes that predates it.', bullets: 2, kind: 'closure' },
+  { section: '6k', label: 'What M17 PR1 closes that predates it', bullets: 1, kind: 'closure' },
+  { section: '6l', label: 'A FIFTH NOTIFICATIONS EDGE', bullets: 3, kind: 'shipped' },
+  {
+    section: '6m',
+    label:
+      'A reset requires the mailed code and nothing else, even for an account holding a verified TOTP or passkey.',
+    bullets: 4,
+    kind: 'decision',
+  },
+  { section: '6m', label: 'The rest of the shape', bullets: 5, kind: 'evidence' },
+  {
+    section: '6n',
+    label: 'VERIFY-THEN-SWITCH, and the ordering is the whole design.',
+    bullets: 3,
+    kind: 'decision',
+  },
+  {
+    section: '6p',
+    label: 'What the review REFUTED, and why the refutations are worth keeping',
+    bullets: 1,
+    kind: 'evidence',
+  },
+  {
+    section: '6q',
+    label: "The window's clock, and what that costs (M18 PR3).",
+    bullets: 3,
+    kind: 'decision',
+  },
+  {
+    section: '6t',
+    label:
+      "Three identity call sites read a discriminated union's DISCRIMINANT as if it were its ANSWER.",
+    bullets: 3,
+    kind: 'shipped',
+  },
+  {
+    section: '6v',
+    label: 'The 202 is not a delivery receipt, and no layer is allowed to render it as one.',
+    bullets: 3,
+    kind: 'decision',
+  },
+  { section: '6y', label: 'The other confirmed findings', bullets: 7, kind: 'shipped' },
+  { section: '6z', label: 'What PR1 changes', bullets: 6, kind: 'shipped' },
+];
+
 const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,2})\]\*\*/;
 
 describe('docs/03 §6 — every residual declares a disposition', () => {
-  const { items, sections, declared, regions, interruptions } = residuals();
+  const { items, sections, declared, regions, interruptions, outside } = residuals();
 
   it('every DECLARED region actually collects a residual', () => {
     /*
@@ -463,7 +706,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     const unclassified: string[] = [];
     const reached = new Set<string>();
     let seen = 0;
-    lines.forEach((line) => {
+    lines.forEach((line, index) => {
       // `6[a-z]{0,2}` — and this is the occurrence where the one-letter
       // version was not merely mis-attributing but BLIND. `## 6aa.` failed the
       // first test and passed the second (`^## `), so `inSix` went FALSE at
@@ -476,7 +719,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
       else if (/^## /.test(line)) inSix = null;
       if (inSix === null) return;
       reached.add(inSix);
-      const label = boldLabel(line);
+      const label = boldLabel(line, lines.slice(index + 1, index + 4));
       if (label === null || !MENTIONS_RESIDUAL.test(label)) return;
       seen += 1;
       if (!REGION_MARKERS.includes(label) && !known.has(label)) unclassified.push(label);
@@ -529,6 +772,194 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     const deltas = [...sections].filter((s) => s !== '6');
     const silent = deltas.filter((s) => !declared.has(s)).sort();
     expect(silent).toEqual([]);
+  });
+
+  it('the bullets OUTSIDE the corpus are declared per lead-in — the fence states its own reach', () => {
+    // THE ASSERTION M27 PR0 ADDED, and the one that would have caught §6j:1623.
+    // See OUT_OF_CORPUS above for why a stated bound was not enough.
+    const derived = new Map<string, number>();
+    for (const b of outside) {
+      const key = `${b.section} § ${b.lead}`;
+      derived.set(key, (derived.get(key) ?? 0) + 1);
+    }
+    // Annotated, because inference makes the key a TEMPLATE-LITERAL type and
+    // then refuses every plain-string lookup below. A jest run does not
+    // typecheck, so this only surfaced under `pnpm typecheck`.
+    const declaredCensus = new Map<string, number>(
+      OUT_OF_CORPUS.map((d) => [`${d.section} § ${d.label}`, d.bullets] as const),
+    );
+
+    // SETS FIRST. Mis-attribution preserves a total: a bullet that moves from
+    // one lead-in to another leaves every count in this file unchanged unless
+    // the KEYS are compared.
+    expect([...derived.keys()].sort()).toEqual([...declaredCensus.keys()].sort());
+
+    // THEN THE PER-LEVEL COUNTS. This is the half that catches a bullet added
+    // under an existing lead-in, which is how the restore residual arrived.
+    const disagreements = [...derived.entries()]
+      .filter(([key, n]) => declaredCensus.get(key) !== n)
+      .map(([key, n]) => `${key} :: declared ${String(declaredCensus.get(key))}, found ${n}`);
+    expect(disagreements).toEqual([]);
+
+    // ANTI-VACUITY, at the level of this scan rather than the file's total: a
+    // parser that stopped collecting `outside` at all would satisfy both
+    // assertions above the moment somebody emptied the list to match it.
+    expect(outside.length).toBeGreaterThanOrEqual(MIN_OUT_OF_CORPUS);
+    expect(derived.size).toBeGreaterThanOrEqual(MIN_OUT_OF_CORPUS_LEADS);
+    // And the classification cannot collapse to one value that means nothing —
+    // a census where every entry says 'shipped' is a census nobody read.
+    expect(new Set(OUT_OF_CORPUS.map((d) => d.kind)).size).toBeGreaterThanOrEqual(4);
+  });
+
+  it('the corpus and its complement partition §6 — no bullet is in both or neither', () => {
+    // The two halves are produced by one branch of one parser, so this cannot
+    // fail without the parser changing shape. It is here because that is
+    // precisely the change that would make the census meaningless while both
+    // assertions above still passed: `outside` quietly collecting a subset.
+    const total = readFileSync(DOC, 'utf8')
+      .split('\n')
+      .reduce((n, line, i, all) => {
+        if (!line.startsWith('- ')) return n;
+        // Only §6 counts, and only bullets the parser would reach — the same
+        // section test, re-derived here rather than shared, so a break in the
+        // parser's own section tracking shows up as a DISAGREEMENT.
+        const before = all.slice(0, i);
+        const lastHeading = [...before].reverse().find((l) => /^## /.test(l)) ?? '';
+        return /^## 6[a-z]{0,2}\./.test(lastHeading) ? n + 1 : n;
+      }, 0);
+    expect(items.length + outside.length).toBe(total);
+    expect(total).toBeGreaterThanOrEqual(MIN_SECTION_SIX_BULLETS);
+  });
+
+  it('a residual written OUTSIDE §6 is still caught — the §6-boundary repair cut both ways', () => {
+    /*
+     * THE ONE PLACE M27 PR0 MADE A PRE-EXISTING ASSERTION WEAKER, restored.
+     *
+     * PR0 taught the parser that a non-§6 `## ` heading ends §6, because
+     * `## 7. Validation program` sits at docs/03:4523 — BETWEEN §6hh and §6ii,
+     * the deltas having been appended after the numbered sections — and its
+     * four bullets were being attributed to §6hh. That fixed a real
+     * mis-attribution and cost something the fence's own review caught: BEFORE
+     * the repair, an untagged residual written in §7 was collected into the
+     * corpus (mislabelled §6hh) and reddened `every residual opens with exactly
+     * one disposition tag`. AFTER it, `section` is null there, so such a bullet
+     * is invisible to that assertion AND absent from the census, which is
+     * §6-scoped by construction.
+     *
+     * Attributing it to §6hh was never the right answer. Requiring a
+     * disposition tag on §7's bullets is not either — they are a validation
+     * PROGRAMME, not residuals. So the claim here is narrower and true: a
+     * bullet outside §6 that SAYS it is deferred work must still carry a
+     * disposition, wherever it lives.
+     */
+    const lines = readFileSync(DOC, 'utf8').split('\n');
+    const residualLanguage =
+      /(recorded,? (?:rather than|not) (?:fixed|closed)|accepted residual|residual (?:is|here|accepted|stated|carried)|remains? open|stays open|is not closed|left open|still open|owed by|no (?:self-service|operator) remedy|until TB7|its own milestone|a later milestone|needs its own)/i;
+    // SCOPED TO WHAT THE REPAIR ACTUALLY COST, which is narrower than "outside
+    // §6". The parser's `section` starts null, so §§1-5 were never collected
+    // BEFORE PR0 either — their STRIDE bullets state residuals inline and have
+    // never used the §6 disposition vocabulary, and demanding tags there would
+    // be a new claim wearing a regression's clothes. What PR0 lost is bullets
+    // in a non-§6 top-level section that appears AFTER the deltas begin, which
+    // today is `## 7. Validation program` alone and tomorrow is whatever else
+    // gets overtaken by an appended delta.
+    let sawSix = false;
+    let outsideSix = false;
+    let seen = 0;
+    const untagged: string[] = [];
+    lines.forEach((line, index) => {
+      if (/^## /.test(line)) {
+        const isSix = /^## 6[a-z]{0,2}\./.test(line);
+        if (isSix) sawSix = true;
+        outsideSix = sawSix && !isSix;
+      }
+      if (!outsideSix || !line.startsWith('- ')) return;
+      const buf = [line];
+      for (let j = index + 1; j < lines.length; j += 1) {
+        const next = lines[j] as string;
+        if (!next.startsWith('  ') || next.trim() === '') break;
+        buf.push(next);
+      }
+      const text = buf.map((l) => l.trim()).join(' ');
+      seen += 1;
+      if (residualLanguage.test(text) && !TAG.test(text)) {
+        untagged.push(`docs/03-threat-model.md:${index + 1} ${text.slice(0, 90)}`);
+      }
+    });
+    // ANTI-VACUITY: §§1-5 and §7 carry plenty of bullets. A scan reaching none
+    // of them would report zero violations and read exactly like a clean one.
+    expect(seen).toBeGreaterThanOrEqual(MIN_NON_SIX_BULLETS);
+    expect(untagged).toEqual([]);
+  });
+
+  it('no residual is owned by a milestone that has already SHIPPED', () => {
+    /*
+     * THE COMPLEMENTARY HOLE, and PR0 exists because of its twin. §6j:1623
+     * assigned the restore surface to "the operator platform (TB7)" and TB7
+     * shipped as M21 without it — the bullet was untagged, so the census now
+     * catches that shape. This is the other half: a bullet that IS tagged, to a
+     * milestone that has since COMPLETED. Nothing looked at it, and `OWNERS` is
+     * derived from every row of docs/04's table INCLUDING the completed ones,
+     * so a tag naming a shipped milestone passes the vocabulary check exactly
+     * as a live one does. Found by the M27 PR0 review.
+     *
+     * Derived on both sides: the completed set comes from docs/04's own status
+     * column, so a milestone marked COMPLETE tomorrow reddens this the moment
+     * its row changes — which is the point. There is no list to maintain here.
+     */
+    const queueRows = readFileSync(PLAN, 'utf8')
+      .split('\n')
+      .filter((line) => /^\| M\d{2} \|/.test(line));
+    // ANTI-VACUITY on the ROWS, before any status is read from them: a table
+    // that moved, or a row format that changed, would otherwise leave every
+    // derivation below operating on an empty corpus and passing in silence.
+    expect(queueRows.length).toBeGreaterThanOrEqual(MIN_QUEUE_ROWS);
+
+    /*
+     * READ THE STATUS, NOT THE ROW — and the first draft of this assertion read
+     * the row. `/^\| (M\d{2}) \|.*COMPLETE/` matched the word ANYWHERE in a
+     * 400-character cell, so the M40 row went into the completed set the moment
+     * it explained that thirteen residuals name milestones "whose docs/04 rows
+     * read COMPLETE" — a row describing closed milestones was classified as one.
+     * A status is a BOLD RUN in the status cell (`**COMPLETE**`,
+     * `**SCOPED ... COMPLETE.**`); prose about other rows is not bold and is not
+     * a status. Caught by adding the M40 residual this same fence demanded.
+     */
+    // The status is the THIRD cell; `| M40 | name | status |` splits to
+    // ['', ' M40 ', ' name ', ' status ', ''] and the tail is rejoined so a
+    // status containing a pipe cannot silently truncate what is scanned.
+    const statusOf = (line: string): string => line.split('|').slice(3).join('|');
+    const isComplete = (status: string): boolean =>
+      [...status.matchAll(/\*\*([^*]+)\*\*/g)].some((m) => /\bCOMPLETE\b/.test(m[1] as string));
+    const completed = new Set(
+      queueRows
+        .filter((line) => isComplete(statusOf(line)))
+        .map((line) => (/^\| (M\d{2}) \|/.exec(line) as RegExpExecArray)[1] as string),
+    );
+    // ANTI-VACUITY on the STATUSES: a bold-run regex that stopped matching
+    // would find no completed milestones and pass just as quietly.
+    expect(completed.size).toBeGreaterThanOrEqual(MIN_COMPLETED_MILESTONES);
+
+    const stale = items
+      .map((r) => ({ r, m: TAG.exec(r.text) }))
+      .filter(({ m }) => m !== null && m[2] !== undefined && completed.has(m[2]));
+
+    // PINNED, NOT ZERO — and the difference is the honest part. Thirty-one
+    // residuals name a milestone whose queue row is closed (M21 eighteen, M23
+    // twelve, M22 one). Re-owning them means deciding, one at a time, whether a
+    // later slice of the same programme still owes the work or whether it
+    // closed with the milestone — a sweep, not a line in this PR, and M40 owns
+    // it. What ships here is that the number cannot GROW in silence: a residual
+    // newly tagged to a shipped milestone, or a milestone marked COMPLETE while
+    // residuals still name it, reddens this immediately.
+    //
+    // SETS for the owners, count for the total — mis-attribution between two
+    // closed milestones preserves the count, and the owner set is what says
+    // WHICH programme the debt belongs to.
+    expect([...new Set(stale.map((x) => String(x.m?.[2])))].sort()).toEqual(
+      [...STALE_OWNERS].sort(),
+    );
+    expect(stale.length).toBe(STALE_OWNED);
   });
 
   it('deferred work still exists — the doc has not quietly become all-ACCEPTED', () => {

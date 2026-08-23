@@ -152,6 +152,29 @@ export const AUDIT_ACTIONS = [
   // because the owner's settlement case has not reached its separately
   // approved vault stage. Zone A is the LAST stage by design.
   'vault.emergency.release_blocked',
+  // M27 PR0, and they arrive here A MILESTONE BEFORE THEIR PRODUCERS on
+  // purpose: AUDIT_ACTIONS is closed, and a consumer that predates a member
+  // treats every instance as `schema_violation` and drops it silently, with no
+  // mark on the producer. Deploy order is the only mitigation and nothing
+  // enforces it, so the vocabulary ships first and the emitters follow.
+  //
+  // `vault.emergency.items_read` is the first vault action whose actor is not
+  // the subject in the READ direction: a released grantee opening the owner's
+  // items. It belongs on the OWNER's trail with the grantee named as actor,
+  // which is what `onBehalfOf` exists for. Four vault call sites already set it
+  // (`emergency.service.ts` twice, `vault.service.ts` once, and
+  // `events.service.ts`'s `emergencyReleased`) — an earlier draft of this
+  // comment said `vault.emergency.released` was the only one, which the M27 PR0
+  // review measured and refuted. Two of those four emit through
+  // `audit.emit` DIRECTLY rather than through `events.service`'s typed helpers,
+  // so that union is not the chokepoint it looks like and the reader's emitter
+  // must set `onBehalfOf` explicitly rather than inherit it.
+  'vault.emergency.items_read',
+  // Restoring a soft-deleted or overwritten item. Distinct from
+  // `vault.item.updated` because a restore asserts a PRIOR state is now
+  // current, and the owner's after-the-fact question is "what came back", not
+  // "what changed".
+  'vault.item.restored',
   // Settlement service (core cluster; docs/03 §5.1). The case lifecycle is
   // the fraudulent-death-trigger audit trail: every transition is recorded,
   // including rejected and owner-voided cases, because the report itself is
