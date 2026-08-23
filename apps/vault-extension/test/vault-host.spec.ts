@@ -597,9 +597,10 @@ describe('writing an item through the host (M16 PR4a)', () => {
    * A holder that records what it was asked to seal, so the VERSION the blob is
    * sealed FOR can be asserted. That number is the subtle part of the write
    * path: it lives inside the AEAD's AAD, and the service writes
-   * `locked.blob_version + 1` after checking `If-Match` against the row it
-   * locked — so sealing for the version we READ produces a blob that no longer
-   * opens once it lands, and nothing in the response would say so.
+   * `locked.blob_version + 1` — so sealing for the version we READ produces a
+   * blob that no longer opens once it lands, and nothing in the response would
+   * say so. The version is NOT what `If-Match` carries; that is `revision`
+   * (M27 PR1a), which is why the doubles here hold the two deliberately apart.
    */
   function recordingHost(): {
     host: VaultHost;

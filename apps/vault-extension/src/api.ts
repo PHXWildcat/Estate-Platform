@@ -96,12 +96,17 @@ export interface RequestOptions {
    */
   readonly bearer?: string | undefined;
   /**
-   * `If-Match: <blobVersion>` — REQUIRED by the vault service on an item update
+   * `If-Match: <revision>` — REQUIRED by the vault service on an item update
    * and refused as `invalid_request` when absent, so it is an explicit option
-   * rather than something a caller can forget into a 400. It is the version the
-   * caller READ, not the one it sealed under: the service writes
-   * `locked.blob_version + 1`, and the blob must already be sealed for that
-   * number because the version is inside the AEAD's AAD.
+   * rather than something a caller can forget into a 400.
+   *
+   * THE REVISION, NOT THE BLOB VERSION (M27 PR1a). The two used to be the same
+   * integer and are now separate columns, because a version restore writes a
+   * captured `blob_version` back and a value that can RECUR cannot be compared
+   * by strict equality — a client holding a stale blob at a repeated version
+   * would pass the check and silently overwrite the restore. `revision` is
+   * assigned by a trigger and never repeats. The blob version still travels,
+   * under its own name, because it is inside the AEAD's AAD.
    */
   readonly ifMatch?: number | undefined;
   /**

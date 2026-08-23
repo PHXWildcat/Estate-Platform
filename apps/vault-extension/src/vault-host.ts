@@ -296,11 +296,14 @@ export class VaultHost {
   /**
    * UPDATE, sealed for the version the service is about to write.
    *
-   * `blobVersion` is what the caller READ. The service writes
-   * `locked.blob_version + 1` after checking `If-Match` against the row it
-   * locked, so the blob must already be sealed for that successor — the number
-   * is inside the AAD, and sealing for the version we read would produce a blob
-   * that no longer opens once it lands.
+   * TWO NUMBERS, TWO JOBS (M27 PR1a). `blobVersion` is the version the caller
+   * READ; the service writes `locked.blob_version + 1`, so the blob must
+   * already be sealed for that successor — the number is inside the AAD, and
+   * sealing for the version we read would produce a blob that no longer opens
+   * once it lands. `revision` is the concurrency token and is what travels as
+   * `If-Match`; the service compares it to the row it locked. They are separate
+   * because a version restore can put a blob version BACK, and a value that
+   * recurs cannot be compared by strict equality.
    */
   async updateItem(input: {
     bearer: string;

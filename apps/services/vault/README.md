@@ -53,7 +53,7 @@ Two details that are load-bearing rather than incidental:
 | `GET /v1/vault/items` | + vault session | Paginated; returns whole blobs. |
 | `POST /v1/vault/items` | + vault session | Client-supplied UUID. |
 | `GET /v1/vault/items/:id` | + vault session | |
-| `PUT /v1/vault/items/:id` | + vault session | Requires `If-Match: <blobVersion>`. |
+| `PUT /v1/vault/items/:id` | + vault session | Requires `If-Match: <revision>`. |
 | `DELETE /v1/vault/items/:id` | + step-up + vault session | Soft delete. |
 
 Step-up (docs/01 §5) covers opening a vault and touching its key material. Item

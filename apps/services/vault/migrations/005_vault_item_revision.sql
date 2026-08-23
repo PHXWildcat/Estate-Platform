@@ -28,11 +28,13 @@
 -- is a restore, and docs/03 §6a's rollback-detection residual (now M39) has
 -- nothing else to look at today.
 --
--- Checked as a category rather than as an instance: `itemContentAad` is the
--- ONLY additional-authenticated-data builder in this repo that binds a mutable
--- per-write counter. `fieldAad`, `aliasAad`, `itemKeyAad`, `masterKeyAad`,
--- `recoveryWrapAad` and `shareAad` bind stable identities only, so no other
--- table carries this conflation and no other migration is owed.
+-- Checked as a category rather than as an instance: item content is the ONLY
+-- additional-authenticated-data construction here that binds a mutable
+-- per-write counter, so no other table carries this conflation and no other
+-- migration is owed. That claim is not restated here as a list of names —
+-- `packages/vault-crypto/test/aad-bindings.spec.ts` holds every AAD as data,
+-- derives the live set from the tree in both zones, and fails the build if a
+-- second counter-binding AAD ever appears or an existing one is misdeclared.
 
 ALTER TABLE vault_items
   ADD COLUMN revision INT NOT NULL DEFAULT 1,

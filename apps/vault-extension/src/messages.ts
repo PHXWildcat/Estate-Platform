@@ -159,19 +159,72 @@ export type VaultResponse =
   | { readonly ok: true; readonly item: ItemSummary }
   | { readonly ok: false; readonly code: string };
 
+/**
+ * WHAT EACH REQUEST MUST CARRY, as data (M27 PR1a).
+ *
+ * This table is the reason the predicate below can honestly claim
+ * `value is VaultRequest`. It used to check `target` and `kind` alone and then
+ * assert the whole type, which made every OTHER field a promise nothing kept:
+ * the router reads `message.revision` as a `number`, and an assertion that
+ * never looked at it is how a message missing that field reaches a handler
+ * typed to receive it. M27 PR1a shipped exactly that bug in the other
+ * direction and no gate saw it.
+ *
+ * `apps/vault-extension/test/messages-contract.spec.ts` derives the variants
+ * and their required fields from this file's own union and fails if this table
+ * and that union ever disagree, in either direction — so a field added to a
+ * message is a field this predicate starts requiring.
+ */
+const STRING = 'string' as const;
+const NUMBER = 'number' as const;
+const OBJECT = 'object' as const;
+
+/**
+ * Named rather than quoted inline, because `itemType: 'string'` reads to
+ * `fences.spec.ts` as a source file claiming an item type called `string` —
+ * and that fence, which exists to catch a fixture inventing `login`, is right
+ * to refuse it. The constant says the same thing without occupying the shape
+ * another fence is watching.
+ */
+export const VAULT_REQUEST_REQUIRED_FIELDS: Readonly<
+  Record<string, Readonly<Record<string, typeof STRING | typeof NUMBER | typeof OBJECT>>>
+> = {
+  state: {},
+  unlock: { userId: STRING, password: STRING, secretKey: STRING, bearer: STRING },
+  list: { bearer: STRING },
+  matches: { bearer: STRING, pageUrl: STRING },
+  fill: { bearer: STRING, itemId: STRING, pageUrl: STRING },
+  create: { bearer: STRING, itemType: STRING, content: OBJECT },
+  update: {
+    bearer: STRING,
+    itemId: STRING,
+    itemType: STRING,
+    changes: OBJECT,
+    blobVersion: NUMBER,
+    revision: NUMBER,
+  },
+  /** `bearer` is OPTIONAL here — a teardown may lock with no session in hand. */
+  lock: {},
+};
+
+const REQUIRED = VAULT_REQUEST_REQUIRED_FIELDS;
+
 /** Narrowing helpers, so a stray message from anywhere is simply ignored. */
 export function isVaultRequest(value: unknown): value is VaultRequest {
   if (typeof value !== 'object' || value === null) return false;
-  const { target, kind } = value as { target?: unknown; kind?: unknown };
-  return (
-    target === OFFSCREEN &&
-    (kind === 'state' ||
-      kind === 'unlock' ||
-      kind === 'list' ||
-      kind === 'matches' ||
-      kind === 'fill' ||
-      kind === 'create' ||
-      kind === 'update' ||
-      kind === 'lock')
-  );
+  const record = value as Record<string, unknown>;
+  if (record['target'] !== OFFSCREEN) return false;
+  const kind = record['kind'];
+  if (typeof kind !== 'string' || !Object.prototype.hasOwnProperty.call(REQUIRED, kind)) {
+    return false;
+  }
+  for (const [field, expected] of Object.entries(REQUIRED[kind] as Record<string, string>)) {
+    const actual = record[field];
+    if (expected === 'object') {
+      if (typeof actual !== 'object' || actual === null) return false;
+    } else if (typeof actual !== expected) {
+      return false;
+    }
+  }
+  return true;
 }

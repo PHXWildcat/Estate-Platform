@@ -4,6 +4,7 @@ import {
   OFFSCREEN,
   type ItemSummary,
   type MatchedItem,
+  type VaultRequest,
   type VaultState,
 } from './messages.js';
 
@@ -23,7 +24,14 @@ import {
 
 export type VaultOutcome<T> = { ok: true; data: T } | { ok: false; code: ApiFailure };
 
-async function ask<T>(message: unknown): Promise<VaultOutcome<T>> {
+/**
+ * `message` is typed as the request union rather than `unknown` on purpose.
+ * M27 PR1a added a required field to the `update` message and changed the hop
+ * that READS it, but this module — which BUILDS it — went on compiling, because
+ * an `unknown` parameter makes `VaultRequest` documentation rather than a
+ * contract. Every popup edit would have 400'd with no `If-Match` at all.
+ */
+async function ask<T>(message: VaultRequest): Promise<VaultOutcome<T>> {
   try {
     await chrome.runtime.sendMessage({ target: BACKGROUND });
     const reply = await chrome.runtime.sendMessage(message);
@@ -132,8 +140,13 @@ export async function createItem(
 /**
  * Change an item, sending ONLY what changed.
  *
- * `blobVersion` is the version the popup read; it travels on as `If-Match`, so
- * an edit against a stale view is refused rather than silently absorbed.
+ * TWO numbers travel, and they are not interchangeable (M27 PR1a).
+ * `blobVersion` is the version the popup read; the service seals the next blob
+ * against it, because it is inside the content AAD. `revision` is the
+ * concurrency token and is what becomes `If-Match`, so an edit against a stale
+ * view is refused rather than silently absorbed. A version restore puts a
+ * captured blob version back, so a blob version can RECUR on a row — which is
+ * exactly what an equality check must never be given.
  */
 export async function updateItem(
   bearer: string,
@@ -142,6 +155,7 @@ export async function updateItem(
     itemType: string;
     changes: Record<string, unknown>;
     blobVersion: number;
+    revision: number;
   },
 ): Promise<VaultOutcome<ItemSummary>> {
   const reply = await ask<{ item: ItemSummary }>({

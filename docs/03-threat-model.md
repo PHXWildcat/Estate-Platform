@@ -5785,15 +5785,25 @@ the revision is ACCEPTED. A change whose proof arrives a PR after the change
 is a change nobody checked. Every client double was given a revision that
 deliberately differs from its blob version for the same reason.
 
-**CHECKED AS A CATEGORY, DERIVED RATHER THAN ASSUMED.** `itemContentAad` is
-the ONLY additional-authenticated-data builder in this repo that binds a
-mutable per-write counter; `fieldAad`, `aliasAad`, `itemKeyAad`,
-`masterKeyAad`, `recoveryWrapAad` and `shareAad` bind stable identities only.
-No other table carries this conflation, and no other migration is owed.
+**CHECKED AS A CATEGORY — AND THE FIRST VERSION OF THIS PARAGRAPH WAS NOT.**
+Item content is the only additional-authenticated-data construction in this
+repo that binds a mutable per-write counter, so no other table carries this
+conflation and no other migration is owed. That claim is correct and it
+survived checking. The sentence that supported it did not: it said "derived
+rather than assumed" while hand-listing six builders, two of which
+(`fieldAad`, `aliasAad`) do not exist and never did, and it omitted every AAD
+built inline at a call site rather than by a named function — which is all of
+Zone B's. A hand-list is what the word "derived" was doing the work of hiding.
+The set now lives in `packages/vault-crypto/test/aad-bindings.spec.ts` as data,
+compared against the tree in both zones and in both directions, with the
+counter property asserted mechanically rather than by eye. Prose does not
+restate it; the fence is the citation.
 
-**AND ONE REFUSAL WHERE THERE WERE TWO.** Every item route read its row by id
-ALONE and then asked Cedar, which answers `403 forbidden` — so a missing item
-gave 404 and somebody else's gave 403. That pair is an existence oracle for
+**AND ONE REFUSAL WHERE THERE WERE TWO.** Every item route that NAMES an id —
+`GET`, `PUT` and `DELETE` on `/v1/vault/items/:itemId`, which is the whole of
+that set and is derived from the controller by the test rather than listed by
+it — read its row by id ALONE and then asked Cedar, which answers `403
+forbidden`, so a missing item gave 404 and somebody else's gave 403. That pair is an existence oracle for
 any item UUID that leaks, against this document's uniform-404 rule, and the
 read itself had already answered a question about another user's data before
 any gate ran. Ownership is now FUSED into the statement (`WHERE id = $1 AND
@@ -5806,8 +5816,8 @@ different body is still a discriminator.
 **THE SAME RULE, ASKED OF THE REST OF THE CATEGORY.**
 `emergency_access_policies` had the identical split, in the same service:
 `requireOwnerPolicy` read by id and let Cedar answer 403, while
-`requireGranteePolicy` TWELVE LINES BELOW IT already answered a uniform 404
-and said why in its own comment. One behaviour, two spellings, and only one of
+`requireGranteePolicy` DIRECTLY BELOW IT in the same file already answered a
+uniform 404 and said why in its own comment. One behaviour, two spellings, and only one of
 them right. Both arms are now fused, and the two unfused lookups they used are
 DELETED rather than left available — including `EmergencyRepo.findLiveById`,
 which had zero callers before this change and was already dead. `ai-assistant`
@@ -5816,6 +5826,22 @@ the precedent this follows.
 
 ### Residuals
 
+- **[OWNER: M41]** *`POST /v1/vault/items` remains an existence oracle across
+  users, and the paragraph above does not reach it.* `vault_items.id` is a
+  global `PRIMARY KEY` and the client supplies it, so creating with an id
+  another user already holds raises a unique violation and answers `409
+  item_exists`, where an unused id answers `201`. The two answers differ, and
+  that difference is the oracle — for a soft-deleted row as much as a live one,
+  since no row is ever removed. Three review lenses raised it independently and
+  neither refuter could refute it. NOT fixed here: closing it means per-user
+  uniqueness, which is a primary-key change on a table carrying a version
+  capture trigger and its own history — a schema decision to propose, not a
+  drive-by in a PR about a concurrency token. The practical reach is bounded by
+  the ids being unguessable 122-bit UUIDs, so the probe confirms an id the
+  caller already holds rather than enumerating anything; it is recorded because
+  the uniform-404 rule in this document is categorical and this is a real
+  exception to it. Pinned by a characterization test in `vault.int.spec.ts` so
+  the behaviour cannot change in either direction unnoticed.
 - **[OWNER: M41]** *`plaid` answers the same 403-vs-404 pair on two routes,
   and this PR did not reach into it.* `sync` and `revoke` both call
   `requireItem` (404 when missing) and then `assertCan` (403 when it is not

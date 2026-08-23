@@ -605,6 +605,11 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
     itemType: 'password',
     title: 'Bank login',
     blobVersion: 4,
+    // DELIBERATELY UNEQUAL to blobVersion. Since M27 PR1a these are two
+    // different jobs — the blob version binds the AAD, the revision is the
+    // concurrency token — and a fixture where they agree cannot catch a call
+    // site that reads the wrong one.
+    revision: 41,
   };
 
   function composing(reply: (m: { kind?: string }) => unknown): Wired {
@@ -691,6 +696,32 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
     expect(Object.keys(sent.changes)).not.toContain('url');
     // And the version the popup READ travels, which is what makes If-Match mean
     // anything.
+    expect(sent.blobVersion).toBe(4);
+  });
+
+  it('sends the REVISION as the concurrency token, never the blob version', async () => {
+    // The popup BUILDS the update message; no service-side test can see this
+    // hop, and a test that hands `updateItem` a hand-written object proves only
+    // that the host forwards what it was given. This drives the real chain:
+    // a listed item -> the edit form -> vault-client -> the message on the wire.
+    const wired = composing((m) => (m.kind === 'update' ? { ok: true, item: ITEM } : undefined));
+    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await until(() => text().includes('Bank login'), 'the list');
+
+    press('Edit');
+    await until(() => text().includes('Edit item'), 'the form');
+    typeInto('item-secret', 'a-new-password');
+    press('Save changes');
+    await until(() => wired.sent.some((m) => (m as { kind?: string }).kind === 'update'), 'update');
+
+    const sent = wired.sent.find((m) => (m as { kind?: string }).kind === 'update') as {
+      blobVersion: number;
+      revision: number;
+    };
+    // The number that becomes If-Match.
+    expect(sent.revision).toBe(41);
+    // POSITIVE CONTROL: the blob version still travels, under its own name,
+    // because it is what the content AAD binds. Losing it is a different bug.
     expect(sent.blobVersion).toBe(4);
   });
 
