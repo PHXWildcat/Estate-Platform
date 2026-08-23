@@ -243,20 +243,72 @@ export class ItemsRepo {
     );
   }
 
-  /** Soft-delete every live item for a user; returns how many were affected. */
-  async softDeleteAllForUser(
+  /**
+   * RETIRE EVERY ITEM A RESET KILLS — live and already-retired alike — IN ONE
+   * STATEMENT (M27 PR1b).
+   *
+   * TWO STATEMENTS WAS A RACE, AND PR1b'S OWN UNDELETE ROUTE IS WHAT RUNS IN
+   * IT. This began as `softDeleteAllForUser` (`WHERE deleted_at IS NULL`)
+   * followed by a relabel of the remainder (`WHERE deleted_at IS NOT NULL`).
+   * Those two predicates are exhaustive only while nothing moves between them:
+   * a row that is RETIRED when the first runs and LIVE when the second does is
+   * matched by neither, and comes out of the reset live, holding a blob the
+   * keyset replaced in this same transaction has just made undecryptable — a
+   * dead item wearing a live row's face, which is the exact confusion migration
+   * 004's discriminator exists to prevent. Before PR1b nothing could move a row
+   * retired->live; `undeleteItem` is precisely that verb, so this milestone
+   * created the window and owes its closure.
+   *
+   * ONE STATEMENT HAS NO BETWEEN. The predicate is `deleted_reason IS DISTINCT
+   * FROM $3`, which is true of a live row (004's CHECK forces its reason NULL)
+   * AND of a row retired for any other reason — so the two populations are one
+   * set matched once, not two passes that must tile. `FOR UPDATE` makes a
+   * concurrent writer waited for and its row re-checked against the version it
+   * committed, so a row that changes state under us is either caught with its
+   * new value or correctly excluded.
+   *
+   * The data-modifying CTE is not referenced by the final SELECT, and runs
+   * anyway: Postgres executes a WITH sub-statement exactly once and to
+   * completion whether or not the primary query reads its output. The SELECT
+   * reads `doomed` because that is where the PRE-update state still is —
+   * `RETURNING` on the UPDATE could only report the values it just wrote, and
+   * "was this live before?" is unanswerable from those.
+   *
+   * `deleted_at` is preserved by `COALESCE` rather than overwritten: WHEN the
+   * owner retired a row stays true, and only its decryptability has changed.
+   *
+   * OUT OF THIS STATEMENT'S REACH, and stated because it looks like the same
+   * bug: an item INSERTED after this snapshot is in no set here. It is not left
+   * dead-but-live by omission, though — the client encrypts under the master
+   * key it is holding, and the session that holds it is revoked inside this
+   * same transaction.
+   */
+  async retireAllForUser(
     tx: Queryable,
     userId: string,
     at: Date,
     reason: DeletedReason,
-  ): Promise<number> {
-    const rows = await tx.query<{ id: string }>(
-      `UPDATE vault_items SET deleted_at = $2, deleted_reason = $3
-        WHERE user_id = $1 AND deleted_at IS NULL
-        RETURNING id`,
+  ): Promise<{ destroyed: number; relabelled: number }> {
+    const rows = await tx.query<{ was_live: boolean }>(
+      `WITH doomed AS (
+         SELECT id, (deleted_at IS NULL) AS was_live
+           FROM vault_items
+          WHERE user_id = $1 AND deleted_reason IS DISTINCT FROM $3
+          FOR UPDATE
+       ), retired AS (
+         UPDATE vault_items v
+            SET deleted_at = COALESCE(v.deleted_at, $2), deleted_reason = $3
+           FROM doomed d
+          WHERE v.id = d.id
+         RETURNING v.id
+       )
+       SELECT was_live FROM doomed`,
       [userId, at, reason],
     );
-    return rows.length;
+    return {
+      destroyed: rows.filter((r) => r.was_live).length,
+      relabelled: rows.filter((r) => !r.was_live).length,
+    };
   }
 
   /**
@@ -427,51 +479,6 @@ export class ItemsRepo {
           AND v.row_data->>'user_id' = i.user_id::text
         RETURNING ${I_COLUMNS}`,
       [input.id, input.userId, input.revision],
-    );
-    return rows[0] ?? null;
-  }
-
-  /**
-   * RELABEL ROWS THAT WERE ALREADY RETIRED WHEN THE KEYSET WENT (M27 PR1b).
-   *
-   * `softDeleteAllForUser` carries `WHERE deleted_at IS NULL`, so an item the
-   * owner deleted BEFORE a reset is not touched by it and keeps
-   * `deleted_reason = 'user_delete'`. Its blob is just as dead as every row the
-   * reset retired — the keyset is replaced in that same transaction — but the
-   * column says restorable, and PR1b's list believes the column. That is the
-   * failure migration 004 exists to prevent, arriving through the one door 004
-   * left open: a silent AEAD error on click, where a control firing and an
-   * outage wear the same face.
-   *
-   * `deleted_at` is DELIBERATELY not touched. When the row was retired is a
-   * fact about the owner's action and stays true; what changes is the answer to
-   * "can this ever be decrypted again", which the reset has just made no.
-   */
-  async relabelRetiredForUser(
-    tx: Queryable,
-    userId: string,
-    reason: DeletedReason,
-  ): Promise<number> {
-    const rows = await tx.query<{ id: string }>(
-      `UPDATE vault_items SET deleted_reason = $2
-        WHERE user_id = $1 AND deleted_at IS NOT NULL AND deleted_reason <> $2
-        RETURNING id`,
-      [userId, reason],
-    );
-    return rows.length;
-  }
-
-  /**
-   * Lock a RETIRED row by (id, owner). The mirror of `lockLiveById`, and the
-   * predicate is inverted rather than dropped: a caller that means "the retired
-   * one" must not silently accept a live one, or undelete becomes a no-op that
-   * reports success.
-   */
-  async lockRetiredById(tx: Queryable, userId: string, id: string): Promise<ItemRow | null> {
-    const rows = await tx.query<ItemRow>(
-      `SELECT ${COLUMNS} FROM vault_items
-        WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL FOR UPDATE`,
-      [id, userId],
     );
     return rows[0] ?? null;
   }

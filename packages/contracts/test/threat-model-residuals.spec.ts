@@ -724,6 +724,17 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // DELETION invisible, which is the one thing a milestone editing its own
     // residuals is most likely to do. Reported per section and as a whole set
     // rather than a first failure, so one run names everything that moved.
+    //
+    // WHAT A COUNT FLOOR CANNOT SEE, stated because the claim above is narrower
+    // than it reads: a deletion and an addition IN THE SAME SECTION cancel, and
+    // this stays green. The set comparison that would close it needs a stable
+    // identity per residual, and a residual is free prose whose only stable
+    // parts are its section and its disposition tag — so the identity would
+    // have to be the text, and every reword would be a failure. The bound is
+    // therefore deliberate: this catches a section getting SMALLER, which is
+    // what an accidental deletion looks like, and does not catch a swap, which
+    // is what a deliberate edit looks like. §6's own review is the control for
+    // the second kind.
     const actual = new Map<string, number>();
     for (const item of items) actual.set(item.section, (actual.get(item.section) ?? 0) + 1);
 

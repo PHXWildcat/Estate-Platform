@@ -77,10 +77,25 @@ CREATE INDEX IF NOT EXISTS ix_vault_items_user_retired
   ON vault_items (user_id, deleted_reason, deleted_at DESC, id DESC)
   WHERE deleted_at IS NOT NULL;
 
--- BOTH STATEMENTS WIDEN AND NEITHER CONSTRAINS DATA, so this migration owes no
+-- EVERY STATEMENT WIDENS AND NONE CONSTRAINS DATA, so this migration owes no
 -- pre-flight (.claude/rules/db-migrations.md: a migration that WIDENS what is
--- permitted needs none; one that narrows does). `IF NOT EXISTS` is carried
--- because the same rule requires an index on a populated table to be built out
--- of band with CONCURRENTLY, which the migrator's BEGIN/COMMIT makes
--- structurally inexpressible — so an operator who built either index by hand
--- first finds this a no-op rather than a failure.
+-- permitted needs none; one that narrows does).
+--
+-- THE TWO `IF NOT EXISTS` CLAUSES DO NOT MEAN THE SAME THING, and stating that
+-- they did was wrong. The rule requires an index on a populated table to be
+-- built out of band with CONCURRENTLY, which the migrator's BEGIN/COMMIT makes
+-- structurally inexpressible — but only ONE of these can be built that way:
+--
+--   · `ix_vault_items_user_retired` is over columns `vault_items` has carried
+--     since 004, so an operator CAN build it concurrently ahead of this file
+--     and find the statement a no-op. That is the case the rule is about.
+--   · `ix_vault_items_versions_row_revision` is over `revision`, which does not
+--     exist until the ALTER TABLE eleven lines above. Nobody can have built it
+--     in advance, because there was nothing to build it on. Its `IF NOT EXISTS`
+--     is worth no more than tolerance of a re-run after a partial failure.
+--
+-- THE `ADD COLUMN` IS DELIBERATELY NOT `IF NOT EXISTS`. A hand-added column of
+-- the same name with a different generation expression is the one state this
+-- file must not accept silently: the handle would still be called `revision`
+-- and would name something else, which is the whole failure the GENERATED
+-- clause exists to make impossible. Failing loudly is the fail-closed answer.

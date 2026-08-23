@@ -420,7 +420,7 @@ export class VaultService {
         : {}),
     });
 
-    await this.events.itemsListed(actorUserId, accountSessionId, rows.length);
+    await this.events.itemsListed(actorUserId, accountSessionId, rows.length, 'live');
     const last = rows.length === query.limit ? rows[rows.length - 1] : undefined;
     return {
       items: rows.map(toDto),
@@ -561,9 +561,18 @@ export class VaultService {
    * because its blob is cryptographically dead — offering it would produce an
    * AEAD failure on click, which is a control firing wearing the face of an
    * outage.
+   *
+   * IT RECORDS, BECAUSE IT DISCLOSES. Every row here carries `blob_ct` in full,
+   * exactly as `listItems` does, so this route is a bulk ciphertext read and
+   * belongs in the audit trail on the same terms as its sibling — the fact that
+   * the items are deleted makes the read MORE interesting to an investigator,
+   * not less. That is why `accountSessionId` is a parameter: without it the
+   * event could not be attributed to a session and the omission would be
+   * structural rather than a choice.
    */
   async listRestorableItems(
     actorUserId: string,
+    accountSessionId: string,
     query: { limit: number; cursor?: string | undefined },
   ): Promise<VaultItemPage> {
     this.authz.assertCan(actorUserId, 'read_history', vaultResource(actorUserId));
@@ -581,6 +590,8 @@ export class VaultService {
     });
     const page = rows.slice(0, query.limit);
     const last = page[page.length - 1];
+
+    await this.events.itemsListed(actorUserId, accountSessionId, page.length, 'restorable');
     return {
       items: page.map(toDto),
       nextCursor:
@@ -749,30 +760,19 @@ export class VaultService {
       const existing = await this.keysets.lockByUser(tx, actorUserId);
       if (!existing) throw new NotFoundException({ error: 'keyset_not_found' });
 
-      // 'vault_reset': the keyset is REPLACED four lines below, in this same
-      // transaction, so every blob retired here is cryptographically dead. This
-      // is the discriminator's whole reason for existing — the stamp above is
+      // 'vault_reset': the keyset is REPLACED just below, in this same
+      // transaction, so every blob this touches is cryptographically dead. This
+      // is the discriminator's whole reason for existing — the stamp is
       // byte-identical to `deleteItem`'s and means the opposite thing.
-      const itemsDestroyed = await this.items.softDeleteAllForUser(
-        tx,
-        actorUserId,
-        now,
-        'vault_reset',
-      );
-      // AND THE ROWS THAT WERE ALREADY RETIRED WHEN THE KEY WENT (M27 PR1b).
-      // The statement above carries `WHERE deleted_at IS NULL`, so an item the
-      // owner deleted a minute before this reset is untouched by it and keeps
-      // `deleted_reason = 'user_delete'`. The keyset replaced four lines below
-      // kills that blob exactly as dead as the ones retired here — but the
-      // column still says restorable, and PR1b's restore list believes the
-      // column. Relabelling closes the one door migration 004 left open; their
-      // `deleted_at` is left alone, because WHEN the owner retired a row stays
-      // true and only its decryptability has changed.
-      const itemsRelabelled = await this.items.relabelRetiredForUser(
-        tx,
-        actorUserId,
-        'vault_reset',
-      );
+      //
+      // ONE CALL COVERS BOTH POPULATIONS, and it has to. Rows the owner had
+      // ALREADY deleted before this reset keep `deleted_reason = 'user_delete'`
+      // unless something relabels them, and their blobs die here exactly as
+      // dead as the live ones — the column would still say restorable, and
+      // PR1b's list believes the column. Splitting that into two statements
+      // reintroduces a window `undeleteItem` can run in; see the repo method.
+      const { destroyed: itemsDestroyed, relabelled: itemsRelabelled } =
+        await this.items.retireAllForUser(tx, actorUserId, now, 'vault_reset');
       await this.keysets.replace(tx, {
         userId: actorUserId,
         srpVerifier: Buffer.from(payload.srpVerifier, 'base64'),

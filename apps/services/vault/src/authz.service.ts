@@ -13,8 +13,29 @@ import { POLICY_DECISION_POINT } from './di-tokens';
  * ones it names. Collapsing these now would mean a future grant of "read a
  * version" could not be written without also granting "put one back".
  */
-export type VaultAction =
-  'read' | 'read_history' | 'create' | 'update' | 'undelete' | 'restore' | 'delete' | 'manage';
+/**
+ * THE ACTION VOCABULARY IS DATA, so the suite can enumerate it (M27 PR1b).
+ *
+ * It was a bare union, and PR1b widened it by three — `read_history`,
+ * `undelete`, `restore` — none of which any test exercised in either direction,
+ * because `authz.spec.ts` iterated a hand-written list of the five that existed
+ * when it was written. A type cannot be enumerated at runtime, so the list
+ * beside it could not have been derived; as a const array it can, and a ninth
+ * action now arrives with its permit-the-owner and deny-a-stranger cases
+ * already written.
+ */
+export const VAULT_ACTIONS = [
+  'read',
+  'read_history',
+  'create',
+  'update',
+  'undelete',
+  'restore',
+  'delete',
+  'manage',
+] as const;
+
+export type VaultAction = (typeof VAULT_ACTIONS)[number];
 
 /** The vault itself (keyset, session lifecycle), owned by exactly one user. */
 export function vaultResource(userId: string): EntityInput {

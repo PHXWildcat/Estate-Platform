@@ -113,13 +113,33 @@ export class EventsService {
     });
   }
 
-  async itemsListed(userId: string, sessionId: string, count: number): Promise<void> {
+  /**
+   * A LIST OF BLOBS WENT OUT, AND `scope` SAYS WHICH LIST (M27 PR1b).
+   *
+   * Both readers hand the caller whole ciphertexts, so both are disclosures and
+   * both record. They are not the same disclosure: one enumerates what the user
+   * has, the other enumerates what the user DELETED and has not got back. An
+   * investigator reading `vault.items.listed` needs to tell those apart, and
+   * `resourceId` cannot say it — it is the user in both cases.
+   *
+   * `scope` is a required argument rather than an optional one with a default,
+   * so a third list route cannot inherit "live" by saying nothing. It stays
+   * inside `AUDIT_ACTIONS`' existing member deliberately: a new action id is a
+   * closed-vocabulary change that an older consumer drops silently, and this
+   * distinction is a property OF the event, not a different event.
+   */
+  async itemsListed(
+    userId: string,
+    sessionId: string,
+    count: number,
+    scope: 'live' | 'restorable',
+  ): Promise<void> {
     await this.emit('vault.items.listed', {
       actorId: userId,
       resourceType: 'vault',
       resourceId: userId,
       sessionId,
-      detail: { count },
+      detail: { count, scope },
     });
   }
 

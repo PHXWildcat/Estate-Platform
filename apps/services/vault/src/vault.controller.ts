@@ -91,8 +91,11 @@ function ifMatchOf(req: CallerRequest): number {
  * unlocked extension can overwrite an item's blob with any bytes, so the
  * contents are at risk even though the KEYSET is not (`reset` and both keyset
  * routes stay refused, as do all eleven emergency routes). `vault_items_versions`
- * keeps the prior image, but nothing in the product reads it — see docs/03 §6j.
- * The declaration
+ * keeps the prior image, and SINCE M27 PR1b the product reads it: the owner can
+ * list an item's versions and put one back (`restoreVersion` below), so that
+ * overwrite is undoable from the product rather than by an operator with psql.
+ * The three restore routes are themselves refused to this audience, which is
+ * what keeps the undo out of reach of the thing it undoes. The declaration
  * lives in `AUDIENCE_ROUTE_ADMITTERS`; `test/session-audience.spec.ts` names
  * every route that must refuse it.
  */
@@ -219,7 +222,11 @@ export class VaultController {
   @HttpCode(200)
   listRestorable(@Req() req: VaultRequest, @Query() query: unknown): Promise<VaultItemPage> {
     const caller = requireCaller(req);
-    return this.vault.listRestorableItems(caller.userId, parse(ListRestorableQuerySchema, query));
+    return this.vault.listRestorableItems(
+      caller.userId,
+      caller.sessionId,
+      parse(ListRestorableQuerySchema, query),
+    );
   }
 
   @Get('vault/items/:itemId')

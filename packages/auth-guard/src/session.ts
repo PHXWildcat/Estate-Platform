@@ -69,7 +69,7 @@ export const AUDIENCE_ADMITTERS: Readonly<
    * `extension` to that service's `ALLOWED_SESSION_AUDIENCES`. It is one word
    * and it is wrong: `CallerGuard.audiencesFor` UNIONS the service-wide grant
    * with any route-level one and can never subtract, so a service-wide grant
-   * here would open all 23 vault routes at once — including `reset`
+   * here would open every vault route at once — including `reset`
    * (crypto-shreds the vault on step-up alone), both keyset routes, `deleteItem`,
    * `request` (starts a §5.2 waiting period) and `release` (the single moment
    * the platform half of a recovery key leaves the service). None of those needs
