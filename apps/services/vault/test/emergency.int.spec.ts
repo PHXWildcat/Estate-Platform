@@ -11,6 +11,8 @@
 import 'reflect-metadata';
 import type { Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { checkConventions, Migrator } from '@estate/db';
@@ -611,6 +613,89 @@ describeIfPg('emergency access end to end', () => {
         .expect(200);
       expect((rearmed.body as PolicyDto).status).toBe('configured');
       expect((rearmed.body as PolicyDto).requestCount).toBe(0);
+    });
+  });
+
+  describe('a stranger gets one answer from EVERY policy route (M27 PR1a)', () => {
+    /**
+     * WHY DERIVED, AND WHY EVERY ROUTE. M27 PR1a fused the ownership predicate
+     * into the lookup on both arms of this service, so a policy belonging to
+     * someone else never arrives to be refused distinguishably. The grantee arm
+     * had a test for that; the OWNER arm — deny, rearm, revoke — had none, and
+     * a fix nothing exercises is a fix nobody checked.
+     *
+     * The corpus is read out of the controller rather than listed here. A
+     * hand-listed set of routes beside a controller that grows is how a rule
+     * ends up applied to one member of its category, which is the defect PR1a
+     * opened by fixing. A new `:policyId` route joins this probe by existing.
+     */
+    const CONTROLLER = join(__dirname, '..', 'src', 'emergency.controller.ts');
+    const ROUTE =
+      /@(Post|Delete|Put|Patch|Get)\('vault\/emergency-access\/:policyId([^']*)'\)((?:\s*@[^\n]*\n)*)/g;
+
+    const routes = [...readFileSync(CONTROLLER, 'utf8').matchAll(ROUTE)].map((m) => ({
+      method: (m[1] as string).toLowerCase() as 'post' | 'delete' | 'put' | 'patch' | 'get',
+      suffix: m[2] as string,
+      stepUp: /StepUpGuard/.test(m[3] as string),
+    }));
+
+    it('finds every policy route, both arms, and the step-up split', () => {
+      // ANTI-VACUITY AT EVERY LEVEL. A regex that stopped matching and a
+      // controller with no policy routes look identical — and a total alone
+      // cannot see the step-up-gated routes drop out, which are exactly the
+      // ones a probe would otherwise never reach past a 403.
+      expect(routes.length).toBeGreaterThanOrEqual(5);
+      expect(routes.filter((r) => r.stepUp).length).toBeGreaterThanOrEqual(2);
+      expect(routes.filter((r) => !r.stepUp).length).toBeGreaterThanOrEqual(3);
+      // SETS, not counts: a suffix moving between two routes preserves both.
+      expect(new Set(routes.map((r) => `${r.method} ${r.suffix}`))).toEqual(
+        new Set(['post /request', 'post /deny', 'post /rearm', 'delete ', 'post /release']),
+      );
+    });
+
+    it.each(routes.map((r) => [`${r.method.toUpperCase()} :policyId${r.suffix}`, r] as const))(
+      '%s answers a stranger exactly not_found',
+      async (_name, route) => {
+        // Step-up freshness where the route demands it, so the probe reaches
+        // the lookup instead of stopping at a 403 that says nothing about
+        // ownership — the refusal every caller gets is not the one under test.
+        const headers = route.stepUp ? bearer('stepup', STRANGER) : bearer('mfa', STRANGER);
+        const url = `/v1/vault/emergency-access/${policyId}${route.suffix}`;
+        const agent = request(server);
+        // Typed as an opaque `{status, body}` on purpose: the assertion compares
+        // whole values, and narrowing the body would invite asserting a shape
+        // where the point is that every route returns the SAME one.
+        const res = (await agent[route.method](url).set(headers)) as {
+          status: number;
+          body: unknown;
+        };
+        expect({ route: route.suffix, status: res.status, body: res.body }).toEqual({
+          route: route.suffix,
+          status: 404,
+          body: { error: 'not_found' },
+        });
+      },
+    );
+
+    it('POSITIVE CONTROL: the policy is real and every route reachable', async () => {
+      // Without this, all five 404s are equally consistent with a dead policy
+      // id, a typo'd path, or a router that answers 404 for everything — and
+      // the probe above would be measuring nothing.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/deny`)
+        .set(asOwner())
+        .expect(200);
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/rearm`)
+        .set(ownerStepUp())
+        .expect(200);
+      // The grantee arm answers its own refusal rather than not_found, which is
+      // the other half of the property: refusals differ by REASON, never by
+      // whether the caller is entitled to know the row exists.
+      const granteeAnswer = await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/release`)
+        .set(asGrantee());
+      expect(granteeAnswer.status).not.toBe(404);
     });
   });
 

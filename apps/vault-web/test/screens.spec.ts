@@ -114,7 +114,15 @@ function installService(overrides: { enrolled?: boolean } = {}): FakeService {
     }
     if (path.startsWith('/api/vault/items') && method === 'POST') {
       const parsed = JSON.parse(body) as Record<string, unknown>;
-      const row = { ...parsed, blobVersion: 1, createdAt: 'now', updatedAt: '2026-08-08' };
+      // `revision` is deliberately NOT equal to `blobVersion`: while the two
+      // were one number a caller sending the wrong one was undetectable.
+      const row = {
+        ...parsed,
+        blobVersion: 1,
+        revision: 41,
+        createdAt: 'now',
+        updatedAt: '2026-08-08',
+      };
       state.items.set(parsed['id'] as string, row);
       return Promise.resolve(reply(201, row));
     }

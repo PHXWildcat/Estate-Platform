@@ -7,3 +7,10 @@ pnpm-lock.yaml
 
 # Prose docs keep their authored wrapping; Prettier formats code only.
 *.md
+# Agent review worktrees. CLAUDE.md's review fan-out creates these under
+# `.claude/worktrees/`, each a full checkout carrying its own built `dist` and
+# served `public/app` output. They are excluded from git by `.git/info/exclude`,
+# which is per-clone and uncommitted — Prettier never sees it, so a review run
+# left 29 build artefacts failing `pnpm format` for everyone. Stated here so
+# the gate does not depend on a local file that is not in the repo.
+.claude/worktrees/

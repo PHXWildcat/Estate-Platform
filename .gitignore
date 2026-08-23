@@ -33,3 +33,8 @@ dist-esm/
 
 # vault-crypto's browser build, copied in by apps/vault-web's build step.
 apps/vault-web/public/lib/
+# Agent review worktrees (CLAUDE.md's fan-out). Tracked only by
+# `.git/info/exclude` until now, which is per-clone: on any other machine these
+# show up as untracked, which is the last thing wanted beside a rule that says
+# never `git add -A` while an agent is running against the tree.
+.claude/worktrees/

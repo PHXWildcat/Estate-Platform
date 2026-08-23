@@ -9,7 +9,7 @@
  */
 import 'fake-indexeddb/auto';
 import { ensureOffscreenDocument } from '../src/offscreen-lifecycle';
-import { isVaultRequest, type VaultRequest } from '../src/messages';
+import { isVaultRequest, VAULT_REQUEST_REQUIRED_FIELDS, type VaultRequest } from '../src/messages';
 import { installOffscreenListener } from '../src/offscreen-router';
 import { forgetSecretKey, rememberSecretKey, rememberedSecretKey } from '../src/secret-key-store';
 import { VaultHost, type KeyHolderPort } from '../src/vault-host';
@@ -37,7 +37,9 @@ function openHolder(): KeyHolderPort {
     prepare: () => Promise.resolve({ publicA: 'A', m1: 'M' }),
     finish: () => Promise.resolve(),
     summarise: () =>
-      Promise.resolve([{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1 }]),
+      Promise.resolve([
+        { id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1, revision: 41 },
+      ]),
     matchesFor: () =>
       Promise.resolve([
         {
@@ -45,6 +47,7 @@ function openHolder(): KeyHolderPort {
           itemType: 'password',
           title: 'Zed',
           blobVersion: 1,
+          revision: 41,
           verdict: { kind: 'match' as const, domain: 'example.com' },
         },
       ]),
@@ -145,7 +148,7 @@ describe('the offscreen router', () => {
 
     expect(await deliver({ target: 'offscreen', kind: 'list', bearer: 'b' })).toEqual({
       ok: true,
-      items: [{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1 }],
+      items: [{ id: 'i-1', itemType: 'password', title: 'Zed', blobVersion: 1, revision: 41 }],
     });
   });
 
@@ -210,6 +213,7 @@ describe('the offscreen router', () => {
           itemType: 'password',
           title: 'Zed',
           blobVersion: 1,
+          revision: 41,
           verdict: { kind: 'match', domain: 'example.com' },
         },
       ],
@@ -334,12 +338,15 @@ describe('the popup’s view of the vault', () => {
   it('returns items and the state on the happy paths', async () => {
     messaging((message) =>
       (message as { kind?: string }).kind === 'list'
-        ? { ok: true, items: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1 }] }
+        ? {
+            ok: true,
+            items: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1, revision: 41 }],
+          }
         : { ok: true, state: { status: 'locked' } },
     );
     expect(await listItems('b')).toEqual({
       ok: true,
-      data: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1 }],
+      data: [{ id: 'i', itemType: 'password', title: 'A', blobVersion: 1, revision: 41 }],
     });
     expect(await lockVault('b')).toEqual({ ok: true, data: { status: 'locked' } });
   });
@@ -523,6 +530,19 @@ describe('the popup to offscreen union is closed, exhaustively', () => {
    * message the router will never answer, which presents as a dead feature
    * rather than an error.
    */
+  /**
+   * A minimally VALID message of one kind, filled from the gate's own
+   * required-field table. Built rather than hand-written so a newly required
+   * field cannot leave this test asserting something weaker than it reads.
+   */
+  const sampleFor = (kind: string): Record<string, unknown> => {
+    const message: Record<string, unknown> = { target: 'offscreen', kind };
+    for (const [field, type] of Object.entries(VAULT_REQUEST_REQUIRED_FIELDS[kind] ?? {})) {
+      message[field] = type === 'string' ? 'x' : type === 'number' ? 1 : {};
+    }
+    return message;
+  };
+
   const KINDS: Record<VaultRequest['kind'], true> = {
     state: true,
     unlock: true,
@@ -548,12 +568,21 @@ describe('the popup to offscreen union is closed, exhaustively', () => {
       'update',
     ]);
     for (const kind of Object.keys(KINDS)) {
-      // Shape beyond `kind` does not matter to the gate; what is asserted is
-      // that the gate has heard of every member of the union.
-      expect({ kind, admitted: isVaultRequest({ target: 'offscreen', kind }) }).toEqual({
+      // Shape DOES matter to the gate as of M27 PR1a — it validates every
+      // field the union requires, which is what makes `value is VaultRequest`
+      // an honest claim rather than a promise about two properties. So the
+      // sample is built from the gate's own required-field table, which
+      // `messages-contract.spec.ts` independently proves equal to the union.
+      expect({ kind, admitted: isVaultRequest(sampleFor(kind)) }).toEqual({
         kind,
         admitted: true,
       });
+      // And the envelope ALONE is no longer enough, for every kind that
+      // requires anything — the property the old version of this test could
+      // not tell apart from the one above.
+      const bare = isVaultRequest({ target: 'offscreen', kind });
+      const requiresNothing = Object.keys(VAULT_REQUEST_REQUIRED_FIELDS[kind] ?? {}).length === 0;
+      expect({ kind, bare }).toEqual({ kind, bare: requiresNothing });
     }
   });
 
@@ -590,12 +619,18 @@ describe('the router answers a write (M16 PR4a)', () => {
     bearer: 'b',
     itemId: 'i-1',
     itemType: 'password',
-    content: { title: 'Edited' },
+    // `changes`, NOT `content` — this fixture said `content` until M27 PR1a,
+    // and the router has always read `message.changes`. It went unnoticed
+    // because the narrowing gate checked `target` and `kind` and vouched for
+    // the rest, so an update whose payload the real popup never sends passed
+    // through it. The gate validates fields now, and this is what it caught.
+    changes: { title: 'Edited' },
     blobVersion: 2,
+    revision: 42,
   };
 
   it('carries a created item back, and a refusal back as a code', async () => {
-    const made = { id: 'i-9', itemType: 'password', title: 'Typed', blobVersion: 1 };
+    const made = { id: 'i-9', itemType: 'password', title: 'Typed', blobVersion: 1, revision: 41 };
     const ok = routerFor({ createItem: () => Promise.resolve({ ok: true, data: made }) });
     expect(await ok(CREATE)).toEqual({ ok: true, item: made });
 
@@ -606,7 +641,13 @@ describe('the router answers a write (M16 PR4a)', () => {
   });
 
   it('carries an updated item back, and a version conflict as its own code', async () => {
-    const saved = { id: 'i-1', itemType: 'password', title: 'Edited', blobVersion: 3 };
+    const saved = {
+      id: 'i-1',
+      itemType: 'password',
+      title: 'Edited',
+      blobVersion: 3,
+      revision: 43,
+    };
     const ok = routerFor({ updateItem: () => Promise.resolve({ ok: true, data: saved }) });
     expect(await ok(UPDATE)).toEqual({ ok: true, item: saved });
 

@@ -26,8 +26,17 @@ password or Secret Key may leave the device.
 - The client PINS the parameters the server serves it (`assertSupportedKdfParams`)
   BEFORE any modpow — otherwise a malicious server substitutes a degenerate SRP group.
 - Every ciphertext carries a domain-separated AAD. Item content AAD binds `blobVersion`;
-  an update of version N encrypts under **N+1** while sending N in `If-Match`. Reversed,
-  the row lands permanently unopenable and nothing in the response says so.
+  an update of a blob read at version N encrypts under **N+1**. Reversed, the row lands
+  permanently unopenable and nothing in the response says so.
+- **`If-Match` carries `revision`, never `blobVersion`** (M27 PR1a). One integer was
+  doing two contradictory jobs. `blobVersion` is an AEAD binding: it must travel with its
+  ciphertext, and it MAY recur, because a version restore puts a captured version back
+  and the live version can move DOWN. `revision` is the concurrency token: a trigger
+  assigns `OLD.revision + 1`, so no writer can forget it or choose it, and it never
+  repeats. Strict equality is a sound change detector only on the second kind.
+- Every AAD is declared as data in `packages/vault-crypto/test/aad-bindings.spec.ts`,
+  which derives the live set from both zones and fails if a second AAD ever binds a
+  mutable per-write counter. Do not restate that set in prose.
 - One message for both halves of 2SKD: a wrong password and a wrong Secret Key say the
   same thing. Naming the half tells a thief which one they hold.
 

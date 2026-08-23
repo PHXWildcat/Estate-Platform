@@ -60,7 +60,10 @@ export interface VaultItemDto {
   id: string;
   itemType: string;
   blob: string;
+  /** The version the blob is SEALED against. Feeds the AAD, not `If-Match`. */
   blobVersion: number;
+  /** The concurrency token. This is what `If-Match` carries. */
+  revision: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +78,7 @@ export interface OpenedItem {
   id: string;
   itemType: string;
   blobVersion: number;
+  revision: number;
   updatedAt: string;
   content: ItemContent;
   /**
@@ -332,7 +336,10 @@ export class VaultSession {
     const base = {
       id: row.id,
       itemType: row.itemType,
+      // Both numbers travel: `blobVersion` opens the blob, `revision` is what a
+      // later edit sends back as `If-Match`.
       blobVersion: row.blobVersion,
+      revision: row.revision,
       updatedAt: row.updatedAt,
     };
     try {
@@ -369,10 +376,18 @@ export class VaultSession {
   }
 
   /**
-   * Update an item. The new blob is bound by AAD to version N+1 and `If-Match`
-   * carries N, so a server that stored it anywhere else would produce an item
-   * that no longer decrypts — which is the anti-rollback property, enforced by
-   * arithmetic rather than by trust.
+   * Update an item.
+   *
+   * TWO NUMBERS. The new blob is bound by AAD to `blobVersion + 1`, so a server
+   * that stored it at any other version would produce an item that no longer
+   * decrypts — the anti-rollback property, enforced by arithmetic rather than
+   * by trust. `If-Match` carries `revision`, a separate server-maintained
+   * counter that never repeats.
+   *
+   * They were ONE number until M27 PR1a, and version restore is what forced
+   * them apart: restoring a captured blob puts its captured version back, so a
+   * version can recur on a row — and a concurrency check by equality on a value
+   * that can recur silently admits a stale write.
    */
   async update(
     item: OpenedItem,
@@ -392,7 +407,7 @@ export class VaultSession {
     return request<VaultItemDto>(`/api/vault/items/${item.id}`, {
       method: 'PUT',
       vaultSession: token,
-      ifMatch: item.blobVersion,
+      ifMatch: item.revision,
       body: { itemType, blob: toBase64(blob) },
     });
   }

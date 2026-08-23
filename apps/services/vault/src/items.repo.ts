@@ -7,7 +7,20 @@ export interface ItemRow {
   user_id: string;
   item_type: VaultItemType;
   blob_ct: Buffer;
+  /**
+   * The AEAD binding, and ONLY that (migration 005). `itemContentAad` seals a
+   * blob against this number, so it travels with its ciphertext and a restore
+   * puts BOTH back — which means this value can legitimately go DOWN. It is not
+   * a concurrency token; `revision` is.
+   */
   blob_version: number;
+  /**
+   * The concurrency token. Trigger-maintained, strictly increasing, never
+   * reused, and unforgeable by any caller: `trg_vault_items_revision` assigns
+   * `OLD.revision + 1` on every UPDATE rather than validating one the statement
+   * supplied. `If-Match` compares against this.
+   */
+  revision: number;
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
@@ -68,7 +81,7 @@ export const RESTORABLE_REASONS: readonly DeletedReason[] = DELETED_REASONS.filt
   (r) => REASON_DISPOSITION[r] === 'restorable',
 );
 
-const COLUMNS = `id, user_id, item_type, blob_ct, blob_version, created_at, updated_at, deleted_at, deleted_reason`;
+const COLUMNS = `id, user_id, item_type, blob_ct, blob_version, revision, created_at, updated_at, deleted_at, deleted_reason`;
 
 /**
  * `vault_items` access. `blob_ct` is client ciphertext end to end: this service
@@ -105,18 +118,36 @@ export class ItemsRepo {
     );
   }
 
-  async findLiveById(q: Queryable | Db, id: string): Promise<ItemRow | null> {
+  /**
+   * OWNERSHIP IS FUSED INTO THE STATEMENT, and that is the point of the
+   * signature (M27 PR1a). These read by (id, owner) together, so "no such item"
+   * and "not your item" produce the same empty result and the caller cannot
+   * tell them apart even in principle — docs/03's uniform-404 rule, and
+   * CLAUDE.md's "any read placed before the authz gate answers a question about
+   * someone else's data".
+   *
+   * The earlier signature took an id alone and left ownership to
+   * `VaultAuthz.assertCan` AFTER the row was in hand, which answered `403
+   * forbidden` for another user's item and `404 not_found` for a missing one —
+   * a distinguishable pair, and an existence oracle for any item UUID that
+   * leaks. Cedar still runs: it decides whether this PRINCIPAL may take this
+   * ACTION, which is the layer M27 PR3's grantee read will need. What it no
+   * longer decides is ownership, because the row never arrives.
+   */
+  async findLiveById(q: Queryable | Db, userId: string, id: string): Promise<ItemRow | null> {
     const rows = await q.query<ItemRow>(
-      `SELECT ${COLUMNS} FROM vault_items WHERE id = $1 AND deleted_at IS NULL`,
-      [id],
+      `SELECT ${COLUMNS} FROM vault_items
+        WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+      [id, userId],
     );
     return rows[0] ?? null;
   }
 
-  async lockLiveById(tx: Queryable, id: string): Promise<ItemRow | null> {
+  async lockLiveById(tx: Queryable, userId: string, id: string): Promise<ItemRow | null> {
     const rows = await tx.query<ItemRow>(
-      `SELECT ${COLUMNS} FROM vault_items WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
-      [id],
+      `SELECT ${COLUMNS} FROM vault_items
+        WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [id, userId],
     );
     return rows[0] ?? null;
   }
@@ -140,7 +171,15 @@ export class ItemsRepo {
     return rows[0]!;
   }
 
-  /** Update a locked row to the next blob version. */
+  /**
+   * Update a locked row to the next blob version.
+   *
+   * `revision` is absent from this statement DELIBERATELY: the trigger owns it,
+   * so a writer cannot forget to advance it and cannot choose what it advances
+   * to. `blob_version` stays a caller-supplied parameter because the client
+   * sealed its ciphertext against a specific number and the server must store
+   * exactly that one.
+   */
   async update(
     tx: Queryable,
     input: { id: string; itemType: VaultItemType; blob: Buffer; nextVersion: number },

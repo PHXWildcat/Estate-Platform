@@ -507,6 +507,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       itemType: editing.itemType,
       changes,
       blobVersion: editing.blobVersion,
+      revision: editing.revision,
     });
     if (!saved.ok) {
       show({ kind: 'composing', editing, error: messageFor(saved.code) });

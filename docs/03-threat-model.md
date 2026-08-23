@@ -5726,3 +5726,140 @@ per-file, because a total passes happily while one lead-in goes blind.
   defect this repo names most often. The bound is stated rather than left to
   be found, on the same terms the fence's own docstring states its
   predecessor.
+
+## 6vv. Threat-model delta — M27 PR1a, the concurrency token (2026-08-22)
+
+**ONE INTEGER WAS DOING TWO JOBS, AND RESTORE IS WHAT FORCED THEM APART.**
+§6uu settled that version restore writes a prior row image forward INCLUDING
+its captured `blob_version`, and that reasoning is unchanged and correct:
+`itemContentAad` binds the version, `to_jsonb(OLD)` captures ciphertext and
+version as a matched pair, and restoring the pair is the only shape that
+decrypts. What it did not carry through was the second job that same column
+was doing. `updateItem` compared `If-Match` to `blob_version` by strict
+equality and wrote `blob_version + 1`, and equality is a sound change detector
+ONLY while a value occurs at most once per row's life. Nothing in the schema
+said so — the invariant lived in a single `+ 1` at one call site, which is the
+shape this repo calls a convention rather than a control.
+
+**THE LOST UPDATE, CONCRETELY.** An item sits at version 5 and a device has
+the editor open holding 5, for up to the fifteen-minute vault session. A
+second device restores the version-3 image, so the live row is at 3. It edits
+twice: 3 to 4, 4 to 5. The first device now submits `If-Match: 5` — and `5 !==
+5` is false, so there is no conflict, no error, and its stale blob lands at 6,
+AAD-bound to 6, decrypting perfectly. The restore and both edits are gone, and
+the audit trail records a routine `vault.item.updated`. That is precisely the
+lost update `If-Match` exists to prevent, and it is unreachable while versions
+only ever increase. Found by the M27 PR1 design fan-out, on a
+refute-by-default verifier that could not refute it.
+
+**THE SPLIT.** `vault_items.revision` (migration 005) takes the concurrency
+job. `blob_version` keeps the AEAD binding alone and is then FREE to move
+backwards, which is not a defect but a signal: a version that goes DOWN is a
+restore, and docs/03 §6a's rollback-detection residual — re-owned to M39 by
+PR0 — has nothing else to look at today. `If-Match` carries `revision`; the
+client still seals against `blob_version + 1`, because that is what the server
+will store. Two numbers travel on every item, and the wire says which is
+which.
+
+**THE INVARIANT MOVED INTO THE TABLE.** `trg_vault_items_revision` ASSIGNS
+`OLD.revision + 1` on every update rather than validating a value the
+statement supplied, so no writer can forget to advance it, no writer can
+choose it, and a restore cannot reuse a token already issued. Soft delete,
+undelete and the ordinary update all advance it for free. A CHECK cannot
+express this — it sees one row version, not a transition — which is why it is
+a trigger. Proved by reverting the service to compare `blob_version` again:
+exactly one named assertion reddens, and the three `If-Match` tests that
+predate this change stay GREEN, which is the same fact from the other side.
+They were driven only through states where the two numbers agree, so they
+never could have told the difference.
+
+**THE FIXTURE PROBLEM THIS CREATES, AND WHY THE TEST LOOKS ODD.** On a row
+that has only ever been created and updated, `revision` and `blob_version`
+advance together and are ALWAYS EQUAL. Every assertion driven through those
+states passes identically whichever column the service compares, so the change
+is unfalsifiable until a row exists where they differ — which is exactly the
+state M27's restore creates, a PR later. The integration test therefore forces
+the divergence with SQL rather than waiting for it, and asserts the
+disagreeing arm in both directions: the blob version is REFUSED as a token and
+the revision is ACCEPTED. A change whose proof arrives a PR after the change
+is a change nobody checked. Every client double was given a revision that
+deliberately differs from its blob version for the same reason.
+
+**CHECKED AS A CATEGORY — AND THE FIRST VERSION OF THIS PARAGRAPH WAS NOT.**
+Item content is the only additional-authenticated-data construction in this
+repo that binds a mutable per-write counter, so no other table carries this
+conflation and no other migration is owed. That claim is correct and it
+survived checking. The sentence that supported it did not: it said "derived
+rather than assumed" while hand-listing six builders, two of which
+(`fieldAad`, `aliasAad`) do not exist and never did, and it omitted every AAD
+built inline at a call site rather than by a named function — which is all of
+Zone B's. A hand-list is what the word "derived" was doing the work of hiding.
+The set now lives in `packages/vault-crypto/test/aad-bindings.spec.ts` as data,
+compared against the tree in both zones and in both directions, with the
+counter property asserted mechanically rather than by eye. Prose does not
+restate it; the fence is the citation.
+
+**AND ONE REFUSAL WHERE THERE WERE TWO.** Every item route that NAMES an id —
+`GET`, `PUT` and `DELETE` on `/v1/vault/items/:itemId`, which is the whole of
+that set and is derived from the controller by the test rather than listed by
+it — read its row by id ALONE and then asked Cedar, which answers `403
+forbidden`, so a missing item gave 404 and somebody else's gave 403. That pair is an existence oracle for
+any item UUID that leaks, against this document's uniform-404 rule, and the
+read itself had already answered a question about another user's data before
+any gate ran. Ownership is now FUSED into the statement (`WHERE id = $1 AND
+user_id = $2`), so the row never arrives to be refused distinguishably. Cedar
+still decides whether this principal may take this action — the layer M27
+PR3's grantee read needs — but it no longer decides ownership. The test
+compares the two responses as WHOLE VALUES, because a status match with a
+different body is still a discriminator.
+
+**THE SAME RULE, ASKED OF THE REST OF THE CATEGORY.**
+`emergency_access_policies` had the identical split, in the same service:
+`requireOwnerPolicy` read by id and let Cedar answer 403, while
+`requireGranteePolicy` DIRECTLY BELOW IT in the same file already answered a
+uniform 404 and said why in its own comment. One behaviour, two spellings, and only one of
+them right. Both arms are now fused, and the two unfused lookups they used are
+DELETED rather than left available — including `EmergencyRepo.findLiveById`,
+which had zero callers before this change and was already dead. `ai-assistant`
+was checked and is correct: its authz throws `NotFoundException`, and it is
+the precedent this follows.
+
+### Residuals
+
+- **[OWNER: M41]** *`POST /v1/vault/items` remains an existence oracle across
+  users, and the paragraph above does not reach it.* `vault_items.id` is a
+  global `PRIMARY KEY` and the client supplies it, so creating with an id
+  another user already holds raises a unique violation and answers `409
+  item_exists`, where an unused id answers `201`. The two answers differ, and
+  that difference is the oracle — for a soft-deleted row as much as a live one,
+  since no row is ever removed. Three review lenses raised it independently and
+  neither refuter could refute it. NOT fixed here: closing it means per-user
+  uniqueness, which is a primary-key change on a table carrying a version
+  capture trigger and its own history — a schema decision to propose, not a
+  drive-by in a PR about a concurrency token. The practical reach is bounded by
+  the ids being unguessable 122-bit UUIDs, so the probe confirms an id the
+  caller already holds rather than enumerating anything; it is recorded because
+  the uniform-404 rule in this document is categorical and this is a real
+  exception to it. Pinned by a characterization test in `vault.int.spec.ts` so
+  the behaviour cannot change in either direction unnoticed.
+- **[OWNER: M41]** *`plaid` answers the same 403-vs-404 pair on two routes,
+  and this PR did not reach into it.* `sync` and `revoke` both call
+  `requireItem` (404 when missing) and then `assertCan` (403 when it is not
+  yours), which is the defect fixed here, in another service. It is recorded
+  rather than fixed because widening a vault PR into the Plaid service is the
+  scope creep this repo asks authors to propose rather than perform. The reach
+  is narrower than the vault's was — a Plaid item id is server-minted and
+  never leaves the owner's own surfaces — but the discriminator is the same
+  one.
+- **[ACCEPTED]** *A `blob_version` that moves backwards is a signal nothing
+  yet reads.* The split makes a downward version legible as a restore, and
+  that is offered as the material M39's rollback detection can use; PR1a ships
+  no detector, no client-side last-seen state and no alarm. Stated so the next
+  author does not read "gives M39 a signal" as "M39 is closer to done".
+- **[ACCEPTED]** *Two numbers on the wire is a larger client contract than
+  one.* Every item response now carries `blobVersion` and `revision`, and a
+  client that sends the wrong one as `If-Match` gets a 409 rather than a
+  silent failure — the fail-closed direction — but nothing structurally
+  prevents a future client from reading the wrong field. The compensating
+  control is that every double in the tree gives the two DIFFERENT values, so
+  the mistake cannot pass a test.

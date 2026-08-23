@@ -112,20 +112,39 @@ export class EmergencyRepo {
     );
   }
 
-  async findLiveById(q: Queryable | Db, id: string): Promise<PolicyRow | null> {
-    const rows = await q.query<PolicyRow>(
+  /**
+   * Lock a policy BY (id, owner) together, so "no such policy" and "not your
+   * policy" are one empty result.
+   *
+   * `requireGranteePolicy` has always answered a uniform 404 for the grantee
+   * arm, and says why in its own comment; `requireOwnerPolicy` twelve lines
+   * above it read by id alone and let `assertCan` answer `403 forbidden`, so
+   * the two halves of one refusal had two spellings and only one of them was
+   * right. M27 PR1a, applying the same fusion it applied to `vault_items`.
+   */
+  /** The grantee arm of the same rule: (id, grantee) fused into one lookup. */
+  async lockLiveByIdForGrantee(
+    tx: Queryable,
+    id: string,
+    granteeUserId: string,
+  ): Promise<PolicyRow | null> {
+    const rows = await tx.query<PolicyRow>(
       `SELECT ${POLICY_COLUMNS} FROM emergency_access_policies
-        WHERE id = $1 AND deleted_at IS NULL`,
-      [id],
+        WHERE id = $1 AND grantee_user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [id, granteeUserId],
     );
     return rows[0] ?? null;
   }
 
-  async lockLiveById(tx: Queryable, id: string): Promise<PolicyRow | null> {
+  async lockLiveByIdForOwner(
+    tx: Queryable,
+    id: string,
+    ownerUserId: string,
+  ): Promise<PolicyRow | null> {
     const rows = await tx.query<PolicyRow>(
       `SELECT ${POLICY_COLUMNS} FROM emergency_access_policies
-        WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
-      [id],
+        WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [id, ownerUserId],
     );
     return rows[0] ?? null;
   }
