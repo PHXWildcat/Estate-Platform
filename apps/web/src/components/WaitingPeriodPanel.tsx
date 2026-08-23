@@ -153,7 +153,7 @@ export function WaitingPeriodPanel(): ReactElement {
               onChange={(event) => {
                 setDraft(event.target.value);
               }}
-              className="input mt-1 w-32"
+              className="field-input mt-1 w-32"
               aria-describedby="waiting-period-range"
             />
             <p id="waiting-period-range" className="mt-1 text-xs text-ink-muted">

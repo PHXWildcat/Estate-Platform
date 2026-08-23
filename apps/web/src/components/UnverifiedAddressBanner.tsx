@@ -51,7 +51,7 @@ export function UnverifiedAddressBanner(): ReactElement | null {
   }
 
   return (
-    <div className="border-b border-line bg-surface-sunken">
+    <div className="border-b border-line bg-sunken">
       <p className="mx-auto w-full max-w-4xl px-6 py-2.5 text-sm text-ink-muted lg:px-10">
         Your email address isn’t confirmed, so we can’t warn you if someone tries to open your
         estate.{' '}

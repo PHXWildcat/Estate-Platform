@@ -239,12 +239,12 @@ export function ReportDeathFlow(): ReactElement {
               </p>
             ) : (
               <>
-                <label htmlFor="evidence-document" className="label">
+                <label htmlFor="evidence-document" className="field-label">
                   Document to attach
                 </label>
                 <select
                   id="evidence-document"
-                  className="input"
+                  className="field-input"
                   value={documentId}
                   onChange={(event) => {
                     setDocumentId(event.target.value);

@@ -201,13 +201,13 @@ export function OperatorLaunch(): ReactElement {
   }
 
   return (
-    <section className="panel">
-      <h1 className="panel-title">Open the operator console</h1>
-      <p className="panel-note">
+    <section className="card p-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Open the operator console</h1>
+      <p className="mt-2 max-w-prose text-sm text-ink-muted">
         Platform operators review settlement cases on a separate, isolated address. This page hands
         you over to it; everything past this point runs on a different host with its own session.
       </p>
-      <p className="panel-note">
+      <p className="mt-2 max-w-prose text-sm text-ink-muted">
         Opening the console does not make you an operator. Whether you may act on a case is decided
         when you try, against a list only a platform administrator can change — so if you are not on
         it, the console will open and every action will be refused.
@@ -227,7 +227,7 @@ export function OperatorLaunch(): ReactElement {
         a case its holder is party to. What is true is the restriction: an
         audience says where a credential may be spent, never who is spending it.
       */}
-      <p className="panel-note">
+      <p className="mt-2 max-w-prose text-sm text-ink-muted">
         You will be asked to confirm your identity first. The session you arrive with lasts fifteen
         minutes and cannot be renewed. It cannot reach your assets, documents, people or vault, and
         it cannot change your account.
@@ -245,7 +245,7 @@ export function OperatorLaunch(): ReactElement {
 
       <button
         type="button"
-        className="button-primary"
+        className="btn btn-primary mt-4"
         disabled={busy}
         onClick={() => {
           // A fresh press is a fresh ceremony. Re-arming here rather than in
