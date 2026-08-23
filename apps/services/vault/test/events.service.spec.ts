@@ -22,6 +22,10 @@ describe('EventsService', () => {
     await events.itemDeleted(USER, SESSION, ITEM);
     await events.reset(USER, SESSION, {
       itemsDestroyed: 7,
+      // DISTINCT from every sibling count on purpose: these four numbers mean
+      // four different things, and a fixture that gave them equal values could
+      // not catch a producer that emitted one under another's key.
+      itemsRelabelled: 5,
       revokedSessions: 1,
       escrowPoliciesRetired: 2,
     });
@@ -68,6 +72,7 @@ describe('EventsService', () => {
     await captured.events.opened(USER, SESSION, VAULT_SESSION);
     await captured.events.reset(USER, SESSION, {
       itemsDestroyed: 1,
+      itemsRelabelled: 0,
       revokedSessions: 0,
       escrowPoliciesRetired: 0,
     });

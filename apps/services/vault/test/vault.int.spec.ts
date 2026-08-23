@@ -40,7 +40,14 @@ import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, NOTIFIER, PG_POOL_CONFIG } from '../src/di-tokens';
 import type { NotificationPort, NotifyOutcome } from '../src/notifications';
 import { VAULT_SESSION_HEADER } from '../src/vault-session.guard';
-import type { KeysetStatus, SrpChallenge, VaultItemDto, VaultOpened } from '../src/vault.service';
+import type {
+  KeysetStatus,
+  SrpChallenge,
+  VaultItemDto,
+  VaultItemPage,
+  VaultOpened,
+  VaultVersionDto,
+} from '../src/vault.service';
 
 /**
  * A notifier shaped like every PRODUCTION adapter since M14: it never throws,
@@ -697,6 +704,28 @@ describeIfPg('vault service end to end', () => {
               .delete(`/v1/vault/items/${id}`)
               .set({ ...withStepUp(), [VAULT_SESSION_HEADER]: vaultToken }),
         },
+        // M27 PR1b's three. They are in this table because the corpus below is
+        // DERIVED from the controller — a new id-bearing route joins this probe
+        // by existing, and the set comparison names it if nobody wrote one.
+        {
+          name: 'GET versions',
+          key: "get('vault/items/:itemId/versions')",
+          run: (id) => request(server).get(`/v1/vault/items/${id}/versions`).set(unlocked()),
+        },
+        {
+          name: 'POST undelete',
+          key: "post('vault/items/:itemId/undelete')",
+          run: (id) => request(server).post(`/v1/vault/items/${id}/undelete`).set(unlocked()),
+        },
+        {
+          name: 'POST restore',
+          key: "post('vault/items/:itemId/restore')",
+          run: (id) =>
+            request(server)
+              .post(`/v1/vault/items/${id}/restore`)
+              .set({ ...unlocked(), 'if-match': '1' })
+              .send({ revision: 1 }),
+        },
       ];
 
       // THE CORPUS IS DERIVED, AND STATED. This test's NAME asserts a property
@@ -705,11 +734,27 @@ describeIfPg('vault service end to end', () => {
       // and this test would go on passing while saying something it no longer
       // checks. So the controller is the input: every route naming an item id
       // must appear above, in both directions.
+      // THE PATTERN MATCHES SUB-PATHS, AND THAT IS THE POINT OF THIS EDIT.
+      // M27 PR1a wrote this as `'(vault\/items\/:itemId)'` — the closing quote
+      // immediately after the parameter — so it captured the three routes whose
+      // path ENDS at the id and was structurally blind to any route beneath it.
+      // PR1b adds three such routes. The old pattern would have stayed green
+      // while probing none of them: a fence whose input is narrower than its
+      // claim goes green for the same reason it is wrong.
       const controller = readFileSync(join(__dirname, '..', 'src', 'vault.controller.ts'), 'utf8');
       const idRoutes = [
-        ...controller.matchAll(/@(Get|Put|Delete|Post|Patch)\('(vault\/items\/:itemId)'\)/g),
+        ...controller.matchAll(
+          /^\s*@(Get|Put|Delete|Post|Patch)\('(vault\/items\/:itemId[^']*)'\)/gm,
+        ),
       ].map((m) => `${(m[1] as string).toLowerCase()}('${m[2] as string}')`);
-      expect(idRoutes.length).toBeGreaterThanOrEqual(3);
+      // ANCHORED AT LINE START (`^\s*@`, multiline). Without it the scan reads
+      // PROSE: a doc comment quoting `@Get('vault/items/:itemId')` counted as a
+      // route, which inflated this floor by one and — worse in the other
+      // direction — would keep the fence green over a route that had been
+      // deleted while a comment still mentioned it. Found because the count
+      // came back one higher than the controller has routes.
+      expect(idRoutes.length).toBe(6);
+      // SETS, not counts: a suffix moving between two routes preserves both.
       expect(new Set(idRoutes)).toEqual(new Set(probes.map((p) => p.key)));
 
       for (const probe of probes) {
@@ -817,6 +862,261 @@ describeIfPg('vault service end to end', () => {
       );
       // No hard deletes: the row survives, flagged.
       expect(rows.rows[0]!.deleted_at).not.toBeNull();
+    });
+
+    describe('the restore reader (M27 PR1b)', () => {
+      // Its own item, so the delete/undelete cycles here cannot disturb the
+      // sequenced cases above.
+      const restorableId = randomUUID();
+
+      /**
+       * AN ITEM WITH A GENUINE HISTORY, and it needs its own because `itemId`
+       * does NOT have one. PR1a's If-Match test forces `blob_version` away from
+       * `revision` with raw SQL (`SET blob_version = 9`) and deliberately does
+       * NOT re-encrypt — so from that point every image of that row carries a
+       * version its ciphertext was never sealed under. Decryption assertions
+       * against it would fail for a reason that is a fixture, not a defect;
+       * the first draft of these cases did exactly that.
+       *
+       * Here every write goes through the real API sealing against
+       * `blobVersion + 1`, so each captured pair is one a client actually made.
+       */
+      const historyId = randomUUID();
+
+      beforeAll(async () => {
+        const seal = async (version: number, text: string): Promise<string> =>
+          Buffer.from(
+            await encryptItem(
+              masterKey,
+              { userId: OWNER, itemId: historyId, blobVersion: version },
+              utf8(text),
+            ),
+          ).toString('base64');
+
+        await request(server)
+          .post('/v1/vault/items')
+          .set(unlocked())
+          .send({ id: historyId, itemType: 'password', blob: await seal(1, 'first') })
+          .expect(201);
+
+        for (const [version, text] of [
+          [2, 'second'],
+          [3, 'third'],
+        ] as const) {
+          const live = (
+            await request(server).get(`/v1/vault/items/${historyId}`).set(unlocked()).expect(200)
+          ).body as VaultItemDto;
+          await request(server)
+            .put(`/v1/vault/items/${historyId}`)
+            .set({ ...unlocked(), 'if-match': String(live.revision) })
+            .send({ itemType: 'password', blob: await seal(version, text) })
+            .expect(200);
+        }
+      });
+
+      it('lists prior versions newest first, and every blob still OPENS', async () => {
+        // The property that matters is not that a row came back — it is that
+        // the ciphertext and the version came back as a MATCHED PAIR. A version
+        // handed over beside the wrong number decrypts to nothing, and no
+        // status code would say so, which is why this decrypts with the real
+        // client crypto rather than asserting shapes.
+        const res = await request(server)
+          .get(`/v1/vault/items/${historyId}/versions`)
+          .set(unlocked())
+          .expect(200);
+        const page = res.body as { versions: VaultVersionDto[]; nextCursor: string | null };
+
+        expect(page.versions.length).toBeGreaterThanOrEqual(2);
+        const revisions = page.versions.map((v) => v.revision);
+        expect([...revisions]).toEqual([...revisions].sort((a, b) => b - a));
+
+        for (const version of page.versions) {
+          const opened = await decryptItem(
+            masterKey,
+            { userId: OWNER, itemId: historyId, blobVersion: version.blobVersion },
+            new Uint8Array(Buffer.from(version.blob, 'base64')),
+          );
+          // It decrypted at all — the pair held.
+          expect(opened.byteLength).toBeGreaterThan(0);
+        }
+      });
+
+      it('answers 200 with an empty list for an item that has no history', async () => {
+        // NOT a 404. "Yours, nothing captured yet" and "not yours" are different
+        // facts and only one of them is the caller's business; collapsing them
+        // would tell an owner their own item does not exist.
+        const fresh = randomUUID();
+        const blob = await encryptItem(
+          masterKey,
+          { userId: OWNER, itemId: fresh, blobVersion: 1 },
+          utf8('never edited'),
+        );
+        await request(server)
+          .post('/v1/vault/items')
+          .set(unlocked())
+          .send({ id: fresh, itemType: 'password', blob: Buffer.from(blob).toString('base64') })
+          .expect(201);
+
+        const res = await request(server)
+          .get(`/v1/vault/items/${fresh}/versions`)
+          .set(unlocked())
+          .expect(200);
+        expect(res.body).toEqual({ versions: [], nextCursor: null });
+      });
+
+      it('puts a prior version back, moving blob_version BACKWARDS', async () => {
+        const before = await request(server)
+          .get(`/v1/vault/items/${historyId}/versions`)
+          .set(unlocked())
+          .expect(200);
+        const target = (before.body as { versions: VaultVersionDto[] }).versions.at(-1)!;
+
+        const live = await request(server)
+          .get(`/v1/vault/items/${historyId}`)
+          .set(unlocked())
+          .expect(200);
+        const liveDto = live.body as VaultItemDto;
+        // ANTI-VACUITY: the restore has to actually move the version, or this
+        // passes by restoring the state the row is already in.
+        expect(target.blobVersion).toBeLessThan(liveDto.blobVersion);
+
+        const res = await request(server)
+          .post(`/v1/vault/items/${historyId}/restore`)
+          .set({ ...unlocked(), 'if-match': String(liveDto.revision) })
+          .send({ revision: target.revision })
+          .expect(200);
+
+        const restored = res.body as VaultItemDto;
+        // The blob version went DOWN — legal since migration 005, and the whole
+        // reason PR1a had to split the token first.
+        expect(restored.blobVersion).toBe(target.blobVersion);
+        expect(restored.blobVersion).toBeLessThan(liveDto.blobVersion);
+        // The revision went UP, because it is a counter and not a version.
+        expect(restored.revision).toBeGreaterThan(liveDto.revision);
+
+        // And the restored blob opens under the restored version.
+        const opened = await decryptItem(
+          masterKey,
+          { userId: OWNER, itemId: historyId, blobVersion: restored.blobVersion },
+          new Uint8Array(Buffer.from(restored.blob, 'base64')),
+        );
+        expect(opened.byteLength).toBeGreaterThan(0);
+      });
+
+      it('refuses a restore whose If-Match is the BLOB VERSION, not the revision', async () => {
+        const live = (
+          await request(server).get(`/v1/vault/items/${historyId}`).set(unlocked()).expect(200)
+        ).body as VaultItemDto;
+        // The arm where the two DISAGREE is the only one that can tell them
+        // apart, and a restore is what makes them disagree.
+        expect(live.blobVersion).not.toBe(live.revision);
+
+        await request(server)
+          .post(`/v1/vault/items/${historyId}/restore`)
+          .set({ ...unlocked(), 'if-match': String(live.blobVersion) })
+          .send({ revision: 1 })
+          .expect(409, { error: 'version_conflict' });
+      });
+
+      it('undeletes a user-deleted item, and says so exactly once', async () => {
+        const blob = await encryptItem(
+          masterKey,
+          { userId: OWNER, itemId: restorableId, blobVersion: 1 },
+          utf8('restore me'),
+        );
+        await request(server)
+          .post('/v1/vault/items')
+          .set(unlocked())
+          .send({
+            id: restorableId,
+            itemType: 'password',
+            blob: Buffer.from(blob).toString('base64'),
+          })
+          .expect(201);
+        await request(server)
+          .delete(`/v1/vault/items/${restorableId}`)
+          .set({ ...withStepUp(), [VAULT_SESSION_HEADER]: vaultToken })
+          .expect(204);
+
+        // It is offered...
+        const listed = (
+          await request(server).get('/v1/vault/items/restorable').set(unlocked()).expect(200)
+        ).body as VaultItemPage;
+        expect(listed.items.map((i) => i.id)).toContain(restorableId);
+
+        // ...and comes back with NO If-Match, because recovery must not be
+        // harder than the delete that made it necessary.
+        const back = await request(server)
+          .post(`/v1/vault/items/${restorableId}/undelete`)
+          .set(unlocked())
+          .expect(200);
+        expect((back.body as VaultItemDto).id).toBe(restorableId);
+
+        const row = await admin.query<{ deleted_at: Date | null; deleted_reason: string | null }>(
+          `SELECT deleted_at, deleted_reason FROM vault_items WHERE id = $1`,
+          [restorableId],
+        );
+        // BOTH columns move together — migration 004's CHECK refuses anything else.
+        expect(row.rows[0]).toEqual({ deleted_at: null, deleted_reason: null });
+
+        // A second undelete is a success that changes nothing rather than a 404
+        // or a second event: the item is already where the caller wants it.
+        await request(server)
+          .post(`/v1/vault/items/${restorableId}/undelete`)
+          .set(unlocked())
+          .expect(200);
+        const restoredEvents = producer.messages
+          .map(
+            (m) =>
+              JSON.parse(m.value) as { action?: string; resourceId?: string; detail?: unknown },
+          )
+          .filter((e) => e.action === 'vault.item.restored' && e.resourceId === restorableId);
+        expect(restoredEvents).toHaveLength(1);
+        expect(restoredEvents[0]?.detail).toMatchObject({ kind: 'undelete' });
+      });
+
+      it('never offers an image captured while the row was RETIRED', async () => {
+        // The undelete above captured the row AS IT WAS — deleted. Writing that
+        // image forward would be a "restore" that deletes the item, so the
+        // reader must not offer it at all. An absence, not a check at the call
+        // site: the arm cannot be reached rather than being refused when it is.
+        const res = await request(server)
+          .get(`/v1/vault/items/${restorableId}/versions`)
+          .set(unlocked())
+          .expect(200);
+        const versions = (res.body as { versions: VaultVersionDto[] }).versions;
+
+        const images = await admin.query<{ n: string }>(
+          `SELECT count(*) AS n FROM vault_items_versions
+            WHERE row_id = $1 AND row_data->>'deleted_at' IS NOT NULL`,
+          [restorableId],
+        );
+        // ANTI-VACUITY: such an image must EXIST, or this asserts nothing.
+        expect(Number(images.rows[0]!.n)).toBeGreaterThan(0);
+
+        for (const version of versions) {
+          const captured = await admin.query<{ deleted_at: string | null }>(
+            `SELECT row_data->>'deleted_at' AS deleted_at FROM vault_items_versions
+              WHERE row_id = $1 AND revision = $2`,
+            [restorableId, version.revision],
+          );
+          expect({ revision: version.revision, deletedAt: captured.rows[0]?.deleted_at }).toEqual({
+            revision: version.revision,
+            deletedAt: null,
+          });
+        }
+      });
+
+      it('routes /restorable to the LIST, not to getItem with a bogus id', async () => {
+        // Nest matches in declaration order, so this is green only while
+        // `@Get('vault/items/restorable')` precedes `@Get('vault/items/:itemId')`.
+        // Reorder those two methods and this 200 becomes a 400.
+        const res = await request(server)
+          .get('/v1/vault/items/restorable')
+          .set(unlocked())
+          .expect(200);
+        expect(res.body).toHaveProperty('items');
+      });
     });
 
     it('locks the vault on request', async () => {
@@ -961,6 +1261,20 @@ describeIfPg('vault service end to end', () => {
       );
       expect(Number(before.rows[0]!.count)).toBeGreaterThan(0);
 
+      // ROWS RETIRED BEFORE THIS RESET ARE THE CASE M27 PR1b CLOSES. There has
+      // to be at least one already carrying `user_delete`, or the assertion
+      // after the reset is about an empty set and proves nothing.
+      const retiredBefore = await admin.query<{ id: string }>(
+        `SELECT id FROM vault_items
+          WHERE user_id = $1 AND deleted_at IS NOT NULL AND deleted_reason = 'user_delete'`,
+        [OWNER],
+      );
+      expect(retiredBefore.rows.length).toBeGreaterThan(0);
+      const retiredAt = await admin.query<{ deleted_at: Date }>(
+        `SELECT deleted_at FROM vault_items WHERE id = $1`,
+        [retiredBefore.rows[0]!.id],
+      );
+
       const fresh = await createVaultEnrollment({
         userId: OWNER,
         password: 'starting over completely',
@@ -987,6 +1301,38 @@ describeIfPg('vault service end to end', () => {
       );
       expect(Number(retained.rows[0]!.count)).toBeGreaterThan(0);
 
+      // THE ROWS RETIRED EARLIER ARE RELABELLED, and this is the defect PR0's
+      // discriminator left open (M27 PR1b). `softDeleteAllForUser` carries
+      // `WHERE deleted_at IS NULL`, so an item the owner deleted a minute
+      // before this reset is untouched by it and would keep saying
+      // `user_delete` — restorable — while the keyset that opened it has just
+      // been replaced. The restore list would offer a blob that can never
+      // decrypt, and the failure would arrive as a silent AEAD error on click:
+      // a control firing wearing the face of an outage, which is the exact
+      // shape migration 004 was added to prevent.
+      const relabelled = await admin.query<{ deleted_reason: string; deleted_at: Date }>(
+        `SELECT deleted_reason, deleted_at FROM vault_items WHERE id = $1`,
+        [retiredBefore.rows[0]!.id],
+      );
+      expect(relabelled.rows[0]!.deleted_reason).toBe('vault_reset');
+      // `deleted_at` is UNCHANGED: when the owner retired it stays true, and
+      // only its decryptability changed here.
+      expect(relabelled.rows[0]!.deleted_at).toEqual(retiredAt.rows[0]!.deleted_at);
+      // The reset RECORDS the relabel, separately from what it retired itself.
+      // In the audit trail rather than the response: the caller already knows
+      // they deleted those rows, and the route's shape is a client contract
+      // this change has no reason to move. The two counts are distinct keys
+      // because they mean different things — one set was live a moment ago,
+      // the other only just became undecryptable.
+      const resetEvent = producer.messages
+        .map((m) => JSON.parse(m.value) as { action?: string; detail?: Record<string, unknown> })
+        .filter((e) => e.action === 'vault.reset')
+        .at(-1);
+      expect(resetEvent?.detail?.['itemsRelabelled']).toBeGreaterThan(0);
+      expect(resetEvent?.detail?.['itemsRelabelled']).not.toEqual(
+        resetEvent?.detail?.['itemsDestroyed'],
+      );
+
       // And the new password opens the new, empty vault.
       const opened = await openVault('starting over completely', fresh.enrollment.secretKey);
       const list = await request(server)
@@ -994,6 +1340,32 @@ describeIfPg('vault service end to end', () => {
         .set({ ...asOwner(), [VAULT_SESSION_HEADER]: opened.token })
         .expect(200);
       expect((list.body as { items: VaultItemDto[] }).items).toHaveLength(0);
+
+      // AND THE RESTORE LIST OFFERS NOTHING, which is the property the relabel
+      // exists to produce: every row this user has is now `vault_reset`, and
+      // `RESTORABLE_REASONS` excludes it because its blob is cryptographically
+      // dead. Asserted through the ROUTE rather than the column, because the
+      // column being right is only useful if the reader agrees.
+      const restorable = await request(server)
+        .get('/v1/vault/items/restorable')
+        .set({ ...asOwner(), [VAULT_SESSION_HEADER]: opened.token })
+        .expect(200);
+      expect((restorable.body as VaultItemPage).items).toEqual([]);
+
+      // AND ASKING FOR ONE DIRECTLY IS REFUSED IN ITS OWN WORDS. Not a 404 —
+      // the row is there and its owner can see it in their own history — and
+      // not a 500, because nothing failed. `item_unrestorable` is a third
+      // answer because it needs a third remedy: there is no action the caller
+      // can take, and telling them "not found" would send them looking.
+      const deadRow = await admin.query<{ id: string }>(
+        `SELECT id FROM vault_items WHERE user_id = $1 AND deleted_reason = 'vault_reset' LIMIT 1`,
+        [OWNER],
+      );
+      expect(deadRow.rows.length).toBe(1);
+      await request(server)
+        .post(`/v1/vault/items/${deadRow.rows[0]!.id}/undelete`)
+        .set({ ...asOwner(), [VAULT_SESSION_HEADER]: opened.token })
+        .expect(409, { error: 'item_unrestorable' });
     });
 
     it('records a reset notification that did NOT land as delivered_at NULL', async () => {

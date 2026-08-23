@@ -631,7 +631,7 @@ describeIfPg('emergency access end to end', () => {
      */
     const CONTROLLER = join(__dirname, '..', 'src', 'emergency.controller.ts');
     const ROUTE =
-      /@(Post|Delete|Put|Patch|Get)\('vault\/emergency-access\/:policyId([^']*)'\)((?:\s*@[^\n]*\n)*)/g;
+      /^\s*@(Post|Delete|Put|Patch|Get)\('vault\/emergency-access\/:policyId([^']*)'\)((?:\s*@[^\n]*\n)*)/gm;
 
     const routes = [...readFileSync(CONTROLLER, 'utf8').matchAll(ROUTE)].map((m) => ({
       method: (m[1] as string).toLowerCase() as 'post' | 'delete' | 'put' | 'patch' | 'get',

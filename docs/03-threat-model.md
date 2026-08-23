@@ -1442,12 +1442,21 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **Residuals carried, not closed.**
 
-- **[OWNER: M27]** *An unlocked extension can overwrite every item, and there is no restore
-  surface.* `deleteItem` stays refused, so the destructive verb is out, and
-  `vault_items_versions` captures BEFORE UPDATE OR DELETE — but NO PRODUCTION CODE
-  READS THAT TABLE. Recovery today means an operator with psql. "Recoverable" is
-  therefore true of the data and not of the product, and the two are recorded apart
-  rather than allowed to sound like one claim. MOVED HERE BY M27 PR0, from under
+- **[OWNER: M27]** *An unlocked extension can overwrite every item, and the restore surface
+  it is recoverable BY has no screen yet.* `deleteItem` stays refused, so the
+  destructive verb is out, and `vault_items_versions` captures BEFORE UPDATE OR
+  DELETE. **M27 PR1b MOVED THE FIRST HALF OF THIS AND NOT THE SECOND**, and the
+  bullet stays open on the difference. Production code now reads that table:
+  `GET /v1/vault/items/:itemId/versions` and `POST
+  /v1/vault/items/:itemId/restore` put a prior image back — the ciphertext and
+  its blob version together, which is what makes it open — so "recoverable" is
+  true of the PRODUCT and not only of the data, and `session.ts`'s refusal rests
+  on a capability that exists. What does not exist is a way for an owner to
+  REACH it: the routes are live behind their own vault session, and the screen
+  that calls them is M27 PR2. A capability with no surface is better than none
+  and is not the same as done, so this is retagged when PR2 lands rather than
+  now. Recovery today still means somebody driving the API by hand — a smaller
+  gap than an operator with psql, and the same KIND of gap. MOVED HERE BY M27 PR0, from under
   `**Added by PR3a (origin matching).**` where it had no tag at all and assigned
   itself to "the operator platform (TB7)" — a milestone that shipped as M21 without
   it. The bullet was invisible to the residuals fence for the whole of that time:
@@ -5621,7 +5630,10 @@ bullet recording that sat where the residuals fence could not see it (below,
 and §6j). An extension can overwrite every item and cannot delete one, so the
 recovery that argument needs is version restore specifically; a restore
 surface that only undeleted would leave the sentence exactly as unsupported as
-it is now.
+it was then. (PR1b BUILT IT — §6ww. This paragraph is left in PR0's tense
+because it is a dated delta and records what was true when it shipped; the
+forward pointer is here so a reader does not take the present tense as a
+current claim about the tree.)
 
 **A SOFT-DELETED ROW DOES NOT SAY WHETHER IT CAN STILL BE DECRYPTED, AND THAT
 IS WHAT PR0 FIXES.** `VaultService.reset` soft-deletes every item with the
@@ -5863,3 +5875,117 @@ the precedent this follows.
   prevents a future client from reading the wrong field. The compensating
   control is that every double in the tree gives the two DIFFERENT values, so
   the mistake cannot pass a test.
+
+## 6ww. Threat-model delta — M27 PR1b, the restore reader (2026-08-23)
+
+**THE REFUSAL IN `session.ts` NOW RESTS ON SOMETHING.** Since M16 that file has
+refused `deleteItem` to the extension audience on the grounds that an overwrite
+is "recoverable", and until this PR nothing in the product could recover one:
+`vault_items_versions` had captured full row images since M6 and had no
+production reader. A security argument whose premise is a capability nobody
+built is an argument resting on nothing, and it stood for eleven milestones.
+`GET /v1/vault/items/:itemId/versions` and `POST
+/v1/vault/items/:itemId/restore` are that reader and that verb. The half this
+PR does NOT close is reachability: the routes are live, the SCREEN is PR2, and
+§6j stays open and owned by M27 on exactly that difference rather than being
+retagged early.
+
+**VERSION RESTORE, NOT UNDELETE, IS THE ONE THAT ANSWERS IT.** Both shapes
+ship, and the tests say which is which. An extension can overwrite every item
+and cannot delete one, so a restore surface that only undeleted would leave
+`session.ts` exactly as unsupported. Undelete flips `deleted_at` and
+`deleted_reason` together — migration 004's CHECK ties them, so clearing either
+alone is a refused statement rather than a half-done restore. Version restore
+writes a prior image forward: `blob_ct` and `blob_version` TOGETHER, because
+`itemContentAad` binds the version and the pair is what decrypts. That is what
+M27 PR1a's `revision` split was for — the live `blob_version` moves DOWN on a
+restore, which strict equality cannot be a change detector over.
+
+**THREE COLUMNS ARE WRITTEN AND THE REST IS AN ABSENCE.** The restore sets
+`blob_ct`, `blob_version` and `item_type` and names nothing else, so `id` and
+`user_id` (identity), `created_at`, `updated_at` and `revision` (trigger-owned)
+and — the one that matters — `deleted_at` / `deleted_reason` cannot travel. An
+image captured at an UNDELETE holds the row as it was WHILE RETIRED, and
+writing that forward would be a restore that deletes the item. The reader
+excludes such images at the source (`row_data->>'deleted_at' IS NULL`) rather
+than checking at the call site, so the arm cannot be reached instead of being
+refused when it is, and `vault.item.restored` is truthful by construction.
+
+**THE HANDLE IS `revision`, WHICH IS A SECURITY CHOICE.** A reader has to name
+an image, to page and to say which one to put back. `version_seq` is the shadow
+table's BIGINT IDENTITY, shared by every user of the table, and this service's
+cursors are base64url of PLAINTEXT — so paging on it would publish a decodable
+platform-wide write counter and put a sequential id on the wire against
+CLAUDE.md's rule. `revision` is per-row, never reused, and already the client's
+`If-Match` token: one handle rather than a second spelling of "which image".
+Migration 006 adds it to `vault_items_versions` as a GENERATED column derived
+from `row_data`, so it cannot disagree with the image it names, needs no change
+to the shared `versionsTableSql` capture function, and is correct for rows
+captured before it existed. Images predating migration 005 have no `revision`
+key and are therefore NULL: unnameable, and so unrestorable — the fail-closed
+direction.
+
+**OWNERSHIP IS FUSED, AND THE SHADOW TABLE HAS NO OWNER COLUMN.**
+`vault_items_versions` records ownership only inside `row_data`, so a reader
+keyed on `row_id` alone answers a question about someone else's data and then
+filters — the ordering CLAUDE.md forbids. The reader drives from `vault_items`
+with `(id, user_id)` fused and reaches the shadow table only with a `row_id`
+the caller has been proven to own. Zero rows is the uniform 404; an owned item
+with no history is 200 and an empty list, because "not yours" and "nothing
+captured yet" are different facts and only one is the caller's business. The
+image's own `user_id` is projected and asserted against the live row, and a
+disagreement RAISES rather than filtering: item ids are client-supplied, so the
+pairing is only as durable as the guarantee that no row is ever removed and no
+id reissued. It cannot fire today, which is why it throws — a silent filter
+would turn the day that guarantee breaks into a surface quietly showing fewer
+versions.
+
+**NONE OF THE FOUR ROUTES CARRIES `StepUpGuard`, AND THE ASYMMETRY IS THE
+POINT.** `deleteItem` is the one item route that does. `updateItem` — which
+destroys the previous content of an item — carries `VaultSessionGuard` alone
+and is open to the `extension` audience. Putting a fresh factor in front of the
+UNDO of that write, while the write itself needs none, would make the
+protective action harder than the permissive one in the milestone that exists
+to honour that rule. All four routes are refused to the `extension` audience:
+the audience that can overwrite is not the audience that can roll back.
+
+**PR0'S DISCRIMINATOR HAD A HOLE, AND THIS PR CLOSES IT.** Migration 004 added
+`deleted_reason` so a restore list would never offer a blob the keyset had
+outlived. `softDeleteAllForUser` carries `WHERE deleted_at IS NULL`, so an item
+the owner deleted BEFORE a reset was never touched by that reset and kept
+saying `user_delete` — restorable — while the keyset that opened it was
+replaced in the same transaction. The list would have offered it and the
+failure would have arrived as a silent AEAD error on click: a control firing
+wearing the face of an outage, which is the precise shape 004 exists to
+prevent. `reset` now relabels rows already retired, leaving their `deleted_at`
+alone because WHEN the owner retired a row stays true and only its
+decryptability changed. Found by PR1b's design fan-out, by two lenses
+independently, and proved by reverting the relabel and watching a named
+assertion redden.
+
+### Residuals
+
+- **[ACCEPTED]** *A refused restore emits no audit event.* `AUDIT_ACTIONS` is a
+  closed vocabulary and a consumer that predates a member drops every instance
+  of it silently, so a `vault.item.restore_refused` would cost a consumer
+  deploy ahead of its producer — a PR0 change, not a PR1b one. The consequence
+  is that repeated failed restores against another user's item ids are
+  invisible, which is bounded by the fact that they are indistinguishable 404s
+  carrying no information to begin with. On the same terms as §6uu's M39
+  residual for `vault.emergency.items_read`: logging is not detecting.
+- **[ACCEPTED]** *A restore is a rollback primitive and nothing watches it.*
+  Putting a prior version back is exactly how an attacker with an unlocked
+  vault would revert a password change the owner had just made. The event is
+  emitted with both revisions in its detail, so the material for a detector
+  exists; no detector does. This is the same gap §6a records for `blob_version`
+  moving backwards, now reachable through a supported route rather than only
+  through operator SQL, and it is why the routes stay out of the `extension`
+  audience.
+- **[OWNER: M41]** *The versions reader returns every prior ciphertext, and a
+  crypto-shred does not reach further than it did.* Restoring is bounded by the
+  keyset, so a shredded vault's images are dead — but a version list is a
+  larger disclosure surface than a single item read, and `vault.item.accessed`
+  is emitted once for the page rather than once per image. The count is not in
+  the detail, so a burst detector sees one access where a caller took fifty
+  ciphertexts. Owned by the milestone that already carries the read-before-authz
+  sweep, since both are about what a read reports rather than what it permits.

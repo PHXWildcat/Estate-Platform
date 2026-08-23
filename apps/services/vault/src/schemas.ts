@@ -134,7 +134,38 @@ export const ListItemsQuerySchema = z
   })
   .strict();
 
-/** `If-Match: <blobVersion>` - the assets optimistic-concurrency precedent. */
+/**
+ * M27 PR1b's readers (docs/03 §6ww).
+ *
+ * The versions cursor is a plain `revision`, not the shadow table's
+ * `version_seq`: per-item, never reused, and already the client's `If-Match`
+ * token. `version_seq` is a platform-wide BIGINT identity and putting it on
+ * the wire would be a sequential id and a write-volume oracle at once.
+ */
+export const ListVersionsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z.coerce.number().int().min(1).max(1_000_000_000).optional(),
+  })
+  .strict();
+
+export const ListRestorableQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+    cursor: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+/**
+ * Which image to put back. `revision` NAMES it; `If-Match` (a header, not this
+ * body) says which live revision the caller believed it was replacing. Two
+ * numbers with two jobs, and conflating them is what M27 PR1a split apart.
+ */
+export const RestoreVersionSchema = z
+  .object({ revision: z.coerce.number().int().min(1).max(1_000_000_000) })
+  .strict();
+
+/** `If-Match: <revision>` - the assets optimistic-concurrency precedent. */
 export const IfMatchSchema = z.coerce.number().int().min(1).max(1_000_000_000);
 
 // --- emergency access (docs/03 §5.2) ---

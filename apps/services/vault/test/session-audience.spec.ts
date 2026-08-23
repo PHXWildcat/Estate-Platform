@@ -131,12 +131,15 @@ describe('vault route audiences match the declaration', () => {
     // assertion below pass — the credential-graph anti-drop lesson.
     const vault = routeNames(VaultController);
     const emergency = routeNames(EmergencyAccessController);
-    expect(vault.length).toBe(12);
+    // SIXTEEN since M27 PR1b, up from twelve: `listRestorable`, `listVersions`,
+    // `undeleteItem` and `restoreVersion`. All four refuse the extension
+    // audience, which is why the refused count below moves by the same four.
+    expect(vault.length).toBe(16);
     expect(emergency.length).toBe(11);
-    // 23, not the 22 the decision log cited from M15 — `ownRecoveryKey` arrived
+    // 27, not the 22 the decision log cited from M15 — `ownRecoveryKey` arrived
     // in PR3 and the remembered number never caught up. Asserted so the next
     // person counts rather than remembers.
-    expect(vault.length + emergency.length).toBe(23);
+    expect(vault.length + emergency.length).toBe(27);
   });
 
   it('exactly seven handlers admit an extension session', () => {
@@ -172,11 +175,14 @@ describe('vault route audiences match the declaration', () => {
     // sense of coverage: a 24th route added tomorrow is refused by default and
     // this notices if it is not.
     //
-    // SIXTEEN, down from eighteen when PR4a admitted `createItem` and
-    // `updateItem`. The number is asserted rather than computed from
+    // TWENTY since M27 PR1b, from sixteen: the restore reader's four routes all
+    // land here, which is the answer this fence exists to give. A restore
+    // surface is the OWNER's — an autofill client has no use for version
+    // history, and every handler left out of that audience is authority not
+    // granted. The number is asserted rather than computed from
     // EXTENSION_ROUTES on purpose: deriving it from the admitted list would make
     // this test agree with any widening automatically, which is the one thing it
-    // exists to refuse. Moving it is meant to cost a deliberate edit.
+    // exists to refuse. Moving it is meant to cost a deliberate edit — this one.
     const refused = [
       ...routeNames(VaultController).map((route) => ({ c: VaultController, route })),
       ...routeNames(EmergencyAccessController).map((route) => ({
@@ -184,7 +190,7 @@ describe('vault route audiences match the declaration', () => {
         route,
       })),
     ].filter(({ route }) => !EXTENSION_ROUTES.includes(route));
-    expect(refused).toHaveLength(16);
+    expect(refused).toHaveLength(20);
     for (const { c, route } of refused) {
       expect({
         route,

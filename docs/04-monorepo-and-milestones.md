@@ -8695,6 +8695,10 @@ audience BECAUSE an overwrite is "recoverable" — a security argument resting
 on a restore capability nobody has built. `vault_items_versions` has captured
 full row images since M6 (`001_vault_schema.sql`) and has no production
 reader. The refusal is correct; its stated justification is not yet true.
+(SCOPED AT KICKOFF, and PR1b closed it: the versions reader and version
+restore are that production reader. Recorded here in the kickoff's tense
+because this section is the milestone's scoping record — the PR1b entry below
+carries what changed.)
 
 **Scope, and it is exactly the two halves of the name.** The seven `[OWNER:
 M27]` tags in docs/03 were FIVE distinct residuals (three tags are one SRP
@@ -8786,15 +8790,31 @@ paired CHECK and no writer is a broken table.
   in the same change. The uniform-404 fix rides here too: every item route and
   both `emergency_access_policies` arms now fuse ownership into the statement,
   and the two unfused lookups are deleted. docs/03 §6vv.
-- **PR1b — the restore READER and undelete.** The versions reader over
-  `vault_items_versions`, the restorable list keyed on `RESTORABLE_REASONS`
-  (its first caller), and `vault.item.restored`'s first producer. Two shapes,
-  and the tests say which is which: undelete flips `deleted_at`; version
-  restore writes a prior row image forward. Only the second answers
-  `session.ts`. Migration 006 carries the two indexes with the queries that
-  need them — `vault_items_versions` has only its identity PK today, and
-  `ix_vault_items_user_live` is partial on `deleted_at IS NULL`, so the
-  restorable list is unindexed.
+- **PR1b — the restore READER and undelete.** SHIPPED, and wider than scoped.
+  The versions reader over `vault_items_versions`, the restorable list keyed on
+  `RESTORABLE_REASONS` (its first caller), and `vault.item.restored`'s first
+  producer. Two shapes, and the tests say which is which: undelete flips
+  `deleted_at` and `deleted_reason` together (004's CHECK ties them); version
+  restore writes a prior row image forward — `blob_ct` and `blob_version`
+  together, which is what makes it open. Only the second answers `session.ts`.
+  Migration 006 carries the two indexes and the per-item handle: the versions
+  reader pages on `revision`, NOT `version_seq`, because the latter is a
+  platform-wide BIGINT identity and this service's cursors are base64url of
+  plaintext. Added during the PR by its own design fan-out: **PR0's
+  `deleted_reason` discriminator had a hole** — `softDeleteAllForUser` carries
+  `WHERE deleted_at IS NULL`, so rows retired BEFORE a reset kept `user_delete`
+  while their keyset was replaced, and the restorable list would have offered a
+  dead blob. `reset` now relabels them. docs/03 §6ww.
+- **A STATED DEVIATION, PR1b to PR2.** PR1b ships four routes whose consumer
+  is PR2, against the repo's "ship a route in the same change as its consumer"
+  rule. Recorded here rather than left to be discovered, and carried in
+  `packages/auth-guard/test/route-consumers.spec.ts` as
+  `EXEMPT_RESTORE_SURFACE` with the terms it leaves on. The reason it is not
+  the zero-caller surface that rule exists to catch: `session.ts` has refused
+  `deleteItem` to the extension audience since M16 BECAUSE an overwrite is
+  "recoverable", which was a security argument resting on a capability nobody
+  had built. The consumer that argument needed was the verb existing. What is
+  still missing is a screen, and §6j stays open and M27-owned on that.
 - **PR2 — the owner's restore surface** on the vault origin.
 - **PR3 — the grantee READ.** The route authorized by the released policy row,
   the Cedar grantee attribute in the vault's own domain, release made
