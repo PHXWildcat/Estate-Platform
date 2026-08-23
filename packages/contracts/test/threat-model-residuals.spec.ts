@@ -100,6 +100,76 @@ const OWNERS: readonly string[] = [
  */
 const MIN_SECTIONS = 24;
 const MIN_RESIDUALS = 95;
+
+/**
+ * A FLOOR PER SECTION, BECAUSE A TOTAL CANNOT SEE A DELETION (M27 PR1b).
+ *
+ * `MIN_RESIDUALS` sits at 95 against 212 actual bullets, which is deliberate —
+ * it exists to catch a parser that stopped matching, not an editor. But that
+ * leaves the fence unable to notice a single residual being REMOVED, and the
+ * one it was least able to notice is the §6j bullet recording that no restore
+ * surface existed: the most load-bearing sentence about M27's own scope, which
+ * this milestone had every reason to want gone. CLAUDE.md's rule is that an
+ * anti-vacuity floor belongs at every LEVEL of a scan and not just its total;
+ * the total was the only level this fence had.
+ *
+ * RATCHETS UP AND NEVER DOWN, exactly like a coverage threshold. Adding a
+ * residual to a section and not updating its floor is harmless; removing one
+ * reddens a named assertion that says which section lost it. A floor that must
+ * come down is a deliberate edit with a reason beside it — the same bargain
+ * `coverageThreshold` makes, and for the same reason.
+ */
+const MIN_PER_SECTION: Readonly<Record<string, number>> = {
+  '6a': 4,
+  '6b': 4,
+  '6c': 7,
+  '6d': 3,
+  '6e': 3,
+  '6f': 2,
+  '6g': 4,
+  '6h': 5,
+  '6i': 5,
+  '6j': 11,
+  '6k': 10,
+  '6l': 6,
+  '6m': 6,
+  '6n': 4,
+  '6o': 4,
+  '6p': 4,
+  '6q': 10,
+  '6r': 4,
+  '6s': 2,
+  '6t': 2,
+  '6u': 3,
+  '6v': 3,
+  '6w': 3,
+  '6x': 6,
+  '6y': 3,
+  '6z': 6,
+  '6aa': 7,
+  '6bb': 6,
+  '6cc': 6,
+  '6dd': 6,
+  '6ee': 4,
+  '6ff': 4,
+  '6gg': 2,
+  '6hh': 2,
+  '6ii': 3,
+  '6jj': 2,
+  '6kk': 4,
+  '6ll': 4,
+  '6mm': 4,
+  '6nn': 5,
+  '6oo': 3,
+  '6pp': 3,
+  '6qq': 2,
+  '6rr': 2,
+  '6ss': 2,
+  '6tt': 3,
+  '6uu': 7,
+  '6vv': 4,
+  '6ww': 3,
+};
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
  * 30 lead-ins; set below those so ordinary editing does
@@ -646,6 +716,41 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // failure mode every fence in this repo has had at least once.
     expect(sections.size).toBeGreaterThanOrEqual(MIN_SECTIONS);
     expect(items.length).toBeGreaterThanOrEqual(MIN_RESIDUALS);
+  });
+
+  it('no SECTION has lost a residual — a floor at every level, not just the total', () => {
+    // The total floor exists to catch a broken parser and is set far below the
+    // real count so ordinary editing does not trip it. That leaves a single
+    // DELETION invisible, which is the one thing a milestone editing its own
+    // residuals is most likely to do. Reported per section and as a whole set
+    // rather than a first failure, so one run names everything that moved.
+    //
+    // WHAT A COUNT FLOOR CANNOT SEE, stated because the claim above is narrower
+    // than it reads: a deletion and an addition IN THE SAME SECTION cancel, and
+    // this stays green. The set comparison that would close it needs a stable
+    // identity per residual, and a residual is free prose whose only stable
+    // parts are its section and its disposition tag — so the identity would
+    // have to be the text, and every reword would be a failure. The bound is
+    // therefore deliberate: this catches a section getting SMALLER, which is
+    // what an accidental deletion looks like, and does not catch a swap, which
+    // is what a deliberate edit looks like. §6's own review is the control for
+    // the second kind.
+    const actual = new Map<string, number>();
+    for (const item of items) actual.set(item.section, (actual.get(item.section) ?? 0) + 1);
+
+    const shortfalls = Object.entries(MIN_PER_SECTION)
+      .filter(([section, floor]) => (actual.get(section) ?? 0) < floor)
+      .map(([section, floor]) => `§${section}: ${actual.get(section) ?? 0} < ${floor}`);
+    expect(shortfalls).toEqual([]);
+
+    // And the floors must cover every section that HAS residuals, or a whole
+    // new section could be emptied without any floor noticing — the same gap
+    // one level up. A section gaining residuals is not a failure; a section
+    // holding residuals that nothing floors is.
+    const unfloored = [...actual.keys()]
+      .filter((section) => !(section in MIN_PER_SECTION))
+      .map((section) => `§${section} has ${actual.get(section)} residuals and no floor`);
+    expect(unfloored).toEqual([]);
   });
 
   it('every residual opens with exactly one disposition tag', () => {

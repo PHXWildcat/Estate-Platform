@@ -22,6 +22,9 @@ import {
   CreateItemSchema,
   CreateKeysetSchema,
   IfMatchSchema,
+  ListRestorableQuerySchema,
+  ListVersionsQuerySchema,
+  RestoreVersionSchema,
   ListItemsQuerySchema,
   parse,
   ReplaceKeysetSchema,
@@ -36,6 +39,7 @@ import {
   type SrpChallenge,
   type VaultItemDto,
   type VaultItemPage,
+  type VaultVersionPage,
   type VaultOpened,
 } from './vault.service';
 
@@ -87,8 +91,11 @@ function ifMatchOf(req: CallerRequest): number {
  * unlocked extension can overwrite an item's blob with any bytes, so the
  * contents are at risk even though the KEYSET is not (`reset` and both keyset
  * routes stay refused, as do all eleven emergency routes). `vault_items_versions`
- * keeps the prior image, but nothing in the product reads it — see docs/03 §6j.
- * The declaration
+ * keeps the prior image, and SINCE M27 PR1b the product reads it: the owner can
+ * list an item's versions and put one back (`restoreVersion` below), so that
+ * overwrite is undoable from the product rather than by an operator with psql.
+ * The three restore routes are themselves refused to this audience, which is
+ * what keeps the undo out of reach of the thing it undoes. The declaration
  * lives in `AUDIENCE_ROUTE_ADMITTERS`; `test/session-audience.spec.ts` names
  * every route that must refuse it.
  */
@@ -200,6 +207,28 @@ export class VaultController {
     return this.vault.createItem(caller.userId, caller.sessionId, parse(CreateItemSchema, body));
   }
 
+  /**
+   * DECLARED BEFORE `:itemId`, AND THAT ORDER IS LOAD-BEARING (M27 PR1b).
+   *
+   * Nest matches within a controller in declaration order, so if
+   * `@Get('vault/items/:itemId')` came first it would capture `restorable` as
+   * an item id and the route would answer 400 `invalid_request` — a live route
+   * that reads as a client bug. `vault.int.spec.ts` drives this path and
+   * asserts a 200 list, so a reordering of these methods fails there rather
+   * than in somebody's browser.
+   */
+  @Get('vault/items/restorable')
+  @UseGuards(VaultSessionGuard)
+  @HttpCode(200)
+  listRestorable(@Req() req: VaultRequest, @Query() query: unknown): Promise<VaultItemPage> {
+    const caller = requireCaller(req);
+    return this.vault.listRestorableItems(
+      caller.userId,
+      caller.sessionId,
+      parse(ListRestorableQuerySchema, query),
+    );
+  }
+
   @Get('vault/items/:itemId')
   @UseGuards(VaultSessionGuard)
   @HttpCode(200)
@@ -233,5 +262,69 @@ export class VaultController {
   deleteItem(@Req() req: VaultRequest, @Param('itemId') itemId: string): Promise<void> {
     const caller = requireCaller(req);
     return this.vault.deleteItem(caller.userId, caller.sessionId, parse(UuidSchema, itemId));
+  }
+
+  /**
+   * M27 PR1b's three restore routes, and NONE of them carries `StepUpGuard`.
+   *
+   * `deleteItem` above is the one item route that does, and the asymmetry is
+   * the point rather than an oversight: a step-up between an owner and the
+   * recovery of their own data would make the protective action harder than
+   * the permissive one. `updateItem` — which destroys the previous content of
+   * an item — carries `VaultSessionGuard` alone and is open to the `extension`
+   * audience; putting a fresh factor in front of the UNDO of that write while
+   * the write itself needs none is the inversion this repo's design rules
+   * forbid, in the milestone that exists to close the gap those rules opened.
+   *
+   * None of the three is admitted to the `extension` audience. That audience
+   * is deliberately minimal (`packages/auth-guard/src/session.ts`), and a
+   * restore surface is the owner's, not an autofill client's.
+   */
+  @Get('vault/items/:itemId/versions')
+  @UseGuards(VaultSessionGuard)
+  @HttpCode(200)
+  listVersions(
+    @Req() req: VaultRequest,
+    @Param('itemId') itemId: string,
+    @Query() query: unknown,
+  ): Promise<VaultVersionPage> {
+    const caller = requireCaller(req);
+    return this.vault.listItemVersions(
+      caller.userId,
+      caller.sessionId,
+      parse(UuidSchema, itemId),
+      parse(ListVersionsQuerySchema, query),
+    );
+  }
+
+  @Post('vault/items/:itemId/undelete')
+  @UseGuards(VaultSessionGuard)
+  @HttpCode(200)
+  undeleteItem(@Req() req: VaultRequest, @Param('itemId') itemId: string): Promise<VaultItemDto> {
+    const caller = requireCaller(req);
+    return this.vault.undeleteItem(caller.userId, caller.sessionId, parse(UuidSchema, itemId));
+  }
+
+  /**
+   * `If-Match` is REQUIRED here and NOT on undelete, and the two are different
+   * questions rather than an inconsistency. This overwrites live content, so a
+   * stale writer can lose an update through it exactly as through `PUT`.
+   * Undelete writes no content onto a row nobody could have been editing.
+   */
+  @Post('vault/items/:itemId/restore')
+  @UseGuards(VaultSessionGuard)
+  @HttpCode(200)
+  restoreVersion(
+    @Req() req: VaultRequest,
+    @Param('itemId') itemId: string,
+    @Body() body: unknown,
+  ): Promise<VaultItemDto> {
+    const caller = requireCaller(req);
+    return this.vault.restoreItemVersion(
+      caller.userId,
+      caller.sessionId,
+      parse(UuidSchema, itemId),
+      { ...parse(RestoreVersionSchema, body), ifMatch: ifMatchOf(req) },
+    );
   }
 }

@@ -57,7 +57,7 @@ TB9 is genuinely new rather than a subdivision of TB6. TB6 is the client DEVICE,
 section originally described, and the narrowing is the result of measuring the platform in Chrome 151 rather than reasoning about it. The old text promised "cross-origin iframes refused by default with a per-item opt-in", and both halves turned out to be wrong. `activeTab` grants exactly the main frame's ORIGIN, host-exact, so a same-site subframe on a different host (`pay.example.com` under `example.com`) is refused by Chrome outright; PR3a's `frameIsAllowed` would have computed "allowed" for a frame the fill could only ever fail on. And the per-item opt-in CANNOT BE BUILT on `activeTab` at all: honouring it needs host permissions for the third-party origin (`optional_host_permissions` plus a runtime `chrome.permissions.request()`), a manifest key and a consent surface this milestone does not have. `frameIsAllowed` IS DELETED rather than kept, because wiring it showed it can have no caller: the popup cannot enumerate frames (that needs `webNavigation` or `tabs`, deliberately not held), and the injected function cannot import it (`func` is serialized). A rule with nowhere to run is the M4 zero-callers shape. What replaces it is stronger than a rule of ours — THE PLATFORM ENFORCES IT, and refuses an injection into any frame the grant does not cover. **Accepted cost, stated rather than hidden:** a login form inside an iframe is not filled, including a same-origin one, because the extension cannot name the frame without a permission it refuses to hold. confusable domains REFUSED rather than warned about. **Confusable detection is PARTIAL as shipped, and NARROWER after the M16 PR5 review than PR3a claimed.** Caught: an ASCII homoglyph skeleton (`rn`/`m`, `vv`/`w`, `cl`/`d`, digit-for-letter) and edit-distance-1. **Punycode is no longer flagged as confusable at all**, and removing it made the control stronger rather than weaker. The old rule returned `confusable` whenever EITHER side carried an `xn--` label, without comparing the two — so it was not a comparison, and on any internationalised page every saved item matched it. Because `matchesFor` keeps confusable verdicts and drops only `no-match`, the measured effect was that ONE VISIT TO ANY IDN PAGE returned the WHOLE VAULT from the key holder — every title and every saved registrable domain — which is exactly the disclosure `matchesFor` exists to prevent. It also fired the lookalike refusal, the one phishing bound this section commits to, on every item at once on ordinary pages. Nothing was given up: filling requires the registrable domains to be EQUAL, so a punycode host that is not the saved domain was already unfillable and the clause only decided the LABEL on the refusal. The general Unicode confusable case (including a genuine punycode homograph) needs UTS #39 skeletons over a vendored confusables table plus punycode decoding, and remains a named follow-up. A miss is a `no-match`, so it is still REFUSED for filling — what is lost is the explanation, never the boundary. What replaces the per-item claim is a single page-level notice when the page's own registrable domain is internationalised.
 - *A hostile page inducing a fill:* → The content script is structurally unable to REQUEST a credential — its message union carries no such variant and it cannot import the key holder. A fill is a one-shot injection into a named frame at the moment of a gesture in extension-owned UI, so there is no standing channel a page can address. **THE EXTENSION NEVER SUBMITS, AND THAT IS NOT THE SAME AS "NOTHING IS EVER AUTO-SUBMITTED"** — which is what this sentence used to say, and the M16 review measured the difference. A fill must dispatch `input` and `change` or no field notices the value, and the reasoning that withholds `blur` ("a page is free to submit on blur, so dispatching one would be auto-submission by proxy") is true of those verbatim: a jsdom probe against the real module showed a page's `change` listener holding the real secret. There is no fix, because the events ARE the fill; what M16 PR5 changed is ORDER — the username is written before the password, so a page that commits early can no longer get the secret with the username field still empty, which is what it used to get. The on-screen copy no longer asserts "Nothing was submitted" either; it says what Estate did and points the user at the address. Also narrowed: the fill's origin decision is now re-read AT THE GESTURE. It used to run on a page URL captured when the popup rendered, so the key holder's re-decision — documented as defending against "the page navigating between the two calls" — compared the same stale string twice and could not see a navigation at all; what actually stood in the way was Chromium revoking `activeTab`, which nobody measured and no test asserted.
 - *A hostile page reading the vault by breadth of access:* → `activeTab` + `scripting` only, with no declared content scripts, so the extension has no view of any page until the user clicks it — and any later broadening is a required-permission increase the browser surfaces as re-consent.
-- *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy the VAULT — narrowed in M16 PR4a, which admitted `createItem` and `updateItem`: `reset`, both keyset routes and all eleven emergency routes stay refused, so the keyset survives and the vault still opens, but an unlocked extension can overwrite every ITEM with bytes that are not ciphertext and each one becomes permanently unreadable. `vault_items_versions` holds the prior image and NO PRODUCTION CODE READS IT, so recovery today means an operator with psql. The mitigation and the residual below describe the same moment — an unlocked vault — and this clause used to overclaim against it), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
+- *Compromised store update (the boundary's un-detectable case):* An auto-updated signed artifact has no CSP in its path, and a self-check is written by the same artifact. → Blast-radius reduction first (an `extension` session audience admitted per handler, so it cannot destroy the VAULT — narrowed in M16 PR4a, which admitted `createItem` and `updateItem`: `reset`, both keyset routes and all eleven emergency routes stay refused, so the keyset survives and the vault still opens, but an unlocked extension can overwrite every ITEM with bytes that are not ciphertext and each one becomes permanently unreadable. `vault_items_versions` holds the prior image, and SINCE M27 PR1b the product reads it — the owner lists an item's versions and restores one over the API, so recovery is theirs rather than an operator's. The three restore routes are refused to the `extension` audience, so the credential that can perform the overwrite cannot perform the undo; see §6ww. The mitigation and the residual below describe the same moment — an unlocked vault — and this clause used to overclaim against it), permissions pinned as data, reproducible builds, published SLSA provenance, and a third-party-runnable verification procedure. *Residual, accepted and stated:* an update keeping the same permissions exfiltrates everything the user unlocks and the platform cannot detect it.
 - *Phishing:* Autofill does not resist it. A credential saved at a lookalike is filled at that lookalike. Passkeys are the structural answer and shipped for the web app in M17 PR5 (§6o; the vault origin and extension remain TOTP-only); the refusal above is the bound M16 owes, and with `activeTab` it fires when the user opens the extension, not when they land on the page.
 
 **TB7 — Operators**
@@ -1442,12 +1442,21 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **Residuals carried, not closed.**
 
-- **[OWNER: M27]** *An unlocked extension can overwrite every item, and there is no restore
-  surface.* `deleteItem` stays refused, so the destructive verb is out, and
-  `vault_items_versions` captures BEFORE UPDATE OR DELETE — but NO PRODUCTION CODE
-  READS THAT TABLE. Recovery today means an operator with psql. "Recoverable" is
-  therefore true of the data and not of the product, and the two are recorded apart
-  rather than allowed to sound like one claim. MOVED HERE BY M27 PR0, from under
+- **[OWNER: M27]** *An unlocked extension can overwrite every item, and the restore surface
+  it is recoverable BY has no screen yet.* `deleteItem` stays refused, so the
+  destructive verb is out, and `vault_items_versions` captures BEFORE UPDATE OR
+  DELETE. **M27 PR1b MOVED THE FIRST HALF OF THIS AND NOT THE SECOND**, and the
+  bullet stays open on the difference. Production code now reads that table:
+  `GET /v1/vault/items/:itemId/versions` and `POST
+  /v1/vault/items/:itemId/restore` put a prior image back — the ciphertext and
+  its blob version together, which is what makes it open — so "recoverable" is
+  true of the PRODUCT and not only of the data, and `session.ts`'s refusal rests
+  on a capability that exists. What does not exist is a way for an owner to
+  REACH it: the routes are live behind their own vault session, and the screen
+  that calls them is M27 PR2. A capability with no surface is better than none
+  and is not the same as done, so this is retagged when PR2 lands rather than
+  now. Recovery today still means somebody driving the API by hand — a smaller
+  gap than an operator with psql, and the same KIND of gap. MOVED HERE BY M27 PR0, from under
   `**Added by PR3a (origin matching).**` where it had no tag at all and assigned
   itself to "the operator platform (TB7)" — a milestone that shipped as M21 without
   it. The bullet was invisible to the residuals fence for the whole of that time:
@@ -5621,7 +5630,10 @@ bullet recording that sat where the residuals fence could not see it (below,
 and §6j). An extension can overwrite every item and cannot delete one, so the
 recovery that argument needs is version restore specifically; a restore
 surface that only undeleted would leave the sentence exactly as unsupported as
-it is now.
+it was then. (PR1b BUILT IT — §6ww. This paragraph is left in PR0's tense
+because it is a dated delta and records what was true when it shipped; the
+forward pointer is here so a reader does not take the present tense as a
+current claim about the tree.)
 
 **A SOFT-DELETED ROW DOES NOT SAY WHETHER IT CAN STILL BE DECRYPTED, AND THAT
 IS WHAT PR0 FIXES.** `VaultService.reset` soft-deletes every item with the
@@ -5863,3 +5875,147 @@ the precedent this follows.
   prevents a future client from reading the wrong field. The compensating
   control is that every double in the tree gives the two DIFFERENT values, so
   the mistake cannot pass a test.
+
+## 6ww. Threat-model delta — M27 PR1b, the restore reader (2026-08-23)
+
+**THE REFUSAL IN `session.ts` NOW RESTS ON SOMETHING.** Since M16 that file has
+refused `deleteItem` to the extension audience on the grounds that an overwrite
+is "recoverable", and until this PR nothing in the product could recover one:
+`vault_items_versions` had captured full row images since M6 and had no
+production reader. A security argument whose premise is a capability nobody
+built is an argument resting on nothing, and it stood for eleven milestones.
+`GET /v1/vault/items/:itemId/versions` and `POST
+/v1/vault/items/:itemId/restore` are that reader and that verb. The half this
+PR does NOT close is reachability: the routes are live, the SCREEN is PR2, and
+§6j stays open and owned by M27 on exactly that difference rather than being
+retagged early.
+
+**VERSION RESTORE, NOT UNDELETE, IS THE ONE THAT ANSWERS IT.** Both shapes
+ship, and the tests say which is which. An extension can overwrite every item
+and cannot delete one, so a restore surface that only undeleted would leave
+`session.ts` exactly as unsupported. Undelete flips `deleted_at` and
+`deleted_reason` together — migration 004's CHECK ties them, so clearing either
+alone is a refused statement rather than a half-done restore. Version restore
+writes a prior image forward: `blob_ct` and `blob_version` TOGETHER, because
+`itemContentAad` binds the version and the pair is what decrypts. That is what
+M27 PR1a's `revision` split was for — the live `blob_version` moves DOWN on a
+restore, which strict equality cannot be a change detector over.
+
+**THREE COLUMNS ARE WRITTEN AND THE REST IS AN ABSENCE.** The restore sets
+`blob_ct`, `blob_version` and `item_type` and names nothing else, so `id` and
+`user_id` (identity), `created_at`, `updated_at` and `revision` (trigger-owned)
+and — the one that matters — `deleted_at` / `deleted_reason` cannot travel. An
+image captured at an UNDELETE holds the row as it was WHILE RETIRED, and
+writing that forward would be a restore that deletes the item. The reader
+excludes such images at the source (`row_data->>'deleted_at' IS NULL`) rather
+than checking at the call site, so the arm cannot be reached instead of being
+refused when it is, and `vault.item.restored` is truthful by construction.
+
+**THE HANDLE IS `revision`, WHICH IS A SECURITY CHOICE.** A reader has to name
+an image, to page and to say which one to put back. `version_seq` is the shadow
+table's BIGINT IDENTITY, shared by every user of the table, and this service's
+cursors are base64url of PLAINTEXT — so paging on it would publish a decodable
+platform-wide write counter and put a sequential id on the wire against
+CLAUDE.md's rule. `revision` is per-row, never reused, and already the client's
+`If-Match` token: one handle rather than a second spelling of "which image".
+Migration 006 adds it to `vault_items_versions` as a GENERATED column derived
+from `row_data`, so it cannot disagree with the image it names, needs no change
+to the shared `versionsTableSql` capture function, and is correct for rows
+captured before it existed. Images predating migration 005 have no `revision`
+key and are therefore NULL: unnameable, and so unrestorable — the fail-closed
+direction.
+
+**RESET RETIRES IN ONE STATEMENT, BECAUSE UNDELETE IS A VERB THAT MOVES ROWS.**
+The first shape soft-deleted the live rows and then relabelled the retired ones
+— two predicates that partition the table only while nothing moves between
+them. `undeleteItem` moves a row from the second set to the first, so a row
+undeleted in that gap was matched by neither and came out of the reset LIVE,
+holding a blob the keyset replaced in the same transaction had just made
+undecryptable: a dead row wearing a live one's face, which is §6uu's confusion
+from the other direction. Nothing could produce that interleaving before this
+PR, so the milestone created the window and closes it here. The retirement is
+now a single `UPDATE ... FROM` over a `FOR UPDATE` CTE, so a concurrent writer
+is waited for and its row re-checked against the version it committed;
+`reset-retirement.int.spec.ts` drives two real transactions and commits the
+undelete at the moment that used to be fatal.
+
+**OWNERSHIP IS FUSED, AND THE SHADOW TABLE HAS NO OWNER COLUMN.**
+`vault_items_versions` records ownership only inside `row_data`, so a reader
+keyed on `row_id` alone answers a question about someone else's data and then
+filters — the ordering CLAUDE.md forbids. The reader drives from `vault_items`
+with `(id, user_id)` fused and reaches the shadow table only with a `row_id`
+the caller has been proven to own. Zero rows is the uniform 404; an owned item
+with no history is 200 and an empty list, because "not yours" and "nothing
+captured yet" are different facts and only one is the caller's business. The
+image's own `user_id` is projected and asserted against the live row, and a
+disagreement RAISES rather than filtering: item ids are client-supplied, so the
+pairing is only as durable as the guarantee that no row is ever removed and no
+id reissued. It cannot fire today, which is why it throws — a silent filter
+would turn the day that guarantee breaks into a surface quietly showing fewer
+versions.
+
+**NONE OF THE FOUR ROUTES CARRIES `StepUpGuard`, AND THE ASYMMETRY IS THE
+POINT.** `deleteItem` is the one item route that does. `updateItem` — which
+destroys the previous content of an item — carries `VaultSessionGuard` alone
+and is open to the `extension` audience. Putting a fresh factor in front of the
+UNDO of that write, while the write itself needs none, would make the
+protective action harder than the permissive one in the milestone that exists
+to honour that rule. All four routes are refused to the `extension` audience:
+the audience that can overwrite is not the audience that can roll back.
+
+**PR0'S DISCRIMINATOR HAD A HOLE, AND THIS PR CLOSES IT.** Migration 004 added
+`deleted_reason` so a restore list would never offer a blob the keyset had
+outlived. `reset` retired only the LIVE rows, so an item the owner deleted
+BEFORE a reset was never touched by it and kept saying `user_delete` —
+restorable — while the keyset that opened it was replaced in the same
+transaction. The list would have offered it and the failure would have arrived
+as a silent AEAD error on click: a control firing wearing the face of an
+outage, which is the precise shape 004 exists to prevent. Found by PR1b's
+design fan-out, by two lenses independently, and proved by reverting the fix
+and watching a named assertion redden.
+
+**AND THE FIRST FIX FOR IT WAS ITSELF WRONG,** which is why the mechanism is
+the single statement described above rather than the obvious one. Relabelling
+the already-retired rows in a SECOND statement closes the hole for a table
+nobody is writing to and opens a race for one somebody is: the two predicates
+tile only while no row moves between them, and this same PR shipped the verb
+that moves them. The review caught it; `reset-retirement.int.spec.ts` now
+drives the interleaving that used to be fatal.
+
+### Residuals
+
+- **[ACCEPTED]** *A refused restore emits no audit event.* `AUDIT_ACTIONS` is a
+  closed vocabulary and a consumer that predates a member drops every instance
+  of it silently, so a `vault.item.restore_refused` would cost a consumer
+  deploy ahead of its producer — a PR0 change, not a PR1b one. The consequence
+  is that repeated failed restores against another user's item ids are
+  invisible, which is bounded by the fact that they are indistinguishable 404s
+  carrying no information to begin with. On the same terms as §6uu's M39
+  residual for `vault.emergency.items_read`: logging is not detecting.
+- **[ACCEPTED]** *A restore is a rollback primitive and nothing watches it.*
+  Putting a prior version back is exactly how an attacker with an unlocked
+  vault would revert a password change the owner had just made. The event is
+  emitted with both revisions in its detail, so the material for a detector
+  exists; no detector does. This is the same gap §6a records for `blob_version`
+  moving backwards, now reachable through a supported route rather than only
+  through operator SQL, and it is why the routes stay out of the `extension`
+  audience.
+- **[ACCEPTED]** *The versions reader pages the history of an item retired by a
+  reset, and says nothing about it.* `listItemVersions` consults
+  `deleted_reason` nowhere, so the images of a row the reset killed are
+  readable. What is disclosed is ciphertext under a destroyed key — dead when
+  the reset committed, not by this route — and it cannot be acted on: a restore
+  locks the LIVE row, so every one of those items answers the same uniform 404
+  as an id that names nothing. The disclosure is bounded by an ABSENCE rather
+  than by a filter on the reader, which is the direction this repo prefers, and
+  the 404 pairing is pinned by test. A filter would additionally have to decide
+  what to tell the owner about their own history, which is a screen question
+  PR2 owns.
+- **[OWNER: M41]** *The versions reader returns every prior ciphertext, and a
+  crypto-shred does not reach further than it did.* Restoring is bounded by the
+  keyset, so a shredded vault's images are dead — but a version list is a
+  larger disclosure surface than a single item read, and `vault.item.accessed`
+  is emitted once for the page rather than once per image. The count is not in
+  the detail, so a burst detector sees one access where a caller took fifty
+  ciphertexts. Owned by the milestone that already carries the read-before-authz
+  sweep, since both are about what a read reports rather than what it permits.

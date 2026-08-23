@@ -15,13 +15,17 @@ describe('EventsService', () => {
     await events.keysetUpdated(USER, SESSION, { revokedSessions: 2 });
     await events.opened(USER, SESSION, VAULT_SESSION);
     await events.openFailed(USER, SESSION, 'bad_proof');
-    await events.itemsListed(USER, SESSION, 4);
+    await events.itemsListed(USER, SESSION, 4, 'live');
     await events.itemCreated(USER, SESSION, ITEM, 'password');
     await events.itemAccessed(USER, SESSION, ITEM);
     await events.itemUpdated(USER, SESSION, ITEM, 3);
     await events.itemDeleted(USER, SESSION, ITEM);
     await events.reset(USER, SESSION, {
       itemsDestroyed: 7,
+      // DISTINCT from every sibling count on purpose: these four numbers mean
+      // four different things, and a fixture that gave them equal values could
+      // not catch a producer that emitted one under another's key.
+      itemsRelabelled: 5,
       revokedSessions: 1,
       escrowPoliciesRetired: 2,
     });
@@ -46,6 +50,43 @@ describe('EventsService', () => {
       // the shape burst detection consumes.
       expect(message.key).toBe(USER);
     }
+
+    // AND THE FOUR RESET COUNTS LAND UNDER THEIR OWN KEYS. The fixture above
+    // gives them four DISTINCT values precisely so a producer that emitted one
+    // under another's name would be visible — but nothing consumed that until
+    // this assertion, so the distinctness was a comment describing a test that
+    // did not exist. `itemsDestroyed` and `itemsRelabelled` are the pair most
+    // worth pinning: they are adjacent, both counts of retired rows, and PR1b
+    // introduced the second one.
+    const reset = JSON.parse(
+      captured.producer.messages.find(
+        (m) => (JSON.parse(m.value) as { action: string }).action === 'vault.reset',
+      )!.value,
+    ) as { detail: Record<string, unknown> };
+    expect(reset.detail).toEqual({
+      itemsDestroyed: 7,
+      itemsRelabelled: 5,
+      revokedSessions: 1,
+      escrowPoliciesRetired: 2,
+    });
+  });
+
+  it('says WHICH list a bulk ciphertext read was (M27 PR1b)', async () => {
+    // Both list routes hand back whole blobs and both record under
+    // `vault.items.listed`, so `scope` is the only thing separating "showed me
+    // my vault" from "showed me everything I had deleted". A required argument
+    // rather than a default, so a third list route cannot inherit one silently.
+    const captured = capturingEvents();
+    await captured.events.itemsListed(USER, SESSION, 4, 'live');
+    await captured.events.itemsListed(USER, SESSION, 2, 'restorable');
+
+    const details = captured.producer.messages.map(
+      (m) => (JSON.parse(m.value) as { detail: { count: number; scope: string } }).detail,
+    );
+    expect(details).toEqual([
+      { count: 4, scope: 'live' },
+      { count: 2, scope: 'restorable' },
+    ]);
   });
 
   it('produces payloads that satisfy the shared audit contract', async () => {
@@ -68,6 +109,7 @@ describe('EventsService', () => {
     await captured.events.opened(USER, SESSION, VAULT_SESSION);
     await captured.events.reset(USER, SESSION, {
       itemsDestroyed: 1,
+      itemsRelabelled: 0,
       revokedSessions: 0,
       escrowPoliciesRetired: 0,
     });
@@ -88,7 +130,7 @@ describe('EventsService', () => {
 
   it('never carries anything but ids, enums and counts', async () => {
     const captured = capturingEvents();
-    await captured.events.itemsListed(USER, SESSION, 12);
+    await captured.events.itemsListed(USER, SESSION, 12, 'restorable');
     await captured.events.itemUpdated(USER, SESSION, ITEM, 5);
     await captured.events.keysetUpdated(USER, SESSION, { revokedSessions: 3 });
 

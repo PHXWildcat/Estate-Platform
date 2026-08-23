@@ -1,6 +1,23 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
+import type { AuditAction } from '@estate/contracts';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
+
+/**
+ * THIS SERVICE'S SLICE OF THE CLOSED VOCABULARY, DERIVED (M27 PR1b).
+ *
+ * This was twenty hand-written literals, and adding `vault.item.restored` is
+ * what exposed the cost: the vocabulary in `@estate/contracts` already held
+ * TWENTY-FOUR `vault.*` actions, so four members of the closed set were
+ * unreachable from the one service that owns them — not by decision, but
+ * because nobody re-typed them here. A producer cannot emit an action its own
+ * parameter type has never heard of, and nothing was red.
+ *
+ * `Extract` makes the vocabulary the single source: a `vault.*` action added
+ * to `AUDIT_ACTIONS` is emittable here the moment it exists, and one removed
+ * stops compiling at every call site rather than at this list.
+ */
+type VaultAuditAction = Extract<AuditAction, `vault.${string}`>;
 
 /**
  * The single egress point for this service's audit events.
@@ -23,27 +40,7 @@ export class EventsService {
   }
 
   private async emit(
-    action:
-      | 'vault.keyset.created'
-      | 'vault.keyset.updated'
-      | 'vault.opened'
-      | 'vault.open.failed'
-      | 'vault.items.listed'
-      | 'vault.item.created'
-      | 'vault.item.accessed'
-      | 'vault.item.updated'
-      | 'vault.item.deleted'
-      | 'vault.reset'
-      | 'vault.session.revoked'
-      | 'vault.recovery_key.published'
-      | 'vault.emergency.configured'
-      | 'vault.emergency.rearmed'
-      | 'vault.emergency.revoked'
-      | 'vault.emergency.requested'
-      | 'vault.emergency.request_blocked'
-      | 'vault.emergency.denied'
-      | 'vault.emergency.released'
-      | 'vault.emergency.release_blocked',
+    action: VaultAuditAction,
     input: {
       actorId: string;
       resourceType: 'vault' | 'vault_item' | 'vault_session' | 'emergency_access_policy';
@@ -116,13 +113,33 @@ export class EventsService {
     });
   }
 
-  async itemsListed(userId: string, sessionId: string, count: number): Promise<void> {
+  /**
+   * A LIST OF BLOBS WENT OUT, AND `scope` SAYS WHICH LIST (M27 PR1b).
+   *
+   * Both readers hand the caller whole ciphertexts, so both are disclosures and
+   * both record. They are not the same disclosure: one enumerates what the user
+   * has, the other enumerates what the user DELETED and has not got back. An
+   * investigator reading `vault.items.listed` needs to tell those apart, and
+   * `resourceId` cannot say it — it is the user in both cases.
+   *
+   * `scope` is a required argument rather than an optional one with a default,
+   * so a third list route cannot inherit "live" by saying nothing. It stays
+   * inside `AUDIT_ACTIONS`' existing member deliberately: a new action id is a
+   * closed-vocabulary change that an older consumer drops silently, and this
+   * distinction is a property OF the event, not a different event.
+   */
+  async itemsListed(
+    userId: string,
+    sessionId: string,
+    count: number,
+    scope: 'live' | 'restorable',
+  ): Promise<void> {
     await this.emit('vault.items.listed', {
       actorId: userId,
       resourceType: 'vault',
       resourceId: userId,
       sessionId,
-      detail: { count },
+      detail: { count, scope },
     });
   }
 
@@ -174,6 +191,39 @@ export class EventsService {
     });
   }
 
+  /**
+   * THE FIRST PRODUCER OF `vault.item.restored` (M27 PR1b). The action has been
+   * in the closed vocabulary since PR0 with nothing emitting it.
+   *
+   * ONE ACTION, TWO SHAPES, discriminated by `kind` in the detail rather than
+   * by a second action id. `AUDIT_ACTIONS` is a closed vocabulary and a
+   * consumer that predates a member drops every instance of it silently, so a
+   * new member costs a consumer deploy ahead of its producer; a detail token
+   * costs nothing and answers the same question. The two arms are genuinely one
+   * event — an item the owner could not use is one they can — and they differ
+   * in what was put back, which is what the detail says.
+   *
+   * `version_seq` APPEARS NOWHERE. It is the shadow table's platform-wide
+   * BIGINT identity; `revision` answers "which image" per item and is already
+   * the client's own token.
+   */
+  async itemRestored(
+    userId: string,
+    sessionId: string,
+    itemId: string,
+    detail:
+      | { kind: 'undelete'; revision: number }
+      | { kind: 'version'; fromRevision: number; revision: number; blobVersion: number },
+  ): Promise<void> {
+    await this.emit('vault.item.restored', {
+      actorId: userId,
+      resourceType: 'vault_item',
+      resourceId: itemId,
+      sessionId,
+      detail,
+    });
+  }
+
   async reset(
     userId: string,
     sessionId: string,
@@ -182,6 +232,14 @@ export class EventsService {
       revokedSessions: number;
       /** Escrow policies torn down with the master key they wrapped. */
       escrowPoliciesRetired: number;
+      /**
+       * Rows that were ALREADY retired and are now relabelled `vault_reset`,
+       * because this reset killed the key that would have opened them (M27
+       * PR1b). Counted separately from `itemsDestroyed`: those were live a
+       * moment ago and this reset retired them, while these were retired by
+       * their owner earlier and only their DECRYPTABILITY changed here.
+       */
+      itemsRelabelled: number;
     },
   ): Promise<void> {
     await this.emit('vault.reset', {

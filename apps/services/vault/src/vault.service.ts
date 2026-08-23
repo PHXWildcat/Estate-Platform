@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -22,7 +23,7 @@ import type { NotificationPort } from './notifications';
 import { EmergencyRepo } from './emergency.repo';
 import { EventsService } from './events.service';
 import { HandshakesRepo } from './handshakes.repo';
-import { ItemsRepo, type ItemRow } from './items.repo';
+import { ItemsRepo, RESTORABLE_REASONS, type ItemRow, type VersionRow } from './items.repo';
 import { KeysetsRepo } from './keysets.repo';
 import { VaultSessionsRepo } from './sessions.repo';
 import { VaultAuthz, vaultItemResource, vaultResource } from './authz.service';
@@ -82,6 +83,62 @@ export interface VaultItemPage {
   readonly nextCursor: string | null;
 }
 
+/**
+ * One prior version of an item, as a client receives it (M27 PR1b).
+ *
+ * `blob` and `blobVersion` travel together for the same reason they do on
+ * `VaultItemDto`: the version is inside the AAD, so ciphertext handed over at
+ * any other number is ciphertext that will never open. `revision` is the
+ * HANDLE — what a restore names — and is per-item, never the shadow table's
+ * `version_seq`, which is a platform-wide sequential id and stays server-side.
+ */
+export interface VaultVersionDto {
+  readonly revision: number;
+  readonly itemType: VaultItemType;
+  readonly blob: string;
+  readonly blobVersion: number;
+  readonly versionedAt: string;
+}
+
+export interface VaultVersionPage {
+  readonly versions: readonly VaultVersionDto[];
+  readonly nextCursor: string | null;
+}
+
+function toVersionDto(row: VersionRow): VaultVersionDto {
+  return {
+    revision: row.revision,
+    itemType: row.item_type,
+    blob: row.blob_ct.toString('base64'),
+    blobVersion: row.blob_version,
+    versionedAt: row.versioned_at.toISOString(),
+  };
+}
+
+/**
+ * THE CAPTURED IMAGE AND THE LIVE ROW MUST NAME THE SAME OWNER, and a
+ * disagreement RAISES rather than filtering (M27 PR1b).
+ *
+ * The reader drives from the live row and reaches the shadow table by
+ * `row_id`, which is sound while an item id names one item forever. Item ids
+ * are CLIENT-SUPPLIED, though, so the pairing is only as durable as the
+ * guarantee that a row is never removed and its id never reissued. Today no
+ * hard delete exists on `vault_items` and this can never fire.
+ *
+ * It throws instead of dropping the row precisely BECAUSE it cannot fire: a
+ * silent filter would turn the day that guarantee breaks into a restore
+ * surface quietly showing fewer versions, whereas this turns it into a loud
+ * failure on the request that first sees it. It is the invariant a future
+ * erasure path has to preserve, stated where that path will run into it.
+ */
+function assertImageOwners(rows: readonly VersionRow[], userId: string): void {
+  for (const row of rows) {
+    if (row.image_user_id !== userId) {
+      throw new InternalServerErrorException({ error: 'version_owner_mismatch' });
+    }
+  }
+}
+
 function toDto(row: ItemRow): VaultItemDto {
   return {
     id: row.id,
@@ -94,20 +151,27 @@ function toDto(row: ItemRow): VaultItemDto {
   };
 }
 
-function encodeCursor(row: ItemRow): string {
-  return Buffer.from(`${row.updated_at.toISOString()}|${row.id}`, 'utf8').toString('base64url');
+/**
+ * BOTH keyset cursors are `<iso timestamp>|<uuid>` and differ only in WHICH
+ * timestamp they carry — `updated_at` for the live list, `deleted_at` for the
+ * restorable one (M27 PR1b). One encoder and one parser rather than a near-copy
+ * per list: a second parser is a second thing to get wrong, and the two could
+ * disagree about a malformed cursor while looking identical.
+ */
+function encodeCursor(at: Date, id: string): string {
+  return Buffer.from(`${at.toISOString()}|${id}`, 'utf8').toString('base64url');
 }
 
-function decodeCursor(cursor: string): { updatedAt: Date; id: string } {
+function decodeCursor(cursor: string): { at: Date; id: string } {
   const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
   const separator = decoded.lastIndexOf('|');
   if (separator <= 0) throw new ConflictException({ error: 'invalid_cursor' });
-  const updatedAt = new Date(decoded.slice(0, separator));
+  const at = new Date(decoded.slice(0, separator));
   const id = decoded.slice(separator + 1);
-  if (Number.isNaN(updatedAt.getTime()) || id.length === 0) {
+  if (Number.isNaN(at.getTime()) || id.length === 0) {
     throw new ConflictException({ error: 'invalid_cursor' });
   }
-  return { updatedAt, id };
+  return { at, id };
 }
 
 /**
@@ -351,14 +415,16 @@ export class VaultService {
     const rows = await this.items.listByUser(this.db, {
       userId: actorUserId,
       limit: query.limit,
-      ...(query.cursor ? { cursor: decodeCursor(query.cursor) } : {}),
+      ...(query.cursor
+        ? { cursor: ((c) => ({ updatedAt: c.at, id: c.id }))(decodeCursor(query.cursor)) }
+        : {}),
     });
 
-    await this.events.itemsListed(actorUserId, accountSessionId, rows.length);
+    await this.events.itemsListed(actorUserId, accountSessionId, rows.length, 'live');
     const last = rows.length === query.limit ? rows[rows.length - 1] : undefined;
     return {
       items: rows.map(toDto),
-      nextCursor: last ? encodeCursor(last) : null,
+      nextCursor: last ? encodeCursor(last.updated_at, last.id) : null,
     };
   }
 
@@ -445,6 +511,198 @@ export class VaultService {
     return toDto(row);
   }
 
+  /**
+   * PRIOR VERSIONS OF ONE ITEM (M27 PR1b).
+   *
+   * The reader drives from the live row with ownership fused, so a caller who
+   * does not own the item and a caller naming an item that does not exist get
+   * the SAME 404 — and the shadow table, which has no `user_id` column of its
+   * own, is never reached with an id the caller has not been proven to own.
+   */
+  async listItemVersions(
+    actorUserId: string,
+    accountSessionId: string,
+    itemId: string,
+    input: { limit: number; cursor?: number | undefined },
+  ): Promise<VaultVersionPage> {
+    this.authz.assertCan(actorUserId, 'read_history', vaultItemResource(itemId, actorUserId));
+
+    // Existence is asked FIRST and separately, because the row-returning query
+    // cannot tell "not yours" from "yours with no history": both are zero rows.
+    // Answering 404 for the second would tell an owner their own item is gone.
+    const owned = await this.items.existsForOwner(this.db, actorUserId, itemId);
+    if (!owned) throw new NotFoundException({ error: 'not_found' });
+
+    const rows = await this.items.listVersions(this.db, {
+      userId: actorUserId,
+      itemId,
+      limit: input.limit + 1,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    });
+    assertImageOwners(rows, actorUserId);
+
+    const page = rows.slice(0, input.limit);
+    const next = rows.length > input.limit ? (page[page.length - 1]?.revision ?? null) : null;
+
+    // A version read is a DISCLOSURE of ciphertext the caller had already
+    // stopped holding, so it is recorded on the same terms as `getItem`.
+    await this.events.itemAccessed(actorUserId, accountSessionId, itemId);
+    return {
+      versions: page.map(toVersionDto),
+      nextCursor: next === null ? null : String(next),
+    };
+  }
+
+  /**
+   * The retired items a restore surface may offer (M27 PR1b).
+   *
+   * Keyed on `RESTORABLE_REASONS`, which is DERIVED from `REASON_DISPOSITION`'s
+   * total map rather than listed here. A row retired by `vault_reset` is absent
+   * because its blob is cryptographically dead — offering it would produce an
+   * AEAD failure on click, which is a control firing wearing the face of an
+   * outage.
+   *
+   * IT RECORDS, BECAUSE IT DISCLOSES. Every row here carries `blob_ct` in full,
+   * exactly as `listItems` does, so this route is a bulk ciphertext read and
+   * belongs in the audit trail on the same terms as its sibling — the fact that
+   * the items are deleted makes the read MORE interesting to an investigator,
+   * not less. That is why `accountSessionId` is a parameter: without it the
+   * event could not be attributed to a session and the omission would be
+   * structural rather than a choice.
+   */
+  async listRestorableItems(
+    actorUserId: string,
+    accountSessionId: string,
+    query: { limit: number; cursor?: string | undefined },
+  ): Promise<VaultItemPage> {
+    this.authz.assertCan(actorUserId, 'read_history', vaultResource(actorUserId));
+
+    const rows = await this.items.listRestorable(this.db, {
+      userId: actorUserId,
+      restorable: RESTORABLE_REASONS,
+      // One more than asked for, so "is there a next page" is answered by the
+      // rows themselves rather than by `rows.length === limit`, which cannot
+      // tell a full last page from a full page with more behind it.
+      limit: query.limit + 1,
+      ...(query.cursor
+        ? { cursor: ((c) => ({ deletedAt: c.at, id: c.id }))(decodeCursor(query.cursor)) }
+        : {}),
+    });
+    const page = rows.slice(0, query.limit);
+    const last = page[page.length - 1];
+
+    await this.events.itemsListed(actorUserId, accountSessionId, page.length, 'restorable');
+    return {
+      items: page.map(toDto),
+      nextCursor:
+        rows.length > query.limit && last?.deleted_at
+          ? encodeCursor(last.deleted_at, last.id)
+          : null,
+    };
+  }
+
+  /**
+   * Bring a retired item back (M27 PR1b).
+   *
+   * THREE ANSWERS FROM ONE LOCKED READ, because they need three different
+   * remedies and must not share a token: an item that is not yours or not there
+   * is a uniform 404; an item already live is a success that changed nothing
+   * and emits no event; an item whose blob the keyset outlived is
+   * `item_unrestorable`, which is neither a 404 (the row is there and the owner
+   * can see it) nor a 500 (nothing failed).
+   *
+   * NO `If-Match`. Undelete writes no content and cannot lose an update — there
+   * is nothing to overwrite on a retired row — and gating recovery behind a
+   * token the caller would have to fetch first makes the protective action
+   * harder than the permissive one, which is the rule this milestone exists to
+   * honour rather than invert.
+   */
+  async undeleteItem(
+    actorUserId: string,
+    accountSessionId: string,
+    itemId: string,
+  ): Promise<VaultItemDto> {
+    const outcome = await this.db.withTransaction(actorUserId, async (tx) => {
+      const locked = await this.items.lockAnyById(tx, actorUserId, itemId);
+      if (!locked) throw new NotFoundException({ error: 'not_found' });
+      this.authz.assertCan(actorUserId, 'undelete', vaultItemResource(itemId, locked.user_id));
+      if (locked.deleted_at === null) return { row: locked, changed: false };
+
+      const restored = await this.items.undelete(tx, {
+        id: itemId,
+        userId: actorUserId,
+        restorable: RESTORABLE_REASONS,
+      });
+      // The statement restates the restorable set in its own WHERE, so a reset
+      // that landed between the lock and the write is refused here rather than
+      // silently reviving a dead blob.
+      if (!restored) throw new ConflictException({ error: 'item_unrestorable' });
+      return { row: restored, changed: true };
+    });
+
+    if (outcome.changed) {
+      await this.events.itemRestored(actorUserId, accountSessionId, itemId, {
+        kind: 'undelete',
+        revision: outcome.row.revision,
+      });
+    }
+    return toDto(outcome.row);
+  }
+
+  /**
+   * Put a prior version of a LIVE item back (M27 PR1b).
+   *
+   * This is the shape that answers `packages/auth-guard/src/session.ts`, whose
+   * refusal of `deleteItem` to the extension audience rests on an overwrite
+   * being "recoverable". An extension can overwrite every item and cannot
+   * delete one, so the recovery that argument needs is this verb specifically —
+   * undelete would not touch it.
+   *
+   * `If-Match` IS required here, and against `revision`: this overwrites live
+   * content, so it is exactly the operation a stale writer can lose an update
+   * through. The restored `blob_version` may move DOWN and that is not a
+   * conflict — since migration 005 the two numbers are different jobs.
+   */
+  async restoreItemVersion(
+    actorUserId: string,
+    accountSessionId: string,
+    itemId: string,
+    input: { revision: number; ifMatch: number },
+  ): Promise<VaultItemDto> {
+    const row = await this.db.withTransaction(actorUserId, async (tx) => {
+      const locked = await this.items.lockLiveById(tx, actorUserId, itemId);
+      if (!locked) throw new NotFoundException({ error: 'not_found' });
+      this.authz.assertCan(actorUserId, 'restore', vaultItemResource(itemId, locked.user_id));
+      if (locked.revision !== input.ifMatch) {
+        throw new ConflictException({ error: 'version_conflict' });
+      }
+      if (locked.revision === input.revision) {
+        // Restoring the version you are already at is not an error, but it must
+        // not be a WRITE either: it would burn a revision and capture an image
+        // for a change that did not happen.
+        return locked;
+      }
+      const restored = await this.items.restoreVersion(tx, {
+        id: itemId,
+        userId: actorUserId,
+        revision: input.revision,
+      });
+      // No such image for this item, or an image the reader would not offer.
+      if (!restored) throw new NotFoundException({ error: 'version_not_found' });
+      return restored;
+    });
+
+    if (row.revision !== input.ifMatch) {
+      await this.events.itemRestored(actorUserId, accountSessionId, itemId, {
+        kind: 'version',
+        fromRevision: input.revision,
+        revision: row.revision,
+        blobVersion: row.blob_version,
+      });
+    }
+    return toDto(row);
+  }
+
   async deleteItem(actorUserId: string, accountSessionId: string, itemId: string): Promise<void> {
     const now = this.clock();
     await this.db.withTransaction(actorUserId, async (tx) => {
@@ -502,16 +760,19 @@ export class VaultService {
       const existing = await this.keysets.lockByUser(tx, actorUserId);
       if (!existing) throw new NotFoundException({ error: 'keyset_not_found' });
 
-      // 'vault_reset': the keyset is REPLACED four lines below, in this same
-      // transaction, so every blob retired here is cryptographically dead. This
-      // is the discriminator's whole reason for existing — the stamp above is
+      // 'vault_reset': the keyset is REPLACED just below, in this same
+      // transaction, so every blob this touches is cryptographically dead. This
+      // is the discriminator's whole reason for existing — the stamp is
       // byte-identical to `deleteItem`'s and means the opposite thing.
-      const itemsDestroyed = await this.items.softDeleteAllForUser(
-        tx,
-        actorUserId,
-        now,
-        'vault_reset',
-      );
+      //
+      // ONE CALL COVERS BOTH POPULATIONS, and it has to. Rows the owner had
+      // ALREADY deleted before this reset keep `deleted_reason = 'user_delete'`
+      // unless something relabels them, and their blobs die here exactly as
+      // dead as the live ones — the column would still say restorable, and
+      // PR1b's list believes the column. Splitting that into two statements
+      // reintroduces a window `undeleteItem` can run in; see the repo method.
+      const { destroyed: itemsDestroyed, relabelled: itemsRelabelled } =
+        await this.items.retireAllForUser(tx, actorUserId, now, 'vault_reset');
       await this.keysets.replace(tx, {
         userId: actorUserId,
         srpVerifier: Buffer.from(payload.srpVerifier, 'base64'),
@@ -531,11 +792,12 @@ export class VaultService {
         reason: 'vault_reset',
         at: now,
       });
-      return { itemsDestroyed, revoked, escrowRetired };
+      return { itemsDestroyed, itemsRelabelled, revoked, escrowRetired };
     });
 
     await this.events.reset(actorUserId, accountSessionId, {
       itemsDestroyed: result.itemsDestroyed,
+      itemsRelabelled: result.itemsRelabelled,
       revokedSessions: result.revoked,
       escrowPoliciesRetired: result.escrowRetired,
     });

@@ -52,9 +52,22 @@ Two details that are load-bearing rather than incidental:
 | `POST /v1/vault/reset` | + step-up | Destroys the vault (see below). |
 | `GET /v1/vault/items` | + vault session | Paginated; returns whole blobs. |
 | `POST /v1/vault/items` | + vault session | Client-supplied UUID. |
+| `GET /v1/vault/items/restorable` | + vault session | Retired items an owner may bring back. Declared before `:id` — see below. |
 | `GET /v1/vault/items/:id` | + vault session | |
 | `PUT /v1/vault/items/:id` | + vault session | Requires `If-Match: <revision>`. |
 | `DELETE /v1/vault/items/:id` | + step-up + vault session | Soft delete. |
+| `GET /v1/vault/items/:id/versions` | + vault session | Prior images, newest first. |
+| `POST /v1/vault/items/:id/undelete` | + vault session | Un-deletes. No `If-Match`. |
+| `POST /v1/vault/items/:id/restore` | + vault session | Puts a version back. Requires `If-Match: <revision>`. |
+
+`restorable` is declared BEFORE `:id` in the controller and the order is
+load-bearing: Nest matches in declaration order, so the reverse would capture
+the literal as an item id and answer 400 on a live route.
+
+None of the four restore routes carries `StepUpGuard`, and none is admitted to
+the `extension` audience. Recovering your own data must never be harder than
+destroying it, and the credential that can perform an overwrite must not be the
+one that can undo it.
 
 Step-up (docs/01 §5) covers opening a vault and touching its key material. Item
 traffic rides the vault session instead, which is not a weaker gate: a vault
@@ -133,6 +146,7 @@ M-of-N is fully implemented, with threshold 1 as the default.
 | Route | Gates |
 | --- | --- |
 | `POST /v1/vault/recovery-key` | caller + step-up |
+| `GET /v1/vault/recovery-key` | caller |
 | `GET /v1/vault/recovery-key/:granteeUserId` | caller |
 | `GET,POST /v1/vault/emergency-access` | caller (+ step-up to configure) |
 | `GET /v1/vault/emergency-access/granted-to-me` | caller |

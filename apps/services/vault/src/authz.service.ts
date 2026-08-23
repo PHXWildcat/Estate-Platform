@@ -2,7 +2,40 @@ import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { ref, type EntityInput, type PolicyDecisionPoint } from '@estate/authz';
 import { POLICY_DECISION_POINT } from './di-tokens';
 
-export type VaultAction = 'read' | 'create' | 'update' | 'delete' | 'manage';
+/**
+ * THE ACTIONS THIS SERVICE ASKS CEDAR ABOUT.
+ *
+ * `read_history`, `undelete` and `restore` are M27 PR1b's, and they are three
+ * distinct ids rather than one `restore` because the action id is what a later
+ * policy can name. `owner.cedar` permits any action when `resource.owner ==
+ * principal`, so today all five behave alike — but PR3 introduces a principal
+ * who is NOT the owner, and the only actions a non-owner policy grants are the
+ * ones it names. Collapsing these now would mean a future grant of "read a
+ * version" could not be written without also granting "put one back".
+ */
+/**
+ * THE ACTION VOCABULARY IS DATA, so the suite can enumerate it (M27 PR1b).
+ *
+ * It was a bare union, and PR1b widened it by three — `read_history`,
+ * `undelete`, `restore` — none of which any test exercised in either direction,
+ * because `authz.spec.ts` iterated a hand-written list of the five that existed
+ * when it was written. A type cannot be enumerated at runtime, so the list
+ * beside it could not have been derived; as a const array it can, and a ninth
+ * action now arrives with its permit-the-owner and deny-a-stranger cases
+ * already written.
+ */
+export const VAULT_ACTIONS = [
+  'read',
+  'read_history',
+  'create',
+  'update',
+  'undelete',
+  'restore',
+  'delete',
+  'manage',
+] as const;
+
+export type VaultAction = (typeof VAULT_ACTIONS)[number];
 
 /** The vault itself (keyset, session lifecycle), owned by exactly one user. */
 export function vaultResource(userId: string): EntityInput {

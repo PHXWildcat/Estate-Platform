@@ -69,7 +69,7 @@ export const AUDIENCE_ADMITTERS: Readonly<
    * `extension` to that service's `ALLOWED_SESSION_AUDIENCES`. It is one word
    * and it is wrong: `CallerGuard.audiencesFor` UNIONS the service-wide grant
    * with any route-level one and can never subtract, so a service-wide grant
-   * here would open all 23 vault routes at once — including `reset`
+   * here would open every vault route at once — including `reset`
    * (crypto-shreds the vault on step-up alone), both keyset routes, `deleteItem`,
    * `request` (starts a §5.2 waiting period) and `release` (the single moment
    * the platform half of a recovery key leaves the service). None of those needs
@@ -181,11 +181,28 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    *   · `updateItem` CARRIES `If-Match`, so an overwrite is conditional on the
    *     version the caller read rather than blind.
    *
-   * RESIDUAL, STATED: with the vault unlocked, this audience can overwrite every
-   * item the user has. The rows survive in `vault_items_versions`, but NO
-   * RESTORE SURFACE EXISTS anywhere in the product, so recovery today means an
-   * operator reading that table. That is a real gap and it is recorded in
-   * docs/03 §6j rather than implied by the word "recoverable".
+   * AND SINCE M27 PR1b THE WORD "RECOVERABLE" IS TRUE. This argument was
+   * written against a capability nobody had built: the rows survived in
+   * `vault_items_versions` and no restore surface existed anywhere in the
+   * product, so "recoverable" meant an operator reading that table by hand.
+   * A refusal justified by a capability that does not exist is a refusal
+   * resting on nothing, and it stood that way from M16 to M27.
+   *
+   * `POST /v1/vault/items/:itemId/restore` now puts a prior image back —
+   * ciphertext AND its blob version together, which is what makes it open —
+   * behind the owner's own vault session. That is the verb this bullet needs
+   * and specifically not undelete: an extension can overwrite every item and
+   * cannot delete one, so the recovery the argument depends on is version
+   * restore. The restore routes are NOT in this audience, which is the other
+   * half of the property: the audience that can overwrite is not the audience
+   * that can roll back.
+   *
+   * RESIDUAL, STILL STATED: with the vault unlocked, this audience can
+   * overwrite every item the user has, and PR1b makes that undoable rather
+   * than harmless. Reaching the undo needs the owner's own vault session on
+   * the isolated origin, and until M27 PR2 lands that surface there is no
+   * SCREEN for it — the capability is reachable, not yet visible. Recorded in
+   * docs/03 §6j, which stays open until then.
    *
    * `vault:getItem` is deliberately absent: `listItems` already returns each
    * item's full ciphertext blob, so it buys an autofill client nothing, and
