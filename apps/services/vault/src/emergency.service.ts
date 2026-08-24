@@ -337,11 +337,33 @@ export class EmergencyAccessService {
    * does not control before sealing anything to it - without that step a
    * malicious server could substitute its own key here and read the escrow.
    */
+  /**
+   * NO CEDAR CALL, AND THE ABSENCE IS THE POINT (M27 PR5).
+   *
+   * This read `assertCan(actorUserId, 'read', vaultResource(actorUserId))` and
+   * then fetched a DIFFERENT user's key. That is not merely aimed at the wrong
+   * entity — it is a TAUTOLOGY: `owner.cedar` permits any action when
+   * `resource.owner == principal`, there is no `forbid` anywhere in the bundle,
+   * and `authz.spec.ts` pins exactly that for all nine actions. It could never
+   * deny anything, for anyone, ever. A PEP argument that is a constant makes
+   * the policy evaluate against a constant and deny nothing — the shape this
+   * repo names — and a dead branch that LOOKS like a control is worse than no
+   * branch, because the next person to add a cross-user read copies it.
+   *
+   * Removed rather than repointed, because there is no policy to repoint it AT:
+   * no Cedar action expresses "may read another user's published key", and
+   * inventing one to make a gate look present would be the same defect wearing
+   * a policy file. The gate is `VaultSessionGuard` on the route, which is a
+   * real bound — the caller's own vault password and Secret Key — and the
+   * controller says so. The residual it leaves is recorded in docs/03 §6zz.
+   *
+   * The 404 is already uniform: `findPublicKey` collapses "no user", "no
+   * keyset" and "keyset with a null public key" into one null, so the refusal
+   * cannot distinguish which of the three it met.
+   */
   async granteePublicKey(
-    actorUserId: string,
     granteeUserId: string,
   ): Promise<{ granteeUserId: string; publicKey: string }> {
-    this.authz.assertCan(actorUserId, 'read', vaultResource(actorUserId));
     const publicKey = await this.keysets.findPublicKey(this.db, granteeUserId);
     if (!publicKey) throw new NotFoundException({ error: 'grantee_key_not_found' });
     return { granteeUserId, publicKey: publicKey.toString('base64') };
@@ -677,9 +699,14 @@ export class EmergencyAccessService {
            *
            * `status='revoked'` is unobservable to every route here.
            * `markRevoked` is the only writer of it and sets `deleted_at` in the
-           * SAME statement, while `lockLiveByIdForGrantee` and
-           * `lockLiveByIdForOwner` — the two reads every policy route goes
-           * through — both filter `deleted_at IS NULL`. A revoked policy
+           * SAME statement, while EVERY reader of that table filters its own
+           * `deleted_at IS NULL` — the two by-id lookups the `:policyId` routes
+           * take, and the two list reads behind `describe` and `granted-to-me`,
+           * and the released-grantee read the PDP is given. Saying "the two
+           * reads every policy route goes through" was false: `describe` reads
+           * through `listByOwner` and `grantedToMe` through `listByGrantee`,
+           * two routes that project `status` straight onto the wire and touch
+           * neither by-id lookup (M27 PR5). A revoked policy
            * therefore answers the uniform 404, which is the right answer
            * anyway, being indistinguishable from "not yours".
            *
@@ -696,7 +723,7 @@ export class EmergencyAccessService {
            * The invariant is asserted rather than described:
            * `revoked-is-unobservable.spec.ts` reads `emergency.repo.ts` and
            * fails if `markRevoked` ever stops soft-deleting in the same
-           * statement, or if any `lockLive*` lookup stops filtering
+           * statement, or if any reader of that table stops filtering
            * `deleted_at IS NULL`. Either change makes these arms live again and
            * the fence is what says so.
            */

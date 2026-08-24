@@ -156,9 +156,17 @@ export function ownRecoveryKey(
  * that happens between these two calls, and collapsing them would remove the
  * only defence against key substitution.
  */
-export async function offerFor(candidate: GranteeCandidate): Promise<ApiResult<GranteeKeyOffer>> {
+export async function offerFor(
+  candidate: GranteeCandidate,
+  // THE ROUTE IS BEHIND AN OPEN VAULT AS OF M27 PR5, on the same reasoning
+  // `ownRecoveryKey` fifteen lines above already carried. The header is opt-in
+  // per call rather than ambient, so omitting it here is a 403 `vault_locked`,
+  // not a silently weaker request.
+  vaultSession: string,
+): Promise<ApiResult<GranteeKeyOffer>> {
   const served = await request<{ granteeUserId: string; publicKey: string }>(
     `/api/vault/recovery-key/${candidate.userId}`,
+    { vaultSession },
   );
   if (!served.ok) {
     return served;

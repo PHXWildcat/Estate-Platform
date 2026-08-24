@@ -365,7 +365,11 @@ describeIfPg('vault (Zone A) end to end', () => {
     // band before trusting it) and seals a share to it.
     const published = await vault
       .get(`/v1/vault/recovery-key/${granteeUserId}`)
-      .set(bearer)
+      // The owner's OWN open vault, as of M27 PR5: the key-offer route sits
+      // behind the same guard its sibling `GET /v1/vault/recovery-key` always
+      // had, so the caller proves a vault password and Secret Key rather than
+      // only a session. `unlockedHeaders` is that proof, already in hand here.
+      .set(unlockedHeaders)
       .expect(200)
       .then((res) => (res.body as { publicKey: string }).publicKey);
     expect(published).toBe(toBase64(granteeKeys.publicKey));

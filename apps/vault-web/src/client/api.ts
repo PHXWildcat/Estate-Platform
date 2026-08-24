@@ -73,6 +73,33 @@ export type ApiFailure =
   | 'ACCESS_STOPPED'
   | 'SETTLEMENT_HOLD'
   | 'NOT_COLLECTED'
+  // M27 PR5. The same review, one route over: PR3b named the READ path's
+  // refusals and left the RELEASE path's, which is this milestone's own
+  // recurring shape — a rule applied to one member of a category.
+  //
+  //   · `waiting_period_active` is the §5.2 window itself, the control the
+  //     whole feature is built around, and it reached the grantee as UNKNOWN's
+  //     "Something went wrong. Try again." A control firing wearing an outage's
+  //     face, with the one piece of advice that cannot work: trying again
+  //     changes nothing until the clock does. It is reachable with no race at
+  //     all — `collectable()` offers the button when the BROWSER's clock says
+  //     the period elapsed, so any forward skew against the server offers it
+  //     early. Found by driving.
+  //   · `not_requested` means the owner re-armed the arrangement under a
+  //     grantee who was holding a live screen. It rendered as CONFLICT's "This
+  //     item changed since you opened it. Reload and try again" — an
+  //     ITEM-shaped sentence on a screen holding an arrangement, naming a
+  //     remedy this SPA does not have.
+  | 'WAITING_PERIOD'
+  | 'NOT_REQUESTED'
+  // A guessing bound, not a fault, and the second client to need it: apps/bff
+  // added a status-keyed 429 branch for this exact defect in M19 and this
+  // origin never got one, though `POST /api/auth/stepup` is entry 2 of
+  // PROXY_ROUTES and identity answers 429 `too_many_attempts` after five
+  // refused codes. STATUS-keyed rather than token-keyed, on apps/bff's stated
+  // reason: 429 means one thing everywhere, and a token that has not been
+  // enumerated must not decide whether a rate limit reads as an outage.
+  | 'TOO_MANY_ATTEMPTS'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -83,13 +110,25 @@ const CSRF_HEADER = 'x-estate-vault-csrf';
 /** Server error TEXT is never surfaced; statuses narrow to the set above. */
 function failureFor(status: number, token: string | null): ApiFailure {
   if (status === 401) return 'UNAUTHENTICATED';
+  // STATUS-INDEPENDENT, because the service spells ONE stop at TWO statuses.
+  // `release` and `readAsGrantee` throw `denied_by_owner` as 403; `request`
+  // reaches the same stop through `blockReason` and throws it as 409. Keyed
+  // inside the 403 block, the 409 spelling fell to CONFLICT — "this item
+  // changed, reload" for a stop that is sticky until the owner re-arms, which
+  // is the wrong remedy for the one refusal on this ceremony that has none.
+  // Hoisted rather than duplicated into the 409 block: one behaviour, one
+  // spelling. `settlement_stage_not_reached` stays below because it has a
+  // single throw site and cannot arrive at another status.
+  if (token === 'denied_by_owner') return 'ACCESS_STOPPED';
   if (status === 403) {
     if (token === 'stepup_required') return 'STEPUP_REQUIRED';
     if (token === 'vault_locked') return 'VAULT_LOCKED';
     if (token === 'forbidden') return 'FORBIDDEN';
-    // Two controls, two remedies, and neither is a fault.
-    if (token === 'denied_by_owner') return 'ACCESS_STOPPED';
+    // A control firing, not a fault.
     if (token === 'settlement_stage_not_reached') return 'SETTLEMENT_HOLD';
+    // The §5.2 waiting period, still running. See the union above for why this
+    // is reachable without a race.
+    if (token === 'waiting_period_active') return 'WAITING_PERIOD';
     return 'UNKNOWN';
   }
   if (status === 404) {
@@ -112,12 +151,18 @@ function failureFor(status: number, token: string | null): ApiFailure {
     // names an item on a screen that is showing a vault, and its "reload"
     // never works — the remedy is to request and open again.
     if (token === 'not_collected') return 'NOT_COLLECTED';
+    // `release`'s sibling of the line above: the arrangement is live but its
+    // clock is not running, because the owner re-armed it. Same remedy as
+    // NOT_COLLECTED — request again — and deliberately NOT the same code, so
+    // the two sentences can differ about what happened.
+    if (token === 'not_requested') return 'NOT_REQUESTED';
     // `invalid_cursor` lands here deliberately. It can only fire if this client
     // mangles a cursor the server handed it, which is a bug rather than a user
     // condition — so it gets no name and no copy, and the spec asserts a cursor
     // is round-tripped VERBATIM instead. Prefer the absence to the filter.
     return 'CONFLICT';
   }
+  if (status === 429) return 'TOO_MANY_ATTEMPTS';
   if (status === 412) return 'CONFLICT';
   if (status === 400) return 'INVALID_REQUEST';
   if (status === 502 || status === 503) {

@@ -151,7 +151,16 @@ function messageFor(code: ApiFailure): string {
       // must never read as a failure.
       return 'Confirm your email address in Estate first. Emergency access depends on us being able to warn you while the waiting period runs, so we will not arm it until we know we can reach you.';
     case 'NOTIFICATIONS_UNAVAILABLE':
-      return 'We cannot send notifications right now, so arming emergency access would leave you unable to interrupt it. Try again shortly.';
+      // SURFACE-NEUTRAL, on `VERSION_CONFLICT`'s precedent nine cases above and
+      // for its reason. `assertNotificationsUsable` guards THREE routes:
+      // `configure` and `rearm`, which the OWNER presses, and `request`, which
+      // a GRANTEE presses as its very first statement. This sentence named
+      // arming — an action the grantee is not taking and cannot take — and told
+      // them it "would leave you unable to interrupt it", where interrupting is
+      // the owner's power, not theirs. The guarantee is the same on all three
+      // and belongs to whoever must be WARNED, so the copy names the warning
+      // rather than the button.
+      return 'We cannot send the warning that has to go out before this takes effect, so it is on hold. Nothing has changed — try again shortly.';
     /*
      * THE GRANTEE'S SIDE OF THE OWNER'S CONTROLS (M27 PR3b review).
      *
@@ -169,12 +178,55 @@ function messageFor(code: ApiFailure): string {
       return 'This estate is being settled, and reading the vault is on hold until that review reaches it. Nothing is lost — this is a step, not a refusal.';
     case 'NOT_COLLECTED':
       return 'This vault was rebuilt since you opened it, so this copy is out of date. Go back and open it again.';
+    case 'WAITING_PERIOD':
+      // THE CONTROL, NAMED AS A CONTROL. This is the §5.2 waiting period still
+      // running, and the reader is a person who was just offered a button that
+      // did not work — because the button is gated on THIS browser's clock and
+      // the refusal on the server's. So the sentence must do two things at
+      // once: say nothing is wrong, and not promise a time this client cannot
+      // compute correctly (naming one is what put them here).
+      return 'The waiting period has not finished yet. This is the delay that gives the owner a chance to stop the request — nothing has gone wrong, and this screen will offer to open the vault once it ends.';
+    case 'NOT_REQUESTED':
+      // NOT "reload". The owner re-armed the arrangement, so the clock this
+      // grantee was watching is no longer running. A reload of this origin
+      // returns to the vault root and loses the screen; requesting again is
+      // the only thing that starts a new window.
+      return 'This arrangement was re-armed since you opened it, so the waiting period is no longer running. Ask for access again to start a new one.';
+    case 'TOO_MANY_ATTEMPTS':
+      // A GUESSING BOUND, NOT AN OUTAGE, and never an existence oracle: it says
+      // only that too many codes were refused, which the person who typed them
+      // already knows. Rolling, so waiting is the remedy and saying so is true.
+      return 'Too many codes have been refused. Wait a few minutes and try again — this is a limit, not a fault.';
     case 'UNAVAILABLE':
     case 'NETWORK':
       return 'The vault is temporarily unreachable. Try again shortly.';
     default:
       return 'Something went wrong. Try again.';
   }
+}
+
+/**
+ * WHAT A REFUSAL SAYS ON A SCREEN HOLDING AN ARRANGEMENT (M27 PR5).
+ *
+ * ONE FUNCTION, BECAUSE THE ALTERNATIVE WAS FOUR COPIES. M27 PR3b found that
+ * `NOT_FOUND`'s "That item is no longer there" is a false sentence on the
+ * grantee's reading screen, and fixed it there with a local ternary. The
+ * emergency-access ceremony has FOUR screens that can meet the same 404 —
+ * request, release, the item list and a single item — and the other three kept
+ * the item copy. Pasting the ternary into each is N copies of one guard, which
+ * is the defect this repo names one line before the one it is fixing.
+ *
+ * `NOT_FOUND` is the only override, and it is genuinely surface-dependent: the
+ * service answers ONE uniform 404 for "no such policy" and "not yours" alike,
+ * deliberately, so a stranger cannot probe — and on the item screens that 404
+ * really does mean an item. Every other refusal on this ceremony describes the
+ * ARRANGEMENT and reads correctly wherever it lands, so it stays in
+ * `messageFor` rather than being forked per screen.
+ */
+function emergencyMessageFor(code: ApiFailure): string {
+  if (code === 'NOT_FOUND')
+    return 'This arrangement is no longer there. The owner may have rebuilt or removed it.';
+  return messageFor(code);
 }
 
 function status(message: string, tone: 'ok' | 'warn' | 'error' = 'ok'): HTMLElement {
@@ -587,11 +639,33 @@ function localDate(at: Date): string {
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
+/**
+ * SECONDS, AND THEY ARE THE WHOLE POINT (M27 PR5, found by driving).
+ *
+ * This rendered to the MINUTE, and the version list is the one screen where
+ * that is not a cosmetic choice: two images captured in the same minute became
+ * two rows identical to the character, each offering "Put this version back",
+ * holding different secrets. The drive produced it on the first attempt without
+ * trying to — edit an item, then put the previous version back, and the restore
+ * captures the image it replaced. 26 seconds apart, one label.
+ *
+ * It is not the §6xx residual. That one says the screen "lists when each image
+ * was captured and its item type, and says nothing about what changed", and
+ * rates the consequence recoverable "because the restore is itself captured".
+ * Both halves assume the WHEN tells two images apart. At minute resolution it
+ * does not, and the recovery it relies on is ambiguous for the same reason —
+ * the undo lands in a list with the same two labels plus a third.
+ *
+ * Seconds rather than an ordinal: an ordinal would be a second numbering beside
+ * a list the server already orders, and it answers a different question ("which
+ * of these is older") than the one a person actually asks at this screen ("is
+ * this the one I saved just now"). The residual keeps the harder half.
+ */
 function captureTime(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return '';
   const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${localDate(at)} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  return `${localDate(at)} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
 }
 
 /** The label a row shows, for an item or a version that may not have opened. */
@@ -918,6 +992,7 @@ async function renderEmergency(notice?: {
         escrow.ok && escrow.data.configured && escrow.data.policies.length > 0
           ? String(escrow.data.policies[0]?.waitingPeriodHours ?? 48)
           : '48',
+        vaultToken,
       ),
     );
   }
@@ -1167,7 +1242,7 @@ function granteeActions(
         void (async () => {
           const result = await requestAccess(policy.id);
           if (!result.ok) {
-            replaceChildren(note, status(messageFor(result.code), 'error'));
+            replaceChildren(note, status(emergencyMessageFor(result.code), 'error'));
             return;
           }
           await renderEmergency({
@@ -1201,7 +1276,7 @@ function policyRow(
         // all three is harmless: `withStepUp` only prompts on a refusal.
         const result = await withStepUp(note, label, run);
         if (!result.ok) {
-          replaceChildren(note, status(messageFor(result.code ?? 'UNKNOWN'), 'error'));
+          replaceChildren(note, status(emergencyMessageFor(result.code ?? 'UNKNOWN'), 'error'));
           return;
         }
         await renderEmergency({ text: done });
@@ -1334,6 +1409,11 @@ function granteePicker(
   note: HTMLElement,
   currentLabel: string,
   currentWaitingHours: string,
+  // THREADED, NOT REACHED FOR (M27 PR5). The key-offer route is behind an open
+  // vault now, and `vaultToken` is already bound in the caller's own render —
+  // in the `try` whose `catch` shows the unlock screen — so passing it four
+  // lines is cheaper and more honest than another module-level accessor.
+  vaultToken: string,
 ): HTMLElement {
   const confirmed = new Map<string, GranteeKeyOffer>();
   const list = el('ul', { class: 'items' });
@@ -1419,7 +1499,7 @@ function granteePicker(
     const state = el('span', { class: 'item-type' }, ['not confirmed']);
     const confirm = quietButton('Confirm key', () => {
       void (async () => {
-        const offer = await offerFor(candidate);
+        const offer = await offerFor(candidate, vaultToken);
         if (!offer.ok) {
           replaceChildren(
             note,
@@ -1645,7 +1725,7 @@ function renderRelease(policyId: string, ownerLabel: string | null): void {
             })
             .catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
           if (!collected.ok) {
-            replaceChildren(note, status(messageFor(collected.code), 'error'));
+            replaceChildren(note, status(emergencyMessageFor(collected.code), 'error'));
             return;
           }
           await renderGrantedItems();
@@ -1706,12 +1786,7 @@ async function renderGrantedItems(): Promise<void> {
        * Overriding one code beats making `messageFor`'s item copy vague for
        * every caller that is genuinely holding an item.
        */
-      status(
-        listed.code === 'NOT_FOUND'
-          ? 'This arrangement is no longer there. The owner may have rebuilt or removed it.'
-          : messageFor(listed.code),
-        'error',
-      ),
+      status(emergencyMessageFor(listed.code), 'error'),
       el('p', {}, [quietButton('Back', () => void renderEmergency())]),
     );
     return;

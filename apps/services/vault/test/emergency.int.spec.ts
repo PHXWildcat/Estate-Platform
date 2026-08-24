@@ -251,6 +251,11 @@ describeIfPg('emergency access end to end', () => {
       kdfParams: enrolled.enrollment.payload.kdfParams,
       srpSalt: enrolled.enrollment.payload.srpSalt,
     });
+    // The owner's Secret Key joins the map too (M27 PR5): the key-offer route
+    // is behind an open vault now, so the OWNER — the caller that route exists
+    // for — has to be able to unlock in these fixtures like everybody else.
+    secretKeys.set(OWNER, enrolled.enrollment.secretKey);
+
     ownerMasterKeyBytes = await exportMasterKeyBytes({
       userId: OWNER,
       auk: preparation.auk,
@@ -320,7 +325,10 @@ describeIfPg('emergency access end to end', () => {
       );
     const preparation = await prepareUnlock({
       userId,
-      password: `${userId} vault password`,
+      // The owner enrolled with VAULT_PASSWORD in `beforeAll`; everybody else
+      // with the per-user string. Keyed here rather than at the call sites so
+      // `openVaultFor(OWNER)` is not a trap.
+      password: userId === OWNER ? VAULT_PASSWORD : `${userId} vault password`,
       secretKey: secretKeys.get(userId) as string,
       kdfParams: challenge.kdfParams,
       srpSalt: challenge.srpSalt,
@@ -362,12 +370,59 @@ describeIfPg('emergency access end to end', () => {
   });
 
   describe('grantee keys', () => {
-    it('publishes a public key others can seal to', async () => {
+    it("publishes a public key others can seal to, behind the CALLER's open vault", async () => {
+      const { token } = await openVaultFor(OWNER);
       const res = await request(server)
         .get(`/v1/vault/recovery-key/${GRANTEE}`)
         .set(asOwner())
+        .set(VAULT_SESSION_HEADER, token)
         .expect(200);
       expect((res.body as { publicKey: string }).publicKey).toBe(toBase64(granteeKeys.publicKey));
+    });
+
+    /*
+     * THE GUARD, AND WHICH LAYER THIS PROVES (M27 PR5).
+     *
+     * The route carried no vault-session guard while its sibling
+     * `GET /v1/vault/recovery-key` — twelve lines up in the controller, with a
+     * docstring saying a session alone "should not be enough to fetch it
+     * either" — carried one. The Cedar call beside it could not close the gap:
+     * it asked whether the caller may read their OWN vault and was therefore a
+     * tautology, so any authenticated account could ask about any user id.
+     *
+     * These two cases prove the ROUTE refuses, which no source fence can: the
+     * first that the guard fires at all, the second that it fires BEFORE the
+     * parameter is looked at, so the answer carries no information about
+     * whether the id names anybody. Without the second, the guard could refuse
+     * late and still be an oracle.
+     */
+    it('refuses a caller with no open vault of their own — before reading the id', async () => {
+      const real = await request(server)
+        .get(`/v1/vault/recovery-key/${GRANTEE}`)
+        .set(asOwner())
+        .expect(403);
+      expect((real.body as { error: string }).error).toBe('vault_locked');
+
+      // A user id that names nobody, asked the same way. IDENTICAL answer —
+      // so the refusal says nothing about who exists.
+      const nobody = await request(server)
+        .get(`/v1/vault/recovery-key/${randomUUID()}`)
+        .set(asOwner())
+        .expect(403);
+      expect(nobody.body).toEqual(real.body);
+    });
+
+    it('and a STRANGER holding their own open vault still learns only published keys', async () => {
+      // THE BOUND STATED HONESTLY. The guard narrows the participation oracle
+      // to callers who hold a vault password and Secret Key; it does not close
+      // it, and docs/03 §6zz records that rather than letting this test read
+      // as a closure. A stranger with their own vault open still gets 200.
+      const { token } = await openVaultFor(STRANGER);
+      await request(server)
+        .get(`/v1/vault/recovery-key/${GRANTEE}`)
+        .set(bearer('mfa', STRANGER))
+        .set(VAULT_SESSION_HEADER, token)
+        .expect(200);
     });
 
     /**
@@ -413,9 +468,11 @@ describeIfPg('emergency access end to end', () => {
     });
 
     it('404s a user who has not published one', async () => {
+      const { token } = await openVaultFor(OWNER);
       await request(server)
         .get(`/v1/vault/recovery-key/${STRANGER}`)
         .set(asOwner())
+        .set(VAULT_SESSION_HEADER, token)
         .expect(404, { error: 'grantee_key_not_found' });
     });
 
@@ -1798,7 +1855,13 @@ describeIfPg('emergency access end to end', () => {
           wrappedPrivateKey: toBase64(ownerKeys.privateKey),
         })
         .expect(201);
-      await request(server).get(`/v1/vault/recovery-key/${OWNER}`).set(asGrantee()).expect(200);
+      // The key-offer route is behind the CALLER's own open vault (M27 PR5).
+      const granteeVault = await openVaultFor(GRANTEE);
+      await request(server)
+        .get(`/v1/vault/recovery-key/${OWNER}`)
+        .set(asGrantee())
+        .set(VAULT_SESSION_HEADER, granteeVault.token)
+        .expect(200);
 
       const before = await admin.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM emergency_access_configs WHERE user_id = $1`,
@@ -1854,6 +1917,7 @@ describeIfPg('emergency access end to end', () => {
       await request(server)
         .get(`/v1/vault/recovery-key/${OWNER}`)
         .set(asGrantee())
+        .set(VAULT_SESSION_HEADER, (await openVaultFor(GRANTEE)).token)
         .expect(404, { error: 'grantee_key_not_found' });
 
       const row = await admin.query<{
