@@ -197,12 +197,14 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    * half of the property: the audience that can overwrite is not the audience
    * that can roll back.
    *
-   * RESIDUAL, STILL STATED: with the vault unlocked, this audience can
-   * overwrite every item the user has, and PR1b makes that undoable rather
-   * than harmless. Reaching the undo needs the owner's own vault session on
-   * the isolated origin, and until M27 PR2 lands that surface there is no
-   * SCREEN for it — the capability is reachable, not yet visible. Recorded in
-   * docs/03 §6j, which stays open until then.
+   * RESIDUAL, NARROWED BY M27 PR2: with the vault unlocked, this audience can
+   * overwrite every item the user has, and PR1b made that undoable rather than
+   * harmless. PR2 gave the undo a SCREEN — the owner's own History page on the
+   * isolated origin, which needs a vault session this audience cannot hold. So
+   * the capability is now reachable AND visible, and what remains is only that
+   * the owner has to notice. Recorded in docs/03 §6j, closed by §6xx; the
+   * consumer is fenced by `packages/auth-guard/test/route-consumers.spec.ts`
+   * rather than asserted here.
    *
    * `vault:getItem` is deliberately absent: `listItems` already returns each
    * item's full ciphertext blob, so it buys an autofill client nothing, and

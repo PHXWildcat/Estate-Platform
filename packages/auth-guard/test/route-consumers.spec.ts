@@ -582,40 +582,21 @@ const EXEMPT_EXECUTOR_SURFACE =
 // told the operator platform does not exist. Same standard as the
 // EXEMPT_RECOVERY_SURFACE note below — except the sentence had stopped being
 // true while the constant was still in use, which is the harder case to notice.
-/**
- * M27 PR1b's four restore routes, and this is a REAL deviation stated as one
- * rather than a category the rule never covered.
- *
- * The rule is "ship a route in the same change as its consumer", and these four
- * have no consumer: `apps/vault-web`'s owner restore surface is M27 PR2. The
- * milestone was split that way on purpose — PR1b is the reader, the two write
- * verbs, migration 006 and the reset relabel that makes the restorable list
- * honest, which is a security-shaped change with its own proofs, and PR2 is
- * screens. Bundling them would put a keyset-decidability fix and a UI in one
- * review.
- *
- * WHAT MAKES THIS DIFFERENT FROM THE ZERO-CALLER SURFACES THIS FENCE EXISTS TO
- * CATCH: the routes are not speculative. `packages/auth-guard/src/session.ts`
- * refuses `deleteItem` to the extension audience BECAUSE an overwrite is
- * "recoverable" — a live security argument that rested on a capability nobody
- * had built, from M16 until this PR. The consumer that argument needs is the
- * restore verb existing at all, and it exists now. docs/03 §6j stays OPEN and
- * owned by M27 on precisely the half that is still missing: an owner cannot
- * REACH these routes from a screen.
- *
- * THE TERMS THIS CONSTANT LEAVES ON, so it cannot outlive its reason the way
- * EXEMPT_SETTLEMENT_REPORTING nearly did: when PR2 lands the restore surface,
- * every entry below names `apps/vault-web/src/client/*` and this constant is
- * DELETED with its last entry. It is not to be reused for a fifth route.
- */
-const EXEMPT_RESTORE_SURFACE =
-  'M27 PR1b ships the restore reader and both restore verbs; the owner surface that calls them ' +
-  'is M27 PR2. Not a zero-caller surface: `packages/auth-guard/src/session.ts` has refused ' +
-  '`deleteItem` to the extension audience since M16 on the grounds that an overwrite is ' +
-  '"recoverable", and until these routes existed that was a security argument resting on a ' +
-  'capability nobody had built. docs/03 \u00a76j stays open and M27-owned on the half still ' +
-  'missing — reachable, not yet visible. This constant is deleted with its last entry when PR2 ' +
-  'lands, and is not to be reused.';
+// EXEMPT_RESTORE_SURFACE is GONE (M27 PR2), on the instruction it carried
+// itself: "when PR2 lands the restore surface, every entry below names
+// `apps/vault-web/src/client/*` and this constant is DELETED with its last
+// entry." All four routes have a consumer now — the owner's restore screens
+// call them through `vault-session.ts` — so the stated PR1b-to-PR2 deviation is
+// discharged and the exemption has nothing left to explain. The
+// EXEMPT_EXECUTOR_CASEWORK and EXEMPT_ACCOUNT_ERASURE precedents, both removed
+// the same way.
+//
+// WORTH KNOWING FOR THE NEXT EXEMPTION HERE: until this PR the stale sweep
+// below could not have forced this flip. It matched raw templates, so every
+// vault-web consumer — which addresses `/api/…` and reaches `/v1/…` only
+// through the edge rewrite — was invisible to it, and this exemption would have
+// sat green forever after its reason expired. The sweep now applies the
+// rewrites; see the note on `fileMatchesPath` at its call site.
 
 const EXEMPT_EVIDENCE_CONTENT =
   'Documents\u2019 own surface, not the console\u2019s: the operator reads a case timeline, never ' +
@@ -996,10 +977,10 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
     `${VX}/vault-host.ts`,
   ),
   'vault DELETE /v1/vault/items/:itemId': consumed(`${VW}/client/vault-session.ts`),
-  'vault GET /v1/vault/items/restorable': { exempt: EXEMPT_RESTORE_SURFACE },
-  'vault GET /v1/vault/items/:itemId/versions': { exempt: EXEMPT_RESTORE_SURFACE },
-  'vault POST /v1/vault/items/:itemId/undelete': { exempt: EXEMPT_RESTORE_SURFACE },
-  'vault POST /v1/vault/items/:itemId/restore': { exempt: EXEMPT_RESTORE_SURFACE },
+  'vault GET /v1/vault/items/restorable': consumed(`${VW}/client/vault-session.ts`),
+  'vault GET /v1/vault/items/:itemId/versions': consumed(`${VW}/client/vault-session.ts`),
+  'vault POST /v1/vault/items/:itemId/undelete': consumed(`${VW}/client/vault-session.ts`),
+  'vault POST /v1/vault/items/:itemId/restore': consumed(`${VW}/client/vault-session.ts`),
   'vault POST /v1/vault/reset': consumed(`${VW}/client/vault-session.ts`),
   'vault GET /v1/vault/recovery-key': consumed(`${VW}/client/emergency.ts`),
   'vault POST /v1/vault/recovery-key': consumed(`${VW}/client/emergency.ts`),
@@ -1022,9 +1003,10 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
  * template against a `/v1/…` route path with `templateMatchesPath` alone means
  * the FIRST SEGMENT never agrees, so the sweep was blind to every consumer that
  * reaches a route THROUGH AN EDGE — which, on the vault and operator origins, is
- * every consumer there is. `EXEMPT_RESTORE_SURFACE` is the case in flight: PR1b's
- * four routes are exempt pending the screen that calls them, and that screen
- * addresses them as `/api/vault/items/…`, which the old rule could not see. The
+ * every consumer there is. `EXEMPT_RESTORE_SURFACE` was the case that proved it:
+ * PR1b's four routes sat exempt pending the screen that calls them, and when M27
+ * PR2 shipped that screen — addressing them as `/api/vault/items/…` — the old
+ * rule named none of the four and the fixed rule names all four. The
  * half of this fence that CERTIFIES a consumer has resolved rewrites since M19
  * PR4; only the half that RETIRES an exemption did not, and one behaviour with
  * two spellings is a behaviour that disagrees with itself.
@@ -1225,10 +1207,26 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     ];
     const templatesByFile = new Map(corpus.map((f) => [f, extractTemplates(f)]));
 
-    // The rule itself lives in `staleExemptions`, which resolves the edge
-    // rewrites — see its docstring for the blindness that closed, and the test
-    // below for the planted pair that proves it, since no exemption on today's
-    // tree is addressed through an edge.
+    /*
+     * The rule lives in `staleExemptions`, which resolves the edge rewrites.
+     *
+     * TWO CHANGES FIXED THIS INDEPENDENTLY AND THIS IS THE MERGE OF THEM. M27
+     * PR2 reached it from the other side: its four restore routes could not be
+     * FORCED to flip, because raw templates named NONE of them with the consumer
+     * written and sitting in front of the sweep, and named ALL FOUR once the
+     * rewrites were applied. That measurement is the strongest evidence either
+     * change produced, and it is why the header's claim — that this check makes
+     * flipping each entry mandatory rather than remembered — was false for every
+     * route on an isolated origin.
+     *
+     * The SHAPE is this branch's, for two reasons. The rule takes its corpus and
+     * its registry as arguments, so it can be run over a planted pair (the test
+     * below) rather than only over whatever the registry happens to hold — those
+     * four routes are `consumed()` now, so the tree that proved the fix no longer
+     * contains a case that would catch its removal, and a fix nothing can catch
+     * losing is a fix waiting to be lost. And it reuses the templates extracted
+     * above instead of re-reading every file once per exempt route.
+     */
     expect(staleExemptions(templatesByFile, ROUTE_CONSUMERS)).toEqual([]);
 
     // Anti-vacuity: the corpus really was read. Without this a bad path or an
