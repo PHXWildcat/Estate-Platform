@@ -1336,7 +1336,11 @@ function granteePicker(
    * OPTIONAL, deliberately, and the hint says what leaving it blank costs
    * rather than nagging. A required label would make ARMING emergency access
    * harder than leaving it unarmed — the protective action carrying the extra
-   * step — which is the rule docs/03 §5.2 turns on, pointed backwards.
+   * step — which is the M6 rule that the protective action must never be
+   * harder than the permissive one, pointed backwards. (This said "the rule
+   * docs/03 §5.2 turns on" and that was a wrong citation: §5.2 lists the
+   * emergency-access CONTROLS, one-tap deny among them, but states no such
+   * rule; it lives in the §6g/§6j/§6ii deltas.)
    *
    * It is the only free text on this origin that one user writes and another
    * reads, so the edge refuses control characters, bidi overrides and anything

@@ -349,9 +349,15 @@ export class EmergencyRepo {
    * and this row is the whole mechanism — there is no `notified` flag on the
    * policy. That is deliberate: M27 PR3a made release re-collectable, and a
    * stored flag would have to be reset by every writer that moves a policy out
-   * of `released` (`markDenied`, `markRearmed`, `markRevoked`) plus the one
-   * that puts it back. Four writers to keep in step, versus a predicate that
-   * re-arms by itself because `released_at` moves forward on every collection.
+   * of `released` — `markDenied` and `markRevoked` — plus the one that puts it
+   * back, `markReleased`. THREE, not the four an earlier draft of this comment
+   * claimed: `markRearmed` never sees a released policy, because `rearm`
+   * refuses one with `already_released` before reaching the repo. That is a
+   * fact about a guard in another file, so it is pinned by a test
+   * (`refuses to re-arm a policy that has already been collected`) rather than
+   * asserted here — the earlier count was wrong precisely because nothing
+   * checked it. Three writers to keep in step, versus a predicate that re-arms
+   * by itself because `released_at` moves forward on every collection.
    *
    * INSIDE THE CALLER'S TRANSACTION, and the caller takes the policy row `FOR
    * UPDATE` first: two concurrent first-reads would otherwise both see no row

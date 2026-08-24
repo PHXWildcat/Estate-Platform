@@ -12,7 +12,9 @@
 -- row already exists for this policy with `created_at >= released_at`. Since
 -- M27 PR3a made release RE-collectable, that predicate re-arms by itself on
 -- every fresh collection — a stored `notified` flag would have had to be reset
--- by each of the four writers that move a policy back out of 'released'.
+-- by each of the three writers that move a policy in and out of 'released'
+-- ('markDenied' and 'markRevoked' out, 'markReleased' in; 'markRearmed' cannot,
+-- because 'rearm' refuses a released policy before reaching the repo).
 --
 -- The existing `ix_emergency_access_notifications_policy` index on
 -- (policy_id, created_at DESC) already answers that query; no index is added.

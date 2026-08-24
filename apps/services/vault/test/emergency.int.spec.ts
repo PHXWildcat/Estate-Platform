@@ -1161,6 +1161,44 @@ describeIfPg('emergency access end to end', () => {
       expect(row.rows[0]?.released_at).not.toBeNull();
     });
 
+    /**
+     * `rearm` REFUSES A COLLECTED POLICY, AND THREE COMMENTS DEPEND ON IT.
+     *
+     * The dedupe predicate is justified — in `emergency.repo.ts`, in
+     * `readAsGrantee`'s guard list, and in migration 008 — by counting the
+     * writers that move a policy in and out of `released`. All three said FOUR
+     * and the answer is THREE, because `markRearmed` never sees a released
+     * policy: this guard refuses first. Nothing checked that, which is exactly
+     * why the count was wrong in four places at once and stayed wrong through a
+     * browser drive and a review.
+     *
+     * So the fact is pinned here rather than restated there. If this guard is
+     * ever removed, `markRearmed` becomes a fourth writer, the predicate needs
+     * re-arguing, and this test is what says so.
+     */
+    it('refuses to re-arm a policy that has already been collected', async () => {
+      const before = await admin.query<{ status: string }>(
+        `SELECT status FROM emergency_access_policies WHERE id = $1`,
+        [policyId],
+      );
+      // The fixture must actually REACH the state the property is about — a
+      // guard tested from the wrong status proves nothing about this one.
+      expect(before.rows[0]!.status).toBe('released');
+
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/rearm`)
+        .set(ownerStepUp())
+        .expect(409, { error: 'already_released' });
+
+      // AND THE ROW DID NOT MOVE. A refusal that still wrote would leave
+      // `markRearmed` a writer of this transition after all.
+      const after = await admin.query<{ status: string }>(
+        `SELECT status FROM emergency_access_policies WHERE id = $1`,
+        [policyId],
+      );
+      expect(after.rows[0]!.status).toBe('released');
+    });
+
     it('serves the owner’s items, and the ciphertext OPENS with the recovered key', async () => {
       const res = await request(server)
         .get(`/v1/vault/emergency-access/${policyId}/items`)
@@ -1397,7 +1435,7 @@ describeIfPg('emergency access end to end', () => {
        * forward with the new collection, so the predicate now counts only the
        * notices earned SINCE it — the previous collection's notice falls out
        * of scope by itself. A stored `notified` flag would have needed each of
-       * the four writers that move a policy in and out of `released` to reset
+       * the three writers that move a policy in and out of `released` to reset
        * it; this needs none of them.
        */
       expect(Number(rows.rows[0]!.count)).toBe(1);
@@ -1466,9 +1504,28 @@ describeIfPg('emergency access end to end', () => {
      * face is the defect this test is named for, and it was reachable on a
      * Zone A cross-user route.
      *
-     * The table names WHICH guard each row exercises, so a future change that
-     * collapses two of them cannot leave a row silently testing the same arm
-     * twice.
+     * WHAT THE ROW NAMES IS THE INPUT SHAPE, NOT A GUARD, and saying otherwise
+     * was this comment's own defect (caught reviewing the PR description).
+     * `decodeCursor` has THREE refusal predicates, not five, so five rows
+     * cannot each name a distinct one:
+     *
+     *   `separator <= 0`                      ← 'no separator', and also
+     *                                           'not base64url at all', because
+     *                                           `Buffer.from(…, 'base64url')`
+     *                                           is LENIENT: it does not throw
+     *                                           on junk, it returns mojibake
+     *                                           with no '|' in it. There is no
+     *                                           encoding check to reach.
+     *   `Number.isNaN(at.getTime())`          ← 'an unparseable timestamp'
+     *   `!UuidSchema.safeParse(id).success`   ← 'a separator but no id' and
+     *                                           'an id that is not a uuid',
+     *                                           which became ONE predicate when
+     *                                           this review replaced
+     *                                           `id.length === 0`.
+     *
+     * Two pairs therefore double up, and that is fine — the table's job is that
+     * every SHAPE a client can send answers 409 rather than 500, not that every
+     * row reaches a different line. The row that mattered is the last one.
      */
     it.each([
       ['not base64url at all', 'not-a-cursor'],

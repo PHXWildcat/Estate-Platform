@@ -554,7 +554,6 @@ export class EmergencyAccessService {
    * stops working.
    */
   private blockReason(policy: PolicyRow): string | null {
-    if (policy.status === 'revoked') return 'policy_revoked';
     if (policy.status === 'released') return 'already_released';
     if (policy.status === 'waiting') return 'already_waiting';
     if (policy.status === 'denied_by_owner') return 'denied_by_owner';
@@ -597,7 +596,6 @@ export class EmergencyAccessService {
     const now = this.clock();
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
-      if (policy.status === 'revoked') throw new ConflictException({ error: 'policy_revoked' });
       return this.emergency.markDenied(tx, policy.id, now);
     });
 
@@ -617,7 +615,6 @@ export class EmergencyAccessService {
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
       if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });
-      if (policy.status === 'revoked') throw new ConflictException({ error: 'policy_revoked' });
       return this.emergency.markRearmed(tx, policy.id);
     });
 
@@ -675,21 +672,33 @@ export class EmergencyAccessService {
           if (policy.status === 'denied_by_owner')
             throw new ForbiddenException({ error: 'denied_by_owner' });
           /*
-           * NO `revoked` ARM, AND ITS ABSENCE IS THE POINT (M27 PR3b review).
+           * NO `revoked` ARM ANYWHERE IN THIS SERVICE, AND THE ABSENCE IS
+           * FENCED (M27 PR3b review, corrected in the same review).
            *
-           * There used to be one, throwing `policy_revoked`. It was dead code:
-           * `markRevoked` is the only writer of `status='revoked'` and it sets
-           * `deleted_at` in the same statement, while `lockLiveByIdForGrantee`
-           * — the read every grantee route goes through — filters
-           * `deleted_at IS NULL`. So a revoked policy never reaches this line;
-           * it answers the uniform 404, which is the right answer anyway,
-           * being indistinguishable from "not yours".
+           * `status='revoked'` is unobservable to every route here.
+           * `markRevoked` is the only writer of it and sets `deleted_at` in the
+           * SAME statement, while `lockLiveByIdForGrantee` and
+           * `lockLiveByIdForOwner` — the two reads every policy route goes
+           * through — both filter `deleted_at IS NULL`. A revoked policy
+           * therefore answers the uniform 404, which is the right answer
+           * anyway, being indistinguishable from "not yours".
            *
-           * Found by the coverage floor rather than by review, which is what a
-           * floor is for. Removing it cannot loosen anything — the row never
-           * arrived — and a dead branch that LOOKS like a control is worse than
-           * no branch, because a reader believes revocation has its own refusal
-           * when it does not.
+           * FIVE arms tested for it and all five were dead: `release` and
+           * `readAsGrantee` here, `blockReason` on the grantee request path,
+           * and `deny` and `rearm` on the owner's. The first pass removed two —
+           * the two a LINE coverage floor could see, because their `throw` was
+           * the whole statement. The other three sat on an `if` that executes
+           * on every call and only never takes its branch, which a line floor
+           * cannot see and a 78% branch floor did not force. Removing two of
+           * five is this repo's "a rule applied to one member of a category is
+           * a rule half-applied", committed inside the change that cites it.
+           *
+           * The invariant is asserted rather than described:
+           * `revoked-is-unobservable.spec.ts` reads `emergency.repo.ts` and
+           * fails if `markRevoked` ever stops soft-deleting in the same
+           * statement, or if any `lockLive*` lookup stops filtering
+           * `deleted_at IS NULL`. Either change makes these arms live again and
+           * the fence is what says so.
            */
           /*
            * RE-COLLECTABLE (M27 PR3a), and it is ONE guard because it was two.
@@ -777,9 +786,12 @@ export class EmergencyAccessService {
    *      policy that is not theirs and a policy that does not exist are one
    *      empty result and one 404.
    *   3. `status === 'released'`, re-read inside the transaction. This is what
-   *      makes PR3a's one-tap stop actually stop something: `markDenied`,
-   *      `markRearmed` and `markRevoked` all move status OUT of `released`, so
-   *      the next read refuses without any of them knowing this route exists.
+   *      makes PR3a's one-tap stop actually stop something: `markDenied` and
+   *      `markRevoked` move status OUT of `released`, so the next read refuses
+   *      without either of them knowing this route exists. `markRearmed` is NOT
+   *      a third — `rearm` refuses a released policy with `already_released`
+   *      before it — and listing it here was a stale generalisation of the true
+   *      statement one guard down, where all three DO clear `releases_at`.
    *   4. The settlement gate, again, inside the transaction — an estate can
    *      enter settlement between the collection and the read, and Zone A is
    *      the stage that must come last.

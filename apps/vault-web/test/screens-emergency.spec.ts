@@ -144,11 +144,29 @@ const PASSWORD = 'a-good-vault-password';
  * thorough — the shape this repo keeps finding, so this reads the labels out of
  * `app.ts` instead.
  *
- * The CORPUS is every `buttonEl`/`quietButton` label in the client, minus the
- * ones a reader legitimately has. Anything that writes, destroys, navigates
- * into the owner's own vault, or exposes vault-wide settings is therefore
- * forbidden BY DEFAULT: a new owner-side button joins this set the moment it is
- * written, without anybody remembering to add it.
+ * The CORPUS IS STATED AND ASSERTED, because the first version of this
+ * derivation claimed more than its input could support — a fence whose input is
+ * narrower than its claim goes green for exactly the reason it is wrong. It
+ * read `buttonEl`/`quietButton` call sites only, and then said "a new
+ * owner-side button joins this set the moment it is written". That was false
+ * for THREE other ways this client makes a button, and the miss was not
+ * academic: `'Save changes'` — the owner's edit-form submit, the single most
+ * plausible thing to drift onto a grantee's item detail screen — is built with
+ * a raw `el('button')` and was outside the corpus, which is also why the
+ * hand-written list it replaced could name it and never match it.
+ *
+ * All four forms are read now:
+ *
+ *   1. `buttonEl('…')` / `quietButton('…')` / `linkButton('…')` — direct calls.
+ *   2. `act('…', …)` — `policyRow`'s helper, which forwards to `quietButton`
+ *      with the label as a VARIABLE, so form 1's regex could never see it.
+ *   3. `el('button', {…}, ['…'])` — raw construction, including the ternary
+ *      children (`existing ? 'Save changes' : 'Add to vault'`), which is why
+ *      this one is a bracket scan rather than a regex.
+ *
+ * ANTI-VACUITY PER FORM, not just on the total: a floor on the whole set cannot
+ * see one of three matchers silently stopping, and mis-attribution preserves
+ * counts. Each form pins a member it must find.
  */
 const GRANTEE_ALLOWED_BUTTONS = new Set([
   // The reading surface's own controls, and the ceremony that reaches it.
@@ -167,16 +185,53 @@ const GRANTEE_ALLOWED_BUTTONS = new Set([
 
 const OWNER_ONLY_BUTTONS: readonly string[] = (() => {
   const source = readFileSync(join(__dirname, '..', 'src', 'client', 'app.ts'), 'utf8');
-  const labels = new Set<string>();
-  for (const m of source.matchAll(/(?:buttonEl|quietButton)\(\s*'((?:[^'\\]|\\.)*)'/g)) {
-    const label = (m[1] ?? '').replace(/\\'/g, "'");
-    if (label && !GRANTEE_ALLOWED_BUTTONS.has(label)) labels.add(label);
+  const unquote = (raw: string): string => raw.replace(/\\'/g, "'");
+  const literals = (text: string): string[] =>
+    [...text.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => unquote(m[1] ?? ''));
+
+  // Form 1 + 2: a label passed as the first argument.
+  const byCall = new Set<string>();
+  for (const m of source.matchAll(
+    /(?:buttonEl|quietButton|linkButton|act)\(\s*'((?:[^'\\]|\\.)*)'/g,
+  )) {
+    const label = unquote(m[1] ?? '');
+    if (label) byCall.add(label);
   }
-  // ANTI-VACUITY: a regex that stopped matching would forbid nothing and every
-  // `not.toContain` below would pass. Pin the floor AND a member that must be
-  // in it, so a rename cannot empty the set quietly.
-  if (labels.size < 10) throw new Error(`derived too few owner buttons: ${labels.size}`);
-  if (!labels.has('Add an item')) throw new Error('derivation missed a known owner button');
+
+  // Form 3: `el('button', …, [ … ])`. Scan to the matching `]` so a ternary or
+  // a line break inside the children array cannot hide a label from a regex.
+  const byRaw = new Set<string>();
+  for (const m of source.matchAll(/el\(\s*'button'/g)) {
+    const open = source.indexOf('[', m.index);
+    if (open < 0) continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < source.length; i += 1) {
+      const ch = source[i];
+      if (ch === '[') depth += 1;
+      else if (ch === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end < 0) continue;
+    for (const label of literals(source.slice(open, end))) if (label) byRaw.add(label);
+  }
+
+  // ANTI-VACUITY, PER FORM. A total-only floor cannot see one matcher of three
+  // stop matching, because the other two keep the count above it.
+  if (!byCall.has('Add an item')) throw new Error('form 1 (buttonEl/quietButton) matched nothing');
+  if (!byCall.has('Remove')) throw new Error("form 2 (policyRow's act helper) matched nothing");
+  if (!byRaw.has('Save changes')) throw new Error("form 3 (raw el('button')) matched nothing");
+
+  const labels = new Set<string>();
+  for (const label of [...byCall, ...byRaw]) {
+    if (!GRANTEE_ALLOWED_BUTTONS.has(label)) labels.add(label);
+  }
+  if (labels.size < 20) throw new Error(`derived too few owner buttons: ${labels.size}`);
   return [...labels];
 })();
 
