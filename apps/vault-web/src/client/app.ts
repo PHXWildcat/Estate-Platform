@@ -19,7 +19,6 @@ import {
   ownRecoveryKey,
   publishRecoveryKey,
   rearmPolicy,
-  releaseAndRecover,
   requestAccess,
   revokePolicy,
   type GranteeCandidate,
@@ -850,6 +849,17 @@ async function renderEmergency(notice?: {
       status(
         `${escrow.data.policies.length} contact(s) named; ${escrow.data.threshold ?? 1} needed together to open it.`,
       ),
+      /*
+       * THE LABEL, ECHOED BACK (M27 PR3b). An owner who cannot see the current
+       * value cannot tell a blank one from one that failed to save — and this
+       * is the string OTHER people read, so being wrong about it is being
+       * wrong about what somebody else sees. `!= null` for the M12 reason a
+       * dozen lines of this file now give: a service older than this origin
+       * sends no `label` at all, and `undefined !== null` is true.
+       */
+      escrow.data.label != null && escrow.data.label !== ''
+        ? status(`They see this vault as “${escrow.data.label}”.`)
+        : status('They see your account id. Re-arm with a name to change that.'),
       el(
         'ul',
         { class: 'items' },
@@ -959,7 +969,7 @@ async function renderEmergency(notice?: {
         { class: 'items' },
         granted.data.map((policy) =>
           el('li', { class: 'item' }, [
-            el('span', {}, [`Vault of ${policy.ownerUserId}`]),
+            el('span', {}, [ownerName(policy)]),
             el('span', { class: 'item-type' }, [describeGranteeStatus(policy)]),
             ...granteeActions(policy, note),
           ]),
@@ -1072,8 +1082,37 @@ function collectable(policy: { status: string; releasesAt: string | null }): boo
   return policy.releasesAt !== null && Date.parse(policy.releasesAt) <= Date.now();
 }
 
+/**
+ * WHOSE VAULT THIS ROW IS (M27 PR3b), closing docs/03 §6yy's `[OWNER: M27]`.
+ *
+ * The row read "Vault of <uuid>" — the same defect M27 had already fixed on the
+ * OWNER's side, arriving once more on the other half of the same feature. It
+ * was not fixed there and then because there was no name to serve: `profile`
+ * has no display-name column at all, and a person's name exists only inside
+ * OTHER users' per-user-encrypted contact rows — the grantee has none for the
+ * person who named them. So the string served here is one the OWNER wrote for
+ * exactly this purpose, which answers the residual's "which name, released to
+ * whom" without inventing a Zone B identity field or a cross-user lookup.
+ *
+ * `!= null` COVERS BOTH SPELLINGS OF ABSENT, for the reason `hasCollected`
+ * gives at length: this field arrives as JSON, so a service older than this
+ * origin sends no `ownerLabel` at all and `undefined !== null` is true. The
+ * fallback is the id — never blank, and never invented (the M12 rule).
+ *
+ * NOT RUN THROUGH ANY SANITISER, and that is deliberate rather than an
+ * omission: `dom.ts` builds every node and text goes in as a text node, so
+ * there is no markup path to sanitise. The value is refused at the edge
+ * instead (`EscrowLabelSchema` — no control characters, no bidi overrides, 80
+ * chars), which is the absence this repo prefers to a filter.
+ */
+function ownerName(policy: { ownerUserId: string; ownerLabel?: string | null }): string {
+  return policy.ownerLabel != null && policy.ownerLabel !== ''
+    ? policy.ownerLabel
+    : `Vault of ${policy.ownerUserId}`;
+}
+
 function granteeActions(
-  policy: { id: string; status: string; releasesAt: string | null },
+  policy: { id: string; status: string; releasesAt: string | null; ownerLabel: string | null },
   note: HTMLElement,
 ): HTMLElement[] {
   const ready = collectable(policy);
@@ -1100,7 +1139,7 @@ function granteeActions(
     ];
   }
   if (ready) {
-    return [quietButton('Open the vault', () => renderRelease(policy.id))];
+    return [quietButton('Open the vault', () => renderRelease(policy.id, policy.ownerLabel))];
   }
   return [];
 }
@@ -1254,6 +1293,26 @@ function policyRow(
 function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElement): HTMLElement {
   const confirmed = new Map<string, GranteeKeyOffer>();
   const list = el('ul', { class: 'items' });
+  /*
+   * WHAT THE PEOPLE YOU NAME WILL SEE (M27 PR3b).
+   *
+   * OPTIONAL, deliberately, and the hint says what leaving it blank costs
+   * rather than nagging. A required label would make ARMING emergency access
+   * harder than leaving it unarmed — the protective action carrying the extra
+   * step — which is the rule docs/03 §5.2 turns on, pointed backwards.
+   *
+   * It is the only free text on this origin that one user writes and another
+   * reads, so the edge refuses control characters, bidi overrides and anything
+   * over 80 characters (`EscrowLabelSchema`) rather than repairing them here.
+   * A client-side trim would only teach the owner that the rule is softer than
+   * it is.
+   */
+  const vaultLabel = field({
+    id: 'escrow-label',
+    label: 'What to call this vault (optional)',
+    value: '',
+    hint: 'The people you name see this instead of your account id. Leave it blank and they see the id, as before.',
+  });
   const waiting = field({
     id: 'waiting-hours',
     label: 'Waiting period (hours)',
@@ -1355,6 +1414,10 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
             confirmed: [...confirmed.values()],
             threshold: needed,
             waitingPeriodHours: hours,
+            // Trimmed to nothing means ABSENT, not an empty string: the schema
+            // rejects '' and configure clears the previous label on absence,
+            // which is what an owner blanking the box means by it.
+            ...(vaultLabel.input.value.trim() ? { label: vaultLabel.input.value.trim() } : {}),
           }).catch(() => ({ ok: false as const, code: 'UNKNOWN' as const })),
         );
         if (!armed.ok) {
@@ -1376,6 +1439,7 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
       'Confirm each person’s key fingerprint with them directly. It is the only way to be sure a share is sealed to them and not to somebody else.',
     ]),
     list,
+    vaultLabel.row,
     waiting.row,
     threshold.row,
     el('p', {}, [arm]),
@@ -1389,7 +1453,7 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
  * wrapped under their own master key. A session alone achieves nothing, which
  * is the property that makes the release meaningful.
  */
-function renderRelease(policyId: string): void {
+function renderRelease(policyId: string, ownerLabel: string | null): void {
   const note = el('div');
   replaceChildren(
     main(),
@@ -1420,15 +1484,23 @@ function renderRelease(policyId: string): void {
      * why `screens-emergency.spec.ts` now does, and why the spellings are
      * banned as data in `fences.spec.ts` rather than swept for by hand again.
      *
-     * WHAT STAYS: the owner is told, and reading their items is not built. The
-     * first is the compensating control the whole change rests on, and the
-     * second is still the honest answer to what pressing this gets you.
+     * M27 PR3b REWROTE THE SECOND SENTENCE AGAIN, for the same reason PR3a
+     * rewrote both: it had become false. It said reading the owner's items was
+     * not built, which was the honest answer to what this button did — and
+     * this PR is the one that builds it. A warning screen that understates
+     * what the next tap does is the same defect as one that overstates it,
+     * pointed the other way, and it is worse here than anywhere: this is the
+     * screen whose entire job is to make somebody weigh the action.
+     *
+     * WHAT STAYS: the owner is told. That is the compensating control the
+     * whole feature rests on, and PR3b adds a second telling — the owner hears
+     * again, once, when the contents are actually opened.
      */
     el('p', { class: 'status status-warn' }, [
       'The owner is told every time this happens. Only continue if they genuinely cannot do this themselves.',
     ]),
     el('p', { class: 'status status-warn' }, [
-      'Reading the owner’s items is not built yet. This confirms the pieces fit and that you could open the vault — it does not show you what is inside. If something goes wrong you can open it again; nothing here is used up.',
+      'This opens the vault and shows you what is inside. Nothing is used up — if something goes wrong you can open it again.',
     ]),
     el('p', {}, [
       buttonEl('Open it now', () => {
@@ -1436,10 +1508,9 @@ function renderRelease(policyId: string): void {
           if (!account) return;
           replaceChildren(note, status('Collecting the pieces…'));
           let vaultToken: string;
-          let granteeMasterKey: CryptoKey;
           try {
             vaultToken = session.requireVaultToken();
-            granteeMasterKey = session.requireMasterKey();
+            session.requireMasterKey();
           } catch {
             replaceChildren(
               note,
@@ -1463,46 +1534,188 @@ function renderRelease(policyId: string): void {
             );
             return;
           }
-          const recovered = await releaseAndRecover({
-            policyId,
-            granteeUserId: account.userId,
-            granteeMasterKey,
-            granteePublicKey: own.data.publicKey,
-            wrappedPrivateKey: own.data.wrappedPrivateKey,
-          }).catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
-          if (!recovered.ok) {
-            replaceChildren(note, status(messageFor(recovered.code), 'error'));
+          /*
+           * THE RECOVERED KEY IS NOW RETAINED, AND M27 PR3b MOVED IT OUT OF
+           * THIS FILE TO DO IT.
+           *
+           * PR3a wiped it here and said so: the collection proved the pieces
+           * fit and there was nothing to read. Reading exists now, so the key
+           * has to survive the call — and the moment it does, holding it in a
+           * screen would break the claim `vault-session.ts` opens with, that
+           * it is the only place in this app that holds a key. `collectGrant`
+           * takes the release call with it, so this screen never sees key
+           * material at all: strictly less than it handled before PR3b, not
+           * more.
+           *
+           * The escrow it holds dies with this vault session — same idle
+           * timer, same explicit lock — which is what keeps a five-minute
+           * step-up from becoming an indefinite key to somebody else's vault.
+           */
+          const collected = await session
+            .collectGrant({
+              policyId,
+              ownerLabel,
+              granteePublicKey: own.data.publicKey,
+              wrappedPrivateKey: own.data.wrappedPrivateKey,
+            })
+            .catch(() => ({ ok: false as const, code: 'UNKNOWN' as const }));
+          if (!collected.ok) {
+            replaceChildren(note, status(messageFor(collected.code), 'error'));
             return;
           }
-          // The recovered key is NOT retained and NOT sent anywhere. What this
-          // release proves is that the reconstruction works; reading the
-          // owner's items with it is the next screen's job and deliberately
-          // not part of this action.
-          //
-          // WIPING IT IS ONLY SAFE BECAUSE COLLECTION REPEATS (M27 PR3a).
-          // Discarding the one copy of a key the server would never hand over
-          // again is what made the old ending sentence true — it told the
-          // grantee the arrangement was finished, and it was describing a dead
-          // end this screen had just walked them into. That sentence is
-          // DESCRIBED rather than quoted, per the ban in `fences.spec.ts`; the
-          // first draft of this comment quoted it across a line wrap, which the
-          // substring search missed only because of where the line happened to
-          // break. A fence that a re-flow can turn red is a fence with a
-          // coincidence in it.
-          //
-          wipe(recovered.data.masterKeyBytes);
-          replaceChildren(
-            note,
-            status(
-              'The recovery key was reconstructed on this device, and the owner has been told. It was not kept — reading their items with it is not built yet — and you can open this again if you need to.',
-              'ok',
-            ),
-          );
+          await renderGrantedItems();
         })();
       }),
       ' ',
       quietButton('Back', () => void renderEmergency()),
     ]),
+    note,
+  );
+}
+
+// ------------------------------------------- the grantee's read (M27 PR3b)
+
+/**
+ * WHAT A RELEASED GRANTEE SEES INSIDE THE VAULT THEY WERE TRUSTED WITH.
+ *
+ * READ-ONLY, AND STRUCTURALLY SO RATHER THAN BY OMISSION. There is no edit
+ * form, no delete, no history and no restore on this screen because the route
+ * behind it serves none of those — `vault.cedar` grants exactly
+ * `read_by_grantee`, and the owner's `read_history`, `undelete` and `restore`
+ * are separate Cedar action ids that no policy gives a grantee. A button here
+ * would be a button that 403s, which reads to the person pressing it as an
+ * outage rather than as a boundary.
+ *
+ * THE OWNER IS NAMED AT THE TOP, not left implicit. A grantee may hold
+ * arrangements from several people, and "which vault am I looking at" is the
+ * question this screen has to answer before any of its contents mean anything
+ * — it is what docs/03 §6yy's residual was really about.
+ *
+ * "DONE" IS THE PROTECTIVE ACTION AND IT IS ONE TAP. It drops the recovered
+ * key without locking the grantee's own vault, so finishing carries no cost
+ * and no ceremony. The rule that the protective action must never be harder
+ * than the permissive one applies to the grantee's own conduct too.
+ */
+async function renderGrantedItems(): Promise<void> {
+  const grant = session.granted();
+  if (!grant) {
+    await renderEmergency();
+    return;
+  }
+  const listed = await session.grantedList();
+  if (!listed.ok) {
+    replaceChildren(
+      main(),
+      el('h1', {}, [ownerName(grant)]),
+      status(messageFor(listed.code), 'error'),
+      el('p', {}, [quietButton('Back', () => void renderEmergency())]),
+    );
+    return;
+  }
+  const items = listed.data;
+
+  const rows = items.map((item) =>
+    el('li', { class: 'item' }, [
+      linkButton(
+        item.unreadable ? '(this item could not be read)' : item.content.title || '(untitled)',
+        () => renderGrantedItem(item),
+      ),
+      el('span', { class: 'item-type' }, [labelFor(item.itemType)]),
+    ]),
+  );
+
+  replaceChildren(
+    main(),
+    el('div', { class: 'row-between' }, [
+      el('h1', {}, [ownerName(grant)]),
+      el('span', { class: 'field-hint' }, [`Locks after ${IDLE_LOCK_MS / 60000} minutes idle`]),
+    ]),
+    status('The owner has been told that you opened this.'),
+    items.length === 0 ? status('This vault is empty.') : el('ul', { class: 'items' }, rows),
+    el('p', {}, [
+      buttonEl('Done', () => {
+        session.endGrant();
+        void renderEmergency();
+      }),
+    ]),
+  );
+}
+
+/**
+ * One of the owner's items, opened. A VIEW rather than the shared form.
+ *
+ * `renderItem` is a populated EDIT form: it carries a save button, an item-type
+ * select and an `If-Match` revision, none of which mean anything for a reader
+ * who cannot write. Reusing it and hiding the controls would have left a screen
+ * one conditional away from offering a grantee a write path into somebody
+ * else's Zone A — the copy that drifts, on the surface where drift is least
+ * affordable.
+ */
+function renderGrantedItem(item: OpenedItem): void {
+  const note = el('div');
+  // `secret-key` rather than a new class: it is the stylesheet's monospace
+  // treatment for a value somebody reads character by character, which is
+  // exactly what this is. `class-vocabulary.spec.ts` refused the invented
+  // `item-secret` on the first run — a class the stylesheet does not define
+  // renders as unstyled text, which on a REVEALED secret is the difference
+  // between a deliberate presentation and a bare string on the page.
+  const secret = el('span', { class: 'secret-key' }, ['••••••••']);
+  let shown = false;
+
+  const rowFor = (label: string, value: string): HTMLElement =>
+    el('li', { class: 'item' }, [
+      el('span', {}, [label]),
+      el('span', { class: 'item-type' }, [value]),
+    ]);
+
+  const details: HTMLElement[] = [];
+  if (item.unreadable) {
+    // WHICH HALF FAILED IS NOT DISTINGUISHED, exactly as the owner's own reader
+    // refuses to distinguish it: a wrong key and a malformed blob share one
+    // message so the pair is never an oracle.
+    details.push(status('This item could not be read.', 'warn'));
+  } else {
+    if (item.content.username) details.push(rowFor('Username', item.content.username));
+    if (item.content.url) details.push(rowFor('Website', item.content.url));
+    if (item.content.notes) details.push(rowFor('Notes', item.content.notes));
+  }
+
+  replaceChildren(
+    main(),
+    el('h1', {}, [
+      item.unreadable ? '(this item could not be read)' : item.content.title || '(untitled)',
+    ]),
+    el('p', { class: 'field-hint' }, [labelFor(item.itemType)]),
+    details.length > 0 ? el('ul', { class: 'items' }, details) : el('div'),
+    item.content.secret
+      ? el('p', {}, [
+          secret,
+          ' ',
+          quietButton('Show', () => {
+            shown = !shown;
+            replaceChildren(secret, shown ? (item.content.secret ?? '') : '••••••••');
+          }),
+          ' ',
+          quietButton('Copy', () => {
+            void (async () => {
+              const outcome = await copyWithAutoClear(item.content.secret ?? '');
+              // The owner's own copy button's exact words. One behaviour, one
+              // spelling: a grantee's clipboard clears on the same timer and
+              // must not be told a different story about it.
+              replaceChildren(
+                note,
+                status(
+                  outcome === 'copied'
+                    ? `Copied. Your clipboard clears in ${CLIPBOARD_CLEAR_MS / 1000} seconds — this cannot reach a clipboard manager or another device.`
+                    : 'This browser would not let the page copy. Select the field and copy it yourself.',
+                  outcome === 'copied' ? 'ok' : 'warn',
+                ),
+              );
+            })();
+          }),
+        ])
+      : el('div'),
+    el('p', {}, [quietButton('Back', () => void renderGrantedItems())]),
     note,
   );
 }

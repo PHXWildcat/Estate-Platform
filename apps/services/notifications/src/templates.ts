@@ -53,6 +53,13 @@ const BODIES: Record<EstateNotificationKind, (deadline: Date | null) => string> 
     'Your Estate vault was reset. Everything previously stored in it is now unrecoverable. If you did not do this, open your Estate app and review your security settings immediately.',
   'vault.grantees_changed': () =>
     'The emergency contacts for your Estate vault changed, and previous arrangements were retired. If you did not make this change, open your Estate app and review it.',
+  // M27 PR3b. Says READ, not "released": the owner already had
+  // `emergency.released` for the collection, and the fact worth a second
+  // message is that the contents were actually opened. Names the stop in the
+  // same clause, because M27 PR3a made stopping one ungated tap and this body
+  // is the only place many owners will learn that.
+  'vault.read_by_grantee': () =>
+    'A designated contact opened the contents of your Estate vault using emergency access. If you did not expect this, open your Estate app — you can stop their access with one tap.',
   'settlement.case_opened': (d) =>
     `A report was filed on your Estate account. If you are reading this, open your Estate app and verify your identity — that stops the process immediately.${UNTIL(d)}`,
   'settlement.owner_contact': (d) =>

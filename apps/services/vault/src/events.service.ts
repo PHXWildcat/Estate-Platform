@@ -376,6 +376,42 @@ export class EventsService {
     });
   }
 
+  /**
+   * A RELEASED GRANTEE READ THE OWNER'S ITEMS (M27 PR3b) — the first producer
+   * for `vault.emergency.items_read`, which `packages/contracts/src/audit.ts`
+   * has declared with no caller since M27 PR0.
+   *
+   * ON THE OWNER'S TRAIL, WITH THE GRANTEE AS ACTOR. `resourceId` is the
+   * OWNER's id and `onBehalfOf` names them too, because the question this event
+   * answers is the owner's ("who opened my vault, and when"), not the grantee's.
+   * The audit contract's comment warns that two of the four existing
+   * `onBehalfOf` call sites emit through `audit.emit` directly rather than
+   * through these helpers, so the field is set explicitly here and inherits
+   * nothing.
+   *
+   * PER READ, unlike the `read_by_grantee` notification, which fires once per
+   * collection. The two are deliberately out of step: the audit trail is the
+   * complete record an investigator reads afterwards, and the notification is
+   * an interrupt a living owner has to be able to act on. Making the trail
+   * sparse to spare the mailbox would trade the wrong one away.
+   */
+  async emergencyItemsRead(
+    granteeUserId: string,
+    sessionId: string,
+    policyId: string,
+    ownerUserId: string,
+    detail: { count: number; scope: 'live' | 'item' },
+  ): Promise<void> {
+    await this.emit('vault.emergency.items_read', {
+      actorId: granteeUserId,
+      resourceType: 'vault',
+      resourceId: ownerUserId,
+      sessionId,
+      onBehalfOf: ownerUserId,
+      detail: { ...detail, policyId },
+    });
+  }
+
   async emergencyReleased(
     granteeUserId: string,
     sessionId: string,

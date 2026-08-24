@@ -15,6 +15,11 @@
 // M14 security review re-measured at 90.62/74.73/94.17/91.82; ratcheted UP. The review
 // added the vault notification adapters' first specs and the client's
 // transport-failure case.
+// M27 PR3b re-measured at 93.23/78.17/95.68/94.02 and ratcheted UP to 93/78/95/94.
+// The gate CAUGHT this PR shipping two branches uncovered — the escrow label's
+// write path (only the screen tests, against a fake, had touched it) and the
+// grantee read's cursor — and both were closed with real tests rather than by
+// moving the floor. Never lower it.
 module.exports = require('@estate/config/jest')(__dirname, {
-  coverageThreshold: { global: { statements: 90, branches: 74, functions: 94, lines: 91 } },
+  coverageThreshold: { global: { statements: 93, branches: 78, functions: 95, lines: 94 } },
 });

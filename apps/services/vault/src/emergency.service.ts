@@ -13,7 +13,9 @@ import { EmergencyRepo, type PolicyRow } from './emergency.repo';
 import { EventsService } from './events.service';
 import { KeysetsRepo } from './keysets.repo';
 import type { EmergencyNotification, NotificationPort } from './notifications';
-import { VaultAuthz, vaultResource } from './authz.service';
+import { VaultAuthz, vaultItemResource, vaultResource } from './authz.service';
+import { ItemsRepo, type ItemRow } from './items.repo';
+import { decodeCursor, encodeCursor, toDto, type VaultItemPage } from './vault.service';
 import { SETTLEMENT_AUTHORITY, type SettlementVaultGate } from '@estate/settlement-client';
 
 /**
@@ -70,6 +72,12 @@ export interface PolicyDto {
 export interface EscrowDto {
   readonly configured: boolean;
   readonly threshold: number | null;
+  /**
+   * M27 PR3b. What the owner chose to call this vault, echoed back so the
+   * screen that SET it can show it — an owner who cannot see the current label
+   * cannot tell an empty one from one that failed to save.
+   */
+  readonly label: string | null;
   readonly policies: readonly PolicyDto[];
 }
 
@@ -81,6 +89,19 @@ export interface GranteePolicyDto {
   readonly releasesAt: string | null;
   /** See `PolicyDto.releasedAt`; the grantee's own row loses the fact the same way. */
   readonly releasedAt: string | null;
+  /**
+   * M27 PR3b, closing docs/03 §6yy's `[OWNER: M27]`. What the OWNER chose to
+   * call their vault, or null — in which case the surface falls back to
+   * `ownerUserId`, which is what it printed before PR3b and is not a secret to
+   * a reader who was sealed a share by that account.
+   *
+   * NOT the owner's name, and the distinction is the disclosure decision this
+   * residual asked for: the platform has no name for an account anywhere (a
+   * person's name exists only inside OTHER users' per-user-encrypted contact
+   * rows), so the only string that can be served here without inventing a
+   * Zone B identity field is one the owner wrote for this purpose.
+   */
+  readonly ownerLabel: string | null;
 }
 
 /** The material a grantee collects after the waiting period elapses. */
@@ -130,6 +151,7 @@ export class EmergencyAccessService {
     private readonly db: Db,
     private readonly emergency: EmergencyRepo,
     private readonly keysets: KeysetsRepo,
+    private readonly items: ItemsRepo,
     private readonly authz: VaultAuthz,
     private readonly events: EventsService,
     @Inject(NOTIFIER) private readonly notifier: NotificationPort,
@@ -334,6 +356,7 @@ export class EmergencyAccessService {
     return {
       configured: config !== null,
       threshold: config?.threshold ?? null,
+      label: config?.label ?? null,
       policies: policies.map(toPolicyDto),
     };
   }
@@ -351,6 +374,7 @@ export class EmergencyAccessService {
       platformPart: string;
       wrappedMasterKeyRecovery: string;
       grantees: readonly GranteeInput[];
+      label?: string | undefined;
     },
   ): Promise<EscrowDto> {
     this.authz.assertCan(actorUserId, 'manage', vaultResource(actorUserId));
@@ -386,6 +410,9 @@ export class EmergencyAccessService {
         threshold: input.threshold,
         platformPart: Buffer.from(input.platformPart, 'base64'),
         wrappedMasterKeyRecovery: Buffer.from(input.wrappedMasterKeyRecovery, 'base64'),
+        // `?? null` rather than a spread: configure REPLACES an escrow, so an
+        // absent label must clear the previous one rather than inherit it.
+        label: input.label ?? null,
       });
 
       const rows: PolicyRow[] = [];
@@ -423,6 +450,7 @@ export class EmergencyAccessService {
     return {
       configured: true,
       threshold: input.threshold,
+      label: input.label ?? null,
       policies: result.rows.map(toPolicyDto),
     };
   }
@@ -436,6 +464,7 @@ export class EmergencyAccessService {
       status: row.status,
       releasesAt: row.releases_at?.toISOString() ?? null,
       releasedAt: row.released_at?.toISOString() ?? null,
+      ownerLabel: row.owner_label,
     }));
   }
 
@@ -706,6 +735,201 @@ export class EmergencyAccessService {
       keyShare: released.policy.key_share_ct.toString('base64'),
       threshold: released.config.threshold,
     };
+  }
+
+  /**
+   * THE GRANTEE'S READ (M27 PR3b) — the surface the whole §5.2 ceremony exists
+   * to reach, and the first place in this service where one user is handed
+   * another user's Zone A rows.
+   *
+   * WHAT AUTHORIZES IT, in the order the request meets it:
+   *
+   *   1. `VaultSessionGuard` on the controller — the grantee's OWN vault is
+   *      unlocked. It is not widened to accept the owner's session, and
+   *      `owner.cedar` is untouched (docs/03 §6uu settled this in PR0).
+   *   2. `requireGranteePolicy`, which locks by (id, grantee) TOGETHER, so a
+   *      policy that is not theirs and a policy that does not exist are one
+   *      empty result and one 404.
+   *   3. `status === 'released'`, re-read inside the transaction. This is what
+   *      makes PR3a's one-tap stop actually stop something: `markDenied`,
+   *      `markRearmed` and `markRevoked` all move status OUT of `released`, so
+   *      the next read refuses without any of them knowing this route exists.
+   *   4. The settlement gate, again, inside the transaction — an estate can
+   *      enter settlement between the collection and the read, and Zone A is
+   *      the stage that must come last.
+   *   5. Cedar, per item, over `vault.cedar`'s `read_by_grantee`.
+   *
+   * WHAT (5) IS AND IS NOT, stated plainly because a mutation caught the first
+   * draft of this comment overclaiming it.
+   *
+   * DELETING THE CEDAR CALL LEAVES THE WHOLE SUITE GREEN except the one test
+   * written to pin its shape. That is not a weak test — it is the honest
+   * answer: the call CANNOT DENY here today. `listReleasedGranteeIds` selects
+   * the owner's policies at `status='released' AND deleted_at IS NULL`, and
+   * guard (2) has already returned THIS row under the same two filters, so the
+   * principal is in the set by construction. Two derivations of one row.
+   *
+   * It stays for two reasons that are worth being explicit about rather than
+   * dressing up as a gate. First, uniformity: every other read in this service
+   * consults the PEP, and making this the single read that does not would be
+   * an exception a reader has to discover. Second, it is the attachment point
+   * — a later policy that narrows grantee reads by item type or settlement
+   * stage is a change to `vault.cedar` and to the resource built here, and to
+   * nothing else.
+   *
+   * The refusal that actually stops a stopped grantee is (3), and
+   * `emergency.int.spec.ts` names which layer each of its refusal tests
+   * proves. The limit is recorded in docs/03 §6zz, not only here.
+   *
+   * WHAT IT DELIBERATELY DOES NOT SERVE: deleted items, version history, the
+   * restorable list — and any single item. A grantee reads what the owner has
+   * now, in one page. The owner's `read_history`, `undelete` and `restore` are
+   * separate action ids for exactly this reason (M27 PR1b), and `vault.cedar`
+   * names none of them; the missing per-item route is explained on the
+   * controller, and it is an absence rather than an omission.
+   */
+  async listItemsForGrantee(
+    granteeUserId: string,
+    accountSessionId: string,
+    policyId: string,
+    query: { limit: number; cursor?: string | undefined },
+  ): Promise<VaultItemPage> {
+    const read = await this.readAsGrantee(granteeUserId, accountSessionId, policyId, query);
+
+    await this.events.emergencyItemsRead(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      read.ownerUserId,
+      { count: read.rows.length, scope: 'live' },
+    );
+
+    const last = read.rows.length === query.limit ? read.rows[read.rows.length - 1] : undefined;
+    return {
+      items: read.rows.map(toDto),
+      nextCursor: last ? encodeCursor(last.updated_at, last.id) : null,
+    };
+  }
+
+  /**
+   * The body of the grantee read: authorize, read, and CLAIM the owner's
+   * notice — all inside one transaction, with the policy row locked.
+   *
+   * SEPARATE FROM ITS CALLER even though there is exactly one, because what
+   * lives here is every decision that could hand somebody else's rows over,
+   * and what lives there is paging and DTO mapping. It took a `read` callback
+   * while a second route existed; with that route gone the callback was a
+   * generic with one call site, which reads as extensibility and is really
+   * just indirection between a reader and the guards they need to check.
+   *
+   * The claim is in here rather than beside the send for a concurrency reason
+   * spelled out on `EmergencyRepo.claimNotification`: `hasNotifiedSince` is the
+   * dedupe, so the check and the write have to be in the same transaction or
+   * the lock protects nothing and two racing first-reads both notify.
+   */
+  private async readAsGrantee(
+    granteeUserId: string,
+    accountSessionId: string,
+    policyId: string,
+    query: { limit: number; cursor?: string | undefined },
+  ): Promise<{ ownerUserId: string; rows: ItemRow[] }> {
+    const outcome = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
+      this.db.withTransaction(granteeUserId, async (tx) => {
+        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+
+        // Named refusals, spelled exactly as `release` spells them: a grantee
+        // whose access was stopped must not read the same token as a grantee
+        // who never collected, and neither may read as an outage.
+        if (policy.status === 'denied_by_owner')
+          throw new ForbiddenException({ error: 'denied_by_owner' });
+        if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
+        if (policy.status !== 'released' || !policy.released_at) {
+          throw new ConflictException({ error: 'not_collected' });
+        }
+
+        await this.assertSettlementPermits(policy.user_id);
+
+        const granteeIds = await this.emergency.listReleasedGranteeIds(tx, policy.user_id);
+        const rows = await this.items.listByUser(tx, {
+          userId: policy.user_id,
+          limit: query.limit,
+          ...(query.cursor
+            ? { cursor: ((c) => ({ updatedAt: c.at, id: c.id }))(decodeCursor(query.cursor)) }
+            : {}),
+        });
+        for (const row of rows) {
+          this.authz.assertCan(
+            granteeUserId,
+            'read_by_grantee',
+            vaultItemResource(row.id, policy.user_id, granteeIds),
+          );
+        }
+
+        const told = await this.emergency.hasNotifiedSince(tx, {
+          policyId: policy.id,
+          kind: 'read_by_grantee',
+          since: policy.released_at,
+        });
+        const claimId = told
+          ? null
+          : await this.emergency.claimNotification(tx, {
+              policyId: policy.id,
+              userId: policy.user_id,
+              kind: 'read_by_grantee',
+              channel: this.notifier.channel,
+              at: this.clock(),
+            });
+
+        return { ownerUserId: policy.user_id, rows, claimId };
+      }),
+    );
+
+    if (outcome.claimId) {
+      await this.sendClaimed(outcome.claimId, {
+        kind: 'read_by_grantee',
+        ownerUserId: outcome.ownerUserId,
+        policyId,
+      });
+    }
+    return { ownerUserId: outcome.ownerUserId, rows: outcome.rows };
+  }
+
+  /**
+   * Send a notice whose record already exists, and fill in its outcome.
+   *
+   * The mirror image of `notify`, which sends first and records after. Both
+   * treat a failed delivery the same way — a null `delivered_at`, never an
+   * exception, because the read still happened and the owner still needs the
+   * record — and both emit the unverified-recipient event on the same rule.
+   */
+  private async sendClaimed(
+    notificationId: string,
+    notification: EmergencyNotification,
+  ): Promise<void> {
+    let deliveredAt: Date | null = null;
+    let recipientVerified = false;
+    try {
+      const sent = await this.notifier.notify(notification);
+      deliveredAt = sent.delivered ? this.clock() : null;
+      recipientVerified = sent.recipientVerified;
+    } catch {
+      // An adapter that broke its own contract. A non-delivery either way.
+    }
+    if (deliveredAt !== null) {
+      await this.emergency.markNotificationDelivered(this.db, notificationId, deliveredAt);
+    }
+    if (deliveredAt !== null && !recipientVerified) {
+      await this.events.audit.emit({
+        action: 'vault.emergency.unverified_recipient',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: notification.ownerUserId,
+        resourceType: 'vault',
+        resourceId: notification.policyId,
+        sessionId: null,
+        detail: { kind: notification.kind },
+      });
+    }
   }
 
   /**

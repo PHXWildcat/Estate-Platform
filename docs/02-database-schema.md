@@ -338,9 +338,25 @@ of truth):
   `platform_part`, `wrapped_master_key_recovery`) that belongs to the escrow as
   a whole rather than to any one grantee, because the recovery key is split at
   two levels — `RK = platform_part XOR contacts_part`, with `contacts_part` then
-  split Shamir M-of-N across the grantees.
+  split Shamir M-of-N across the grantees. **M27 PR3b adds `label`** (nullable):
+  the owner-authored name their grantees read instead of the owner's account id.
+  It is the first column in this cluster that ONE user writes and a DIFFERENT
+  user reads, so it carries a CHECK for length and for the absence of control
+  characters — the edge refuses bidi and format characters on top of that
+  (docs/03 §6zz). It is deliberately NOT redacted by the version trigger below:
+  the trigger subtracts named key material, and a label's history is
+  owner-visible metadata worth keeping.
 - `emergency_access_notifications` is new: which owner notification was
-  attempted and when. Kind and channel only, never content.
+  attempted and when. Kind and channel only, never content. Its `kind` CHECK is
+  widened by a LATER migration each time the vocabulary grows (`003`, then `008`
+  for M27 PR3b's `read_by_grantee`), never by editing the file that created it —
+  applied migrations are checksummed and editing one raises `MigrationDriftError`.
+  `read_by_grantee` is also the one kind whose row is written INSIDE the caller's
+  transaction with an explicit `created_at` from the service clock, because it is
+  the only kind that is read back: it is the once-per-collection dedupe, compared
+  against `emergency_access_policies.released_at`, and a defaulted `now()` would
+  put a DB-server timestamp and an app-server timestamp on the two sides of one
+  predicate.
 - Both `vault_keysets` and `emergency_access_configs` use a version-capture
   trigger that REDACTS key material from the row image. Retaining a superseded
   wrapped master key (or a superseded platform half) would let a phished old

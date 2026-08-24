@@ -139,7 +139,14 @@ function assertImageOwners(rows: readonly VersionRow[], userId: string): void {
   }
 }
 
-function toDto(row: ItemRow): VaultItemDto {
+/**
+ * EXPORTED FOR THE GRANTEE READER (M27 PR3b). `emergency.service.ts` serves the
+ * owner's items to a released grantee and must hand back the same shape on the
+ * same cursor grammar — a second mapper and a second codec would be two things
+ * to keep in step, and the cursor pair in particular could disagree about a
+ * malformed value while looking identical.
+ */
+export function toDto(row: ItemRow): VaultItemDto {
   return {
     id: row.id,
     itemType: row.item_type,
@@ -158,11 +165,11 @@ function toDto(row: ItemRow): VaultItemDto {
  * per list: a second parser is a second thing to get wrong, and the two could
  * disagree about a malformed cursor while looking identical.
  */
-function encodeCursor(at: Date, id: string): string {
+export function encodeCursor(at: Date, id: string): string {
   return Buffer.from(`${at.toISOString()}|${id}`, 'utf8').toString('base64url');
 }
 
-function decodeCursor(cursor: string): { at: Date; id: string } {
+export function decodeCursor(cursor: string): { at: Date; id: string } {
   const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
   const separator = decoded.lastIndexOf('|');
   if (separator <= 0) throw new ConflictException({ error: 'invalid_cursor' });

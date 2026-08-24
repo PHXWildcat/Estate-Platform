@@ -79,6 +79,8 @@ export interface PolicyDto {
 export interface EscrowDto {
   configured: boolean;
   threshold: number | null;
+  /** M27 PR3b: what the owner named this vault, echoed back. */
+  label: string | null;
   policies: PolicyDto[];
 }
 
@@ -88,6 +90,15 @@ export interface GranteePolicyDto {
   status: string;
   releasesAt: string | null;
   releasedAt: string | null;
+  /**
+   * M27 PR3b. The owner's own words for their vault, or null — in which case
+   * the row falls back to `ownerUserId`, which is what it always showed.
+   * OPTIONAL IN PRACTICE even though the type says otherwise: this arrives as
+   * JSON from a service that may be older than this origin, so every reader
+   * must treat `undefined` and `null` alike (the M12 rule — never blank a row
+   * because a field is missing, and never invent one that is).
+   */
+  ownerLabel: string | null;
 }
 
 /** Fetch the contacts this owner could name, already projected by the edge. */
@@ -176,6 +187,8 @@ export interface ConfigureInput {
   readonly confirmed: readonly GranteeKeyOffer[];
   readonly threshold: number;
   readonly waitingPeriodHours: number;
+  /** M27 PR3b. Absent clears any previous label — configure replaces wholesale. */
+  readonly label?: string | undefined;
 }
 
 export class EmergencyAccessError extends Error {
@@ -235,6 +248,7 @@ export async function configureEscrow(input: ConfigureInput): Promise<ApiResult<
       threshold: material.threshold,
       platformPart: material.platformPart,
       wrappedMasterKeyRecovery: material.wrappedMasterKeyRecovery,
+      ...(input.label ? { label: input.label } : {}),
       grantees: material.shares.map((share) => ({
         granteeContactId: byUser.get(share.granteeUserId)?.contactId,
         granteeUserId: share.granteeUserId,

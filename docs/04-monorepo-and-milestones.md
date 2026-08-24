@@ -8907,13 +8907,30 @@ paired CHECK and no writer is a broken table.
   cannot" — one false about who acted, one pointing its pronoun at the wrong
   person, both found one screen after that function grew its first
   grantee-specific case. docs/03 §6yy.
-- **PR3b — the grantee READ.** The route authorized by the released policy row,
-  the Cedar grantee attribute in the vault's own domain (a ninth action id in
-  its own `vault.cedar`), and the `vault.read_by_grantee` notification kind with
-  its producer — emitted once per collection rather than per read.
-  (`vault.emergency.items_read` is the AUDIT action PR0 added; an earlier draft
-  of this line named it as the notification, which it has never been — the kind
-  CHECK in `002_emergency_access.sql` does not contain it.)
-- **PR4 — the grantee's reading surface** on the vault origin.
+- **PR3b — the grantee READ, AND ITS SURFACE.** The route authorized by the
+  released policy row, the Cedar grantee attribute in the vault's own domain (a
+  ninth action id in its own `vault.cedar`), and the `vault.read_by_grantee`
+  notification kind with its producer — emitted once per collection rather than
+  per read. (`vault.emergency.items_read` is the AUDIT action PR0 added; an
+  earlier draft of this line named it as the notification, which it has never
+  been — the kind CHECK in `002_emergency_access.sql` does not contain it.)
+
+  **PR3b ABSORBED PR4, and the rule that forced it is this repo's own:** ship a
+  route in the same change as its consumer, because zero-caller surfaces are the
+  largest recurring gap here. Landing the read route with its screens a PR later
+  would have shipped a Zone A cross-user read path that nothing called, through
+  a milestone whose next PR is the security review — the exact shape that gap
+  takes. It was also forced from the other end: §6yy's `[OWNER: M27]` residual
+  is assigned to "the PR that must already answer *whose vault am I reading?* in
+  order to render a reading surface at all", and the answer PR3b lands (an
+  owner-authored `label`, because `profile` has no name for an account anywhere)
+  is only checkable on a screen that renders it.
+
+  So PR3b also carries: the reading screens on the vault origin, the collected
+  escrow held read-only and non-extractable inside `VaultSession` — moved there
+  from `app.ts`, which now handles no key material at all — and the owner's
+  label field with its echo back. docs/03 §6zz.
+- **PR4 — FOLDED INTO PR3b.** Kept as a numbered row rather than renumbered, so
+  the per-PR record above and every reference to PR5 stays true.
 - **PR5 — the security review**, asking the M25 PR5 question of M27's own
   controls, plus the live drive on the isolated vault origin.

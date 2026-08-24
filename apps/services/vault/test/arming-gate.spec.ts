@@ -6,6 +6,7 @@ import type { Db } from '../src/db';
 import type { EmergencyRepo } from '../src/emergency.repo';
 import type { EventsService } from '../src/events.service';
 import type { KeysetsRepo } from '../src/keysets.repo';
+import type { ItemsRepo } from '../src/items.repo';
 import type { VaultAuthz } from '../src/authz.service';
 
 /**
@@ -78,6 +79,10 @@ function harness(
     unusable as Db,
     unusable as EmergencyRepo,
     unusable as KeysetsRepo,
+    // M27 PR3b widened the constructor. Still `unusable`: neither gate suite
+    // may reach an item, and a double that THROWS on contact says so where a
+    // permissive stub would quietly let a regression through.
+    unusable as ItemsRepo,
     { assertCan: (): void => undefined } as unknown as VaultAuthz,
     events,
     notifier,
