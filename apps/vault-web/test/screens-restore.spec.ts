@@ -475,7 +475,7 @@ describe('the restore surface (M27 PR2)', () => {
 
       // ANTI-VACUITY: the row actually carries a rendered time, so two empty
       // strings cannot agree their way to a pass.
-      expect(asZulu).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+      expect(asZulu).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
       expect(asOffset).toBe(asZulu);
       // AND NOTHING MORE. A line asserting the rendering is NOT '2026-08-24
       // 00:00' was here and it was itself the mistake these comments warn
@@ -486,6 +486,65 @@ describe('the restore surface (M27 PR2)', () => {
       // asks for, skipped in exactly the arm that mattered. The equivalence
       // above already discriminates: the trim renders the two spellings
       // differently in EVERY zone, UTC included.
+    });
+
+    /**
+     * TWO IMAGES FROM THE SAME MINUTE ARE TWO DIFFERENT ROWS (M27 PR5).
+     *
+     * FOUND BY DRIVING, and this is the assertion that was missing rather than
+     * the one that was wrong. The test above pins that one instant renders the
+     * same however it is SPELLED. Nothing pinned the converse — that two
+     * DIFFERENT instants render differently — so a formatter that threw away
+     * precision satisfied every existing assertion here. Minute resolution did,
+     * and the drive hit it on the first try: editing an item and then putting
+     * the previous version back captures the replaced image, 26 seconds after
+     * the first, and the History screen showed two rows identical to the
+     * character, each offering "Put this version back", holding different
+     * secrets.
+     *
+     * The gap is a general one worth naming: an equivalence assertion is only
+     * half a specification. `x renders like y` is satisfied by a function that
+     * renders EVERYTHING alike, and the anti-vacuity floor beside it — a regex
+     * that the output is shaped like a date — is satisfied by that function too.
+     * A discrimination assertion is what closes it.
+     */
+    it('tells two versions from the same minute apart — precision is the whole job here', async () => {
+      await openVaultWithItem('Bank — joint');
+      clickText('Bank — joint');
+      await waitForText('Password or secret');
+      byLabel('Password or secret').value = 'second-secret';
+      submitForm();
+      await waitForText('Bank — joint');
+
+      const live = [...service.items.values()][0] as Row;
+      const log = service.versions.get(live.id) as Image[];
+      const image = log[0] as Image;
+
+      // The two instants the drive actually produced: an edit, then the restore
+      // that replaced it, inside one minute.
+      image.versionedAt = '2026-08-24T22:05:22.000Z';
+      clickText('History');
+      await waitForText('Put this version back');
+      const first = document.querySelector('ul.items li .item-type')?.textContent ?? '';
+
+      image.versionedAt = '2026-08-24T22:05:48.000Z';
+      clickText('Back');
+      await waitForText('Locks after');
+      clickText('History');
+      await waitForText('Put this version back');
+      const second = document.querySelector('ul.items li .item-type')?.textContent ?? '';
+
+      // ANTI-VACUITY BEFORE THE DISCRIMINATION: two empty strings differ from
+      // nothing, and a row that stopped rendering a time would read as a pass
+      // on `not.toBe` alone.
+      expect(first).toMatch(/\d{2}:\d{2}:\d{2}$/);
+      expect(second).toMatch(/\d{2}:\d{2}:\d{2}$/);
+      expect(second).not.toBe(first);
+
+      // AND THE SAME MINUTE, so this cannot pass by the fixture drifting into
+      // two different minutes — which would leave the defect uncovered while
+      // the test went green.
+      expect(first.slice(0, -3)).toBe(second.slice(0, -3));
     });
 
     /**

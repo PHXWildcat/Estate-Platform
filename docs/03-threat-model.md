@@ -1341,9 +1341,12 @@ substituting its own key for a grantee's could not be exercised.
 from whatever key the client was handed. CLOSED: the grantee's own fingerprint is
 displayed, computed from the key the server serves back.
 
-*Residual, narrowed by M27 PR3a and now stated on the screen rather than
-implied:* a released escrow reconstructs the owner's recovery key and this
-client cannot yet read their items with it. This bullet used to continue
+*Residual, CLOSED by M27 PR3b (§6zz):* a released escrow reconstructs the
+owner's recovery key and this client NOW READS the owner's items with it —
+`renderGrantedItems` behind `GET /v1/vault/emergency-access/:policyId/items`.
+The sentence said "cannot yet", and went on saying it after the capability
+shipped in the very `app.ts` it cites; M27 PR5 corrected it. A residual that
+claims a capability is missing is what stops the next reader looking for it. This bullet used to continue
 "release is one-shot, so pressing the button spends the arrangement", which was
 the sharp half — the grantee traded the whole arrangement for a reconstruction
 they could not use. Since §6yy collection repeats, so the cost of pressing it is
@@ -1681,8 +1684,10 @@ CLAUDE.md decision log; the security-relevant shape is:
 - *An unlocked extension can overwrite every item.* The residual this used to
   state — that no restore surface exists — was written here, under a PR lead-in,
   where the residuals fence could not see it. It now sits in this section's
-  declared residual region, tagged and owned by M27; §6uu records both the move
-  and the fence change that makes the next one visible.
+  declared residual region, tagged there and CLOSED by M27 PR2 (§6xx), which
+  shipped the owner's restore surface; §6uu records both the move and the fence
+  change that makes the next one visible. It read "tagged and owned by M27"
+  until M27 PR5 — owned by the milestone that had already closed it.
 - *An edit needs no read, and that was a choice rather than a limitation.* The
   popup cannot open an item: `summarise` yields titles and `fillFor` yields one
   credential for a page that matches. Editing normally requires reading the item
@@ -5741,9 +5746,12 @@ per-file, because a total passes happily while one lead-in goes blind.
   milestone passes the vocabulary check exactly as naming a live one does. The
   count is pinned rather than driven to zero: deciding whether a later slice
   of the same programme still owes each item is a sweep, not a line in this
-  PR. What the derivation CANNOT see is the sharper half — M21's eighteen and
-  M24's residuals, because those two queue rows say APPROVED and never gained
-  a completion status, so no scan of that column will ever find them.
+  PR. What the derivation CANNOT see is the sharper half — M21's eighteen,
+  because that queue row says APPROVED and never gained a completion status,
+  so no scan of that column will ever find them. M27 PR5 corrected this
+  sentence: it said "M21's eighteen and M24's", and M24 owns NO residual at
+  all — zero `[OWNER: M24]` tags in this document. A bullet about ownership
+  accuracy asserting a count nobody checked is the defect it describes.
 - **[ACCEPTED]** *The reason fence binds a route's label to its keyset
   behaviour, not to which rows it retires.* A `deleteItem` that retired every
   item a user owns would label them `user_delete`, which is CORRECT for a
@@ -6162,15 +6170,26 @@ a category is a rule half-applied" costs when the category is not swept.
   overwrite live content, which is why the unopenable-image case above is
   withheld; what it cannot do is remove anything, since the write it performs is
   itself captured before it lands.
-- **[OWNER: M39]** *The owner picks a version by time alone.* The screen lists
+- **[ACCEPTED]** *The owner picks a version by time alone.* The screen lists
   when each image was captured and its item type, and says nothing about what
   changed. Rendering a diff would put two decrypted secrets on screen at once
   and would need a differ this origin has no dependency budget for. The
   consequence is a reader restoring the wrong image and needing a second restore
   to undo it — recoverable, because the restore is itself captured, but it means
   the surface is honest about the past without being useful for choosing within
-  it. Owned alongside §6ww's rollback-detector item, since both are about what a
-  version list tells someone rather than what it permits.
+  it. **M27 PR5 narrowed it and corrected two things about it.** The premise
+  that the WHEN discriminates was false: `captureTime` rendered to the minute,
+  so two images from one minute were two rows identical to the character, each
+  offering to be put back and holding different secrets — and a restore captures
+  the image it replaces, so any restore within a minute of the edit it reverses
+  produced exactly that. Found by driving. Seconds are rendered now, and
+  `screens-restore.spec.ts` asserts the discrimination rather than only the
+  equivalence, which is the assertion that was missing. What remains is the
+  original half — the list says nothing about CONTENT — and it is ACCEPTED
+  rather than owned: the diff is refused on this origin for the reason above, so
+  nothing is owed. The tag also claimed to be "owned alongside §6ww's
+  rollback-detector item", which is `[ACCEPTED]` and has no owner, and the work
+  it described is not what M39's row is named for.
 ## 6yy. Threat-model delta — M27 PR3a, release becomes re-collectable (2026-08-23)
 
 **THE §5.2 CEREMONY SPENT ITSELF AND DELIVERED NOTHING, AND THAT WAS THE
@@ -6532,3 +6551,27 @@ the wider set. `packages/vault-crypto/test/items.spec.ts` observes the usages
   and "one shared client module" is a client-architecture decision that does not
   belong inside a Zone A read; it is vault-local and unblocked, which is what
   that row collects.
+- **[ACCEPTED]** *The grantee-key lookup narrows a participation oracle rather
+  than closing it.* `GET /v1/vault/recovery-key/:granteeUserId` carried NO
+  vault-session guard while its sibling `GET /v1/vault/recovery-key` — twelve
+  lines above it in the same controller, whose docstring says a session alone
+  "should not be enough to fetch it either" — carried one. The Cedar call beside
+  it could not close the gap and was worse than absent: it asked
+  `assertCan(actor, 'read', vaultResource(actor))`, which `owner.cedar` permits
+  unconditionally when `resource.owner == principal` and no `forbid` exists in
+  the bundle, so it was a TAUTOLOGY that could never deny anybody. Any
+  authenticated account could therefore ask about any user id it could name.
+  What is disclosed is not the risk — the value is a P-256 public key published
+  so strangers can seal to it, and its private half is wrapped under the target's
+  own master key — the EXISTENCE answer beside it is: a 200 says "this id has a
+  vault keyset AND has published a recovery key", which `app.ts` tells the owner
+  in as many words is not something they should be able to probe. M27 PR5 put
+  `VaultSessionGuard` on the route and DELETED the tautology rather than
+  repointing it, because no Cedar action expresses "may read another user's
+  published key" and inventing one to make a gate look present is the same
+  defect wearing a policy file. Accepted rather than owned because the bound is
+  now a real one and the residue is inherent: a caller holding their own vault
+  password and Secret Key can still learn that a user id participates, which is
+  what the feature requires them to learn before sealing a share. The int suite
+  asserts the refusal fires BEFORE the parameter is read, so the 403 carries no
+  information about who exists.

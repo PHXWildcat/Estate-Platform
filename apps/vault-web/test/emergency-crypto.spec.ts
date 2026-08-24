@@ -174,6 +174,14 @@ async function enrol(userId: string): Promise<{ key: CryptoKey; bytes: Uint8Arra
 
 jest.setTimeout(180_000);
 
+/**
+ * The route moved behind an open vault in M27 PR5, so every call here carries a
+ * session token. Named rather than inlined so the fence below can assert the
+ * header actually travels — a double that accepts a call without the credential
+ * the route now demands is a double that is unfaithful about a REFUSAL.
+ */
+const VAULT_SESSION = 'vault-session-for-key-offers';
+
 describe('emergency access, owner device to grantee device', () => {
   let server: Server;
   let owner: { key: CryptoKey; bytes: Uint8Array };
@@ -199,7 +207,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const offer = await offerFor(candidates.data[0] as GranteeCandidate);
+    const offer = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!offer.ok) throw new Error('offer');
     // 80 bits in the M6-widened alphabet: what the owner reads down a phone.
     expect(offer.data.fingerprint).toMatch(/^[0-9A-HJKMNP-TV-Z-]+$/);
@@ -266,7 +274,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const before = await offerFor(candidates.data[0] as GranteeCandidate);
+    const before = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!before.ok) throw new Error('offer');
 
     const impostor = await generateRecoveryKeyPair();
@@ -274,7 +282,7 @@ describe('emergency access, owner device to grantee device', () => {
       publicKey: toBase64(impostor.publicKey),
       wrappedPrivateKey: honest?.wrappedPrivateKey ?? '',
     });
-    const after = await offerFor(candidates.data[0] as GranteeCandidate);
+    const after = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!after.ok) throw new Error('substituted offer');
 
     expect(after.data.fingerprint).not.toBe(before.data.fingerprint);
@@ -287,7 +295,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const offer = await offerFor(candidates.data[0] as GranteeCandidate);
+    const offer = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!offer.ok) throw new Error('offer');
     await configureEscrow({
       ownerUserId: OWNER,
@@ -317,7 +325,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const offer = await offerFor(candidates.data[0] as GranteeCandidate);
+    const offer = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!offer.ok) throw new Error('offer');
 
     // 2-of-1 would arm an escrow that can never be opened — the owner would
@@ -339,7 +347,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const offer = await offerFor(candidates.data[0] as GranteeCandidate);
+    const offer = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     expect(offer.ok).toBe(false);
     if (offer.ok) throw new Error('unreachable');
     expect(offer.code).toBe('NOT_FOUND');
@@ -362,7 +370,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const offer = await offerFor(candidates.data[0] as GranteeCandidate);
+    const offer = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!offer.ok) throw new Error('offer');
     await configureEscrow({
       ownerUserId: OWNER,
@@ -410,7 +418,7 @@ describe('emergency access, owner device to grantee device', () => {
     server.caller = OWNER;
     const candidates = await granteeCandidates();
     if (!candidates.ok) throw new Error('candidates');
-    const offer = await offerFor(candidates.data[0] as GranteeCandidate);
+    const offer = await offerFor(candidates.data[0] as GranteeCandidate, VAULT_SESSION);
     if (!offer.ok) throw new Error('offer');
     await configureEscrow({
       ownerUserId: OWNER,

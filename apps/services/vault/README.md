@@ -146,8 +146,8 @@ M-of-N is fully implemented, with threshold 1 as the default.
 | Route | Gates |
 | --- | --- |
 | `POST /v1/vault/recovery-key` | caller + step-up |
-| `GET /v1/vault/recovery-key` | caller |
-| `GET /v1/vault/recovery-key/:granteeUserId` | caller |
+| `GET /v1/vault/recovery-key` | caller + **caller's own vault session** |
+| `GET /v1/vault/recovery-key/:granteeUserId` | caller + **caller's own vault session** |
 | `GET,POST /v1/vault/emergency-access` | caller (+ step-up to configure) |
 | `GET /v1/vault/emergency-access/granted-to-me` | caller |
 | `POST /v1/vault/emergency-access/:id/request` | caller (grantee) |

@@ -870,8 +870,16 @@ describe('the emergency-access screens', () => {
     await waitForText('key confirmed');
     clickText('Arm emergency access');
 
-    await waitForText(/cannot send notifications right now/i);
+    // The copy is SURFACE-NEUTRAL as of M27 PR5 — it named "arming", and
+    // `request` throws this same 503 at a GRANTEE, who is arming nothing. What
+    // this test proves is unchanged and is the distinctness, not the wording:
+    // the outage and the M14 verification gate must never share a sentence.
+    await waitForText(/cannot send the warning/i);
     expect(document.body.textContent).not.toMatch(/confirm your email address/i);
+    // AND IT STILL READS AS A HOLD RATHER THAN A FAULT: "nothing has changed"
+    // is the half that keeps a 503 on this ceremony from sounding like data
+    // loss, and it is the half a shorter rewrite would drop.
+    expect(document.body.textContent).toMatch(/nothing has changed/i);
   });
 
   it('offers one-tap denial on a waiting request, and never a challenge', async () => {
@@ -1288,7 +1296,27 @@ describe('the emergency-access screens', () => {
     await waitForText(/ready to open/i);
     clickText('Open the vault');
     clickText('Open it now');
-    await waitForText(/changed since you opened it/i);
+    /*
+     * THIS ASSERTION USED TO PIN THE DEFECT (M27 PR5).
+     *
+     * The fixture answers 409 `not_requested` — the owner re-armed under a
+     * grantee holding a live screen — and the assertion was
+     * `/changed since you opened it/i`, which is CONFLICT's copy: "This item
+     * changed since you opened it. Reload and try again." Every word of that is
+     * wrong here. There is no item on this screen; nothing "changed" in the
+     * sense a stale If-Match means; and reloading this origin returns to the
+     * vault root and loses the arrangement, so the one instruction it gives is
+     * the one thing that does not help. The test passed because it asserted
+     * what the code did rather than what the screen owed the reader.
+     */
+    await waitForText(/re-armed since you opened it/i);
+    // THE REMEDY IS THE POINT, not the description: requesting again is the
+    // only thing that starts a new waiting period.
+    expect(document.body.textContent).toMatch(/ask for access again/i);
+    // AND THE ITEM-SHAPED COPY IS GONE, in the spellings this screen has
+    // actually shown, so a relapse into `messageFor`'s generic branch reddens.
+    expect(document.body.textContent).not.toMatch(/this item changed/i);
+    expect(document.body.textContent).not.toMatch(/reload and try again/i);
     expect(document.body.textContent).not.toMatch(/reconstructed on this device/i);
   });
 

@@ -81,8 +81,10 @@ const OWNERS: readonly string[] = [
   'M37', // passkey provisioning (Estate as authenticator)
   'M38', // referral marketplace
   'M39', // Zone A hardening — SRP abuse bound + rollback detection (added M27 PR0)
-  'M40',
-  'M41', // residual ownership re-sweep (added M27 PR0)
+  'M40', // residual ownership re-sweep (added M27 PR0)
+  'M41', // Plaid item refusal + the read-before-authz sweep (added M27 PR1a)
+  'M42', // cross-user free text, and everywhere else it crosses (added M27 PR5)
+  'M43', // one derivation per closed vocabulary (added M27 PR5)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -168,10 +170,10 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6tt': 3,
   '6uu': 7,
   '6vv': 4,
-  '6ww': 3,
+  '6ww': 4,
   '6xx': 3,
   '6yy': 5,
-  '6zz': 7,
+  '6zz': 8,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -403,7 +405,14 @@ function residuals(): {
     // still collected and still tagged, but the failure message named the wrong
     // section, which is the wrong file for whoever goes looking. Found by §6bb
     // reporting itself as §6z.
-    const delta = /^## (6[a-z]{0,2})\./.exec(line);
+    //
+    // THREE LETTERS NOW (M27 PR5), and forced rather than tidy: §6zz is the
+    // LAST two-letter section there is, so the next delta this milestone
+    // writes is §6aaa and lands on the same wall §6aa did. The bound is
+    // written out in six places; `the section vocabulary has ONE spelling`
+    // names all six and fails if an extension reaches only some of them, which
+    // is how the one-letter era lasted — every copy was wrong together.
+    const delta = /^## (6[a-z]{0,3})\./.exec(line);
     if (delta !== null) {
       section = delta[1] as string;
       sections.add(section);
@@ -684,7 +693,7 @@ const OUT_OF_CORPUS: ReadonlyArray<{
   { section: '6z', label: 'What PR1 changes', bullets: 6, kind: 'shipped' },
 ];
 
-const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,2})\]\*\*/;
+const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,3})\]\*\*/;
 
 describe('docs/03 §6 — every residual declares a disposition', () => {
   const { items, sections, declared, regions, interruptions, outside } = residuals();
@@ -797,7 +806,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // stops the next reader looking and offers them nowhere to look.
     const bad = items
       .filter((r) => /^- \*\*\[CLOSED/.test(r.text))
-      .filter((r) => !/^- \*\*\[CLOSED: §6[a-z]{0,2}\]\*\*/.test(r.text))
+      .filter((r) => !/^- \*\*\[CLOSED: §6[a-z]{0,3}\]\*\*/.test(r.text))
       .map((r) => `docs/03-threat-model.md:${r.line} is CLOSED without naming a §`);
     expect(bad).toEqual([]);
   });
@@ -816,14 +825,14 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     const reached = new Set<string>();
     let seen = 0;
     lines.forEach((line, index) => {
-      // `6[a-z]{0,2}` — and this is the occurrence where the one-letter
+      // `6[a-z]{0,3}` — and this is the occurrence where the one-letter
       // version was not merely mis-attributing but BLIND. `## 6aa.` failed the
       // first test and passed the second (`^## `), so `inSix` went FALSE at
       // §6aa and stayed false: §6aa and §6bb were outside this scan entirely,
       // and a residual lead-in written there with an unrecognised idiom would
       // have been unclassified and unreported. A fence that stops matching goes
       // green, which is the failure this file exists to make loud.
-      const heading = /^## (6[a-z]{0,2})\./.exec(line);
+      const heading = /^## (6[a-z]{0,3})\./.exec(line);
       if (heading !== null) inSix = heading[1] as string;
       else if (/^## /.test(line)) inSix = null;
       if (inSix === null) return;
@@ -866,6 +875,62 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
       .map((m) => m[1] as string);
     expect(headings.length).toBeGreaterThanOrEqual(MIN_SECTIONS);
     expect([...sections].sort()).toEqual([...new Set(headings)].sort());
+  });
+
+  it('the section vocabulary has ONE spelling, and the guard above is still the LOOSER one', () => {
+    /*
+     * WHAT THE TEST ABOVE CANNOT SEE ABOUT ITSELF (M27 PR5).
+     *
+     * The letter bound on `## 6<letters>.` is written out in SIX places in
+     * this file: the parser, the lead-in classification scan, the partition
+     * total, the outside-§6 scan, and twice as a `CLOSED: §` citation. They
+     * are separate on purpose — the comment on the partition total says so —
+     * because an independently re-derived scan is what turns a break in the
+     * parser into a DISAGREEMENT instead of a shared blind spot.
+     *
+     * Independence in the traversal is the property worth having. Independence
+     * in the LETTER BOUND is pure liability, and it is the half-applied-rule
+     * shape this milestone kept finding: extending the bound is a six-line
+     * edit, five of which nothing forces you to make. The one-letter era
+     * survived precisely because every copy was wrong together.
+     *
+     * The second assertion is the one with teeth. The test above compares the
+     * parser against an "independently permissive read" — but nothing made
+     * that read permissive except an author's care. Widen the parser to
+     * `[a-z]*` and that comparison becomes a tautology: it would pass on every
+     * possible file, forever, while reading exactly like the fence that caught
+     * the one-letter regex. A fence that measures nothing is worse than no
+     * fence, because it is load-bearing in someone's head.
+     *
+     * So: every bounded copy agrees, and the guard's bound strictly exceeds
+     * theirs. Extending to four letters means changing one number in seven
+     * places and this test names all of them.
+     */
+    // Built by concatenation, never as literals: a scanner written with the
+    // pattern it scans for finds ITSELF and reports a clean file.
+    const bounded = new RegExp('6\\[a-z\\]\\{0,(\\d+)\\}', 'g');
+    const open = new RegExp('6\\[a-z\\]\\*', 'g');
+
+    const self = readFileSync(__filename, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+
+    // ANTI-VACUITY FIRST, and on the corpus rather than the result: comment
+    // stripping that ate the file would leave every `new Set` below empty and
+    // every assertion green. The parser's own line must survive the strip.
+    expect(self).toContain('sections.add(section)');
+    expect(self.length).toBeGreaterThan(20000);
+
+    const bounds = [...self.matchAll(bounded)].map((m) => Number(m[1]));
+    // A FLOOR AT THIS LEVEL TOO. Five of the six copies could be renamed out
+    // of existence and a set of one distinct value would still be a set of one.
+    expect(bounds.length).toBeGreaterThanOrEqual(6);
+    expect([...new Set(bounds)]).toHaveLength(1);
+
+    // The guard's read is unbounded, so it is looser than any bound at all —
+    // and there is exactly one of it, because a second unbounded copy is how
+    // the parser becomes unbounded without anyone editing the parser.
+    expect(self.match(open) ?? []).toHaveLength(1);
   });
 
   it('every §6 DELTA declares a residual region, so the next one lands where the fence looks', () => {
@@ -934,7 +999,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
         // parser's own section tracking shows up as a DISAGREEMENT.
         const before = all.slice(0, i);
         const lastHeading = [...before].reverse().find((l) => /^## /.test(l)) ?? '';
-        return /^## 6[a-z]{0,2}\./.test(lastHeading) ? n + 1 : n;
+        return /^## 6[a-z]{0,3}\./.test(lastHeading) ? n + 1 : n;
       }, 0);
     expect(items.length + outside.length).toBe(total);
     expect(total).toBeGreaterThanOrEqual(MIN_SECTION_SIX_BULLETS);
@@ -978,7 +1043,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     const untagged: string[] = [];
     lines.forEach((line, index) => {
       if (/^## /.test(line)) {
-        const isSix = /^## 6[a-z]{0,2}\./.test(line);
+        const isSix = /^## 6[a-z]{0,3}\./.test(line);
         if (isSix) sawSix = true;
         outsideSix = sawSix && !isSix;
       }

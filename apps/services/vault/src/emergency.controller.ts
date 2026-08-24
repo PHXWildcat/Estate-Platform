@@ -83,17 +83,34 @@ export class EmergencyAccessController {
   /**
    * Fetch a prospective grantee's public key. The owner's client must confirm
    * the fingerprint out of band before sealing a share to it.
+   *
+   * BEHIND AN OPEN VAULT, on the same reasoning as `ownRecoveryKey` earlier in
+   * this controller — which carried the guard while this one did not, the
+   * sibling gap this milestone kept finding (M27 PR5). Stated as "earlier in
+   * this controller" rather than as a line count: the first draft said "twelve
+   * lines above", which the docstring below then made false in the same commit.
+   *
+   * The value itself is PUBLISHED ON PURPOSE: it is a P-256 public key, offered
+   * so strangers can seal a share to it, and its private half is wrapped under
+   * the target's own master key. Learning it enables nothing. What the missing
+   * guard exposed is the EXISTENCE answer beside it — a 200 says "this user id
+   * has a vault keyset and has published a recovery key", and every
+   * authenticated account could ask it about every user id it could name.
+   * `apps/vault-web/src/client/app.ts` tells the owner in as many words that
+   * participation is not something they should be able to probe.
+   *
+   * The guard narrows that to callers holding an OPEN VAULT of their own —
+   * their vault password and Secret Key, not merely a stolen session — which is
+   * a real bound and not a closure. Recorded as such in docs/03 §6zz rather
+   * than left to read as a fix.
    */
   @Get('vault/recovery-key/:granteeUserId')
+  @UseGuards(VaultSessionGuard)
   @HttpCode(200)
   granteePublicKey(
-    @Req() req: CallerRequest,
     @Param('granteeUserId') granteeUserId: string,
   ): Promise<{ granteeUserId: string; publicKey: string }> {
-    return this.emergency.granteePublicKey(
-      requireCaller(req).userId,
-      parse(UuidSchema, granteeUserId),
-    );
+    return this.emergency.granteePublicKey(parse(UuidSchema, granteeUserId));
   }
 
   @Get('vault/emergency-access')
