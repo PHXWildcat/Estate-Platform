@@ -29,7 +29,7 @@ import { VaultSessionsRepo } from './sessions.repo';
 import { VaultAuthz, vaultItemResource, vaultResource } from './authz.service';
 import { generateOpaqueToken, hashToken } from './tokens';
 import type { VaultSessionContext } from './vault-session.guard';
-import type { VaultItemType } from './schemas';
+import { UuidSchema, type VaultItemType } from './schemas';
 
 /** An SRP challenge is a one-shot, short-lived thing. */
 export const HANDSHAKE_TTL_MS = 2 * 60 * 1000;
@@ -139,7 +139,14 @@ function assertImageOwners(rows: readonly VersionRow[], userId: string): void {
   }
 }
 
-function toDto(row: ItemRow): VaultItemDto {
+/**
+ * EXPORTED FOR THE GRANTEE READER (M27 PR3b). `emergency.service.ts` serves the
+ * owner's items to a released grantee and must hand back the same shape on the
+ * same cursor grammar — a second mapper and a second codec would be two things
+ * to keep in step, and the cursor pair in particular could disagree about a
+ * malformed value while looking identical.
+ */
+export function toDto(row: ItemRow): VaultItemDto {
   return {
     id: row.id,
     itemType: row.item_type,
@@ -158,17 +165,31 @@ function toDto(row: ItemRow): VaultItemDto {
  * per list: a second parser is a second thing to get wrong, and the two could
  * disagree about a malformed cursor while looking identical.
  */
-function encodeCursor(at: Date, id: string): string {
+export function encodeCursor(at: Date, id: string): string {
   return Buffer.from(`${at.toISOString()}|${id}`, 'utf8').toString('base64url');
 }
 
-function decodeCursor(cursor: string): { at: Date; id: string } {
+export function decodeCursor(cursor: string): { at: Date; id: string } {
   const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
   const separator = decoded.lastIndexOf('|');
   if (separator <= 0) throw new ConflictException({ error: 'invalid_cursor' });
   const at = new Date(decoded.slice(0, separator));
   const id = decoded.slice(separator + 1);
-  if (Number.isNaN(at.getTime()) || id.length === 0) {
+  /*
+   * BOTH HALVES, NOT JUST THE TIMESTAMP (M27 PR3b review).
+   *
+   * `id.length === 0` was the only check on the id, so a cursor of the shape
+   * `<valid ISO>|zzz` decoded happily and reached the repo, where the
+   * parameter binds against a `uuid` column and Postgres raises 22P02. That
+   * leaves the filter with a non-HttpException and the caller gets 500
+   * `internal_error` — an OUTAGE's face on a malformed input, and the one
+   * answer this function exists to make impossible. Every other malformed
+   * cursor already answered `invalid_cursor`; this one arm did not.
+   *
+   * `UuidSchema.safeParse` rather than a local regex, so the cursor's idea of
+   * an id and the routes' idea of an id cannot drift apart.
+   */
+  if (Number.isNaN(at.getTime()) || !UuidSchema.safeParse(id).success) {
     throw new ConflictException({ error: 'invalid_cursor' });
   }
   return { at, id };

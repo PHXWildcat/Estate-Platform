@@ -155,6 +155,22 @@ M-of-N is fully implemented, with threshold 1 as the default.
 | `POST /v1/vault/emergency-access/:id/rearm` | caller + step-up |
 | `DELETE /v1/vault/emergency-access/:id` | caller + step-up |
 | `POST /v1/vault/emergency-access/:id/release` | caller (grantee) |
+| `GET /v1/vault/emergency-access/:id/items` | caller (grantee) + **grantee's own vault session** |
+
+**The grantee read carries the GRANTEE's vault session, never the owner's**
+(M27 PR3b). `VaultSessionGuard` is unchanged and unwidened: it proves the caller
+unlocked their own vault, which an attacker holding only an account session
+cannot do. The authority to read somebody else's rows comes from the
+`emergency_access_policies` row in `status='released'`, re-read inside the
+transaction and re-checked against the settlement gate — so the owner's one-tap
+stop ends the reading as well as the collecting. Neither route admits an
+extension session, and neither is step-up gated: opening the grantee's own vault
+already required a fresh step-up, and the collection required the full §5.2
+ceremony. Putting a further factor in front of the person acting for an owner
+who cannot act would be the heaviest gate at the one moment the feature is for.
+There is no single-item sibling: the list serves every blob and the client opens
+them all on arrival, so a per-item route would emit an "opened item X" audit
+event for a read that had already happened.
 
 **Denial is deliberately not step-up gated.** It has to be one tap from a push
 notification, possibly on a locked phone, possibly by someone elderly and

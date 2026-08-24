@@ -13,7 +13,9 @@ import { EmergencyRepo, type PolicyRow } from './emergency.repo';
 import { EventsService } from './events.service';
 import { KeysetsRepo } from './keysets.repo';
 import type { EmergencyNotification, NotificationPort } from './notifications';
-import { VaultAuthz, vaultResource } from './authz.service';
+import { VaultAuthz, vaultItemResource, vaultResource } from './authz.service';
+import { ItemsRepo, type ItemRow } from './items.repo';
+import { decodeCursor, encodeCursor, toDto, type VaultItemPage } from './vault.service';
 import { SETTLEMENT_AUTHORITY, type SettlementVaultGate } from '@estate/settlement-client';
 
 /**
@@ -70,6 +72,12 @@ export interface PolicyDto {
 export interface EscrowDto {
   readonly configured: boolean;
   readonly threshold: number | null;
+  /**
+   * M27 PR3b. What the owner chose to call this vault, echoed back so the
+   * screen that SET it can show it — an owner who cannot see the current label
+   * cannot tell an empty one from one that failed to save.
+   */
+  readonly label: string | null;
   readonly policies: readonly PolicyDto[];
 }
 
@@ -81,6 +89,19 @@ export interface GranteePolicyDto {
   readonly releasesAt: string | null;
   /** See `PolicyDto.releasedAt`; the grantee's own row loses the fact the same way. */
   readonly releasedAt: string | null;
+  /**
+   * M27 PR3b, closing docs/03 §6yy's `[OWNER: M27]`. What the OWNER chose to
+   * call their vault, or null — in which case the surface falls back to
+   * `ownerUserId`, which is what it printed before PR3b and is not a secret to
+   * a reader who was sealed a share by that account.
+   *
+   * NOT the owner's name, and the distinction is the disclosure decision this
+   * residual asked for: the platform has no name for an account anywhere (a
+   * person's name exists only inside OTHER users' per-user-encrypted contact
+   * rows), so the only string that can be served here without inventing a
+   * Zone B identity field is one the owner wrote for this purpose.
+   */
+  readonly ownerLabel: string | null;
 }
 
 /** The material a grantee collects after the waiting period elapses. */
@@ -130,6 +151,7 @@ export class EmergencyAccessService {
     private readonly db: Db,
     private readonly emergency: EmergencyRepo,
     private readonly keysets: KeysetsRepo,
+    private readonly items: ItemsRepo,
     private readonly authz: VaultAuthz,
     private readonly events: EventsService,
     @Inject(NOTIFIER) private readonly notifier: NotificationPort,
@@ -334,6 +356,7 @@ export class EmergencyAccessService {
     return {
       configured: config !== null,
       threshold: config?.threshold ?? null,
+      label: config?.label ?? null,
       policies: policies.map(toPolicyDto),
     };
   }
@@ -351,6 +374,7 @@ export class EmergencyAccessService {
       platformPart: string;
       wrappedMasterKeyRecovery: string;
       grantees: readonly GranteeInput[];
+      label?: string | undefined;
     },
   ): Promise<EscrowDto> {
     this.authz.assertCan(actorUserId, 'manage', vaultResource(actorUserId));
@@ -386,6 +410,9 @@ export class EmergencyAccessService {
         threshold: input.threshold,
         platformPart: Buffer.from(input.platformPart, 'base64'),
         wrappedMasterKeyRecovery: Buffer.from(input.wrappedMasterKeyRecovery, 'base64'),
+        // `?? null` rather than a spread: configure REPLACES an escrow, so an
+        // absent label must clear the previous one rather than inherit it.
+        label: input.label ?? null,
       });
 
       const rows: PolicyRow[] = [];
@@ -423,6 +450,7 @@ export class EmergencyAccessService {
     return {
       configured: true,
       threshold: input.threshold,
+      label: input.label ?? null,
       policies: result.rows.map(toPolicyDto),
     };
   }
@@ -436,6 +464,7 @@ export class EmergencyAccessService {
       status: row.status,
       releasesAt: row.releases_at?.toISOString() ?? null,
       releasedAt: row.released_at?.toISOString() ?? null,
+      ownerLabel: row.owner_label,
     }));
   }
 
@@ -451,32 +480,37 @@ export class EmergencyAccessService {
     await this.assertNotificationsUsable();
     const now = this.clock();
 
-    const outcome = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
-      this.db.withTransaction(granteeUserId, async (tx) => {
-        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
-        // The settlement gate (docs/03 §6a / §5.1 control 5). Checked BEFORE the
-        // clock starts: if the owner's estate is in settlement without an
-        // approved vault stage, the waiting period must never begin, so a
-        // grantee cannot pre-position a request to mature the instant a stage
-        // lands.
-        await this.assertSettlementPermits(policy.user_id);
+    const outcome = await this.withSettlementGate(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      'request',
+      () =>
+        this.db.withTransaction(granteeUserId, async (tx) => {
+          const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+          // The settlement gate (docs/03 §6a / §5.1 control 5). Checked BEFORE the
+          // clock starts: if the owner's estate is in settlement without an
+          // approved vault stage, the waiting period must never begin, so a
+          // grantee cannot pre-position a request to mature the instant a stage
+          // lands.
+          await this.assertSettlementPermits(policy.user_id);
 
-        const blocked = this.blockReason(policy);
-        if (blocked) {
-          // Counted and reported, not silently dropped: a grantee hammering a
-          // denied policy is exactly what the owner needs to see.
-          await this.emergency.countBlockedRequest(tx, policy.id);
-          return { blocked, policy };
-        }
+          const blocked = this.blockReason(policy);
+          if (blocked) {
+            // Counted and reported, not silently dropped: a grantee hammering a
+            // denied policy is exactly what the owner needs to see.
+            await this.emergency.countBlockedRequest(tx, policy.id);
+            return { blocked, policy };
+          }
 
-        const releasesAt = new Date(now.getTime() + policy.waiting_period_hours * 60 * 60 * 1000);
-        const updated = await this.emergency.markRequested(tx, {
-          id: policy.id,
-          at: now,
-          releasesAt,
-        });
-        return { blocked: null, policy: updated };
-      }),
+          const releasesAt = new Date(now.getTime() + policy.waiting_period_hours * 60 * 60 * 1000);
+          const updated = await this.emergency.markRequested(tx, {
+            id: policy.id,
+            at: now,
+            releasesAt,
+          });
+          return { blocked: null, policy: updated };
+        }),
     );
 
     if (outcome.blocked) {
@@ -520,7 +554,6 @@ export class EmergencyAccessService {
    * stops working.
    */
   private blockReason(policy: PolicyRow): string | null {
-    if (policy.status === 'revoked') return 'policy_revoked';
     if (policy.status === 'released') return 'already_released';
     if (policy.status === 'waiting') return 'already_waiting';
     if (policy.status === 'denied_by_owner') return 'denied_by_owner';
@@ -563,7 +596,6 @@ export class EmergencyAccessService {
     const now = this.clock();
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
-      if (policy.status === 'revoked') throw new ConflictException({ error: 'policy_revoked' });
       return this.emergency.markDenied(tx, policy.id, now);
     });
 
@@ -583,7 +615,6 @@ export class EmergencyAccessService {
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
       if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });
-      if (policy.status === 'revoked') throw new ConflictException({ error: 'policy_revoked' });
       return this.emergency.markRearmed(tx, policy.id);
     });
 
@@ -629,62 +660,95 @@ export class EmergencyAccessService {
   ): Promise<ReleaseDto> {
     const now = this.clock();
 
-    const released = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
-      this.db.withTransaction(granteeUserId, async (tx) => {
-        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+    const released = await this.withSettlementGate(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      'release',
+      () =>
+        this.db.withTransaction(granteeUserId, async (tx) => {
+          const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
 
-        if (policy.status === 'denied_by_owner')
-          throw new ForbiddenException({ error: 'denied_by_owner' });
-        if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
-        /*
-         * RE-COLLECTABLE (M27 PR3a), and it is ONE guard because it was two.
-         *
-         * `released` used to be refused here with `already_released`, which made
-         * the §5.2 ceremony spend itself and deliver nothing: a grantee who
-         * closed the tab consumed the arrangement in the one scenario the
-         * feature exists for. Nothing was ever destroyed to justify it — `markReleased`
-         * sets `status` and `released_at` and touches neither `key_share_ct` nor
-         * anything in `emergency_access_configs` — so "one-shot" was a status
-         * check wearing a cryptographic one-way door's clothes.
-         *
-         * REMOVING ONLY THAT THROW WOULD HAVE CHANGED NOTHING. The caller fell
-         * straight into the next line, `status !== 'waiting'`, and got
-         * `not_requested` — the same dead end reported under a token that means
-         * something else, which is the two-failures-one-token defect docs/03
-         * forbids. The M27 PR0 review reproduced that against a real database
-         * rather than reading the guard order, which is why both are replaced by
-         * a single predicate naming what collectable actually means.
-         *
-         * `releases_at` survives a RELEASE — `markReleased` does not touch it —
-         * so the elapsed check below still governs every collection rather than
-         * just the first. THREE writers clear it, not one: `markDenied`,
-         * `markRearmed` and `markRevoked`. An earlier draft of this comment
-         * said "only `markDenied`", which is the shape CLAUDE.md warns about —
-         * a comment justifying itself with a fact about the tree that nobody
-         * checks — and it was wrong. The conclusion survives because all three
-         * also move `status` out of the collectable set, which is the property
-         * actually relied on here rather than the count of writers.
-         */
-        const collectable = policy.status === 'waiting' || policy.status === 'released';
-        if (!collectable || !policy.releases_at) {
-          throw new ConflictException({ error: 'not_requested' });
-        }
-        if (policy.releases_at.getTime() > now.getTime()) {
-          throw new ForbiddenException({ error: 'waiting_period_active' });
-        }
+          if (policy.status === 'denied_by_owner')
+            throw new ForbiddenException({ error: 'denied_by_owner' });
+          /*
+           * NO `revoked` ARM ANYWHERE IN THIS SERVICE, AND THE ABSENCE IS
+           * FENCED (M27 PR3b review, corrected in the same review).
+           *
+           * `status='revoked'` is unobservable to every route here.
+           * `markRevoked` is the only writer of it and sets `deleted_at` in the
+           * SAME statement, while `lockLiveByIdForGrantee` and
+           * `lockLiveByIdForOwner` — the two reads every policy route goes
+           * through — both filter `deleted_at IS NULL`. A revoked policy
+           * therefore answers the uniform 404, which is the right answer
+           * anyway, being indistinguishable from "not yours".
+           *
+           * FIVE arms tested for it and all five were dead: `release` and
+           * `readAsGrantee` here, `blockReason` on the grantee request path,
+           * and `deny` and `rearm` on the owner's. The first pass removed two —
+           * the two a LINE coverage floor could see, because their `throw` was
+           * the whole statement. The other three sat on an `if` that executes
+           * on every call and only never takes its branch, which a line floor
+           * cannot see and a 78% branch floor did not force. Removing two of
+           * five is this repo's "a rule applied to one member of a category is
+           * a rule half-applied", committed inside the change that cites it.
+           *
+           * The invariant is asserted rather than described:
+           * `revoked-is-unobservable.spec.ts` reads `emergency.repo.ts` and
+           * fails if `markRevoked` ever stops soft-deleting in the same
+           * statement, or if any `lockLive*` lookup stops filtering
+           * `deleted_at IS NULL`. Either change makes these arms live again and
+           * the fence is what says so.
+           */
+          /*
+           * RE-COLLECTABLE (M27 PR3a), and it is ONE guard because it was two.
+           *
+           * `released` used to be refused here with `already_released`, which made
+           * the §5.2 ceremony spend itself and deliver nothing: a grantee who
+           * closed the tab consumed the arrangement in the one scenario the
+           * feature exists for. Nothing was ever destroyed to justify it — `markReleased`
+           * sets `status` and `released_at` and touches neither `key_share_ct` nor
+           * anything in `emergency_access_configs` — so "one-shot" was a status
+           * check wearing a cryptographic one-way door's clothes.
+           *
+           * REMOVING ONLY THAT THROW WOULD HAVE CHANGED NOTHING. The caller fell
+           * straight into the next line, `status !== 'waiting'`, and got
+           * `not_requested` — the same dead end reported under a token that means
+           * something else, which is the two-failures-one-token defect docs/03
+           * forbids. The M27 PR0 review reproduced that against a real database
+           * rather than reading the guard order, which is why both are replaced by
+           * a single predicate naming what collectable actually means.
+           *
+           * `releases_at` survives a RELEASE — `markReleased` does not touch it —
+           * so the elapsed check below still governs every collection rather than
+           * just the first. THREE writers clear it, not one: `markDenied`,
+           * `markRearmed` and `markRevoked`. An earlier draft of this comment
+           * said "only `markDenied`", which is the shape CLAUDE.md warns about —
+           * a comment justifying itself with a fact about the tree that nobody
+           * checks — and it was wrong. The conclusion survives because all three
+           * also move `status` out of the collectable set, which is the property
+           * actually relied on here rather than the count of writers.
+           */
+          const collectable = policy.status === 'waiting' || policy.status === 'released';
+          if (!collectable || !policy.releases_at) {
+            throw new ConflictException({ error: 'not_requested' });
+          }
+          if (policy.releases_at.getTime() > now.getTime()) {
+            throw new ForbiddenException({ error: 'waiting_period_active' });
+          }
 
-        // The settlement gate again, INSIDE the transaction and after the row
-        // lock (docs/03 §6a). Re-checked here because the waiting period is days
-        // long: an estate can enter settlement between the request and the
-        // collection, and Zone A is the stage that must come last.
-        await this.assertSettlementPermits(policy.user_id);
+          // The settlement gate again, INSIDE the transaction and after the row
+          // lock (docs/03 §6a). Re-checked here because the waiting period is days
+          // long: an estate can enter settlement between the request and the
+          // collection, and Zone A is the stage that must come last.
+          await this.assertSettlementPermits(policy.user_id);
 
-        const config = await this.emergency.lockConfig(tx, policy.user_id);
-        if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
+          const config = await this.emergency.lockConfig(tx, policy.user_id);
+          if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
 
-        const updated = await this.emergency.markReleased(tx, policy.id, now);
-        return { policy: updated, config };
-      }),
+          const updated = await this.emergency.markReleased(tx, policy.id, now);
+          return { policy: updated, config };
+        }),
     );
 
     await this.events.emergencyReleased(
@@ -706,6 +770,208 @@ export class EmergencyAccessService {
       keyShare: released.policy.key_share_ct.toString('base64'),
       threshold: released.config.threshold,
     };
+  }
+
+  /**
+   * THE GRANTEE'S READ (M27 PR3b) — the surface the whole §5.2 ceremony exists
+   * to reach, and the first place in this service where one user is handed
+   * another user's Zone A rows.
+   *
+   * WHAT AUTHORIZES IT, in the order the request meets it:
+   *
+   *   1. `VaultSessionGuard` on the controller — the grantee's OWN vault is
+   *      unlocked. It is not widened to accept the owner's session, and
+   *      `owner.cedar` is untouched (docs/03 §6uu settled this in PR0).
+   *   2. `requireGranteePolicy`, which locks by (id, grantee) TOGETHER, so a
+   *      policy that is not theirs and a policy that does not exist are one
+   *      empty result and one 404.
+   *   3. `status === 'released'`, re-read inside the transaction. This is what
+   *      makes PR3a's one-tap stop actually stop something: `markDenied` and
+   *      `markRevoked` move status OUT of `released`, so the next read refuses
+   *      without either of them knowing this route exists. `markRearmed` is NOT
+   *      a third — `rearm` refuses a released policy with `already_released`
+   *      before it — and listing it here was a stale generalisation of the true
+   *      statement one guard down, where all three DO clear `releases_at`.
+   *   4. The settlement gate, again, inside the transaction — an estate can
+   *      enter settlement between the collection and the read, and Zone A is
+   *      the stage that must come last.
+   *   5. Cedar, per item, over `vault.cedar`'s `read_by_grantee`.
+   *
+   * WHAT (5) IS AND IS NOT, stated plainly because a mutation caught the first
+   * draft of this comment overclaiming it.
+   *
+   * DELETING THE CEDAR CALL LEAVES THE WHOLE SUITE GREEN except the one test
+   * written to pin its shape. That is not a weak test — it is the honest
+   * answer: the call CANNOT DENY here today. `listReleasedGranteeIds` selects
+   * the owner's policies at `status='released' AND deleted_at IS NULL`, and
+   * guard (2) has already returned THIS row under the same two filters, so the
+   * principal is in the set by construction. Two derivations of one row.
+   *
+   * It stays for two reasons that are worth being explicit about rather than
+   * dressing up as a gate. First, uniformity: every other read in this service
+   * consults the PEP, and making this the single read that does not would be
+   * an exception a reader has to discover. Second, it is the attachment point
+   * — a later policy that narrows grantee reads by item type or settlement
+   * stage is a change to `vault.cedar` and to the resource built here, and to
+   * nothing else.
+   *
+   * The refusal that actually stops a stopped grantee is (3), and
+   * `emergency.int.spec.ts` names which layer each of its refusal tests
+   * proves. The limit is recorded in docs/03 §6zz, not only here.
+   *
+   * WHAT IT DELIBERATELY DOES NOT SERVE: deleted items, version history, the
+   * restorable list — and any single item. A grantee reads what the owner has
+   * now, in one page. The owner's `read_history`, `undelete` and `restore` are
+   * separate action ids for exactly this reason (M27 PR1b), and `vault.cedar`
+   * names none of them; the missing per-item route is explained on the
+   * controller, and it is an absence rather than an omission.
+   */
+  async listItemsForGrantee(
+    granteeUserId: string,
+    accountSessionId: string,
+    policyId: string,
+    query: { limit: number; cursor?: string | undefined },
+  ): Promise<VaultItemPage> {
+    const read = await this.readAsGrantee(granteeUserId, accountSessionId, policyId, query);
+
+    await this.events.emergencyItemsRead(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      read.ownerUserId,
+      { count: read.rows.length, scope: 'live' },
+    );
+
+    const last = read.rows.length === query.limit ? read.rows[read.rows.length - 1] : undefined;
+    return {
+      items: read.rows.map(toDto),
+      nextCursor: last ? encodeCursor(last.updated_at, last.id) : null,
+    };
+  }
+
+  /**
+   * The body of the grantee read: authorize, read, and CLAIM the owner's
+   * notice — all inside one transaction, with the policy row locked.
+   *
+   * SEPARATE FROM ITS CALLER even though there is exactly one, because what
+   * lives here is every decision that could hand somebody else's rows over,
+   * and what lives there is paging and DTO mapping. It took a `read` callback
+   * while a second route existed; with that route gone the callback was a
+   * generic with one call site, which reads as extensibility and is really
+   * just indirection between a reader and the guards they need to check.
+   *
+   * The claim is in here rather than beside the send for a concurrency reason
+   * spelled out on `EmergencyRepo.claimNotification`: `hasNotifiedSince` is the
+   * dedupe, so the check and the write have to be in the same transaction or
+   * the lock protects nothing and two racing first-reads both notify.
+   */
+  private async readAsGrantee(
+    granteeUserId: string,
+    accountSessionId: string,
+    policyId: string,
+    query: { limit: number; cursor?: string | undefined },
+  ): Promise<{ ownerUserId: string; rows: ItemRow[] }> {
+    const outcome = await this.withSettlementGate(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      'read',
+      () =>
+        this.db.withTransaction(granteeUserId, async (tx) => {
+          const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+
+          // Named refusals, spelled exactly as `release` spells them: a grantee
+          // whose access was stopped must not read the same token as a grantee
+          // who never collected, and neither may read as an outage.
+          if (policy.status === 'denied_by_owner')
+            throw new ForbiddenException({ error: 'denied_by_owner' });
+          if (policy.status !== 'released' || !policy.released_at) {
+            throw new ConflictException({ error: 'not_collected' });
+          }
+
+          await this.assertSettlementPermits(policy.user_id);
+
+          const granteeIds = await this.emergency.listReleasedGranteeIds(tx, policy.user_id);
+          const rows = await this.items.listByUser(tx, {
+            userId: policy.user_id,
+            limit: query.limit,
+            ...(query.cursor
+              ? { cursor: ((c) => ({ updatedAt: c.at, id: c.id }))(decodeCursor(query.cursor)) }
+              : {}),
+          });
+          for (const row of rows) {
+            this.authz.assertCan(
+              granteeUserId,
+              'read_by_grantee',
+              vaultItemResource(row.id, policy.user_id, granteeIds),
+            );
+          }
+
+          const told = await this.emergency.hasNotifiedSince(tx, {
+            policyId: policy.id,
+            kind: 'read_by_grantee',
+            since: policy.released_at,
+          });
+          const claimId = told
+            ? null
+            : await this.emergency.claimNotification(tx, {
+                policyId: policy.id,
+                userId: policy.user_id,
+                kind: 'read_by_grantee',
+                channel: this.notifier.channel,
+                at: this.clock(),
+              });
+
+          return { ownerUserId: policy.user_id, rows, claimId };
+        }),
+    );
+
+    if (outcome.claimId) {
+      await this.sendClaimed(outcome.claimId, {
+        kind: 'read_by_grantee',
+        ownerUserId: outcome.ownerUserId,
+        policyId,
+      });
+    }
+    return { ownerUserId: outcome.ownerUserId, rows: outcome.rows };
+  }
+
+  /**
+   * Send a notice whose record already exists, and fill in its outcome.
+   *
+   * The mirror image of `notify`, which sends first and records after. Both
+   * treat a failed delivery the same way — a null `delivered_at`, never an
+   * exception, because the read still happened and the owner still needs the
+   * record — and both emit the unverified-recipient event on the same rule.
+   */
+  private async sendClaimed(
+    notificationId: string,
+    notification: EmergencyNotification,
+  ): Promise<void> {
+    let deliveredAt: Date | null = null;
+    let recipientVerified = false;
+    try {
+      const sent = await this.notifier.notify(notification);
+      deliveredAt = sent.delivered ? this.clock() : null;
+      recipientVerified = sent.recipientVerified;
+    } catch {
+      // An adapter that broke its own contract. A non-delivery either way.
+    }
+    if (deliveredAt !== null) {
+      await this.emergency.markNotificationDelivered(this.db, notificationId, deliveredAt);
+    }
+    if (deliveredAt !== null && !recipientVerified) {
+      await this.events.audit.emit({
+        action: 'vault.emergency.unverified_recipient',
+        actorId: null,
+        actorType: 'system',
+        onBehalfOf: notification.ownerUserId,
+        resourceType: 'vault',
+        resourceId: notification.policyId,
+        sessionId: null,
+        detail: { kind: notification.kind },
+      });
+    }
   }
 
   /**
@@ -738,6 +1004,11 @@ export class EmergencyAccessService {
     granteeUserId: string,
     accountSessionId: string,
     policyId: string,
+    // Which act this gate is wrapping. Threaded through to the audit event
+    // because all three used to look identical on the trail (PR3b review), and
+    // required for the same reason `itemsListed`'s `scope` is: a fourth caller
+    // must not be able to inherit somebody else's answer by omission.
+    surface: 'request' | 'release' | 'read',
     fn: () => Promise<T>,
   ): Promise<T> {
     try {
@@ -751,6 +1022,7 @@ export class EmergencyAccessService {
         accountSessionId,
         policyId,
         err.caseId,
+        surface,
       );
       throw new ForbiddenException({ error: 'settlement_stage_not_reached' });
     }

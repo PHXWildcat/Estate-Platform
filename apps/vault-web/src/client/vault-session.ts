@@ -6,6 +6,7 @@ import {
   exportMasterKeyBytes,
   finishUnlock,
   fromBase64,
+  importAesKey,
   parseSecretKey,
   prepareUnlock,
   proveUnlock,
@@ -13,6 +14,7 @@ import {
   wipe,
   type UnlockedVault,
 } from '/lib/vault-crypto/index.js';
+import { releaseAndRecover } from './emergency.js';
 import { request, type ApiResult } from './api.js';
 import { decodeItemContent, encodeItemContent, type ItemContent } from './item-content.js';
 
@@ -35,6 +37,23 @@ import { decodeItemContent, encodeItemContent, type ItemContent } from './item-c
  * and appear in no request. `test/no-key-material-egress.spec.ts` drives a full
  * enrollment and unlock against a recording transport and asserts exactly that.
  */
+
+/**
+ * A COLLECTED ESCROW (M27 PR3b): somebody else's vault, open on this device.
+ *
+ * Separate from `#vault` rather than swapped into it, and that separation is
+ * the control. One field means one lock, one idle timer and one place to ask
+ * "whose key is this" — but they are never interchangeable: this key can only
+ * decrypt, carries no `keysetAuthKey`, and no write path in this module will
+ * accept it. A design where the grantee's session simply *became* the owner's
+ * would put every write and rotation path one bug away from the wrong vault.
+ */
+interface GrantedVault {
+  readonly policyId: string;
+  readonly ownerUserId: string;
+  readonly ownerLabel: string | null;
+  readonly masterKey: CryptoKey;
+}
 
 /** Server shape of `GET /v1/vault/keyset`. */
 interface KeysetStatus {
@@ -155,6 +174,8 @@ export class VaultSession {
    * more force here: these are the keys, not a placeholder map.
    */
   #vault: UnlockedVault | null = null;
+  /** M27 PR3b. Non-null only while a grantee is reading a collected escrow. */
+  #granted: GrantedVault | null = null;
   /*
    * Retained ONLY for the password change, which needs the master key BYTES to
    * re-wrap them under a key derived from the new password — and a
@@ -332,6 +353,13 @@ export class VaultSession {
     // can do about it. Stated rather than implied, because "zeroization
     // best-effort" in docs/03 §4 must not read as a promise this can keep.
     this.#vault = null;
+    // M27 PR3b: a collected escrow dies with the grantee's own session, on the
+    // SAME idle timer and the same explicit lock. It is held only because this
+    // session is open — the grantee proved a factor to get here — so outliving
+    // it would turn a five-minute step-up into an indefinite key to somebody
+    // else's vault. Dropping the reference is again the whole of what this
+    // client can do; the key is imported non-extractable for the same reason.
+    this.#granted = null;
     this.#auk = null;
     this.#wrappedMasterKey = null;
     this.#kdfParams = null;
@@ -343,6 +371,165 @@ export class VaultSession {
     if (token && reason !== 'expired') {
       await request('/api/vault/lock', { method: 'POST', vaultSession: token });
     }
+  }
+
+  /**
+   * COLLECT AN ESCROW AND HOLD THE RESULT (M27 PR3b).
+   *
+   * The release call used to live in `app.ts`, which meant the screen briefly
+   * held raw master-key bytes and wiped them itself. It moved here so the
+   * claim at the top of this file — that this is the only place that holds a
+   * key — stays literally true now that the recovered key has to SURVIVE the
+   * call in order to open anything.
+   *
+   * Three narrowings on what is held:
+   *
+   *   * NON-EXTRACTABLE. Same property as the grantee's own master key: page
+   *     script may use it and cannot read it out (docs/03 §4 TB6).
+   *   * READ-ONLY USAGES: `decrypt` and `unwrapKey`, and NOT `encrypt` or
+   *     `wrapKey`. A grantee reads; they never write to the owner's vault, and
+   *     a key the platform refuses to encrypt with cannot be talked into
+   *     sealing a blob into somebody else's Zone A — the browser enforces
+   *     that, not this code.
+   *
+   *     THAT SENTENCE WAS NOT TRUE WHEN FIRST WRITTEN, and the M27 PR3b review
+   *     is why it is now. `unwrapKey` is granted (see below) and
+   *     `decryptItem` used to unwrap each per-item content key with
+   *     `['encrypt', 'decrypt']` — so this key DID yield keys that produce
+   *     valid owner ciphertext, and the only thing standing in the way was
+   *     that no route accepts such a blob from a grantee. An absence of
+   *     callers is not a platform guarantee. `packages/vault-crypto` now
+   *     unwraps with `['decrypt']` alone, which costs nothing there (it only
+   *     ever decrypts) and is what makes the claim above hold.
+   *
+   *     `unwrapKey` IS REQUIRED and the first draft omitted it, on the
+   *     reasoning that "read" meant `decrypt` alone. It does not: an item blob
+   *     carries a wrapped per-item key, and `decryptItem` calls
+   *     `crypto.subtle.unwrapKey` with the master key before it decrypts
+   *     anything. Every item rendered as unreadable — correctly, because
+   *     `#openBlob` refuses to distinguish a wrong key from a malformed blob,
+   *     which is the property that keeps the pair from being an oracle and is
+   *     also what stopped this looking like a usages bug.
+   *   * Cleared by `lock()`, on the idle timer as well as an explicit lock.
+   *
+   * The raw bytes are wiped as soon as the import is done, on both paths.
+   */
+  async collectGrant(input: {
+    readonly policyId: string;
+    readonly ownerLabel: string | null;
+    readonly granteePublicKey: string;
+    readonly wrappedPrivateKey: string;
+  }): Promise<ApiResult<GrantedVault>> {
+    const { vault, userId } = this.#requireOpen();
+    this.touch();
+    const recovered = await releaseAndRecover({
+      policyId: input.policyId,
+      granteeUserId: userId,
+      granteeMasterKey: vault.masterKey,
+      granteePublicKey: input.granteePublicKey,
+      wrappedPrivateKey: input.wrappedPrivateKey,
+    });
+    if (!recovered.ok) {
+      return recovered;
+    }
+    try {
+      const masterKey = await importAesKey(recovered.data.masterKeyBytes, ['decrypt', 'unwrapKey']);
+      /*
+       * THE SESSION MUST STILL BE THE ONE THAT STARTED THIS (M27 PR3b review).
+       *
+       * `#requireOpen()` ran BEFORE two awaits — a network release and a key
+       * import — and the write below used to be unconditional. So a `lock()`
+       * landing in that window was silently undone: the OWNER's master key was
+       * installed on a session whose status is `locked`, where `touch()`
+       * returns early and therefore never arms another idle timer. The key
+       * then outlived the very control meant to drop it, until an explicit
+       * lock or the page went away. docs/03 §6zz accepted this residual on the
+       * premise that "a grantee who walks away is protected by the idle lock",
+       * which is exactly the case that failed.
+       *
+       * IDENTITY, not a boolean: comparing the object catches a lock AND a
+       * lock-then-unlock, which would otherwise graft a grant collected under
+       * one unlock onto a different one.
+       *
+       * There is no await between this check and the write, so nothing can
+       * intervene. Aborting costs a collection, not the arrangement — PR3a
+       * made release repeatable, and the screen says so. The release DID
+       * happen and the owner WAS told; that is the honest outcome to leave
+       * standing, because it is what occurred.
+       */
+      if (this.#vault !== vault) {
+        return { ok: false, code: 'VAULT_LOCKED' };
+      }
+      this.#granted = {
+        policyId: input.policyId,
+        ownerUserId: recovered.data.ownerUserId,
+        ownerLabel: input.ownerLabel,
+        masterKey,
+      };
+      return { ok: true, data: this.#granted };
+    } finally {
+      wipe(recovered.data.masterKeyBytes);
+    }
+  }
+
+  /** The escrow this session has collected, if any. Never the key itself. */
+  granted(): { policyId: string; ownerUserId: string; ownerLabel: string | null } | null {
+    if (!this.#granted) return null;
+    const { policyId, ownerUserId, ownerLabel } = this.#granted;
+    return { policyId, ownerUserId, ownerLabel };
+  }
+
+  /** Drop a collected escrow without locking the grantee's own vault. */
+  endGrant(): void {
+    this.#granted = null;
+  }
+
+  /**
+   * The owner's items, opened on this device with the recovered key.
+   *
+   * `#openBlob` is reused verbatim, and the `userId` it is handed is the
+   * OWNER's — `itemContentAad` binds the owner's id, so passing the reader's
+   * would refuse every blob and the refusal would look exactly like a wrong
+   * key. That is the whole reason the AAD helper takes a user id rather than
+   * reading one off a session.
+   *
+   * LIVE ITEMS ONLY, and no version history: the route serves nothing else.
+   * Sorted here for the same reason `list()` sorts — the order a person reads
+   * should not depend on the server's cursor column.
+   */
+  async grantedList(): Promise<ApiResult<OpenedItem[]>> {
+    const { token } = this.#requireOpen();
+    const grant = this.#granted;
+    if (!grant) {
+      throw new Error('no escrow has been collected');
+    }
+    this.touch();
+    const page = await request<VaultItemPage>(
+      `/api/vault/emergency-access/${grant.policyId}/items?limit=200`,
+      { vaultSession: token },
+    );
+    if (!page.ok) {
+      return page;
+    }
+    const opened: OpenedItem[] = [];
+    for (const row of page.data.items ?? []) {
+      opened.push({
+        id: row.id,
+        itemType: row.itemType,
+        blobVersion: row.blobVersion,
+        revision: row.revision,
+        updatedAt: row.updatedAt,
+        ...(await this.#openBlob(
+          { masterKey: grant.masterKey },
+          grant.ownerUserId,
+          row.id,
+          row.blob,
+          row.blobVersion,
+        )),
+      });
+    }
+    opened.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return { ok: true, data: opened };
   }
 
   #requireOpen(): { vault: UnlockedVault; token: string; userId: string } {
@@ -396,7 +583,10 @@ export class VaultSession {
    * a wrong key.
    */
   async #openBlob(
-    vault: UnlockedVault,
+    // NOT `UnlockedVault`. All this needs is a decrypting key, and saying so
+    // lets the grantee reader (M27 PR3b) pass a collected escrow without a
+    // cast that would quietly claim it had a `keysetAuthKey` too.
+    vault: { readonly masterKey: CryptoKey },
     userId: string,
     itemId: string,
     blob: string,

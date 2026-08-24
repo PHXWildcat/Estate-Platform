@@ -57,6 +57,22 @@ export type ApiFailure =
   // `undelete`, `restore`). Unreachable while the owner is the only principal;
   // named now because PR3 introduces one who is not.
   | 'FORBIDDEN'
+  // M27 PR3b review. The grantee's READING screen answers four refusals that
+  // had no name here, so every one of them reached the reader as `UNKNOWN`'s
+  // "Something went wrong. Try again." or — worse — as item-shaped copy on a
+  // screen showing a whole vault. Three of them are the owner's own controls
+  // firing, which is the M9 rule pointed straight at the surface it protects:
+  // a stop and a settlement hold are not faults, they have different
+  // remedies, and "try again" is the wrong advice for either. A third,
+  // `policy_revoked`, was named here until the coverage floor showed the
+  // service arm producing it was dead — a revoked policy is soft-deleted and
+  // answers the uniform 404 — so the code went with it rather than becoming a
+  // zero-caller surface.
+  // They are named rather than folded together for the same reason
+  // `RECIPIENT_UNVERIFIED` and `NOTIFICATIONS_UNAVAILABLE` are.
+  | 'ACCESS_STOPPED'
+  | 'SETTLEMENT_HOLD'
+  | 'NOT_COLLECTED'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -71,6 +87,9 @@ function failureFor(status: number, token: string | null): ApiFailure {
     if (token === 'stepup_required') return 'STEPUP_REQUIRED';
     if (token === 'vault_locked') return 'VAULT_LOCKED';
     if (token === 'forbidden') return 'FORBIDDEN';
+    // Two controls, two remedies, and neither is a fault.
+    if (token === 'denied_by_owner') return 'ACCESS_STOPPED';
+    if (token === 'settlement_stage_not_reached') return 'SETTLEMENT_HOLD';
     return 'UNKNOWN';
   }
   if (status === 404) {
@@ -88,6 +107,11 @@ function failureFor(status: number, token: string | null): ApiFailure {
     // is surface-neutral. See `messageFor` and apps/web's M19 precedent.
     if (token === 'version_conflict') return 'VERSION_CONFLICT';
     if (token === 'item_unrestorable') return 'ITEM_UNRESTORABLE';
+    // The arrangement was rebuilt under the grantee, so the release they are
+    // holding is no longer the current one. CONFLICT's "this item changed"
+    // names an item on a screen that is showing a vault, and its "reload"
+    // never works — the remedy is to request and open again.
+    if (token === 'not_collected') return 'NOT_COLLECTED';
     // `invalid_cursor` lands here deliberately. It can only fire if this client
     // mangles a cursor the server handed it, which is a bug rather than a user
     // condition — so it gets no name and no copy, and the spec asserts a cursor

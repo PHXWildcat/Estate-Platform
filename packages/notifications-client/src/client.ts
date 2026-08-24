@@ -29,6 +29,12 @@ export const ESTATE_NOTIFICATION_KINDS = [
   'emergency.revoked',
   'vault.reset',
   'vault.grantees_changed',
+  // M27 PR3b: a released emergency-access grantee opened the owner's items.
+  // Distinct from `emergency.released`, which says the escrow was COLLECTED —
+  // a grantee can collect and never read, and the owner's decision about
+  // whether to press stop turns on which of those happened. Emitted once per
+  // collection, not per read.
+  'vault.read_by_grantee',
   'settlement.case_opened',
   'settlement.owner_contact',
   // M13: somebody claimed a link to this owner's estate contact, which is the

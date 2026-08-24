@@ -28,7 +28,12 @@ export type EmergencyNotificationKind =
   // when the vault is RESET (the one bearer-token-destructive route) and when
   // a reconfiguration retires the previous grantees.
   | 'reset'
-  | 'grantees_changed';
+  | 'grantees_changed'
+  // M27 PR3b: a released grantee opened the owner's items. The vault-local
+  // name drops the `vault.` prefix the wire kind carries, like every member
+  // here — this union is the SERVICE's vocabulary and `WIRE_KIND` is the only
+  // place the two spellings meet.
+  | 'read_by_grantee';
 
 export interface EmergencyNotification {
   readonly kind: EmergencyNotificationKind;
@@ -124,6 +129,7 @@ const WIRE_KIND: Record<EmergencyNotificationKind, EstateNotificationKind> = {
   revoked: 'emergency.revoked',
   reset: 'vault.reset',
   grantees_changed: 'vault.grantees_changed',
+  read_by_grantee: 'vault.read_by_grantee',
 };
 
 /**

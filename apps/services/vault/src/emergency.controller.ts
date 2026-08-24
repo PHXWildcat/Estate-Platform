@@ -6,17 +6,19 @@ import {
   HttpCode,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { CallerGuard, requireCaller, StepUpGuard, type CallerRequest } from '@estate/auth-guard';
 import {
   ConfigureEmergencyAccessSchema,
+  ListItemsQuerySchema,
   parse,
   PublishRecoveryKeySchema,
   UuidSchema,
 } from './schemas';
-import { VaultSessionGuard } from './vault-session.guard';
+import { VaultSessionGuard, type VaultRequest } from './vault-session.guard';
 import {
   EmergencyAccessService,
   type EscrowDto,
@@ -24,6 +26,7 @@ import {
   type PolicyDto,
   type ReleaseDto,
 } from './emergency.service';
+import type { VaultItemPage } from './vault.service';
 
 /**
  * Emergency access (docs/03 §5.2).
@@ -171,5 +174,57 @@ export class EmergencyAccessController {
   release(@Req() req: CallerRequest, @Param('policyId') policyId: string): Promise<ReleaseDto> {
     const caller = requireCaller(req);
     return this.emergency.release(caller.userId, caller.sessionId, parse(UuidSchema, policyId));
+  }
+
+  /**
+   * THE READING SURFACE (M27 PR3b): a released grantee reads the owner's live
+   * items. Everything about what may pass is decided in
+   * `EmergencyAccessService.listItemsForGrantee`; the two facts that live HERE
+   * are the guard and the audience.
+   *
+   * `VaultSessionGuard` — the GRANTEE'S OWN vault session, not the owner's.
+   * The guard is unchanged and unwidened: it proves the caller unlocked their
+   * own vault, which is a bar an attacker holding only an account session
+   * cannot clear, and the authority to read somebody ELSE's rows comes from
+   * the policy row instead (docs/03 §6uu).
+   *
+   * NO `@AllowSessionAudiences('extension')`, unlike the owner's own
+   * `vault/items`. The browser extension exists to fill the caller's own
+   * credentials; there is no autofill story for an estate you are recovering,
+   * and an emergency collection is the last capability that should be
+   * reachable from a surface with that much page contact.
+   *
+   * NO `StepUpGuard`. Opening the grantee's own vault already required a fresh
+   * step-up, and the collection this read depends on required the full §5.2
+   * ceremony — a waiting period the owner could interrupt. Adding another
+   * factor here would put the heaviest gate in front of the person acting for
+   * an owner who cannot act, which is the one moment the ceremony is FOR.
+   *
+   * AND THERE IS NO SINGLE-ITEM SIBLING, unlike the owner's own surface. One
+   * was written and removed before this shipped, because the route↔consumer
+   * fence reported it had no caller and the honest reading of that was not
+   * "wire one up". The list serves every blob, and the grantee's client opens
+   * them all on arrival — so by the time any detail screen renders, the
+   * content has already left the server. A per-item route would therefore emit
+   * a `vault.emergency.items_read` event meaning "opened item X" for a read
+   * that had already happened, which is an audit trail that overstates what it
+   * knows on the one surface where the owner needs it to be exact. Prefer the
+   * absence: the route you never added cannot lie.
+   */
+  @Get('vault/emergency-access/:policyId/items')
+  @UseGuards(VaultSessionGuard)
+  @HttpCode(200)
+  granteeItems(
+    @Req() req: VaultRequest,
+    @Param('policyId') policyId: string,
+    @Query() query: unknown,
+  ): Promise<VaultItemPage> {
+    const caller = requireCaller(req);
+    return this.emergency.listItemsForGrantee(
+      caller.userId,
+      caller.sessionId,
+      parse(UuidSchema, policyId),
+      parse(ListItemsQuerySchema, query),
+    );
   }
 }

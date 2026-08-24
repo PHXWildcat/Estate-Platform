@@ -135,11 +135,26 @@ describe('vault route audiences match the declaration', () => {
     // `undeleteItem` and `restoreVersion`. All four refuse the extension
     // audience, which is why the refused count below moves by the same four.
     expect(vault.length).toBe(16);
-    expect(emergency.length).toBe(11);
-    // 27, not the 22 the decision log cited from M15 — `ownRecoveryKey` arrived
-    // in PR3 and the remembered number never caught up. Asserted so the next
-    // person counts rather than remembers.
-    expect(vault.length + emergency.length).toBe(27);
+    // TWELVE since M27 PR3b, up from eleven: `granteeItems`, the released
+    // grantee's read. There is no single-item sibling — one was written and
+    // removed when the route↔consumer fence reported it had no caller (see
+    // `emergency.controller.ts`). It refuses the extension audience, which is
+    // why the refused count below moves by the same one — deliberately, and
+    // the reasoning is the restore reader's turned up a notch. An autofill
+    // client fills the CALLER's own credentials; there is no autofill story
+    // for an estate you are recovering, and an emergency collection is the
+    // last capability that should be reachable from a surface with that much
+    // page contact.
+    expect(emergency.length).toBe(12);
+    // THE TOTAL IS ASSERTED, NOT RESTATED. The decision log once cited 22 here
+    // from M15 and `ownRecoveryKey` arrived in PR3 without the remembered
+    // number catching up; this comment then said 29 beside an assertion of 28,
+    // which is the same defect one layer up and is what the PR3b review found.
+    // The literal below is the only copy — a number in prose beside a
+    // mechanism that derives one is a copy that rots, so the next person
+    // counts rather than remembers, and the two halves above are what make a
+    // miscount attributable rather than just a changed total.
+    expect(vault.length + emergency.length).toBe(28);
   });
 
   it('exactly seven handlers admit an extension session', () => {
@@ -175,11 +190,13 @@ describe('vault route audiences match the declaration', () => {
     // sense of coverage: a 24th route added tomorrow is refused by default and
     // this notices if it is not.
     //
-    // TWENTY since M27 PR1b, from sixteen: the restore reader's four routes all
-    // land here, which is the answer this fence exists to give. A restore
-    // surface is the OWNER's — an autofill client has no use for version
-    // history, and every handler left out of that audience is authority not
-    // granted. The number is asserted rather than computed from
+    // TWENTY-ONE since M27 PR3b, from twenty at PR1b and sixteen before it: the
+    // restore reader's four routes land here, and so does the grantee read.
+    // That is the answer this fence exists to give. A restore surface is the
+    // OWNER's — an autofill client has no use for version history — and a
+    // grantee read is somebody ELSE's vault, which is further still from
+    // anything an autofill client does. Every handler left out of that audience
+    // is authority not granted. The number is asserted rather than computed from
     // EXTENSION_ROUTES on purpose: deriving it from the admitted list would make
     // this test agree with any widening automatically, which is the one thing it
     // exists to refuse. Moving it is meant to cost a deliberate edit — this one.
@@ -190,7 +207,7 @@ describe('vault route audiences match the declaration', () => {
         route,
       })),
     ].filter(({ route }) => !EXTENSION_ROUTES.includes(route));
-    expect(refused).toHaveLength(20);
+    expect(refused).toHaveLength(21);
     for (const { c, route } of refused) {
       expect({
         route,

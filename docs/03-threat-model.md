@@ -6358,16 +6358,177 @@ re-collection, and `collectable = true`. All five now redden by name.
   Owned by M30 rather than fixed here because a new notification kind is a
   producer/consumer deploy ordering question and M30 already owns this feature's
   notification work.
-- **[OWNER: M27]** *The grantee's row names the owner by raw account id.* It
-  reads "Vault of <uuid>", and M27 already fixed exactly this on the OWNER's
+- **[CLOSED: §6zz]** *The grantee's row names the owner by raw account id.* It
+  read "Vault of <uuid>", and M27 had already fixed exactly this on the OWNER's
   side — a row of UUIDs cannot be checked against what somebody intended — so
-  this is that rule half-applied, found by driving the stack rather than by
-  sweeping for it. It is NOT fixed here because the fix needs a fact this
-  origin does not have: the owner's name reached the owner's own screen from
-  their contact list, and the grantee has no contact record for the person who
-  named them. Supplying one is a cross-user disclosure decision — which name,
-  released to whom, on whose audit trail — and it belongs to PR3b, the PR that
-  must already answer "whose vault am I reading?" in order to render a reading
-  surface at all. Bounded meanwhile because the id is not secret to this
-  reader: they were sealed a share by that account, and the fingerprint
-  ceremony already binds the pair out of band.
+  this was that rule half-applied, found by driving the stack rather than by
+  sweeping for it. PR3b closes it, and the premise recorded here turned out to
+  be **wrong in a way worth keeping**: this bullet assumed a name existed and
+  only needed releasing, on the model of the owner's own screen reading one out
+  of their contact list. **There is no such name.** `profile` has no
+  display-name column at all — a person's name exists ONLY inside other users'
+  per-user-encrypted contact rows — so "serve the owner's name" was never a
+  disclosure decision, it was a request for a new Zone B identity field. PR3b
+  answers the question the residual actually asked, "which name, released to
+  whom", with a string the OWNER writes for this purpose. See §6zz.
+
+## 6zz. Threat-model delta — M27 PR3b, the grantee's read (2026-08-24)
+
+**THE §6yy `[OWNER: M27]` ITEM IS CLOSED BY THIS DELTA**, and its premise is
+corrected there rather than quietly dropped.
+
+PR0 designed this surface (§6uu) and deferred it; PR3a made the collection that
+precedes it repeatable (§6yy). This is the read itself: `GET
+/v1/vault/emergency-access/:policyId/items` — ONE route, the first place in the
+platform where one user is handed another user's Zone A rows.
+
+**What authorizes it, in the order a request meets it.** (1) `VaultSessionGuard`
+on the GRANTEE's own vault — unchanged and unwidened, so an attacker holding
+only an account session reaches nothing; the authority to read somebody else's
+rows comes from the policy row, never from a widened session. (2)
+`requireGranteePolicy`, locking by `(id, grantee_user_id)` together, so "no such
+policy" and "not your policy" are one empty result and one 404. (3)
+`status = 'released'`, re-read INSIDE the transaction — this is what makes PR3a's
+one-tap stop stop something, since `markDenied`, `markRearmed` and `markRevoked`
+all move status out of the collectable set. (4) The settlement gate, re-checked
+per read (§5.1 control 5): an estate can enter settlement between a legitimate
+collection and a read days later, and Zone A is the stage that must come last.
+(5) Cedar, over a ninth action id in a new `vault.cedar` — see the residual
+below for what that layer is and is not worth.
+
+**`owner.cedar` is untouched and no guard is widened**, which is the property
+§6uu asked PR3b to preserve. The new policy is narrowed twice — by action id
+(`read_by_grantee`, never `read`) and by resource type (`resource is VaultItem`)
+— because `loadBundledPolicies()` concatenates every `.cedar` into EVERY
+service's PDP. The grantee set is carried on an attribute deliberately NOT named
+`namedBeneficiaries`: `beneficiary.cedar` permits plain `read` on anything
+carrying that name, so reusing it would have handed every named beneficiary a
+Zone A vault read, which §5.5 forbids.
+
+**The owner is told twice, about two different facts.**
+`emergency.released` says the escrow was COLLECTED; `vault.read_by_grantee` says
+the contents were OPENED. A grantee can collect and never read, and the owner's
+decision about whether to press stop turns on which happened. The read notice
+fires once per COLLECTION rather than once per read, derived from
+`emergency_access_notifications` (`created_at >= released_at`) with no new
+column — which re-arms by itself on each fresh collection, where a stored flag
+would have needed resetting by each of the four writers that move a policy in
+and out of `released`.
+
+**The audit trail is deliberately out of step with the notification.**
+`vault.emergency.items_read` — declared with no producer since PR0 — is emitted
+per READ, on the OWNER's trail with the grantee as actor and `onBehalfOf` set
+explicitly. Audit is the complete record an investigator reads afterwards;
+notification is an interrupt a living owner must be able to act on. Making the
+trail sparse to spare the mailbox would trade away the wrong one.
+
+**What the grantee cannot do.** No version history, no restorable list, no
+undelete, no restore, no write of any kind: `vault.cedar` names one action and
+the owner's other four are separate ids precisely so a grant of one is not a
+grant of the rest (M27 PR1b). The recovered key is imported NON-EXTRACTABLE with
+`decrypt` and `unwrapKey` only — no `encrypt`, no `wrapKey` — so the browser
+itself refuses to seal anything into the owner's vault, and the reading screens
+render no control that could try.
+
+**That browser guarantee did not hold as first shipped, and the PR3b review is
+why it does.** `unwrapKey` is genuinely required to open an item, and
+`decryptItem` unwrapped each per-item content key with `['encrypt', 'decrypt']`
+— so the granted key DID yield keys that produce valid owner ciphertext, and the
+only thing preventing a forged blob was that no route accepts one from a
+grantee. An absence of callers is not a platform guarantee, and a future
+grantee-facing write path reviewed against the old sentence would have been
+reviewed against something false. `packages/vault-crypto` now unwraps with
+`['decrypt']` alone — it never encrypted with that key anyway, and `encryptItem`
+generates a fresh item key rather than unwrapping one, so nothing else wanted
+the wider set. `packages/vault-crypto/test/items.spec.ts` observes the usages
+`decryptItem` actually requests, so the claim is checked rather than asserted.
+
+### Residuals
+
+- **[ACCEPTED]** *The Cedar layer on this route cannot deny, today.* Deleting
+  the `assertCan` call leaves the entire suite green except the one test written
+  to pin its shape, and that is the honest result rather than a weak test:
+  `listReleasedGranteeIds` selects the owner's policies at `status='released'
+  AND deleted_at IS NULL`, and guard (2) has already returned THIS row under the
+  same two filters — so the principal is in the set by construction. Two
+  derivations of one row cannot disagree. It stays for uniformity (every other
+  read in this service consults the PEP, and the single read that did not would
+  be an exception a reader has to discover) and because it is the attachment
+  point: a later narrowing by item type or settlement stage is a change to
+  `vault.cedar` and to the resource built at that call site, and to nothing
+  else. What actually refuses a stopped grantee is guard (3), and the suite
+  names which layer each refusal test proves.
+- **[ACCEPTED]** *The read notice is deduped on the ATTEMPT, not the delivery.*
+  A `vault.read_by_grantee` whose send fails is not retried on the next read of
+  the same collection, so the owner's only remaining signal for it is the
+  `emergency.released` they were already sent. Delivery-keyed dedupe was
+  rejected because a dead channel would turn one grantee's reading session into
+  a message per item — a notification storm is not a safety property. The
+  failure is recorded the way every other non-delivery on this table is, as a
+  null `delivered_at`.
+- **[ACCEPTED]** *The dedupe is atomic only within one policy.* The claim row is
+  written inside the transaction that holds the policy `FOR UPDATE`, so two
+  racing first-reads of the same policy serialise. Nothing serialises across
+  policies, and nothing needs to: the predicate is per-policy.
+- **[ACCEPTED]** *The escrow label is free text one user writes and another
+  reads* — the first such string in Zone A's schema. It is REFUSED rather than
+  repaired at the edge: no control characters, no bidi or invisible format
+  characters, 80 characters, and a DDL CHECK behind that as the backstop for any
+  writer that is not the route. There is no markup path to sanitise, because
+  `dom.ts` builds every node and text goes in as a text node. What remains is
+  that an owner can write anything short and printable into a string their
+  grantees will read, which is what "the owner chooses what they disclose"
+  means.
+- **[OWNER: M30]** *Changing the label means re-arming the whole escrow.*
+  `configure` replaces an arrangement wholesale — it retires every policy, sends
+  `grantees_changed`, and requires the owner to redo the fingerprint ceremony —
+  so correcting a typo in a name costs the same as rebuilding the arrangement.
+  The label is optional and falls back to the account id, so nobody is blocked;
+  but an owner who wants a clearer name for their family has to disturb every
+  grantee to get one. Owned by M30 with the rest of this feature's surface work
+  rather than fixed here, because a label-only route is a new write path into
+  the escrow and wants its own gating decision.
+- **[ACCEPTED]** *A reading grantee holds the owner's master key for the life of
+  their own vault session.* It lives in the one module that holds keys, is
+  cleared by the same explicit lock and the same idle timer as their own vault,
+  and is non-extractable and read-only. It cannot be persisted — this origin has
+  no client-storage design, which is also why §6uu's blob-version item is still
+  open. A grantee who walks away is protected by the idle lock and by nothing
+  else, which is the same protection their own vault has.
+
+  **THAT LAST SENTENCE WAS FALSE AS FIRST WRITTEN**, and the PR3b review found
+  it. `collectGrant` checked the session before its two awaits and wrote the
+  recovered key after them unconditionally, so a lock landing in that window was
+  silently undone: the key was installed on a session already marked `locked`,
+  where `touch()` returns early and never arms another idle timer. The key then
+  outlived the control this residual leans on. `collectGrant` now re-checks that
+  `#vault` is the same object it started with — identity, so a lock AND a
+  lock-then-unlock are both caught — and refuses with `vault_locked` otherwise.
+  Aborting costs a collection and not the arrangement, because PR3a made release
+  repeatable. The residual stands as written now that the mechanism it names
+  actually holds.
+
+- **[OWNER: M39]** *The vault origin does not carry the step-up propagation
+  budget the other two origins carry, so a user who completes step-up quickly is
+  told they did not.* Found by driving the real app for this PR and pre-existing
+  since M13, which is why it is re-owned rather than fixed here.
+  `HttpSessionVerifier` positive-caches a session for `DEFAULT_CACHE_TTL_MS`, so
+  for up to one TTL after a successful `POST /v1/auth/stepup` a peer service
+  still answers from a cached un-elevated session. `apps/web/src/lib/step-up.ts`
+  documents exactly this and exports `STEP_UP_PROPAGATION_BUDGET_MS`;
+  `apps/operator-web` carries the same shape, each with a test asserting parity
+  against `verifier.ts`. `apps/vault-web` retries ONCE and then reports "That
+  action needs a fresh identity check, and it was not completed" — a sentence
+  that is false about what happened, on the origin with the MOST step-up-gated
+  actions (vault open, keyset create, add item, arm emergency access, reset).
+  MEASURED against the running stack rather than argued: first gated call 403,
+  step-up 200, identity immediately reporting `mfaLevel: stepup`, the single
+  retry 403, fifteen consecutive 403s, elevation visible at T+30.1s. The
+  harness's own first draft is the positive control — it waited for an unspent
+  TOTP window BETWEEN the probe and the step-up, putting 30s inside the measured
+  interval, and the identical retry succeeded. So the failure gets LIKELIER the
+  faster the user types. M39 rather than M27 because the fix is the third copy
+  of a shape two other origins already have, and choosing between "a third copy"
+  and "one shared client module" is a client-architecture decision that does not
+  belong inside a Zone A read; it is vault-local and unblocked, which is what
+  that row collects.

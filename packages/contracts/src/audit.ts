@@ -148,9 +148,16 @@ export const AUDIT_ACTIONS = [
   'vault.emergency.request_blocked',
   'vault.emergency.denied',
   'vault.emergency.released',
-  // The docs/03 §6a integration point: a release (or a request) refused
-  // because the owner's settlement case has not reached its separately
-  // approved vault stage. Zone A is the LAST stage by design.
+  // The docs/03 §6a integration point: a grantee act refused because the
+  // owner's settlement case has not reached its separately approved vault
+  // stage. Zone A is the LAST stage by design.
+  //
+  // THREE acts sit behind that gate, not the two this comment used to name —
+  // a request, a collection and (M27 PR3b) a READ — so `detail.surface` says
+  // which, and `EventsService.emergencyReleaseBlocked` takes it as a required
+  // argument. Without it a grantee's screen refetching was indistinguishable
+  // from a grantee hammering the release route, which is the probing signal
+  // this member exists to surface.
   'vault.emergency.release_blocked',
   // M27 PR0, and they arrive here A MILESTONE BEFORE THEIR PRODUCERS on
   // purpose: AUDIT_ACTIONS is closed, and a consumer that predates a member

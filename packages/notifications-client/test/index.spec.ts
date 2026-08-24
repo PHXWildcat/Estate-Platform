@@ -15,6 +15,8 @@ describe('package surface', () => {
       'emergency.revoked',
       'vault.reset',
       'vault.grantees_changed',
+      // M27 PR3b: a released emergency-access grantee opened the owner's items.
+      'vault.read_by_grantee',
       'settlement.case_opened',
       'settlement.owner_contact',
       // M13: somebody claimed a link to an owner's estate contact.

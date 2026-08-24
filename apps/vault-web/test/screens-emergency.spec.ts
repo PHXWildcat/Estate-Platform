@@ -21,7 +21,9 @@ import 'fake-indexeddb/auto';
 import {
   createEscrow,
   createServerEphemeral,
+  encryptItem,
   generateRecoveryKeyPair,
+  importAesKey,
   publicKeyFingerprint,
   decodeGroupElement,
   encodeGroupElement,
@@ -32,6 +34,7 @@ import {
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { installLifecycle, render } from '../src/client/app';
+import { VaultSession } from '../src/client/vault-session';
 import { forgetSecretKey } from '../src/client/secret-key-store';
 
 /**
@@ -130,12 +133,120 @@ const USER = '11111111-2222-4333-8444-555555555555';
 const GRANTEE = '22222222-3333-4444-8555-666666666666';
 const PASSWORD = 'a-good-vault-password';
 
+/**
+ * BUTTONS THAT MUST NEVER APPEAR ON A GRANTEE'S SURFACE — DERIVED (PR3b review).
+ *
+ * This was a hand-written list of five, and two of its members could not do
+ * anything: `'Delete'` matches no button in the app (the label is `'Delete this
+ * item'`, and `toContain` on an array is strict equality), and `'Save changes'`
+ * belongs to the owner's edit form, which is not the screen being inspected.
+ * A list that cannot match is a list that reports nothing while looking
+ * thorough — the shape this repo keeps finding, so this reads the labels out of
+ * `app.ts` instead.
+ *
+ * The CORPUS IS STATED AND ASSERTED, because the first version of this
+ * derivation claimed more than its input could support — a fence whose input is
+ * narrower than its claim goes green for exactly the reason it is wrong. It
+ * read `buttonEl`/`quietButton` call sites only, and then said "a new
+ * owner-side button joins this set the moment it is written". That was false
+ * for THREE other ways this client makes a button, and the miss was not
+ * academic: `'Save changes'` — the owner's edit-form submit, the single most
+ * plausible thing to drift onto a grantee's item detail screen — is built with
+ * a raw `el('button')` and was outside the corpus, which is also why the
+ * hand-written list it replaced could name it and never match it.
+ *
+ * All four forms are read now:
+ *
+ *   1. `buttonEl('…')` / `quietButton('…')` / `linkButton('…')` — direct calls.
+ *   2. `act('…', …)` — `policyRow`'s helper, which forwards to `quietButton`
+ *      with the label as a VARIABLE, so form 1's regex could never see it.
+ *   3. `el('button', {…}, ['…'])` — raw construction, including the ternary
+ *      children (`existing ? 'Save changes' : 'Add to vault'`), which is why
+ *      this one is a bracket scan rather than a regex.
+ *
+ * ANTI-VACUITY PER FORM, not just on the total: a floor on the whole set cannot
+ * see one of three matchers silently stopping, and mis-attribution preserves
+ * counts. Each form pins a member it must find.
+ */
+const GRANTEE_ALLOWED_BUTTONS = new Set([
+  // The reading surface's own controls, and the ceremony that reaches it.
+  'Done',
+  'Back',
+  'Show',
+  'Copy',
+  'Open the vault',
+  'Open it now',
+  'Request access',
+  'Confirm key',
+  'Let others name me',
+  'Emergency access',
+  'Cancel',
+]);
+
+const OWNER_ONLY_BUTTONS: readonly string[] = (() => {
+  const source = readFileSync(join(__dirname, '..', 'src', 'client', 'app.ts'), 'utf8');
+  const unquote = (raw: string): string => raw.replace(/\\'/g, "'");
+  const literals = (text: string): string[] =>
+    [...text.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => unquote(m[1] ?? ''));
+
+  // Form 1 + 2: a label passed as the first argument.
+  const byCall = new Set<string>();
+  for (const m of source.matchAll(
+    /(?:buttonEl|quietButton|linkButton|act)\(\s*'((?:[^'\\]|\\.)*)'/g,
+  )) {
+    const label = unquote(m[1] ?? '');
+    if (label) byCall.add(label);
+  }
+
+  // Form 3: `el('button', …, [ … ])`. Scan to the matching `]` so a ternary or
+  // a line break inside the children array cannot hide a label from a regex.
+  const byRaw = new Set<string>();
+  for (const m of source.matchAll(/el\(\s*'button'/g)) {
+    const open = source.indexOf('[', m.index);
+    if (open < 0) continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < source.length; i += 1) {
+      const ch = source[i];
+      if (ch === '[') depth += 1;
+      else if (ch === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end < 0) continue;
+    for (const label of literals(source.slice(open, end))) if (label) byRaw.add(label);
+  }
+
+  // ANTI-VACUITY, PER FORM. A total-only floor cannot see one matcher of three
+  // stop matching, because the other two keep the count above it.
+  if (!byCall.has('Add an item')) throw new Error('form 1 (buttonEl/quietButton) matched nothing');
+  if (!byCall.has('Remove')) throw new Error("form 2 (policyRow's act helper) matched nothing");
+  if (!byRaw.has('Save changes')) throw new Error("form 3 (raw el('button')) matched nothing");
+
+  const labels = new Set<string>();
+  for (const label of [...byCall, ...byRaw]) {
+    if (!GRANTEE_ALLOWED_BUTTONS.has(label)) labels.add(label);
+  }
+  if (labels.size < 20) throw new Error(`derived too few owner buttons: ${labels.size}`);
+  return [...labels];
+})();
+
 interface Service {
   calls: Array<{ path: string; method: string; body: string }>;
   /** Forced failures, keyed `METHOD /path`. */
   fail: Map<string, { status: number; error: string }>;
   candidates: Array<{ contactId: string; userId: string; name: string }>;
-  escrow: { configured: boolean; threshold: number | null; policies: unknown[] };
+  escrow: {
+    configured: boolean;
+    threshold: number | null;
+    policies: unknown[];
+    /** M27 PR3b. `null` is the CLEARED state, mirroring the service. */
+    label?: string | null;
+  };
   grantedToMe: unknown[];
   /** Whether this user has published a recovery key of their own. */
   ownKey: { publicKey: string; wrappedPrivateKey: string } | null;
@@ -146,6 +257,10 @@ interface Service {
    * so the grantee side runs against a real escrow rather than a fixture.
    */
   release: { status: number; body: unknown } | null;
+  /** Held open, so a test can act while a release is in flight. */
+  releaseGate: Promise<void> | null;
+  /** M27 PR3b: what `GET .../:policyId/items` answers the collected grantee. */
+  granteeItems: { status: number; body: unknown } | null;
 }
 
 function installService(): Service {
@@ -158,6 +273,8 @@ function installService(): Service {
     ownKey: null,
     publishedKeys: new Map(),
     release: null,
+    releaseGate: null,
+    granteeItems: null,
   };
   let keyset: Record<string, string> | null = null;
   let ephemeral: Awaited<ReturnType<typeof createServerEphemeral>> | null = null;
@@ -252,6 +369,15 @@ function installService(): Service {
           : reply(404, { error: 'recovery_key_not_found' }),
       );
     }
+    // M27 PR3b. Matched by SHAPE rather than by an exact path, because the
+    // policy id is generated by the test that armed the escrow.
+    if (/\/api\/vault\/emergency-access\/[^/]+\/items(\?|$)/.test(path)) {
+      return Promise.resolve(
+        state.granteeItems
+          ? reply(state.granteeItems.status, state.granteeItems.body)
+          : reply(409, { error: 'not_collected' }),
+      );
+    }
     if (path.endsWith('/release')) {
       // THE DEFAULT REFUSAL IS ONE THE SERVICE CAN STILL SEND. It was 409
       // `already_released` until M27 PR3a made collection repeatable, at which
@@ -259,11 +385,15 @@ function installService(): Service {
       // real route had dropped — and the screen test below went on passing
       // against a server that no longer exists. `not_requested` is what a
       // release with no elapsed `releases_at` actually answers.
-      return Promise.resolve(
+      const answer = (): unknown =>
         state.release
           ? reply(state.release.status, state.release.body)
-          : reply(409, { error: 'not_requested' }),
-      );
+          : reply(409, { error: 'not_requested' });
+      // A HOLD, so a test can make something happen WHILE the release is in
+      // flight. Every real release has a window between the request going out
+      // and the key coming back; without a way to open that window here, the
+      // only things testable are states that never overlap it.
+      return state.releaseGate ? state.releaseGate.then(answer) : Promise.resolve(answer());
     }
     if (path === '/api/vault/emergency-access' && method === 'GET') {
       return Promise.resolve(reply(200, state.escrow));
@@ -276,11 +406,21 @@ function installService(): Service {
       // created, one per grantee, so the screen re-renders against reality.
       const parsed = JSON.parse(body) as {
         threshold: number;
+        label?: string;
         grantees: Array<Record<string, unknown>>;
       };
       state.escrow = {
         configured: true,
         threshold: parsed.threshold,
+        // FAITHFUL ABOUT THE ABSENCE, NOT ONLY THE VALUE (M27 PR3b review).
+        // This double rebuilt `escrow` without a `label` key at all, so the
+        // owner-side write path for the new field had no observer and the
+        // review found the bug it was hiding: the form never seeded from the
+        // current escrow, so any re-arm cleared the label. `?? null` mirrors
+        // the service, which writes `label = EXCLUDED.label` and therefore
+        // CLEARS on absence — a double that answered `undefined` here would
+        // still be lying about the one arm that matters.
+        label: parsed.label ?? null,
         policies: parsed.grantees.map((g, index) => ({
           id: `p${index + 1}`,
           granteeContactId: g['granteeContactId'],
@@ -378,6 +518,52 @@ async function openEmergency(): Promise<void> {
   await waitForText('Your arrangement');
 }
 
+const GRANTEE_ITEM_ID = '55555555-6666-4777-8888-999999999999';
+
+/**
+ * ARM A REAL ESCROW, THE WAY THE OWNER'S DEVICE WOULD (M27 PR3b).
+ *
+ * The grantee side then reconstructs an ACTUAL key and opens an ACTUAL blob,
+ * rather than trusting a fixture to have got the crypto right. The item is
+ * sealed with the same `encryptItem` and the same AAD shape the owner's client
+ * uses — under the OWNER's id, which is the detail that would break a reader
+ * keyed on the caller's own id and would look exactly like a wrong key.
+ */
+async function armEscrowFor(
+  service: Service,
+  ownerUserId: string,
+  content: Record<string, string> = { title: 'The owner\u2019s secret note' },
+): Promise<{
+  ownerUserId: string;
+  platformPart: string;
+  wrappedMasterKeyRecovery: string;
+  keyShare: string | undefined;
+  threshold: number;
+  itemBlob: string;
+}> {
+  const ownerMasterKey = crypto.getRandomValues(new Uint8Array(32));
+  const material = await createEscrow({
+    ownerUserId,
+    masterKey: ownerMasterKey,
+    grantees: [{ granteeUserId: USER, publicKey: fromBase64(service.ownKey?.publicKey ?? '') }],
+    threshold: 1,
+  });
+  const key = await importAesKey(ownerMasterKey, ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']);
+  const blob = await encryptItem(
+    key,
+    { userId: ownerUserId, itemId: GRANTEE_ITEM_ID, blobVersion: 1 },
+    new TextEncoder().encode(JSON.stringify(content)),
+  );
+  return {
+    ownerUserId,
+    platformPart: material.platformPart,
+    wrappedMasterKeyRecovery: material.wrappedMasterKeyRecovery,
+    keyShare: material.shares[0]?.sealedShare,
+    threshold: material.threshold,
+    itemBlob: toBase64(blob),
+  };
+}
+
 describe('the emergency-access screens', () => {
   jest.setTimeout(180_000);
 
@@ -428,6 +614,192 @@ describe('the emergency-access screens', () => {
     // What crossed the wire is a sealed share and a platform half — never a key.
     expect(armed?.body).toContain('platformPart');
     expect(armed?.body).toContain('granteePublicKeySha256');
+  });
+
+  /*
+   * THE LABEL'S WRITE PATH (M27 PR3b review).
+   *
+   * Three tests rather than one, because the field has three distinct arms and
+   * the review found the middle one broken while the outer two would have
+   * passed: typing a label must SEND it, re-arming without touching the box
+   * must KEEP it, and blanking the box must CLEAR it. Only the second is a
+   * behaviour change; it is here with the other two because a seed that
+   * defeated the clear would be a worse bug than the one being fixed.
+   */
+  /**
+   * Arm from the emergency screen as it currently stands. Re-arming does NOT
+   * re-open the vault: after `configure` the screen re-renders in place with
+   * the picker back at "not confirmed", which is exactly the state an owner
+   * adding a second contact is in — and the state the seeding defect needed.
+   */
+  const configures = (service: ReturnType<typeof installService>): readonly { body: string }[] =>
+    service.calls.filter((c) => c.method === 'POST' && c.path === '/api/vault/emergency-access');
+
+  const armWith = async (
+    service: ReturnType<typeof installService>,
+    label?: string,
+    waitingHours?: string,
+  ): Promise<void> => {
+    /*
+     * ANTI-VACUITY, AND THIS HELPER NEEDED IT (M27 PR3b review).
+     *
+     * Every wait below is satisfiable by the PREVIOUS arm's DOM — "key
+     * confirmed" and "1 contact(s) named" are both already on screen when a
+     * re-arm starts. The first draft of these tests therefore drove one arm,
+     * waited on text that never changed, and asserted against the FIRST
+     * request while believing it had made a second. Staging on the picker
+     * returning to "not confirmed" is the intermediate assertion that proves
+     * the re-render happened, and the request count is the floor that proves
+     * the click reached the network.
+     */
+    await waitForText('Ada');
+    await waitForText('not confirmed');
+    const before = configures(service).length;
+    clickText('Confirm key');
+    await waitForText('key confirmed');
+    if (label !== undefined) byLabel('What to call this vault').value = label;
+    if (waitingHours !== undefined) byLabel('Waiting period').value = waitingHours;
+    clickText('Arm emergency access');
+    await waitForText(/contact\(s\) named/i);
+    for (let i = 0; configures(service).length === before && i < 80; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(configures(service).length).toBe(before + 1);
+  };
+
+  /** First arm: real enrollment, real SRP unlock, a real published key. */
+  const openWithCandidate = async (service: ReturnType<typeof installService>): Promise<void> => {
+    service.candidates = [{ contactId: 'c1', userId: GRANTEE, name: 'Ada' }];
+    const pair = await generateRecoveryKeyPair();
+    service.publishedKeys.set(GRANTEE, toBase64(pair.publicKey));
+    await openEmergency();
+  };
+
+  const lastConfigureBody = (service: ReturnType<typeof installService>): string =>
+    configures(service).at(-1)?.body ?? '';
+
+  it('sends the label the owner typed', async () => {
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, 'The Dehn family vault');
+
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      label: 'The Dehn family vault',
+    });
+    await waitForText('They see this vault as “The Dehn family vault”.');
+  });
+
+  it('KEEPS the label when the owner re-arms without touching the box', async () => {
+    // The defect this closes: `configure` clears the label on absence, so a
+    // form that always started blank discarded the name on every re-arm done
+    // for some other reason — reverting every grantee to `Vault of <uuid>`,
+    // which is the §6yy defect this PR exists to close.
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, 'The Dehn family vault');
+
+    // Re-arm in place, never touching the label field.
+    await armWith(service);
+
+    expect(byLabel('What to call this vault').value).toBe('The Dehn family vault');
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      label: 'The Dehn family vault',
+    });
+    await waitForText('They see this vault as “The Dehn family vault”.');
+  });
+
+  it('CLEARS the label when the owner blanks the box', async () => {
+    // The other arm, and the reason the seed above must not be a floor: an
+    // owner who deletes the name means it, and the omitted field is how this
+    // client says so.
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, 'The Dehn family vault');
+
+    await armWith(service, '   ');
+
+    expect(JSON.parse(lastConfigureBody(service))).not.toHaveProperty('label');
+    await waitForText('They see your account id.');
+  });
+
+  /*
+   * THE WAITING PERIOD IS THE LABEL'S DEFECT ONE LINE DOWN (M27 PR3b review 2).
+   *
+   * `value: '48'` was hardcoded from M15 PR3 and stayed hardcoded through the
+   * review that seeded the field directly above it. Found by driving the real
+   * app: armed at 24, re-armed to re-confirm a key, and the row came back 48.
+   *
+   * The observed direction is the harmless one. These tests pin the OTHER one,
+   * because that is the direction that costs something: `WAITING_PERIOD_HOURS`
+   * admits 24..8760, so an owner who chose 72 hours has the docs/03 §5.2
+   * window SHORTENED to 48 by a re-arm about something else entirely — a
+   * protective control weakened as a side effect of an unrelated one.
+   */
+  it('sends the waiting period the owner typed', async () => {
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, undefined, '72');
+
+    // Per GRANTEE, not top level — `configure` sends one value and the client
+    // stamps it onto each sealed share.
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      grantees: [expect.objectContaining({ waitingPeriodHours: 72 })],
+    });
+  });
+
+  it('KEEPS a LONGER waiting period when the owner re-arms without touching it', async () => {
+    // The arm that was broken, driven in the direction that loses protection:
+    // 72 is above the hardcoded default, so a form that always starts at 48
+    // shortens the owner's window by a day without saying so.
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, undefined, '72');
+
+    // Re-arm in place, touching neither the label nor the waiting period.
+    await armWith(service);
+
+    expect(byLabel('Waiting period').value).toBe('72');
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      grantees: [expect.objectContaining({ waitingPeriodHours: 72 })],
+    });
+  });
+
+  it('offers 48 to a vault that has never been armed', async () => {
+    // The discriminating arm: without it the two tests above pass for a field
+    // that simply echoes whatever it was last given, and a never-armed vault
+    // would render an empty box rather than a default.
+    const service = installService();
+    await openWithCandidate(service);
+
+    expect(byLabel('Waiting period').value).toBe('48');
+  });
+
+  it('names the step a candidate is actually missing, not one it cannot know about', async () => {
+    /*
+     * FOUND BY DRIVING THE REAL APP (M27 PR3b).
+     *
+     * The copy said the candidate "has not set up a vault yet" — which the
+     * server's 404 does not say, and which was false for the contact the drive
+     * used: they HAD a vault and had never published a recovery key. The owner
+     * was told to ask for something already done. `granteePublicKey` answers
+     * one uniform 404 for both states deliberately, so the only honest copy is
+     * one true of both, naming the action that fixes either.
+     */
+    const service = installService();
+    service.candidates = [{ contactId: 'c1', userId: GRANTEE, name: 'Ada' }];
+    // No published key for GRANTEE: the route 404s, exactly as it does for a
+    // contact with no vault at all. The screen cannot tell them apart.
+    await openEmergency();
+    await waitForText('Ada');
+
+    clickText('Confirm key');
+    await waitForText(/has not published a key yet/i);
+    const text = document.body.textContent ?? '';
+    // It must not assert the cause the 404 cannot establish…
+    expect(text).not.toMatch(/has not set up a vault/i);
+    // …and it must name the step that actually fixes it, in both states.
+    expect(text).toContain('Let others name me');
+    expect(document.body.textContent).not.toContain('key confirmed');
   });
 
   it('refuses a key it cannot parse rather than hanging on it', async () => {
@@ -759,24 +1131,9 @@ describe('the emergency-access screens', () => {
     clickText('Let others name me');
     await waitForText(/your key is published/i);
 
-    const ownerMasterKey = crypto.getRandomValues(new Uint8Array(32));
     const OWNER_ID = '33333333-4444-4555-8666-777777777777';
-    const material = await createEscrow({
-      ownerUserId: OWNER_ID,
-      masterKey: ownerMasterKey,
-      grantees: [{ granteeUserId: USER, publicKey: fromBase64(service.ownKey?.publicKey ?? '') }],
-      threshold: 1,
-    });
-    service.release = {
-      status: 200,
-      body: {
-        ownerUserId: OWNER_ID,
-        platformPart: material.platformPart,
-        wrappedMasterKeyRecovery: material.wrappedMasterKeyRecovery,
-        keyShare: material.shares[0]?.sealedShare,
-        threshold: material.threshold,
-      },
-    };
+    const armed = await armEscrowFor(service, OWNER_ID);
+    service.release = { status: 200, body: armed };
     service.grantedToMe = [
       {
         id: 'p9',
@@ -800,8 +1157,35 @@ describe('the emergency-access screens', () => {
     // one only needs to know the screen arrived.
     await waitForText(/only continue if they genuinely cannot/i);
     clickText('Open it now');
-    await waitForText(/reconstructed on this device/i);
+    /*
+     * M27 PR3b MOVED THE ENDING. This waited on the collection's own
+     * confirmation — the sentence that said the key had been rebuilt and NOT
+     * kept — and PR3b keeps it, in `VaultSession`, so the grantee can read
+     * with it. So the proof that reconstruction worked is no longer a message
+     * claiming it did: it is the owner's ciphertext OPENING, which is a fact
+     * about the key rather than a sentence about it.
+     */
+    service.granteeItems = {
+      status: 200,
+      body: {
+        items: [
+          {
+            id: GRANTEE_ITEM_ID,
+            itemType: 'secure_note',
+            blob: armed.itemBlob,
+            blobVersion: 1,
+            revision: 1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
+        nextCursor: null,
+      },
+    };
+    await waitForText(/the owner’s secret note/i);
     // And it stays on the device: nothing carries a recovered key back up.
+    // THE POINT OF THIS TEST, and it survives PR3b unchanged — the key now
+    // lives longer, so the egress question matters more, not less.
     expect(
       service.calls.filter((c) => c.method === 'POST' && c.body.includes('masterKey')),
     ).toHaveLength(0);
@@ -859,8 +1243,18 @@ describe('the emergency-access screens', () => {
     // control the whole change rests on, so losing it would quietly remove the
     // reason re-collection is safe.
     expect(warning).toMatch(/the owner is told every time/i);
-    // And the honest limit is unchanged: this does not read their items.
-    expect(warning).toMatch(/not built yet/i);
+    /*
+     * AND THE SECOND SENTENCE IS NOW THE OTHER WAY ROUND (M27 PR3b).
+     *
+     * It asserted `not built yet` — the honest limit while reading did not
+     * exist. PR3b builds it, so that sentence became false in the same way
+     * PR3a's did, and this is the screen where a false sentence does the most
+     * damage. UNDERSTATING what the next tap does is the same defect as
+     * overstating it: somebody weighing a real emergency has to be told they
+     * are about to see the contents.
+     */
+    expect(warning).toMatch(/shows you what is inside/i);
+    expect(warning).not.toMatch(/not built yet/i);
 
     // WHAT MUST NOT BE SAID, asserted on this rendered screen rather than only
     // on the source, so a reworded relapse is caught where a reader would meet
@@ -1457,5 +1851,586 @@ describe('the emergency-access screens', () => {
     clickText('Cancel');
     await waitForText(/needs a fresh identity check, and it was not completed/i);
     expect(service.escrow.policies).toHaveLength(1);
+  });
+
+  // ------------------------------------------- M27 PR3b: whose vault is this
+
+  const OWNER_ID = '33333333-4444-4555-8666-777777777777';
+
+  /**
+   * docs/03 §6yy's `[OWNER: M27]`, closed. The grantee's row read
+   * "Vault of <uuid>" — the SAME defect M27 had already fixed on the owner's
+   * side, arriving once more on the other half of one feature, which is
+   * exactly what "a rule applied to one member of a category is a rule half
+   * applied" describes.
+   */
+  it('names the owner’s vault by the label the OWNER wrote', async () => {
+    const service = installService();
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        status: 'configured',
+        releasesAt: null,
+        releasedAt: null,
+        ownerLabel: 'Mum’s vault',
+      },
+    ];
+    await openEmergency();
+    await waitForText(/mum’s vault/i);
+    // The id is GONE from the row, not merely accompanied by a name.
+    expect(document.body.textContent).not.toContain(OWNER_ID);
+  });
+
+  /**
+   * THE FALLBACK, AND BOTH SPELLINGS OF ABSENT. `ownerLabel` arrives as JSON,
+   * so a service older than this origin sends no such field at all — and
+   * `undefined !== null` is true, which is how the M12 rule gets broken by a
+   * strict-equality check that looks careful. Null and missing must both fall
+   * back, and neither may blank the row.
+   */
+  it.each([
+    ['null', null],
+    ['missing entirely (an older service)', undefined],
+    ['empty (a service that sent a blank)', ''],
+  ])('falls back to the owner id when the label is %s', async (_name, label) => {
+    const service = installService();
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        status: 'configured',
+        releasesAt: null,
+        releasedAt: null,
+        ...(label === undefined ? {} : { ownerLabel: label }),
+      },
+    ];
+    await openEmergency();
+    await waitForText(/ready if they cannot/i);
+    expect(document.body.textContent).toContain(`Vault of ${OWNER_ID}`);
+  });
+
+  /**
+   * THE OWNER SEES WHAT THEY PUBLISHED. An owner who cannot read back the
+   * current label cannot tell a blank one from one that failed to save — and
+   * this is the one string on this origin whose audience is somebody else, so
+   * being wrong about it is being wrong about what another person reads.
+   */
+  it('echoes the label back to the owner who set it', async () => {
+    const service = installService();
+    service.escrow = {
+      configured: true,
+      threshold: 1,
+      label: 'The Dehn family vault',
+      policies: [],
+    };
+    await openEmergency();
+    await waitForText(/they see this vault as/i);
+    expect(document.body.textContent).toContain('The Dehn family vault');
+  });
+
+  it('tells an owner with NO label exactly what their grantees see instead', async () => {
+    // The discriminating arm: without it the test above passes for a screen
+    // that prints whatever it was given and says nothing when given nothing.
+    const service = installService();
+    service.escrow = { configured: true, threshold: 1, policies: [] };
+    await openEmergency();
+    await waitForText(/they see your account id/i);
+  });
+
+  /**
+   * THE READING SURFACE ITSELF — the thing the whole §5.2 ceremony exists to
+   * reach, and the screen PR3a could only promise.
+   */
+  it('opens the owner’s items after a collection, under the owner’s name', async () => {
+    const service = installService();
+    await openEmergency();
+    clickText('Let others name me');
+    await waitForText(/your key is published/i);
+
+    // A REAL escrow, built by this test playing the owner's device, so the
+    // grantee side reconstructs an actual key rather than trusting a fixture.
+    const armed = await armEscrowFor(service, OWNER_ID);
+    service.release = { status: 200, body: armed };
+    service.granteeItems = {
+      status: 200,
+      body: {
+        items: [
+          {
+            id: GRANTEE_ITEM_ID,
+            itemType: 'secure_note',
+            blob: armed.itemBlob,
+            blobVersion: 1,
+            revision: 1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
+        nextCursor: null,
+      },
+    };
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        status: 'waiting',
+        releasesAt: new Date(Date.now() - 1000).toISOString(),
+        releasedAt: null,
+        ownerLabel: 'Mum’s vault',
+      },
+    ];
+
+    // Re-enter the screen so it picks up the new granted-to-me state. 'Back'
+    // from the recovery-key screen lands on the VAULT, not on emergency
+    // access, which is why the round trip is spelled out rather than assumed.
+    clickText('Back');
+    await waitForText(/nothing here yet/i);
+    clickText('Emergency access');
+    await waitForText('Your arrangement');
+    await waitForText(/ready to open/i);
+    clickText('Open the vault');
+    await waitForText(/only continue if they genuinely cannot/i);
+    clickText('Open it now');
+
+    // THE ITEM'S TITLE, decrypted on this device with a key rebuilt from the
+    // escrow. A 200 carrying ciphertext that will not open is the failure this
+    // screen could have and a status assertion could not see.
+    await waitForText(/the owner’s secret note/i);
+    // Under the owner's own name, not their id.
+    expect(document.body.textContent).toContain('Mum’s vault');
+    expect(document.body.textContent).not.toContain(OWNER_ID);
+    // And the owner is told, said on the screen the grantee is looking at.
+    expect(document.body.textContent).toMatch(/the owner has been told/i);
+  });
+
+  /**
+   * THE RUNTIME HALF OF THE READ-ONLY-KEY CLAIM (M27 PR3b review).
+   *
+   * `fences.spec.ts` checks the `importAesKey` CALL and used to justify
+   * stopping there by claiming the key was unreachable from a test. It is not:
+   * `collectGrant` returns the `GrantedVault`, so the real key from the real
+   * ceremony can be inspected with nothing cut into the module. Spying on the
+   * prototype observes the value the app itself received — no production
+   * change, and no fixture standing in for the key.
+   *
+   * WebCrypto enforces `usages`, so this is the layer where "cannot seal a
+   * blob into somebody else's Zone A" is a platform guarantee rather than a
+   * property of what was built.
+   */
+  it('the collected key carries no writing usage AT RUNTIME', async () => {
+    const collected: CryptoKey[] = [];
+    // UNBOUND ON PURPOSE, which is the one case the rule exists to allow: the
+    // reference is re-entered as `realCollect.call(this, …)` below, so the
+    // instance supplies `this`. Binding it to the prototype — the reflex fix —
+    // would hand the real method an object with none of the `#private` fields
+    // it reads, and the restore in `finally` would leave a bound method
+    // installed for every later test.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const realCollect = VaultSession.prototype.collectGrant;
+    VaultSession.prototype.collectGrant = async function (this: VaultSession, input) {
+      const real = await realCollect.call(this, input);
+      if (real.ok) collected.push(real.data.masterKey);
+      return real;
+    };
+    try {
+      const service = installService();
+      await readAsGrantee(service);
+      // `readAsGrantee` returns on the CLICK, not on the collection — every
+      // caller stages on the screen that follows, and so must this one.
+      await waitForText(/the owner has been told/i);
+
+      // ANTI-VACUITY: the ceremony really ran and really produced a key, or
+      // every assertion below is about an empty array.
+      expect(collected).toHaveLength(1);
+      const key = collected[0]!;
+      // Exactly what reading needs, and nothing that writes.
+      expect([...key.usages].sort()).toEqual(['decrypt', 'unwrapKey']);
+      for (const forbidden of ['encrypt', 'wrapKey', 'sign', 'deriveKey', 'deriveBits']) {
+        expect(key.usages).not.toContain(forbidden);
+      }
+      // And page script cannot read the owner's master key out of the browser.
+      expect(key.extractable).toBe(false);
+    } finally {
+      VaultSession.prototype.collectGrant = realCollect;
+    }
+  });
+
+  /**
+   * A LOCK LANDING WHILE THE RELEASE IS IN FLIGHT (M27 PR3b review).
+   *
+   * `collectGrant` checked the session before its awaits and wrote the
+   * recovered key after them, unconditionally — so a lock arriving in between
+   * was silently undone. The owner's master key ended up installed on a
+   * session whose status is `locked`, where `touch()` returns early and
+   * therefore never arms another idle timer: the key outlived the control that
+   * exists to drop it. §6zz accepted the residual on the premise that the idle
+   * lock protects a grantee who walks away, which is this exact case.
+   *
+   * Driven through `pagehide` because that is a real way to lose the race —
+   * shutting the laptop while the release is out — and because it is the one
+   * lock trigger a test can fire at an exact moment. The idle timer reaches
+   * the same `lock()` by the same path.
+   */
+  it('does not install the owner’s key when a lock lands mid-collection', async () => {
+    const service = installService();
+    await openEmergency();
+    clickText('Let others name me');
+    await waitForText(/your key is published/i);
+    const armed = await armEscrowFor(service, OWNER_ID);
+    service.release = { status: 200, body: armed };
+    service.granteeItems = { status: 200, body: { items: [], nextCursor: null } };
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        granteeUserId: USER,
+        waitingPeriodHours: 48,
+        status: 'waiting',
+        releasesAt: new Date(Date.now() - 1000).toISOString(),
+        releasedAt: null,
+        ownerLabel: 'Mum’s vault',
+      },
+    ];
+
+    clickText('Back');
+    await waitForText(/nothing here yet/i);
+    clickText('Emergency access');
+    await waitForText('Your arrangement');
+    await waitForText(/ready to open/i);
+
+    // The `pagehide` handler lives in `installLifecycle`, which `mount()` does
+    // NOT call — the first draft of this test dispatched the event at nothing,
+    // so the lock never fired and it "reproduced" the defect against the fix.
+    // Installing it here is what makes the dispatch below mean anything.
+    installLifecycle();
+
+    // Hold the release open, start the collection, then lose the device.
+    let openTheGate = (): void => {};
+    service.releaseGate = new Promise<void>((resolve) => {
+      openTheGate = resolve;
+    });
+    clickText('Open the vault');
+    await waitForText(/only continue if they genuinely cannot/i);
+    clickText('Open it now');
+    // The request is out and waiting on the gate.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    window.dispatchEvent(new Event('pagehide'));
+    openTheGate();
+
+    // The screen ends up locked, NOT holding somebody else's vault.
+    await waitForText('Unlock your vault');
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('Mum’s vault');
+    expect(text).not.toMatch(/the owner has been told/i);
+    // ANTI-VACUITY: the release really did go out and really did answer, so
+    // this is the race and not a collection that never started.
+    expect(service.calls.some((c) => c.method === 'POST' && c.path.endsWith('/release'))).toBe(
+      true,
+    );
+  });
+
+  /*
+   * EVERY REFUSAL THE READING ROUTE CAN ANSWER (M27 PR3b review).
+   *
+   * THE CORPUS, stated because a table that does not say what it covers is a
+   * table that silently stops covering it: these are the refusals
+   * `EmergencyService.readAsGrantee` and the guards above it can produce for a
+   * grantee holding a live session — `denied_by_owner` and `not_collected`
+   * thrown in `readAsGrantee` itself, `settlement_stage_not_reached` from the
+   * settlement gate it runs inside, and the uniform `not_found` from
+   * `requireGranteePolicy`. `policy_revoked` is deliberately NOT here: the
+   * coverage floor showed that arm was dead, because `markRevoked`
+   * soft-deletes and every grantee read filters `deleted_at IS NULL`, so a
+   * revoked policy answers as the `not_found` row below.
+   * `vault_locked` and 401 are excluded: both are the
+   * grantee's OWN session lapsing, they already have correct copy, and neither
+   * is a statement about the arrangement.
+   *
+   * Every one of them used to arrive as `UNKNOWN` -> "Something went wrong.
+   * Try again." or as item-shaped copy on a screen holding a whole vault. The
+   * three assertions below are the three things that made that wrong, and they
+   * are asserted for the whole table rather than per row so a NEW refusal
+   * cannot be added with generic copy and stay green.
+   */
+  const READ_REFUSALS = [
+    ['the owner stopped access', 403, 'denied_by_owner', /stopped your access/i],
+    ['settlement is holding it', 403, 'settlement_stage_not_reached', /being settled/i],
+    ['the arrangement was rebuilt', 409, 'not_collected', /rebuilt since you opened it/i],
+    ['the arrangement is gone', 404, 'not_found', /no longer there/i],
+  ] as const;
+
+  it.each(READ_REFUSALS)(
+    'tells a reading grantee what happened when %s',
+    async (_name, status, token, expected) => {
+      const service = installService();
+      await openEmergency();
+      clickText('Let others name me');
+      await waitForText(/your key is published/i);
+      const armed = await armEscrowFor(service, OWNER_ID);
+      service.release = { status: 200, body: armed };
+      // The COLLECTION succeeds and the READ is refused, which is the shape
+      // every one of these takes in life: the grantee held a release and the
+      // arrangement moved under them.
+      service.granteeItems = { status, body: { error: token } };
+      service.grantedToMe = [
+        {
+          id: 'p9',
+          ownerUserId: OWNER_ID,
+          granteeUserId: USER,
+          waitingPeriodHours: 48,
+          status: 'waiting',
+          releasesAt: new Date(Date.now() - 1000).toISOString(),
+          releasedAt: null,
+          ownerLabel: 'Mum’s vault',
+        },
+      ];
+
+      clickText('Back');
+      await waitForText(/nothing here yet/i);
+      clickText('Emergency access');
+      await waitForText('Your arrangement');
+      await waitForText(/ready to open/i);
+      clickText('Open the vault');
+      await waitForText(/only continue if they genuinely cannot/i);
+      clickText('Open it now');
+
+      await waitForText(expected);
+      const text = document.body.textContent ?? '';
+      // Not a fault…
+      expect(text).not.toContain('Something went wrong');
+      // …not advice that cannot succeed…
+      expect(text).not.toMatch(/try again/i);
+      // …and not a sentence about an item, on a screen holding a vault.
+      expect(text).not.toMatch(/that item is no longer there|this item changed/i);
+      // The owner's name still heads the screen, so the reader knows WHOSE.
+      expect(text).toContain('Mum’s vault');
+    },
+  );
+
+  /**
+   * NOTHING THE GRANTEE PRESSES CAN WRITE. The route serves only
+   * `read_by_grantee`, so an edit or a delete would 403 — and a button that
+   * 403s reads to the person pressing it as an outage rather than a boundary.
+   * Asserted on the RENDERED screen, because "there is no such button" is a
+   * property of what was built, not of what the service would refuse.
+   */
+  it('offers a released grantee no way to change anything', async () => {
+    const service = installService();
+    await openEmergency();
+    clickText('Let others name me');
+    await waitForText(/your key is published/i);
+    const armed = await armEscrowFor(service, OWNER_ID);
+    service.release = { status: 200, body: armed };
+    service.granteeItems = {
+      status: 200,
+      body: {
+        items: [
+          {
+            id: GRANTEE_ITEM_ID,
+            itemType: 'secure_note',
+            blob: armed.itemBlob,
+            blobVersion: 1,
+            revision: 1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
+        nextCursor: null,
+      },
+    };
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        status: 'waiting',
+        releasesAt: new Date(Date.now() - 1000).toISOString(),
+        releasedAt: null,
+        ownerLabel: 'Mum’s vault',
+      },
+    ];
+    // Re-enter the screen so it picks up the new granted-to-me state. 'Back'
+    // from the recovery-key screen lands on the VAULT, not on emergency
+    // access, which is why the round trip is spelled out rather than assumed.
+    clickText('Back');
+    await waitForText(/nothing here yet/i);
+    clickText('Emergency access');
+    await waitForText('Your arrangement');
+    await waitForText(/ready to open/i);
+    clickText('Open the vault');
+    await waitForText(/only continue if they genuinely cannot/i);
+    clickText('Open it now');
+    await waitForText(/the owner’s secret note/i);
+
+    const buttons = [...document.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    // ANTI-VACUITY: this really is the reading screen, and it really does have
+    // buttons — a screen that failed to render passes every `not.toContain`.
+    expect(buttons).toContain('Done');
+    for (const forbidden of OWNER_ONLY_BUTTONS) {
+      expect(buttons).not.toContain(forbidden);
+    }
+
+    /*
+     * AND THE ITEM DETAIL SCREEN, WHICH WAS NEVER CHECKED (PR3b review).
+     *
+     * It is the one that could plausibly drift into reusing the owner's edit
+     * form — `renderGrantedItem` exists precisely so it does not — so leaving
+     * it unchecked left the list screen guarded and the risky screen open.
+     */
+    clickText('The owner’s secret note');
+    // Stage on the screen actually having CHANGED: the list carries 'Done',
+    // the detail carries 'Back'. Waiting on the title would be satisfied by
+    // the list, which still shows it.
+    for (let i = 0; i < 80 && !findButton('Back'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const detailButtons = [...document.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    expect(detailButtons).not.toContain('Done');
+    expect(detailButtons).toContain('Back');
+    for (const forbidden of OWNER_ONLY_BUTTONS) {
+      expect(detailButtons).not.toContain(forbidden);
+    }
+  });
+
+  /**
+   * A HELPER FOR THE THREE TESTS BELOW, which all need a grantee sitting on the
+   * reading screen with a real decrypted item in front of them. Driving the
+   * whole ceremony three times inline is three chances to drive it differently.
+   */
+  async function readAsGrantee(
+    service: Service,
+    content?: Record<string, string>,
+    itemOverrides: Record<string, unknown> = {},
+  ): Promise<void> {
+    await openEmergency();
+    clickText('Let others name me');
+    await waitForText(/your key is published/i);
+    const armed = await armEscrowFor(service, OWNER_ID, content);
+    service.release = { status: 200, body: armed };
+    service.granteeItems = {
+      status: 200,
+      body: {
+        items: [
+          {
+            id: GRANTEE_ITEM_ID,
+            itemType: 'secure_note',
+            blob: armed.itemBlob,
+            blobVersion: 1,
+            revision: 1,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+            ...itemOverrides,
+          },
+        ],
+        nextCursor: null,
+      },
+    };
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        status: 'waiting',
+        releasesAt: new Date(Date.now() - 1000).toISOString(),
+        releasedAt: null,
+        ownerLabel: 'Mum\u2019s vault',
+      },
+    ];
+    clickText('Back');
+    await waitForText(/nothing here yet/i);
+    clickText('Emergency access');
+    await waitForText('Your arrangement');
+    await waitForText(/ready to open/i);
+    clickText('Open the vault');
+    await waitForText(/only continue if they genuinely cannot/i);
+    clickText('Open it now');
+  }
+
+  /**
+   * THE DETAIL SCREEN, AND THE SECRET IT HIDES BY DEFAULT.
+   *
+   * A grantee reading somebody else's vault is, by construction, reading it
+   * somewhere unusual — a hospital corridor, a solicitor's office — so the
+   * secret starts masked for the same reason the owner's own form does, and
+   * nothing about being a grantee relaxes that.
+   */
+  it('opens one of the owner’s items, masked until revealed', async () => {
+    const service = installService();
+    await readAsGrantee(service, {
+      title: 'Bank login',
+      username: 'jane@example.com',
+      url: 'https://bank.example',
+      notes: 'the joint account',
+      secret: 'hunter2-the-real-one',
+    });
+    await waitForText(/bank login/i);
+    clickText('Bank login');
+    await waitForText(/jane@example.com/i);
+
+    // Masked by default — the secret is NOT in the document before Show.
+    expect(document.body.textContent).not.toContain('hunter2-the-real-one');
+    expect(document.body.textContent).toContain('••••••••');
+    // The other decrypted fields ARE there, which is what makes the absence
+    // above a statement about the SECRET rather than about a blank screen.
+    expect(document.body.textContent).toContain('https://bank.example');
+    expect(document.body.textContent).toContain('the joint account');
+
+    clickText('Show');
+    expect(document.body.textContent).toContain('hunter2-the-real-one');
+    clickText('Show');
+    expect(document.body.textContent).not.toContain('hunter2-the-real-one');
+  });
+
+  it('tells a grantee the same clipboard story the owner is told', async () => {
+    const service = installService();
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    await readAsGrantee(service, { title: 'Bank login', secret: 'hunter2-the-real-one' });
+    await waitForText(/bank login/i);
+    clickText('Bank login');
+    await waitForText(/••••••••/);
+    clickText('Copy');
+    // ONE BEHAVIOUR, ONE SPELLING: the grantee's clipboard clears on the same
+    // timer as the owner's, so it must not be described differently.
+    await waitForText(/your clipboard clears in 20 seconds/i);
+    expect(writeText).toHaveBeenCalledWith('hunter2-the-real-one');
+  });
+
+  /**
+   * AN UNREADABLE ITEM IS SHOWN, NOT HIDDEN, and does not say WHY.
+   *
+   * `#openBlob` refuses to distinguish a wrong key from a malformed blob — one
+   * message, so the pair is never an oracle — and a grantee must still be able
+   * to see that something is there. The blob here is served at a blobVersion
+   * the ciphertext was not sealed against, which is the anti-rollback binding
+   * refusing exactly as designed.
+   */
+  it('shows an item it could not open, without saying which half failed', async () => {
+    const service = installService();
+    await readAsGrantee(service, { title: 'Bank login', secret: 's' }, { blobVersion: 9 });
+    await waitForText(/could not be read/i);
+    clickText('(this item could not be read)');
+    await waitForText(/this item could not be read/i);
+    const text = document.body.textContent ?? '';
+    // Never an oracle: no wording that separates a wrong key from a bad blob.
+    expect(text).not.toMatch(/wrong key|bad key|malformed|corrupt|decryption failed/i);
+    // ANTI-VACUITY: this really is the detail screen for that item.
+    expect(text).toContain('Secure note');
+  });
+
+  it('drops the collected escrow when the grantee presses Done', async () => {
+    const service = installService();
+    await readAsGrantee(service);
+    await waitForText(/the owner’s secret note/i);
+    const reads = service.calls.filter((c) => c.path.includes('/items')).length;
+    clickText('Done');
+    await waitForText('Your arrangement');
+    // The escrow is gone: re-entering the reading screen is no longer possible
+    // without collecting again, so nothing further is fetched.
+    expect(service.calls.filter((c) => c.path.includes('/items')).length).toBe(reads);
+    // And the grantee's OWN vault is untouched — Done is not a lock.
+    clickText('Back');
+    await waitForText(/nothing here yet/i);
   });
 });

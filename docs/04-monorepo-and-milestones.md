@@ -6860,7 +6860,7 @@ decision booked as progress is how a queue stays untouched.**
 | M36 | Plaid-assisted subscription detection | Three stacked prerequisites, **middle one absent** — no transaction data path exists |
 | M37 | Passkey provisioning (Estate as authenticator) | Reverses M16's central control |
 | M38 | Referral marketplace | Zero code, zero DDL, regulatory surface |
-| M39 | Zone A hardening — the SRP abuse bound and rollback detection | **ADDED BY M27 PR0**, and the addition is forced rather than tidy: `threat-model-residuals.spec.ts` derives its owner vocabulary from THIS TABLE in both directions, so re-owning a residual to anything not listed here is refused — which is the point of a closed vocabulary. Two §6a residuals, both vault-local and both unblocked: a caller holding a GENUINE step-up can still burn SRP handshakes (three tags, one residual, tracked at docs/03 §6a, §6j and §6k), and full-history rollback is detectable only by client-side last-seen state. Neither is either half of M27's name, and carrying them there was how M27 looked bigger than it is. **A THIRD residual joined M39 in the same commit and this row said "two" until the M27 PR0 review counted them:** §6uu's grantee-read detection gap — `vault.emergency.items_read` is watched by no detector, because `decrypt-rate-detector.ts` pins its counted set to `crypto.field.decrypted` alone. It is neither a §6a bullet nor vault-local (the detector is audit's), so the milestone is three residuals across two services, not two in one |
+| M39 | Zone A hardening — the SRP abuse bound and rollback detection | **ADDED BY M27 PR0**, and the addition is forced rather than tidy: `threat-model-residuals.spec.ts` derives its owner vocabulary from THIS TABLE in both directions, so re-owning a residual to anything not listed here is refused — which is the point of a closed vocabulary. Two §6a residuals, both vault-local and both unblocked: a caller holding a GENUINE step-up can still burn SRP handshakes (three tags, one residual, tracked at docs/03 §6a, §6j and §6k), and full-history rollback is detectable only by client-side last-seen state. Neither is either half of M27's name, and carrying them there was how M27 looked bigger than it is. **A THIRD residual joined M39 in the same commit and this row said "two" until the M27 PR0 review counted them:** §6uu's grantee-read detection gap — `vault.emergency.items_read` is watched by no detector, because `decrypt-rate-detector.ts` pins its counted set to `crypto.field.decrypted` alone. It is neither a §6a bullet nor vault-local (the detector is audit's), so the milestone is three residuals across two services, not two in one. **A FOURTH joined from M27 PR3b**, found by driving the real app: `apps/vault-web` carries no step-up propagation budget, so a user who completes step-up faster than `HttpSessionVerifier`'s positive cache expires is told they did not complete it (docs/03 §6zz). It lands here because the fix is the third copy of a shape `apps/web` and `apps/operator-web` already have, and deciding between a third copy and one shared module is a client-architecture call, not a line inside a Zone A read |
 | M40 | Residual ownership re-sweep | **ADDED BY M27 PR0**, which found the complementary hole to the one it was scoped to fix. PR0 closed the case of an UNTAGGED residual hiding outside the fence's corpus; this is the case of a TAGGED one whose owner has since shipped. Thirteen residuals in the fence's corpus name M22 or M23, whose docs/04 rows read COMPLETE, and `OWNERS` is derived from every row of this table including the closed ones — so a tag naming a finished milestone passes the vocabulary check exactly as a live one does. The count is now pinned by `threat-model-residuals.spec.ts` so it cannot grow in silence; deciding, one at a time, whether a later slice of the same programme still owes each item is the sweep this row owns. **It is larger than thirteen:** M21's eighteen and M24's are invisible to any derivation from this table, because those two rows say APPROVED and never gained a completion status — which is the same stale-prose defect the M23 row already records about itself |
 | M41 | Plaid item refusal, and the read-before-authz sweep | **ADDED BY M27 PR1a**, which fixed this defect in the vault and asked what else was in the category. `plaid`'s `sync` and `revoke` read an item by id, answer 404 when it is missing, then call `assertCan`, which answers 403 when it is not yours — the same existence oracle M27 PR1a closed on `vault_items` and `emergency_access_policies`. It is a row rather than a line in that PR because reaching from a vault change into the Plaid service is scope creep to propose, not to perform. `ai-assistant` was checked in the same pass and is already correct (its authz throws `NotFoundException`), so the sweep this row owns is: every service that reads a row by id before its authz gate, checked against that precedent |
 
@@ -8907,13 +8907,30 @@ paired CHECK and no writer is a broken table.
   cannot" — one false about who acted, one pointing its pronoun at the wrong
   person, both found one screen after that function grew its first
   grantee-specific case. docs/03 §6yy.
-- **PR3b — the grantee READ.** The route authorized by the released policy row,
-  the Cedar grantee attribute in the vault's own domain (a ninth action id in
-  its own `vault.cedar`), and the `vault.read_by_grantee` notification kind with
-  its producer — emitted once per collection rather than per read.
-  (`vault.emergency.items_read` is the AUDIT action PR0 added; an earlier draft
-  of this line named it as the notification, which it has never been — the kind
-  CHECK in `002_emergency_access.sql` does not contain it.)
-- **PR4 — the grantee's reading surface** on the vault origin.
+- **PR3b — the grantee READ, AND ITS SURFACE.** The route authorized by the
+  released policy row, the Cedar grantee attribute in the vault's own domain (a
+  ninth action id in its own `vault.cedar`), and the `vault.read_by_grantee`
+  notification kind with its producer — emitted once per collection rather than
+  per read. (`vault.emergency.items_read` is the AUDIT action PR0 added; an
+  earlier draft of this line named it as the notification, which it has never
+  been — the kind CHECK in `002_emergency_access.sql` does not contain it.)
+
+  **PR3b ABSORBED PR4, and the rule that forced it is this repo's own:** ship a
+  route in the same change as its consumer, because zero-caller surfaces are the
+  largest recurring gap here. Landing the read route with its screens a PR later
+  would have shipped a Zone A cross-user read path that nothing called, through
+  a milestone whose next PR is the security review — the exact shape that gap
+  takes. It was also forced from the other end: §6yy's `[OWNER: M27]` residual
+  is assigned to "the PR that must already answer *whose vault am I reading?* in
+  order to render a reading surface at all", and the answer PR3b lands (an
+  owner-authored `label`, because `profile` has no name for an account anywhere)
+  is only checkable on a screen that renders it.
+
+  So PR3b also carries: the reading screens on the vault origin, the collected
+  escrow held read-only and non-extractable inside `VaultSession` — moved there
+  from `app.ts`, which now handles no key material at all — and the owner's
+  label field with its echo back. docs/03 §6zz.
+- **PR4 — FOLDED INTO PR3b.** Kept as a numbered row rather than renumbered, so
+  the per-PR record above and every reference to PR5 stays true.
 - **PR5 — the security review**, asking the M25 PR5 question of M27's own
   controls, plus the live drive on the isolated vault origin.

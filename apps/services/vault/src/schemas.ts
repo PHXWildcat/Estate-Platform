@@ -200,11 +200,50 @@ export const GranteeSchema = z
   })
   .strict();
 
+/**
+ * THE LABEL A GRANTEE READS INSTEAD OF THE OWNER'S USER ID (M27 PR3b).
+ *
+ * The first string in this service that ONE user writes and a DIFFERENT user
+ * reads, which is why it is validated harder than its length suggests. Two
+ * properties, refused rather than repaired — the transformation you never
+ * wrote cannot mangle a name somebody meant:
+ *
+ *   * NO CONTROL CHARACTERS (`\p{Cc}`, C0 and C1). A NUL in a value that is
+ *     rendered, logged and captured into a version row is a binary payload in
+ *     three places at once. Also enforced by the DDL CHECK in vault migration
+ *     007, which is the backstop for a writer that is not this route.
+ *   * NO BIDI OR INVISIBLE FORMAT CHARACTERS (`\p{Cf}`). A right-to-left
+ *     override in a label rendered on somebody ELSE's screen is a spoofing
+ *     primitive, not a typo. This half is NOT in the DDL: it is a property of
+ *     the rendering audience, and stating it here keeps the two layers'
+ *     different jobs legible instead of half-copying one into the other.
+ *
+ * `.trim()` before the checks so a label of pure whitespace fails `min(1)`
+ * rather than reaching the DDL as a blank the grantee reads as a missing name.
+ */
+export const EscrowLabelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .refine((value) => !/[\p{Cc}\p{Cf}]/u.test(value), {
+    message: 'label must not contain control or formatting characters',
+  });
+
 export const ConfigureEmergencyAccessSchema = z
   .object({
     threshold: z.number().int().min(1).max(255),
     platformPart: base64OfBytes(32),
     wrappedMasterKeyRecovery: z.string().min(1).max(1024),
     grantees: z.array(GranteeSchema).min(1).max(64),
+    /**
+     * OPTIONAL, and that is the design rather than a concession. A required
+     * label would make ARMING emergency access strictly harder than leaving it
+     * unarmed, which inverts "the protective action must never be harder than
+     * the permissive one". Absent, the grantee's row falls back to the owner's
+     * user id — which is what it showed before PR3b and is not a secret to a
+     * reader who was sealed a share by that account.
+     */
+    label: EscrowLabelSchema.optional(),
   })
   .strict();

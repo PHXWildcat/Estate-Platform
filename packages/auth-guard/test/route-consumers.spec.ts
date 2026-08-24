@@ -993,6 +993,13 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'vault POST /v1/vault/emergency-access/:policyId/rearm': consumed(`${VW}/client/emergency.ts`),
   'vault POST /v1/vault/emergency-access/:policyId/request': consumed(`${VW}/client/emergency.ts`),
   'vault POST /v1/vault/emergency-access/:policyId/release': consumed(`${VW}/client/emergency.ts`),
+  // M27 PR3b. The consumer is `vault-session.ts`, not `emergency.ts` like every
+  // other row here, and the difference is the point: this call returns the
+  // owner's ciphertext, so it is made from the ONE module that holds keys and
+  // opens blobs. A sibling `.../items/:itemId` route was written and removed
+  // before this shipped — this fence reported it had no caller, and the honest
+  // answer was to delete the route rather than to invent one.
+  'vault GET /v1/vault/emergency-access/:policyId/items': consumed(`${VW}/client/vault-session.ts`),
 };
 
 /**

@@ -217,6 +217,79 @@ describe('key material cannot leave through a call site that does not exist', ()
   });
 });
 
+describe('a collected escrow is imported read-only (M27 PR3b)', () => {
+  /**
+   * THE GRANTEE'S KEY CAN OPEN THE OWNER'S VAULT AND MUST NOT BE ABLE TO WRITE
+   * TO IT.
+   *
+   * `importAesKey` takes explicit usages, and WebCrypto enforces them: a key
+   * imported without `encrypt` cannot be talked into sealing a blob, however
+   * the call site is later refactored. That is a stronger guarantee than "no
+   * screen offers a save button" — which is also true, and asserted in
+   * `screens-emergency.spec.ts`, but is a property of what was built rather
+   * than of what the platform will allow.
+   *
+   * WHICH LAYER THIS PROVES: the SOURCE, and only that.
+   *
+   * An earlier draft justified stopping here by asserting that the runtime
+   * property was out of reach — "no test can reach the `CryptoKey` to read
+   * `.usages` off it without a test-only accessor". THAT WAS FALSE, and the
+   * M27 PR3b review said so: `collectGrant` RETURNS the whole `GrantedVault`,
+   * `masterKey` included, so the key is reachable from an ordinary test with
+   * nothing cut into the module. A comment that justifies an omission by
+   * asserting a fact about the tree is a test nobody runs, and this one was
+   * wrong about the tree.
+   *
+   * The runtime assertion now exists — `screens-emergency.spec.ts`, "the
+   * collected key carries no writing usage AT RUNTIME" — and reads `.usages`
+   * and `.extractable` off the real key from the real ceremony. This fence is
+   * kept as the second layer because it fails on the CALL: a refactor that
+   * stopped importing the recovered bytes here, or imported them somewhere
+   * else, breaks this before any fixture notices.
+   *
+   * The first draft of that call passed `['decrypt']` alone and every item
+   * rendered unreadable: `decryptItem` unwraps a per-item key with the master
+   * key before it decrypts anything. `unwrapKey` is therefore REQUIRED, and
+   * the narrowing that matters is the absence of the writing usages.
+   */
+  const session = code(join(CLIENT, 'vault-session.ts'));
+  const CALL = /importAesKey\(\s*recovered\.data\.masterKeyBytes\s*,\s*\[([^\]]*)\]/;
+
+  it('finds the import call it is meant to be checking', () => {
+    // ANTI-VACUITY: a regex that stopped matching and a module with no such
+    // call look identical, and every assertion below would pass on ''.
+    expect(CALL.test(session)).toBe(true);
+  });
+
+  it('grants the recovered key no writing usage', () => {
+    const usages = (CALL.exec(session)?.[1] ?? '')
+      .split(',')
+      .map((u) => u.trim().replace(/['"]/g, ''))
+      .filter(Boolean);
+    expect(usages.sort()).toEqual(['decrypt', 'unwrapKey']);
+    for (const forbidden of ['encrypt', 'wrapKey', 'sign', 'deriveKey']) {
+      expect(usages).not.toContain(forbidden);
+    }
+  });
+
+  it('imports it NON-EXTRACTABLE, by taking the default', () => {
+    // `importAesKey`'s third parameter defaults to false (docs/03 TB6). Passing
+    // `true` here would make the owner's master key readable by page script —
+    // so the fence is that the argument is ABSENT, not that it is `false`.
+    /*
+     * THE MATCH ALREADY CONSUMES THE CLOSING BRACKET, and the first draft of
+     * this assertion did not account for that: it looked for `], true` in text
+     * that began AFTER the `]`, so it could never match and the fence passed
+     * on every input. Caught by mutating `extractable` to `true` and watching
+     * nothing go red — a fence that cannot fail and a fence that found nothing
+     * are the same green.
+     */
+    const args = CALL.exec(session)?.[0] ?? '';
+    const after = session.slice(session.indexOf(args) + args.length);
+    expect(after.slice(0, 40)).not.toMatch(/^\s*,\s*true/);
+  });
+});
+
 describe('the edge holds no credential and no key', () => {
   it('mentions no internal service credential', () => {
     // The runtime half lives in `test/config.spec.ts` (credentialsHeldIn), the

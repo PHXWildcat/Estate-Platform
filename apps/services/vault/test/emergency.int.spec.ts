@@ -24,6 +24,7 @@ import {
   decryptItem,
   encryptItem,
   exportMasterKeyBytes,
+  fromBase64,
   generateRecoveryKeyPair,
   importAesKey,
   MIN_ITERATIONS,
@@ -37,6 +38,8 @@ import {
 import { Client } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { loadBundledPolicies, PolicyDecisionPoint, type EntityInput } from '@estate/authz';
+import { VaultAuthz, type VaultAction } from '../src/authz.service';
 import { VAULT_SESSION_HEADER } from '../src/vault-session.guard';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER, CLOCK, NOTIFIER, PG_POOL_CONFIG } from '../src/di-tokens';
@@ -117,10 +120,18 @@ describeIfPg('emergency access end to end', () => {
   const ownerStepUp = (): Record<string, string> => bearer('stepup', OWNER);
   const asGrantee = (): Record<string, string> => bearer('mfa', GRANTEE);
 
+  /** Every question this service put to Cedar, in order (M27 PR3b). */
+  const pepCalls: Array<{
+    principalUserId: string;
+    action: VaultAction;
+    resource: EntityInput;
+  }> = [];
+
   /** Arm a fresh escrow over the current grantee set. */
   async function configureEscrow(
     grantees: Array<{ userId: string; contactId: string; keys: RecoveryKeyPair }>,
     threshold = 1,
+    label?: string,
   ): Promise<EscrowDto> {
     const escrow = await createEscrow({
       ownerUserId: OWNER,
@@ -136,6 +147,7 @@ describeIfPg('emergency access end to end', () => {
         threshold: escrow.threshold,
         platformPart: escrow.platformPart,
         wrappedMasterKeyRecovery: escrow.wrappedMasterKeyRecovery,
+        ...(label === undefined ? {} : { label }),
         grantees: escrow.shares.map((share, i) => ({
           granteeContactId: grantees[i]!.contactId,
           granteeUserId: share.granteeUserId,
@@ -175,7 +187,29 @@ describeIfPg('emergency access end to end', () => {
 
     producer = new InMemoryAuditProducer();
     notifier = new StubNotifier();
+    /*
+     * A RECORDING PEP THAT REFUSES EXACTLY WHAT THE REAL ONE REFUSES (M27 PR3b).
+     *
+     * It delegates to a real `PolicyDecisionPoint` over the real bundled
+     * policies, so no decision changes anywhere in this suite — the only thing
+     * added is a log of what was asked. A double that answered differently
+     * would make every other test in this file a test of the double.
+     */
+    const authzSpy = new (class extends VaultAuthz {
+      override assertCan(
+        principalUserId: string,
+        action: VaultAction,
+        resource: EntityInput,
+        entities: readonly EntityInput[] = [resource],
+      ): void {
+        pepCalls.push({ principalUserId, action, resource });
+        super.assertCan(principalUserId, action, resource, entities);
+      }
+    })(new PolicyDecisionPoint(loadBundledPolicies()));
+
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(VaultAuthz)
+      .useValue(authzSpy)
       .overrideProvider(AUDIT_PRODUCER)
       .useValue(producer)
       .overrideProvider(NOTIFIER)
@@ -616,6 +650,132 @@ describeIfPg('emergency access end to end', () => {
     });
   });
 
+  /**
+   * THE OWNER-AUTHORED LABEL (M27 PR3b), closing docs/03 §6yy's `[OWNER: M27]`.
+   *
+   * Driven through the REAL route rather than asserted about the schema, because
+   * three separate things have to agree for it to work — the zod refusal at the
+   * edge, the DDL CHECK behind it, and the LEFT JOIN that carries it onto the
+   * grantee's row — and only a request exercises all three. The screen tests
+   * cover the rendering against a fake service; nothing but this covers the
+   * write path.
+   */
+  describe('the escrow label', () => {
+    afterAll(async () => {
+      // Put the escrow back the way the rest of this file expects it: one
+      // grantee, no label. `configure` replaces wholesale, so leaving a labelled
+      // escrow behind would change what every later block reads.
+      const restored = await configureEscrow([
+        { userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys },
+      ]);
+      policyId = restored.policies[0]!.id;
+    });
+
+    it('reaches the GRANTEE’s row, and the owner’s own view of it', async () => {
+      await configureEscrow(
+        [{ userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys }],
+        1,
+        'The Dehn family vault',
+      );
+
+      const mine = await request(server)
+        .get('/v1/vault/emergency-access')
+        .set(asOwner())
+        .expect(200);
+      expect((mine.body as EscrowDto & { label: string | null }).label).toBe(
+        'The Dehn family vault',
+      );
+
+      const theirs = await request(server)
+        .get('/v1/vault/emergency-access/granted-to-me')
+        .set(asGrantee())
+        .expect(200);
+      const row = (theirs.body as Array<{ ownerUserId: string; ownerLabel: string | null }>).find(
+        (r) => r.ownerUserId === OWNER,
+      );
+      expect(row?.ownerLabel).toBe('The Dehn family vault');
+    });
+
+    /**
+     * ABSENT CLEARS IT, and this is the arm a spread would have got wrong.
+     * `configure` replaces an escrow wholesale — it retires every prior policy
+     * and sends `grantees_changed` — so a label surviving into an arrangement
+     * the owner rebuilt without one would be the OLD escrow's name on the NEW
+     * escrow's grantee rows.
+     */
+    it('CLEARS the label when a re-arm omits it', async () => {
+      await configureEscrow(
+        [{ userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys }],
+        1,
+        'first name',
+      );
+      await configureEscrow([{ userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys }]);
+
+      const mine = await request(server)
+        .get('/v1/vault/emergency-access')
+        .set(asOwner())
+        .expect(200);
+      expect((mine.body as EscrowDto & { label: string | null }).label).toBeNull();
+    });
+
+    /**
+     * REFUSED AT THE EDGE, NOT REPAIRED — and refused with a 400, so the DDL
+     * CHECK behind it is a backstop rather than the thing users meet. A label
+     * that passed zod and violated the constraint would be a 500: an input
+     * validation failure wearing the face of an outage.
+     *
+     * WHICH LAYER: this is the SCHEMA. The DDL's own half is proven by the
+     * migration existing and by `checkConventions`; what a request can reach is
+     * this one.
+     */
+    it.each([
+      ['a control character', 'Mum\u0000s vault'],
+      ['a right-to-left override', 'vault\u202Egnp.exe'],
+      ['a zero-width joiner', 'Mum\u200Ds vault'],
+      ['pure whitespace', '   '],
+      ['81 characters', 'x'.repeat(81)],
+    ])('refuses %s with 400, never a constraint violation', async (_name, label) => {
+      const escrow = await createEscrow({
+        ownerUserId: OWNER,
+        masterKey: ownerMasterKeyBytes,
+        grantees: [{ granteeUserId: GRANTEE, publicKey: granteeKeys.publicKey }],
+        threshold: 1,
+      });
+      const res = await request(server)
+        .post('/v1/vault/emergency-access')
+        .set(ownerStepUp())
+        .send({
+          threshold: escrow.threshold,
+          platformPart: escrow.platformPart,
+          wrappedMasterKeyRecovery: escrow.wrappedMasterKeyRecovery,
+          label,
+          grantees: escrow.shares.map((share) => ({
+            granteeContactId: CONTACT_ID,
+            granteeUserId: share.granteeUserId,
+            keyShare: share.sealedShare,
+            granteePublicKeySha256: share.publicKeySha256,
+            waitingPeriodHours: WAITING_HOURS,
+          })),
+        });
+      expect(res.status).toBe(400);
+      // NOT a 500, and not a token that reads as an outage. The two failures
+      // have different remedies and must never share a spelling.
+      expect(res.status).not.toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain('constraint');
+    });
+
+    it('POSITIVE CONTROL: a label at the 80-character boundary is accepted', async () => {
+      // The discriminating arm for `81 characters` above: without it, that case
+      // is equally consistent with a route that refuses every label.
+      const ok = await configureEscrow(
+        [{ userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys }],
+        1,
+        'y'.repeat(80),
+      );
+      expect((ok as EscrowDto & { label: string | null }).label).toBe('y'.repeat(80));
+    });
+  });
+
   describe('a stranger gets one answer from EVERY policy route (M27 PR1a)', () => {
     /**
      * WHY DERIVED, AND WHY EVERY ROUTE. M27 PR1a fused the ownership predicate
@@ -637,6 +797,20 @@ describeIfPg('emergency access end to end', () => {
       method: (m[1] as string).toLowerCase() as 'post' | 'delete' | 'put' | 'patch' | 'get',
       suffix: m[2] as string,
       stepUp: /StepUpGuard/.test(m[3] as string),
+      /**
+       * M27 PR3b. A SECOND CREDENTIAL THIS PROBE HAS TO CARRY, for exactly the
+       * reason it already carries step-up freshness: the grantee read routes
+       * are `VaultSessionGuard`-gated, so a probe without a vault session stops
+       * at `403 vault_locked` and never reaches the ownership lookup this fence
+       * exists to measure.
+       *
+       * THAT 403 IS NOT ITSELF A LEAK — it is the same answer whether the
+       * policy exists or not — but a fence that stops before the thing it
+       * tests is a fence that passes for the wrong reason. This one caught its
+       * own new members on the first run, which is what "a new `:policyId`
+       * route joins this probe by existing" is worth.
+       */
+      vaultSession: /VaultSessionGuard/.test(m[3] as string),
     }));
 
     it('finds every policy route, both arms, and the step-up split', () => {
@@ -644,12 +818,22 @@ describeIfPg('emergency access end to end', () => {
       // controller with no policy routes look identical — and a total alone
       // cannot see the step-up-gated routes drop out, which are exactly the
       // ones a probe would otherwise never reach past a 403.
-      expect(routes.length).toBeGreaterThanOrEqual(5);
+      expect(routes.length).toBeGreaterThanOrEqual(6);
       expect(routes.filter((r) => r.stepUp).length).toBeGreaterThanOrEqual(2);
-      expect(routes.filter((r) => !r.stepUp).length).toBeGreaterThanOrEqual(3);
+      expect(routes.filter((r) => !r.stepUp).length).toBeGreaterThanOrEqual(4);
+      // A FLOOR AT EVERY LEVEL, including the new one: a guard that stopped
+      // being detected would silently send the probe back to measuring 403s.
+      expect(routes.filter((r) => r.vaultSession).length).toBeGreaterThanOrEqual(1);
       // SETS, not counts: a suffix moving between two routes preserves both.
       expect(new Set(routes.map((r) => `${r.method} ${r.suffix}`))).toEqual(
-        new Set(['post /request', 'post /deny', 'post /rearm', 'delete ', 'post /release']),
+        new Set([
+          'post /request',
+          'post /deny',
+          'post /rearm',
+          'delete ',
+          'post /release',
+          'get /items',
+        ]),
       );
     });
 
@@ -660,7 +844,16 @@ describeIfPg('emergency access end to end', () => {
         // the lookup instead of stopping at a 403 that says nothing about
         // ownership — the refusal every caller gets is not the one under test.
         const headers = route.stepUp ? bearer('stepup', STRANGER) : bearer('mfa', STRANGER);
-        const url = `/v1/vault/emergency-access/${policyId}${route.suffix}`;
+        if (route.vaultSession) {
+          // STRANGER's OWN vault, really unlocked over SRP. The point of the
+          // read routes' guard is that it proves nothing about the owner's
+          // vault, so a stranger holding one must still be answered 404.
+          headers[VAULT_SESSION_HEADER] = (await openVaultFor(STRANGER)).token;
+        }
+        const url = `/v1/vault/emergency-access/${policyId}${route.suffix}`.replace(
+          ':itemId',
+          ownerItemId,
+        );
         const agent = request(server);
         // Typed as an opaque `{status, body}` on purpose: the assertion compares
         // whole values, and narrowing the body would invite asserting a shape
@@ -890,6 +1083,591 @@ describeIfPg('emergency access end to end', () => {
       expect(deniedRow?.status).toBe('denied_by_owner');
       expect(deniedRow?.releasesAt).toBeNull();
       expect(deniedRow?.releasedAt).toBe(releasedRow?.releasedAt);
+    });
+  });
+
+  /**
+   * THE GRANTEE'S READ (M27 PR3b).
+   *
+   * ESTABLISHES ITS OWN `released` STATE rather than inheriting the one the
+   * `release` block leaves behind, and the first draft did inherit it. That
+   * draft failed on its first run — the policy arrived `denied_by_owner`,
+   * because a block in between had pressed the stop — which is the ordering
+   * coupling this suite has produced before. A `beforeAll` that drives the real
+   * ceremony costs three requests and removes a class of failure that reads
+   * like a broken route.
+   */
+  describe('grantee read', () => {
+    let granteeVault: string;
+    let secondItemId: string;
+
+    beforeAll(async () => {
+      // Drive the ceremony rather than forging the row: `rearm` clears whatever
+      // stop a previous block applied, and the request/elapse/release sequence
+      // is the only thing that sets `released_at`, which the once-per-collection
+      // predicate reads.
+      await request(server).post(`/v1/vault/emergency-access/${policyId}/rearm`).set(ownerStepUp());
+      now = new Date('2027-05-01T09:00:00.000Z');
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/request`)
+        .set(asGrantee())
+        .expect(200);
+      now = new Date('2027-05-04T09:00:00.000Z'); // past the 48h window
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/release`)
+        .set(asGrantee())
+        .expect(200);
+      /*
+       * THE VAULT SESSION IS OPENED LAST, AFTER THE CLOCK HAS STOPPED MOVING.
+       * Opening it first cost an hour: the waiting period is simulated by
+       * jumping `now` forward three days, which expires any session minted
+       * before the jump — so every read answered `403 vault_locked` and looked
+       * exactly like a route that refuses released grantees. A time-travelling
+       * fixture invalidates anything time-bound it set up earlier.
+       */
+      granteeVault = (await openVaultFor(GRANTEE)).token;
+
+      /*
+       * A SECOND ITEM, AND IT IS THE WHOLE POINT OF THE PEP TEST BELOW.
+       * With one item, "one PEP call" and "one PEP call per item" are the same
+       * number, and a per-REQUEST check would pass a per-ITEM assertion. Two
+       * items make the two claims distinguishable — the fixture has to reach
+       * the branch the property is about.
+       */
+      secondItemId = randomUUID();
+      const blob2 = await encryptItem(
+        await importAesKey(ownerMasterKeyBytes, ['encrypt', 'decrypt', 'unwrapKey']),
+        { userId: OWNER, itemId: secondItemId, blobVersion: 1 },
+        utf8('a second thing worth recovering'),
+      );
+      await admin.query(
+        `INSERT INTO vault_items (id, user_id, item_type, blob_ct, blob_version)
+         VALUES ($1, $2, 'secure_note', $3, 1)`,
+        [secondItemId, OWNER, Buffer.from(blob2)],
+      );
+    });
+
+    const asReader = (): Record<string, string> => ({
+      ...asGrantee(),
+      [VAULT_SESSION_HEADER]: granteeVault,
+    });
+
+    it('starts from a RELEASED policy — the precondition every test here needs', async () => {
+      const row = await admin.query<{ status: string; released_at: Date | null }>(
+        `SELECT status, released_at FROM emergency_access_policies WHERE id = $1`,
+        [policyId],
+      );
+      expect(row.rows[0]?.status).toBe('released');
+      expect(row.rows[0]?.released_at).not.toBeNull();
+    });
+
+    /**
+     * `rearm` REFUSES A COLLECTED POLICY, AND THREE COMMENTS DEPEND ON IT.
+     *
+     * The dedupe predicate is justified — in `emergency.repo.ts`, in
+     * `readAsGrantee`'s guard list, and in migration 008 — by counting the
+     * writers that move a policy in and out of `released`. All three said FOUR
+     * and the answer is THREE, because `markRearmed` never sees a released
+     * policy: this guard refuses first. Nothing checked that, which is exactly
+     * why the count was wrong in four places at once and stayed wrong through a
+     * browser drive and a review.
+     *
+     * So the fact is pinned here rather than restated there. If this guard is
+     * ever removed, `markRearmed` becomes a fourth writer, the predicate needs
+     * re-arguing, and this test is what says so.
+     */
+    it('refuses to re-arm a policy that has already been collected', async () => {
+      const before = await admin.query<{ status: string }>(
+        `SELECT status FROM emergency_access_policies WHERE id = $1`,
+        [policyId],
+      );
+      // The fixture must actually REACH the state the property is about — a
+      // guard tested from the wrong status proves nothing about this one.
+      expect(before.rows[0]!.status).toBe('released');
+
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/rearm`)
+        .set(ownerStepUp())
+        .expect(409, { error: 'already_released' });
+
+      // AND THE ROW DID NOT MOVE. A refusal that still wrote would leave
+      // `markRearmed` a writer of this transition after all.
+      const after = await admin.query<{ status: string }>(
+        `SELECT status FROM emergency_access_policies WHERE id = $1`,
+        [policyId],
+      );
+      expect(after.rows[0]!.status).toBe('released');
+    });
+
+    it('serves the owner’s items, and the ciphertext OPENS with the recovered key', async () => {
+      const res = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader())
+        .expect(200);
+
+      const page = res.body as { items: Array<{ id: string; blob: string; blobVersion: number }> };
+      const item = page.items.find((i) => i.id === ownerItemId);
+      expect(item).toBeDefined();
+
+      // NOT A STATUS ASSERTION. A 200 carrying a blob that will not open is
+      // exactly the failure this route could have and a shape check could not
+      // see. The AAD is built with the OWNER's id — the grantee's would refuse
+      // every blob, and the refusal would look like a wrong key.
+      const masterKey = await importAesKey(ownerMasterKeyBytes, [
+        'encrypt',
+        'decrypt',
+        'unwrapKey',
+      ]);
+      const plaintext = await decryptItem(
+        masterKey,
+        { userId: OWNER, itemId: ownerItemId, blobVersion: item!.blobVersion },
+        fromBase64(item!.blob),
+      );
+      expect(Buffer.from(plaintext).toString('utf8')).toBe(ITEM_SECRET);
+    });
+
+    /**
+     * EVERY ITEM SERVED GOES THROUGH THE PEP — and this test says exactly what
+     * that is worth, because a mutation showed it is worth less than it looks.
+     *
+     * DELETING THE CEDAR CALL ALTOGETHER LEFT ALL 62 TESTS GREEN. That is not
+     * a weak test and not an unfaithful mutation; it is CLAUDE.md's third
+     * reason, and the honest reading is that the call CANNOT DENY here today.
+     * `listReleasedGranteeIds` selects `status='released' AND deleted_at IS
+     * NULL` for the owner, and `lockLiveByIdForGrantee` has already returned
+     * this very row under the same two filters — so the principal is in the
+     * set by construction, and `contains` is a foregone conclusion.
+     *
+     * WHAT THIS TEST THEREFORE CLAIMS, AND NOTHING MORE: the PEP is CONSULTED,
+     * once per item handed over, with the owner and the released grantee set
+     * on the resource. That is the shape a future narrowing attaches to — by
+     * item type, by settlement stage, by anything Cedar can see — and it is
+     * the thing that would rot silently, because nothing else in this service
+     * would notice its absence. The gate that actually refuses a stopped
+     * grantee is the status guard, and `STOPS serving items the moment the
+     * owner denies` is the test that proves it.
+     *
+     * The limit is recorded in docs/03 §6yy and docs/06 rather than left as a
+     * comment nobody re-reads.
+     */
+    it('consults the PEP once per item served, with owner and grantee set', async () => {
+      const before = pepCalls.filter((c) => c.action === 'read_by_grantee').length;
+      const res = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader())
+        .expect(200);
+      const served = (res.body as { items: unknown[] }).items;
+      // ANTI-VACUITY, and the reason the fixture inserts a second item: with a
+      // one-item vault this assertion is satisfied by a per-REQUEST check.
+      expect(served.length).toBeGreaterThanOrEqual(2);
+
+      const asked = pepCalls.filter((c) => c.action === 'read_by_grantee').slice(before);
+      expect(asked.length).toBe(served.length);
+      for (const call of asked) {
+        expect(call.principalUserId).toBe(GRANTEE);
+        expect(call.resource.uid.type).toBe('VaultItem');
+        expect(call.resource.attrs?.['owner']).toEqual({
+          __entity: { type: 'User', id: OWNER },
+        });
+        // The set is READ FROM THE TABLE, not assembled from the caller — the
+        // difference between a fence and a mirror. It cannot deny today (see
+        // above), but what it carries has to be the real designation.
+        expect(call.resource.attrs?.['emergencyGrantees']).toEqual([
+          { __entity: { type: 'User', id: GRANTEE } },
+        ]);
+      }
+    });
+
+    /**
+     * THE AUDIT TRAIL IS THE OWNER'S, WITH THE GRANTEE NAMED AS ACTOR. This is
+     * the first producer for `vault.emergency.items_read`, which
+     * `packages/contracts/src/audit.ts` has carried with no caller since PR0.
+     */
+    it('writes items_read to the OWNER’s trail with the grantee as actor', () => {
+      const events = producer.messages
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.emergency.items_read');
+      // ANTI-VACUITY: `every` over an empty list is true, and this action had
+      // ZERO producers before PR3b — so an emitter that was never wired up
+      // would satisfy the loop below and nothing else in the suite would care.
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(event.actorId).toBe(GRANTEE);
+        // `onBehalfOf` is what makes this legible on the OWNER's trail. The
+        // audit contract warns it is set per-call-site and inherited from
+        // nowhere, so this is the assertion that says it actually was.
+        expect(event.onBehalfOf).toBe(OWNER);
+        expect(event.resourceId).toBe(OWNER);
+      }
+    });
+
+    /**
+     * ONCE PER COLLECTION, NOT PER READ — and the discriminating arm is that
+     * the reads above ALREADY happened. A test that only counted after one
+     * read would pass for an emitter that fires every time.
+     */
+    it('tells the owner ONCE per collection, however many reads follow', async () => {
+      // COUNTED SINCE THIS BLOCK'S OWN COLLECTION, not over all time: earlier
+      // blocks collect too, so a lifetime count would measure their history.
+      const since = async (): Promise<number> => {
+        const rows = await admin.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM emergency_access_notifications n
+             JOIN emergency_access_policies p ON p.id = n.policy_id
+            WHERE n.policy_id = $1 AND n.kind = 'read_by_grantee'
+              AND n.created_at >= p.released_at`,
+          [policyId],
+        );
+        return Number(rows.rows[0]!.count);
+      };
+      expect(await since()).toBe(1);
+
+      await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader())
+        .expect(200);
+      await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader())
+        .expect(200);
+
+      expect(await since()).toBe(1);
+
+      /*
+       * AND IT WAS ACTUALLY SENT (M27 PR3b review).
+       *
+       * Everything above counts ROWS in `emergency_access_notifications`, so a
+       * service that claimed the notice and never handed it to the notifier
+       * would pass a test named for telling the owner. `claimNotification` and
+       * the send are deliberately separate steps — that is what makes the
+       * dedupe safe under concurrency — which is exactly why the send needs
+       * its own assertion rather than being implied by the claim.
+       */
+      const notices = notifier.sent.filter((n) => n.kind === 'read_by_grantee');
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({ kind: 'read_by_grantee', ownerUserId: OWNER, policyId });
+      // …and the outcome was written back, so `delivered_at` is not left null
+      // on a notice that did go out.
+      const delivered = await admin.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM emergency_access_notifications n
+           JOIN emergency_access_policies p ON p.id = n.policy_id
+          WHERE n.policy_id = $1 AND n.kind = 'read_by_grantee'
+            AND n.created_at >= p.released_at AND n.delivered_at IS NOT NULL`,
+        [policyId],
+      );
+      expect(Number(delivered.rows[0]!.count)).toBe(1);
+
+      // POSITIVE CONTROL: the audit trail is deliberately NOT deduped, so the
+      // two reads above must have produced two events. Without this, an
+      // emitter that had silently stopped doing anything would pass the count
+      // above for the wrong reason.
+      const audits = producer.messages
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.emergency.items_read');
+      expect(audits.length).toBeGreaterThanOrEqual(4);
+    });
+
+    it('RE-ARMS the notice on the next collection', async () => {
+      const releasedAt = async (): Promise<string> =>
+        (
+          await admin.query<{ released_at: string }>(
+            `SELECT released_at::text AS released_at FROM emergency_access_policies WHERE id = $1`,
+            [policyId],
+          )
+        ).rows[0]!.released_at;
+      const totalNotices = async (): Promise<number> =>
+        Number(
+          (
+            await admin.query<{ count: string }>(
+              `SELECT count(*)::text AS count FROM emergency_access_notifications
+                WHERE policy_id = $1 AND kind = 'read_by_grantee'`,
+              [policyId],
+            )
+          ).rows[0]!.count,
+        );
+
+      const firstReleasedAt = await releasedAt();
+      const noticesBefore = await totalNotices();
+      const sentBefore = notifier.sent.filter((n) => n.kind === 'read_by_grantee').length;
+
+      /*
+       * THE CLOCK MUST MOVE, AND THAT IS THE WHOLE TEST (M27 PR3b review).
+       *
+       * The dedupe predicate is `created_at >= released_at`, both written from
+       * the injected clock. With the clock frozen, a second collection writes
+       * the SAME `released_at`, the previous collection's notice still
+       * satisfies the predicate, and the read is deduped — so the count stayed
+       * 1 and the test passed. It passed identically for a `hasNotifiedSince`
+       * that ignored its `since` argument altogether, which is to say it could
+       * not observe the re-arm it is named for. Advancing the clock is what
+       * makes the two collections distinguishable at all.
+       */
+      now = new Date(now.getTime() + 60 * 60 * 1000);
+      // A VAULT SESSION MINTED BEFORE A CLOCK JUMP IS EXPIRED AFTER IT, and
+      // its 403 `vault_locked` would stand in for this test's own refusals —
+      // the failure mode that costs an hour every time it is rediscovered.
+      // Re-minting here also repairs the reader for the tests that follow,
+      // which share this block's `granteeVault`.
+      granteeVault = (await openVaultFor(GRANTEE)).token;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/release`)
+        .set(asGrantee())
+        .expect(200);
+
+      // ANTI-VACUITY: if `released_at` did not actually move, everything below
+      // is measuring the frozen-clock case again.
+      const secondReleasedAt = await releasedAt();
+      expect(secondReleasedAt).not.toBe(firstReleasedAt);
+
+      await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader())
+        .expect(200);
+
+      const rows = await admin.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM emergency_access_notifications n
+           JOIN emergency_access_policies p ON p.id = n.policy_id
+          WHERE n.policy_id = $1 AND n.kind = 'read_by_grantee'
+            AND n.created_at >= p.released_at`,
+        [policyId],
+      );
+      /*
+       * ONE AGAIN, NOT TWO, and that is the assertion. `released_at` moved
+       * forward with the new collection, so the predicate now counts only the
+       * notices earned SINCE it — the previous collection's notice falls out
+       * of scope by itself. A stored `notified` flag would have needed each of
+       * the three writers that move a policy in and out of `released` to reset
+       * it; this needs none of them.
+       */
+      expect(Number(rows.rows[0]!.count)).toBe(1);
+      // …and it is a NEW notice, not the old one recounted. This is the pair
+      // the frozen clock made indistinguishable: one row in scope, two rows in
+      // total, and a second send actually handed to the notifier.
+      expect(await totalNotices()).toBe(noticesBefore + 1);
+      expect(notifier.sent.filter((n) => n.kind === 'read_by_grantee')).toHaveLength(
+        sentBefore + 1,
+      );
+    });
+
+    /**
+     * THE GUARD, NOT THE POLICY. A released grantee who has not unlocked their
+     * own vault gets `vault_locked` — the same refusal any locked caller gets
+     * on any vault route, and deliberately NOT one of this route's own tokens.
+     * A control firing must not read as an outage, and a locked vault must not
+     * read as a revoked arrangement.
+     */
+    /**
+     * PAGING, on the SAME cursor grammar as the owner's own list.
+     *
+     * `toDto`, `encodeCursor` and `decodeCursor` are exported from
+     * `vault.service.ts` and reused here rather than reimplemented, because two
+     * codecs are two things to keep in step and could disagree about a
+     * malformed cursor while looking identical. That reuse is only worth
+     * anything if the grantee path actually walks a cursor, which nothing did
+     * until this test — the paging branch was shipped uncovered.
+     */
+    it('pages the owner’s items, and the pages do not overlap', async () => {
+      const first = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items?limit=1`)
+        .set(asReader())
+        .expect(200);
+      const page1 = first.body as { items: Array<{ id: string }>; nextCursor: string | null };
+      expect(page1.items).toHaveLength(1);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const second = await request(server)
+        .get(
+          `/v1/vault/emergency-access/${policyId}/items?limit=1&cursor=${encodeURIComponent(
+            page1.nextCursor as string,
+          )}`,
+        )
+        .set(asReader())
+        .expect(200);
+      const page2 = second.body as { items: Array<{ id: string }>; nextCursor: string | null };
+      expect(page2.items).toHaveLength(1);
+
+      // SETS, not counts. A cursor that was ignored would return page 1 again
+      // and every length assertion above would still pass.
+      expect(page2.items[0]?.id).not.toBe(page1.items[0]?.id);
+      expect(new Set([page1.items[0]?.id, page2.items[0]?.id])).toEqual(
+        new Set([ownerItemId, secondItemId]),
+      );
+    });
+
+    /*
+     * EVERY MALFORMED SHAPE, NOT JUST THE ONE THAT FAILS FIRST (PR3b review).
+     *
+     * This asserted a single cursor — one that dies on the `lastIndexOf('|')`
+     * guard, the very first check — so it said nothing about the arms after
+     * it. The one that mattered was `<valid ISO>|<not a uuid>`: it passed
+     * every check the function made, bound against a `uuid` column, and came
+     * back as 500 `internal_error`. A crafted input answering with an outage's
+     * face is the defect this test is named for, and it was reachable on a
+     * Zone A cross-user route.
+     *
+     * WHAT THE ROW NAMES IS THE INPUT SHAPE, NOT A GUARD, and saying otherwise
+     * was this comment's own defect (caught reviewing the PR description).
+     * `decodeCursor` has THREE refusal predicates, not five, so five rows
+     * cannot each name a distinct one:
+     *
+     *   `separator <= 0`                      ← 'no separator', and also
+     *                                           'not base64url at all', because
+     *                                           `Buffer.from(…, 'base64url')`
+     *                                           is LENIENT: it does not throw
+     *                                           on junk, it returns mojibake
+     *                                           with no '|' in it. There is no
+     *                                           encoding check to reach.
+     *   `Number.isNaN(at.getTime())`          ← 'an unparseable timestamp'
+     *   `!UuidSchema.safeParse(id).success`   ← 'a separator but no id' and
+     *                                           'an id that is not a uuid',
+     *                                           which became ONE predicate when
+     *                                           this review replaced
+     *                                           `id.length === 0`.
+     *
+     * Two pairs therefore double up, and that is fine — the table's job is that
+     * every SHAPE a client can send answers 409 rather than 500, not that every
+     * row reaches a different line. The row that mattered is the last one.
+     */
+    it.each([
+      ['not base64url at all', 'not-a-cursor'],
+      ['no separator', Buffer.from('2020-01-01T00:00:00.000Z').toString('base64url')],
+      ['a separator but no id', Buffer.from('2020-01-01T00:00:00.000Z|').toString('base64url')],
+      ['an unparseable timestamp', Buffer.from(`nonsense|${'a'.repeat(8)}`).toString('base64url')],
+      [
+        'a valid timestamp and an id that is not a uuid',
+        Buffer.from('2020-01-01T00:00:00.000Z|zzz').toString('base64url'),
+      ],
+    ])(
+      'refuses a malformed cursor (%s) as a CLIENT error, not an outage',
+      async (_name, cursor) => {
+        const res = await request(server)
+          .get(
+            `/v1/vault/emergency-access/${policyId}/items?limit=1&cursor=${encodeURIComponent(cursor)}`,
+          )
+          .set(asReader());
+        expect(res.status).toBe(409);
+        expect((res.body as { error: string }).error).toBe('invalid_cursor');
+      },
+    );
+
+    it('refuses a released grantee who has not opened their OWN vault', async () => {
+      const res = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asGrantee());
+      expect(res.status).toBe(403);
+      expect((res.body as { error: string }).error).toBe('vault_locked');
+      expect((res.body as { error: string }).error).not.toBe('denied_by_owner');
+    });
+
+    /**
+     * UNIFORM 404 for "no such policy" and "not yours" alike. STRANGER holds a
+     * real vault session of their own, so what is being measured is the policy
+     * lookup and not the guard.
+     */
+    it('answers 404 to a policy that is not the caller’s', async () => {
+      const strangerVault = (await openVaultFor(STRANGER)).token;
+      await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set({ ...bearer('mfa', STRANGER), [VAULT_SESSION_HEADER]: strangerVault })
+        .expect(404);
+      await request(server)
+        .get(`/v1/vault/emergency-access/${randomUUID()}/items`)
+        .set({ ...bearer('mfa', STRANGER), [VAULT_SESSION_HEADER]: strangerVault })
+        .expect(404);
+    });
+
+    /**
+     * THE STOP ACTUALLY STOPS THE READ, which is the property PR3a's one-tap
+     * deny was for and the reason this route reads `status` inside the
+     * transaction rather than trusting the collection that preceded it.
+     *
+     * WHICH LAYER: this is the SERVICE's guard, not Cedar's. The two are
+     * separable and both real — `authz.spec.ts` proves the Cedar layer on its
+     * own resource — and saying which one each test exercises is the whole
+     * point of having named them.
+     */
+    it('STOPS serving items the moment the owner denies', async () => {
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/deny`)
+        .set(asOwner())
+        .expect(200);
+
+      const res = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader());
+      expect(res.status).toBe(403);
+      expect((res.body as { error: string }).error).toBe('denied_by_owner');
+
+      // AND THE REFUSAL IS NOT AN OUTAGE. Two failures with different remedies
+      // never share a token: a stopped grantee must not read the same word as
+      // one whose service is down.
+      expect((res.body as { error: string }).error).not.toBe('service_unavailable');
+    });
+
+    it('refuses a policy that was never collected, with its own token', async () => {
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/rearm`)
+        .set(ownerStepUp())
+        .expect(200);
+
+      const res = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader());
+      expect(res.status).toBe(409);
+      expect((res.body as { error: string }).error).toBe('not_collected');
+      // The DISAGREEING arm: `not_collected` and `denied_by_owner` are the two
+      // states an owner reaches with two different buttons, and a grantee has
+      // to be able to tell them apart to know whether to ask again.
+      expect((res.body as { error: string }).error).not.toBe('denied_by_owner');
+    });
+
+    /**
+     * MID-WAITING-PERIOD, WITH A STALE `released_at` — the arm that makes the
+     * read guard's `status === 'released'` load-bearing, and the one the first
+     * draft of this block did not reach.
+     *
+     * FOUND BY MUTATION. Widening the guard to admit `waiting` left all 61
+     * tests green, because the only refusal case here went through `rearm`,
+     * which writes `status = 'configured'`. That looked like a redundant
+     * guard. It is not, and the reason is a field `rearm` does NOT touch:
+     * `markRearmed` clears `denied_at`, `requested_at`, `releases_at` and
+     * `request_count`, and leaves `released_at` standing — deliberately, since
+     * M27 PR3a anchors "was this ever collected" on it precisely because no
+     * transition clears it.
+     *
+     * So a policy that was collected, stopped, re-armed and re-requested sits
+     * at `waiting` with a `released_at` from the PREVIOUS collection. A guard
+     * keyed on "has a released_at" rather than on the status would hand that
+     * grantee the owner's items while the owner's waiting period — the whole
+     * §5.2 control — was still running, using a collection the owner had
+     * already stopped. This is that state, driven rather than forged.
+     */
+    it('refuses a re-requested policy MID-WAITING-PERIOD, stale released_at and all', async () => {
+      now = new Date('2027-06-01T09:00:00.000Z');
+      // RE-OPENED AFTER THE JUMP, for the reason `beforeAll` gives: a vault
+      // session minted before a clock jump is expired on the other side of it,
+      // and the resulting `403 vault_locked` would masquerade as this test's
+      // own refusal — a false green wearing the right status code.
+      granteeVault = (await openVaultFor(GRANTEE)).token;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/request`)
+        .set(asGrantee())
+        .expect(200);
+
+      // THE FIXTURE REACHES THE BRANCH, asserted rather than assumed: this is
+      // only a test of the status arm if the row really is `waiting` AND
+      // really does carry a released_at from before.
+      const row = await admin.query<{ status: string; released_at: Date | null }>(
+        `SELECT status, released_at FROM emergency_access_policies WHERE id = $1`,
+        [policyId],
+      );
+      expect(row.rows[0]?.status).toBe('waiting');
+      expect(row.rows[0]?.released_at).not.toBeNull();
+
+      const res = await request(server)
+        .get(`/v1/vault/emergency-access/${policyId}/items`)
+        .set(asReader());
+      expect(res.status).toBe(409);
+      expect((res.body as { error: string }).error).toBe('not_collected');
     });
   });
 
@@ -1178,6 +1956,7 @@ describeIfPg('emergency access end to end', () => {
       expect(blocked.at(-1)?.detail).toEqual({
         reason: 'settlement_stage_not_reached',
         caseId: SETTLED_CASE,
+        surface: 'request',
       });
     });
 
@@ -1274,6 +2053,87 @@ describeIfPg('emergency access end to end', () => {
      * deliberate: a fence for an invariant has to exercise the arm where the
      * two facts DISAGREE, and here only the database can disagree.
      */
+    /**
+     * THE READ IS GATED TOO, AND NOTHING TESTED IT (M27 PR3b).
+     *
+     * FOUND BY MUTATION: deleting `assertSettlementPermits` from the grantee
+     * read left all 62 tests green. The gate was in the code and correct — the
+     * weak-test arm of CLAUDE.md's three-way rule, not a live hole — but a
+     * control nothing exercises is a control nobody has checked.
+     *
+     * IT MATTERS MOST HERE, of all the places it appears. A collection hands
+     * over key material once; a READ is the repeatable act that follows it, and
+     * it can follow by days. docs/03 §5.1 control 5 makes Zone A the LAST
+     * staged grant of a settlement, so an estate that enters settlement after a
+     * legitimate collection must stop the reading, not merely refuse the next
+     * collection — otherwise the gate is a speed bump around a door already
+     * open.
+     */
+    it('BLOCKS a grantee READ when settlement opens after the collection', async () => {
+      const gatedPolicy = await freshPolicy();
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/request`)
+        .set(asGrantee())
+        .expect(200);
+      now = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
+        .set(asGrantee())
+        .expect(200);
+
+      // The session is minted AFTER the clock jump, for the reason the grantee
+      // read block gives at length: one minted before it is already expired,
+      // and its 403 would stand in for this test's.
+      const vaultToken = (await openVaultFor(GRANTEE)).token;
+      const reader = { ...asGrantee(), [VAULT_SESSION_HEADER]: vaultToken };
+
+      // POSITIVE CONTROL FIRST: the read works while nothing is wrong. Without
+      // it, the refusal below is equally consistent with a route that never
+      // served anything.
+      await request(server)
+        .get(`/v1/vault/emergency-access/${gatedPolicy}/items`)
+        .set(reader)
+        .expect(200);
+
+      settlementGate.permitted = false;
+      settlementGate.caseId = SETTLED_CASE;
+      const before = producer.messages.length;
+      await request(server)
+        .get(`/v1/vault/emergency-access/${gatedPolicy}/items`)
+        .set(reader)
+        .expect(403, { error: 'settlement_stage_not_reached' });
+
+      /*
+       * THE TRAIL MUST SAY WHICH ACT WAS REFUSED (M27 PR3b review).
+       *
+       * All three grantee acts go through one gate and produced one
+       * indistinguishable event, so a reading screen refetching looked exactly
+       * like a grantee hammering the release route — the probing signal this
+       * action exists to surface. Asserted on the event emitted by THIS
+       * request (sliced from `before`) rather than on `.at(-1)`, so it cannot
+       * pass by reading some earlier arm's event.
+       */
+      const blockedByRead = producer.messages
+        .slice(before)
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.emergency.release_blocked');
+      expect(blockedByRead).toHaveLength(1);
+      expect(blockedByRead[0]?.detail).toEqual({
+        reason: 'settlement_stage_not_reached',
+        caseId: SETTLED_CASE,
+        surface: 'read',
+      });
+
+      settlementGate.permitted = true;
+      settlementGate.caseId = null;
+      // …and it comes back when the gate does, so the refusal was the gate and
+      // not the collection being spent.
+      await request(server)
+        .get(`/v1/vault/emergency-access/${gatedPolicy}/items`)
+        .set(reader)
+        .expect(200);
+    });
+
     it('refuses a policy whose status and releases_at DISAGREE', async () => {
       const forged = await freshPolicy();
       await admin.query(

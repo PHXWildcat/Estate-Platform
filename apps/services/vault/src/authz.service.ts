@@ -1,5 +1,5 @@
 import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
-import { ref, type EntityInput, type PolicyDecisionPoint } from '@estate/authz';
+import { ref, type CedarValue, type EntityInput, type PolicyDecisionPoint } from '@estate/authz';
 import { POLICY_DECISION_POINT } from './di-tokens';
 
 /**
@@ -33,6 +33,12 @@ export const VAULT_ACTIONS = [
   'restore',
   'delete',
   'manage',
+  // M27 PR3b. The ninth, and the first that is NOT a thing the owner does:
+  // a released emergency-access grantee reading the owner's items. It is a
+  // separate id rather than `read` because `vault.cedar` grants exactly the
+  // actions it names, and `read` is also what `beneficiary.cedar` grants on
+  // any resource naming the principal.
+  'read_by_grantee',
 ] as const;
 
 export type VaultAction = (typeof VAULT_ACTIONS)[number];
@@ -43,13 +49,28 @@ export function vaultResource(userId: string): EntityInput {
 }
 
 /**
- * A single item. Ownership is the only attribute: there are no beneficiary or
- * grantee reads in Zone A, because nothing else holds a key that could open it.
- * That changes when emergency access lands, and it changes here, not by
- * loosening a policy elsewhere.
+ * A single item. Ownership was the only attribute until M27 PR3b: there were no
+ * beneficiary or grantee reads in Zone A, because nothing else held a key that
+ * could open one. Emergency access changed that, and — as the earlier version
+ * of this comment promised — it changed HERE, by naming the grantees on the
+ * resource, not by loosening a policy elsewhere.
+ *
+ * `emergencyGrantees` is OMITTED when empty rather than passed as `[]`, and the
+ * distinction is the control: `vault.cedar` is guarded by
+ * `resource has emergencyGrantees`, so an owner-side call site that forgets to
+ * pass grantees produces a resource that CANNOT match the grantee policy. The
+ * failure direction of a mistake here is refusal.
  */
-export function vaultItemResource(itemId: string, ownerUserId: string): EntityInput {
-  return { uid: { type: 'VaultItem', id: itemId }, attrs: { owner: ref('User', ownerUserId) } };
+export function vaultItemResource(
+  itemId: string,
+  ownerUserId: string,
+  emergencyGranteeUserIds: readonly string[] = [],
+): EntityInput {
+  const attrs: Record<string, CedarValue> = { owner: ref('User', ownerUserId) };
+  if (emergencyGranteeUserIds.length > 0) {
+    attrs.emergencyGrantees = emergencyGranteeUserIds.map((id) => ref('User', id));
+  }
+  return { uid: { type: 'VaultItem', id: itemId }, attrs };
 }
 
 /**
