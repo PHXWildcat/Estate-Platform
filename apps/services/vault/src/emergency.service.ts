@@ -480,32 +480,37 @@ export class EmergencyAccessService {
     await this.assertNotificationsUsable();
     const now = this.clock();
 
-    const outcome = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
-      this.db.withTransaction(granteeUserId, async (tx) => {
-        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
-        // The settlement gate (docs/03 §6a / §5.1 control 5). Checked BEFORE the
-        // clock starts: if the owner's estate is in settlement without an
-        // approved vault stage, the waiting period must never begin, so a
-        // grantee cannot pre-position a request to mature the instant a stage
-        // lands.
-        await this.assertSettlementPermits(policy.user_id);
+    const outcome = await this.withSettlementGate(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      'request',
+      () =>
+        this.db.withTransaction(granteeUserId, async (tx) => {
+          const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+          // The settlement gate (docs/03 §6a / §5.1 control 5). Checked BEFORE the
+          // clock starts: if the owner's estate is in settlement without an
+          // approved vault stage, the waiting period must never begin, so a
+          // grantee cannot pre-position a request to mature the instant a stage
+          // lands.
+          await this.assertSettlementPermits(policy.user_id);
 
-        const blocked = this.blockReason(policy);
-        if (blocked) {
-          // Counted and reported, not silently dropped: a grantee hammering a
-          // denied policy is exactly what the owner needs to see.
-          await this.emergency.countBlockedRequest(tx, policy.id);
-          return { blocked, policy };
-        }
+          const blocked = this.blockReason(policy);
+          if (blocked) {
+            // Counted and reported, not silently dropped: a grantee hammering a
+            // denied policy is exactly what the owner needs to see.
+            await this.emergency.countBlockedRequest(tx, policy.id);
+            return { blocked, policy };
+          }
 
-        const releasesAt = new Date(now.getTime() + policy.waiting_period_hours * 60 * 60 * 1000);
-        const updated = await this.emergency.markRequested(tx, {
-          id: policy.id,
-          at: now,
-          releasesAt,
-        });
-        return { blocked: null, policy: updated };
-      }),
+          const releasesAt = new Date(now.getTime() + policy.waiting_period_hours * 60 * 60 * 1000);
+          const updated = await this.emergency.markRequested(tx, {
+            id: policy.id,
+            at: now,
+            releasesAt,
+          });
+          return { blocked: null, policy: updated };
+        }),
     );
 
     if (outcome.blocked) {
@@ -658,62 +663,83 @@ export class EmergencyAccessService {
   ): Promise<ReleaseDto> {
     const now = this.clock();
 
-    const released = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
-      this.db.withTransaction(granteeUserId, async (tx) => {
-        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+    const released = await this.withSettlementGate(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      'release',
+      () =>
+        this.db.withTransaction(granteeUserId, async (tx) => {
+          const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
 
-        if (policy.status === 'denied_by_owner')
-          throw new ForbiddenException({ error: 'denied_by_owner' });
-        if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
-        /*
-         * RE-COLLECTABLE (M27 PR3a), and it is ONE guard because it was two.
-         *
-         * `released` used to be refused here with `already_released`, which made
-         * the §5.2 ceremony spend itself and deliver nothing: a grantee who
-         * closed the tab consumed the arrangement in the one scenario the
-         * feature exists for. Nothing was ever destroyed to justify it — `markReleased`
-         * sets `status` and `released_at` and touches neither `key_share_ct` nor
-         * anything in `emergency_access_configs` — so "one-shot" was a status
-         * check wearing a cryptographic one-way door's clothes.
-         *
-         * REMOVING ONLY THAT THROW WOULD HAVE CHANGED NOTHING. The caller fell
-         * straight into the next line, `status !== 'waiting'`, and got
-         * `not_requested` — the same dead end reported under a token that means
-         * something else, which is the two-failures-one-token defect docs/03
-         * forbids. The M27 PR0 review reproduced that against a real database
-         * rather than reading the guard order, which is why both are replaced by
-         * a single predicate naming what collectable actually means.
-         *
-         * `releases_at` survives a RELEASE — `markReleased` does not touch it —
-         * so the elapsed check below still governs every collection rather than
-         * just the first. THREE writers clear it, not one: `markDenied`,
-         * `markRearmed` and `markRevoked`. An earlier draft of this comment
-         * said "only `markDenied`", which is the shape CLAUDE.md warns about —
-         * a comment justifying itself with a fact about the tree that nobody
-         * checks — and it was wrong. The conclusion survives because all three
-         * also move `status` out of the collectable set, which is the property
-         * actually relied on here rather than the count of writers.
-         */
-        const collectable = policy.status === 'waiting' || policy.status === 'released';
-        if (!collectable || !policy.releases_at) {
-          throw new ConflictException({ error: 'not_requested' });
-        }
-        if (policy.releases_at.getTime() > now.getTime()) {
-          throw new ForbiddenException({ error: 'waiting_period_active' });
-        }
+          if (policy.status === 'denied_by_owner')
+            throw new ForbiddenException({ error: 'denied_by_owner' });
+          /*
+           * NO `revoked` ARM, AND ITS ABSENCE IS THE POINT (M27 PR3b review).
+           *
+           * There used to be one, throwing `policy_revoked`. It was dead code:
+           * `markRevoked` is the only writer of `status='revoked'` and it sets
+           * `deleted_at` in the same statement, while `lockLiveByIdForGrantee`
+           * — the read every grantee route goes through — filters
+           * `deleted_at IS NULL`. So a revoked policy never reaches this line;
+           * it answers the uniform 404, which is the right answer anyway,
+           * being indistinguishable from "not yours".
+           *
+           * Found by the coverage floor rather than by review, which is what a
+           * floor is for. Removing it cannot loosen anything — the row never
+           * arrived — and a dead branch that LOOKS like a control is worse than
+           * no branch, because a reader believes revocation has its own refusal
+           * when it does not.
+           */
+          /*
+           * RE-COLLECTABLE (M27 PR3a), and it is ONE guard because it was two.
+           *
+           * `released` used to be refused here with `already_released`, which made
+           * the §5.2 ceremony spend itself and deliver nothing: a grantee who
+           * closed the tab consumed the arrangement in the one scenario the
+           * feature exists for. Nothing was ever destroyed to justify it — `markReleased`
+           * sets `status` and `released_at` and touches neither `key_share_ct` nor
+           * anything in `emergency_access_configs` — so "one-shot" was a status
+           * check wearing a cryptographic one-way door's clothes.
+           *
+           * REMOVING ONLY THAT THROW WOULD HAVE CHANGED NOTHING. The caller fell
+           * straight into the next line, `status !== 'waiting'`, and got
+           * `not_requested` — the same dead end reported under a token that means
+           * something else, which is the two-failures-one-token defect docs/03
+           * forbids. The M27 PR0 review reproduced that against a real database
+           * rather than reading the guard order, which is why both are replaced by
+           * a single predicate naming what collectable actually means.
+           *
+           * `releases_at` survives a RELEASE — `markReleased` does not touch it —
+           * so the elapsed check below still governs every collection rather than
+           * just the first. THREE writers clear it, not one: `markDenied`,
+           * `markRearmed` and `markRevoked`. An earlier draft of this comment
+           * said "only `markDenied`", which is the shape CLAUDE.md warns about —
+           * a comment justifying itself with a fact about the tree that nobody
+           * checks — and it was wrong. The conclusion survives because all three
+           * also move `status` out of the collectable set, which is the property
+           * actually relied on here rather than the count of writers.
+           */
+          const collectable = policy.status === 'waiting' || policy.status === 'released';
+          if (!collectable || !policy.releases_at) {
+            throw new ConflictException({ error: 'not_requested' });
+          }
+          if (policy.releases_at.getTime() > now.getTime()) {
+            throw new ForbiddenException({ error: 'waiting_period_active' });
+          }
 
-        // The settlement gate again, INSIDE the transaction and after the row
-        // lock (docs/03 §6a). Re-checked here because the waiting period is days
-        // long: an estate can enter settlement between the request and the
-        // collection, and Zone A is the stage that must come last.
-        await this.assertSettlementPermits(policy.user_id);
+          // The settlement gate again, INSIDE the transaction and after the row
+          // lock (docs/03 §6a). Re-checked here because the waiting period is days
+          // long: an estate can enter settlement between the request and the
+          // collection, and Zone A is the stage that must come last.
+          await this.assertSettlementPermits(policy.user_id);
 
-        const config = await this.emergency.lockConfig(tx, policy.user_id);
-        if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
+          const config = await this.emergency.lockConfig(tx, policy.user_id);
+          if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
 
-        const updated = await this.emergency.markReleased(tx, policy.id, now);
-        return { policy: updated, config };
-      }),
+          const updated = await this.emergency.markReleased(tx, policy.id, now);
+          return { policy: updated, config };
+        }),
     );
 
     await this.events.emergencyReleased(
@@ -833,55 +859,59 @@ export class EmergencyAccessService {
     policyId: string,
     query: { limit: number; cursor?: string | undefined },
   ): Promise<{ ownerUserId: string; rows: ItemRow[] }> {
-    const outcome = await this.withSettlementGate(granteeUserId, accountSessionId, policyId, () =>
-      this.db.withTransaction(granteeUserId, async (tx) => {
-        const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
+    const outcome = await this.withSettlementGate(
+      granteeUserId,
+      accountSessionId,
+      policyId,
+      'read',
+      () =>
+        this.db.withTransaction(granteeUserId, async (tx) => {
+          const policy = await this.requireGranteePolicy(tx, policyId, granteeUserId);
 
-        // Named refusals, spelled exactly as `release` spells them: a grantee
-        // whose access was stopped must not read the same token as a grantee
-        // who never collected, and neither may read as an outage.
-        if (policy.status === 'denied_by_owner')
-          throw new ForbiddenException({ error: 'denied_by_owner' });
-        if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
-        if (policy.status !== 'released' || !policy.released_at) {
-          throw new ConflictException({ error: 'not_collected' });
-        }
+          // Named refusals, spelled exactly as `release` spells them: a grantee
+          // whose access was stopped must not read the same token as a grantee
+          // who never collected, and neither may read as an outage.
+          if (policy.status === 'denied_by_owner')
+            throw new ForbiddenException({ error: 'denied_by_owner' });
+          if (policy.status !== 'released' || !policy.released_at) {
+            throw new ConflictException({ error: 'not_collected' });
+          }
 
-        await this.assertSettlementPermits(policy.user_id);
+          await this.assertSettlementPermits(policy.user_id);
 
-        const granteeIds = await this.emergency.listReleasedGranteeIds(tx, policy.user_id);
-        const rows = await this.items.listByUser(tx, {
-          userId: policy.user_id,
-          limit: query.limit,
-          ...(query.cursor
-            ? { cursor: ((c) => ({ updatedAt: c.at, id: c.id }))(decodeCursor(query.cursor)) }
-            : {}),
-        });
-        for (const row of rows) {
-          this.authz.assertCan(
-            granteeUserId,
-            'read_by_grantee',
-            vaultItemResource(row.id, policy.user_id, granteeIds),
-          );
-        }
+          const granteeIds = await this.emergency.listReleasedGranteeIds(tx, policy.user_id);
+          const rows = await this.items.listByUser(tx, {
+            userId: policy.user_id,
+            limit: query.limit,
+            ...(query.cursor
+              ? { cursor: ((c) => ({ updatedAt: c.at, id: c.id }))(decodeCursor(query.cursor)) }
+              : {}),
+          });
+          for (const row of rows) {
+            this.authz.assertCan(
+              granteeUserId,
+              'read_by_grantee',
+              vaultItemResource(row.id, policy.user_id, granteeIds),
+            );
+          }
 
-        const told = await this.emergency.hasNotifiedSince(tx, {
-          policyId: policy.id,
-          kind: 'read_by_grantee',
-          since: policy.released_at,
-        });
-        const claimId = told
-          ? null
-          : await this.emergency.claimNotification(tx, {
-              policyId: policy.id,
-              userId: policy.user_id,
-              kind: 'read_by_grantee',
-              channel: this.notifier.channel,
-              at: this.clock(),
-            });
+          const told = await this.emergency.hasNotifiedSince(tx, {
+            policyId: policy.id,
+            kind: 'read_by_grantee',
+            since: policy.released_at,
+          });
+          const claimId = told
+            ? null
+            : await this.emergency.claimNotification(tx, {
+                policyId: policy.id,
+                userId: policy.user_id,
+                kind: 'read_by_grantee',
+                channel: this.notifier.channel,
+                at: this.clock(),
+              });
 
-        return { ownerUserId: policy.user_id, rows, claimId };
-      }),
+          return { ownerUserId: policy.user_id, rows, claimId };
+        }),
     );
 
     if (outcome.claimId) {
@@ -962,6 +992,11 @@ export class EmergencyAccessService {
     granteeUserId: string,
     accountSessionId: string,
     policyId: string,
+    // Which act this gate is wrapping. Threaded through to the audit event
+    // because all three used to look identical on the trail (PR3b review), and
+    // required for the same reason `itemsListed`'s `scope` is: a fourth caller
+    // must not be able to inherit somebody else's answer by omission.
+    surface: 'request' | 'release' | 'read',
     fn: () => Promise<T>,
   ): Promise<T> {
     try {
@@ -975,6 +1010,7 @@ export class EmergencyAccessService {
         accountSessionId,
         policyId,
         err.caseId,
+        surface,
       );
       throw new ForbiddenException({ error: 'settlement_stage_not_reached' });
     }

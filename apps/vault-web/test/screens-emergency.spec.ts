@@ -34,6 +34,7 @@ import {
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { installLifecycle, render } from '../src/client/app';
+import { VaultSession } from '../src/client/vault-session';
 import { forgetSecretKey } from '../src/client/secret-key-store';
 
 /**
@@ -132,12 +133,65 @@ const USER = '11111111-2222-4333-8444-555555555555';
 const GRANTEE = '22222222-3333-4444-8555-666666666666';
 const PASSWORD = 'a-good-vault-password';
 
+/**
+ * BUTTONS THAT MUST NEVER APPEAR ON A GRANTEE'S SURFACE — DERIVED (PR3b review).
+ *
+ * This was a hand-written list of five, and two of its members could not do
+ * anything: `'Delete'` matches no button in the app (the label is `'Delete this
+ * item'`, and `toContain` on an array is strict equality), and `'Save changes'`
+ * belongs to the owner's edit form, which is not the screen being inspected.
+ * A list that cannot match is a list that reports nothing while looking
+ * thorough — the shape this repo keeps finding, so this reads the labels out of
+ * `app.ts` instead.
+ *
+ * The CORPUS is every `buttonEl`/`quietButton` label in the client, minus the
+ * ones a reader legitimately has. Anything that writes, destroys, navigates
+ * into the owner's own vault, or exposes vault-wide settings is therefore
+ * forbidden BY DEFAULT: a new owner-side button joins this set the moment it is
+ * written, without anybody remembering to add it.
+ */
+const GRANTEE_ALLOWED_BUTTONS = new Set([
+  // The reading surface's own controls, and the ceremony that reaches it.
+  'Done',
+  'Back',
+  'Show',
+  'Copy',
+  'Open the vault',
+  'Open it now',
+  'Request access',
+  'Confirm key',
+  'Let others name me',
+  'Emergency access',
+  'Cancel',
+]);
+
+const OWNER_ONLY_BUTTONS: readonly string[] = (() => {
+  const source = readFileSync(join(__dirname, '..', 'src', 'client', 'app.ts'), 'utf8');
+  const labels = new Set<string>();
+  for (const m of source.matchAll(/(?:buttonEl|quietButton)\(\s*'((?:[^'\\]|\\.)*)'/g)) {
+    const label = (m[1] ?? '').replace(/\\'/g, "'");
+    if (label && !GRANTEE_ALLOWED_BUTTONS.has(label)) labels.add(label);
+  }
+  // ANTI-VACUITY: a regex that stopped matching would forbid nothing and every
+  // `not.toContain` below would pass. Pin the floor AND a member that must be
+  // in it, so a rename cannot empty the set quietly.
+  if (labels.size < 10) throw new Error(`derived too few owner buttons: ${labels.size}`);
+  if (!labels.has('Add an item')) throw new Error('derivation missed a known owner button');
+  return [...labels];
+})();
+
 interface Service {
   calls: Array<{ path: string; method: string; body: string }>;
   /** Forced failures, keyed `METHOD /path`. */
   fail: Map<string, { status: number; error: string }>;
   candidates: Array<{ contactId: string; userId: string; name: string }>;
-  escrow: { configured: boolean; threshold: number | null; policies: unknown[] };
+  escrow: {
+    configured: boolean;
+    threshold: number | null;
+    policies: unknown[];
+    /** M27 PR3b. `null` is the CLEARED state, mirroring the service. */
+    label?: string | null;
+  };
   grantedToMe: unknown[];
   /** Whether this user has published a recovery key of their own. */
   ownKey: { publicKey: string; wrappedPrivateKey: string } | null;
@@ -148,6 +202,8 @@ interface Service {
    * so the grantee side runs against a real escrow rather than a fixture.
    */
   release: { status: number; body: unknown } | null;
+  /** Held open, so a test can act while a release is in flight. */
+  releaseGate: Promise<void> | null;
   /** M27 PR3b: what `GET .../:policyId/items` answers the collected grantee. */
   granteeItems: { status: number; body: unknown } | null;
 }
@@ -162,6 +218,7 @@ function installService(): Service {
     ownKey: null,
     publishedKeys: new Map(),
     release: null,
+    releaseGate: null,
     granteeItems: null,
   };
   let keyset: Record<string, string> | null = null;
@@ -273,11 +330,15 @@ function installService(): Service {
       // real route had dropped — and the screen test below went on passing
       // against a server that no longer exists. `not_requested` is what a
       // release with no elapsed `releases_at` actually answers.
-      return Promise.resolve(
+      const answer = (): unknown =>
         state.release
           ? reply(state.release.status, state.release.body)
-          : reply(409, { error: 'not_requested' }),
-      );
+          : reply(409, { error: 'not_requested' });
+      // A HOLD, so a test can make something happen WHILE the release is in
+      // flight. Every real release has a window between the request going out
+      // and the key coming back; without a way to open that window here, the
+      // only things testable are states that never overlap it.
+      return state.releaseGate ? state.releaseGate.then(answer) : Promise.resolve(answer());
     }
     if (path === '/api/vault/emergency-access' && method === 'GET') {
       return Promise.resolve(reply(200, state.escrow));
@@ -290,11 +351,21 @@ function installService(): Service {
       // created, one per grantee, so the screen re-renders against reality.
       const parsed = JSON.parse(body) as {
         threshold: number;
+        label?: string;
         grantees: Array<Record<string, unknown>>;
       };
       state.escrow = {
         configured: true,
         threshold: parsed.threshold,
+        // FAITHFUL ABOUT THE ABSENCE, NOT ONLY THE VALUE (M27 PR3b review).
+        // This double rebuilt `escrow` without a `label` key at all, so the
+        // owner-side write path for the new field had no observer and the
+        // review found the bug it was hiding: the form never seeded from the
+        // current escrow, so any re-arm cleared the label. `?? null` mirrors
+        // the service, which writes `label = EXCLUDED.label` and therefore
+        // CLEARS on absence — a double that answered `undefined` here would
+        // still be lying about the one arm that matters.
+        label: parsed.label ?? null,
         policies: parsed.grantees.map((g, index) => ({
           id: `p${index + 1}`,
           granteeContactId: g['granteeContactId'],
@@ -488,6 +559,138 @@ describe('the emergency-access screens', () => {
     // What crossed the wire is a sealed share and a platform half — never a key.
     expect(armed?.body).toContain('platformPart');
     expect(armed?.body).toContain('granteePublicKeySha256');
+  });
+
+  /*
+   * THE LABEL'S WRITE PATH (M27 PR3b review).
+   *
+   * Three tests rather than one, because the field has three distinct arms and
+   * the review found the middle one broken while the outer two would have
+   * passed: typing a label must SEND it, re-arming without touching the box
+   * must KEEP it, and blanking the box must CLEAR it. Only the second is a
+   * behaviour change; it is here with the other two because a seed that
+   * defeated the clear would be a worse bug than the one being fixed.
+   */
+  /**
+   * Arm from the emergency screen as it currently stands. Re-arming does NOT
+   * re-open the vault: after `configure` the screen re-renders in place with
+   * the picker back at "not confirmed", which is exactly the state an owner
+   * adding a second contact is in — and the state the seeding defect needed.
+   */
+  const configures = (service: ReturnType<typeof installService>): readonly { body: string }[] =>
+    service.calls.filter((c) => c.method === 'POST' && c.path === '/api/vault/emergency-access');
+
+  const armWith = async (
+    service: ReturnType<typeof installService>,
+    label?: string,
+  ): Promise<void> => {
+    /*
+     * ANTI-VACUITY, AND THIS HELPER NEEDED IT (M27 PR3b review).
+     *
+     * Every wait below is satisfiable by the PREVIOUS arm's DOM — "key
+     * confirmed" and "1 contact(s) named" are both already on screen when a
+     * re-arm starts. The first draft of these tests therefore drove one arm,
+     * waited on text that never changed, and asserted against the FIRST
+     * request while believing it had made a second. Staging on the picker
+     * returning to "not confirmed" is the intermediate assertion that proves
+     * the re-render happened, and the request count is the floor that proves
+     * the click reached the network.
+     */
+    await waitForText('Ada');
+    await waitForText('not confirmed');
+    const before = configures(service).length;
+    clickText('Confirm key');
+    await waitForText('key confirmed');
+    if (label !== undefined) byLabel('What to call this vault').value = label;
+    clickText('Arm emergency access');
+    await waitForText(/contact\(s\) named/i);
+    for (let i = 0; configures(service).length === before && i < 80; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(configures(service).length).toBe(before + 1);
+  };
+
+  /** First arm: real enrollment, real SRP unlock, a real published key. */
+  const openWithCandidate = async (service: ReturnType<typeof installService>): Promise<void> => {
+    service.candidates = [{ contactId: 'c1', userId: GRANTEE, name: 'Ada' }];
+    const pair = await generateRecoveryKeyPair();
+    service.publishedKeys.set(GRANTEE, toBase64(pair.publicKey));
+    await openEmergency();
+  };
+
+  const lastConfigureBody = (service: ReturnType<typeof installService>): string =>
+    configures(service).at(-1)?.body ?? '';
+
+  it('sends the label the owner typed', async () => {
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, 'The Dehn family vault');
+
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      label: 'The Dehn family vault',
+    });
+    await waitForText('They see this vault as “The Dehn family vault”.');
+  });
+
+  it('KEEPS the label when the owner re-arms without touching the box', async () => {
+    // The defect this closes: `configure` clears the label on absence, so a
+    // form that always started blank discarded the name on every re-arm done
+    // for some other reason — reverting every grantee to `Vault of <uuid>`,
+    // which is the §6yy defect this PR exists to close.
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, 'The Dehn family vault');
+
+    // Re-arm in place, never touching the label field.
+    await armWith(service);
+
+    expect(byLabel('What to call this vault').value).toBe('The Dehn family vault');
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      label: 'The Dehn family vault',
+    });
+    await waitForText('They see this vault as “The Dehn family vault”.');
+  });
+
+  it('CLEARS the label when the owner blanks the box', async () => {
+    // The other arm, and the reason the seed above must not be a floor: an
+    // owner who deletes the name means it, and the omitted field is how this
+    // client says so.
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, 'The Dehn family vault');
+
+    await armWith(service, '   ');
+
+    expect(JSON.parse(lastConfigureBody(service))).not.toHaveProperty('label');
+    await waitForText('They see your account id.');
+  });
+
+  it('names the step a candidate is actually missing, not one it cannot know about', async () => {
+    /*
+     * FOUND BY DRIVING THE REAL APP (M27 PR3b).
+     *
+     * The copy said the candidate "has not set up a vault yet" — which the
+     * server's 404 does not say, and which was false for the contact the drive
+     * used: they HAD a vault and had never published a recovery key. The owner
+     * was told to ask for something already done. `granteePublicKey` answers
+     * one uniform 404 for both states deliberately, so the only honest copy is
+     * one true of both, naming the action that fixes either.
+     */
+    const service = installService();
+    service.candidates = [{ contactId: 'c1', userId: GRANTEE, name: 'Ada' }];
+    // No published key for GRANTEE: the route 404s, exactly as it does for a
+    // contact with no vault at all. The screen cannot tell them apart.
+    await openEmergency();
+    await waitForText('Ada');
+
+    clickText('Confirm key');
+    await waitForText(/has not published a key yet/i);
+    const text = document.body.textContent ?? '';
+    // It must not assert the cause the 404 cannot establish…
+    expect(text).not.toMatch(/has not set up a vault/i);
+    // …and it must name the step that actually fixes it, in both states.
+    expect(text).toContain('Let others name me');
+    expect(document.body.textContent).not.toContain('key confirmed');
   });
 
   it('refuses a key it cannot parse rather than hanging on it', async () => {
@@ -1611,7 +1814,7 @@ describe('the emergency-access screens', () => {
       threshold: 1,
       label: 'The Dehn family vault',
       policies: [],
-    } as unknown as typeof service.escrow;
+    };
     await openEmergency();
     await waitForText(/they see this vault as/i);
     expect(document.body.textContent).toContain('The Dehn family vault');
@@ -1692,6 +1895,210 @@ describe('the emergency-access screens', () => {
   });
 
   /**
+   * THE RUNTIME HALF OF THE READ-ONLY-KEY CLAIM (M27 PR3b review).
+   *
+   * `fences.spec.ts` checks the `importAesKey` CALL and used to justify
+   * stopping there by claiming the key was unreachable from a test. It is not:
+   * `collectGrant` returns the `GrantedVault`, so the real key from the real
+   * ceremony can be inspected with nothing cut into the module. Spying on the
+   * prototype observes the value the app itself received — no production
+   * change, and no fixture standing in for the key.
+   *
+   * WebCrypto enforces `usages`, so this is the layer where "cannot seal a
+   * blob into somebody else's Zone A" is a platform guarantee rather than a
+   * property of what was built.
+   */
+  it('the collected key carries no writing usage AT RUNTIME', async () => {
+    const collected: CryptoKey[] = [];
+    // UNBOUND ON PURPOSE, which is the one case the rule exists to allow: the
+    // reference is re-entered as `realCollect.call(this, …)` below, so the
+    // instance supplies `this`. Binding it to the prototype — the reflex fix —
+    // would hand the real method an object with none of the `#private` fields
+    // it reads, and the restore in `finally` would leave a bound method
+    // installed for every later test.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const realCollect = VaultSession.prototype.collectGrant;
+    VaultSession.prototype.collectGrant = async function (this: VaultSession, input) {
+      const real = await realCollect.call(this, input);
+      if (real.ok) collected.push(real.data.masterKey);
+      return real;
+    };
+    try {
+      const service = installService();
+      await readAsGrantee(service);
+      // `readAsGrantee` returns on the CLICK, not on the collection — every
+      // caller stages on the screen that follows, and so must this one.
+      await waitForText(/the owner has been told/i);
+
+      // ANTI-VACUITY: the ceremony really ran and really produced a key, or
+      // every assertion below is about an empty array.
+      expect(collected).toHaveLength(1);
+      const key = collected[0]!;
+      // Exactly what reading needs, and nothing that writes.
+      expect([...key.usages].sort()).toEqual(['decrypt', 'unwrapKey']);
+      for (const forbidden of ['encrypt', 'wrapKey', 'sign', 'deriveKey', 'deriveBits']) {
+        expect(key.usages).not.toContain(forbidden);
+      }
+      // And page script cannot read the owner's master key out of the browser.
+      expect(key.extractable).toBe(false);
+    } finally {
+      VaultSession.prototype.collectGrant = realCollect;
+    }
+  });
+
+  /**
+   * A LOCK LANDING WHILE THE RELEASE IS IN FLIGHT (M27 PR3b review).
+   *
+   * `collectGrant` checked the session before its awaits and wrote the
+   * recovered key after them, unconditionally — so a lock arriving in between
+   * was silently undone. The owner's master key ended up installed on a
+   * session whose status is `locked`, where `touch()` returns early and
+   * therefore never arms another idle timer: the key outlived the control that
+   * exists to drop it. §6zz accepted the residual on the premise that the idle
+   * lock protects a grantee who walks away, which is this exact case.
+   *
+   * Driven through `pagehide` because that is a real way to lose the race —
+   * shutting the laptop while the release is out — and because it is the one
+   * lock trigger a test can fire at an exact moment. The idle timer reaches
+   * the same `lock()` by the same path.
+   */
+  it('does not install the owner’s key when a lock lands mid-collection', async () => {
+    const service = installService();
+    await openEmergency();
+    clickText('Let others name me');
+    await waitForText(/your key is published/i);
+    const armed = await armEscrowFor(service, OWNER_ID);
+    service.release = { status: 200, body: armed };
+    service.granteeItems = { status: 200, body: { items: [], nextCursor: null } };
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: OWNER_ID,
+        granteeUserId: USER,
+        waitingPeriodHours: 48,
+        status: 'waiting',
+        releasesAt: new Date(Date.now() - 1000).toISOString(),
+        releasedAt: null,
+        ownerLabel: 'Mum’s vault',
+      },
+    ];
+
+    clickText('Back');
+    await waitForText(/nothing here yet/i);
+    clickText('Emergency access');
+    await waitForText('Your arrangement');
+    await waitForText(/ready to open/i);
+
+    // The `pagehide` handler lives in `installLifecycle`, which `mount()` does
+    // NOT call — the first draft of this test dispatched the event at nothing,
+    // so the lock never fired and it "reproduced" the defect against the fix.
+    // Installing it here is what makes the dispatch below mean anything.
+    installLifecycle();
+
+    // Hold the release open, start the collection, then lose the device.
+    let openTheGate = (): void => {};
+    service.releaseGate = new Promise<void>((resolve) => {
+      openTheGate = resolve;
+    });
+    clickText('Open the vault');
+    await waitForText(/only continue if they genuinely cannot/i);
+    clickText('Open it now');
+    // The request is out and waiting on the gate.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    window.dispatchEvent(new Event('pagehide'));
+    openTheGate();
+
+    // The screen ends up locked, NOT holding somebody else's vault.
+    await waitForText('Unlock your vault');
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('Mum’s vault');
+    expect(text).not.toMatch(/the owner has been told/i);
+    // ANTI-VACUITY: the release really did go out and really did answer, so
+    // this is the race and not a collection that never started.
+    expect(service.calls.some((c) => c.method === 'POST' && c.path.endsWith('/release'))).toBe(
+      true,
+    );
+  });
+
+  /*
+   * EVERY REFUSAL THE READING ROUTE CAN ANSWER (M27 PR3b review).
+   *
+   * THE CORPUS, stated because a table that does not say what it covers is a
+   * table that silently stops covering it: these are the refusals
+   * `EmergencyService.readAsGrantee` and the guards above it can produce for a
+   * grantee holding a live session — `denied_by_owner` and `not_collected`
+   * thrown in `readAsGrantee` itself, `settlement_stage_not_reached` from the
+   * settlement gate it runs inside, and the uniform `not_found` from
+   * `requireGranteePolicy`. `policy_revoked` is deliberately NOT here: the
+   * coverage floor showed that arm was dead, because `markRevoked`
+   * soft-deletes and every grantee read filters `deleted_at IS NULL`, so a
+   * revoked policy answers as the `not_found` row below.
+   * `vault_locked` and 401 are excluded: both are the
+   * grantee's OWN session lapsing, they already have correct copy, and neither
+   * is a statement about the arrangement.
+   *
+   * Every one of them used to arrive as `UNKNOWN` -> "Something went wrong.
+   * Try again." or as item-shaped copy on a screen holding a whole vault. The
+   * three assertions below are the three things that made that wrong, and they
+   * are asserted for the whole table rather than per row so a NEW refusal
+   * cannot be added with generic copy and stay green.
+   */
+  const READ_REFUSALS = [
+    ['the owner stopped access', 403, 'denied_by_owner', /stopped your access/i],
+    ['settlement is holding it', 403, 'settlement_stage_not_reached', /being settled/i],
+    ['the arrangement was rebuilt', 409, 'not_collected', /rebuilt since you opened it/i],
+    ['the arrangement is gone', 404, 'not_found', /no longer there/i],
+  ] as const;
+
+  it.each(READ_REFUSALS)(
+    'tells a reading grantee what happened when %s',
+    async (_name, status, token, expected) => {
+      const service = installService();
+      await openEmergency();
+      clickText('Let others name me');
+      await waitForText(/your key is published/i);
+      const armed = await armEscrowFor(service, OWNER_ID);
+      service.release = { status: 200, body: armed };
+      // The COLLECTION succeeds and the READ is refused, which is the shape
+      // every one of these takes in life: the grantee held a release and the
+      // arrangement moved under them.
+      service.granteeItems = { status, body: { error: token } };
+      service.grantedToMe = [
+        {
+          id: 'p9',
+          ownerUserId: OWNER_ID,
+          granteeUserId: USER,
+          waitingPeriodHours: 48,
+          status: 'waiting',
+          releasesAt: new Date(Date.now() - 1000).toISOString(),
+          releasedAt: null,
+          ownerLabel: 'Mum’s vault',
+        },
+      ];
+
+      clickText('Back');
+      await waitForText(/nothing here yet/i);
+      clickText('Emergency access');
+      await waitForText('Your arrangement');
+      await waitForText(/ready to open/i);
+      clickText('Open the vault');
+      await waitForText(/only continue if they genuinely cannot/i);
+      clickText('Open it now');
+
+      await waitForText(expected);
+      const text = document.body.textContent ?? '';
+      // Not a fault…
+      expect(text).not.toContain('Something went wrong');
+      // …not advice that cannot succeed…
+      expect(text).not.toMatch(/try again/i);
+      // …and not a sentence about an item, on a screen holding a vault.
+      expect(text).not.toMatch(/that item is no longer there|this item changed/i);
+      // The owner's name still heads the screen, so the reader knows WHOSE.
+      expect(text).toContain('Mum’s vault');
+    },
+  );
+
+  /**
    * NOTHING THE GRANTEE PRESSES CAN WRITE. The route serves only
    * `read_by_grantee`, so an edit or a delete would 403 — and a button that
    * 403s reads to the person pressing it as an outage rather than a boundary.
@@ -1749,8 +2156,29 @@ describe('the emergency-access screens', () => {
     // ANTI-VACUITY: this really is the reading screen, and it really does have
     // buttons — a screen that failed to render passes every `not.toContain`.
     expect(buttons).toContain('Done');
-    for (const forbidden of ['Add an item', 'Save changes', 'Delete', 'History', 'Deleted items']) {
+    for (const forbidden of OWNER_ONLY_BUTTONS) {
       expect(buttons).not.toContain(forbidden);
+    }
+
+    /*
+     * AND THE ITEM DETAIL SCREEN, WHICH WAS NEVER CHECKED (PR3b review).
+     *
+     * It is the one that could plausibly drift into reusing the owner's edit
+     * form — `renderGrantedItem` exists precisely so it does not — so leaving
+     * it unchecked left the list screen guarded and the risky screen open.
+     */
+    clickText('The owner’s secret note');
+    // Stage on the screen actually having CHANGED: the list carries 'Done',
+    // the detail carries 'Back'. Waiting on the title would be satisfied by
+    // the list, which still shows it.
+    for (let i = 0; i < 80 && !findButton('Back'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const detailButtons = [...document.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    expect(detailButtons).not.toContain('Done');
+    expect(detailButtons).toContain('Back');
+    for (const forbidden of OWNER_ONLY_BUTTONS) {
+      expect(detailButtons).not.toContain(forbidden);
     }
   });
 

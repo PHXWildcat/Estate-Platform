@@ -29,7 +29,7 @@ import { VaultSessionsRepo } from './sessions.repo';
 import { VaultAuthz, vaultItemResource, vaultResource } from './authz.service';
 import { generateOpaqueToken, hashToken } from './tokens';
 import type { VaultSessionContext } from './vault-session.guard';
-import type { VaultItemType } from './schemas';
+import { UuidSchema, type VaultItemType } from './schemas';
 
 /** An SRP challenge is a one-shot, short-lived thing. */
 export const HANDSHAKE_TTL_MS = 2 * 60 * 1000;
@@ -175,7 +175,21 @@ export function decodeCursor(cursor: string): { at: Date; id: string } {
   if (separator <= 0) throw new ConflictException({ error: 'invalid_cursor' });
   const at = new Date(decoded.slice(0, separator));
   const id = decoded.slice(separator + 1);
-  if (Number.isNaN(at.getTime()) || id.length === 0) {
+  /*
+   * BOTH HALVES, NOT JUST THE TIMESTAMP (M27 PR3b review).
+   *
+   * `id.length === 0` was the only check on the id, so a cursor of the shape
+   * `<valid ISO>|zzz` decoded happily and reached the repo, where the
+   * parameter binds against a `uuid` column and Postgres raises 22P02. That
+   * leaves the filter with a non-HttpException and the caller gets 500
+   * `internal_error` — an OUTAGE's face on a malformed input, and the one
+   * answer this function exists to make impossible. Every other malformed
+   * cursor already answered `invalid_cursor`; this one arm did not.
+   *
+   * `UuidSchema.safeParse` rather than a local regex, so the cursor's idea of
+   * an id and the routes' idea of an id cannot drift apart.
+   */
+  if (Number.isNaN(at.getTime()) || !UuidSchema.safeParse(id).success) {
     throw new ConflictException({ error: 'invalid_cursor' });
   }
   return { at, id };

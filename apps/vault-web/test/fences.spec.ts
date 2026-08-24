@@ -229,11 +229,23 @@ describe('a collected escrow is imported read-only (M27 PR3b)', () => {
    * `screens-emergency.spec.ts`, but is a property of what was built rather
    * than of what the platform will allow.
    *
-   * WHICH LAYER THIS PROVES: the SOURCE. The runtime property lives inside
-   * `VaultSession`'s private field and no test can reach the `CryptoKey` to
-   * read `.usages` off it without a test-only accessor — which would be a hole
-   * cut in the module whose whole claim is that it holds keys and hands out
-   * none. So this reads the call, and says so rather than implying more.
+   * WHICH LAYER THIS PROVES: the SOURCE, and only that.
+   *
+   * An earlier draft justified stopping here by asserting that the runtime
+   * property was out of reach — "no test can reach the `CryptoKey` to read
+   * `.usages` off it without a test-only accessor". THAT WAS FALSE, and the
+   * M27 PR3b review said so: `collectGrant` RETURNS the whole `GrantedVault`,
+   * `masterKey` included, so the key is reachable from an ordinary test with
+   * nothing cut into the module. A comment that justifies an omission by
+   * asserting a fact about the tree is a test nobody runs, and this one was
+   * wrong about the tree.
+   *
+   * The runtime assertion now exists — `screens-emergency.spec.ts`, "the
+   * collected key carries no writing usage AT RUNTIME" — and reads `.usages`
+   * and `.extractable` off the real key from the real ceremony. This fence is
+   * kept as the second layer because it fails on the CALL: a refactor that
+   * stopped importing the recovered bytes here, or imported them somewhere
+   * else, breaks this before any fixture notices.
    *
    * The first draft of that call passed `['decrypt']` alone and every item
    * rendered unreadable: `decryptItem` unwraps a per-item key with the master

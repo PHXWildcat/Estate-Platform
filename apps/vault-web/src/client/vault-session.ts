@@ -392,6 +392,16 @@ export class VaultSession {
    *     sealing a blob into somebody else's Zone A — the browser enforces
    *     that, not this code.
    *
+   *     THAT SENTENCE WAS NOT TRUE WHEN FIRST WRITTEN, and the M27 PR3b review
+   *     is why it is now. `unwrapKey` is granted (see below) and
+   *     `decryptItem` used to unwrap each per-item content key with
+   *     `['encrypt', 'decrypt']` — so this key DID yield keys that produce
+   *     valid owner ciphertext, and the only thing standing in the way was
+   *     that no route accepts such a blob from a grantee. An absence of
+   *     callers is not a platform guarantee. `packages/vault-crypto` now
+   *     unwraps with `['decrypt']` alone, which costs nothing there (it only
+   *     ever decrypts) and is what makes the claim above hold.
+   *
    *     `unwrapKey` IS REQUIRED and the first draft omitted it, on the
    *     reasoning that "read" meant `decrypt` alone. It does not: an item blob
    *     carries a wrapped per-item key, and `decryptItem` calls
@@ -424,6 +434,32 @@ export class VaultSession {
     }
     try {
       const masterKey = await importAesKey(recovered.data.masterKeyBytes, ['decrypt', 'unwrapKey']);
+      /*
+       * THE SESSION MUST STILL BE THE ONE THAT STARTED THIS (M27 PR3b review).
+       *
+       * `#requireOpen()` ran BEFORE two awaits — a network release and a key
+       * import — and the write below used to be unconditional. So a `lock()`
+       * landing in that window was silently undone: the OWNER's master key was
+       * installed on a session whose status is `locked`, where `touch()`
+       * returns early and therefore never arms another idle timer. The key
+       * then outlived the very control meant to drop it, until an explicit
+       * lock or the page went away. docs/03 §6zz accepted this residual on the
+       * premise that "a grantee who walks away is protected by the idle lock",
+       * which is exactly the case that failed.
+       *
+       * IDENTITY, not a boolean: comparing the object catches a lock AND a
+       * lock-then-unlock, which would otherwise graft a grant collected under
+       * one unlock onto a different one.
+       *
+       * There is no await between this check and the write, so nothing can
+       * intervene. Aborting costs a collection, not the arrangement — PR3a
+       * made release repeatable, and the screen says so. The release DID
+       * happen and the owner WAS told; that is the honest outcome to leave
+       * standing, because it is what occurred.
+       */
+      if (this.#vault !== vault) {
+        return { ok: false, code: 'VAULT_LOCKED' };
+      }
       this.#granted = {
         policyId: input.policyId,
         ownerUserId: recovered.data.ownerUserId,

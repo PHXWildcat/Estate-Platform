@@ -89,11 +89,29 @@ export async function decryptItem(
   const contentStart = HEADER_LENGTH + wrappedLength;
   if (contentStart > blob.length) throw new VaultDecryptionError();
 
+  /*
+   * `['decrypt']`, NOT `['encrypt', 'decrypt']` (M27 PR3b review).
+   *
+   * This function only ever calls `open`, so the `encrypt` usage was never
+   * used — but granting it had a consequence one zone up. M27 PR3b hands a
+   * grantee the owner's master key with `['decrypt', 'unwrapKey']` and claims
+   * that "a key the platform refuses to encrypt with cannot be talked into
+   * sealing a blob into somebody else's Zone A — the browser enforces that".
+   * The browser did NOT enforce it: `unwrapKey` is genuinely required to open
+   * an item, and this call handed back a per-item key that COULD seal. So the
+   * granted key did yield keys that produce valid owner ciphertext, and the
+   * only thing standing in the way was that no route accepts such a blob from
+   * a grantee.
+   *
+   * Narrowing here makes the platform guarantee real rather than incidental.
+   * Nothing needs the wider set: `encryptItem` GENERATES a fresh item key and
+   * never unwraps one, so this is the only unwrap of an item key in the tree.
+   */
   const itemKey = await unwrapAesKey(
     masterKey,
     blob.subarray(HEADER_LENGTH, contentStart),
     itemKeyAad(ref.userId, ref.itemId),
-    ['encrypt', 'decrypt'],
+    ['decrypt'],
   );
   return open(itemKey, blob.subarray(contentStart), itemContentAad(ref));
 }

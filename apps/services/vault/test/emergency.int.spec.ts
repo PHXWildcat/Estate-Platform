@@ -1294,6 +1294,30 @@ describeIfPg('emergency access end to end', () => {
 
       expect(await since()).toBe(1);
 
+      /*
+       * AND IT WAS ACTUALLY SENT (M27 PR3b review).
+       *
+       * Everything above counts ROWS in `emergency_access_notifications`, so a
+       * service that claimed the notice and never handed it to the notifier
+       * would pass a test named for telling the owner. `claimNotification` and
+       * the send are deliberately separate steps — that is what makes the
+       * dedupe safe under concurrency — which is exactly why the send needs
+       * its own assertion rather than being implied by the claim.
+       */
+      const notices = notifier.sent.filter((n) => n.kind === 'read_by_grantee');
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({ kind: 'read_by_grantee', ownerUserId: OWNER, policyId });
+      // …and the outcome was written back, so `delivered_at` is not left null
+      // on a notice that did go out.
+      const delivered = await admin.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM emergency_access_notifications n
+           JOIN emergency_access_policies p ON p.id = n.policy_id
+          WHERE n.policy_id = $1 AND n.kind = 'read_by_grantee'
+            AND n.created_at >= p.released_at AND n.delivered_at IS NOT NULL`,
+        [policyId],
+      );
+      expect(Number(delivered.rows[0]!.count)).toBe(1);
+
       // POSITIVE CONTROL: the audit trail is deliberately NOT deduped, so the
       // two reads above must have produced two events. Without this, an
       // emitter that had silently stopped doing anything would pass the count
@@ -1305,10 +1329,57 @@ describeIfPg('emergency access end to end', () => {
     });
 
     it('RE-ARMS the notice on the next collection', async () => {
+      const releasedAt = async (): Promise<string> =>
+        (
+          await admin.query<{ released_at: string }>(
+            `SELECT released_at::text AS released_at FROM emergency_access_policies WHERE id = $1`,
+            [policyId],
+          )
+        ).rows[0]!.released_at;
+      const totalNotices = async (): Promise<number> =>
+        Number(
+          (
+            await admin.query<{ count: string }>(
+              `SELECT count(*)::text AS count FROM emergency_access_notifications
+                WHERE policy_id = $1 AND kind = 'read_by_grantee'`,
+              [policyId],
+            )
+          ).rows[0]!.count,
+        );
+
+      const firstReleasedAt = await releasedAt();
+      const noticesBefore = await totalNotices();
+      const sentBefore = notifier.sent.filter((n) => n.kind === 'read_by_grantee').length;
+
+      /*
+       * THE CLOCK MUST MOVE, AND THAT IS THE WHOLE TEST (M27 PR3b review).
+       *
+       * The dedupe predicate is `created_at >= released_at`, both written from
+       * the injected clock. With the clock frozen, a second collection writes
+       * the SAME `released_at`, the previous collection's notice still
+       * satisfies the predicate, and the read is deduped — so the count stayed
+       * 1 and the test passed. It passed identically for a `hasNotifiedSince`
+       * that ignored its `since` argument altogether, which is to say it could
+       * not observe the re-arm it is named for. Advancing the clock is what
+       * makes the two collections distinguishable at all.
+       */
+      now = new Date(now.getTime() + 60 * 60 * 1000);
+      // A VAULT SESSION MINTED BEFORE A CLOCK JUMP IS EXPIRED AFTER IT, and
+      // its 403 `vault_locked` would stand in for this test's own refusals —
+      // the failure mode that costs an hour every time it is rediscovered.
+      // Re-minting here also repairs the reader for the tests that follow,
+      // which share this block's `granteeVault`.
+      granteeVault = (await openVaultFor(GRANTEE)).token;
       await request(server)
         .post(`/v1/vault/emergency-access/${policyId}/release`)
         .set(asGrantee())
         .expect(200);
+
+      // ANTI-VACUITY: if `released_at` did not actually move, everything below
+      // is measuring the frozen-clock case again.
+      const secondReleasedAt = await releasedAt();
+      expect(secondReleasedAt).not.toBe(firstReleasedAt);
+
       await request(server)
         .get(`/v1/vault/emergency-access/${policyId}/items`)
         .set(asReader())
@@ -1330,6 +1401,13 @@ describeIfPg('emergency access end to end', () => {
        * it; this needs none of them.
        */
       expect(Number(rows.rows[0]!.count)).toBe(1);
+      // …and it is a NEW notice, not the old one recounted. This is the pair
+      // the frozen clock made indistinguishable: one row in scope, two rows in
+      // total, and a second send actually handed to the notifier.
+      expect(await totalNotices()).toBe(noticesBefore + 1);
+      expect(notifier.sent.filter((n) => n.kind === 'read_by_grantee')).toHaveLength(
+        sentBefore + 1,
+      );
     });
 
     /**
@@ -1377,13 +1455,42 @@ describeIfPg('emergency access end to end', () => {
       );
     });
 
-    it('refuses a malformed cursor as a CLIENT error, not an outage', async () => {
-      const res = await request(server)
-        .get(`/v1/vault/emergency-access/${policyId}/items?limit=1&cursor=not-a-cursor`)
-        .set(asReader());
-      expect(res.status).toBe(409);
-      expect((res.body as { error: string }).error).toBe('invalid_cursor');
-    });
+    /*
+     * EVERY MALFORMED SHAPE, NOT JUST THE ONE THAT FAILS FIRST (PR3b review).
+     *
+     * This asserted a single cursor — one that dies on the `lastIndexOf('|')`
+     * guard, the very first check — so it said nothing about the arms after
+     * it. The one that mattered was `<valid ISO>|<not a uuid>`: it passed
+     * every check the function made, bound against a `uuid` column, and came
+     * back as 500 `internal_error`. A crafted input answering with an outage's
+     * face is the defect this test is named for, and it was reachable on a
+     * Zone A cross-user route.
+     *
+     * The table names WHICH guard each row exercises, so a future change that
+     * collapses two of them cannot leave a row silently testing the same arm
+     * twice.
+     */
+    it.each([
+      ['not base64url at all', 'not-a-cursor'],
+      ['no separator', Buffer.from('2020-01-01T00:00:00.000Z').toString('base64url')],
+      ['a separator but no id', Buffer.from('2020-01-01T00:00:00.000Z|').toString('base64url')],
+      ['an unparseable timestamp', Buffer.from(`nonsense|${'a'.repeat(8)}`).toString('base64url')],
+      [
+        'a valid timestamp and an id that is not a uuid',
+        Buffer.from('2020-01-01T00:00:00.000Z|zzz').toString('base64url'),
+      ],
+    ])(
+      'refuses a malformed cursor (%s) as a CLIENT error, not an outage',
+      async (_name, cursor) => {
+        const res = await request(server)
+          .get(
+            `/v1/vault/emergency-access/${policyId}/items?limit=1&cursor=${encodeURIComponent(cursor)}`,
+          )
+          .set(asReader());
+        expect(res.status).toBe(409);
+        expect((res.body as { error: string }).error).toBe('invalid_cursor');
+      },
+    );
 
     it('refuses a released grantee who has not opened their OWN vault', async () => {
       const res = await request(server)
@@ -1792,6 +1899,7 @@ describeIfPg('emergency access end to end', () => {
       expect(blocked.at(-1)?.detail).toEqual({
         reason: 'settlement_stage_not_reached',
         caseId: SETTLED_CASE,
+        surface: 'request',
       });
     });
 
@@ -1932,10 +2040,33 @@ describeIfPg('emergency access end to end', () => {
 
       settlementGate.permitted = false;
       settlementGate.caseId = SETTLED_CASE;
+      const before = producer.messages.length;
       await request(server)
         .get(`/v1/vault/emergency-access/${gatedPolicy}/items`)
         .set(reader)
         .expect(403, { error: 'settlement_stage_not_reached' });
+
+      /*
+       * THE TRAIL MUST SAY WHICH ACT WAS REFUSED (M27 PR3b review).
+       *
+       * All three grantee acts go through one gate and produced one
+       * indistinguishable event, so a reading screen refetching looked exactly
+       * like a grantee hammering the release route — the probing signal this
+       * action exists to surface. Asserted on the event emitted by THIS
+       * request (sliced from `before`) rather than on `.at(-1)`, so it cannot
+       * pass by reading some earlier arm's event.
+       */
+      const blockedByRead = producer.messages
+        .slice(before)
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.emergency.release_blocked');
+      expect(blockedByRead).toHaveLength(1);
+      expect(blockedByRead[0]?.detail).toEqual({
+        reason: 'settlement_stage_not_reached',
+        caseId: SETTLED_CASE,
+        surface: 'read',
+      });
+
       settlementGate.permitted = true;
       settlementGate.caseId = null;
       // …and it comes back when the gate does, so the refusal was the gate and

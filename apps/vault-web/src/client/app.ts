@@ -152,6 +152,23 @@ function messageFor(code: ApiFailure): string {
       return 'Confirm your email address in Estate first. Emergency access depends on us being able to warn you while the waiting period runs, so we will not arm it until we know we can reach you.';
     case 'NOTIFICATIONS_UNAVAILABLE':
       return 'We cannot send notifications right now, so arming emergency access would leave you unable to interrupt it. Try again shortly.';
+    /*
+     * THE GRANTEE'S SIDE OF THE OWNER'S CONTROLS (M27 PR3b review).
+     *
+     * Each of these is somebody exercising a right, reaching the person it was
+     * exercised against — so each says WHAT HAPPENED and offers the only
+     * action that exists, which for the first three is "nothing here". None
+     * says "try again": the M9 rule is that a control firing must not read as
+     * an outage, and advice that cannot succeed is the sharpest form of that
+     * defect. None of them names an item either; this reader is holding a
+     * whole vault, and the copy that used to arrive was written for a row.
+     */
+    case 'ACCESS_STOPPED':
+      return 'The owner has stopped your access to this vault. If you still need it, ask them directly — nothing here can undo it.';
+    case 'SETTLEMENT_HOLD':
+      return 'This estate is being settled, and reading the vault is on hold until that review reaches it. Nothing is lost — this is a step, not a refusal.';
+    case 'NOT_COLLECTED':
+      return 'This vault was rebuilt since you opened it, so this copy is out of date. Go back and open it again.';
     case 'UNAVAILABLE':
     case 'NETWORK':
       return 'The vault is temporarily unreachable. Try again shortly.';
@@ -880,7 +897,23 @@ async function renderEmergency(notice?: {
       ),
     );
   } else {
-    children.push(granteePicker(candidates.data, note));
+    children.push(
+      granteePicker(
+        candidates.data,
+        note,
+        // SEEDED FROM THE CURRENT ESCROW, not left blank (M27 PR3b review).
+        // `configure` replaces an escrow wholesale and clears the label on
+        // absence — deliberately, see `emergency.repo.ts` — so a form that
+        // always starts empty means every re-arm the owner does for some other
+        // reason (adding a second contact, changing the waiting period)
+        // silently discards the name. That reverts every grantee row to
+        // `Vault of <uuid>`: §6yy's defect, re-introduced by the control this
+        // PR added to close it. It also made the field's own hint false, since
+        // "leave it blank and they see the id, as before" is only true when
+        // there was no label before. Seeding is what makes both sentences true.
+        escrow.ok && escrow.data.configured ? (escrow.data.label ?? '') : '',
+      ),
+    );
   }
 
   // --- the other side: what others have named you for ---
@@ -1290,7 +1323,11 @@ function policyRow(
  * server-side can detect it, because the digest recorded alongside the share is
  * derived from whatever key the client was handed.
  */
-function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElement): HTMLElement {
+function granteePicker(
+  candidates: readonly GranteeCandidate[],
+  note: HTMLElement,
+  currentLabel: string,
+): HTMLElement {
   const confirmed = new Map<string, GranteeKeyOffer>();
   const list = el('ul', { class: 'items' });
   /*
@@ -1310,8 +1347,8 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
   const vaultLabel = field({
     id: 'escrow-label',
     label: 'What to call this vault (optional)',
-    value: '',
-    hint: 'The people you name see this instead of your account id. Leave it blank and they see the id, as before.',
+    value: currentLabel,
+    hint: 'The people you name see this instead of your account id. Clear it and they see the id instead.',
   });
   const waiting = field({
     id: 'waiting-hours',
@@ -1355,7 +1392,22 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
             note,
             status(
               offer.code === 'NOT_FOUND'
-                ? `${candidate.name} has not set up a vault yet, so there is no key to seal a share to.`
+                ? // WHAT THE 404 ACTUALLY ESTABLISHES (M27 PR3b browser drive).
+                  //
+                  // This said "has not set up a vault yet", which the refusal
+                  // does not say and which was FALSE in the case the drive hit:
+                  // the contact had a vault and had simply never pressed "Let
+                  // others name me", so `public_key` was null. The owner was
+                  // told to ask for something already done, and neither of them
+                  // could learn the real step from this screen.
+                  //
+                  // `granteePublicKey` answers ONE uniform 404 for "no keyset"
+                  // and "keyset with no published key" alike — correctly, since
+                  // whether a named contact has a vault at all is not something
+                  // an owner should be able to probe. So the copy must be true
+                  // of both states and prescribe the same action for both,
+                  // which also keeps them indistinguishable here.
+                  `${candidate.name} has not published a key yet, so there is nothing to seal a share to. They need to open their vault, go to Emergency access and choose “Let others name me”.`
                 : messageFor(offer.code),
               'warn',
             ),
@@ -1607,7 +1659,26 @@ async function renderGrantedItems(): Promise<void> {
     replaceChildren(
       main(),
       el('h1', {}, [ownerName(grant)]),
-      status(messageFor(listed.code), 'error'),
+      /*
+       * ONE LOCAL OVERRIDE, AND ONLY ONE (M27 PR3b review).
+       *
+       * The other refusals this route answers are named in `messageFor`,
+       * because they describe the ARRANGEMENT and read the same wherever they
+       * land. `NOT_FOUND` is the exception: it is genuinely surface-dependent.
+       * The service answers ONE uniform 404 for "no such policy" and "not
+       * yours" alike — deliberately, so a stranger cannot probe — and on the
+       * item screens that 404 means an item, which is what `messageFor` says.
+       * Here it means the arrangement itself is gone, and "That item is no
+       * longer there" is a false sentence about a screen with no item on it.
+       * Overriding one code beats making `messageFor`'s item copy vague for
+       * every caller that is genuinely holding an item.
+       */
+      status(
+        listed.code === 'NOT_FOUND'
+          ? 'This arrangement is no longer there. The owner may have rebuilt or removed it.'
+          : messageFor(listed.code),
+        'error',
+      ),
       el('p', {}, [quietButton('Back', () => void renderEmergency())]),
     );
     return;

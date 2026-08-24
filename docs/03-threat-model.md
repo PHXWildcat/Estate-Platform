@@ -6430,6 +6430,19 @@ grant of the rest (M27 PR1b). The recovered key is imported NON-EXTRACTABLE with
 itself refuses to seal anything into the owner's vault, and the reading screens
 render no control that could try.
 
+**That browser guarantee did not hold as first shipped, and the PR3b review is
+why it does.** `unwrapKey` is genuinely required to open an item, and
+`decryptItem` unwrapped each per-item content key with `['encrypt', 'decrypt']`
+— so the granted key DID yield keys that produce valid owner ciphertext, and the
+only thing preventing a forged blob was that no route accepts one from a
+grantee. An absence of callers is not a platform guarantee, and a future
+grantee-facing write path reviewed against the old sentence would have been
+reviewed against something false. `packages/vault-crypto` now unwraps with
+`['decrypt']` alone — it never encrypted with that key anyway, and `encryptItem`
+generates a fresh item key rather than unwrapping one, so nothing else wanted
+the wider set. `packages/vault-crypto/test/items.spec.ts` observes the usages
+`decryptItem` actually requests, so the claim is checked rather than asserted.
+
 ### Residuals
 
 - **[ACCEPTED]** *The Cedar layer on this route cannot deny, today.* Deleting
@@ -6482,3 +6495,40 @@ render no control that could try.
   no client-storage design, which is also why §6uu's blob-version item is still
   open. A grantee who walks away is protected by the idle lock and by nothing
   else, which is the same protection their own vault has.
+
+  **THAT LAST SENTENCE WAS FALSE AS FIRST WRITTEN**, and the PR3b review found
+  it. `collectGrant` checked the session before its two awaits and wrote the
+  recovered key after them unconditionally, so a lock landing in that window was
+  silently undone: the key was installed on a session already marked `locked`,
+  where `touch()` returns early and never arms another idle timer. The key then
+  outlived the control this residual leans on. `collectGrant` now re-checks that
+  `#vault` is the same object it started with — identity, so a lock AND a
+  lock-then-unlock are both caught — and refuses with `vault_locked` otherwise.
+  Aborting costs a collection and not the arrangement, because PR3a made release
+  repeatable. The residual stands as written now that the mechanism it names
+  actually holds.
+
+- **[OWNER: M39]** *The vault origin does not carry the step-up propagation
+  budget the other two origins carry, so a user who completes step-up quickly is
+  told they did not.* Found by driving the real app for this PR and pre-existing
+  since M13, which is why it is re-owned rather than fixed here.
+  `HttpSessionVerifier` positive-caches a session for `DEFAULT_CACHE_TTL_MS`, so
+  for up to one TTL after a successful `POST /v1/auth/stepup` a peer service
+  still answers from a cached un-elevated session. `apps/web/src/lib/step-up.ts`
+  documents exactly this and exports `STEP_UP_PROPAGATION_BUDGET_MS`;
+  `apps/operator-web` carries the same shape, each with a test asserting parity
+  against `verifier.ts`. `apps/vault-web` retries ONCE and then reports "That
+  action needs a fresh identity check, and it was not completed" — a sentence
+  that is false about what happened, on the origin with the MOST step-up-gated
+  actions (vault open, keyset create, add item, arm emergency access, reset).
+  MEASURED against the running stack rather than argued: first gated call 403,
+  step-up 200, identity immediately reporting `mfaLevel: stepup`, the single
+  retry 403, fifteen consecutive 403s, elevation visible at T+30.1s. The
+  harness's own first draft is the positive control — it waited for an unspent
+  TOTP window BETWEEN the probe and the step-up, putting 30s inside the measured
+  interval, and the identical retry succeeded. So the failure gets LIKELIER the
+  faster the user types. M39 rather than M27 because the fix is the third copy
+  of a shape two other origins already have, and choosing between "a third copy"
+  and "one shared client module" is a client-architecture decision that does not
+  belong inside a Zone A read; it is vault-local and unblocked, which is what
+  that row collects.

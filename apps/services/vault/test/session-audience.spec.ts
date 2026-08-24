@@ -146,9 +146,14 @@ describe('vault route audiences match the declaration', () => {
     // last capability that should be reachable from a surface with that much
     // page contact.
     expect(emergency.length).toBe(12);
-    // 29, not the 22 the decision log cited from M15 — `ownRecoveryKey` arrived
-    // in PR3 and the remembered number never caught up. Asserted so the next
-    // person counts rather than remembers.
+    // THE TOTAL IS ASSERTED, NOT RESTATED. The decision log once cited 22 here
+    // from M15 and `ownRecoveryKey` arrived in PR3 without the remembered
+    // number catching up; this comment then said 29 beside an assertion of 28,
+    // which is the same defect one layer up and is what the PR3b review found.
+    // The literal below is the only copy — a number in prose beside a
+    // mechanism that derives one is a copy that rots, so the next person
+    // counts rather than remembers, and the two halves above are what make a
+    // miscount attributable rather than just a changed total.
     expect(vault.length + emergency.length).toBe(28);
   });
 

@@ -16,6 +16,68 @@ describe('vault item envelopes', () => {
     expect(Buffer.from(await decryptItem(masterKey, REF, blob))).toEqual(Buffer.from(SECRET));
   });
 
+  /*
+   * A READ-ONLY MASTER KEY MUST NOT YIELD A WRITING ITEM KEY (M27 PR3b review).
+   *
+   * M27 PR3b hands a grantee the owner's master key as
+   * `['decrypt', 'unwrapKey']` and rests on the claim that the browser will not
+   * let such a key seal anything into the owner's vault. `unwrapKey` is
+   * genuinely required to open an item, so the claim only holds if the key that
+   * comes BACK out of the unwrap cannot encrypt either — and it could, because
+   * `decryptItem` asked for `['encrypt', 'decrypt']` while only ever
+   * decrypting. This is the test that makes the claim checkable instead of
+   * asserted, driven through the real `decryptItem` rather than by inspecting
+   * the source.
+   */
+  it('a read-only master key cannot produce an item key that seals', async () => {
+    const ownerKey = await generateAesKey(['encrypt', 'decrypt', 'wrapKey', 'unwrapKey'], true);
+    const blob = await encryptItem(ownerKey, REF, SECRET);
+
+    // Exactly what `VaultSession.collectGrant` imports for a grantee: the
+    // owner's own key bytes, re-imported read-only and non-extractable.
+    const grantedKey = await crypto.subtle.importKey(
+      'raw',
+      await crypto.subtle.exportKey('raw', ownerKey),
+      'AES-GCM',
+      false,
+      ['decrypt', 'unwrapKey'],
+    );
+
+    // WHAT DECRYPTITEM ASKS FOR, observed rather than re-derived. Wrapping
+    // `unwrapKey` is the only way to see the usages without reimplementing the
+    // envelope format here, and a reimplementation is a second copy that can
+    // agree with itself while both are wrong.
+    const realUnwrap = crypto.subtle.unwrapKey.bind(crypto.subtle);
+    const seen: KeyUsage[][] = [];
+    crypto.subtle.unwrapKey = async (
+      format: 'raw',
+      wrapped: BufferSource,
+      unwrapping: CryptoKey,
+      unwrapAlgo: AlgorithmIdentifier,
+      unwrappedAlgo: AlgorithmIdentifier,
+      ext: boolean,
+      usages: KeyUsage[],
+    ) => {
+      seen.push([...usages]);
+      return realUnwrap(format, wrapped, unwrapping, unwrapAlgo, unwrappedAlgo, ext, usages);
+    };
+
+    try {
+      // THE PAIR THAT MATTERS. Narrowing the usage must not cost the grantee
+      // the capability they actually need, so the read still has to work…
+      expect(Buffer.from(await decryptItem(grantedKey, REF, blob))).toEqual(Buffer.from(SECRET));
+    } finally {
+      crypto.subtle.unwrapKey = realUnwrap;
+    }
+
+    // ANTI-VACUITY: the wrapper really was called, or the absence below is free.
+    expect(seen).toHaveLength(1);
+    // …and the item key it produced cannot seal anything back into the vault,
+    // which is what makes "the browser enforces it" true rather than asserted.
+    expect(seen[0]).toEqual(['decrypt']);
+    expect(seen[0]).not.toContain('encrypt');
+  });
+
   it('never contains the plaintext', async () => {
     const masterKey = await generateAesKey();
     const blob = await encryptItem(masterKey, REF, SECRET);
