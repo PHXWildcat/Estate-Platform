@@ -912,6 +912,12 @@ async function renderEmergency(notice?: {
         // "leave it blank and they see the id, as before" is only true when
         // there was no label before. Seeding is what makes both sentences true.
         escrow.ok && escrow.data.configured ? (escrow.data.label ?? '') : '',
+        // Same seeding, same reason, one field down — see `granteePicker`.
+        // `configure` sends ONE waiting period for the whole escrow, so any
+        // policy answers for all of them; 48 is the never-armed default.
+        escrow.ok && escrow.data.configured && escrow.data.policies.length > 0
+          ? String(escrow.data.policies[0]?.waitingPeriodHours ?? 48)
+          : '48',
       ),
     );
   }
@@ -1327,6 +1333,7 @@ function granteePicker(
   candidates: readonly GranteeCandidate[],
   note: HTMLElement,
   currentLabel: string,
+  currentWaitingHours: string,
 ): HTMLElement {
   const confirmed = new Map<string, GranteeKeyOffer>();
   const list = el('ul', { class: 'items' });
@@ -1354,11 +1361,33 @@ function granteePicker(
     value: currentLabel,
     hint: 'The people you name see this instead of your account id. Clear it and they see the id instead.',
   });
+  /*
+   * SEEDED TOO, AND FOR A SHARPER REASON THAN THE LABEL (M27 PR3b review 2).
+   *
+   * This sat at a hardcoded '48' since M15 PR3 while the field above it was
+   * being fixed to seed from the current escrow — the same defect, in the
+   * adjacent line of the same form, left behind by the change that cites "a
+   * rule applied to one member of a category is a rule half-applied". Found by
+   * driving the real app: arming at 24h and then re-arming to re-confirm a key
+   * wrote 48.
+   *
+   * The direction that matters is NOT the one observed. 24 -> 48 lengthens the
+   * window and reads as harmless. But `WAITING_PERIOD_HOURS` admits 24..8760
+   * and nothing preserves a stored value, so an owner who deliberately chose 72
+   * hours — or a year — has the docs/03 §5.2 protective window silently
+   * SHORTENED to 48 by a re-arm that had nothing to do with it. That is a
+   * control weakened as a side effect of an unrelated control, which is the
+   * failure this whole form is supposed to make impossible.
+   *
+   * All of an escrow's policies share one value because `configure` sends one,
+   * so the first policy is the escrow's answer; 48 stays the default for a
+   * vault that has never been armed.
+   */
   const waiting = field({
     id: 'waiting-hours',
     label: 'Waiting period (hours)',
     type: 'number',
-    value: '48',
+    value: currentWaitingHours,
     hint: 'At least 24. This is how long you have to stop a request before it succeeds.',
   });
   const threshold = field({

@@ -638,6 +638,7 @@ describe('the emergency-access screens', () => {
   const armWith = async (
     service: ReturnType<typeof installService>,
     label?: string,
+    waitingHours?: string,
   ): Promise<void> => {
     /*
      * ANTI-VACUITY, AND THIS HELPER NEEDED IT (M27 PR3b review).
@@ -657,6 +658,7 @@ describe('the emergency-access screens', () => {
     clickText('Confirm key');
     await waitForText('key confirmed');
     if (label !== undefined) byLabel('What to call this vault').value = label;
+    if (waitingHours !== undefined) byLabel('Waiting period').value = waitingHours;
     clickText('Arm emergency access');
     await waitForText(/contact\(s\) named/i);
     for (let i = 0; configures(service).length === before && i < 80; i++) {
@@ -718,6 +720,58 @@ describe('the emergency-access screens', () => {
 
     expect(JSON.parse(lastConfigureBody(service))).not.toHaveProperty('label');
     await waitForText('They see your account id.');
+  });
+
+  /*
+   * THE WAITING PERIOD IS THE LABEL'S DEFECT ONE LINE DOWN (M27 PR3b review 2).
+   *
+   * `value: '48'` was hardcoded from M15 PR3 and stayed hardcoded through the
+   * review that seeded the field directly above it. Found by driving the real
+   * app: armed at 24, re-armed to re-confirm a key, and the row came back 48.
+   *
+   * The observed direction is the harmless one. These tests pin the OTHER one,
+   * because that is the direction that costs something: `WAITING_PERIOD_HOURS`
+   * admits 24..8760, so an owner who chose 72 hours has the docs/03 §5.2
+   * window SHORTENED to 48 by a re-arm about something else entirely — a
+   * protective control weakened as a side effect of an unrelated one.
+   */
+  it('sends the waiting period the owner typed', async () => {
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, undefined, '72');
+
+    // Per GRANTEE, not top level — `configure` sends one value and the client
+    // stamps it onto each sealed share.
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      grantees: [expect.objectContaining({ waitingPeriodHours: 72 })],
+    });
+  });
+
+  it('KEEPS a LONGER waiting period when the owner re-arms without touching it', async () => {
+    // The arm that was broken, driven in the direction that loses protection:
+    // 72 is above the hardcoded default, so a form that always starts at 48
+    // shortens the owner's window by a day without saying so.
+    const service = installService();
+    await openWithCandidate(service);
+    await armWith(service, undefined, '72');
+
+    // Re-arm in place, touching neither the label nor the waiting period.
+    await armWith(service);
+
+    expect(byLabel('Waiting period').value).toBe('72');
+    expect(JSON.parse(lastConfigureBody(service))).toMatchObject({
+      grantees: [expect.objectContaining({ waitingPeriodHours: 72 })],
+    });
+  });
+
+  it('offers 48 to a vault that has never been armed', async () => {
+    // The discriminating arm: without it the two tests above pass for a field
+    // that simply echoes whatever it was last given, and a never-armed vault
+    // would render an empty box rather than a default.
+    const service = installService();
+    await openWithCandidate(service);
+
+    expect(byLabel('Waiting period').value).toBe('48');
   });
 
   it('names the step a candidate is actually missing, not one it cannot know about', async () => {
