@@ -275,6 +275,46 @@ describe('the vault’s actions', () => {
     expect(atob(payload.blob ?? '')).not.toContain('renamed');
   });
 
+  /**
+   * A STALE EDIT-SAVE MUST NOT BE TOLD TO RELOAD A SCREEN IT IS NOT ON.
+   *
+   * `version_conflict` is NOT restore-only: `updateItem` and
+   * `restoreItemVersion` throw it for the identical `locked.revision !== ifMatch`
+   * test. M27 PR2 gave the token history-specific copy and shipped it, so an
+   * owner whose item was changed in another tab — or by the extension, which is
+   * admitted to `updateItem` — was told on the EDIT FORM that their item
+   * "changed while you were looking at its history" and to "reload the history".
+   * A false sentence pointing at a control that is not on the page: the exact
+   * wrong-remedy class that split was written to fix, half-applied.
+   *
+   * Found by the PR's own adversarial review, and neither refuter could refute
+   * it. The fix is `apps/web/src/lib/copy.ts`'s M19 precedent — surface-neutral
+   * copy for one refusal that more than one surface can raise.
+   */
+  it('answers a stale edit-save with copy that is TRUE on the edit form', async () => {
+    const service = installService();
+    await openVaultWithItem();
+
+    clickText('Bank — joint');
+    await waitForText('Edit item');
+    const id = [...service.items.keys()][0] as string;
+    service.fail.set(`PUT /api/vault/items/${id}`, {
+      status: 409,
+      error: 'version_conflict',
+    });
+    byLabel('Title').value = 'Bank — renamed';
+    submitForm();
+
+    await waitForText('This changed since you opened it');
+    const shown = document.body.textContent ?? '';
+    // The sentence must not name a screen this one is not.
+    expect(shown).not.toContain('history');
+    expect(shown).not.toContain('History');
+    // ANTI-VACUITY: we really are on the edit form, and the save really failed.
+    expect(shown).toContain('Edit item');
+    expect(service.calls.some((c) => c.method === 'PUT' && c.path.includes(id))).toBe(true);
+  });
+
   it('deletes an item, and says what to do when step-up is required', async () => {
     const service = installService();
     await openVaultWithItem();

@@ -6019,12 +6019,17 @@ drives the interleaving that used to be fatal.
   than by a filter on the reader, which is the direction this repo prefers, and
   the 404 pairing is pinned by test. A filter would additionally have to decide
   what to tell the owner about their own history, which is a screen question
-  PR2 owns. **ANSWERED BY PR2 (§6xx): it tells them nothing, because it cannot
-  reach them.** A reset retires every item, so a reset-killed row is not on the
-  vault list and has no History button; the only screen that names it at all is
-  Deleted items, where "Bring it back" is offered and the server's
-  `ITEM_UNRESTORABLE` is the sentence the owner reads. The versions reader
-  keeps no filter and gains no caller.
+  PR2 owns. **ANSWERED BY PR2 (§6xx): it tells them nothing, because no screen
+  can reach the row at all.** A reset retires every item, so a reset-killed row
+  is off the vault list and has no History button; and it is off Deleted items
+  too, because `RESTORABLE_REASONS` is derived from `REASON_DISPOSITION`, which
+  classes `vault_reset` as unrestorable. The row is on NO surface. That is a
+  stronger answer than the one this bullet first gave — an earlier draft said
+  Deleted items offers it with `ITEM_UNRESTORABLE` as the sentence, which is
+  false about the steady state. `ITEM_UNRESTORABLE` remains reachable, but only
+  through a RACE: a row listed while it still said `user_delete`, undeleted
+  after a reset relabelled it. The client handles that token and the screens
+  spec pins it. The versions reader keeps no filter and gains no caller.
 - **[OWNER: M41]** *The versions reader returns every prior ciphertext, and a
   crypto-shred does not reach further than it did.* Restoring is bounded by the
   keyset, so a shredded vault's images are dead — but a version list is a
@@ -6087,12 +6092,20 @@ has to maintain.
 **THE HISTORY CURSOR IS OPAQUE AND IS HANDED BACK VERBATIM.** It is never
 parsed, never rebuilt from a row, and never interpolated into the path — the
 query is APPENDED so the route template stays legible to the consumer fence.
-That fence was itself the finding: it matched a URL template against the
-*declaring* file's name, so a route whose only caller lives on this origin read
-as unconsumed, and a stale exemption constant had been papering over four routes.
-`fileMatchesPath` replaces it, `EXEMPT_RESTORE_SURFACE` is deleted, and the
-measured proof is that with the consumer written the fence names all four routes
-where the old one named three and missed the fourth.
+That fence was itself the finding, though not in the way this paragraph first
+claimed. Its STALE-EXEMPTION SWEEP — the half that asks whether an exemption has
+outlived its reason — compared each consumer's RAW template against the route,
+while the main consumer check already applied the edge rewrites through
+`fileMatchesPath`. So a caller on this origin, which addresses `/api/vault/…` and
+reaches `/v1/vault/…` only through the rewrite, was invisible to the sweep, and
+`EXEMPT_RESTORE_SURFACE` would have sat green forever after its stated deadline
+passed. The sweep now calls `fileMatchesPath` too, and the exemption is DELETED
+rather than emptied. MEASURED, with the consumer written: the old sweep named
+ZERO of the four routes and the new one names four. (An earlier draft of this
+sentence said "three and missed the fourth". That is a real measurement of a
+DIFFERENT defect — my own `${query}` interpolation, which collapsed the last
+segment to `versions:p` — and attaching it here was a second copy of a number
+landing beside the wrong mechanism, which is the habit this repo keeps closing.)
 
 **AND THE UNLOCK ITSELF NOW ELEVATES, WHICH IT HAD NEVER DONE.** Driving the
 stack for this PR found the last gated action on this origin that could not ask

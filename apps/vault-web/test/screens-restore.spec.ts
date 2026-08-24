@@ -377,6 +377,16 @@ describe('the restore surface (M27 PR2)', () => {
       expect(service.retired.has(live.id)).toBe(false);
     });
 
+    /**
+     * THE RACE ARM, and this test says so because the steady state cannot reach
+     * it. `REASON_DISPOSITION` classes `vault_reset` as unrestorable, so
+     * `RESTORABLE_REASONS` is `['user_delete']` and a reset-killed row is on NO
+     * screen — not the vault list, not this one. `item_unrestorable` arrives
+     * only when a reset lands BETWEEN the list read and the undelete: the row
+     * was listed while it still said `user_delete`. That is the sequence forced
+     * here, and it is why the client must handle a token its own list can never
+     * produce.
+     */
     it('says a reset-killed item can NEVER come back, and does not say "try again"', async () => {
       await openVaultWithItem();
       const live = [...service.items.values()][0] as Row;
@@ -467,8 +477,15 @@ describe('the restore surface (M27 PR2)', () => {
       // strings cannot agree their way to a pass.
       expect(asZulu).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
       expect(asOffset).toBe(asZulu);
-      // And it is NOT the ISO text: the trim would have produced this.
-      expect(asZulu).not.toContain('2026-08-24 00:00');
+      // AND NOTHING MORE. A line asserting the rendering is NOT '2026-08-24
+      // 00:00' was here and it was itself the mistake these comments warn
+      // about: under TZ=UTC that IS the correct local rendering, so the
+      // assertion failed on CI while passing in Phoenix. It was found by this
+      // PR's own review after I proved the MUTATION red under TZ=UTC and never
+      // ran the fix green in the same zone — the positive control CLAUDE.md
+      // asks for, skipped in exactly the arm that mattered. The equivalence
+      // above already discriminates: the trim renders the two spellings
+      // differently in EVERY zone, UTC included.
     });
 
     /**
@@ -592,7 +609,10 @@ describe('the restore surface (M27 PR2)', () => {
         error: 'version_conflict',
       });
       clickText('Put this version back');
-      await waitForText('changed while you were looking at its history');
+      await waitForText('This changed since you opened it');
+      // SURFACE-NEUTRAL on purpose: `version_conflict` is thrown by the item
+      // EDIT save too, so a sentence naming this screen would be false there.
+      expect(bodyText()).not.toContain('history and try again');
       // …and the refusal that can never be retried must not appear here.
       expect(bodyText()).not.toContain('cannot be brought back');
     });

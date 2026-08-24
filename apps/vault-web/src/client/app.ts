@@ -121,7 +121,17 @@ function messageFor(code: ApiFailure): string {
     // the first, nothing fixes the second, and the third leaves the reader
     // exactly where they are.
     case 'VERSION_CONFLICT':
-      return 'This item changed while you were looking at its history. Reload the history and try again.';
+      // SURFACE-NEUTRAL, on `apps/web/src/lib/copy.ts`'s M19 precedent and for
+      // exactly its reason: one stale-If-Match refusal covers more than one
+      // surface and the remedy is identical. `version_conflict` is thrown by
+      // `updateItem` as well as `restoreItemVersion` — the SAME
+      // `locked.revision !== ifMatch` test in both — so the first draft of this
+      // sentence, which said "while you were looking at its history" and told
+      // the reader to "reload the history", was false on the edit form and
+      // pointed at a control that is not on it. Naming a screen in a message
+      // that more than one screen can raise is the wrong-remedy defect this
+      // whole split exists to fix, half-applied.
+      return 'This changed since you opened it. Reload to see the latest, then try again.';
     case 'ITEM_UNRESTORABLE':
       // NOT "try again". The keyset that opened this blob was destroyed when
       // the vault was reset, so no retry can ever succeed and saying otherwise
@@ -347,7 +357,12 @@ function renderSecretKey(secretKey: string, entropy: Uint8Array): void {
     downloadEmergencyKit({
       secretKey,
       accountLabel: account.userId,
-      issuedAt: new Date().toISOString().slice(0, 10),
+      // THE OTHER MEMBER OF THE CATEGORY, found by this PR's own review sweep.
+      // `toISOString().slice(0, 10)` is the UTC date, so a kit downloaded at
+      // 17:00 on a Sunday in Phoenix is stamped with Monday — the same defect
+      // `captureTime` had, on a document whose whole purpose is being read
+      // months later by someone reconstructing what happened when.
+      issuedAt: localDate(new Date()),
     });
   });
 
@@ -392,6 +407,14 @@ async function renderUnlock(): Promise<void> {
     label: 'Secret Key',
     hint: 'Looks like ES1-… — from your Emergency Kit.',
   });
+  // OUTSIDE the form, for the reason `renderSetup` states twenty lines above its
+  // own `note` and this screen did not copy: a refused action renders its
+  // step-up prompt — itself a `<form>` — into this node, and a form nested in a
+  // form is invalid HTML. In a hand-built DOM the inner form EXISTS rather than
+  // being dropped by a parser, so its submit event BUBBLES to this form's own
+  // handler and confirming the code starts a second unlock beside the retry
+  // `withStepUp` is already making. Measured at three `srp/start` POSTs where
+  // the count asserts two.
   const note = el('div');
   const submit = el('button', { class: 'button', type: 'submit' }, ['Unlock']);
 
@@ -399,7 +422,7 @@ async function renderUnlock(): Promise<void> {
   if (!remembered) {
     rows.push(secret.row);
   }
-  const form = el('form', {}, [...rows, el('p', {}, [submit]), note]);
+  const form = el('form', {}, [...rows, el('p', {}, [submit])]);
 
   onSubmit(form, () => {
     void (async () => {
@@ -462,6 +485,7 @@ async function renderUnlock(): Promise<void> {
       ? el('p', { class: 'status' }, ['This device remembers your Secret Key.'])
       : el('p', { class: 'status' }, ['This device does not have your Secret Key saved.']),
     form,
+    note,
     el('p', {}, [linkButton('Vault settings', () => renderSettings())]),
   );
 }
@@ -542,14 +566,16 @@ async function renderVault(): Promise<void> {
  * only one of them looks like a fault in the owner's own vault. Callers append
  * the separator only when there is something to separate.
  */
+function localDate(at: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
 function captureTime(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return '';
   const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` +
-    ` ${pad(at.getHours())}:${pad(at.getMinutes())}`
-  );
+  return `${localDate(at)} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
 }
 
 /** The label a row shows, for an item or a version that may not have opened. */

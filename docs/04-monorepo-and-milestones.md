@@ -8829,13 +8829,14 @@ paired CHECK and no writer is a broken table.
 - **PR2 — the owner's restore surface** on the vault origin. SHIPPED, and it
   closes §6j: Deleted items and one item's History, both reached from the vault
   list, calling all four PR1b routes with the owner's own vault session.
-  Widened during the PR by three findings. **The consumer fence was
-  REWRITE-BLIND** — it matched a URL template against the name of the file
-  DECLARING the route, so a caller on the isolated origin (whose paths are
-  `/api/vault/…` and are rewritten at the edge) could never be seen; with the
-  screen written, the old matcher named three of the four routes and missed
-  `/versions` entirely. `fileMatchesPath` replaces it and the exemption is
-  gone. **Three refusals shared one remedy** — 403, 404 and 409 all reached the
+  Widened during the PR by three findings. **The consumer fence's STALE-EXEMPTION
+  SWEEP was REWRITE-BLIND** — it compared each consumer's RAW template against
+  the route while the main check already applied the edge rewrites, so a caller
+  on the isolated origin (whose paths are `/api/vault/…` and reach `/v1/…` only
+  through the rewrite) could never be seen, and `EXEMPT_RESTORE_SURFACE` would
+  have stayed green past its own stated deadline. Measured with the screen
+  written: the old sweep named ZERO of the four routes, the new one names four.
+  The sweep now calls `fileMatchesPath` and the exemption is DELETED. **Three refusals shared one remedy** — 403, 404 and 409 all reached the
   reader as "reload and try again", including the one that can never succeed on
   retry, so `VERSION_CONFLICT`, `ITEM_UNRESTORABLE`, `VERSION_NOT_FOUND` and
   `FORBIDDEN` are now distinct tokens with a mapping table and four positive
@@ -8844,9 +8845,12 @@ paired CHECK and no writer is a broken table.
   label and its filter were removed rather than shipped as a predicate guarding
   an unreachable case. History PAGES (the service's page is 50, its ceiling
   100) and the cursor is handed back verbatim. The live drive then found two
-  more, neither of them PR2's own code. **Capture times rendered in UTC** — an
-  item edited at 17:00 on a Sunday reported itself changed on Monday, and the
-  residual excusing it named a dependency fence that never applied to `Date`.
+  more. **Capture times rendered in UTC** — PR2's OWN new code: an item edited at
+  17:00 on a Sunday reported itself changed on Monday, and the residual excusing
+  it named a dependency fence that never applied to `Date`. The PR's adversarial
+  review then found the same defect in the one other place vault-web stamps a
+  date — the Emergency Kit's `Issued:` line — which is the category sweep the
+  first fix skipped.
   **And the UNLOCK could not ask for a factor**: `srp/start` is step-up gated
   and `renderUnlock` called `unlock` bare, so a five-minute-old vault screen
   refused with a remedy the page did not offer — unchanged since M15 PR2, fixed

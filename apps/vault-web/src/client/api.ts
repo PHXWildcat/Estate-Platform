@@ -39,8 +39,12 @@ export type ApiFailure =
   //   · `item_unrestorable` means a reset destroyed the key that opened this
   //     blob. It rendered as CONFLICT's "Reload and try again", which is advice
   //     that can never succeed. A control firing wearing an outage's face.
-  //   · `version_conflict` is the one restore failure where reloading DOES
-  //     work, so it must not share copy with the one where nothing does.
+  //   · `version_conflict` is the one of the three where reloading DOES work,
+  //     so it must not share copy with the one where nothing does. It is ALSO
+  //     the one that is not restore-only: `updateItem` throws it for the same
+  //     stale `If-Match`, so its message stays surface-neutral. The first draft
+  //     named the history screen and was therefore false on the edit form —
+  //     this list's own defect, committed while writing the list.
   //   · `version_not_found` rendered as NOT_FOUND's "That item is no longer
   //     there" on a screen where the item is plainly present — a false
   //     sentence, and the wrong thing to do about it.
@@ -77,6 +81,11 @@ function failureFor(status: number, token: string | null): ApiFailure {
     return 'NOT_FOUND';
   }
   if (status === 409) {
+    // NOT restore-only, and the copy must not pretend otherwise: `updateItem`
+    // and `restoreItemVersion` both throw this for the same stale `If-Match`.
+    // It stays a DISTINCT code from `CONFLICT` — which covers `item_exists`,
+    // `keyset_exists` and 412, genuinely different conditions — but its message
+    // is surface-neutral. See `messageFor` and apps/web's M19 precedent.
     if (token === 'version_conflict') return 'VERSION_CONFLICT';
     if (token === 'item_unrestorable') return 'ITEM_UNRESTORABLE';
     // `invalid_cursor` lands here deliberately. It can only fire if this client
