@@ -430,6 +430,16 @@ function templatesReachPath(
             return true;
           }
         }
+        /*
+         * …AND NOTHING ELSE RUNS FOR A TREE ROW. The segment-wise arm below
+         * would let a consumer's `:p` line up with a PARAMETER inside a tree
+         * row's `from` — but the edge matches a tree with
+         * `pathname.startsWith(r.prefix)` against a REAL request path, where a
+         * `:param` in the prefix matches nothing at all. Applying it here would
+         * model a call the edge cannot make, which is the same over-match this
+         * gate exists to close. That a tree row's `from` is a literal prefix is
+         * asserted rather than assumed — see the `tree` flag test below.
+         */
         continue;
       }
       /*
@@ -985,6 +995,43 @@ const ROUTE_CONSUMERS: Readonly<Record<string, RouteDecl>> = {
   'vault POST /v1/vault/emergency-access/:policyId/release': consumed(`${VW}/client/emergency.ts`),
 };
 
+/**
+ * The stale-exemption sweep's rule, as a function of its two inputs, so the
+ * tests below can run the REAL rule over a corpus and a registry they control.
+ *
+ * IT RESOLVES THE EDGE REWRITES (M27 follow-up review). Comparing an `/api/…`
+ * template against a `/v1/…` route path with `templateMatchesPath` alone means
+ * the FIRST SEGMENT never agrees, so the sweep was blind to every consumer that
+ * reaches a route THROUGH AN EDGE — which, on the vault and operator origins, is
+ * every consumer there is. `EXEMPT_RESTORE_SURFACE` is the case in flight: PR1b's
+ * four routes are exempt pending the screen that calls them, and that screen
+ * addresses them as `/api/vault/items/…`, which the old rule could not see. The
+ * half of this fence that CERTIFIES a consumer has resolved rewrites since M19
+ * PR4; only the half that RETIRES an exemption did not, and one behaviour with
+ * two spellings is a behaviour that disagrees with itself.
+ *
+ * `enumerated: false` — the narrow matcher, unchanged. A wildcard reaching a
+ * literal here would accuse an exemption of being stale because some unrelated
+ * call site happens to share its arity, which is the exact inertness the M19 PR4
+ * review removed.
+ */
+function staleExemptions(
+  templatesByFile: ReadonlyMap<string, readonly string[]>,
+  decls: Readonly<Record<string, RouteDecl>>,
+): string[] {
+  const stale: string[] = [];
+  for (const [key, decl] of Object.entries(decls)) {
+    if (!('exempt' in decl)) continue;
+    const path = key.slice(key.lastIndexOf(' ') + 1);
+    for (const [file, templates] of templatesByFile) {
+      if (templatesReachPath(templates, path, false, EDGE_REWRITES)) {
+        stale.push(`${key} is addressed by ${file} — flip it to consumed()`);
+      }
+    }
+  }
+  return stale;
+}
+
 // ---------------------------------------------------------------------------
 // The fence.
 // ---------------------------------------------------------------------------
@@ -1159,21 +1206,11 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     ];
     const templatesByFile = new Map(corpus.map((f) => [f, extractTemplates(f)]));
 
-    const stale: string[] = [];
-    for (const [key, decl] of Object.entries(ROUTE_CONSUMERS)) {
-      if (!('exempt' in decl)) continue;
-      const path = key.slice(key.lastIndexOf(' ') + 1);
-      for (const [file, templates] of templatesByFile) {
-        // `enumerated: false` — the narrow matcher. A wildcard reaching a
-        // literal here would accuse an exemption of being stale because some
-        // unrelated call site happens to share its arity, which is the exact
-        // inertness the M19 PR4 review removed.
-        if (templates.some((t) => templateMatchesPath(t, path))) {
-          stale.push(`${key} is addressed by ${file} — flip it to consumed()`);
-        }
-      }
-    }
-    expect(stale).toEqual([]);
+    // The rule itself lives in `staleExemptions`, which resolves the edge
+    // rewrites — see its docstring for the blindness that closed, and the test
+    // below for the planted pair that proves it, since no exemption on today's
+    // tree is addressed through an edge.
+    expect(staleExemptions(templatesByFile, ROUTE_CONSUMERS)).toEqual([]);
 
     // Anti-vacuity: the corpus really was read. Without this a bad path or an
     // empty extraction would make "no stale exemptions" vacuously true.
@@ -1189,6 +1226,52 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     );
     const swept = corpus.filter((f) => !declared.has(f));
     expect(swept.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('the stale sweep SEES a consumer that reaches an exempt route THROUGH an edge', () => {
+    /*
+     * WHY THIS IS PLANTED RATHER THAN MEASURED FROM THE REGISTRY. No exemption
+     * on today's tree is addressed through an edge, so resolving the rewrites in
+     * the sweep changes nothing the suite above can show — and a fix whose only
+     * evidence is a green suite is a fix with no evidence. Both halves of the
+     * planted pair are REAL: a route the repo really serves, and the `/api/…`
+     * path the vault edge really maps onto it, built from the derived row rather
+     * than written out here.
+     */
+    const tree = EDGE_REWRITES.find((r) => r.edge === 'vault-web' && r.from === '/api/vault/');
+    expect(tree?.tree).toBe(true);
+    const path = '/v1/vault/items/restorable';
+    expect(DERIVED.map(routeKey)).toContain(`vault GET ${path}`);
+    const template = (tree as EdgeRewrite).from + path.slice((tree as EdgeRewrite).to.length);
+    expect(template).toBe('/api/vault/items/restorable');
+
+    /*
+     * The registry here is the TEST'S OWN, so this cannot rot when M27 PR2 flips
+     * the real `EXEMPT_RESTORE_SURFACE` entries to `consumed()`: the property is
+     * about the RULE, not about which routes happen to be exempt this week.
+     */
+    const planted: Readonly<Record<string, RouteDecl>> = {
+      [`vault GET ${path}`]: { exempt: 'planted by the test; the reason text is not under test' },
+    };
+    const corpus = new Map([[`${VW}/client/planted.ts`, [template]]]);
+
+    expect(staleExemptions(corpus, planted)).toEqual([
+      `vault GET ${path} is addressed by ${VW}/client/planted.ts — flip it to consumed()`,
+    ]);
+
+    // THE ARM WHERE THE TWO RULES DISAGREE: the matcher this sweep used before —
+    // `templateMatchesPath` with no rewrites — cannot see the same pair, which
+    // is the entire finding. Without this line the assertion above would pass
+    // just as happily under the old rule if some other row happened to match.
+    expect(templateMatchesPath(template, path)).toBe(false);
+
+    // …and the sweep does not now accuse everything it sees: the same corpus
+    // against a route the template does NOT reach stays silent. A rule that
+    // matched anything would satisfy the assertion above too.
+    const unrelated: Readonly<Record<string, RouteDecl>> = {
+      'vault GET /v1/vault/keyset': { exempt: 'planted; a route this template does not address' },
+    };
+    expect(staleExemptions(corpus, unrelated)).toEqual([]);
   });
 
   it('the edge rewrites are DERIVED from each server.ts, and the scrape really found them', () => {
@@ -1240,6 +1323,21 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
      * in one direction only.
      */
     expect([...new Set(EDGE_REWRITES.map((r) => r.tree))].sort()).toEqual([false, true]);
+    /*
+     * AND A TREE ROW'S `from` IS A LITERAL PREFIX, which is what lets
+     * `templatesReachPath` skip the segment-wise arm for one. The edge matches a
+     * tree with `pathname.startsWith(r.prefix)` against a real request path, so
+     * a `:param` inside a tree row would match nothing at runtime — a row that
+     * grows one needs richer semantics than this boolean, and it says so here
+     * rather than being modelled as a call the edge cannot make. The set
+     * assertion above is what stops this loop from iterating over nothing.
+     */
+    for (const rewrite of EDGE_REWRITES.filter((r) => r.tree)) {
+      expect({ from: rewrite.from, parameterised: rewrite.from.includes(':') }).toEqual({
+        from: rewrite.from,
+        parameterised: false,
+      });
+    }
   });
 
   /*
