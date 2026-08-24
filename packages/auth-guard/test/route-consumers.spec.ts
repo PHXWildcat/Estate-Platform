@@ -236,14 +236,35 @@ interface EdgeRewrite {
   /**
    * The HTTP method the row grants, where the edge declares one.
    *
-   * The vault edge's rows are prefix TREES and forward whatever method arrives,
-   * so theirs is null and every method-aware check treats them as covering all
-   * of them — which is what they do. The operator edge names a method per row,
+   * The vault edge's rows declare none and forward whatever method arrives, so
+   * theirs is null and every method-aware check treats them as covering all of
+   * them — which is what they do. The operator edge names a method per row,
    * because two settlement routes there share a path and differ only by verb.
    */
   readonly method: string | null;
   readonly from: string;
   readonly to: string;
+  /**
+   * Whether the row is a prefix TREE or an EXACT route, read from the edge's
+   * own `tree` field where it declares one and false where it does not — which
+   * is what the edges' own matchers do: vault-web is
+   * `r.tree ? pathname.startsWith(r.prefix) : pathname === r.prefix`, and every
+   * other row shape on either edge (the operator table, PASS_THROUGH_ROUTES,
+   * the grantee projection) compares whole paths.
+   *
+   * IT IS LOAD-BEARING HERE FOR THE SAME REASON IT IS THERE. The field was
+   * captured by the scrape below from the day it was written and then dropped
+   * on the floor, so this fence applied EVERY row as a prefix: a consumer
+   * template that merely shares an exact row's prefix read as addressing the
+   * route beyond it. `/api/auth/logout` is the row that names the hazard in the
+   * edge's own comment — a consumer writing `/api/auth/logout/refresh` would
+   * have certified identity's unauthenticated refresh-token revocation route as
+   * consumed, on the strength of a call this edge answers 404. Inert on the
+   * tree that found it (M27 PR2 review, refuted there as pre-existing and
+   * unreachable), which is exactly when a fence's over-match is worth closing:
+   * before some consumer makes it load-bearing.
+   */
+  readonly tree: boolean;
 }
 
 /**
@@ -319,7 +340,13 @@ function deriveEdgeRewrites(): ReadonlyArray<EdgeRewrite> {
     for (const m of server.matchAll(
       /\{\s*prefix:\s*'([^']+)',[^}]*rewriteTo:\s*'([^']+)',\s*tree:\s*(true|false)\s*\}/g,
     )) {
-      rewrites.push({ edge, method: null, from: m[1] as string, to: m[2] as string });
+      rewrites.push({
+        edge,
+        method: null,
+        from: m[1] as string,
+        to: m[2] as string,
+        tree: m[3] === 'true',
+      });
     }
     /*
      * The operator edge's rows are read as BLOCKS rather than as one
@@ -335,49 +362,93 @@ function deriveEdgeRewrites(): ReadonlyArray<EdgeRewrite> {
       const from = /\bpath:\s*'([^']+)'/.exec(text)?.[1];
       const to = /\brewriteTo:\s*'([^']+)'/.exec(text)?.[1];
       if (from !== undefined && to !== undefined) {
-        rewrites.push({ edge, method: /\bmethod:\s*'([A-Z]+)'/.exec(text)?.[1] ?? null, from, to });
+        rewrites.push({
+          edge,
+          method: /\bmethod:\s*'([A-Z]+)'/.exec(text)?.[1] ?? null,
+          from,
+          to,
+          // Read rather than assumed. Today no operator row declares `tree` and
+          // its matcher is segment-wise exact, so every one of them is false —
+          // but a row that grows the field arrives here as what it says it is,
+          // instead of as a hard-coded false that would be silently wrong.
+          tree: /\btree:\s*true\b/.test(text),
+        });
       }
     }
     // PASS_THROUGH_ROUTES: credential-free upstream calls. The vault edge has
     // two (extension pairing redemption, refresh); the operator edge has none,
     // and its own fence asserts that absence.
     for (const m of server.matchAll(/\{\s*path:\s*'([^']+)',\s*upstreamPath:\s*'([^']+)'\s*\}/g)) {
-      rewrites.push({ edge, method: null, from: m[1] as string, to: m[2] as string });
+      // `PASS_THROUGH_ROUTES.find((r) => r.path === pathname)` — the source's own
+      // comment is "EXACT paths, no suffix, no tree", and its matcher is equality.
+      rewrites.push({ edge, method: null, from: m[1] as string, to: m[2] as string, tree: false });
     }
     // The one projection with its own constant rather than a table row.
     const grantee = /GRANTEE_CANDIDATES_PATH\s*=\s*'([^']+)'/.exec(server)?.[1];
     if (grantee !== undefined && server.includes("'/v1/contacts/grantee-candidates'")) {
-      rewrites.push({ edge, method: null, from: grantee, to: '/v1/contacts/grantee-candidates' });
+      // `pathname === GRANTEE_CANDIDATES_PATH` at the edge: one path, no tree.
+      rewrites.push({
+        edge,
+        method: null,
+        from: grantee,
+        to: '/v1/contacts/grantee-candidates',
+        tree: false,
+      });
     }
   }
   return rewrites;
 }
 
-function fileMatchesPath(file: string, path: string, enumerated = false): boolean {
-  const templates = extractTemplates(file);
+/**
+ * Does any of these consumer templates address `path`, directly or through an
+ * edge's rewrite table?
+ *
+ * TAKES ITS REWRITES AS AN ARGUMENT so the property below it can be tested on a
+ * table it controls. `fileMatchesPath` passes the real derived rows, which is
+ * the only call the fence itself makes; the `tree` tests pass a planted pair
+ * that differs in one field, because a gate on a flag is only proved by the arm
+ * where the two values DISAGREE.
+ */
+function templatesReachPath(
+  templates: readonly string[],
+  path: string,
+  enumerated: boolean,
+  rewrites: ReadonlyArray<EdgeRewrite>,
+): boolean {
   for (const template of templates) {
     if (templateMatchesPath(template, path, enumerated)) {
       return true;
     }
-    for (const rewrite of EDGE_REWRITES) {
-      // A PREFIX rewrite (the vault edge's trees) — string surgery, as before.
-      if (template.startsWith(rewrite.from)) {
-        const rewritten = rewrite.to + template.slice(rewrite.from.length);
-        if (templateMatchesPath(rewritten, path, enumerated)) {
-          return true;
+    for (const rewrite of rewrites) {
+      if (rewrite.tree) {
+        // A PREFIX rewrite — the vault edge's one tree, `/api/vault/`. String
+        // surgery, as before: whatever follows the prefix travels to the
+        // upstream, which is what `pathname.startsWith(r.prefix)` does there.
+        if (template.startsWith(rewrite.from)) {
+          const rewritten = rewrite.to + template.slice(rewrite.from.length);
+          if (templateMatchesPath(rewritten, path, enumerated)) {
+            return true;
+          }
         }
+        continue;
       }
       /*
-       * A TEMPLATE rewrite (the operator edge's parameterised rows).
-       * `startsWith` cannot see these: the edge writes `:caseId` where a
-       * caller's interpolation collapses to `:p`, so the two strings never
-       * share a prefix past `cases/`. Matching the consumer's template against
-       * the edge's `from` SEGMENT-WISE is the same one-directional rule used
+       * AN EXACT ROW (`tree: false`) REWRITES ONE PATH AND NOTHING BELOW IT,
+       * because that is all the edge will forward: `pathname === r.prefix`.
+       * A template that merely SHARES the row's prefix reaches a 404 at the
+       * edge, and counting it would certify a route no consumer can call —
+       * `/api/auth/logout` versus `/api/auth/logout/refresh` being the pair the
+       * edge's own comment calls out.
+       *
+       * Compared SEGMENT-WISE rather than by `===` for the operator edge's
+       * parameterised rows: the edge writes `:caseId` where a caller's
+       * interpolation collapses to `:p`, so the two strings never share a
+       * prefix past `cases/`. It is the same one-directional rule used
        * everywhere else — a consumer wildcard lines up with an edge parameter
        * and never with an edge literal — and the edge's `to` is then the
        * template compared against the route.
        */
-      if (rewrite.from.includes('/:') && templateMatchesPath(template, rewrite.from)) {
+      if (templateMatchesPath(template, rewrite.from)) {
         if (templateMatchesPath(rewrite.to, path, enumerated)) {
           return true;
         }
@@ -385,6 +456,10 @@ function fileMatchesPath(file: string, path: string, enumerated = false): boolea
     }
   }
   return false;
+}
+
+function fileMatchesPath(file: string, path: string, enumerated = false): boolean {
+  return templatesReachPath(extractTemplates(file), path, enumerated, EDGE_REWRITES);
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1216,104 @@ describe('route↔consumer fence (every non-internal route is consumed or exempt
     for (const { to } of EDGE_REWRITES) {
       expect(to.startsWith('/v1/auth/handoff')).toBe(false);
     }
+  });
+
+  it('the `tree` flag is READ from each edge source, never assumed', () => {
+    /*
+     * A second, deliberately dumber derivation of the same fact — the
+     * compose-parity mechanism the completeness test above uses. The flag was
+     * captured by the scrape and dropped on the floor for two milestones;
+     * storing it is only worth something if what is stored is what the edge
+     * WROTE, and a hand-set `false` on the operator rows would read identically
+     * to a read one until the day that edge grows a tree.
+     */
+    for (const { edge, source } of EDGE_SERVERS) {
+      const text = read(join(REPO_ROOT, source));
+      const declared = (text.match(/\btree:\s*true\b/g) ?? []).length;
+      const derived = EDGE_REWRITES.filter((r) => r.edge === edge && r.tree).length;
+      expect({ edge, declared, derived }).toEqual({ edge, declared, derived: declared });
+    }
+    /*
+     * Anti-vacuity as SETS rather than as a count, because the claim is that
+     * BOTH values occur: a corpus of nothing but `tree: false` rows clears every
+     * per-edge equality above (0 === 0) while leaving the gate below exercised
+     * in one direction only.
+     */
+    expect([...new Set(EDGE_REWRITES.map((r) => r.tree))].sort()).toEqual([false, true]);
+  });
+
+  /*
+   * THE `tree` GATE, AND THE OVER-MATCH IT CLOSES.
+   *
+   * `deriveEdgeRewrites` captured `tree` from the day it was written and never
+   * stored it, so `fileMatchesPath` applied EVERY row as a prefix rewrite. The
+   * two tests below are the pair: the first goes red without the gate, the
+   * second is the positive control that stays green with it or without it —
+   * "every mutation went red" is equally consistent with a fence that fails on
+   * any edit at all.
+   */
+  it('an EXACT edge row (tree: false) refuses a template that merely SHARES its prefix', () => {
+    // The row is REAL, read out of the vault edge's own table — a fixture that
+    // invents its data tests the fixture. Asserted whole, so a row that stops
+    // being derived, or arrives with a different flag, names itself here.
+    const exact = EDGE_REWRITES.find(
+      (r) => r.edge === 'vault-web' && r.from === '/api/auth/logout',
+    );
+    expect(exact).toEqual({
+      edge: 'vault-web',
+      method: null,
+      from: '/api/auth/logout',
+      to: '/v1/auth/logout',
+      tree: false,
+    });
+
+    // …and the route BEYOND it is real too: identity's unauthenticated
+    // refresh-token revocation, which is why the edge enumerates rather than
+    // prefixes — `server.ts`'s own comment names this exact pair.
+    expect(DERIVED.map(routeKey)).toContain('identity POST /v1/auth/logout/refresh');
+
+    // THE PROPERTY. A consumer template one segment past an exact row reaches a
+    // 404 at that edge, so it addresses nothing upstream.
+    expect(
+      templatesReachPath(['/api/auth/logout/refresh'], '/v1/auth/logout/refresh', false, [
+        exact as EdgeRewrite,
+      ]),
+    ).toBe(false);
+
+    // THE FIXTURE REACHES THE BRANCH: same row, same table, and the template
+    // that IS the row's path still rewrites. Without this, a
+    // `templatesReachPath` that answered false to everything would pass above.
+    expect(
+      templatesReachPath(['/api/auth/logout'], '/v1/auth/logout', false, [exact as EdgeRewrite]),
+    ).toBe(true);
+
+    // THE ARM WHERE THE TWO FACTS DISAGREE: one field changed, the answer flips.
+    // That is what pins the refusal to `tree` rather than to anything else about
+    // the pair — and `true` here is what the code answered for EVERY row before
+    // the gate, so this arm is the un-gated behaviour, kept as data.
+    expect(
+      templatesReachPath(['/api/auth/logout/refresh'], '/v1/auth/logout/refresh', false, [
+        { ...(exact as EdgeRewrite), tree: true },
+      ]),
+    ).toBe(true);
+  });
+
+  it('a real PREFIX row still rewrites its whole tree — the positive control', () => {
+    const tree = EDGE_REWRITES.find((r) => r.edge === 'vault-web' && r.from === '/api/vault/');
+    expect(tree).toEqual({
+      edge: 'vault-web',
+      method: null,
+      from: '/api/vault/',
+      to: '/v1/vault/',
+      tree: true,
+    });
+    // The vault's item tree, through the real table: a suffix the edge really
+    // forwards, on a route that really exists and really declares this consumer.
+    expect(DERIVED.map(routeKey)).toContain('vault GET /v1/vault/items/:itemId');
+    expect(fileMatchesPath(`${VW}/client/vault-session.ts`, '/v1/vault/items/:itemId')).toBe(true);
+    expect(
+      templatesReachPath(['/api/vault/items/:p'], '/v1/vault/items/:itemId', false, EDGE_REWRITES),
+    ).toBe(true);
   });
 
   it('EVERY declared edge contributed rewrites — no edge is silently unscanned', () => {
