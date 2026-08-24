@@ -43,6 +43,27 @@ export interface PolicyDto {
   readonly status: PolicyRow['status'];
   readonly requestedAt: string | null;
   readonly releasesAt: string | null;
+  /**
+   * WHEN A COLLECTION LAST HAPPENED, AND IT IS ON THE DTO BECAUSE `deny` NOW
+   * OVERWRITES THE STATUS THAT USED TO CARRY THAT FACT (M27 PR3a review).
+   *
+   * `deny` refused on a released policy until this milestone, so `status`
+   * itself was the durable record: a policy that had handed over the master
+   * key stayed `released` and said so. Admitting deny — which the same PR had
+   * to do, or the only ungated stop would have been unavailable exactly where
+   * the permissive action became repeatable — writes `denied_by_owner` over
+   * it, and `markDenied` clears `releases_at` too. Without this field the
+   * owner's escrow view returns a BYTE-IDENTICAL row for "I stopped them
+   * before anything left the server" and "I stopped them after they rebuilt my
+   * master key", which are the two states in this whole feature whose remedies
+   * differ most: the second requires a vault reset and the first requires
+   * nothing.
+   *
+   * A bare timestamp carries no key material and no PII, which is why the fix
+   * is exposing the column the row already has rather than reinstating the
+   * refusal — reinstating it would restore the defect PR3a exists to remove.
+   */
+  readonly releasedAt: string | null;
   readonly requestCount: number;
 }
 
@@ -58,6 +79,8 @@ export interface GranteePolicyDto {
   readonly ownerUserId: string;
   readonly status: PolicyRow['status'];
   readonly releasesAt: string | null;
+  /** See `PolicyDto.releasedAt`; the grantee's own row loses the fact the same way. */
+  readonly releasedAt: string | null;
 }
 
 /** The material a grantee collects after the waiting period elapses. */
@@ -78,6 +101,7 @@ function toPolicyDto(row: PolicyRow): PolicyDto {
     status: row.status,
     requestedAt: row.requested_at?.toISOString() ?? null,
     releasesAt: row.releases_at?.toISOString() ?? null,
+    releasedAt: row.released_at?.toISOString() ?? null,
     requestCount: row.request_count,
   };
 }
@@ -411,6 +435,7 @@ export class EmergencyAccessService {
       ownerUserId: row.user_id,
       status: row.status,
       releasesAt: row.releases_at?.toISOString() ?? null,
+      releasedAt: row.released_at?.toISOString() ?? null,
     }));
   }
 
@@ -523,8 +548,16 @@ export class EmergencyAccessService {
    * belt-and-braces behind that. Sticky, no cooldown, until the owner re-arms —
    * exactly what deny has always meant.
    *
-   * `rearm` keeps refusing on a released policy. It is step-up gated and it
-   * ARMS, so it is not the action this rule is about.
+   * `rearm` still answers `already_released` on a released policy, and that is
+   * a SPEED BUMP RATHER THAN A BOUNDARY — stated here because the first draft
+   * of this paragraph presented it as a decided limit. Since deny now admits,
+   * an owner can deny (one tap, CallerGuard) and then rearm (step-up), landing
+   * the policy at `configured` with `releases_at` cleared. That is not an
+   * authority bypass: both are owner actions, rearm still demands fresh MFA,
+   * and the result is a policy that must serve a fresh waiting period before
+   * anything can be collected — which is the arming ceremony working, not
+   * being evaded. What it is not is a rule, and a comment claiming otherwise
+   * would be a control that exists only on paper.
    */
   async deny(ownerUserId: string, accountSessionId: string, policyId: string): Promise<PolicyDto> {
     const now = this.clock();
@@ -579,12 +612,15 @@ export class EmergencyAccessService {
    * without a denial. This is the only moment the platform half leaves the
    * server.
    *
-   * IT IS REPEATABLE SINCE M27 PR3a. This sentence used to end "and it happens
-   * exactly once per escrow", which was the ceremony's central defect stated as
-   * if it were a guarantee: a dropped connection or a closed tab spent the
-   * escrow and delivered nothing, recoverable only by an owner re-arming — the
-   * one thing an incapacitated owner cannot do. See the guard below for why
-   * repeating it destroys nothing, and `deny` for the stop that moved with it.
+   * IT IS REPEATABLE SINCE M27 PR3a. This sentence used to end by promising the
+   * collection happened a single time per escrow, which was the ceremony's
+   * central defect stated as if it were a guarantee: a dropped connection or a
+   * closed tab consumed the arrangement and delivered nothing, recoverable only
+   * by an owner re-arming — the one thing an incapacitated owner cannot do. See
+   * the guard below for why repeating it destroys nothing, and `deny` for the
+   * stop that moved with it. (Described rather than quoted, so a repo-wide
+   * sweep for the old claim does not report this explanation as an instance of
+   * it — the same reason `apps/vault-web/test/fences.spec.ts` gives.)
    */
   async release(
     granteeUserId: string,
@@ -605,8 +641,8 @@ export class EmergencyAccessService {
          *
          * `released` used to be refused here with `already_released`, which made
          * the §5.2 ceremony spend itself and deliver nothing: a grantee who
-         * closed the tab burned the escrow in the one scenario the feature
-         * exists for. Nothing was ever destroyed to justify it — `markReleased`
+         * closed the tab consumed the arrangement in the one scenario the
+         * feature exists for. Nothing was ever destroyed to justify it — `markReleased`
          * sets `status` and `released_at` and touches neither `key_share_ct` nor
          * anything in `emergency_access_configs` — so "one-shot" was a status
          * check wearing a cryptographic one-way door's clothes.
@@ -619,9 +655,15 @@ export class EmergencyAccessService {
          * rather than reading the guard order, which is why both are replaced by
          * a single predicate naming what collectable actually means.
          *
-         * `releases_at` survives a release (only `markDenied` clears it, and
-         * `denied_by_owner` is refused above), so the elapsed check below still
-         * governs every collection rather than just the first.
+         * `releases_at` survives a RELEASE — `markReleased` does not touch it —
+         * so the elapsed check below still governs every collection rather than
+         * just the first. THREE writers clear it, not one: `markDenied`,
+         * `markRearmed` and `markRevoked`. An earlier draft of this comment
+         * said "only `markDenied`", which is the shape CLAUDE.md warns about —
+         * a comment justifying itself with a fact about the tree that nobody
+         * checks — and it was wrong. The conclusion survives because all three
+         * also move `status` out of the collectable set, which is the property
+         * actually relied on here rather than the count of writers.
          */
         const collectable = policy.status === 'waiting' || policy.status === 'released';
         if (!collectable || !policy.releases_at) {

@@ -6188,8 +6188,12 @@ review rather than reasoned from the guard order.
 
 **NOTHING WAS EVER DESTROYED TO JUSTIFY IT.** `markReleased` writes `status`
 and `released_at` and nothing else; `key_share_ct`, `platform_part` and
-`wrapped_master_key_recovery` all survive it, and `releases_at` is cleared only
-by `markDenied`. "One-shot" was a status check wearing a cryptographic one-way
+`wrapped_master_key_recovery` all survive it, and no release clears
+`releases_at`. (An earlier draft said it was cleared "only by `markDenied`",
+which is false — `markRearmed` and `markRevoked` clear it too. The conclusion
+stands because all three also move `status` out of the collectable set, which
+is the property actually relied on; the premise was a checkable fact stated
+without checking it, and two independent review lenses caught it.) "One-shot" was a status check wearing a cryptographic one-way
 door's clothes. The proof is not the reading: the integration test collects a
 second time and puts the material through the same reconstruction as the first,
 and `emergency-crypto.spec.ts` does it again one layer up through
@@ -6224,9 +6228,14 @@ had zero callers on the surface it exists for.
 were three hand-written lists in `screens-emergency.spec.ts` under a comment
 claiming they were pinned to `002_emergency_access.sql` — a claim about the
 tree asserted in prose, which is this repo's name for a test nobody runs. They
-are read out of the CHECK constraint now, and each of the three tables asserts
-SET EQUALITY with it before reading a button, so a seventh status reddens three
-named assertions until somebody decides what the screens do with it. That
+are read out of the CHECK constraint now, and every table asserts SET EQUALITY
+with it before reading a button, so a seventh status reddens each of them by
+name until somebody decides what the screens do with it. The scan reads EVERY
+migration and takes the last definition, not the file that created the table:
+migrations here are append-only and checksummed, so a widening can only arrive
+as a later `DROP CONSTRAINT … ADD CONSTRAINT`, which is precisely what
+`003_notification_kinds.sql` already does to another constraint `002` declared.
+The PR3a review defeated the first draft of this scan with exactly that shape. That
 decision is exactly the one skipped when `released` became collectable in the
 service and stayed unofferable in the client.
 
@@ -6263,6 +6272,50 @@ not asking what ELSE in that map was audience-specific left the answer in the
 very next entry. Only the differing entries are overridden, and a fourth
 DDL-keyed table now asserts what the grantee is told on all six statuses and
 that neither second-person wording reaches them on any of them.
+
+**AND THE ADVERSARIAL REVIEW FOUND THAT THE STOP ERASED WHAT IT WAS
+STOPPING.** This is the finding the change itself created, and it is the
+sharpest one. `deny` writes `denied_by_owner` over `released` and `markDenied`
+clears `releases_at`, so once the owner acted, `status` no longer recorded that
+the master key had been handed over — and `released_at`, which the row has
+always stored, was serialized by no DTO. The owner's escrow view therefore
+returned a BYTE-IDENTICAL policy for "I stopped them before anything left the
+server" and "I stopped them after they rebuilt my master key": the two states
+in this feature whose remedies differ most, since the second requires a vault
+reset and the first requires nothing. The client made it concrete — its honest
+copy branched on `status === 'released'`, so an owner who denied and then
+removed a grantee holding their master key was told "that person can no longer
+open this vault", the exact sentence the code calls the most consequential lie
+this screen could tell, produced by the control meant to handle it.
+
+Reinstating the refusal is NOT the fix — that restores the defect this delta
+exists to remove. `releasedAt` is exposed on both policy DTOs instead: a bare
+timestamp, no key material, no PII, on a column the row already had. Every
+sentence is anchored on it rather than on a status another action may
+overwrite, and the row itself now says a collection happened after the stop,
+because the owner reading the list is deciding whether to open the controls at
+all. The predicate falls back to the status when the field is ABSENT, which is
+not redundancy: `releasedAt` arrives as JSON, so its type is a claim about the
+server rather than a guarantee, and a service older than this origin sends
+nothing — where `undefined !== null` would have announced a collection on every
+row it served.
+
+**THE REVIEW ALSO FOUND THREE THINGS THE SUITE COULD NOT SEE, ALL OF THEM
+FENCES THAT WENT GREEN FOR THE WRONG REASON.** The phrase ban missed the
+capitalised heading on `releaseAndRecover` itself — the module's only
+description of the function that collects — because it banned one inflection of
+a noun and the live text used the other; the ban now carries both, the text is
+de-wrapped before searching so a line break can neither hide nor create a hit,
+and the docstring's claim was narrowed to what eight substrings can actually
+support. The status scan read only the migration that CREATED the table, while
+append-only checksummed migrations mean a widening can only ever arrive in a
+later file — proved by adding one, which the first draft could not see. And the
+owner-stop table recorded only WHETHER a stop existed, accepting either label,
+so the released-specific wording — the sentence this section calls the most
+consequential lie — had no assertion at all, and two mutations producing the
+pre-PR3a copy on a post-PR3a status survived the whole suite. Two service-side
+mutations survived on the same principle: skipping the settlement gate on a
+re-collection, and `collectable = true`. All five now redden by name.
 
 ### Residuals
 

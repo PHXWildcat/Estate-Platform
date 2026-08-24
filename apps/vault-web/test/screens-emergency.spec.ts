@@ -29,7 +29,7 @@ import {
   toBase64,
   verifyClientSession,
 } from '@estate/vault-crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { installLifecycle, render } from '../src/client/app';
 import { forgetSecretKey } from '../src/client/secret-key-store';
@@ -37,32 +37,93 @@ import { forgetSecretKey } from '../src/client/secret-key-store';
 /**
  * THE STATUS VOCABULARY, READ OUT OF THE DDL RATHER THAN RETYPED HERE.
  *
- * The table below this used to be six hand-written rows under a comment saying
+ * The tables below this used to be hand-written rows under a comment saying
  * they were "pinned to `002_emergency_access.sql`" — which is the shape this
  * repo calls a test nobody runs: a claim about the tree asserted in prose. It
- * was also already wrong in the direction that matters. A seventh status added
- * to the CHECK would have been covered by the comment and by no assertion, and
- * an UNGATED status is a button offered where the service refuses or, worse,
- * withheld where the service allows — the exact M27 PR3a defect, which is that
- * `released` was collectable nowhere in this client because a hand-list said so.
+ * was also already wrong in the direction that matters. A seventh status would
+ * have been covered by the comment and by no assertion, and an UNGATED status
+ * is a button offered where the service refuses or, worse, withheld where the
+ * service allows — the exact M27 PR3a defect, which is that `released` was
+ * collectable nowhere in this client because a hand-list said so.
+ *
+ * EVERY MIGRATION, NOT JUST THE ONE THAT CREATED THE TABLE, and the PR3a review
+ * proved the difference by adding a seventh status that this scan's first draft
+ * could not see. Migrations here are APPEND-ONLY and checksummed, so editing
+ * `002` raises `MigrationDriftError` — which makes a new file doing
+ * `DROP CONSTRAINT … ADD CONSTRAINT … CHECK (status IN (…))` the ONLY legal way
+ * to widen the vocabulary, and therefore the only way it will ever actually
+ * happen. That is not hypothetical: `003_notification_kinds.sql` in this same
+ * directory does exactly that to a constraint `002` declared. A scan anchored
+ * on the creating file is blind to every widening that can occur.
+ *
+ * ANCHORED ON THE TABLE, NOT ON FILE POSITION. Statements are split and only
+ * those naming `emergency_access_policies` are read, so a `CHECK (status IN …)`
+ * belonging to some other table cannot be mis-attributed here — the failure
+ * mode that a slice-to-end-of-file invites. Comments are stripped first: a
+ * mention is not a use, and these migrations quote their own vocabularies.
+ * LAST definition wins, because append-only means later files supersede.
  *
  * Reading it makes this spec's inputs reach outside its own package, so
  * `apps/vault-web/turbo.json` declares the canonical wide input set. Without
- * that, editing the CHECK constraint would not move this task's hash and the
- * one gate whose input just changed would replay a cached pass
+ * that, editing a CHECK constraint would not move this task's hash and the one
+ * gate whose input just changed would replay a cached pass
  * (`packages/config/test/turbo-test-inputs.spec.ts` enforces the pairing).
  */
+const MIGRATIONS_DIR = join(__dirname, '..', '..', 'services', 'vault', 'migrations');
+
+/** Floor on the corpus itself: a walk that stopped finding files reads as clean. */
+const MIN_MIGRATIONS = 6;
+
+function policyStatusDefinitions(): { file: string; values: string[] }[] {
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+  if (files.length < MIN_MIGRATIONS) {
+    throw new Error(`only ${files.length} migrations found; expected at least ${MIN_MIGRATIONS}`);
+  }
+  const found: { file: string; values: string[] }[] = [];
+  for (const file of files) {
+    // EVERY comment goes, not just whole-line ones, and the difference is not
+    // cosmetic: statements are split on `;`, and `002` carries a TRAILING
+    // comment containing a semicolon (`-- docs/02 §5; opaque here`). Stripping
+    // only leading `--` lines left that semicolon in place, which cut the
+    // CREATE TABLE in half BEFORE the status CHECK and made this scan return
+    // nothing — a parser reporting an empty vocabulary, which without the floor
+    // below would have read exactly like a table with nothing to check.
+    const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8')
+      .split('\n')
+      .map((line) => {
+        const at = line.indexOf('--');
+        return at === -1 ? line : line.slice(0, at);
+      })
+      .join('\n');
+    for (const statement of sql.split(';')) {
+      if (!statement.includes('emergency_access_policies')) continue;
+      const re = /CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)/gi;
+      let m = re.exec(statement);
+      while (m !== null) {
+        found.push({
+          file,
+          values: (m[1] as string)
+            .split(',')
+            .map((v) => v.trim().replace(/^'|'$/g, ''))
+            .filter(Boolean),
+        });
+        m = re.exec(statement);
+      }
+    }
+  }
+  return found;
+}
+
+const POLICY_STATUS_DEFS = policyStatusDefinitions();
+
 const POLICY_STATUSES: readonly string[] = (() => {
-  const ddl = readFileSync(
-    join(__dirname, '..', '..', 'services', 'vault', 'migrations', '002_emergency_access.sql'),
-    'utf8',
-  );
-  const table = ddl.slice(ddl.indexOf('CREATE TABLE emergency_access_policies ('));
-  const check = /status TEXT NOT NULL DEFAULT '[a-z_]+'\s*CHECK \(status IN \(([^)]*)\)\)/.exec(
-    table,
-  );
-  if (!check) throw new Error('no status CHECK in 002_emergency_access.sql');
-  return check[1]!.split(',').map((raw) => raw.trim().replace(/^'|'$/g, ''));
+  if (POLICY_STATUS_DEFS.length === 0) {
+    throw new Error('no `CHECK (status IN (...))` for emergency_access_policies in any migration');
+  }
+  // Append-only: the last file to define it is the one in force.
+  return POLICY_STATUS_DEFS[POLICY_STATUS_DEFS.length - 1]!.values;
 })();
 
 const USER = '11111111-2222-4333-8444-555555555555';
@@ -967,7 +1028,26 @@ describe('the emergency-access screens', () => {
     },
   } as const;
 
-  it('covers EVERY status in the DDL, in all three tables', () => {
+  it('reads the status vocabulary from EVERY migration, not just the creating one', () => {
+    // The floor and the anti-vacuity, at the level the PR3a review broke. A
+    // scan that found no definition, or stopped descending the directory, must
+    // not read as "all six covered".
+    expect(POLICY_STATUS_DEFS.length).toBeGreaterThan(0);
+    expect(POLICY_STATUSES.length).toBeGreaterThan(0);
+    // Every definition found must be attributed to a real migration file, and
+    // the one in force must be the LAST — comparing the SET, because
+    // mis-attribution between two definitions preserves a count.
+    const last = POLICY_STATUS_DEFS[POLICY_STATUS_DEFS.length - 1]!;
+    expect(last.file).toMatch(/^\d{3}_.*\.sql$/);
+    expect([...POLICY_STATUSES].sort()).toEqual([...last.values].sort());
+    // POSITIVE CONTROL on the parser: it really is reading the policies table's
+    // constraint and not something that merely mentions the words. The set it
+    // returns must contain the two statuses this whole PR turns on.
+    expect(POLICY_STATUSES).toContain('waiting');
+    expect(POLICY_STATUSES).toContain('released');
+  });
+
+  it('covers EVERY status in the DDL, in every table', () => {
     // The floor. Any of these tables silently narrowing is how a status stops
     // being considered without anybody noticing, so the corpus is compared as a
     // SET against the CHECK constraint rather than by length.
@@ -976,6 +1056,10 @@ describe('the emergency-access screens', () => {
     expect(Object.keys(EXPECTATIONS.request).sort()).toEqual(ddl);
     expect(Object.keys(EXPECTATIONS.open).sort()).toEqual(ddl);
     expect(Object.keys(EXPECTATIONS.ownerStops).sort()).toEqual(ddl);
+    // The grantee wording table is keyed on the same corpus and asserted in its
+    // own test; named here too so this one test states the FULL reach rather
+    // than three quarters of it.
+    expect(Object.keys(GRANTEE_WORDS).sort()).toEqual(ddl);
   });
 
   it('offers the request on every status the service would actually accept', async () => {
@@ -1070,6 +1154,146 @@ describe('the emergency-access screens', () => {
       expect(shown).not.toMatch(/ready if you cannot/i);
       await forgetSecretKey(USER);
     }
+  });
+
+  /**
+   * THE TWO SENTENCES §6yy CALLS THE MOST CONSEQUENTIAL LIE (PR3a review).
+   *
+   * `app.ts` states in capitals that NEITHER stop may claim the release was
+   * undone, and the `ownerStops` table above records only WHETHER a stop
+   * exists — it accepts either label by design, because both are stops. So
+   * nothing asserted that a released row gets the released-specific wording,
+   * and the review proved it with two surviving mutations: forcing the deny
+   * ternary to the waiting arm, and the Remove ternary to the generic arm,
+   * each producing the pre-PR3a sentence on a post-PR3a status, both green
+   * across the whole suite.
+   *
+   * The waiting side has had this assertion since M15 (`offers one-tap denial
+   * on a waiting request` reads back its toast). The released twin, added by
+   * this PR, had none — a rule applied to one member of a category.
+   */
+  const releasedPolicy = {
+    id: 'p1',
+    granteeContactId: 'c1',
+    granteeUserId: GRANTEE,
+    waitingPeriodHours: 48,
+    status: 'released',
+    requestedAt: '2026-08-08T00:00:00.000Z',
+    releasesAt: '2026-08-10T00:00:00.000Z',
+    releasedAt: '2026-08-10T00:00:00.000Z',
+    requestCount: 1,
+  };
+
+  it('tells the owner a STOP cannot take back what was already opened', async () => {
+    const service = installService();
+    service.escrow = { configured: true, threshold: 1, policies: [releasedPolicy] };
+    await openEmergency();
+    await waitForText(/opened · 48h wait/i);
+
+    clickText('Stop further access');
+    await waitForText(/they keep what they already opened/i);
+    // The discriminating half: the WAITING sentence must not appear here. It
+    // promises the request cannot proceed, which is false about a collection
+    // that already completed.
+    expect(document.body.textContent).not.toMatch(/that request cannot proceed/i);
+    expect(document.body.textContent).toMatch(/nothing further can be handed over/i);
+  });
+
+  it('tells the owner REMOVE cannot take back what was already opened', async () => {
+    const service = installService();
+    service.escrow = { configured: true, threshold: 1, policies: [releasedPolicy] };
+    await openEmergency();
+    await waitForText(/opened · 48h wait/i);
+
+    clickText('Remove');
+    await waitForText(/they keep what they already opened/i);
+    // The sentence `app.ts` names as the most consequential lie this screen
+    // could tell: it is FALSE about somebody who rebuilt the master key.
+    expect(document.body.textContent).not.toMatch(/can no longer open this vault/i);
+  });
+
+  /**
+   * THE STOP MUST NOT ERASE WHAT IT WAS STOPPING (PR3a review).
+   *
+   * `deny` writes `denied_by_owner` over `released`, so once the owner acts,
+   * `status` no longer records that the master key was handed over. Keyed on
+   * the status, this screen told the truth right up until the owner pressed
+   * the stop and then reverted to the generic sentence — so an owner who
+   * denied and then removed a grantee HOLDING THEIR MASTER KEY was told "that
+   * person can no longer open this vault". Those are the two states in this
+   * feature whose remedies differ most: one needs a vault reset, the other
+   * needs nothing.
+   *
+   * Both rows below are `denied_by_owner`. The only difference is
+   * `releasedAt`, which is why the copy is anchored on it.
+   */
+  it('still says a collection happened AFTER the owner stops it', async () => {
+    const collected = {
+      id: 'p1',
+      granteeContactId: 'c1',
+      granteeUserId: GRANTEE,
+      waitingPeriodHours: 48,
+      status: 'denied_by_owner',
+      requestedAt: '2026-08-08T00:00:00.000Z',
+      releasesAt: null,
+      releasedAt: '2026-08-10T00:00:00.000Z',
+      requestCount: 1,
+    };
+    const service = installService();
+    service.escrow = { configured: true, threshold: 1, policies: [collected] };
+    await openEmergency();
+    await waitForText(/stopped by you/i);
+
+    // The ROW says it, not only a control the owner might never open.
+    expect(document.body.textContent).toMatch(/was opened/i);
+    // And Remove must not promise what it cannot deliver.
+    clickText('Remove');
+    await waitForText(/they keep what they already opened/i);
+    expect(document.body.textContent).not.toMatch(/can no longer open this vault/i);
+  });
+
+  it('POSITIVE CONTROL: a stop with NO collection keeps the plain sentence', async () => {
+    // The discriminating arm. Identical row, `releasedAt: null` — without this
+    // the test above passes for a screen that says "was opened" unconditionally.
+    const neverCollected = {
+      id: 'p1',
+      granteeContactId: 'c1',
+      granteeUserId: GRANTEE,
+      waitingPeriodHours: 48,
+      status: 'denied_by_owner',
+      requestedAt: '2026-08-08T00:00:00.000Z',
+      releasesAt: null,
+      releasedAt: null,
+      requestCount: 1,
+    };
+    const service = installService();
+    service.escrow = { configured: true, threshold: 1, policies: [neverCollected] };
+    await openEmergency();
+    await waitForText(/stopped by you/i);
+    expect(document.body.textContent).not.toMatch(/was opened/i);
+    clickText('Remove');
+    await waitForText(/can no longer open this vault/i);
+  });
+
+  it('does not invent a collection when the service sends no releasedAt', async () => {
+    // A service older than this origin omits the field entirely, and
+    // `undefined !== null` is TRUE — which would announce a collection on every
+    // row it serves. The predicate falls back to the status instead.
+    const legacyRow = {
+      id: 'p1',
+      granteeContactId: 'c1',
+      granteeUserId: GRANTEE,
+      waitingPeriodHours: 48,
+      status: 'denied_by_owner',
+      requestedAt: '2026-08-08T00:00:00.000Z',
+      releasesAt: null,
+      requestCount: 1,
+    };
+    const service = installService();
+    service.escrow = { configured: true, threshold: 1, policies: [legacyRow] };
+    await openEmergency();
+    await waitForText(/stopped by you/i);
+    expect(document.body.textContent).not.toMatch(/was opened/i);
   });
 
   it('offers the owner a STOP on every status a grantee can still act on', async () => {

@@ -8695,6 +8695,13 @@ spent"; `emergency.service.ts` then refuses re-release at four sites with
 incapacitated — the grantee burns the escrow, receives no data, and the only
 recovery is the owner re-arming, which is exactly what they cannot do. Both
 halves were re-verified at kickoff rather than taken from the queue row.
+(SCOPED AT KICKOFF, and PR3a closed it: release admits
+`status IN ('waiting','released')`, so nothing spends itself; TWO
+`already_released` sites remain, in `blockReason` and `rearm`, not four; and
+the client copy quoted above is gone, its spellings banned as data. Recorded
+here in the kickoff's tense on the same precedent as the paragraph below —
+this section is the milestone's scoping record and the PR3a entry carries what
+changed.)
 
 **And the second half has the same shape.**
 `packages/auth-guard/src/session.ts` refuses `deleteItem` to the extension
@@ -8880,11 +8887,13 @@ paired CHECK and no writer is a broken table.
   tap rendered the owner NO controls at all. `granteeActions` had the mirror
   gap and offered collection on `waiting` alone, leaving the new capability
   with zero callers on the surface it exists for. Both are fixed here, with
-  copy that does not claim a denial undid the release. **The three status
+  copy that does not claim a denial undid the release. **The status
   tables are now READ OUT OF THE DDL's CHECK constraint** rather than
   hand-listed under a comment claiming they were pinned to it, each asserting
-  set equality before reading a button — which makes `apps/vault-web` reach
-  outside its package, so it gains the canonical `turbo.json` test inputs.
+  set equality with it before reading a button, so a status added to the CHECK
+  reddens each of them by name until somebody decides what the screens do with
+  it. That makes `apps/vault-web` reach outside its package, so it gains the
+  canonical `turbo.json` test inputs.
   **And two test doubles were the last things enforcing the old rule**, staying
   green against a server that no longer answers `already_released` from
   `/release`. **THE LIVE DRIVE THEN FOUND TWO SENTENCES THE SWEEP COULD NOT** —
@@ -8900,8 +8909,11 @@ paired CHECK and no writer is a broken table.
   grantee-specific case. docs/03 §6yy.
 - **PR3b — the grantee READ.** The route authorized by the released policy row,
   the Cedar grantee attribute in the vault's own domain (a ninth action id in
-  its own `vault.cedar`), and the `vault.emergency.items_read` notification with
+  its own `vault.cedar`), and the `vault.read_by_grantee` notification kind with
   its producer — emitted once per collection rather than per read.
+  (`vault.emergency.items_read` is the AUDIT action PR0 added; an earlier draft
+  of this line named it as the notification, which it has never been — the kind
+  CHECK in `002_emergency_access.sql` does not contain it.)
 - **PR4 — the grantee's reading surface** on the vault origin.
 - **PR5 — the security review**, asking the M25 PR5 question of M27's own
   controls, plus the live drive on the isolated vault origin.

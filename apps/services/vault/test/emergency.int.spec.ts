@@ -701,6 +701,17 @@ describeIfPg('emergency access end to end', () => {
 
   describe('release', () => {
     it('hands over the escrow once the period elapses undenied', async () => {
+      // BEFORE ANYTHING IS COLLECTED, `releasedAt` is null. This is the
+      // discriminating arm for `keeps \`releasedAt\` on the DTO …` below: without
+      // it, that test passes for a field populated unconditionally.
+      const virgin = await request(server)
+        .get('/v1/vault/emergency-access')
+        .set(asOwner())
+        .expect(200);
+      expect(
+        (virgin.body as EscrowDto).policies.find((p) => p.id === policyId)?.releasedAt,
+      ).toBeNull();
+
       now = new Date('2027-02-01T09:00:00.000Z');
       await request(server)
         .post(`/v1/vault/emergency-access/${policyId}/request`)
@@ -753,7 +764,7 @@ describeIfPg('emergency access end to end', () => {
      * It was `is one-shot: the escrow is spent`, and what it pinned was the
      * §5.2 ceremony's central defect: a grantee who completed everything —
      * waited out the period, was not denied, passed the settlement gate — and
-     * then closed the tab had burned the escrow and received nothing, in the
+     * then closed the tab had consumed the arrangement and received nothing, in the
      * one scenario the feature exists for. The only recovery was the owner
      * re-arming, which is precisely what an incapacitated owner cannot do.
      *
@@ -836,6 +847,14 @@ describeIfPg('emergency access end to end', () => {
         .set(asGrantee())
         .expect(200);
 
+      const before = await request(server)
+        .get('/v1/vault/emergency-access')
+        .set(asOwner())
+        .expect(200);
+      const releasedRow = (before.body as EscrowDto).policies.find((p) => p.id === policyId);
+      expect(releasedRow?.status).toBe('released');
+      expect(releasedRow?.releasedAt).toEqual(expect.any(String));
+
       // No step-up header: deny is CallerGuard only, deliberately.
       await request(server)
         .post(`/v1/vault/emergency-access/${policyId}/deny`)
@@ -848,6 +867,29 @@ describeIfPg('emergency access end to end', () => {
         .post(`/v1/vault/emergency-access/${policyId}/release`)
         .set(asGrantee())
         .expect(403, { error: 'denied_by_owner' });
+
+      /*
+       * THE STOP MUST NOT ERASE THE RECORD OF WHAT IT STOPPED (PR3a review).
+       *
+       * `markDenied` writes `denied_by_owner` over `released` and clears
+       * `releases_at`, so `status` — the durable record only BECAUSE deny used
+       * to refuse here — stops carrying the fact that the master key was handed
+       * over. `released_at` was on the row already and on no DTO, so the owner's
+       * view answered IDENTICALLY for a policy stopped before anything left the
+       * server and one stopped after the grantee rebuilt their key. Those two
+       * need a vault reset and nothing respectively.
+       *
+       * The discriminating arm is in `hands over the escrow …`, which asserts
+       * this same field is null before any collection.
+       */
+      const after = await request(server)
+        .get('/v1/vault/emergency-access')
+        .set(asOwner())
+        .expect(200);
+      const deniedRow = (after.body as EscrowDto).policies.find((p) => p.id === policyId);
+      expect(deniedRow?.status).toBe('denied_by_owner');
+      expect(deniedRow?.releasesAt).toBeNull();
+      expect(deniedRow?.releasedAt).toBe(releasedRow?.releasedAt);
     });
   });
 
@@ -1164,6 +1206,99 @@ describeIfPg('emergency access end to end', () => {
         .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
         .set(asGrantee())
         .expect(200);
+    });
+
+    /**
+     * THE GATE RUNS ON EVERY COLLECTION, NOT ONLY THE FIRST (M27 PR3a review).
+     *
+     * The test above walks `waiting → released`, so it is structurally unable
+     * to see the released arm — and the review proved that with a mutation
+     * skipping `assertSettlementPermits` whenever the policy was already
+     * `released`, which left all 46 tests green. The behaviour that mutation
+     * describes is the window docs/03 §5.1 control 5 exists to close: grantee
+     * collects legitimately on day 0, the owner dies, a case opens with the
+     * vault stage unapproved, and the grantee collects the platform half again
+     * anyway.
+     *
+     * Repeatable release is what makes per-collection gating load-bearing. It
+     * was correct in the shipped service and unasserted, which is the weak-test
+     * arm of CLAUDE.md's three-way rule rather than a live hole.
+     */
+    it('BLOCKS a RE-collection when settlement opens after the first one', async () => {
+      const gatedPolicy = await freshPolicy();
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/request`)
+        .set(asGrantee())
+        .expect(200);
+      now = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+
+      // A legitimate first collection, while nothing is wrong.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
+        .set(asGrantee())
+        .expect(200);
+
+      // The estate then enters settlement without the vault stage approved.
+      settlementGate.permitted = false;
+      settlementGate.caseId = SETTLED_CASE;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
+        .set(asGrantee())
+        .expect(403, { error: 'settlement_stage_not_reached' });
+
+      // POSITIVE CONTROL, and it is what tells this test apart from one that
+      // merely observes a released policy refusing: lift the gate and the same
+      // policy collects again. Without it, a mutation making `released`
+      // uncollectable outright would satisfy the assertion above.
+      settlementGate.permitted = true;
+      settlementGate.caseId = null;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${gatedPolicy}/release`)
+        .set(asGrantee())
+        .expect(200);
+    });
+
+    /**
+     * THE STATUS HALF OF `collectable` IS LOAD-BEARING, and nothing proved it.
+     *
+     * `const collectable = true;` survived all 46 tests, because on every state
+     * the API can reach, a non-null `releases_at` already implies
+     * `status ∈ {waiting, released}` — so the predicate's status test is
+     * carried entirely by `!policy.releases_at`. The invariant making that safe
+     * is that `markRearmed` clears `releases_at` alongside `status =
+     * 'configured'`; if a future change ever cleared one without the other, the
+     * status test is the only thing standing between a re-armed policy and a
+     * collection with no waiting period served.
+     *
+     * The API cannot construct that state, so this forges it directly. That is
+     * deliberate: a fence for an invariant has to exercise the arm where the
+     * two facts DISAGREE, and here only the database can disagree.
+     */
+    it('refuses a policy whose status and releases_at DISAGREE', async () => {
+      const forged = await freshPolicy();
+      await admin.query(
+        `UPDATE emergency_access_policies
+            SET status = 'configured', releases_at = $2
+          WHERE id = $1`,
+        [forged, new Date(now.getTime() - 60 * 60 * 1000)],
+      );
+
+      // `configured` is not collectable however elapsed the clock looks.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${forged}/release`)
+        .set(asGrantee())
+        .expect(409, { error: 'not_requested' });
+
+      // POSITIVE CONTROL on the forgery itself: the row really does carry a
+      // past `releases_at`, so the refusal above came from the STATUS test and
+      // not from the elapsed test finding nothing to read.
+      const row = await admin.query<{ status: string; releases_at: Date | null }>(
+        `SELECT status, releases_at FROM emergency_access_policies WHERE id = $1`,
+        [forged],
+      );
+      expect(row.rows[0]?.status).toBe('configured');
+      expect(row.rows[0]?.releases_at).not.toBeNull();
+      expect(row.rows[0]!.releases_at!.getTime()).toBeLessThan(now.getTime());
     });
   });
 });

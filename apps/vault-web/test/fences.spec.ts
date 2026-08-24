@@ -296,57 +296,91 @@ describe('profile is reachable only through the projection', () => {
 });
 
 /**
- * THE SINGLE-USE CLAIM CANNOT COME BACK, IN ANY SPELLING (M27 PR3a).
+ * THE SINGLE-USE SPELLINGS THIS REPO HAS ACTUALLY WRITTEN ARE ABSENT (M27 PR3a).
  *
  * Release stopped being single-use when the guard began admitting
- * `status IN ('waiting','released')`, and three sentences in this origin's
- * source went on telling the grantee otherwise — one of them the warning on
- * the confirmation screen itself, which is the last thing somebody reads
- * before deciding whether to act in an emergency. Two were found by searching
- * for the spellings already known; the third was found only by driving the
- * stack, because it said the same thing in words that search did not contain.
+ * `status IN ('waiting','released')`, and FOUR sentences in this origin's
+ * source went on saying otherwise. One was the warning on the confirmation
+ * screen — the last thing somebody reads before acting in an emergency. One
+ * was the capitalised heading on `releaseAndRecover` itself, the module's only
+ * description of the function that performs the collection.
  *
- * SO THE BAN IS DATA AND THE SEARCH IS A PLAIN SUBSTRING, on the M24 wording-
- * fence precedent. No parser, no comment exemption, nothing to misconfigure:
- * the corpus is every `.ts` file under `src`, COMMENTS INCLUDED, and the
- * comments that explain this history are written to DESCRIBE these sentences
- * rather than quote them. That is the whole M24 lesson — the first draft of
- * that fence exempted comments so its own documentation could quote the bad
- * strings, and the exemption was wrong about block-comment continuation lines.
- * Prefer an absence to a filter.
+ * THE HEADING IS WHY THIS DOCSTRING NO LONGER CLAIMS COMPLETENESS. The first
+ * draft of this block was titled "no sentence on this origin claims the
+ * arrangement is single-use", which is a claim far wider than eight hand-typed
+ * strings can support — and it was wrong on its first run in exactly that gap:
+ * the heading said `spends the escrow` while the list banned `spent the
+ * escrow`, and `can only succeed once per arrangement` while the list banned
+ * `can be done once`. A fence whose input is narrower than its claim goes
+ * green for the same reason it is wrong. So the claim is now the narrow, true
+ * one — these spellings are absent from this corpus — and the bound is stated
+ * below rather than implied away.
  *
- * WHAT IS DELIBERATELY NOT BANNED: `one-shot`. It is an engineering term that
- * these comments need in order to describe what changed, and no user-facing
- * sentence would ever contain it — banning it would force the history to be
- * unwritable to catch a string that cannot reach a screen.
+ * THE STATED BOUND: this list is HAND-WRITTEN and cannot be derived, because
+ * nothing in the tree enumerates the ways English can assert single use. A
+ * fifth wording would pass. What the fence buys is that a spelling this repo
+ * has already written cannot come back, which is the failure that actually
+ * happened, three times, in one PR. The complement — a NEW wording — is
+ * answered by reading the screens, and `screens-emergency.spec.ts` asserts the
+ * rendered confirmation copy for that reason.
+ *
+ * COMMENTS ARE IN THE CORPUS and the text is DE-WRAPPED before searching. Both
+ * are the M24 wording-fence lesson, in the two directions it cuts. That fence's
+ * first draft EXEMPTED comments so its own documentation could quote the bad
+ * strings, and the exemption was wrong about block-comment continuation lines —
+ * so nothing here is exempt, and the comments explaining this history DESCRIBE
+ * these sentences rather than quoting them. De-wrapping is the other direction:
+ * a review of this PR found a banned phrase quoted across a line break, green
+ * only because of where the line happened to end, and one re-flow away from
+ * red. Joining continuation lines can only make the search find MORE, never
+ * less, which is the safe direction for a filter to err in.
+ *
+ * DELIBERATELY NOT BANNED: `one-shot`. It is an engineering term these comments
+ * need to describe what changed, and no user-facing sentence would contain it —
+ * banning it would make the history unwritable to catch a string that cannot
+ * reach a screen.
  */
-describe('no sentence on this origin claims the arrangement is single-use', () => {
+describe('the single-use spellings this repo has written are absent from src', () => {
   const BANNED: readonly string[] = [
     'spends the arrangement',
     'spend the arrangement',
+    'spends the escrow',
+    'spent the escrow',
     'can be done once',
+    'succeed once',
     'used a second time',
     'cannot be used again',
     'is now spent',
-    'spent the escrow',
     'only chance',
   ];
 
+  /** Continuation lines joined, so a line break cannot hide or create a hit. */
+  const flatten = (raw: string): string =>
+    raw.replace(/\s*\n\s*(?:\/\/|\*)?\s*/g, ' ').toLowerCase();
+
   it.each(BANNED)('no source file says %p', (phrase) => {
     const offenders = allSourceFiles.filter((file) =>
-      readFileSync(file, 'utf8').toLowerCase().includes(phrase),
+      flatten(readFileSync(file, 'utf8')).includes(phrase),
     );
     expect(offenders).toEqual([]);
   });
 
-  it('POSITIVE CONTROL: the corpus is real and the search would find a match', () => {
+  it('POSITIVE CONTROL: the corpus is real and this search does find things', () => {
     // Without this, a corpus that had silently become empty — a moved `src`, a
-    // walk that stopped descending — would pass all eight assertions above by
-    // finding nothing, which is indistinguishable from finding nothing wrong.
+    // walk that stopped descending — passes every assertion above by finding
+    // nothing, which is indistinguishable from finding nothing wrong.
     expect(allSourceFiles.length).toBeGreaterThan(5);
     const hits = allSourceFiles.filter((file) =>
-      readFileSync(file, 'utf8').toLowerCase().includes('emergency'),
+      flatten(readFileSync(file, 'utf8')).includes('emergency'),
     );
     expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('POSITIVE CONTROL: de-wrapping finds a phrase broken across lines', () => {
+    // The specific defect this de-wrap exists for, proved on a fixture rather
+    // than trusted: a banned phrase split by a comment continuation is found.
+    const wrapped = '// the old sentence said it is\n          // now spent, which was true then';
+    expect(wrapped.toLowerCase().includes('is now spent')).toBe(false);
+    expect(flatten(wrapped).includes('is now spent')).toBe(true);
   });
 });

@@ -1025,7 +1025,11 @@ const GRANTEE_STATUS_WORDS: Readonly<Record<string, string>> = {
   configured: 'ready if they cannot',
 };
 
-function describeGranteeStatus(policy: { status: string; releasesAt: string | null }): string {
+function describeGranteeStatus(policy: {
+  status: string;
+  releasesAt: string | null;
+  releasedAt: string | null;
+}): string {
   if (policy.status === 'waiting' && policy.releasesAt) {
     const remainingMs = Date.parse(policy.releasesAt) - Date.now();
     if (remainingMs > 0) {
@@ -1040,6 +1044,11 @@ function describeGranteeStatus(policy: { status: string; releasesAt: string | nu
   // be the row arguing with the control next to it, and the reader who most
   // needs the button is the one whose first collection did not arrive.
   if (collectable(policy) && policy.status === 'released') return 'opened — you can open it again';
+  // Their own row keeps the fact after the owner stops it, for the same reason
+  // the owner's does: 'stopped by the owner' alone does not say whether they
+  // still hold the key they rebuilt.
+  if (policy.releasedAt != null && policy.status === 'denied_by_owner')
+    return 'stopped by the owner — you opened it before that';
   return GRANTEE_STATUS_WORDS[policy.status] ?? describePolicyStatus(policy.status);
 }
 
@@ -1140,6 +1149,35 @@ function policyRow(
    * of this screen, which is the half that an owner actually has.
    */
   const stoppable = policy.status === 'waiting' || policy.status === 'released';
+  /*
+   * ANCHORED ON `releasedAt`, NOT ON `status === 'released'` (PR3a review).
+   *
+   * Every honest sentence below is honest BECAUSE a collection happened, and
+   * `status` stops recording that the moment the owner acts: `markDenied`
+   * writes `denied_by_owner` over `released`. Keyed on the status, the copy
+   * told the truth right up until the owner pressed the stop and then reverted
+   * to the generic sentence — so an owner who denied and then removed a
+   * grantee holding their master key was told "that person can no longer open
+   * this vault", which is the sentence the comment below calls the most
+   * consequential lie this screen could tell, produced by the very control
+   * meant to handle it.
+   *
+   * `releasedAt` is a timestamp the row already had and no transition clears,
+   * so it survives deny, rearm and revoke alike. Anchor on what the fact IS,
+   * not on a status that another action is free to overwrite.
+   *
+   * THE STATUS FALLBACK IS NOT REDUNDANT, and the first draft of this line
+   * omitted it and was caught by a fixture. `releasedAt` arrives as JSON, so
+   * its type is a claim about the server rather than a guarantee: a service
+   * older than this origin sends no such field, and `undefined !== null` is
+   * TRUE — which would have announced a collection that never happened on
+   * every row served by that older service. `!= null` covers both spellings of
+   * absent, and `status === 'released'` is then the best remaining signal,
+   * which is exactly what an older service means by it (deny refused on a
+   * released policy there, so its status IS durable). The M12 rule, applied to
+   * a field rather than a row: never blank, and never invent.
+   */
+  const hasCollected = policy.releasedAt != null || policy.status === 'released';
   const controls: HTMLElement[] = [];
   if (stoppable) {
     // DENY IS ONE TAP AND NEVER STEP-UP GATED (docs/03 §5.2). A challenge
@@ -1152,7 +1190,7 @@ function policyRow(
     // vault is safe again would be the most consequential lie this screen
     // could tell, on the one screen they check to find out.
     controls.push(
-      policy.status === 'released'
+      hasCollected
         ? act(
             'Stop further access',
             'Stopped. They keep what they already opened — this cannot take that back — but nothing further can be handed over.',
@@ -1173,7 +1211,7 @@ function policyRow(
     );
   }
   controls.push(
-    policy.status === 'released'
+    hasCollected
       ? act(
           'Remove',
           'Removed. They keep what they already opened, and this vault will hand them nothing again.',
@@ -1191,7 +1229,14 @@ function policyRow(
     el('span', {}, [nameFor(policy)]),
     el('span', { class: 'item-type' }, [
       `${describePolicyStatus(policy.status)} · ${policy.waitingPeriodHours}h wait` +
-        (policy.requestCount > 0 ? ` · ${policy.requestCount} request(s)` : ''),
+        (policy.requestCount > 0 ? ` · ${policy.requestCount} request(s)` : '') +
+        // THE FACT THE STATUS STOPPED CARRYING. After a stop, the row reads
+        // "stopped by you" whether or not the master key was ever handed over,
+        // and those two situations need different things from the owner —
+        // one needs a vault reset and the other needs nothing. The controls
+        // already say it; the row has to say it too, because the owner reading
+        // the list is deciding whether to open the controls at all.
+        (hasCollected && policy.status !== 'released' ? ' · was opened' : ''),
     ]),
     ...controls,
   ]);
@@ -1436,9 +1481,15 @@ function renderRelease(policyId: string): void {
           //
           // WIPING IT IS ONLY SAFE BECAUSE COLLECTION REPEATS (M27 PR3a).
           // Discarding the one copy of a key the server would never hand over
-          // again is what made the old ending sentence — "this arrangement is
-          // now spent" — a true statement about a dead end this screen had
-          // just walked the grantee into.
+          // again is what made the old ending sentence true — it told the
+          // grantee the arrangement was finished, and it was describing a dead
+          // end this screen had just walked them into. That sentence is
+          // DESCRIBED rather than quoted, per the ban in `fences.spec.ts`; the
+          // first draft of this comment quoted it across a line wrap, which the
+          // substring search missed only because of where the line happened to
+          // break. A fence that a re-flow can turn red is a fence with a
+          // coincidence in it.
+          //
           wipe(recovered.data.masterKeyBytes);
           replaceChildren(
             note,

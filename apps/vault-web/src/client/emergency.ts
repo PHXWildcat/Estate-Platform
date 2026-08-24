@@ -68,6 +68,11 @@ export interface PolicyDto {
   status: string;
   requestedAt: string | null;
   releasesAt: string | null;
+  /**
+   * When a collection last happened, or null. Survives a denial, which
+   * `status` does not — see the service's `PolicyDto.releasedAt`.
+   */
+  releasedAt: string | null;
   requestCount: number;
 }
 
@@ -82,6 +87,7 @@ export interface GranteePolicyDto {
   ownerUserId: string;
   status: string;
   releasesAt: string | null;
+  releasedAt: string | null;
 }
 
 /** Fetch the contacts this owner could name, already projected by the edge. */
@@ -277,11 +283,18 @@ export interface ReleaseDto {
 /**
  * Collect the escrow and reconstruct the owner's master key.
  *
- * ONE-SHOT: handing over the platform half spends the escrow, so this can only
- * succeed once per arrangement. It needs the grantee's OWN recovery private
- * key, which is wrapped under the grantee's master key — so a grantee must have
- * their own vault open to complete a release, and a stolen session alone
- * achieves nothing.
+ * REPEATABLE since M27 PR3a, and this heading used to say the opposite in
+ * capitals: that handing over the platform half consumed the escrow and that
+ * the call could therefore succeed only once. That was the module's ONLY
+ * description of what this function does, on the function that performs the
+ * collection, and it contradicted both the service and the two screens this
+ * origin renders around it. `markReleased` writes `status` and `released_at`
+ * and nothing else, so a second call collects the same material again.
+ *
+ * It needs the grantee's OWN recovery private key, which is wrapped under the
+ * grantee's master key — so a grantee must have their own vault open to
+ * complete a release, and a stolen session alone achieves nothing. That half
+ * is untouched by PR3a and is what makes the route safe to repeat.
  *
  * Returns the master key BYTES. The caller owns wiping them; nothing here
  * persists or transmits them, and there is deliberately no path that sends the
