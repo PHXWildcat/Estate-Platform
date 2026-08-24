@@ -156,8 +156,15 @@ export class EmergencyAccessController {
 
   /**
    * The grantee collects the escrow material after the waiting period. The only
-   * moment the platform half of the recovery key leaves this service, and it
-   * happens exactly once per escrow.
+   * moment the platform half of the recovery key leaves this service.
+   *
+   * REPEATABLE since M27 PR3a. This docstring used to end by promising the
+   * collection happened a single time per escrow, and it was corrected here
+   * only after the identical sentence had been fixed on the service method it
+   * calls — the same rule half-applied that this PR kept finding, arriving
+   * once more between a route and its handler. `EmergencyService.release`
+   * admits `status IN ('waiting','released')`; nothing about that is visible
+   * from this file, which is exactly why the sentence rotted.
    */
   @Post('vault/emergency-access/:policyId/release')
   @HttpCode(200)

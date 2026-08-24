@@ -997,7 +997,39 @@ function describePolicyStatus(status: string): string {
   return POLICY_STATUS_WORDS[status] ?? status.replace(/_/g, ' ');
 }
 
-function describeGranteeStatus(policy: { status: string; releasesAt: string | null }): string {
+/**
+ * THE SAME STATUS SAID TO THE OTHER PERSON (M27 PR3a).
+ *
+ * `POLICY_STATUS_WORDS` is written for the OWNER reading their own
+ * arrangement, and two of its entries are wrong — not merely stiff — when the
+ * reader is the grantee instead. Only the entries that differ live here; every
+ * other status falls through to the owner's word, because a second full copy
+ * of that map is a copy that drifts.
+ *
+ * FOUND BY DRIVING THE STACK, one screen after this function grew its first
+ * grantee-specific case. `denied_by_owner` reads "stopped by you" — true for
+ * the owner, and a false sentence about the reader when the reader is the
+ * grantee, who is told they stopped something the owner stopped. Adding the
+ * `released` override and not asking what ELSE in the map was audience-
+ * specific is precisely the half-applied rule this repo keeps naming; the
+ * answer was the very next entry.
+ */
+const GRANTEE_STATUS_WORDS: Readonly<Record<string, string>> = {
+  // Not "stopped by you". The owner stopped it, and saying otherwise tells the
+  // grantee they did something they did not do, on the row that explains why
+  // the button is gone.
+  denied_by_owner: 'stopped by the owner',
+  // The owner's word is "ready if you cannot", whose "you" is the owner. Read
+  // by the grantee that pronoun points at the wrong person and inverts the
+  // sentence — it would promise access whenever the GRANTEE is unable.
+  configured: 'ready if they cannot',
+};
+
+function describeGranteeStatus(policy: {
+  status: string;
+  releasesAt: string | null;
+  releasedAt: string | null;
+}): string {
   if (policy.status === 'waiting' && policy.releasesAt) {
     const remainingMs = Date.parse(policy.releasesAt) - Date.now();
     if (remainingMs > 0) {
@@ -1006,15 +1038,45 @@ function describeGranteeStatus(policy: { status: string; releasesAt: string | nu
     }
     return 'ready to open';
   }
-  return describePolicyStatus(policy.status);
+  // A GRANTEE READS 'opened' AS FINISHED, and since M27 PR3a it is not. The
+  // owner's word for this row stays 'opened' — for them it is a thing that
+  // happened — but printing it beside an enabled "Open the vault" button would
+  // be the row arguing with the control next to it, and the reader who most
+  // needs the button is the one whose first collection did not arrive.
+  if (collectable(policy) && policy.status === 'released') return 'opened — you can open it again';
+  // Their own row keeps the fact after the owner stops it, for the same reason
+  // the owner's does: 'stopped by the owner' alone does not say whether they
+  // still hold the key they rebuilt.
+  if (policy.releasedAt != null && policy.status === 'denied_by_owner')
+    return 'stopped by the owner — you opened it before that';
+  return GRANTEE_STATUS_WORDS[policy.status] ?? describePolicyStatus(policy.status);
+}
+
+/**
+ * Can this grantee collect right now?
+ *
+ * ONE BEHAVIOUR, ONE SPELLING: this is the client's copy of the service's
+ * release guard, and it is written to mirror it line for line —
+ * `status IN ('waiting','released')`, `releases_at` present, and elapsed. The
+ * two drifting apart has a direction that matters: a client narrower than the
+ * service hides a capability the server would honour, which is exactly the
+ * defect M27 PR3a exists to remove, so the mirror is asserted in
+ * `screens-emergency.spec.ts` against the DDL's own status vocabulary.
+ *
+ * `released` belongs here since PR3a. `markDenied` is the only writer that
+ * clears `releasesAt`, and `denied_by_owner` is not in the set, so a policy
+ * reaching this with a past `releasesAt` is one the service will collect.
+ */
+function collectable(policy: { status: string; releasesAt: string | null }): boolean {
+  if (policy.status !== 'waiting' && policy.status !== 'released') return false;
+  return policy.releasesAt !== null && Date.parse(policy.releasesAt) <= Date.now();
 }
 
 function granteeActions(
   policy: { id: string; status: string; releasesAt: string | null },
   note: HTMLElement,
 ): HTMLElement[] {
-  const ready =
-    policy.status === 'waiting' && policy.releasesAt && Date.parse(policy.releasesAt) <= Date.now();
+  const ready = collectable(policy);
   // WHAT THE SERVICE ACTUALLY ALLOWS, not a status invented here. `blockReason`
   // refuses a request only for revoked / released / waiting / denied_by_owner,
   // so `configured` and `requested` are the two a grantee may act on. An
@@ -1068,16 +1130,77 @@ function policyRow(
       })();
     });
 
+  /*
+   * THE STOPS ARE OFFERED ON 'released' SINCE M27 PR3a, and until PR3a this
+   * row rendered NO controls at all on that status: deny was gated on
+   * `waiting` and revoke on `!== 'released'`.
+   *
+   * That was defensible while release was one-shot — a spent escrow has
+   * nothing left to stop — and it is exactly inverted now. A released policy
+   * is the status where the grantee can collect again with one tap, so it is
+   * the status where the owner most needs a stop, and shipping the service
+   * half alone would have made the permissive action repeatable while leaving
+   * the protective one unrenderable. docs/03's rule is that the protective
+   * action must never be HARDER than the permissive one; a button that does
+   * not exist is the hardest it can get.
+   *
+   * The decision-log entry for §6uu argues re-collection is safe because "the
+   * owner can revoke a released policy today" — true of the service and false
+   * of this screen, which is the half that an owner actually has.
+   */
+  const stoppable = policy.status === 'waiting' || policy.status === 'released';
+  /*
+   * ANCHORED ON `releasedAt`, NOT ON `status === 'released'` (PR3a review).
+   *
+   * Every honest sentence below is honest BECAUSE a collection happened, and
+   * `status` stops recording that the moment the owner acts: `markDenied`
+   * writes `denied_by_owner` over `released`. Keyed on the status, the copy
+   * told the truth right up until the owner pressed the stop and then reverted
+   * to the generic sentence — so an owner who denied and then removed a
+   * grantee holding their master key was told "that person can no longer open
+   * this vault", which is the sentence the comment below calls the most
+   * consequential lie this screen could tell, produced by the very control
+   * meant to handle it.
+   *
+   * `releasedAt` is a timestamp the row already had and no transition clears,
+   * so it survives deny, rearm and revoke alike. Anchor on what the fact IS,
+   * not on a status that another action is free to overwrite.
+   *
+   * THE STATUS FALLBACK IS NOT REDUNDANT, and the first draft of this line
+   * omitted it and was caught by a fixture. `releasedAt` arrives as JSON, so
+   * its type is a claim about the server rather than a guarantee: a service
+   * older than this origin sends no such field, and `undefined !== null` is
+   * TRUE — which would have announced a collection that never happened on
+   * every row served by that older service. `!= null` covers both spellings of
+   * absent, and `status === 'released'` is then the best remaining signal,
+   * which is exactly what an older service means by it (deny refused on a
+   * released policy there, so its status IS durable). The M12 rule, applied to
+   * a field rather than a row: never blank, and never invent.
+   */
+  const hasCollected = policy.releasedAt != null || policy.status === 'released';
   const controls: HTMLElement[] = [];
-  if (policy.status === 'waiting') {
+  if (stoppable) {
     // DENY IS ONE TAP AND NEVER STEP-UP GATED (docs/03 §5.2). A challenge
     // between an owner and "stop this" is a control that argues with itself.
+    //
+    // NEITHER SENTENCE MAY CLAIM THE RELEASE WAS UNDONE. The escrow material
+    // left the server and the master key was rebuilt on the grantee's device;
+    // no server action reaches it. What a denial ends is the ability to hand
+    // over MORE, and the copy has to say only that — telling an owner their
+    // vault is safe again would be the most consequential lie this screen
+    // could tell, on the one screen they check to find out.
     controls.push(
-      act(
-        'Stop this',
-        'Stopped. That request cannot proceed, and it stays stopped until you allow it again.',
-        () => denyPolicy(policy.id),
-      ),
+      hasCollected
+        ? act(
+            'Stop further access',
+            'Stopped. They keep what they already opened — this cannot take that back — but nothing further can be handed over.',
+            () => denyPolicy(policy.id),
+          )
+        : act(
+            'Stop this',
+            'Stopped. That request cannot proceed, and it stays stopped until you allow it again.',
+            () => denyPolicy(policy.id),
+          ),
     );
   }
   if (policy.status === 'denied_by_owner') {
@@ -1087,13 +1210,17 @@ function policyRow(
       ),
     );
   }
-  if (policy.status !== 'released') {
-    controls.push(
-      act('Remove', 'Removed. That person can no longer open this vault.', () =>
-        revokePolicy(policy.id),
-      ),
-    );
-  }
+  controls.push(
+    hasCollected
+      ? act(
+          'Remove',
+          'Removed. They keep what they already opened, and this vault will hand them nothing again.',
+          () => revokePolicy(policy.id),
+        )
+      : act('Remove', 'Removed. That person can no longer open this vault.', () =>
+          revokePolicy(policy.id),
+        ),
+  );
 
   return el('li', { class: 'item' }, [
     // THE PERSON, not their account id. An owner reviewing an arrangement has
@@ -1102,7 +1229,14 @@ function policyRow(
     el('span', {}, [nameFor(policy)]),
     el('span', { class: 'item-type' }, [
       `${describePolicyStatus(policy.status)} · ${policy.waitingPeriodHours}h wait` +
-        (policy.requestCount > 0 ? ` · ${policy.requestCount} request(s)` : ''),
+        (policy.requestCount > 0 ? ` · ${policy.requestCount} request(s)` : '') +
+        // THE FACT THE STATUS STOPPED CARRYING. After a stop, the row reads
+        // "stopped by you" whether or not the master key was ever handed over,
+        // and those two situations need different things from the owner —
+        // one needs a vault reset and the other needs nothing. The controls
+        // already say it; the row has to say it too, because the owner reading
+        // the list is deciding whether to open the controls at all.
+        (hasCollected && policy.status !== 'released' ? ' · was opened' : ''),
     ]),
     ...controls,
   ]);
@@ -1135,12 +1269,19 @@ function granteePicker(candidates: readonly GranteeCandidate[], note: HTMLElemen
     // ONLY 1 IS SUPPORTED BY THIS CLIENT (M15 review). The service and
     // `packages/vault-crypto` both do arbitrary M-of-N — `createEscrow` splits
     // Shamir over the grantees exactly as M6 designed — but `releaseAndRecover`
-    // hands `recoverMasterKey` a SINGLE share, because release is one-shot per
-    // policy and there is no way yet for one grantee to collect another's.
-    // Arming 2-of-3 would therefore create an arrangement nobody could ever
-    // open, and the first grantee to try would spend their own policy finding
-    // out. Offering the field and refusing the value is the honest shape: the
-    // capability exists in the protocol and not yet in this client.
+    // hands `recoverMasterKey` a SINGLE share and there is no way yet for one
+    // grantee to collect another's. Arming 2-of-3 would therefore create an
+    // arrangement nobody could ever open. Offering the field and refusing the
+    // value is the honest shape: the capability exists in the protocol and not
+    // yet in this client.
+    //
+    // M27 PR3a REMOVED THE SECOND HALF OF THIS ARGUMENT, not the first. It
+    // used to add that the first grantee to try would SPEND their own policy
+    // finding out; collection repeats now, so a mis-armed escrow costs a
+    // wasted attempt rather than a destroyed one. The refusal stands on the
+    // remaining half alone — this client still cannot open such an escrow —
+    // and failing closed at ARM time is still the only way not to store an
+    // arrangement that silently cannot work.
     hint: 'This client can only complete a release with 1 — collecting several people’s shares is not built yet.',
   });
   const arm = el('button', { class: 'button', type: 'button' }, ['Arm emergency access']);
@@ -1253,23 +1394,41 @@ function renderRelease(policyId: string): void {
   replaceChildren(
     main(),
     el('h1', {}, ['Open the vault you were trusted with']),
-    el('p', { class: 'status status-warn' }, [
-      'This spends the arrangement: it can be done once, and the owner is told. Only continue if they genuinely cannot do this themselves.',
-    ]),
     /*
-     * SAY WHAT THIS DOES AND DOES NOT DO (M15 review).
+     * WHAT THIS WARNING IS FOR, AND WHY M27 PR3a REWROTE BOTH SENTENCES.
      *
-     * Release is ONE-SHOT, and this client reconstructs the owner's recovery
-     * key and then wipes it — there is no screen yet that reads their items
-     * with it. Until that ships, pressing the button spends the only chance the
-     * arrangement had and returns nothing usable, so the person doing it in a
-     * real emergency has to be told that BEFORE they press it rather than
-     * discovering it afterwards. Withholding the warning while keeping the
-     * button is the shape this repo calls offering what the server would
-     * refuse; here the server would not refuse, which makes it worse.
+     * Both sentences told the grantee the arrangement was single-use and would
+     * be consumed by continuing — the M15 warning, correct when written and
+     * FALSE since the release guard admits `status IN ('waiting','released')`.
+     * They are DESCRIBED rather than quoted here, because `fences.spec.ts`
+     * bans those spellings from this origin's source by plain substring search
+     * and a comment quoting them would be reported as the violation. That is
+     * the M24 lesson applied at the point it would have bitten: prefer an
+     * absence to a filter, and never make a fence exempt its own
+     * documentation. This is the screen shown immediately
+     * before the action, whose whole job is to make a grantee weigh it, so a
+     * stale sentence here does the most damage of anywhere in the flow: it
+     * tells someone in a real emergency that they get one attempt, which is
+     * the reason to hesitate that PR3a exists to remove.
+     *
+     * FOUND BY DRIVING THE STACK, and it survived the sweep that preceded it
+     * because that sweep searched for the two spellings already known and this
+     * screen used neither — a search for the WORDING cannot find a CLAIM said
+     * a third way. The thirteenth consecutive milestone in which driving the
+     * real product found something no suite could see, and this time the suite
+     * could have: nothing asserted the copy on this screen at all, which is
+     * why `screens-emergency.spec.ts` now does, and why the spellings are
+     * banned as data in `fences.spec.ts` rather than swept for by hand again.
+     *
+     * WHAT STAYS: the owner is told, and reading their items is not built. The
+     * first is the compensating control the whole change rests on, and the
+     * second is still the honest answer to what pressing this gets you.
      */
     el('p', { class: 'status status-warn' }, [
-      'Reading the owner’s items is not built yet. This confirms the pieces fit and that you could open the vault — it does not show you what is inside, and the arrangement cannot be used a second time once you continue.',
+      'The owner is told every time this happens. Only continue if they genuinely cannot do this themselves.',
+    ]),
+    el('p', { class: 'status status-warn' }, [
+      'Reading the owner’s items is not built yet. This confirms the pieces fit and that you could open the vault — it does not show you what is inside. If something goes wrong you can open it again; nothing here is used up.',
     ]),
     el('p', {}, [
       buttonEl('Open it now', () => {
@@ -1317,13 +1476,25 @@ function renderRelease(policyId: string): void {
           }
           // The recovered key is NOT retained and NOT sent anywhere. What this
           // release proves is that the reconstruction works; reading the
-          // owner's items with it is the next screen's job and is deliberately
-          // not part of the one-shot action.
+          // owner's items with it is the next screen's job and deliberately
+          // not part of this action.
+          //
+          // WIPING IT IS ONLY SAFE BECAUSE COLLECTION REPEATS (M27 PR3a).
+          // Discarding the one copy of a key the server would never hand over
+          // again is what made the old ending sentence true — it told the
+          // grantee the arrangement was finished, and it was describing a dead
+          // end this screen had just walked them into. That sentence is
+          // DESCRIBED rather than quoted, per the ban in `fences.spec.ts`; the
+          // first draft of this comment quoted it across a line wrap, which the
+          // substring search missed only because of where the line happened to
+          // break. A fence that a re-flow can turn red is a fence with a
+          // coincidence in it.
+          //
           wipe(recovered.data.masterKeyBytes);
           replaceChildren(
             note,
             status(
-              'The recovery key was reconstructed on this device, and the owner has been told. It was not kept: reading their items with it is not built yet, and this arrangement is now spent.',
+              'The recovery key was reconstructed on this device, and the owner has been told. It was not kept — reading their items with it is not built yet — and you can open this again if you need to.',
               'ok',
             ),
           );

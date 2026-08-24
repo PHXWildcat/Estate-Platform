@@ -167,11 +167,24 @@ denied grantee back in on its own. That is the whole point: a cooldown just
 tells a patient attacker how long to wait, and waiting the owner out is the
 attack.
 
-**Release is one-shot.** Once the platform half is handed over, the escrow is
-spent — the owner has to build a new one. `revoked` cannot un-ring that bell,
-so on the owner's next unlock the client is expected to re-split a fresh
-recovery key (and may rotate the master key, which is cheap because per-item
-keys mean rewrapping keys rather than re-encrypting blobs).
+**Release is RE-COLLECTABLE** (M27 PR3a; this paragraph said the opposite from
+M6 until then). Handing over the platform half consumes nothing: `markReleased`
+writes `status` and `released_at` and leaves `key_share_ct`, `platform_part`
+and `wrapped_master_key_recovery` untouched, so a grantee whose collection is
+interrupted collects again rather than losing the arrangement in the one
+scenario it exists for. `release` admits `status IN ('waiting','released')`
+with `releases_at` set and elapsed.
+
+What no action can un-ring is a collection that SUCCEEDED — the material left
+the service and the master key was rebuilt on the grantee's device. Both stops
+end only the ability to hand over MORE: `deny` (one tap, no step-up, admitted
+on a released policy since PR3a) and `revoke` (step-up gated, no status guard).
+Recovery from a genuine compromise is still the owner re-splitting a fresh
+recovery key on their next unlock, and may rotate the master key, which is
+cheap because per-item keys mean rewrapping keys rather than re-encrypting
+blobs. Every collection re-notifies the owner, re-emits
+`vault.emergency.released` and re-runs the settlement gate, which is what makes
+repeating it safe. See docs/03 §6yy.
 
 **Key authenticity is the owner's job, and the API is shaped to make that
 visible.** The service hands out a grantee's public key, and the owner's client

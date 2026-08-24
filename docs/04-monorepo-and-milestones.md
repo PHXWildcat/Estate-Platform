@@ -731,8 +731,15 @@ shaped the way it is:
   tap from a push notification, possibly on a locked phone. A step-up challenge
   between an owner and "no" is a control that defeats itself. Configure, re-arm
   and revoke *are* step-up gated per docs/01 §5.
-- **Release is one-shot.** Handing over the platform half spends the escrow;
-  `revoked` cannot un-ring that bell, so recovery is re-splitting a fresh key.
+- **Release is RE-COLLECTABLE** (M27 PR3a; this read "release is one-shot" from
+  M6 until then). Handing over the platform half does not spend anything —
+  `markReleased` writes `status` and `released_at` and leaves `key_share_ct`,
+  `platform_part` and `wrapped_master_key_recovery` untouched — so a grantee
+  whose collection is interrupted can simply collect again. What no action can
+  un-ring is a collection that SUCCEEDED: neither `deny` nor `revoke` reaches
+  the master key already rebuilt on the grantee's device, and both end only the
+  arrangement's ability to hand over more. Recovery from a genuine compromise is
+  still re-splitting a fresh key. docs/03 §6yy.
 - **Key authenticity is in scope.** The service serves a grantee's public key
   and the owner's client confirms its short fingerprint out of band before
   sealing to it; the key each share was sealed to is recorded, so a later
@@ -8688,6 +8695,13 @@ spent"; `emergency.service.ts` then refuses re-release at four sites with
 incapacitated — the grantee burns the escrow, receives no data, and the only
 recovery is the owner re-arming, which is exactly what they cannot do. Both
 halves were re-verified at kickoff rather than taken from the queue row.
+(SCOPED AT KICKOFF, and PR3a closed it: release admits
+`status IN ('waiting','released')`, so nothing spends itself; TWO
+`already_released` sites remain, in `blockReason` and `rearm`, not four; and
+the client copy quoted above is gone, its spellings banned as data. Recorded
+here in the kickoff's tense on the same precedent as the paragraph below —
+this section is the milestone's scoping record and the PR3a entry carries what
+changed.)
 
 **And the second half has the same shape.**
 `packages/auth-guard/src/session.ts` refuses `deleteItem` to the extension
@@ -8856,9 +8870,50 @@ paired CHECK and no writer is a broken table.
   refused with a remedy the page did not offer — unchanged since M15 PR2, fixed
   here because a history nobody can reach is not a restore surface. docs/03
   §6xx.
-- **PR3 — the grantee READ.** The route authorized by the released policy row,
-  the Cedar grantee attribute in the vault's own domain, release made
-  re-collectable, and the notification kind with its producer.
+- **PR3a — release becomes RE-COLLECTABLE.** SHIPPED. Split out of PR3 because
+  it is a SEMANTICS change the grantee read depends on and can be proved
+  without it: PR3's read route is authorized by a `status='released'` row, and
+  a status a grantee could reach only once is a poor thing to hang a reading
+  surface on. `release` admits `status IN ('waiting','released')` as ONE
+  predicate — removing only the `already_released` throw left the caller in the
+  same dead end under `not_requested`, which the PR0 review reproduced against
+  a real database. `deny` admits on a released policy in the same change,
+  because leaving the only ungated stop refused while the permissive action
+  repeated would invert docs/03's rule in the paragraph that cites it.
+  **WIDENED BY WHAT THE SERVICE HALF ALONE WOULD HAVE SHIPPED.** §6uu's safety
+  argument is that the owner can stop a released policy — true of the service
+  and false of the product: `policyRow` gated deny on `waiting` and revoke on
+  `!== 'released'`, so the one status where a grantee can now collect with one
+  tap rendered the owner NO controls at all. `granteeActions` had the mirror
+  gap and offered collection on `waiting` alone, leaving the new capability
+  with zero callers on the surface it exists for. Both are fixed here, with
+  copy that does not claim a denial undid the release. **The status
+  tables are now READ OUT OF THE DDL's CHECK constraint** rather than
+  hand-listed under a comment claiming they were pinned to it, each asserting
+  set equality with it before reading a button, so a status added to the CHECK
+  reddens each of them by name until somebody decides what the screens do with
+  it. That makes `apps/vault-web` reach outside its package, so it gains the
+  canonical `turbo.json` test inputs.
+  **And two test doubles were the last things enforcing the old rule**, staying
+  green against a server that no longer answers `already_released` from
+  `/release`. **THE LIVE DRIVE THEN FOUND TWO SENTENCES THE SWEEP COULD NOT** —
+  the thirteenth consecutive milestone in which it found something no suite
+  could see. `renderRelease`'s warning still said continuing spent the
+  arrangement and could be done once, in a third wording that a search for the
+  two known spellings could never match, on the last screen a grantee reads
+  before acting; the spellings are now banned as DATA in `fences.spec.ts`. And
+  `describeGranteeStatus` fell through to the OWNER's vocabulary, so a denied
+  row told the GRANTEE "stopped by you" and a configured one said "ready if you
+  cannot" — one false about who acted, one pointing its pronoun at the wrong
+  person, both found one screen after that function grew its first
+  grantee-specific case. docs/03 §6yy.
+- **PR3b — the grantee READ.** The route authorized by the released policy row,
+  the Cedar grantee attribute in the vault's own domain (a ninth action id in
+  its own `vault.cedar`), and the `vault.read_by_grantee` notification kind with
+  its producer — emitted once per collection rather than per read.
+  (`vault.emergency.items_read` is the AUDIT action PR0 added; an earlier draft
+  of this line named it as the notification, which it has never been — the kind
+  CHECK in `002_emergency_access.sql` does not contain it.)
 - **PR4 — the grantee's reading surface** on the vault origin.
 - **PR5 — the security review**, asking the M25 PR5 question of M27's own
   controls, plus the live drive on the isolated vault origin.
