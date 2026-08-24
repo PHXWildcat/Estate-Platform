@@ -8812,17 +8812,46 @@ paired CHECK and no writer is a broken table.
   ciphertexts and emitted nothing — and replaced an index fence that was
   EXPLAINing a query written out in the test rather than the one the repo
   issues. docs/03 §6ww.
-- **A STATED DEVIATION, PR1b to PR2.** PR1b ships four routes whose consumer
-  is PR2, against the repo's "ship a route in the same change as its consumer"
-  rule. Recorded here rather than left to be discovered, and carried in
-  `packages/auth-guard/test/route-consumers.spec.ts` as
-  `EXEMPT_RESTORE_SURFACE` with the terms it leaves on. The reason it is not
+- **A STATED DEVIATION, PR1b to PR2 — DISCHARGED BY PR2.** PR1b shipped four
+  routes whose consumer was PR2, against the repo's "ship a route in the same
+  change as its consumer" rule. Recorded here rather than left to be
+  discovered, and carried in `packages/auth-guard/test/route-consumers.spec.ts`
+  as `EXEMPT_RESTORE_SURFACE` with the terms it left on. The reason it was not
   the zero-caller surface that rule exists to catch: `session.ts` has refused
   `deleteItem` to the extension audience since M16 BECAUSE an overwrite is
   "recoverable", which was a security argument resting on a capability nobody
-  had built. The consumer that argument needed was the verb existing. What is
-  still missing is a screen, and §6j stays open and M27-owned on that.
-- **PR2 — the owner's restore surface** on the vault origin.
+  had built. The consumer that argument needed was the verb existing.
+  **PR2 wrote the screen and DELETED the constant** — an exemption that
+  outlives its deadline is a permanent hole wearing a temporary name, so the
+  discharge is the constant's absence rather than a note beside it. The
+  deletion carries a gravestone comment naming what stood there and why, on
+  this repo's habit of leaving the argument where the next reader will look.
+- **PR2 — the owner's restore surface** on the vault origin. SHIPPED, and it
+  closes §6j: Deleted items and one item's History, both reached from the vault
+  list, calling all four PR1b routes with the owner's own vault session.
+  Widened during the PR by three findings. **The consumer fence was
+  REWRITE-BLIND** — it matched a URL template against the name of the file
+  DECLARING the route, so a caller on the isolated origin (whose paths are
+  `/api/vault/…` and are rewritten at the edge) could never be seen; with the
+  screen written, the old matcher named three of the four routes and missed
+  `/versions` entirely. `fileMatchesPath` replaces it and the exemption is
+  gone. **Three refusals shared one remedy** — 403, 404 and 409 all reached the
+  reader as "reload and try again", including the one that can never succeed on
+  retry, so `VERSION_CONFLICT`, `ITEM_UNRESTORABLE`, `VERSION_NOT_FOUND` and
+  `FORBIDDEN` are now distinct tokens with a mapping table and four positive
+  controls. **A "current version" row was designed and does not exist** — the
+  capture trigger reads `OLD`, so no image ever carries the live revision; the
+  label and its filter were removed rather than shipped as a predicate guarding
+  an unreachable case. History PAGES (the service's page is 50, its ceiling
+  100) and the cursor is handed back verbatim. The live drive then found two
+  more, neither of them PR2's own code. **Capture times rendered in UTC** — an
+  item edited at 17:00 on a Sunday reported itself changed on Monday, and the
+  residual excusing it named a dependency fence that never applied to `Date`.
+  **And the UNLOCK could not ask for a factor**: `srp/start` is step-up gated
+  and `renderUnlock` called `unlock` bare, so a five-minute-old vault screen
+  refused with a remedy the page did not offer — unchanged since M15 PR2, fixed
+  here because a history nobody can reach is not a restore surface. docs/03
+  §6xx.
 - **PR3 — the grantee READ.** The route authorized by the released policy row,
   the Cedar grantee attribute in the vault's own domain, release made
   re-collectable, and the notification kind with its producer.

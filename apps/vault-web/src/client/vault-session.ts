@@ -486,10 +486,9 @@ export class VaultSession {
     // these four routes and silently missed this one.
     const query =
       cursor === undefined ? '?limit=50' : `?limit=50&cursor=${encodeURIComponent(cursor)}`;
-    const page = await request<VaultVersionPage>(
-      `/api/vault/items/${itemId}/versions` + query,
-      { vaultSession: token },
-    );
+    const page = await request<VaultVersionPage>(`/api/vault/items/${itemId}/versions` + query, {
+      vaultSession: token,
+    });
     if (!page.ok) {
       return page;
     }

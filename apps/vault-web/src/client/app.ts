@@ -30,16 +30,23 @@ import { DEFAULT_LENGTH, entropyBits, generatePassword } from './generator.js';
 import { promptForStepUp } from './stepup.js';
 import type { ItemContent } from './item-content.js';
 import { forgetSecretKey, recallSecretKey, rememberSecretKey } from './secret-key-store.js';
-import { IDLE_LOCK_MS, VaultSession, type OpenedItem } from './vault-session.js';
+import {
+  IDLE_LOCK_MS,
+  VaultSession,
+  type OpenedItem,
+  type OpenedVersion,
+} from './vault-session.js';
 
 /**
  * The vault surface (M15 PR2).
  *
  * Screens are functions that replace the contents of one container. There is no
- * router and no framework: the vault has five states (no vault, locked,
- * unlocked, editing an item, settings) and a state variable reads more honestly
- * than a routing table would. Every node is built through `dom.ts`, so the
- * origin's `trusted-types 'none'` policy stays enforceable — see that module.
+ * router and no framework: a state variable reads more honestly than a routing
+ * table would. The screens are deliberately NOT counted or listed here — the
+ * set has grown in M15, M18, M23 and M27, and a hand-maintained list beside a
+ * thing that grows is this repo's most repeated defect. Every node is built
+ * through `dom.ts`, so the origin's `trusted-types 'none'` policy stays
+ * enforceable — see that module.
  *
  * WHAT THIS FILE DELIBERATELY NEVER DOES: touch a key. `VaultSession` owns all
  * of it, and this module passes user input in and gets rendered values out.
@@ -109,6 +116,23 @@ function messageFor(code: ApiFailure): string {
       return 'This item changed since you opened it. Reload and try again.';
     case 'NOT_FOUND':
       return 'That item is no longer there.';
+    // M27 PR2. THE THREE RESTORE REFUSALS, and the whole reason they are named
+    // separately is that they call for three different things. Reloading fixes
+    // the first, nothing fixes the second, and the third leaves the reader
+    // exactly where they are.
+    case 'VERSION_CONFLICT':
+      return 'This item changed while you were looking at its history. Reload the history and try again.';
+    case 'ITEM_UNRESTORABLE':
+      // NOT "try again". The keyset that opened this blob was destroyed when
+      // the vault was reset, so no retry can ever succeed and saying otherwise
+      // sends someone back to press the same button forever.
+      return 'This item cannot be brought back. Its contents were destroyed when the vault was reset, and nothing can decrypt them now.';
+    case 'VERSION_NOT_FOUND':
+      // The ITEM is fine and is still on screen — saying it is "no longer
+      // there" would be a false sentence about something visibly present.
+      return 'That version is no longer available. Refresh the history to see what is still there.';
+    case 'FORBIDDEN':
+      return 'You are not allowed to do that.';
     case 'INVALID_REQUEST':
       return 'Something about that was not accepted. Check the fields and try again.';
     case 'RECIPIENT_UNVERIFIED':
@@ -385,13 +409,28 @@ async function renderUnlock(): Promise<void> {
       const secretKeyText = remembered
         ? await formatSecretKey(remembered)
         : secret.input.value.trim();
-      const opened = await session
-        .unlock(account.userId, password.input.value, secretKeyText)
-        // A mistyped Secret Key throws in `parseSecretKey` before any network
-        // call. It is the SAME answer as a wrong password by design, so it
-        // lands on the same message rather than telling the user which half of
-        // 2SKD they got wrong.
-        .catch(() => ({ ok: false as const, code: 'UNAUTHENTICATED' as const }));
+      // CAPTURED BEFORE THE RUN, because `withStepUp` may run it twice and the
+      // step-up prompt renders over this form in between.
+      const typedPassword = password.input.value;
+      const userId = account.userId;
+      // THE UNLOCK ELEVATES LIKE EVERY OTHER ACTION ON THIS ORIGIN (M27 PR2).
+      // `srp/start` and `srp/verify` both carry `StepUpGuard`, whose 403
+      // `stepup_required` exists — its own comment says so — to tell a
+      // well-behaved client to elevate. This screen was the one that did not:
+      // it called `unlock` bare, so once the vault-open step-up aged past five
+      // minutes the refusal arrived as "that action needs a fresh identity
+      // check, and it was not completed" with nothing on the page that could
+      // complete it. Found by driving the stack; predates PR2 (M15 PR2) and is
+      // fixed here because this is the screen every restore surface sits behind.
+      const opened = await withStepUp(note, 'Unlocking your vault', () =>
+        session
+          .unlock(userId, typedPassword, secretKeyText)
+          // A mistyped Secret Key throws in `parseSecretKey` before any network
+          // call. It is the SAME answer as a wrong password by design, so it
+          // lands on the same message rather than telling the user which half of
+          // 2SKD they got wrong.
+          .catch(() => ({ ok: false as const, code: 'UNAUTHENTICATED' as const })),
+      );
       password.input.value = '';
       secret.input.value = '';
       submit.removeAttribute('disabled');
@@ -443,6 +482,10 @@ async function renderVault(): Promise<void> {
         () => renderItem(item),
       ),
       el('span', { class: 'item-type' }, [labelFor(item.itemType)]),
+      // FROM THE LIST, NOT FROM THE EDIT FORM. `renderItem` is a populated
+      // form and this origin has no dirty check — entering history from inside
+      // it would drop a half-typed secret with no warning.
+      quietButton('History', () => void renderItemHistory(item)),
     ]),
   );
 
@@ -464,10 +507,247 @@ async function renderVault(): Promise<void> {
         })();
       }),
       ' ',
+      quietButton('Deleted items', () => void renderDeletedItems()),
+      ' ',
       quietButton('Settings', () => renderSettings()),
       ' ',
       quietButton('Emergency access', () => void renderEmergency()),
     ]),
+  );
+}
+
+// ------------------------------------------------- restore surface (M27 PR2)
+
+/**
+ * A CAPTURE TIME A PERSON CAN READ, IN THEIR OWN ZONE.
+ *
+ * FOUND BY DRIVING THE REAL APP, and the first draft of this function was the
+ * defect. It trimmed the ISO string the server sent — `2026-08-24T00:00:31Z`
+ * became `2026-08-24 00:00` — on the reasoning that `package.json` fences
+ * dependencies to exactly `['zod']` so there is no formatter available. The
+ * premise was wrong: `Date` is the RUNTIME, not a dependency, and nothing about
+ * the fence forced UTC. The consequence was not a few hours of skew but a wrong
+ * DATE: the live drive edited an item at 17:00 on a Sunday and the history said
+ * it happened on Monday. For every owner west of UTC editing in the afternoon
+ * that is wrong every single day, on the one screen whose entire job is telling
+ * them WHEN something changed.
+ *
+ * The parts are read off the Date, not off the string, so the same instant
+ * spelled two ways renders identically — that equivalence is what the spec
+ * asserts, because it holds in every zone including the CI runner's UTC, where
+ * an expected-string assertion would pass against the trim that caused this.
+ *
+ * A value that is not a time renders as EMPTY rather than "Invalid Date", on
+ * `apps/web/src/lib/datetime.ts`'s rule: both are a failure to show a time and
+ * only one of them looks like a fault in the owner's own vault. Callers append
+ * the separator only when there is something to separate.
+ */
+function captureTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '';
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` +
+    ` ${pad(at.getHours())}:${pad(at.getMinutes())}`
+  );
+}
+
+/** The label a row shows, for an item or a version that may not have opened. */
+function titleOf(opened: { content: ItemContent; unreadable?: boolean }, noun: string): string {
+  if (opened.unreadable) return `(this ${noun} could not be read)`;
+  return opened.content.title || '(untitled)';
+}
+
+/**
+ * WHAT THE OWNER DELETED, AND CAN STILL GET BACK (M27 PR2).
+ *
+ * ONE CLICK, NO CEREMONY, AND THAT IS THE POINT. `deleteItem` is the one item
+ * route behind a step-up; bringing the item back carries none, and this screen
+ * must not invent one. A confirmation dialog in front of the UNDO of a gated
+ * destruction would make the protective action harder than the permissive one,
+ * which is the inversion this milestone exists to close.
+ *
+ * ROWS THAT WILL NOT DECRYPT STILL OFFER THE BUTTON, unlike the version screen
+ * below. Undelete writes no ciphertext — it clears `deleted_at` and nothing
+ * else — so offering it on a row this client cannot open is honest: the item
+ * comes back exactly as unreadable as it was, and hiding it would leave the
+ * owner unable to see that it exists at all.
+ */
+async function renderDeletedItems(notice?: {
+  readonly text: string;
+  readonly tone?: 'ok' | 'warn' | 'error';
+}): Promise<void> {
+  try {
+    session.requireVaultToken();
+  } catch {
+    await renderUnlock();
+    return;
+  }
+
+  // Carried IN rather than left behind: every action here re-renders, and a
+  // note written before that read is destroyed by it (the app.ts:499-503 rule).
+  const note = el('div');
+  const listed = await session.listRestorable();
+  if (!listed.ok) {
+    replaceChildren(
+      main(),
+      el('h1', {}, ['Deleted items']),
+      // NEVER the empty-state sentence. A read that was refused and a vault
+      // with nothing deleted are different facts with different remedies.
+      status(`We could not load your deleted items just now. ${messageFor(listed.code)}`, 'error'),
+      el('p', {}, [quietButton('Back', () => void renderVault())]),
+    );
+    return;
+  }
+
+  const items = listed.data;
+  const rows = items.map((item) =>
+    el('li', { class: 'item' }, [
+      el('span', {}, [titleOf(item, 'item')]),
+      el('span', { class: 'item-type' }, [labelFor(item.itemType)]),
+      quietButton('Bring it back', () => {
+        void (async () => {
+          const back = await session.undelete(item.id);
+          if (!back.ok) {
+            replaceChildren(note, status(messageFor(back.code), 'error'));
+            return;
+          }
+          await renderDeletedItems({
+            text: `${titleOf(back.data, 'item')} is back in your vault.`,
+          });
+        })();
+      }),
+    ]),
+  );
+
+  replaceChildren(
+    main(),
+    el('h1', {}, ['Deleted items']),
+    items.length === 0
+      ? status('Nothing you have deleted is waiting to come back.')
+      : el('ul', { class: 'items' }, rows),
+    el('p', {}, [quietButton('Back', () => void renderVault())]),
+    note,
+    ...(notice ? [status(notice.text, notice.tone ?? 'ok')] : []),
+  );
+}
+
+/**
+ * ONE ITEM'S CAPTURED PAST (M27 PR2).
+ *
+ * EVERY VERSION THE SERVER RETURNS IS OFFERED, and there is no "current" row to
+ * withhold. The capture trigger reads OLD, so an image always carries the
+ * revision the row had BEFORE the write that captured it — every image's
+ * revision is strictly below the live one, and the version you are already at
+ * has no image at all. The server's no-op arm is unreachable from here by
+ * ABSENCE rather than by a filter, which is the shape this repo prefers; the
+ * spec asserts that absence instead of testing a branch that cannot run.
+ *
+ * REACHED FROM THE VAULT LIST, NEVER FROM THE EDIT FORM. `renderItem` is a
+ * populated `<form>` and this origin has no dirty check, no cleanup hook and no
+ * confirm — `replaceChildren` would silently drop a half-typed secret. It is
+ * also why "Back" returns to the list rather than to the item: handing a reader
+ * back a PRE-restore `OpenedItem` is the one path that bricks a row, because a
+ * later edit would seal against a `blobVersion` the row no longer has.
+ *
+ * THIS ONE PAGES. The server's page is 50 and its ceiling 100, so a
+ * much-edited item would otherwise show a truncated past with nothing saying
+ * so. A successful restore returns the reader to the first page deliberately:
+ * the history it was reading has changed underneath it.
+ */
+async function renderItemHistory(
+  item: OpenedItem,
+  opts?: { readonly cursor?: string; readonly loaded?: readonly OpenedVersion[] },
+  notice?: { readonly text: string; readonly tone?: 'ok' | 'warn' | 'error' },
+): Promise<void> {
+  try {
+    session.requireVaultToken();
+  } catch {
+    await renderUnlock();
+    return;
+  }
+
+  const note = el('div');
+  const page = await session.itemVersions(item.id, opts?.cursor);
+  if (!page.ok) {
+    replaceChildren(
+      main(),
+      el('h1', {}, ['History']),
+      status(`We could not load this item's history. ${messageFor(page.code)}`, 'error'),
+      el('p', {}, [quietButton('Back', () => void renderVault())]),
+    );
+    return;
+  }
+
+  const versions = [...(opts?.loaded ?? []), ...page.data.versions];
+  const rows = versions.map((version) =>
+    el('li', { class: 'item' }, [
+      el('span', {}, [titleOf(version, 'version')]),
+      el('span', { class: 'item-type' }, [
+        // The separator belongs to the time, not to the type: an unparseable
+        // `versionedAt` must not leave a row reading "Password · ".
+        labelFor(version.itemType) +
+          (captureTime(version.versionedAt) === '' ? '' : ` · ${captureTime(version.versionedAt)}`),
+      ]),
+      // A VERSION THIS CLIENT CANNOT OPEN IS NEVER OFFERED. Restoring it would
+      // write ciphertext nobody can read over live content — the one action on
+      // this screen that destroys something. The row still shows, so the owner
+      // can see the past exists; only the button is withheld.
+      ...(version.unreadable
+        ? []
+        : [
+            quietButton('Put this version back', () => {
+              void (async () => {
+                // `item.revision` is the LIVE row's — the concurrency token.
+                // `version.revision` names the image. Different jobs, and the
+                // spec pins both against a fixture where they differ.
+                const restored = await session.restoreVersion(
+                  item.id,
+                  version.revision,
+                  item.revision,
+                );
+                if (!restored.ok) {
+                  replaceChildren(note, status(messageFor(restored.code), 'error'));
+                  return;
+                }
+                // The FRESH item is adopted. Re-rendering against the old one
+                // would leave a later edit sealing under a stale blobVersion.
+                const when = captureTime(version.versionedAt);
+                await renderItemHistory(restored.data, undefined, {
+                  text:
+                    (when === ''
+                      ? 'Put back the version you chose.'
+                      : `Put back the version from ${when}.`) +
+                    ' The version you replaced is still in this history.',
+                });
+              })();
+            }),
+          ]),
+    ]),
+  );
+
+  const next = page.data.nextCursor;
+  replaceChildren(
+    main(),
+    el('h1', {}, ['History']),
+    el('p', { class: 'field-hint' }, [titleOf(item, 'item')]),
+    versions.length === 0
+      ? status('This item has not been changed since you created it.')
+      : el('ul', { class: 'items' }, rows),
+    el('p', {}, [
+      quietButton('Back', () => void renderVault()),
+      ...(next === null
+        ? []
+        : [
+            ' ',
+            quietButton('Show older', () => {
+              // The cursor goes back VERBATIM — never parsed, never built.
+              void renderItemHistory(item, { cursor: next, loaded: versions });
+            }),
+          ]),
+    ]),
+    note,
+    ...(notice ? [status(notice.text, notice.tone ?? 'ok')] : []),
   );
 }
 

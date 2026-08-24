@@ -1442,7 +1442,7 @@ CLAUDE.md decision log; the security-relevant shape is:
 
 **Residuals carried, not closed.**
 
-- **[OWNER: M27]** *An unlocked extension can overwrite every item, and the restore surface
+- **[CLOSED: §6xx]** *An unlocked extension can overwrite every item, and the restore surface
   it is recoverable BY has no screen yet.* `deleteItem` stays refused, so the
   destructive verb is out, and `vault_items_versions` captures BEFORE UPDATE OR
   DELETE. **M27 PR1b MOVED THE FIRST HALF OF THIS AND NOT THE SECOND**, and the
@@ -1465,7 +1465,12 @@ CLAUDE.md decision log; the security-relevant shape is:
   outside the mechanism built to make deferrals visible. It is M27's headline scope,
   and it is the security argument `packages/auth-guard/src/session.ts` rests
   `deleteItem`'s refusal to the extension audience on — a refusal justified by a
-  capability nobody had built.
+  capability nobody had built. **CLOSED by M27 PR2 (§6xx)**: the owner's own
+  History and Deleted-items screens on the isolated origin call all four
+  routes, so recovery no longer means driving the API by hand. The bullet is
+  kept rather than deleted — it is the only place the whole arc from M16's
+  refusal to M27's screen is written down, and the sentence a later milestone
+  would need to re-derive if it were gone.
 - **[OWNER: M26]** *A paired-devices row cannot identify a device.* The
   headline residual it sits under — "no user-reachable session revocation" — is
   genuinely closed by PR1's list with per-row revoke, and by §6l and §6m for
@@ -5888,7 +5893,11 @@ built is an argument resting on nothing, and it stood for eleven milestones.
 /v1/vault/items/:itemId/restore` are that reader and that verb. The half this
 PR does NOT close is reachability: the routes are live, the SCREEN is PR2, and
 §6j stays open and owned by M27 on exactly that difference rather than being
-retagged early.
+retagged early. (**PR2 BUILT IT — §6xx**, and §6j is retagged there. This
+paragraph keeps PR1b's tense, on the same precedent §6uu's PR0 paragraph
+follows: what a delta recorded at the time it was written is evidence about
+the order things happened in, and back-dating it would erase the very gap the
+sentence exists to name.)
 
 **VERSION RESTORE, NOT UNDELETE, IS THE ONE THAT ANSWERS IT.** Both shapes
 ship, and the tests say which is which. An extension can overwrite every item
@@ -6010,7 +6019,12 @@ drives the interleaving that used to be fatal.
   than by a filter on the reader, which is the direction this repo prefers, and
   the 404 pairing is pinned by test. A filter would additionally have to decide
   what to tell the owner about their own history, which is a screen question
-  PR2 owns.
+  PR2 owns. **ANSWERED BY PR2 (§6xx): it tells them nothing, because it cannot
+  reach them.** A reset retires every item, so a reset-killed row is not on the
+  vault list and has no History button; the only screen that names it at all is
+  Deleted items, where "Bring it back" is offered and the server's
+  `ITEM_UNRESTORABLE` is the sentence the owner reads. The versions reader
+  keeps no filter and gains no caller.
 - **[OWNER: M41]** *The versions reader returns every prior ciphertext, and a
   crypto-shred does not reach further than it did.* Restoring is bounded by the
   keyset, so a shredded vault's images are dead — but a version list is a
@@ -6019,3 +6033,111 @@ drives the interleaving that used to be fatal.
   the detail, so a burst detector sees one access where a caller took fifty
   ciphertexts. Owned by the milestone that already carries the read-before-authz
   sweep, since both are about what a read reports rather than what it permits.
+
+## 6xx. Threat-model delta — M27 PR2, the owner's restore surface (2026-08-23)
+
+**§6j IS CLOSED HERE, ELEVEN MILESTONES AFTER IT WAS WRITTEN.** PR1b gave
+`session.ts`'s refusal a capability to rest on; this PR gives the owner a way to
+reach it. Two screens on the isolated origin — Deleted items and one item's
+History — call all four restore routes with the owner's own vault session, an
+audience the extension cannot hold. The property that makes the refusal sound is
+now stated twice and enforced once: the credential that can overwrite an item
+cannot roll one back, and the credential that can roll one back is minted only
+by an SRP unlock on a different host.
+
+**THREE REFUSALS THAT USED TO SHARE ONE SENTENCE.** Before this PR the client
+mapped 403, 404 and 409 to `FORBIDDEN`, `NOT_FOUND` and `CONFLICT`, so a stale
+concurrency token, a version that had been superseded, and an item whose keyset
+was destroyed by a vault reset all reached the reader as "reload and try again".
+One of those three can never succeed on retry. `ITEM_UNRESTORABLE` now says the
+contents were destroyed when the vault was reset and does NOT say "try again",
+because sending someone back to press the same button forever is the failure
+mode the M9 rule exists to prevent. `VERSION_NOT_FOUND` deliberately does not
+borrow `NOT_FOUND`'s sentence: the ITEM is on screen while its version is gone,
+and "that item is no longer there" would be a false statement about something
+the reader can see. The mapping is a table in `client.spec.ts` with four
+positive controls, so an added token cannot quietly inherit a neighbour's copy.
+
+**THE ONE ACTION ON THIS SURFACE THAT CAN DESTROY SOMETHING IS THE ONE THAT IS
+WITHHELD.** A version whose blob this client cannot open is still listed — the
+owner is entitled to know their past exists — but it carries no restore button.
+Putting an unopenable image back would write ciphertext nobody can read over
+live content, converting a readable item into a dead one through a supported
+route. Undelete keeps its button on an unreadable row, and the asymmetry is the
+point: undelete writes no ciphertext at all, so it cannot make anything worse.
+
+**HISTORY IS REACHED FROM THE LIST AND NEVER FROM THE EDIT FORM, AND THAT IS A
+CORRECTNESS BOUNDARY RATHER THAN A LAYOUT CHOICE.** This origin has no dirty
+check, no cleanup hook and no confirm dialog, so entering history from inside a
+populated form would drop a half-typed secret with nothing said. The return path
+matters more: handing a reader back a PRE-restore `OpenedItem` would leave the
+next save sealing under a `blobVersion` the row no longer has, and the item would
+land permanently unopenable with nothing in the response saying so. Both screens
+return to the vault LIST, which re-reads.
+
+**THE TWO INTEGERS STAY IN THEIR OWN LANES ACROSS THE WIRE.** `If-Match` carries
+the LIVE row's `revision`; the request body carries the IMAGE's. The screen spec
+pins both against a fixture where the two genuinely disagree and where no image
+ever carries the live revision — the capture trigger reads `OLD`, so the version
+the reader is already at has no image at all. That absence is why every returned
+row may be offered without a "current" filter: the server's no-op arm is
+unreachable from this screen by construction rather than by a predicate someone
+has to maintain.
+
+**THE HISTORY CURSOR IS OPAQUE AND IS HANDED BACK VERBATIM.** It is never
+parsed, never rebuilt from a row, and never interpolated into the path — the
+query is APPENDED so the route template stays legible to the consumer fence.
+That fence was itself the finding: it matched a URL template against the
+*declaring* file's name, so a route whose only caller lives on this origin read
+as unconsumed, and a stale exemption constant had been papering over four routes.
+`fileMatchesPath` replaces it, `EXEMPT_RESTORE_SURFACE` is deleted, and the
+measured proof is that with the consumer written the fence names all four routes
+where the old one named three and missed the fourth.
+
+**AND THE UNLOCK ITSELF NOW ELEVATES, WHICH IT HAD NEVER DONE.** Driving the
+stack for this PR found the last gated action on this origin that could not ask
+for a factor. `POST /v1/vault/srp/start` and `/srp/verify` both carry
+`StepUpGuard`, and its 403 `stepup_required` exists — the guard's own comment
+says so — to tell a well-behaved client to elevate. `renderUnlock` called
+`unlock` bare, so once the vault-open step-up aged past five minutes the owner
+was told "that action needs a fresh identity check, and it was not completed" on
+a page holding nothing that could complete one. The vault-open handoff had NOT
+expired; only the factor had, and the two are told apart nowhere on the screen.
+This predates PR2 — unchanged since M15 PR2 — and is fixed here because this
+screen is what every restore surface sits behind: a history nobody can reach is
+not a restore surface. It is the same finding the M15 review recorded about
+enrollment arriving a third time, which is what "a rule applied to one member of
+a category is a rule half-applied" costs when the category is not swept.
+
+### Residuals
+
+- **[ACCEPTED]** *A capture time is shown to the minute, with no zone label and
+  no seconds.* The first draft of this bullet recorded something worse and was
+  WRONG about its own premise: `captureTime` trimmed the ISO string and rendered
+  UTC, justified by `apps/vault-web/package.json` fencing dependencies to
+  exactly `['zod']`. `Date` is the runtime rather than a dependency, so the
+  fence never forced it, and the live drive showed what it cost — an item edited
+  at 17:00 on a Sunday reported itself as changed on Monday, a wrong DATE on the
+  one screen whose job is saying when something changed. Fixed rather than
+  accepted; the parts are now read off the `Date`. What remains accepted is
+  smaller: the rendering carries no zone label, so an owner reading their own
+  history on a device set to the wrong zone reads a consistently shifted past,
+  and two versions captured in the same minute are indistinguishable by their
+  timestamps. Bounded because ORDER is what a restore decision rests on and the
+  list is server-ordered by `revision`, not re-sorted by the rendered text.
+- **[ACCEPTED]** *Neither undelete nor version restore is behind a step-up, and
+  delete is.* This is the asymmetry the design rule asks for rather than a gap
+  in it: the protective action must never be harder than the permissive one, and
+  every action on this surface moves an item back toward the owner. Restore does
+  overwrite live content, which is why the unopenable-image case above is
+  withheld; what it cannot do is remove anything, since the write it performs is
+  itself captured before it lands.
+- **[OWNER: M39]** *The owner picks a version by time alone.* The screen lists
+  when each image was captured and its item type, and says nothing about what
+  changed. Rendering a diff would put two decrypted secrets on screen at once
+  and would need a differ this origin has no dependency budget for. The
+  consequence is a reader restoring the wrong image and needing a second restore
+  to undo it — recoverable, because the restore is itself captured, but it means
+  the surface is honest about the past without being useful for choosing within
+  it. Owned alongside §6ww's rollback-detector item, since both are about what a
+  version list tells someone rather than what it permits.
