@@ -169,6 +169,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6uu': 7,
   '6vv': 4,
   '6ww': 3,
+  '6xx': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under

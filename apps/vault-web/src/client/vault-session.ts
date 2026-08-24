@@ -73,6 +73,46 @@ interface VaultItemPage {
   nextCursor: string | null;
 }
 
+/**
+ * A captured prior image of an item (M27 PR2).
+ *
+ * `revision` is the HANDLE — the only thing that names this image, and what a
+ * restore sends back. `blobVersion` is the AEAD binding this image's ciphertext
+ * was sealed under, and the two are different numbers doing different jobs
+ * (M27 PR1a). A version list must key and order on `revision`, which is
+ * strictly increasing per row and never reused; `blobVersion` may recur and may
+ * move DOWN once a restore has happened, so ordering by it silently scrambles
+ * the history.
+ */
+export interface VaultVersionDto {
+  revision: number;
+  itemType: string;
+  blob: string;
+  blobVersion: number;
+  versionedAt: string;
+}
+
+interface VaultVersionPage {
+  versions: VaultVersionDto[];
+  nextCursor: string | null;
+}
+
+/** A captured image with its content opened. Never sent anywhere in this shape. */
+export interface OpenedVersion {
+  revision: number;
+  itemType: string;
+  blobVersion: number;
+  versionedAt: string;
+  content: ItemContent;
+  /**
+   * Same meaning as `OpenedItem.unreadable`, and one extra consequence: a
+   * version this client cannot open must not be OFFERED for restore. Putting it
+   * back would write ciphertext nobody can read over live content, which is the
+   * one action on this screen that destroys something.
+   */
+  unreadable?: boolean;
+}
+
 /** An item with its content opened — never sent anywhere in this shape. */
 export interface OpenedItem {
   id: string;
@@ -333,7 +373,7 @@ export class VaultSession {
   }
 
   async #open(vault: UnlockedVault, userId: string, row: VaultItemDto): Promise<OpenedItem> {
-    const base = {
+    return {
       id: row.id,
       itemType: row.itemType,
       // Both numbers travel: `blobVersion` opens the blob, `revision` is what a
@@ -341,23 +381,188 @@ export class VaultSession {
       blobVersion: row.blobVersion,
       revision: row.revision,
       updatedAt: row.updatedAt,
+      ...(await this.#openBlob(vault, userId, row.id, row.blob, row.blobVersion)),
     };
+  }
+
+  /**
+   * THE ONE DECRYPT, and the one place the item-content AAD is built.
+   *
+   * `#open` and the version reader both need this and must not each spell the
+   * AAD. `itemContentAad` binds `blobVersion`, so the number passed here is
+   * ALWAYS the one that travelled with this particular ciphertext — a captured
+   * image's own `blobVersion`, never the live row's. Handing it the live number
+   * would refuse every historical blob, and the refusal would look exactly like
+   * a wrong key.
+   */
+  async #openBlob(
+    vault: UnlockedVault,
+    userId: string,
+    itemId: string,
+    blob: string,
+    blobVersion: number,
+  ): Promise<{ content: ItemContent; unreadable?: boolean }> {
     try {
       const plaintext = await decryptItem(
         vault.masterKey,
-        { userId, itemId: row.id, blobVersion: row.blobVersion },
-        fromBase64(row.blob),
+        { userId, itemId, blobVersion },
+        fromBase64(blob),
       );
       const content = decodeItemContent(plaintext);
       plaintext.fill(0);
-      return { ...base, content };
+      return { content };
     } catch {
       // Either the AEAD refused (a blob that does not belong to this key or
       // this version — the anti-rollback binding working) or the content did
       // not parse. Both are shown as an unreadable ROW rather than hidden: a
-      // user must be able to see that something is there.
-      return { ...base, content: { title: '' }, unreadable: true };
+      // user must be able to see that something is there. WHICH half failed is
+      // deliberately not distinguished — `VaultDecryptionError` carries one
+      // message so the pair is never an oracle.
+      return { content: { title: '' }, unreadable: true };
     }
+  }
+
+  /**
+   * The retired items an owner may bring back (M27 PR2).
+   *
+   * DELIBERATELY NOT SORTED, unlike `list()` above. The server orders by
+   * `deleted_at DESC` and `VaultItemDto` carries no `deletedAt` at all, so this
+   * client has nothing to re-sort BY — and `updatedAt` is not it. Re-sorting on
+   * `updatedAt` would silently reorder the page against its own cursor, which
+   * pages on `deleted_at`, and produce a list that skips and repeats rows as
+   * the reader walks it. Server order is the only correct order here.
+   *
+   * ONE PAGE, at the schema maximum. `limit` is capped at 500 server-side,
+   * which is far above any plausible number of items one owner has deleted and
+   * not yet restored. Stated as a bound rather than left implicit: if a vault
+   * ever exceeds it this list truncates silently, and the cursor is already
+   * returned for the day that has to change.
+   */
+  async listRestorable(): Promise<ApiResult<OpenedItem[]>> {
+    const { vault, token, userId } = this.#requireOpen();
+    this.touch();
+    const page = await request<VaultItemPage>('/api/vault/items/restorable?limit=500', {
+      vaultSession: token,
+    });
+    if (!page.ok) {
+      return page;
+    }
+    const opened: OpenedItem[] = [];
+    for (const row of page.data.items ?? []) {
+      opened.push(await this.#open(vault, userId, row));
+    }
+    return { ok: true, data: opened };
+  }
+
+  /**
+   * One page of an item's captured history, newest first (M27 PR2).
+   *
+   * THIS ONE PAGES AND THE RESTORABLE LIST DOES NOT, and the asymmetry is
+   * measured rather than stylistic: the server's page default here is 50 and
+   * its ceiling is 100, so an item edited a hundred times would otherwise show
+   * a truncated past with nothing saying so. The two cursors are also different
+   * types — this one is a decimal `revision`, the restorable list's is opaque
+   * base64url — so they must never share a helper or a constant. 500 is legal
+   * there and a 400 here.
+   *
+   * The cursor is round-tripped VERBATIM. It is never parsed, never arithmetic
+   * is done on it, and never constructed: a cursor this client invented is the
+   * only way to reach the server's `invalid_cursor`, which is why that token
+   * gets no name and no copy.
+   */
+  async itemVersions(
+    itemId: string,
+    cursor?: string,
+  ): Promise<ApiResult<{ versions: OpenedVersion[]; nextCursor: string | null }>> {
+    const { vault, token, userId } = this.#requireOpen();
+    this.touch();
+    // THE QUERY IS APPENDED, NOT INTERPOLATED, and that is load-bearing rather
+    // than style. `route-consumers.spec.ts` scans this file for URL templates
+    // and collapses every `${…}` to `:p`; interpolating the query makes the
+    // final path segment read `versions:p`, which matches no route, and the
+    // consumer fence goes quietly blind to this call. Keeping the path a single
+    // template literal that ENDS at the route leaves it legible to that scan.
+    // Measured: with `${query}` inline, the stale-exemption sweep named three of
+    // these four routes and silently missed this one.
+    const query =
+      cursor === undefined ? '?limit=50' : `?limit=50&cursor=${encodeURIComponent(cursor)}`;
+    const page = await request<VaultVersionPage>(`/api/vault/items/${itemId}/versions` + query, {
+      vaultSession: token,
+    });
+    if (!page.ok) {
+      return page;
+    }
+    const versions: OpenedVersion[] = [];
+    for (const row of page.data.versions ?? []) {
+      versions.push({
+        revision: row.revision,
+        itemType: row.itemType,
+        blobVersion: row.blobVersion,
+        versionedAt: row.versionedAt,
+        // THIS image's own blobVersion, never the live row's.
+        ...(await this.#openBlob(vault, userId, itemId, row.blob, row.blobVersion)),
+      });
+    }
+    return { ok: true, data: { versions, nextCursor: page.data.nextCursor ?? null } };
+  }
+
+  /**
+   * Bring a retired item back (M27 PR2).
+   *
+   * NO `If-Match`, and that is the server's contract rather than an omission
+   * here: undelete writes no content, so there is no update for a stale writer
+   * to lose. Requiring a token would mean fetching one first, which makes the
+   * PROTECTIVE action harder than the `deleteItem` that created the need for it.
+   * No body either — the route takes none, and sending one would be a 400.
+   */
+  async undelete(itemId: string): Promise<ApiResult<OpenedItem>> {
+    const { vault, token, userId } = this.#requireOpen();
+    this.touch();
+    const restored = await request<VaultItemDto>(`/api/vault/items/${itemId}/undelete`, {
+      method: 'POST',
+      vaultSession: token,
+    });
+    if (!restored.ok) {
+      return restored;
+    }
+    return { ok: true, data: await this.#open(vault, userId, restored.data) };
+  }
+
+  /**
+   * Put a captured version back over live content (M27 PR2).
+   *
+   * TWO REVISIONS, AND THEY ARE NOT INTERCHANGEABLE. `ifMatch` is the LIVE
+   * row's revision — the concurrency token, proving this caller is writing over
+   * the state it last saw. `revision` in the body names the IMAGE to put back.
+   * Swapping them is not a type error and the server would answer a plausible
+   * 409, so the spec pins both against a fixture where the two numbers differ.
+   *
+   * `blobVersion` appears in neither slot. It is the AEAD binding, it may move
+   * DOWN when this succeeds, and supplying it as `If-Match` is exactly the
+   * confusion M27 PR1a split the columns to end.
+   *
+   * The RETURNED item must be adopted by the caller. `update()` seals against
+   * `blobVersion + 1` of whatever it is handed, so an edit made against the
+   * pre-restore object would encrypt under a version the row no longer has and
+   * brick it permanently, with nothing in the response saying so.
+   */
+  async restoreVersion(
+    itemId: string,
+    revision: number,
+    ifMatch: number,
+  ): Promise<ApiResult<OpenedItem>> {
+    const { vault, token, userId } = this.#requireOpen();
+    this.touch();
+    const restored = await request<VaultItemDto>(`/api/vault/items/${itemId}/restore`, {
+      method: 'POST',
+      vaultSession: token,
+      ifMatch,
+      body: { revision },
+    });
+    if (!restored.ok) {
+      return restored;
+    }
+    return { ok: true, data: await this.#open(vault, userId, restored.data) };
   }
 
   /** Create an item. The id is generated HERE — it is bound into the AAD. */

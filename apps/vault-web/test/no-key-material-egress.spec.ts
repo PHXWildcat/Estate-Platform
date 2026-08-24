@@ -110,6 +110,36 @@ function recordingTransport(): { calls: Recorded[] } {
           : reply(401, { error: 'srp_failed' }),
       );
     }
+    // THE RESTORE VERBS, BEFORE THE CREATE ARM (M27 PR2). `undelete` sends no
+    // body at all, so falling into the arm below would `JSON.parse('')`, reject
+    // the transport, and surface through api.ts's catch as an invented NETWORK
+    // failure — a double lying about an outage rather than about a shape.
+    if (path.endsWith('/undelete') && method === 'POST') {
+      return Promise.resolve(
+        reply(200, {
+          id: 'x',
+          itemType: 'password',
+          blob: '',
+          blobVersion: 1,
+          revision: 43,
+          createdAt: 'now',
+          updatedAt: 'now',
+        }),
+      );
+    }
+    if (path.endsWith('/restore') && method === 'POST') {
+      return Promise.resolve(
+        reply(200, {
+          id: 'x',
+          itemType: 'password',
+          blob: '',
+          blobVersion: 1,
+          revision: 44,
+          createdAt: 'now',
+          updatedAt: 'now',
+        }),
+      );
+    }
     if (path.startsWith('/api/vault/items') && method === 'POST') {
       const parsed = JSON.parse(body) as Record<string, unknown>;
       return Promise.resolve(
@@ -190,6 +220,46 @@ describe('no key material reaches the network', () => {
     expect(wire).not.toContain('someone@example.test');
     expect(wire).not.toContain(PASSWORD);
     expect(wire).not.toContain(enrolled.data.secretKey);
+  });
+
+  it('restores a version without sending ciphertext or key material (M27 PR2)', async () => {
+    // THE FOURTH CANARY. A restore is the one verb that WRITES content the
+    // client did not encrypt in that request — the server copies `blob_ct` and
+    // `blob_version` forward itself. So the wire should carry a revision and
+    // nothing else, and this states that in the suite that exists to state it
+    // rather than in a comment beside the call site.
+    const { calls } = recordingTransport();
+    const session = new VaultSession();
+
+    const enrolled = await session.enroll(USER, PASSWORD);
+    if (!enrolled.ok) throw new Error('enrollment failed');
+    const opened = await session.unlock(USER, PASSWORD, enrolled.data.secretKey);
+    expect(opened.ok).toBe(true);
+
+    await session.create('password', { title: ITEM_TITLE, secret: ITEM_SECRET });
+    calls.length = 0;
+
+    const restored = await session.restoreVersion('x', 41, 42);
+    expect(restored.ok).toBe(true);
+    const undeleted = await session.undelete('x');
+    expect(undeleted.ok).toBe(true);
+
+    const wire = calls.map((c) => `${c.path} ${c.body}`).join('\n');
+    // ANTI-VACUITY: both calls really went out, or the absences below are free.
+    expect(wire).toContain('/restore');
+    expect(wire).toContain('/undelete');
+    // The restore names a revision and carries NOTHING else…
+    expect(JSON.parse(calls.find((c) => c.path.endsWith('/restore'))?.body ?? '{}')).toEqual({
+      revision: 41,
+    });
+    // …the undelete carries no body at all…
+    expect(calls.find((c) => c.path.endsWith('/undelete'))?.body ?? '').toBe('');
+    // …and neither leaks anything the device holds.
+    expect(wire).not.toContain(ITEM_SECRET);
+    expect(wire).not.toContain(ITEM_TITLE);
+    expect(wire).not.toContain(PASSWORD);
+    expect(wire).not.toContain(enrolled.data.secretKey);
+    expect(wire).not.toMatch(/"blob":/);
   });
 
   it('round-trips an item through real encryption — so the blob is not just noise', async () => {

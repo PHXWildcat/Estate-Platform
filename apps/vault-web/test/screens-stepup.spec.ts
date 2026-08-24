@@ -233,7 +233,13 @@ const submitStepUp = (code = '123456'): void => {
   const input = document.getElementById('stepup-code') as HTMLInputElement | null;
   if (!input) throw new Error(`no step-up prompt. Saw: ${document.body.textContent}`);
   input.value = code;
-  input.form?.dispatchEvent(new Event('submit', { cancelable: true }));
+  // BUBBLES, because a real click does and that is the only way this harness can
+  // see a NESTED prompt. A non-bubbling synthetic submit reaches the prompt's own
+  // form and stops there, so a prompt hosted inside its screen's form — invalid
+  // HTML whose inner form still exists in a hand-built DOM — looks identical to a
+  // correctly-hosted one. M27 PR2 shipped exactly that on `renderUnlock` and the
+  // count assertion below could not see the third `srp/start` it caused.
+  input.form?.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
 };
 
 const waitForText = async (pattern: string | RegExp, deadlineMs = 30_000): Promise<void> => {
@@ -283,6 +289,133 @@ describe('proving a factor on this origin', () => {
 
   afterEach(async () => {
     await forgetSecretKey(USER);
+  });
+
+  /**
+   * THE UNLOCK ASKS TOO — the last gated action on this origin that could not.
+   *
+   * FOUND BY DRIVING THE LIVE STACK during M27 PR2, and it is the SETUP defect
+   * above arriving a second time in the same category. `srp/start` and
+   * `srp/verify` both carry `StepUpGuard`, whose 403 `stepup_required` exists —
+   * its own comment says so — to tell a well-behaved client to elevate. This
+   * screen called `unlock` bare, so once the vault-open step-up aged past five
+   * minutes the owner was told "that action needs a fresh identity check, and
+   * it was not completed" on a page holding nothing that could complete one.
+   * The vault-open handoff had not expired; only the factor had. Predates PR2
+   * (unchanged since M15 PR2) and is fixed in it because this screen is what
+   * every restore surface sits behind.
+   *
+   * The assertion is that the PROMPT IS OFFERED and the retry succeeds, not
+   * that the copy reads well — the copy was already right, and being right
+   * about a remedy the page does not provide is the whole defect.
+   */
+  it('prompts for a factor when the UNLOCK is refused, then retries', async () => {
+    const service = installService();
+    await render();
+    await waitForText('Set up your vault');
+    byLabel('Vault password').value = PASSWORD;
+    byLabel('Confirm vault password').value = PASSWORD;
+    submitForm();
+    await waitForText('Save your Secret Key');
+    (document.getElementById('ack') as HTMLInputElement).checked = true;
+    clickText('I have saved it');
+    await waitForText('Unlock your vault');
+
+    // The factor ages out between arriving here and typing the password —
+    // ordinary, since this screen is where a returning owner lands.
+    service.fail.set('POST /api/vault/srp/start', { status: 403, error: 'stepup_required' });
+    byLabel('Vault password').value = PASSWORD;
+    submitForm();
+
+    await waitForText(/unlocking your vault needs a fresh identity check/i);
+    service.fail.delete('POST /api/vault/srp/start');
+    submitStepUp();
+
+    // It gets all the way in, which is the point: elevating is the remedy the
+    // message names, so the message has to be true.
+    await waitForText(/nothing here yet/i);
+    expect(service.calls.some((c) => c.path === '/api/auth/stepup')).toBe(true);
+    // Two starts: the refused one and the retry. A count, so a stray unlock is
+    // deterministic rather than a slow-machine flake.
+    expect(
+      service.calls.filter((c) => c.path === '/api/vault/srp/start' && c.method === 'POST'),
+    ).toHaveLength(2);
+  });
+
+  /**
+   * AND CANCELLING LEAVES THE OWNER ON A SCREEN THEY CAN STILL USE.
+   *
+   * The refusal must not strand anyone: declining the factor returns the unlock
+   * form, not a dead end. `fail closed means DE-ESCALATE` — the protective path
+   * (staying locked) survives, and the permissive one is simply not taken.
+   */
+  it('returns the unlock form when the factor is declined, and unlocks nothing', async () => {
+    const service = installService();
+    await render();
+    await waitForText('Set up your vault');
+    byLabel('Vault password').value = PASSWORD;
+    byLabel('Confirm vault password').value = PASSWORD;
+    submitForm();
+    await waitForText('Save your Secret Key');
+    (document.getElementById('ack') as HTMLInputElement).checked = true;
+    clickText('I have saved it');
+    await waitForText('Unlock your vault');
+
+    service.fail.set('POST /api/vault/srp/start', { status: 403, error: 'stepup_required' });
+    byLabel('Vault password').value = PASSWORD;
+    submitForm();
+    await waitForText(/unlocking your vault needs a fresh identity check/i);
+
+    clickText('Cancel');
+    await waitForText(/needs a fresh identity check, and it was not completed/i);
+    // Still the unlock screen, and no vault was opened.
+    expect(document.body.textContent).toContain('Unlock your vault');
+    expect(service.calls.some((c) => c.path === '/api/vault/srp/verify')).toBe(false);
+  });
+
+  /**
+   * THE SAME STRUCTURAL RULE, ON THE UNLOCK SCREEN — the member of the category
+   * that M27 PR2 shipped broken.
+   *
+   * `renderSetup` carries a load-bearing comment saying its `note` is OUTSIDE
+   * the form because the step-up prompt is itself a `<form>`. `renderUnlock`
+   * did not copy it, and the DOM here is hand-built rather than parsed — so the
+   * nested form is not dropped by a parser, it EXISTS, and its submit event
+   * bubbles to the unlock handler. Confirming the code started a second unlock
+   * beside the retry `withStepUp` was already making: three `srp/start` POSTs
+   * where this suite asserts two.
+   *
+   * Both statements, for the reason the setup test gives: either can hold while
+   * the other breaks.
+   */
+  it('hosts the step-up prompt OUTSIDE the unlock form', async () => {
+    const service = installService();
+    await render();
+    await waitForText('Set up your vault');
+    byLabel('Vault password').value = PASSWORD;
+    byLabel('Confirm vault password').value = PASSWORD;
+    submitForm();
+    await waitForText('Save your Secret Key');
+    (document.getElementById('ack') as HTMLInputElement).checked = true;
+    clickText('I have saved it');
+    await waitForText('Unlock your vault');
+
+    service.fail.set('POST /api/vault/srp/start', { status: 403, error: 'stepup_required' });
+    byLabel('Vault password').value = PASSWORD;
+    submitForm();
+    await waitForText(/unlocking your vault needs a fresh identity check/i);
+
+    const unlockForm = document.querySelectorAll('form')[0] as HTMLFormElement;
+    const code = document.getElementById('stepup-code') as HTMLInputElement;
+    expect(document.querySelectorAll('form form')).toHaveLength(0);
+    expect(code.form).not.toBe(unlockForm);
+    expect(code.form?.contains(code)).toBe(true);
+
+    // ANTI-VACUITY: the unlock form is genuinely on screen and genuinely a
+    // DIFFERENT node, so `not.toBe` is not comparing a thing to undefined.
+    expect(unlockForm).toBeTruthy();
+    expect(unlockForm.querySelector('#unlock-password')).toBeTruthy();
+    expect(code.form).toBeTruthy();
   });
 
   it('prompts for a factor on SETUP, the first gated action a new user meets', async () => {
