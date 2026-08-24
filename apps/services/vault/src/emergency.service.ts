@@ -506,12 +506,30 @@ export class EmergencyAccessService {
    * The owner says no. CallerGuard only, deliberately: this has to be one tap
    * from a notification on a phone, and a step-up prompt between the owner and
    * "stop this" is a control that argues with itself.
+   *
+   * ADMITTED ON A RELEASED POLICY SINCE M27 PR3a, and that is not a convenience
+   * — it is what makes re-collectable release legal under docs/03's rule that
+   * the protective action must never be harder than the permissive one. Release
+   * is CallerGuard only; `revoke`, the other stop, is `@UseGuards(StepUpGuard)`.
+   * Leaving this refused while release repeated would have put the permissive
+   * action one call away and the only ungated stop behind fresh MFA — the rule
+   * inverted, in the change that cited it.
+   *
+   * IT CANNOT UN-RELEASE WHAT THE GRANTEE ALREADY HOLDS. The escrow material
+   * left the server on the first collection and the master key was rebuilt on
+   * their device; a denial ends the arrangement's ability to hand over MORE.
+   * `markDenied` does that with no new transition: `denied_by_owner` is refused
+   * by the release guard above, and the `releases_at = NULL` it also writes is
+   * belt-and-braces behind that. Sticky, no cooldown, until the owner re-arms —
+   * exactly what deny has always meant.
+   *
+   * `rearm` keeps refusing on a released policy. It is step-up gated and it
+   * ARMS, so it is not the action this rule is about.
    */
   async deny(ownerUserId: string, accountSessionId: string, policyId: string): Promise<PolicyDto> {
     const now = this.clock();
     const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
-      if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });
       if (policy.status === 'revoked') throw new ConflictException({ error: 'policy_revoked' });
       return this.emergency.markDenied(tx, policy.id, now);
     });
@@ -559,7 +577,14 @@ export class EmergencyAccessService {
   /**
    * The grantee collects the escrow material once the waiting period has run
    * without a denial. This is the only moment the platform half leaves the
-   * server, and it happens exactly once per escrow.
+   * server.
+   *
+   * IT IS REPEATABLE SINCE M27 PR3a. This sentence used to end "and it happens
+   * exactly once per escrow", which was the ceremony's central defect stated as
+   * if it were a guarantee: a dropped connection or a closed tab spent the
+   * escrow and delivered nothing, recoverable only by an owner re-arming — the
+   * one thing an incapacitated owner cannot do. See the guard below for why
+   * repeating it destroys nothing, and `deny` for the stop that moved with it.
    */
   async release(
     granteeUserId: string,
@@ -575,9 +600,31 @@ export class EmergencyAccessService {
         if (policy.status === 'denied_by_owner')
           throw new ForbiddenException({ error: 'denied_by_owner' });
         if (policy.status === 'revoked') throw new ForbiddenException({ error: 'policy_revoked' });
-        if (policy.status === 'released')
-          throw new ConflictException({ error: 'already_released' });
-        if (policy.status !== 'waiting' || !policy.releases_at) {
+        /*
+         * RE-COLLECTABLE (M27 PR3a), and it is ONE guard because it was two.
+         *
+         * `released` used to be refused here with `already_released`, which made
+         * the §5.2 ceremony spend itself and deliver nothing: a grantee who
+         * closed the tab burned the escrow in the one scenario the feature
+         * exists for. Nothing was ever destroyed to justify it — `markReleased`
+         * sets `status` and `released_at` and touches neither `key_share_ct` nor
+         * anything in `emergency_access_configs` — so "one-shot" was a status
+         * check wearing a cryptographic one-way door's clothes.
+         *
+         * REMOVING ONLY THAT THROW WOULD HAVE CHANGED NOTHING. The caller fell
+         * straight into the next line, `status !== 'waiting'`, and got
+         * `not_requested` — the same dead end reported under a token that means
+         * something else, which is the two-failures-one-token defect docs/03
+         * forbids. The M27 PR0 review reproduced that against a real database
+         * rather than reading the guard order, which is why both are replaced by
+         * a single predicate naming what collectable actually means.
+         *
+         * `releases_at` survives a release (only `markDenied` clears it, and
+         * `denied_by_owner` is refused above), so the elapsed check below still
+         * governs every collection rather than just the first.
+         */
+        const collectable = policy.status === 'waiting' || policy.status === 'released';
+        if (!collectable || !policy.releases_at) {
           throw new ConflictException({ error: 'not_requested' });
         }
         if (policy.releases_at.getTime() > now.getTime()) {

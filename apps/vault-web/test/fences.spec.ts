@@ -294,3 +294,59 @@ describe('profile is reachable only through the projection', () => {
     expect(server).toContain('projectGranteeCandidates(parsed)');
   });
 });
+
+/**
+ * THE SINGLE-USE CLAIM CANNOT COME BACK, IN ANY SPELLING (M27 PR3a).
+ *
+ * Release stopped being single-use when the guard began admitting
+ * `status IN ('waiting','released')`, and three sentences in this origin's
+ * source went on telling the grantee otherwise — one of them the warning on
+ * the confirmation screen itself, which is the last thing somebody reads
+ * before deciding whether to act in an emergency. Two were found by searching
+ * for the spellings already known; the third was found only by driving the
+ * stack, because it said the same thing in words that search did not contain.
+ *
+ * SO THE BAN IS DATA AND THE SEARCH IS A PLAIN SUBSTRING, on the M24 wording-
+ * fence precedent. No parser, no comment exemption, nothing to misconfigure:
+ * the corpus is every `.ts` file under `src`, COMMENTS INCLUDED, and the
+ * comments that explain this history are written to DESCRIBE these sentences
+ * rather than quote them. That is the whole M24 lesson — the first draft of
+ * that fence exempted comments so its own documentation could quote the bad
+ * strings, and the exemption was wrong about block-comment continuation lines.
+ * Prefer an absence to a filter.
+ *
+ * WHAT IS DELIBERATELY NOT BANNED: `one-shot`. It is an engineering term that
+ * these comments need in order to describe what changed, and no user-facing
+ * sentence would ever contain it — banning it would force the history to be
+ * unwritable to catch a string that cannot reach a screen.
+ */
+describe('no sentence on this origin claims the arrangement is single-use', () => {
+  const BANNED: readonly string[] = [
+    'spends the arrangement',
+    'spend the arrangement',
+    'can be done once',
+    'used a second time',
+    'cannot be used again',
+    'is now spent',
+    'spent the escrow',
+    'only chance',
+  ];
+
+  it.each(BANNED)('no source file says %p', (phrase) => {
+    const offenders = allSourceFiles.filter((file) =>
+      readFileSync(file, 'utf8').toLowerCase().includes(phrase),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL: the corpus is real and the search would find a match', () => {
+    // Without this, a corpus that had silently become empty — a moved `src`, a
+    // walk that stopped descending — would pass all eight assertions above by
+    // finding nothing, which is indistinguishable from finding nothing wrong.
+    expect(allSourceFiles.length).toBeGreaterThan(5);
+    const hits = allSourceFiles.filter((file) =>
+      readFileSync(file, 'utf8').toLowerCase().includes('emergency'),
+    );
+    expect(hits.length).toBeGreaterThan(0);
+  });
+});

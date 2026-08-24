@@ -747,19 +747,107 @@ describeIfPg('emergency access end to end', () => {
       expect(Buffer.from(plaintext).toString('utf8')).toBe(ITEM_SECRET);
     });
 
-    it('is one-shot: the escrow is spent', async () => {
-      await request(server)
+    /**
+     * RE-COLLECTABLE (M27 PR3a), and this test used to assert the opposite.
+     *
+     * It was `is one-shot: the escrow is spent`, and what it pinned was the
+     * §5.2 ceremony's central defect: a grantee who completed everything —
+     * waited out the period, was not denied, passed the settlement gate — and
+     * then closed the tab had burned the escrow and received nothing, in the
+     * one scenario the feature exists for. The only recovery was the owner
+     * re-arming, which is precisely what an incapacitated owner cannot do.
+     *
+     * WHAT MAKES IT SAFE IS THAT NOTHING WAS EVER DESTROYED, and this asserts
+     * that rather than trusting it: the SECOND collection's material is put
+     * through the same reconstruction as the first and must still open the
+     * owner's item. `markReleased` writes `status` and `released_at` only —
+     * `key_share_ct`, `platform_part` and `wrapped_master_key_recovery` all
+     * survive it — so "one-shot" was a status check, never a one-way door.
+     */
+    it('is RE-COLLECTABLE: a second collection still opens the vault', async () => {
+      const res = await request(server)
         .post(`/v1/vault/emergency-access/${policyId}/release`)
         .set(asGrantee())
-        .expect(409, { error: 'already_released' });
+        .expect(200);
+
+      const release = res.body as ReleaseDto;
+      expect(release.ownerUserId).toBe(OWNER);
+
+      // THE MATERIAL STILL WORKS. A 200 carrying a dead share would pass a
+      // status assertion and fail the only thing the grantee needs.
+      const masterKeyBytes = await recoverMasterKey({
+        ownerUserId: OWNER,
+        platformPart: release.platformPart,
+        wrappedMasterKeyRecovery: release.wrappedMasterKeyRecovery,
+        shares: [
+          {
+            granteeUserId: GRANTEE,
+            sealedShare: release.keyShare,
+            publicKey: granteeKeys.publicKey,
+            privateKey: granteeKeys.privateKey,
+          },
+        ],
+      });
+      expect(Buffer.from(masterKeyBytes)).toEqual(Buffer.from(ownerMasterKeyBytes));
+
+      // REQUEST STAYS REFUSED, and that is not an oversight. `markRequested` is
+      // the only writer of `status = 'waiting'`, so letting a released policy
+      // re-request would restart a waiting period the grantee has already
+      // served — making the protective clock a punishment for collecting twice.
+      // The token is unchanged because the CONDITION is unchanged; what changed
+      // is that its remedy is now "collect it" rather than "nothing".
       await request(server)
         .post(`/v1/vault/emergency-access/${policyId}/request`)
         .set(asGrantee())
         .expect(409, { error: 'already_released' });
     });
 
-    it('tells the owner it happened', () => {
-      expect(notifier.sent.filter((n) => n.kind === 'released')).toHaveLength(1);
+    /**
+     * EXACTLY ONE PER COLLECTION, counted rather than floored.
+     *
+     * This is the whole compensating control for making release repeatable:
+     * §6uu's argument is that a second collection is MORE visible than the
+     * first, not less. A `toBeGreaterThanOrEqual` would let a silent third
+     * collection pass, which is the failure this number exists to catch.
+     */
+    it('tells the owner EVERY time, once per collection', () => {
+      expect(notifier.sent.filter((n) => n.kind === 'released')).toHaveLength(2);
+    });
+
+    /**
+     * THE PROTECTIVE ACTION MOVED WITH THE PERMISSIVE ONE (M27 PR3a).
+     *
+     * `deny` used to refuse on a released policy with `already_released`.
+     * Leaving that while release repeated would have put the permissive action
+     * one CallerGuard call away and the only ungated stop — `deny` — behind
+     * `already_released`, with the other stop, `revoke`, behind StepUpGuard.
+     * That is docs/03's rule inverted: the protective action must never be
+     * harder than the permissive one.
+     *
+     * It cannot un-release what the grantee already holds. What it does is end
+     * the arrangement's ability to hand over MORE, with one tap.
+     */
+    it('lets the owner STOP a re-collectable release with one ungated tap', async () => {
+      // ANTI-VACUITY, in the test rather than in a neighbouring one: a 403 after
+      // the deny proves nothing unless collection was working immediately
+      // before it. This is the positive control, and it must be a 200.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/release`)
+        .set(asGrantee())
+        .expect(200);
+
+      // No step-up header: deny is CallerGuard only, deliberately.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/deny`)
+        .set(asOwner())
+        .expect(200);
+
+      // Refused by TOKEN, not merely by status: `waiting_period_active` here
+      // would mean the clock stopped it and the denial was never tested.
+      await request(server)
+        .post(`/v1/vault/emergency-access/${policyId}/release`)
+        .set(asGrantee())
+        .expect(403, { error: 'denied_by_owner' });
     });
   });
 

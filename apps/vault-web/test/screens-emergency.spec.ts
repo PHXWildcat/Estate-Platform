@@ -29,8 +29,41 @@ import {
   toBase64,
   verifyClientSession,
 } from '@estate/vault-crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { installLifecycle, render } from '../src/client/app';
 import { forgetSecretKey } from '../src/client/secret-key-store';
+
+/**
+ * THE STATUS VOCABULARY, READ OUT OF THE DDL RATHER THAN RETYPED HERE.
+ *
+ * The table below this used to be six hand-written rows under a comment saying
+ * they were "pinned to `002_emergency_access.sql`" — which is the shape this
+ * repo calls a test nobody runs: a claim about the tree asserted in prose. It
+ * was also already wrong in the direction that matters. A seventh status added
+ * to the CHECK would have been covered by the comment and by no assertion, and
+ * an UNGATED status is a button offered where the service refuses or, worse,
+ * withheld where the service allows — the exact M27 PR3a defect, which is that
+ * `released` was collectable nowhere in this client because a hand-list said so.
+ *
+ * Reading it makes this spec's inputs reach outside its own package, so
+ * `apps/vault-web/turbo.json` declares the canonical wide input set. Without
+ * that, editing the CHECK constraint would not move this task's hash and the
+ * one gate whose input just changed would replay a cached pass
+ * (`packages/config/test/turbo-test-inputs.spec.ts` enforces the pairing).
+ */
+const POLICY_STATUSES: readonly string[] = (() => {
+  const ddl = readFileSync(
+    join(__dirname, '..', '..', 'services', 'vault', 'migrations', '002_emergency_access.sql'),
+    'utf8',
+  );
+  const table = ddl.slice(ddl.indexOf('CREATE TABLE emergency_access_policies ('));
+  const check = /status TEXT NOT NULL DEFAULT '[a-z_]+'\s*CHECK \(status IN \(([^)]*)\)\)/.exec(
+    table,
+  );
+  if (!check) throw new Error('no status CHECK in 002_emergency_access.sql');
+  return check[1]!.split(',').map((raw) => raw.trim().replace(/^'|'$/g, ''));
+})();
 
 const USER = '11111111-2222-4333-8444-555555555555';
 const GRANTEE = '22222222-3333-4444-8555-666666666666';
@@ -159,10 +192,16 @@ function installService(): Service {
       );
     }
     if (path.endsWith('/release')) {
+      // THE DEFAULT REFUSAL IS ONE THE SERVICE CAN STILL SEND. It was 409
+      // `already_released` until M27 PR3a made collection repeatable, at which
+      // point this fake became the last thing in the repo enforcing a rule the
+      // real route had dropped — and the screen test below went on passing
+      // against a server that no longer exists. `not_requested` is what a
+      // release with no elapsed `releases_at` actually answers.
       return Promise.resolve(
         state.release
           ? reply(state.release.status, state.release.body)
-          : reply(409, { error: 'already_released' }),
+          : reply(409, { error: 'not_requested' }),
       );
     }
     if (path === '/api/vault/emergency-access' && method === 'GET') {
@@ -523,7 +562,7 @@ describe('the emergency-access screens', () => {
     ];
     installLifecycle();
     await openEmergency();
-    await waitForText(/ready if you cannot/i);
+    await waitForText(/ready if they cannot/i);
 
     window.dispatchEvent(new Event('pagehide')); // locks
     clickText('Request access');
@@ -637,7 +676,7 @@ describe('the emergency-access screens', () => {
       },
     ];
     await openEmergency();
-    await waitForText(/ready if you cannot/i);
+    await waitForText(/ready if they cannot/i);
 
     clickText('Request access');
     await waitForText(/waiting period has started and the owner has been told/i);
@@ -694,7 +733,11 @@ describe('the emergency-access screens', () => {
     await waitForText(/ready to open/i);
 
     clickText('Open the vault');
-    await waitForText(/this spends the arrangement/i);
+    // The warning gate, staged on the sentence that SURVIVED M27 PR3a rather
+    // than the single-use claim that did not. Its own assertions live in
+    // `warns before a collection WITHOUT claiming it is the only one`; this
+    // one only needs to know the screen arrived.
+    await waitForText(/only continue if they genuinely cannot/i);
     clickText('Open it now');
     await waitForText(/reconstructed on this device/i);
     // And it stays on the device: nothing carries a recovered key back up.
@@ -722,12 +765,59 @@ describe('the emergency-access screens', () => {
     await waitForText(/unlock your own vault first/i);
   });
 
-  it('does not claim a release worked when the escrow is already spent', async () => {
+  /**
+   * THE LAST THING READ BEFORE THE DECISION, AND NOTHING ASSERTED IT.
+   *
+   * `renderRelease`'s two warnings told the grantee the arrangement was
+   * single-use and would be consumed by continuing. Correct in M15, false
+   * since M27 PR3a, and this screen is where somebody in a real emergency
+   * decides whether to act — so a stale sentence here is the one that changes
+   * behaviour rather than merely reading oddly. It survived a source sweep
+   * because it made the claim in a third wording, and it survived the suite
+   * because no test looked at this screen's copy at all. Both halves are
+   * closed: `fences.spec.ts` bans the spellings as data, and this asserts the
+   * two things the sentence must still carry.
+   */
+  it('warns before a collection WITHOUT claiming it is the only one', async () => {
+    const service = installService();
+    service.grantedToMe = [
+      {
+        id: 'p9',
+        ownerUserId: '33333333-4444-4555-8666-777777777777',
+        status: 'waiting',
+        releasesAt: new Date(Date.now() - 1000).toISOString(),
+      },
+    ];
+    await openEmergency();
+    await waitForText(/ready to open/i);
+    clickText('Open the vault');
+    await waitForText(/only continue if they genuinely cannot/i);
+
+    const warning = document.body.textContent ?? '';
+    // WHAT MUST STILL BE SAID. The owner-is-told sentence is the compensating
+    // control the whole change rests on, so losing it would quietly remove the
+    // reason re-collection is safe.
+    expect(warning).toMatch(/the owner is told every time/i);
+    // And the honest limit is unchanged: this does not read their items.
+    expect(warning).toMatch(/not built yet/i);
+
+    // WHAT MUST NOT BE SAID, asserted on this rendered screen rather than only
+    // on the source, so a reworded relapse is caught where a reader would meet
+    // it. The claim, in each spelling the code has actually used.
+    expect(warning).not.toMatch(/spends the arrangement/i);
+    expect(warning).not.toMatch(/can be done once/i);
+    expect(warning).not.toMatch(/used a second time/i);
+    // ANTI-VACUITY: this really is the release confirmation and not a screen
+    // that happens to lack those words. A blank page passes every `not.toMatch`.
+    expect(warning).toMatch(/open the vault you were trusted with/i);
+  });
+
+  it('does not claim a release worked when the service refused it', async () => {
     const service = installService();
     await openEmergency();
     clickText('Let others name me');
     await waitForText(/your key is published/i);
-    service.release = null; // the fake answers 409 already_released
+    service.release = null; // the fake answers 409 not_requested
     service.grantedToMe = [
       {
         id: 'p9',
@@ -827,19 +917,69 @@ describe('the emergency-access screens', () => {
     await waitForText(/some future state/i);
   });
 
+  /**
+   * EVERY STATUS THE DDL CAN HOLD, AGAINST WHAT EACH SCREEN OFFERS.
+   *
+   * Three tables, one corpus. Each is keyed by the status set parsed out of
+   * `002_emergency_access.sql`, and each asserts SET EQUALITY with it before
+   * reading a single button — the anti-vacuity floor, at the level that
+   * matters rather than only on a total. A row added to the CHECK constraint
+   * fails these three tests by name until somebody decides what the screens do
+   * with it, which is the decision that was skipped when `released` became
+   * collectable server-side and stayed unofferable here.
+   */
+  const EXPECTATIONS = {
+    request: {
+      // Gating on an invented `armed` meant the button could never appear — the
+      // defect the live stack found, and the reason this is DDL-derived now.
+      configured: true,
+      requested: true,
+      waiting: false,
+      denied_by_owner: false,
+      released: false,
+      revoked: false,
+    },
+    // "Open the vault", for a policy whose waiting period has ALREADY elapsed.
+    // `released` is the M27 PR3a row: the service admits
+    // `status IN ('waiting','released')` with an elapsed `releases_at`, and
+    // before PR3a this client offered it on the first of those only — so the
+    // grantee whose collection was interrupted saw the word "opened" and no
+    // control, in the one scenario §5.2 exists for.
+    open: {
+      configured: false,
+      requested: false,
+      waiting: true,
+      denied_by_owner: false,
+      released: true,
+      revoked: false,
+    },
+    // The OWNER's controls. `released` carried NONE of these before PR3a —
+    // deny was gated on `waiting`, revoke on `!== 'released'` — which made the
+    // status where the grantee can collect with one tap the only status where
+    // the owner could do nothing at all. docs/03's rule points the other way.
+    ownerStops: {
+      configured: { stop: false, remove: true },
+      requested: { stop: false, remove: true },
+      waiting: { stop: true, remove: true },
+      denied_by_owner: { stop: false, remove: true },
+      released: { stop: true, remove: true },
+      revoked: { stop: false, remove: true },
+    },
+  } as const;
+
+  it('covers EVERY status in the DDL, in all three tables', () => {
+    // The floor. Any of these tables silently narrowing is how a status stops
+    // being considered without anybody noticing, so the corpus is compared as a
+    // SET against the CHECK constraint rather than by length.
+    const ddl = [...POLICY_STATUSES].sort();
+    expect(ddl.length).toBeGreaterThan(0);
+    expect(Object.keys(EXPECTATIONS.request).sort()).toEqual(ddl);
+    expect(Object.keys(EXPECTATIONS.open).sort()).toEqual(ddl);
+    expect(Object.keys(EXPECTATIONS.ownerStops).sort()).toEqual(ddl);
+  });
+
   it('offers the request on every status the service would actually accept', async () => {
-    // The DDL's vocabulary, not a word chosen here. Gating on an invented
-    // `armed` meant the button could never appear — the defect the live stack
-    // found, and the reason these fixtures are pinned to
-    // `002_emergency_access.sql`.
-    for (const [status, offered] of [
-      ['configured', true],
-      ['requested', true],
-      ['waiting', false],
-      ['denied_by_owner', false],
-      ['revoked', false],
-      ['released', false],
-    ] as const) {
+    for (const status of POLICY_STATUSES) {
       mount();
       const service = installService();
       service.grantedToMe = [
@@ -854,7 +994,116 @@ describe('the emergency-access screens', () => {
       await waitForText('Granted to you');
       expect({ status, offered: findButton('Request access') !== undefined }).toEqual({
         status,
-        offered,
+        offered: EXPECTATIONS.request[status as keyof typeof EXPECTATIONS.request],
+      });
+      await forgetSecretKey(USER);
+    }
+  });
+
+  it('offers COLLECTION on every status the service would release on', async () => {
+    const elapsed = new Date(Date.now() - 60_000).toISOString();
+    for (const status of POLICY_STATUSES) {
+      mount();
+      const service = installService();
+      service.grantedToMe = [
+        {
+          id: 'p9',
+          ownerUserId: '33333333-4444-4555-8666-777777777777',
+          status,
+          // Elapsed for EVERY row, so the only variable is the status. A null
+          // here would make the table pass for the wrong reason on all six.
+          releasesAt: elapsed,
+        },
+      ];
+      await openEmergency();
+      await waitForText('Granted to you');
+      expect({ status, offered: findButton('Open the vault') !== undefined }).toEqual({
+        status,
+        offered: EXPECTATIONS.open[status as keyof typeof EXPECTATIONS.open],
+      });
+      await forgetSecretKey(USER);
+    }
+  });
+
+  /**
+   * WHAT THE GRANTEE IS TOLD, on every status the DDL can hold.
+   *
+   * `POLICY_STATUS_WORDS` is the OWNER's vocabulary and this list is read by
+   * the other person, so a word that is true for one can be a false sentence
+   * about the other. Found by driving the stack: a denied row told the grantee
+   * "stopped by you" — the owner stopped it — on the row explaining why their
+   * button had gone. The fourth table keyed on the same DDL corpus, because
+   * the defect was an entry nobody asked about, and asking about all six is
+   * the only way that does not recur.
+   */
+  const GRANTEE_WORDS: Readonly<Record<string, RegExp>> = {
+    configured: /ready if they cannot/i,
+    requested: /requested/i,
+    waiting: /ready to open/i,
+    denied_by_owner: /stopped by the owner/i,
+    released: /opened — you can open it again/i,
+    revoked: /removed/i,
+  };
+
+  it('never tells the grantee a sentence that is only true of the OWNER', async () => {
+    expect(Object.keys(GRANTEE_WORDS).sort()).toEqual([...POLICY_STATUSES].sort());
+    const elapsed = new Date(Date.now() - 60_000).toISOString();
+    for (const status of POLICY_STATUSES) {
+      mount();
+      const service = installService();
+      service.grantedToMe = [
+        {
+          id: 'p9',
+          ownerUserId: '33333333-4444-4555-8666-777777777777',
+          status,
+          releasesAt: elapsed,
+        },
+      ];
+      await openEmergency();
+      await waitForText('Granted to you');
+      const shown = document.body.textContent ?? '';
+      expect({ status, ok: GRANTEE_WORDS[status]!.test(shown) }).toEqual({ status, ok: true });
+      // THE OWNER'S TWO SECOND-PERSON WORDINGS MUST NOT REACH THIS READER.
+      // Asserted on every row rather than only the two that were wrong, so a
+      // future entry that borrows either spelling is caught here.
+      expect(shown).not.toMatch(/stopped by you/i);
+      expect(shown).not.toMatch(/ready if you cannot/i);
+      await forgetSecretKey(USER);
+    }
+  });
+
+  it('offers the owner a STOP on every status a grantee can still act on', async () => {
+    const elapsed = new Date(Date.now() - 60_000).toISOString();
+    for (const status of POLICY_STATUSES) {
+      mount();
+      const service = installService();
+      service.escrow = {
+        configured: true,
+        threshold: 1,
+        policies: [
+          {
+            id: 'p1',
+            granteeContactId: 'c1',
+            granteeUserId: GRANTEE,
+            waitingPeriodHours: 48,
+            status,
+            requestedAt: null,
+            releasesAt: elapsed,
+            requestCount: 0,
+          },
+        ],
+      };
+      await openEmergency();
+      await waitForText(GRANTEE);
+      const expected = EXPECTATIONS.ownerStops[status as keyof typeof EXPECTATIONS.ownerStops];
+      // Both spellings of the stop count: 'Stop this' on a waiting request and
+      // 'Stop further access' on a released one are the same control saying a
+      // true sentence about two different situations.
+      const stop =
+        findButton('Stop this') !== undefined || findButton('Stop further access') !== undefined;
+      expect({ status, stop, remove: findButton('Remove') !== undefined }).toEqual({
+        status,
+        ...expected,
       });
       await forgetSecretKey(USER);
     }

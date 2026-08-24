@@ -1341,12 +1341,17 @@ substituting its own key for a grantee's could not be exercised.
 from whatever key the client was handed. CLOSED: the grantee's own fingerprint is
 displayed, computed from the key the server serves back.
 
-*Residual, unchanged and now stated on the screen rather than implied:* a
-released escrow reconstructs the owner's recovery key and this client cannot yet
-read their items with it. Release is one-shot, so pressing the button spends the
-arrangement. The warning is given BEFORE the action; the reader is a separate
-change with its own retention decision, because holding a second owner's master
-key in memory is not something to settle inside a fix round.
+*Residual, narrowed by M27 PR3a and now stated on the screen rather than
+implied:* a released escrow reconstructs the owner's recovery key and this
+client cannot yet read their items with it. This bullet used to continue
+"release is one-shot, so pressing the button spends the arrangement", which was
+the sharp half — the grantee traded the whole arrangement for a reconstruction
+they could not use. Since §6yy collection repeats, so the cost of pressing it is
+a wasted attempt rather than a destroyed escrow, and `app.ts` says so where it
+used to say the arrangement was spent. The warning is still given BEFORE the
+action; the reader is PR3b, with its own retention decision, because holding a
+second owner's master key in memory is not something to settle inside a fix
+round.
 
 *Residual, accepted:* an M-of-N escrow above threshold 1 is refused by this
 client at both layers. The protocol and the service support it; collecting
@@ -5551,7 +5556,12 @@ at four sites with `already_released`. So in the ONE scenario §5.2 exists for
 no data, and the only recovery is the owner re-arming, which is precisely what
 they cannot do. This is not a missing feature at the edge of a control; it is
 a control whose success path is indistinguishable from its failure path, and
-it has been shipped since M6 PR2.
+it has been shipped since M6 PR2. (**PR3a BUILT IT — §6yy.** This section
+keeps PR0's tense, on the precedent §6ww and §6xx set: a design delta records
+what was true when it was written, and the pointer says where the change
+landed. §6yy also records the half PR0 did not see — that the owner's screen
+rendered neither stop on a released policy, so the argument two paragraphs
+below was true of the service and false of the product.)
 
 **THE READ IS A ZONE A TRUST-BOUNDARY CHANGE AND IS TREATED AS ONE.** Every
 vault credential to date has had one subject: `vault-session.guard.ts` refuses
@@ -5589,9 +5599,16 @@ two-failures-one-token defect this document forbids. `request` cannot rescue
 it either: `blockReason` returns `already_released`, and `markRequested` is
 the only writer of `status = 'waiting'` anywhere. So the release path must
 admit `status IN ('waiting','released')` with `releases_at` set and elapsed,
-and PR3 owns changing `emergency.int.spec.ts`'s `release › is one-shot: the
+and PR3a owns changing `emergency.int.spec.ts`'s `release › is one-shot: the
 escrow is spent`, which asserts today's dead end on both the second release
-AND the follow-up request. Found by the M27 PR0 review, which reproduced it
+AND the follow-up request. (**DONE in PR3a**, and only the first half was
+reversed: that test is now `is RE-COLLECTABLE: a second collection still opens
+the vault` and puts the second collection through the same reconstruction as
+the first, while the follow-up REQUEST stays refused with `already_released`.
+The token there is unchanged because the CONDITION is unchanged — `markRequested`
+is still the only writer of `status = 'waiting'`, so a re-request would restart
+a waiting period the grantee has already served — and what changed is that its
+remedy is now "collect it" rather than nothing.) Found by the M27 PR0 review, which reproduced it
 against a real database rather than reading the guard order.
 
 **AND THE PROTECTIVE ACTION HAS TO MOVE WITH IT, WHICH THE FIRST DRAFT GOT
@@ -6154,3 +6171,150 @@ a category is a rule half-applied" costs when the category is not swept.
   the surface is honest about the past without being useful for choosing within
   it. Owned alongside §6ww's rollback-detector item, since both are about what a
   version list tells someone rather than what it permits.
+## 6yy. Threat-model delta — M27 PR3a, release becomes re-collectable (2026-08-23)
+
+**THE §5.2 CEREMONY SPENT ITSELF AND DELIVERED NOTHING, AND THAT WAS THE
+DEFECT RATHER THAN THE CONTROL.** A grantee who waited out the period, was not
+denied and passed the settlement gate could lose the collection to a dropped
+connection or a closed tab, after which the route answered `already_released`
+forever. The only recovery was the owner re-arming — which is precisely what an
+incapacitated owner cannot do, in the one scenario emergency access exists for.
+`release` now admits `status IN ('waiting','released')` with `releases_at`
+present and elapsed, as ONE predicate rather than two guards: removing only the
+`already_released` throw dropped the caller into `status !== 'waiting'` and the
+same dead end under `not_requested`, which is the two-failures-one-token defect
+this document forbids. That was reproduced against a real database by the PR0
+review rather than reasoned from the guard order.
+
+**NOTHING WAS EVER DESTROYED TO JUSTIFY IT.** `markReleased` writes `status`
+and `released_at` and nothing else; `key_share_ct`, `platform_part` and
+`wrapped_master_key_recovery` all survive it, and `releases_at` is cleared only
+by `markDenied`. "One-shot" was a status check wearing a cryptographic one-way
+door's clothes. The proof is not the reading: the integration test collects a
+second time and puts the material through the same reconstruction as the first,
+and `emergency-crypto.spec.ts` does it again one layer up through
+`releaseAndRecover`, because a route answering 200 with material the client
+cannot rebuild from would satisfy every status assertion and still strand the
+person it exists for.
+
+**THE PROTECTIVE ACTION HAD TO MOVE WITH THE PERMISSIVE ONE, AND SHIPPING THE
+SERVICE HALF ALONE WOULD HAVE INVERTED THE RULE IN THE PARAGRAPH THAT CITED
+IT.** `deny` is `CallerGuard` only by design — a step-up prompt between an
+owner and "stop this" is a control that argues with itself — and it refused on
+a released policy. Making collection repeatable behind a bare account session
+while leaving the only ungated stop unavailable would have put the permissive
+action one call away and the protective one behind fresh MFA, since `revoke`
+carries `StepUpGuard`. `deny` now admits on a released policy and keeps its
+meaning: sticky, no cooldown, no further collection until the owner re-arms.
+
+**AND THE OWNER'S SCREEN RENDERED NEITHER STOP, WHICH IS THE HALF AN OWNER
+ACTUALLY HAS.** The decision-log entry for §6uu argued re-collection was safe
+because the owner can revoke a released policy — true of the service and false
+of the product. `policyRow` gated deny on `status === 'waiting'` and revoke on
+`status !== 'released'`, so a released policy carried NO controls at all: the
+one status where a grantee can now collect with one tap was the one status
+where the owner could do nothing. Both stops are rendered there now, with copy
+that does not claim the release was undone — it cannot be, and telling an owner
+their vault is safe again would be the most consequential lie this screen could
+tell, on the screen they check to find out. The grantee's side had the mirror
+gap: `granteeActions` offered collection on `waiting` alone, so the capability
+had zero callers on the surface it exists for.
+
+**THE TABLES THAT DECIDE THIS ARE NOW DERIVED FROM THE DDL.** The six statuses
+were three hand-written lists in `screens-emergency.spec.ts` under a comment
+claiming they were pinned to `002_emergency_access.sql` — a claim about the
+tree asserted in prose, which is this repo's name for a test nobody runs. They
+are read out of the CHECK constraint now, and each of the three tables asserts
+SET EQUALITY with it before reading a button, so a seventh status reddens three
+named assertions until somebody decides what the screens do with it. That
+decision is exactly the one skipped when `released` became collectable in the
+service and stayed unofferable in the client.
+
+**THE LAST THING ENFORCING THE OLD RULE WAS A PAIR OF TEST DOUBLES.** Once the
+service stopped refusing a second collection, `emergency-crypto.spec.ts` still
+answered 409 `already_released` from its fake and `screens-emergency.spec.ts`
+still defaulted to it — and both suites stayed green against a server that no
+longer exists. A double must be faithful about what it REFUSES, not only about
+what it returns; the crypto fake now refuses only an unarmed escrow, and the
+screen fake defaults to `not_requested`, which is what a release with no
+elapsed `releases_at` actually answers.
+
+**AND THE DRIVE FOUND TWO SENTENCES THE SWEEP COULD NOT.** The stale
+single-use claim survived a source sweep for every spelling already known,
+because `renderRelease`'s warning said it a third way — that continuing spent
+the arrangement and that it could be done once. That is the LAST thing a
+grantee reads before acting in an emergency, and it told them they had one
+attempt, which is the exact hesitation this delta exists to remove. The fix is
+paired with a ban held as DATA in `fences.spec.ts`: eight spellings, plain
+substring, comments included in the corpus, with the explaining comments
+written to describe those sentences rather than quote them — the M24 wording-
+fence lesson applied at the point it would otherwise have bitten, since a
+fence that must exempt its own documentation is a fence with a filter in it.
+
+**THE SECOND WAS THE OWNER'S VOCABULARY READ BY THE OTHER PERSON.**
+`describeGranteeStatus` fell through to `POLICY_STATUS_WORDS`, which is
+written for an owner reading their own arrangement, so a denied row told the
+GRANTEE "stopped by you" — the owner stopped it — on the row explaining why
+their button had gone, and `configured` read "ready if you cannot", whose
+"you" points at the wrong person and inverts the sentence. Found one screen
+after this function grew its first grantee-specific case, which is the
+half-applied rule arriving immediately: adding an override for `released` and
+not asking what ELSE in that map was audience-specific left the answer in the
+very next entry. Only the differing entries are overridden, and a fourth
+DDL-keyed table now asserts what the grantee is told on all six statuses and
+that neither second-person wording reaches them on any of them.
+
+### Residuals
+
+- **[ACCEPTED]** *A released policy is a STANDING capability until the owner
+  acts, where it used to be a spent one.* This is the real widening and it is
+  not the obvious one. The marginal harm to the legitimate path is nil — the
+  grantee who collected already holds the master key, and further collections
+  hand them what they have. The case that changes is an attacker who
+  compromises the GRANTEE after a legitimate collection: under one-shot the
+  route answered `already_released` and gave them nothing, while now it rebuilds
+  the owner's master key for them. What bounds it is that the protection being
+  given up was largely illusory — it held only against an attacker whose victim
+  had used THIS client, which wipes the recovered key and retains nothing, and
+  nothing forces a grantee to use it. What replaces it is active rather than
+  passive: the attacker must open the grantee's OWN vault by SRP (a stolen
+  session reaches the route and comes away with ciphertext it cannot open, which
+  `emergency-crypto.spec.ts` proves), every collection re-notifies the owner,
+  re-emits `vault.emergency.released` and re-runs the settlement gate, and
+  either stop is one owner action. A control that is spent protects nobody after
+  it is spent; one that fires every time is the trade this takes.
+- **[ACCEPTED]** *A denial cannot un-release what the grantee already holds.*
+  The escrow material left the server on the first collection and the master key
+  was rebuilt on the grantee's device; no server action reaches it. What both
+  stops end is the arrangement's ability to hand over MORE. This is stated here
+  because the copy on the owner's screen is the only place a person learns it,
+  and the temptation to write a reassuring sentence there is exactly what this
+  bullet exists to refuse.
+- **[ACCEPTED]** *Nothing caps how many times a released policy can be
+  collected.* Visibility is the control rather than a counter: each collection
+  notifies and audits, and the integration test asserts an EXACT count of two
+  after two collections rather than a floor, so a silent third cannot pass. A
+  cap would have to choose a number, and any number it chose would strand the
+  grantee whose Nth attempt is the first that arrives — which is the failure
+  this whole delta removes.
+- **[OWNER: M30]** *A repeat collection is announced with the same notification
+  kind as the first.* The owner is told every time, but `released` carries no
+  ordinal, so a second collection and a duplicated delivery of the first read
+  identically to the person deciding whether to press stop. The visibility
+  argument above rests on that message, which makes this the weakest link in it.
+  Owned by M30 rather than fixed here because a new notification kind is a
+  producer/consumer deploy ordering question and M30 already owns this feature's
+  notification work.
+- **[OWNER: M27]** *The grantee's row names the owner by raw account id.* It
+  reads "Vault of <uuid>", and M27 already fixed exactly this on the OWNER's
+  side — a row of UUIDs cannot be checked against what somebody intended — so
+  this is that rule half-applied, found by driving the stack rather than by
+  sweeping for it. It is NOT fixed here because the fix needs a fact this
+  origin does not have: the owner's name reached the owner's own screen from
+  their contact list, and the grantee has no contact record for the person who
+  named them. Supplying one is a cross-user disclosure decision — which name,
+  released to whom, on whose audit trail — and it belongs to PR3b, the PR that
+  must already answer "whose vault am I reading?" in order to render a reading
+  surface at all. Bounded meanwhile because the id is not secret to this
+  reader: they were sealed a share by that account, and the fingerprint
+  ceremony already binds the pair out of band.

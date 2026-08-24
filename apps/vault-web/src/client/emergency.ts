@@ -196,11 +196,15 @@ export async function configureEscrow(input: ConfigureInput): Promise<ApiResult<
   }
   if (input.threshold !== 1) {
     // `releaseAndRecover` below passes ONE share to `recoverMasterKey`, so an
-    // escrow needing more could never be opened by this client — and release is
-    // one-shot, so the first grantee to try would spend their policy learning
-    // that. The protocol and the service both support M-of-N; this client does
-    // not, and refusing to ARM is the only way to fail closed rather than
-    // storing an arrangement that silently cannot work (M15 review).
+    // escrow needing more could never be opened by this client. The protocol
+    // and the service both support M-of-N; this client does not, and refusing
+    // to ARM is the only way to fail closed rather than storing an arrangement
+    // that silently cannot work (M15 review).
+    //
+    // This used to carry a second reason — that release was one-shot, so the
+    // first grantee to try would spend their policy learning it. M27 PR3a made
+    // collection repeatable, so that half is void; the refusal rests on the
+    // first reason, which is untouched by it.
     throw new EmergencyAccessError('this client can only complete a release with threshold 1');
   }
 

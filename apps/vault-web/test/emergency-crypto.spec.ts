@@ -119,10 +119,15 @@ function installServer(): Server {
       return Promise.resolve(reply(201, { configured: true, threshold: 1, policies: [] }));
     }
     if (path.endsWith('/release')) {
-      // Handing over the platform half is what SPENDS the escrow, which is why
-      // the real service allows it exactly once.
-      if (!state.escrow || state.releases > 0) {
-        return Promise.resolve(reply(409, { error: 'already_released' }));
+      // FAITHFUL ABOUT WHAT THE SERVICE REFUSES, which since M27 PR3a is no
+      // longer a second collection. This double used to answer 409
+      // `already_released` on every release after the first, and once the
+      // service stopped doing that the fake was the only thing in the repo
+      // still enforcing it — a double that refuses what the real thing allows
+      // is how a client keeps passing against a server it no longer matches.
+      // The one refusal left is the honest one: nothing was ever armed.
+      if (!state.escrow) {
+        return Promise.resolve(reply(409, { error: 'not_requested' }));
       }
       state.releases += 1;
       const share = state.escrow.grantees[0] as Record<string, unknown>;
@@ -340,7 +345,18 @@ describe('emergency access, owner device to grantee device', () => {
     expect(offer.code).toBe('NOT_FOUND');
   });
 
-  it('is ONE-SHOT: a second release finds the escrow spent', async () => {
+  /**
+   * RE-COLLECTABLE, and this is the CLIENT half of the proof.
+   *
+   * `emergency.int.spec.ts` proves the service hands the material over twice.
+   * This proves the thing the grantee actually needs, which is one step
+   * further on: that `releaseAndRecover` puts the second collection through
+   * the real unseal-and-reconstruct path and arrives at the SAME master key.
+   * A route that answers 200 with material the client cannot rebuild from
+   * would satisfy every status assertion and still strand the person it exists
+   * for — and this is the layer that would notice.
+   */
+  it('is RE-COLLECTABLE: a second release reconstructs the SAME key', async () => {
     server.caller = GRANTEE;
     await publishRecoveryKey(GRANTEE, grantee.key);
     server.caller = OWNER;
@@ -366,12 +382,22 @@ describe('emergency access, owner device to grantee device', () => {
       granteePublicKey: own.data.publicKey,
       wrappedPrivateKey: own.data.wrappedPrivateKey,
     };
-    expect((await releaseAndRecover(args)).ok).toBe(true);
+    const first = await releaseAndRecover(args);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('unreachable');
+
     const second = await releaseAndRecover(args);
-    expect(second.ok).toBe(false);
-    if (second.ok) throw new Error('unreachable');
-    expect(second.code).toBe('CONFLICT');
-    expect(server.releases).toBe(1);
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error('unreachable');
+
+    // The SAME key, not merely a successful call. Compared against the owner's
+    // real master key rather than against the first collection alone, so two
+    // identically-wrong reconstructions cannot agree their way to green.
+    expect(Buffer.from(second.data.masterKeyBytes)).toEqual(Buffer.from(owner.bytes));
+    expect(Buffer.from(first.data.masterKeyBytes)).toEqual(Buffer.from(owner.bytes));
+    // ANTI-VACUITY: both calls reached the route. A client that short-circuited
+    // the second one locally would satisfy every assertion above.
+    expect(server.releases).toBe(2);
   });
 
   it('cannot be completed by a grantee who only holds a session', async () => {
