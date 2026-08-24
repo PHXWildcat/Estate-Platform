@@ -50,7 +50,7 @@ function stripComments(src: string): string {
 function declaredCodes(): string[] {
   // STRIPPED FIRST, and the first draft of this function is why the comment is
   // here: reading the RAW source, `indexOf(';')` stopped at a semicolon inside
-  // the union's own documentation and derived 12 of 28 members. A floor caught
+  // the union's own documentation and derived 12 of 21 members. A floor caught
   // it, which is the only reason it is not still silently under-deriving.
   const src = stripComments(API_SRC);
   const start = src.indexOf('export type ApiFailure =');

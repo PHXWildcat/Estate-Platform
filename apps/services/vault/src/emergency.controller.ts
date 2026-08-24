@@ -84,9 +84,11 @@ export class EmergencyAccessController {
    * Fetch a prospective grantee's public key. The owner's client must confirm
    * the fingerprint out of band before sealing a share to it.
    *
-   * BEHIND AN OPEN VAULT, on the same reasoning as `ownRecoveryKey` twelve
-   * lines above — which carried the guard while this one did not, the sibling
-   * gap this milestone kept finding (M27 PR5).
+   * BEHIND AN OPEN VAULT, on the same reasoning as `ownRecoveryKey` earlier in
+   * this controller — which carried the guard while this one did not, the
+   * sibling gap this milestone kept finding (M27 PR5). Stated as "earlier in
+   * this controller" rather than as a line count: the first draft said "twelve
+   * lines above", which the docstring below then made false in the same commit.
    *
    * The value itself is PUBLISHED ON PURPOSE: it is a P-256 public key, offered
    * so strangers can seal a share to it, and its private half is wrapped under
