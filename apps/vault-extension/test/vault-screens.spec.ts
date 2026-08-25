@@ -11,11 +11,16 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { messages } from '../src/copy';
 import { rememberedSecretKey, rememberSecretKey } from '../src/secret-key-store';
+import type { ApiResult } from '../src/api';
 import { mountVaultScreens } from '../src/vault-screens';
 import { TEST_ORIGIN } from './chrome-double';
 
 const USER = '11111111-2222-4333-8444-555555555555';
 const BEARER = 'extension-access-token';
+/** What a popup held past fifteen minutes still has in hand. */
+const STALE_BEARER = 'extension-access-token-expired';
+/** What a refresh hands back in its place. */
+const FRESH_BEARER = 'extension-access-token-rotated';
 
 interface Wired {
   injected: unknown[];
@@ -34,7 +39,7 @@ interface Wired {
  * `fetch` for the one call this module makes directly (the step-up).
  */
 function wire(
-  reply: (message: { kind?: string }) => unknown,
+  reply: (message: { kind?: string; bearer?: string }) => unknown,
   fetchStatus: { status: number; body?: unknown } = { status: 200 },
   // `null` means "no active tab we may see". NOT `undefined`, because passing
   // `undefined` explicitly SELECTS a default parameter — which silently gave
@@ -96,6 +101,69 @@ function wire(
     refuseInjection: () => {
       injectionThrows = true;
     },
+  };
+}
+
+/**
+ * The `call` capability the popup supplies, as a test double.
+ *
+ * PASSTHROUGH BY DEFAULT, and that is a deliberate choice about what the other
+ * thirty-two cases in this file are for. They assert screens, copy and
+ * gestures; routing every one of them through a real `withSession` would couple
+ * an assertion about a fill button to token-rotation mechanics, so the diff
+ * that changed one would break the other. The refresh BEHAVIOUR is exercised by
+ * the cases that opt into `expiringOnce()`, which is where it belongs.
+ *
+ * It still carries the load-bearing property: `vault-screens` receives no
+ * bearer and can obtain one only by asking.
+ */
+function passthrough(bearer: string = BEARER): {
+  call: <T>(fn: (b: string) => Promise<ApiResult<T>>) => Promise<ApiResult<T>>;
+  presented: string[];
+} {
+  const presented: string[] = [];
+  return {
+    call: <T>(fn: (b: string) => Promise<ApiResult<T>>): Promise<ApiResult<T>> => {
+      presented.push(bearer);
+      return fn(bearer);
+    },
+    presented,
+  };
+}
+
+/**
+ * A `call` that behaves as `withSession` does across an access-token expiry:
+ * the first attempt of every call answers `UNAUTHENTICATED`, then the SAME call
+ * is retried on a fresh bearer and its real answer returned.
+ *
+ * This reproduces the popup's contract rather than importing `withSession`. The
+ * unit under test is `vault-screens`, and what it has to prove is that each of
+ * its actions goes THROUGH the capability instead of around it. Whether
+ * `withSession` itself refreshes correctly is `session.spec.ts`'s question and
+ * is answered there — stating which layer proves what, because a guard that
+ * exists at two layers needs each test to say which one it covers.
+ */
+function expiringOnce(): {
+  call: <T>(fn: (b: string) => Promise<ApiResult<T>>) => Promise<ApiResult<T>>;
+  presented: string[];
+} {
+  const presented: string[] = [];
+  // ROTATION IS MODELLED, because the popup's really is: `callOnLiveSession`
+  // writes the refreshed session back with `rotateSession`, so the SECOND call
+  // starts on the fresh credential. A double that re-presented the expired one
+  // every time would make "refreshed once" and "refreshes on every call"
+  // indistinguishable — and the second is what a stale capture looks like.
+  let current = STALE_BEARER;
+  return {
+    call: async <T>(fn: (b: string) => Promise<ApiResult<T>>): Promise<ApiResult<T>> => {
+      presented.push(current);
+      const first = await fn(current);
+      if (first.ok || first.code !== 'UNAUTHENTICATED') return first;
+      current = FRESH_BEARER;
+      presented.push(current);
+      return fn(current);
+    },
+    presented,
   };
 }
 
@@ -303,6 +371,218 @@ function stepUpRefusals(): { refusals: Refusal[]; guards: string[]; methods: str
   };
 }
 
+describe('the vault half holds no credential of its own', () => {
+  const SCREENS = join(__dirname, '..', 'src', 'vault-screens.ts');
+  const CLIENT = join(__dirname, '..', 'src', 'vault-client.ts');
+
+  /** Comments out, so a fence never reads its own documentation. */
+  function strip(src: string): string {
+    return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  }
+
+  /**
+   * The `vault-client` exports that TAKE A BEARER, from their own signatures.
+   *
+   * Derived rather than listed, and the distinction earns its keep immediately:
+   * `vaultState()` takes none and so must NOT be required to sit inside a
+   * wrapper. A hand-written exclusion list would have said the same thing today
+   * and rotted the first time a function gained or lost the parameter.
+   */
+  function credentialTaking(): string[] {
+    const src = strip(readFileSync(CLIENT, 'utf8'));
+    const found: string[] = [];
+    for (const m of src.matchAll(/export async function (\w+)\(([\s\S]*?)\)\s*:/g)) {
+      if (/\bbearer\b/.test(m[2] as string)) found.push(m[1] as string);
+    }
+    return found.sort();
+  }
+
+  /**
+   * The source ranges covered by a `call(...)` wrapper, by matching parens.
+   *
+   * Not a line-based check: two of these wrappers span a dozen lines, and a
+   * regex that stopped at the newline would call them absent and go red for a
+   * reason that has nothing to do with the property.
+   */
+  function wrapperRanges(src: string): [number, number][] {
+    const ranges: [number, number][] = [];
+    for (const m of src.matchAll(/\bcall\(/g)) {
+      let depth = 0;
+      const open = m.index + m[0].length - 1;
+      for (let i = open; i < src.length; i += 1) {
+        if (src[i] === '(') depth += 1;
+        else if (src[i] === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            ranges.push([m.index, i]);
+            break;
+          }
+        }
+      }
+    }
+    return ranges;
+  }
+
+  const inside = (ranges: [number, number][], at: number): boolean =>
+    ranges.some(([from, to]) => at >= from && at <= to);
+
+  it('takes a CAPABILITY, never a bearer — the deps interface says so', () => {
+    const src = strip(readFileSync(SCREENS, 'utf8'));
+    const start = src.indexOf('export interface VaultScreensDeps');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = src.indexOf('}', start);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    // THE WHOLE DEFECT, in one assertion. A `readonly bearer: string` here is a
+    // credential captured at mount and spent for the life of the popup, which
+    // is what made a fifteen-minute-old token read as an un-paired device.
+    // MEMBERS, not mentions: the surviving `bearer` in this block is the name of
+    // a PARAMETER inside `call`'s type, which binds nothing and is erased at
+    // build. Renaming it would make the assertion below simpler and prove less.
+    expect(body).not.toMatch(/readonly\s+bearer\b/);
+    expect(body).not.toMatch(/^\s*bearer\s*[?:]/m);
+    expect(body).toMatch(/readonly call:/);
+  });
+
+  it('obtains a bearer ONLY from the capability, at every site that needs one', () => {
+    const src = strip(readFileSync(SCREENS, 'utf8'));
+    const ranges = wrapperRanges(src);
+    const takers = credentialTaking();
+
+    // ANTI-VACUITY, at BOTH levels. An empty derivation would satisfy every
+    // "nothing outside" assertion below, and so would a source that made no
+    // calls at all. Both floors, plus a member that must be there.
+    expect(takers.length).toBeGreaterThanOrEqual(6);
+    expect(takers).toContain('listItems');
+    expect(takers).not.toContain('vaultState');
+    expect(ranges.length).toBeGreaterThanOrEqual(8);
+
+    // Every credential-taking client call sits inside a wrapper...
+    const strayCalls: string[] = [];
+    for (const name of [...takers, 'request']) {
+      for (const m of src.matchAll(new RegExp(`\\b${name}\\(`, 'g'))) {
+        if (!inside(ranges, m.index)) strayCalls.push(`${name} @${String(m.index)}`);
+      }
+    }
+    expect(strayCalls).toEqual([]);
+
+    // ...and so does every RUNTIME mention of a bearer, so there is no way to
+    // hold one that this fence cannot see. Anchored on the identifier the
+    // runtime reads, not on a call shape a later edit could rename around.
+    //
+    // THE DEPS INTERFACE IS CUT OUT OF THE CORPUS, with its reason and its own
+    // assertion above rather than as a silent exemption: it is a TYPE, erased
+    // at build, and the one `bearer` in it names a parameter of `call`'s
+    // signature. Stating the corpus is the point — a fence whose input is
+    // narrower than its claim goes green for the same reason it is wrong.
+    const iface = src.indexOf('export interface VaultScreensDeps');
+    const ifaceEnd = src.indexOf('}', iface);
+    expect(ifaceEnd).toBeGreaterThan(iface);
+    const runtime = [...src.matchAll(/\bbearer\b/g)].filter(
+      (m) => m.index < iface || m.index > ifaceEnd,
+    );
+    // ANTI-VACUITY: cutting the interface must not cut everything.
+    expect(runtime.length).toBeGreaterThanOrEqual(8);
+    const stray = runtime.filter((m) => !inside(ranges, m.index)).map((m) => `@${String(m.index)}`);
+    expect(stray).toEqual([]);
+  });
+});
+
+describe('a popup held past the access token’s fifteen minutes', () => {
+  afterEach(() => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  /**
+   * WHAT THIS IS ABOUT. The access token lives fifteen minutes; the session
+   * lives thirty days. Until M44 PR2 `vault-screens` was handed one bearer at
+   * mount and spent it forever, so a popup left open across that boundary
+   * answered every action `UNAUTHENTICATED` and told the user "This device is
+   * no longer connected to your account … Connect it again to continue" about
+   * a pairing that was perfectly alive — naming re-pairing, which costs a
+   * step-up on the app origin, as the remedy for a token that had merely aged.
+   *
+   * The three cases below are a DISCRIMINATION SET, not three coverage points.
+   * A screen that simply always retried would pass the first two and fail the
+   * third; a screen that never retried would pass the first and third. Only
+   * all three together say the two conditions are told apart.
+   */
+
+  const ITEM = { id: 'i-1', itemType: 'password', title: 'Bank login' };
+
+  /** Unlocked, listing one item — but only for a bearer the server accepts. */
+  function acceptingOnly(live: string) {
+    return (message: { kind?: string; bearer?: string }): unknown => {
+      if (message.kind === 'state') return { ok: true, state: { status: 'unlocked' } };
+      if (message.bearer !== undefined && message.bearer !== live) {
+        return { ok: false, code: 'UNAUTHENTICATED' };
+      }
+      if (message.kind === 'list') return { ok: true, items: [ITEM] };
+      return { ok: true, state: { status: 'unlocked' } };
+    };
+  }
+
+  it('CONTROL: with a live bearer the list renders, so the fixture reaches the branch', async () => {
+    wire(acceptingOnly(BEARER));
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
+    await until(() => text().includes('Bank login'), 'the list to render');
+    expect(text()).not.toContain('no longer connected');
+  });
+
+  it('refreshes and shows the vault, instead of claiming the device was disconnected', async () => {
+    wire(acceptingOnly(FRESH_BEARER));
+    const capability = expiringOnce();
+    await mountVaultScreens({ host: host(), userId: USER, call: capability.call });
+
+    await until(() => text().includes('Bank login'), 'the list to render after a refresh');
+    // The defect, named as an assertion rather than implied by the absence of
+    // one: this is the sentence a live pairing must never be given.
+    expect(text()).not.toContain('no longer connected');
+    // It really did take two credentials to get there — otherwise this passes
+    // for want of an expiry rather than because a refresh happened. And the
+    // expired one is presented EXACTLY ONCE: the screen makes several calls,
+    // and every one of them re-presenting a dead token is precisely what the
+    // snapshot defect looked like.
+    expect(capability.presented[0]).toBe(STALE_BEARER);
+    expect(capability.presented.filter((b) => b === STALE_BEARER)).toHaveLength(1);
+    expect(capability.presented.filter((b) => b === FRESH_BEARER).length).toBeGreaterThan(1);
+  });
+
+  it('still reports a REVOKED pairing as disconnected — a refresh that fails is not an expiry', async () => {
+    // Nothing this double accepts: the refresh happened and the session is
+    // genuinely gone, which is the case the copy is TRUE about.
+    wire(acceptingOnly('a-credential-the-server-will-never-accept'));
+    await mountVaultScreens({ host: host(), userId: USER, call: expiringOnce().call });
+    await until(() => text().includes('no longer connected'), 'the disconnected copy');
+    expect(text()).not.toContain('Bank login');
+  });
+
+  it('routes the STEP-UP call through the capability too, not around it', async () => {
+    // The one call in this module that does not go through `vault-client` — it
+    // is a direct `request()` to the identity proxy, and it was the eighth
+    // raw-bearer site. A fix applied to seven of eight is a rule half-applied.
+    const { fetched } = wire(
+      (message) =>
+        message.kind === 'unlock'
+          ? { ok: false, code: 'STEPUP_REQUIRED' }
+          : { ok: true, state: { status: 'locked' } },
+      { status: 200 },
+    );
+    const capability = expiringOnce();
+    await mountVaultScreens({ host: host(), userId: USER, call: capability.call });
+
+    (document.querySelector('#vault-password') as HTMLInputElement).value = 'pw';
+    (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-GOOD';
+    button(/Open vault/).click();
+    await until(() => document.querySelector('#stepup-code') !== null, 'the code field');
+
+    (document.querySelector('#stepup-code') as HTMLInputElement).value = '123456';
+    button(/Confirm$/).click();
+    await until(() => fetched.length > 0, 'the step-up request');
+    expect(capability.presented.length).toBeGreaterThan(0);
+  });
+});
+
 describe('the vault screens', () => {
   afterEach(() => {
     delete (globalThis as { chrome?: unknown }).chrome;
@@ -310,7 +590,7 @@ describe('the vault screens', () => {
 
   it('offers an unlock form when the vault is locked', async () => {
     wire(() => LOCKED);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
 
     expect(text()).toContain('Vault locked');
     expect(document.querySelector('#vault-password')).not.toBeNull();
@@ -327,7 +607,7 @@ describe('the vault screens', () => {
           ? { ok: true, items: [{ id: 'i-1', itemType: 'password', title: 'Bank login' }] }
           : LOCKED,
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
 
     (document.querySelector('#vault-password') as HTMLInputElement).value = 'pw';
     (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-GOOD';
@@ -344,7 +624,7 @@ describe('the vault screens', () => {
     // look like a corrupted device rather than a mistake.
     await rememberSecretKey(USER, 'ES1-PREVIOUS');
     wire((message) => (message.kind === 'unlock' ? { ok: false, code: 'SRP_FAILED' } : LOCKED));
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
 
     (document.querySelector('#vault-password') as HTMLInputElement).value = 'wrong';
     (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-TYPO';
@@ -362,7 +642,7 @@ describe('the vault screens', () => {
       (message) => (message.kind === 'unlock' ? { ok: false, code: 'STEPUP_REQUIRED' } : LOCKED),
       { status: 200 },
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     (document.querySelector('#vault-password') as HTMLInputElement).value = 'pw';
     (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-GOOD';
     button(/Open vault/).click();
@@ -383,7 +663,7 @@ describe('the vault screens', () => {
     const { fetched } = wire((message) =>
       message.kind === 'unlock' ? { ok: false, code: 'STEPUP_REQUIRED' } : LOCKED,
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     (document.querySelector('#vault-password') as HTMLInputElement).value = 'pw';
     (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-GOOD';
     button(/Open vault/).click();
@@ -423,7 +703,7 @@ describe('the vault screens', () => {
       (message) => (message.kind === 'unlock' ? { ok: false, code: 'STEPUP_REQUIRED' } : LOCKED),
       { status, body: { error: token } },
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     (document.querySelector('#vault-password') as HTMLInputElement).value = 'pw';
     (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-GOOD';
     button(/Open vault/).click();
@@ -569,7 +849,7 @@ describe('the vault screens', () => {
           ? LOCKED
           : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     expect(text()).toContain('Vault open');
     expect(text()).toContain('No items in this vault yet.');
 
@@ -584,7 +864,7 @@ describe('the vault screens', () => {
         ? { ok: true, items: [{ id: 'i', itemType: 'password', title: '', unreadable: true }] }
         : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     expect(text()).toContain('could not be read');
   });
 
@@ -594,7 +874,7 @@ describe('the vault screens', () => {
         ? { ok: true, items: [{ id: 'i', itemType: 'password', title: '<img src=x onerror=1>' }] }
         : { ok: true, state: { status: 'unlocked', expiresAt: '2099-01-01T00:00:00.000Z' } },
     );
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     expect(document.querySelector('img')).toBeNull();
     expect(text()).toContain('<img src=x onerror=1>');
   });
@@ -603,7 +883,7 @@ describe('the vault screens', () => {
     // Not a dead end: the only thing this screen can offer is an unlock, so it
     // shows the form and attaches why the state read failed.
     wire(() => undefined);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     expect(text()).toContain('Vault locked');
     expect(text()).toContain(messages.UNAVAILABLE);
   });
@@ -647,7 +927,7 @@ describe('what is saved for the page you are on', () => {
         verdict: { kind: 'match', domain: 'example.com' },
       },
     ]);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('For example.com'), 'the per-page section');
     expect(text()).toContain('Bank login — saved for this site');
   });
@@ -664,7 +944,7 @@ describe('what is saved for the page you are on', () => {
         verdict: { kind: 'confusable', savedDomain: 'example.com', pageDomain: 'exarnple.com' },
       },
     ]);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('only looks like the saved one'), 'the refusal');
     expect(text()).not.toContain('saved for this site');
   });
@@ -678,13 +958,13 @@ describe('what is saved for the page you are on', () => {
         verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
       },
     ]);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('this page is not secure'), 'the downgrade refusal');
   });
 
   it('says plainly that nothing is saved here', async () => {
     openWith([]);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Nothing saved for this site'), 'the empty state');
   });
 
@@ -718,7 +998,7 @@ describe('what is saved for the page you are on', () => {
         verdict: { kind: 'scheme-downgrade', domain: 'example.com' },
       },
     ]);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('For example.com'), 'the per-page section');
 
     const fills = [...document.querySelectorAll('button')].filter((b) =>
@@ -744,7 +1024,7 @@ describe('what is saved for the page you are on', () => {
         verdict: { kind: 'match', domain: 'example.com' },
       },
     ]);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('For example.com'), 'the per-page section');
     expect(text()).toContain('gives this page the password');
     expect(text()).toContain('cannot tell whether the site itself is genuine');
@@ -770,7 +1050,7 @@ describe('what is saved for the page you are on', () => {
 
   it('fills, and says what Estate did rather than what the page will do', async () => {
     const wired = openWith(MATCH);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await pressFill();
     await until(() => text().includes('Filled'), 'the outcome');
 
@@ -795,7 +1075,7 @@ describe('what is saved for the page you are on', () => {
    */
   it('REFUSES to fill when the tab has navigated since the screen was drawn', async () => {
     const wired = openWith(MATCH);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('For example.com'), 'the per-page section');
 
     wired.navigate('https://evil.test/harvest');
@@ -812,7 +1092,7 @@ describe('what is saved for the page you are on', () => {
 
   it('REFUSES when the active tab is no longer the tab that was rendered', async () => {
     const wired = openWith(MATCH);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('For example.com'), 'the per-page section');
 
     wired.moveToAnotherTab();
@@ -832,7 +1112,7 @@ describe('what is saved for the page you are on', () => {
     // did not.
     const wired = openWith(MATCH);
     wired.refuseInjection();
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await pressFill();
     await until(() => text().includes('couldn’t reach that page'), 'the refusal');
     expect(text()).not.toContain('No password field was found');
@@ -843,7 +1123,7 @@ describe('what is saved for the page you are on', () => {
     // vault on any IDN page. One sentence about the page; the items are
     // unaffected.
     openWith([], 'https://xn--80ak6aa92e.com/login');
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('internationalised domain name'), 'the page notice');
     expect(text()).toContain('Nothing saved for this site');
     expect(text()).not.toContain('only looks like the saved one');
@@ -856,14 +1136,14 @@ describe('what is saved for the page you are on', () => {
     // that matters — it is NOT reported as internationalised, because nothing
     // was established about it.
     openWith([], 'not a url at all');
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('For not a url at all'), 'the verbatim heading');
     expect(text()).not.toContain('internationalised domain name');
   });
 
   it('asks for a FILL, naming the item and the page, never for a secret', async () => {
     const wired = openWith(MATCH);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await pressFill();
     await until(() => text().includes('Filled'), 'the outcome');
 
@@ -882,7 +1162,7 @@ describe('what is saved for the page you are on', () => {
     // to this page, or could not be opened. The user did nothing wrong and there
     // is nothing to retry, so it must not read as a failure (the M9 rule).
     const wired = openWith(MATCH, 'https://example.com/login', { ok: true, credential: null });
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await pressFill();
     await until(() => text().includes('not offered for this page'), 'the refusal');
 
@@ -895,7 +1175,7 @@ describe('what is saved for the page you are on', () => {
       ok: false,
       code: 'VAULT_LOCKED',
     });
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await pressFill();
     await until(() => document.querySelector('.error') !== null, 'the error');
     expect(wired.injected).toEqual([]);
@@ -905,7 +1185,7 @@ describe('what is saved for the page you are on', () => {
     // A chrome:// tab, or a window with nothing active. Not a failure of the
     // vault, so the list is still there and the per-page section simply is not.
     openWith([], null);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Vault open'), 'the unlocked view');
     expect(text()).not.toContain('For ');
     expect(text()).not.toContain('Nothing saved for this site');
@@ -953,7 +1233,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
 
   it('creates from what was typed, and says the address decides where it fills', async () => {
     const wired = composing((m) => (m.kind === 'create' ? { ok: true, item: ITEM } : undefined));
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Vault open'), 'the vault');
 
     press('New item');
@@ -976,7 +1256,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
 
   it('refuses a create with no title rather than saving an unfindable item', async () => {
     composing(() => undefined);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Vault open'), 'the vault');
     press('New item');
     await until(() => text().includes('New item'), 'the form');
@@ -986,7 +1266,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
 
   it('EDIT SENDS ONLY WHAT CHANGED, so a blank field cannot erase what it cannot see', async () => {
     const wired = composing((m) => (m.kind === 'update' ? { ok: true, item: ITEM } : undefined));
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Bank login'), 'the list');
 
     press('Edit');
@@ -1018,7 +1298,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
     // that the host forwards what it was given. This drives the real chain:
     // a listed item -> the edit form -> vault-client -> the message on the wire.
     const wired = composing((m) => (m.kind === 'update' ? { ok: true, item: ITEM } : undefined));
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Bank login'), 'the list');
 
     press('Edit');
@@ -1042,7 +1322,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
     // Losing what someone just typed because the server said no is the worst
     // possible answer on a form holding a password.
     composing((m) => (m.kind === 'create' ? { ok: false, code: 'VAULT_LOCKED' } : undefined));
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Vault open'), 'the vault');
     press('New item');
     await until(() => text().includes('New item'), 'the form');
@@ -1055,7 +1335,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
 
   it('explains a version conflict in its own words, and offers no overwrite', async () => {
     composing((m) => (m.kind === 'update' ? { ok: false, code: 'VERSION_CONFLICT' } : undefined));
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Bank login'), 'the list');
     press('Edit');
     await until(() => text().includes('Edit item'), 'the form');
@@ -1069,7 +1349,7 @@ describe('authoring an item in the popup (M16 PR4a)', () => {
 
   it('sends nothing at all when an edit changed nothing', async () => {
     const wired = composing(() => undefined);
-    await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
+    await mountVaultScreens({ host: host(), userId: USER, call: passthrough().call });
     await until(() => text().includes('Bank login'), 'the list');
     press('Edit');
     await until(() => text().includes('Edit item'), 'the form');

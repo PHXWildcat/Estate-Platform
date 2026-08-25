@@ -1,3 +1,4 @@
+import type { ApiResult } from './api.js';
 import { request } from './api.js';
 import { messageFor } from './copy.js';
 import { el, render } from './dom.js';
@@ -37,7 +38,33 @@ import type { MatchedItem } from './messages.js';
 export interface VaultScreensDeps {
   readonly host: HTMLElement;
   readonly userId: string;
-  readonly bearer: string;
+  /**
+   * RUN ONE CALL ON A LIVE ACCESS TOKEN (M44 PR2).
+   *
+   * This used to be `readonly bearer: string` — a SNAPSHOT taken at mount, in
+   * `popup.ts`, and spent by all eight call sites below. The access token lives
+   * fifteen minutes and the session thirty days, so a popup left open across
+   * that boundary answered every action `UNAUTHENTICATED`, and `messageFor`
+   * told the user "This device is no longer connected to your account … Connect
+   * it again to continue" about a pairing that was perfectly alive. Nothing was
+   * un-paired; the copy was simply false, and the remedy it named — re-pairing,
+   * which costs a step-up on the app origin — was the most expensive one
+   * available.
+   *
+   * The defect was never the eight call sites. It was the TYPE: a `string`
+   * cannot refresh itself, so every consumer of it was correct and the result
+   * was still wrong. This module now holds no bearer at all, which is why it
+   * cannot hold a stale one — the ABSENCE this repo prefers to a filter. A
+   * ninth call site cannot reintroduce the defect because there is nothing left
+   * here to reintroduce it with.
+   *
+   * WHY IT IS INJECTED rather than imported. `withSession` needs the
+   * `PairedSession`, and a refresh ROTATES it; `popup.ts` owns that state and
+   * must see the rotation, or its in-memory copy drifts from storage. Calling
+   * `withSession` here would refresh correctly and leave the popup holding the
+   * previous session — right in storage, wrong in the tab.
+   */
+  readonly call: <T>(fn: (bearer: string) => Promise<ApiResult<T>>) => Promise<ApiResult<T>>;
 }
 
 type View =
@@ -65,7 +92,7 @@ type View =
 const CODE_PATTERN = /^[0-9]{6}$/;
 
 export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
-  const { host, userId, bearer } = deps;
+  const { host, userId, call } = deps;
   let view: View = { kind: 'checking' };
   let remembered: string | null = null;
 
@@ -96,11 +123,12 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
   }
 
   async function refresh(): Promise<void> {
-    const listed = await listItems(bearer);
+    const listed = await call((bearer) => listItems(bearer));
     if (listed.ok) {
       const tab = await activeTab();
       const pageUrl = tab.url;
-      const matched = pageUrl === undefined ? undefined : await matchesFor(bearer, pageUrl);
+      const matched =
+        pageUrl === undefined ? undefined : await call((bearer) => matchesFor(bearer, pageUrl));
       show({
         kind: 'unlocked',
         ...(tab.id === undefined ? {} : { tabId: tab.id }),
@@ -123,7 +151,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     remember: boolean,
   ): Promise<void> {
     show({ kind: 'busy', label: 'Opening…' });
-    const opened = await unlockVault({ userId, password, secretKey, bearer });
+    const opened = await call((bearer) => unlockVault({ userId, password, secretKey, bearer }));
     if (opened.ok) {
       // Remembered only AFTER a key has actually opened this vault, so a typo
       // is never persisted as though it were the device's key.
@@ -148,7 +176,9 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       return;
     }
     show({ kind: 'busy', label: 'Checking…' });
-    const done = await request('/api/auth/stepup', { method: 'POST', bearer, body: { code } });
+    const done = await call((bearer) =>
+      request('/api/auth/stepup', { method: 'POST', bearer, body: { code } }),
+    );
     if (done.ok) {
       show({ kind: 'locked' });
       return;
@@ -193,7 +223,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
 
   async function doLock(): Promise<void> {
     show({ kind: 'busy', label: 'Locking…' });
-    await lockVault(bearer);
+    await call((bearer) => lockVault(bearer));
     show({ kind: 'locked' });
   }
 
@@ -390,7 +420,7 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       });
       return;
     }
-    const filled = await fillFor(bearer, itemId, pageUrl);
+    const filled = await call((bearer) => fillFor(bearer, itemId, pageUrl));
     if (!filled.ok) {
       show({ ...(view as Extract<View, { kind: 'unlocked' }>), error: messageFor(filled.code) });
       return;
@@ -496,12 +526,14 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     show({ kind: 'busy', label: editing ? 'Saving…' : 'Adding…' });
 
     if (editing === undefined) {
-      const made = await createItem(bearer, 'password', {
-        title: typed.title.trim(),
-        username: typed.username,
-        secret: typed.secret,
-        url: typed.url,
-      });
+      const made = await call((bearer) =>
+        createItem(bearer, 'password', {
+          title: typed.title.trim(),
+          username: typed.username,
+          secret: typed.secret,
+          url: typed.url,
+        }),
+      );
       if (!made.ok) {
         show({ kind: 'composing', error: messageFor(made.code) });
         return;
@@ -527,13 +559,15 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
       await refresh();
       return;
     }
-    const saved = await updateItem(bearer, {
-      itemId: editing.id,
-      itemType: editing.itemType,
-      changes,
-      blobVersion: editing.blobVersion,
-      revision: editing.revision,
-    });
+    const saved = await call((bearer) =>
+      updateItem(bearer, {
+        itemId: editing.id,
+        itemType: editing.itemType,
+        changes,
+        blobVersion: editing.blobVersion,
+        revision: editing.revision,
+      }),
+    );
     if (!saved.ok) {
       show({ kind: 'composing', editing, error: messageFor(saved.code) });
       return;

@@ -177,6 +177,8 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6zz': 8,
   '6aaa': 3,
   '6bbb': 2,
+  // M44 PR2 closed the row; the one bullet is an ACCEPTED trade-off.
+  '6ccc': 1,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -219,6 +221,7 @@ const REGION_MARKERS: readonly string[] = [
   'Residuals, stated rather than implied.', // §6q
   'Two residuals.', // §6s
   'Residuals, stated.', // §6t
+  'Residuals: none, and the row is closed.', // §6ccc — a region with nothing in it
 ];
 
 /**
@@ -625,6 +628,19 @@ const OUT_OF_CORPUS: ReadonlyArray<{
     kind: 'decision',
   },
   { section: '6bb', label: 'What PR3a changes', bullets: 5, kind: 'shipped' },
+  {
+    section: '6ccc',
+    label: 'DRIVEN IN A REAL BROWSER, and the drive cost two checks that could not fail.',
+    bullets: 2,
+    kind: 'evidence',
+  },
+  {
+    section: '6ccc',
+    label:
+      'Two fences, and they catch different things — stated because a guard at two layers needs each test to say which layer it proves.',
+    bullets: 2,
+    kind: 'evidence',
+  },
   {
     section: '6bbb',
     label: 'The same fence had the same defect TWICE MORE, and the review found both.',

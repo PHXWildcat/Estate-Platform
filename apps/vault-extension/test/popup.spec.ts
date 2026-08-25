@@ -181,6 +181,77 @@ describe('the popup', () => {
     expect(double.store.size).toBe(0);
   });
 
+  it('spends the ROTATED credential afterwards, not the one it started with', async () => {
+    /*
+     * THE MUTATION THAT SURVIVED (M44 PR2). Deleting `rotateSession(current)`
+     * left all eleven cases in this file green, and that was a weak test rather
+     * than a harmless line. A refresh rotates BOTH tokens — `toSession` requires
+     * a `refreshToken` in the response — so a popup that does not take the
+     * rotation goes on presenting a spent one. `disconnect` reads the resulting
+     * refusal as "already gone" and forgets locally, leaving a browser that
+     * looks signed out over a session still live on the server: the exact
+     * outcome `disconnect`'s own comment calls the worst there is.
+     *
+     * The rotation is driven through the VAULT half deliberately, because that
+     * is the path `callOnLiveSession` owns. `refreshStatus` re-renders through
+     * `show()` and would carry the new session anyway, so a test written around
+     * it would pass with the line deleted — which is how this went unnoticed.
+     */
+    const double = installChromeDouble();
+    double.store.set('estate.session', TOKENS);
+    const ROTATED = {
+      accessToken: 'access-2',
+      refreshToken: 'refresh-2',
+      userId: 'u-1',
+      sessionId: 's-1',
+    };
+    // The offscreen document, as a double that answers on the CREDENTIAL it is
+    // handed — which is the only way a stale one is visible from out here.
+    const presented: string[] = [];
+    (
+      globalThis as { chrome?: { runtime?: Record<string, unknown> } }
+    ).chrome!.runtime!.sendMessage = (message: {
+      kind?: string;
+      bearer?: string;
+    }): Promise<unknown> => {
+      if (message.kind === undefined) return Promise.resolve({ ok: true });
+      if (message.kind === 'state') {
+        return Promise.resolve({ ok: true, state: { status: 'unlocked' } });
+      }
+      if (message.bearer !== undefined) presented.push(message.bearer);
+      if (message.bearer !== ROTATED.accessToken) {
+        return Promise.resolve({ ok: false, code: 'UNAUTHENTICATED' });
+      }
+      return Promise.resolve({ ok: true, items: [] });
+    };
+    const { calls } = transport([
+      { status: 200, body: { enrolled: true } },
+      { status: 200, body: ROTATED },
+      { status: 200, body: { status: 'ok' } },
+    ]);
+    await mountPopup({ root: root() });
+    for (let i = 0; i < 50 && !presented.includes(ROTATED.accessToken); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    // ANTI-VACUITY: the rotation really happened, and it took the stale token
+    // first — otherwise everything below passes for want of an expiry.
+    expect(presented[0]).toBe(TOKENS.accessToken);
+    expect(presented).toContain(ROTATED.accessToken);
+
+    button(/Disconnect this browser/).click();
+    for (let i = 0; i < 50 && calls.length < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    const logout = calls.find((c) => c.url.endsWith('/api/auth/logout'));
+    expect(logout).toBeDefined();
+    // THE ASSERTION. With the rotation dropped this reads `Bearer access-1`.
+    expect((logout?.init.headers as Record<string, string>)['authorization']).toBe(
+      'Bearer access-2',
+    );
+  });
+
   it('disconnects, and returns to the connect screen', async () => {
     const double = installChromeDouble();
     double.store.set('estate.session', TOKENS);

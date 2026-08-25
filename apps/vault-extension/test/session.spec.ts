@@ -2,6 +2,8 @@
  * The paired session: what it stores, what it refuses to store, and the one
  * distinction that decides whether a user gets un-paired by a wifi blip.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { assertExactOrigin, vaultOrigin, ExtensionConfigError } from '../src/config';
 import { PACKAGED_VAULT_ORIGIN } from '../src/origin';
 import {
@@ -309,5 +311,138 @@ describe('disconnecting', () => {
     double.store.set('estate.session', SESSION);
     await forgetSession();
     expect(double.store.size).toBe(0);
+  });
+});
+
+/**
+ * THE REVOCATION PREDICATE MUST NAME ONLY REFUSALS THIS ROUTE CAN PRODUCE.
+ *
+ * WHY THIS EXISTS. `withSession` decides, when a refresh is refused, whether the
+ * pairing is GONE (report the 401, and the caller forgets the credential) or the
+ * network merely failed (report the transport error, and keep it). Until M44 PR2
+ * that predicate read
+ *
+ *     refreshed.code === 'UNAUTHENTICATED' || refreshed.code === 'INVALID_CODE'
+ *
+ * and the second disjunct could not fire: `POST /v1/auth/refresh` throws exactly
+ * `invalid_token`, which this client answers as `UNAUTHENTICATED`. docs/03 §6aaa
+ * recorded it as harmless-but-recorded, and named the real risk precisely — "the
+ * failure mode of a later edit is somebody making it true". A disjunct that
+ * cannot fire is indistinguishable from one that fires for a reason nobody has
+ * thought about, inside the predicate that decides whether a WORKING credential
+ * gets thrown away.
+ *
+ * THE REACHABLE SET IS MEASURED, NOT PARSED. `failureFor` is module-private in
+ * `api.ts` and stays that way; rather than re-implement its mapping here — a
+ * second copy that would drift — each refusal identity can answer is driven
+ * through the REAL `refresh()` over a transport double, and the code that comes
+ * out is recorded. What this asserts is therefore what the client actually does,
+ * not what a mirror of it says.
+ */
+describe('the revocation predicate names only what a refusal can be', () => {
+  const IDENTITY_SRC = join(__dirname, '..', '..', 'services', 'identity', 'src');
+  const SESSION_SRC = join(__dirname, '..', 'src', 'session.ts');
+
+  function strip(src: string): string {
+    return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  }
+
+  const NEST_STATUS: ReadonlyMap<string, number> = new Map([
+    ['BadRequestException', 400],
+    ['UnauthorizedException', 401],
+    ['ForbiddenException', 403],
+    ['NotFoundException', 404],
+    ['ConflictException', 409],
+  ]);
+
+  /**
+   * Every `(status, token)` `POST /v1/auth/refresh` can answer, out of
+   * identity's own source: the controller's body parser, plus every throw in
+   * the service method the handler delegates to.
+   */
+  function refusals(): { status: number; token: string }[] {
+    const controller = strip(readFileSync(join(IDENTITY_SRC, 'auth.controller.ts'), 'utf8'));
+    const at = controller.indexOf("@Post('refresh')");
+    expect(at).toBeGreaterThanOrEqual(0);
+    // TO THE NEXT ROUTE, not to the next decorator: `@HttpCode` sits between
+    // `@Post` and the method, so stopping at the first `\n  @` cut the handler
+    // off before its body and made the guard check below vacuously true.
+    const nextRoute = [
+      ...controller.slice(at + 10).matchAll(/\n {2}@(?:Post|Get|Put|Patch|Delete)\(/g),
+    ][0];
+    const handler = controller.slice(
+      at,
+      nextRoute === undefined ? controller.length : at + 10 + nextRoute.index,
+    );
+    // The route is UNAUTHENTICATED by construction — it is the credential that
+    // replaces an expired one — so a guard appearing here would change what it
+    // can answer and must not pass unnoticed.
+    expect(handler).not.toMatch(/@UseGuards/);
+    expect(handler).toMatch(/this\.auth\.refresh\(/);
+
+    const found: { status: number; token: string }[] = [];
+    // The body parser's refusal, which belongs to the ROUTE even though it is
+    // thrown by a helper: a malformed body never reaches the service.
+    if (/parseBody\(/.test(handler)) {
+      const parse = controller.slice(controller.indexOf('function parseBody'));
+      for (const m of parse
+        .slice(0, parse.indexOf('\n}'))
+        .matchAll(/throw new (\w+)\(\{\s*error:\s*'([a-z_]+)'/g)) {
+        found.push({ status: NEST_STATUS.get(m[1] as string) ?? 0, token: m[2] as string });
+      }
+    }
+
+    const service = strip(readFileSync(join(IDENTITY_SRC, 'auth.service.ts'), 'utf8'));
+    const start = service.indexOf('async refresh(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = service.indexOf('\n  }', start);
+    expect(end).toBeGreaterThan(start);
+    for (const m of service
+      .slice(start, end)
+      .matchAll(/throw new (\w+)\(\{\s*error:\s*'([a-z_]+)'/g)) {
+      found.push({ status: NEST_STATUS.get(m[1] as string) ?? 0, token: m[2] as string });
+    }
+    return found;
+  }
+
+  /** The disjuncts the predicate actually tests, from the source it runs. */
+  function disjuncts(): string[] {
+    const src = strip(readFileSync(SESSION_SRC, 'utf8'));
+    const at = src.indexOf('const revoked =');
+    expect(at).toBeGreaterThanOrEqual(0);
+    const line = src.slice(at, src.indexOf(';', at));
+    return [...line.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1] as string).sort();
+  }
+
+  it('derives what the refresh route can refuse, out of identity itself', () => {
+    const found = refusals();
+    // ANTI-VACUITY: a slice that matched nothing agrees with every assertion
+    // below, and the token this whole fence turns on must be among them.
+    expect(found.length).toBeGreaterThanOrEqual(2);
+    expect(found.map((r) => r.token)).toContain('invalid_token');
+    expect(found.every((r) => r.status > 0)).toBe(true);
+  });
+
+  it('every disjunct is a code this client can actually produce here', async () => {
+    // MEASURED through the real client: each refusal identity can answer is
+    // driven through `refresh()` and the resulting code recorded.
+    const produced = new Set<string>();
+    for (const refusal of refusals()) {
+      transport([{ status: refusal.status, body: { error: refusal.token } }]);
+      const result = await refresh(SESSION);
+      expect(result.ok).toBe(false);
+      if (!result.ok) produced.add(result.code);
+    }
+    // ANTI-VACUITY on the measurement itself.
+    expect(produced.size).toBeGreaterThanOrEqual(1);
+    expect(produced.has('UNAUTHENTICATED')).toBe(true);
+
+    const named = disjuncts();
+    expect(named.length).toBeGreaterThanOrEqual(1);
+    // THE ASSERTION. Not "the sets are equal" — `INVALID_REQUEST` is reachable
+    // and must NOT count as a revocation, so equality would be the wrong claim
+    // and would force a dead disjunct back in. What is forbidden is naming a
+    // code this route cannot produce, which is exactly what `INVALID_CODE` was.
+    expect(named.filter((code) => !produced.has(code))).toEqual([]);
   });
 });
