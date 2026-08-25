@@ -182,6 +182,9 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // M40 PR0: one ACCEPTED bound and two owned items — the escalations half of
   // the same question, and the hand-kept register this PR chose to keep.
   '6ddd': 3,
+  // M40 PR1: the category's reach, its underived membership, and the four
+  // assertions that pin the behaviour a fix must change.
+  '6eee': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -513,7 +516,7 @@ function residuals(): {
       lead = null;
     } else if (/^## /.test(line)) {
       // A TOP-LEVEL HEADING THAT IS NOT A §6 DELTA ENDS §6, and this parser did
-      // not say so. `## 7. Validation program` sits at docs/03:4523, BETWEEN
+      // not say so. `## 7. Validation program` sits BETWEEN
       // §6hh and §6ii — the doc appends deltas after the numbered sections and
       // §7 was overtaken — so `section` stayed '6hh' and §7's four bullets were
       // attributed to it. The same mis-attribution class as the one-letter
@@ -810,6 +813,15 @@ const OUT_OF_CORPUS: ReadonlyArray<{
     // The four docs/04 rows whose Status cell could not be read as a lifecycle.
     // Evidence for the defect, not work owed: three of the four were finished
     // and all four now declare a token.
+  },
+  {
+    section: '6eee',
+    label: 'The category, enumerated.',
+    bullets: 2,
+    kind: 'evidence',
+    // The eight members, grouped by service. Evidence for an ownership
+    // decision, not work owed: both bullets are already tagged where they
+    // live, in §6e and §6vv.
   },
   {
     section: '6ddd',
@@ -1174,7 +1186,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
      * THE ONE PLACE M27 PR0 MADE A PRE-EXISTING ASSERTION WEAKER, restored.
      *
      * PR0 taught the parser that a non-§6 `## ` heading ends §6, because
-     * `## 7. Validation program` sits at docs/03:4523 — BETWEEN §6hh and §6ii,
+     * `## 7. Validation program` sits BETWEEN §6hh and §6ii,
      * the deltas having been appended after the numbered sections — and its
      * four bullets were being attributed to §6hh. That fixed a real
      * mis-attribution and cost something the fence's own review caught: BEFORE
@@ -1403,15 +1415,18 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // milestone, or a milestone declaring COMPLETE while residuals still name
     // it, reddens this immediately.
     //
-    // THE OTHER EIGHTEEN ARE NOT HERE, and the correction is worth stating
+    // M21'S ARE NOT HERE, and the correction is worth stating
     // because this comment used to make it. It read "Thirty-one … (M21
-    // eighteen, M23 twelve, M22 one)", and M21 has NOT shipped: docs/04:5639
-    // records PR5 — documents evidence content plus the legal-hold lift
-    // ceremony — as NOT YET SHIPPED, and no commit names it. So M21's row
+    // eighteen, M23 twelve, M22 one)", and M21 has NOT shipped: docs/04's
+    // `- **PR5 — documents evidence content + the legal-hold lift ceremony.**`
+    // bullet ends `NOT YET SHIPPED.`, and no commit names it. (Cited by its TEXT
+    // rather than by a line number: this comment said `docs/04:5639`, and M40
+    // PR1 moved that line by eight while editing the same file. A line number
+    // into another file is a citation that rots on the next edit above it.) So M21's row
     // saying nothing about completion was HONEST, not the stale prose the M40
-    // row called it, and its eighteen residuals are live debt on a live
+    // row called it, and its residuals are live debt on a live
     // milestone rather than debt on a closed one. They are still a defect —
-    // M21's one remaining PR does none of the eighteen — but that is a
+    // M21's one remaining PR does none of them — but that is a
     // different defect with a different remedy, and this assertion is not the
     // one that finds it.
     //
