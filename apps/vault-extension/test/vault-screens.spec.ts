@@ -7,6 +7,8 @@
  * opened the vault.
  */
 import 'fake-indexeddb/auto';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { messages } from '../src/copy';
 import { rememberedSecretKey, rememberSecretKey } from '../src/secret-key-store';
 import { mountVaultScreens } from '../src/vault-screens';
@@ -133,6 +135,174 @@ const button = (name: RegExp): HTMLButtonElement => {
 
 const LOCKED = { ok: true, state: { status: 'locked' } };
 
+/* ------------------------------------------------------------------------- *
+ * WHAT `POST /v1/auth/stepup` CAN ACTUALLY ANSWER, WALKED OUT OF IDENTITY.
+ *
+ * Derived rather than listed, because the list is what was wrong. The corpus is
+ * the guards the controller decorates the handler with, plus the transitive
+ * closure of private methods `stepUp` calls — so a refusal added to either
+ * arrives here red instead of unnoticed.
+ *
+ * CROSS-PACKAGE BY DESIGN, and declared: `apps/vault-extension/turbo.json`
+ * already widens this package's `test` inputs to the repo, which is what stops
+ * a change to identity's vocabulary replaying a cached green here.
+ * ------------------------------------------------------------------------- */
+
+const IDENTITY_SRC = join(__dirname, '..', '..', 'services', 'identity', 'src');
+
+/** Comments out, so a derivation never reads documentation as code. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+const NEST_STATUS: ReadonlyMap<string, number> = new Map([
+  ['BadRequestException', 400],
+  ['UnauthorizedException', 401],
+  ['ForbiddenException', 403],
+  ['NotFoundException', 404],
+]);
+const EXPLICIT_STATUS: ReadonlyMap<string, number> = new Map([
+  ['HttpStatus.TOO_MANY_REQUESTS', 429],
+]);
+
+interface Refusal {
+  readonly status: number;
+  readonly token: string;
+}
+
+function throwsIn(src: string): Refusal[] {
+  const out: Refusal[] = [];
+  const pattern = /throw new (\w+)\(\{\s*error:\s*'([a-z_]+)'\s*\}(?:\s*,\s*(HttpStatus\.\w+))?/g;
+  for (const m of src.matchAll(pattern)) {
+    const explicit = m[3];
+    const status =
+      explicit === undefined ? NEST_STATUS.get(m[1] as string) : EXPLICIT_STATUS.get(explicit);
+    if (status !== undefined) out.push({ status, token: m[2] as string });
+  }
+  return out;
+}
+
+/** Every `export class X` in identity, so a guard name resolves to its file. */
+function classFiles(): ReadonlyMap<string, string> {
+  const found = new Map<string, string>();
+  for (const file of readdirSync(IDENTITY_SRC).filter((f) => f.endsWith('.ts'))) {
+    const src = readFileSync(join(IDENTITY_SRC, file), 'utf8');
+    for (const m of src.matchAll(/export class (\w+)/g)) found.set(m[1] as string, file);
+  }
+  return found;
+}
+
+/** The guard classes decorating the `stepup` handler. */
+function stepUpGuards(controller: string): string[] {
+  const at = controller.indexOf("@Post('stepup')");
+  expect(at).toBeGreaterThanOrEqual(0);
+  const end = controller.indexOf('async ', at);
+  expect(end).toBeGreaterThan(at);
+  return [...controller.slice(at, end).matchAll(/@UseGuards\(([^)]*)\)/g)]
+    .flatMap((m) => (m[1] as string).split(','))
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
+
+/** A method's body, by name, from a stripped service source. */
+function methodBody(service: string, name: string): string | null {
+  // NOT `async`-only. A private helper that throws needs no `await` to do it,
+  // and a walk that could only see async methods would step over one silently.
+  const found = new RegExp(`\\n  (?:private )?(?:async )?${name}\\(`).exec(service);
+  if (!found) return null;
+  const end = service.indexOf('\n  }\n', found.index);
+  return end < 0 ? service.slice(found.index) : service.slice(found.index, end);
+}
+
+/**
+ * `this.X(` targets that are NOT methods of this class, with the reason. A call
+ * the walk cannot resolve is otherwise indistinguishable from a method with no
+ * throws in it — the walk would step over a whole subtree and report a shorter,
+ * perfectly plausible answer.
+ */
+const NOT_A_METHOD: ReadonlyMap<string, string> = new Map([
+  ['clock', 'An injected `() => Date` on the class, not a method. It cannot throw a refusal.'],
+]);
+
+/**
+ * Throw forms this walk can READ. Anything else in a reachable body is a
+ * refusal the corpus cannot see.
+ *
+ * The idiom that forces this is in the very file being walked:
+ * `throw invalidCredentials()` appears seven times in `auth.service.ts`, where
+ * the helper builds the exception elsewhere. None of those sites is reachable
+ * from `stepUp` today — but "not today" is exactly the claim that rots, and a
+ * corpus narrower than its stated guarantee goes green for the same reason it
+ * is wrong. So an unreadable throw in a reachable body turns this fence RED
+ * rather than quietly shrinking it, on the same principle as the residual
+ * fence's marker list.
+ */
+const READABLE_THROW = /throw new \w+\(\{\s*error:/;
+
+/** `stepUp` plus everything it calls on `this`, to a fixed point. */
+function reachableFromStepUp(service: string): {
+  methods: string[];
+  refusals: Refusal[];
+  unresolved: string[];
+  unreadableThrows: string[];
+} {
+  const seen = new Set<string>();
+  const stack = ['stepUp'];
+  const refusals: Refusal[] = [];
+  const unresolved: string[] = [];
+  const unreadableThrows: string[] = [];
+  while (stack.length > 0) {
+    const name = stack.pop() as string;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const body = methodBody(service, name);
+    if (body === null) {
+      if (!NOT_A_METHOD.has(name)) unresolved.push(name);
+      continue;
+    }
+    refusals.push(...throwsIn(body));
+    for (const line of body.matchAll(/^\s*throw .*/gm)) {
+      const text = line[0].trim();
+      if (!READABLE_THROW.test(text)) unreadableThrows.push(`${name}: ${text}`);
+    }
+    for (const m of body.matchAll(/this\.(\w+)\(/g)) {
+      if (!seen.has(m[1] as string)) stack.push(m[1] as string);
+    }
+  }
+  return { methods: [...seen].sort(), refusals, unresolved, unreadableThrows };
+}
+
+function stepUpRefusals(): { refusals: Refusal[]; guards: string[]; methods: string[] } {
+  const files = classFiles();
+  const controller = stripComments(readFileSync(join(IDENTITY_SRC, 'auth.controller.ts'), 'utf8'));
+  const guards = stepUpGuards(controller);
+  const all: Refusal[] = [];
+  for (const guard of guards) {
+    const file = files.get(guard);
+    expect(file).toBeDefined();
+    all.push(...throwsIn(stripComments(readFileSync(join(IDENTITY_SRC, file as string), 'utf8'))));
+  }
+  const service = stripComments(readFileSync(join(IDENTITY_SRC, 'auth.service.ts'), 'utf8'));
+  const walked = reachableFromStepUp(service);
+  all.push(...walked.refusals);
+  // THE WALK'S OWN BLIND SPOTS, surfaced rather than absorbed. A call that
+  // resolved to nothing and a throw this parser cannot read are both ways for
+  // the corpus to be narrower than the guarantee stated above it.
+  expect(walked.unresolved).toEqual([]);
+  expect(walked.unreadableThrows).toEqual([]);
+  const staleNotMethod = [...NOT_A_METHOD.keys()].filter((n) => !walked.methods.includes(n));
+  expect(staleNotMethod).toEqual([]);
+  const unique = new Map<string, Refusal>();
+  for (const r of all) unique.set(`${r.status} ${r.token}`, r);
+  return {
+    refusals: [...unique.values()].sort((a, b) =>
+      a.status === b.status ? a.token.localeCompare(b.token) : a.status - b.status,
+    ),
+    guards,
+    methods: walked.methods,
+  };
+}
+
 describe('the vault screens', () => {
   afterEach(() => {
     delete (globalThis as { chrome?: unknown }).chrome;
@@ -227,25 +397,166 @@ describe('the vault screens', () => {
     expect(fetched).toHaveLength(0);
   });
 
-  it('names the CODE when a step-up is refused, never a password', async () => {
-    // identity answers `invalid_credentials` for a rejected TOTP code exactly
-    // as for a rejected password — the M12 defect, on a form with neither.
+  /*
+   * THE STEP-UP REFUSALS, DERIVED RATHER THAN IMAGINED (M27 PR6).
+   *
+   * What stood here was one test called "names the CODE when a step-up is
+   * refused, never a password", answering `401 unauthorized`. That IS a real
+   * token — `SessionGuard` throws it — but it is what a DEAD PAIRING looks
+   * like, not a rejected code. So a test named for one property exercised the
+   * boundary of another, and stayed green while the screen answered a mistyped
+   * authenticator digit with PAIRING copy: "create a new one in Estate under
+   * Security", about a number that is read rather than created.
+   *
+   * The arm was keyed on `UNAUTHENTICATED`, lifted from
+   * `apps/vault-web/src/client/stepup.ts` where that is the right code because
+   * that origin maps every 401 to it. This client splits 401 three ways, so the
+   * same expression named a different failure and the two sentences came out
+   * swapped. identity had already anticipated exactly this: the 429 helper's
+   * comment says the cap gets its own token and never `invalid_code`, "the M12
+   * lesson about one token changing meaning with the surface".
+   */
+  async function refusalText(status: number, token: string): Promise<string> {
     const { fetched } = wire(
       (message) => (message.kind === 'unlock' ? { ok: false, code: 'STEPUP_REQUIRED' } : LOCKED),
-      { status: 401, body: { error: 'unauthorized' } },
+      { status, body: { error: token } },
     );
     await mountVaultScreens({ host: host(), userId: USER, bearer: BEARER });
     (document.querySelector('#vault-password') as HTMLInputElement).value = 'pw';
     (document.querySelector('#secret-key') as HTMLInputElement).value = 'ES1-GOOD';
     button(/Open vault/).click();
-    await settle();
+    await until(() => document.querySelector('#stepup-code') !== null, 'the step-up form');
     (document.querySelector('#stepup-code') as HTMLInputElement).value = '123456';
     button(/Confirm/).click();
-    await settle();
-
+    // STAGED ON THE ERROR NODE, not on a tick: the call and the redraw are two
+    // hops, and this file's own `until` exists because a fixed tick flaked here.
+    await until(() => document.querySelector('p.error') !== null, `the refusal for ${token}`);
     expect(fetched).toHaveLength(1);
-    expect(text()).toContain('Codes last about 30 seconds');
-    expect(text()).not.toContain('email and password');
+    return document.querySelector('p.error')?.textContent ?? '';
+  }
+
+  /**
+   * REFUSALS THIS SCREEN ANSWERS GENERICALLY ON PURPOSE, each with its reason.
+   * A refusal is here or it has a sentence of its own; there is no third state,
+   * which is the whole point of the unclassified check below.
+   */
+  const GENERIC: ReadonlyMap<string, string> = new Map([
+    [
+      '400 invalid_request',
+      'Not a user condition here. It comes from `requireAuth`, whose own comment calls it unreachable behind SessionGuard, and from the body schema — which CODE_PATTERN refuses before the network. Either is a bug in THIS extension, and UNKNOWN is the honest sentence for one.',
+    ],
+  ]);
+
+  it('derives what the step-up route can refuse, out of identity itself', () => {
+    const { refusals, guards, methods } = stepUpRefusals();
+    // ANTI-VACUITY AT EVERY LEVEL, not just the total. A walk that resolved no
+    // guards and a walk that entered no methods both yield a short list that
+    // would agree with a hand-written expectation.
+    expect(guards).toContain('SessionGuard');
+    expect(methods).toContain('stepUp');
+    expect(methods).toContain('refuseStepUpForRate');
+    expect(methods.length).toBeGreaterThanOrEqual(4);
+    // SETS, not counts: a mis-attribution preserves a count.
+    //
+    // Pinned exactly, so a refusal ADDED to identity arrives red here instead
+    // of unnoticed. Measured: inserting one throw into `stepUp` reddens this
+    // and names the new token in the diff. Disabling the closure walk reddens
+    // it too, which is why the method assertions above are not decoration.
+    expect(refusals.map((r) => `${r.status} ${r.token}`)).toEqual([
+      '400 invalid_request',
+      '401 invalid_code',
+      '401 unauthorized',
+      '429 too_many_attempts',
+    ]);
+  });
+
+  it('answers a rejected code about the AUTHENTICATOR, never about pairing', async () => {
+    const shown = await refusalText(401, 'invalid_code');
+    expect(shown).toContain('Codes last about 30 seconds');
+    // THE DEFECT, NAMED. `invalid_code` is also identity's answer for a refused
+    // PAIRING code; reading it as pairing everywhere sent someone who mistyped
+    // six digits to Estate's Security screen to create a replacement.
+    expect(shown).not.toBe(messages.INVALID_CODE);
+    expect(shown).not.toContain('Estate under Security');
+  });
+
+  it('answers a revoked pairing about the DEVICE, never about the code', async () => {
+    const shown = await refusalText(401, 'unauthorized');
+    expect(shown).toBe(messages.UNAUTHENTICATED);
+    // The arm the replaced test actually exercised while claiming the other.
+    expect(shown).not.toContain('30 seconds');
+  });
+
+  it('answers the guessing cap as a limit, never as an outage', async () => {
+    const shown = await refusalText(429, 'too_many_attempts');
+    expect(shown).toBe(messages.TOO_MANY_ATTEMPTS);
+    expect(shown).not.toBe(messages.UNKNOWN);
+    // It must neither blame the code nor invite the retry the cap is refusing.
+    expect(shown).not.toContain('30 seconds');
+    expect(shown).not.toContain('try again in a moment');
+  });
+
+  it('gives every refusal on this route a sentence of its OWN', async () => {
+    /*
+     * DISCRIMINATION, NOT COVERAGE. "Every refusal renders a sentence" is
+     * satisfied by a screen rendering ONE sentence for all of them — which is
+     * the shape of the defect this replaced. Only the pairwise comparison
+     * closes it, and an equivalence assertion is half a specification.
+     *
+     * WHAT THIS TEST DOES NOT CATCH, measured rather than assumed. Reverting
+     * the discriminator in `vault-screens.ts` leaves this test GREEN: a SWAP
+     * preserves distinctness, so three wrong sentences are still three
+     * different ones. The two named tests above are what catch a permutation;
+     * this one catches a COLLAPSE.
+     *
+     * ITS POSITIVE CONTROL is collapsing the cap's sentence onto the
+     * DEVICE-DISCONNECTED one (`messages.UNAUTHENTICATED`), which reddens this
+     * test and nothing else.
+     *
+     * NOT onto the PAIRING sentence, and the difference is kept here because an
+     * earlier draft of this comment named that mutation — which leaves all 37
+     * tests green. `messages.INVALID_CODE` is unreachable FROM THIS SCREEN: a
+     * rejected code renders the inline sentence above, so collapsing onto the
+     * pairing copy collides with nothing and proves nothing. A positive control
+     * has to name a mutation somebody actually ran, or it is the same
+     * unverified claim about the tree this whole file exists to refuse.
+     */
+    const { refusals } = stepUpRefusals();
+    // A reason recorded for a refusal that no longer exists is a claim about the
+    // tree nobody checks — this repo's most repeated defect, in miniature.
+    const stale = [...GENERIC.keys()].filter(
+      (key) => !refusals.some((r) => `${r.status} ${r.token}` === key),
+    );
+    expect(stale).toEqual([]);
+
+    const shown = new Map<string, string>();
+    for (const r of refusals) {
+      const key = `${r.status} ${r.token}`;
+      if (GENERIC.has(key)) continue;
+      shown.set(key, await refusalText(r.status, r.token));
+    }
+    /*
+     * A refusal not declared GENERIC must have a sentence of its OWN, which
+     * means it must not be the generic sentence either.
+     *
+     * The first draft of this check only inspected refusals at status 400 while
+     * the test claimed every refusal on the route — a fence whose input was
+     * narrower than its claim, which is the exact defect this file exists to
+     * catch, committed inside it. A new refusal falling through to UNKNOWN
+     * would have been DISTINCT from the other three and passed the pairwise
+     * comparison below while saying nothing at all to the user.
+     */
+    const spokenGenerically = [...shown.entries()]
+      .filter(([, sentence]) => sentence === messages.UNKNOWN)
+      .map(([key]) => key);
+    expect(spokenGenerically).toEqual([]);
+    // ANTI-VACUITY: a loop that drove nothing also produces no clashes below.
+    expect(shown.size).toBe(3);
+    const bySentence = new Map<string, string[]>();
+    for (const [key, sentence] of shown) {
+      bySentence.set(sentence, [...(bySentence.get(sentence) ?? []), key]);
+    }
+    expect([...bySentence.values()].filter((keys) => keys.length > 1)).toEqual([]);
   });
 
   it('locks on request, and comes back to the unlock form', async () => {

@@ -6575,3 +6575,116 @@ the wider set. `packages/vault-crypto/test/items.spec.ts` observes the usages
   what the feature requires them to learn before sealing a share. The int suite
   asserts the refusal fires BEFORE the parameter is read, so the 403 carries no
   information about who exists.
+
+## 6aaa. Threat-model delta — M27 PR6, the extension's step-up refusals (2026-08-24)
+
+**A refusal reached the user wearing another refusal's face, in both
+directions at once.** PR5's review fan-out found it and PR5 did not fix it —
+and, checked rather than assumed, it was written down NOWHERE. Not in this tree,
+and not in PR #164's body either, which records only the findings PR5 closed. It
+survived in a working conversation, which is the weakest place a known defect
+can live: nothing there is derived, nothing is fenced, and nothing outlives the
+session. That is why it is recorded here before it is described.
+
+`POST /v1/auth/stepup` refuses a wrong authenticator code with `401
+invalid_code`. The extension's `failureFor` maps that to `INVALID_CODE`, whose
+sentence in `copy.ts` is written for a refused PAIRING code — "Codes work once
+and expire after ten minutes — create a new one in Estate under Security."
+Every clause of it is false of a TOTP, which lasts about thirty seconds, is read
+off an authenticator, and cannot be created anywhere in Estate. Someone who
+mistyped one digit was sent to a different screen to solve a problem they did
+not have.
+
+The step-up screen did carry a TOTP sentence. It was keyed on
+`UNAUTHENTICATED`, so it fired on the OTHER case — a device whose pairing had
+actually been revoked — and told that user to "try the current one", advice that
+can never succeed for a credential that no longer exists. Two refusals with
+opposite remedies, each answered with the other's.
+
+**THE CAUSE IS AN INHERITED DISCRIMINATOR, AND IT IS WORTH NAMING AS A SHAPE.**
+The branch was lifted from `apps/vault-web/src/client/stepup.ts`, where
+`UNAUTHENTICATED` IS the right code: that origin's `failureFor` maps EVERY 401
+to it. The extension's does not — it splits 401 into `invalid_code`,
+`srp_failed` and the rest — so the identical expression names a different
+failure in the file it was copied into. Copying a conditional without the
+mapping it depends on type-checks perfectly and means something else, which is
+this repo's discriminant rule applied to error surfaces.
+
+**The guessing bound read as an outage.** identity refuses a capped step-up with
+`429 too_many_attempts` and gives it its own token deliberately — the helper's
+comment says "never `invalid_code`, which already means 'that code was wrong'",
+citing the M12 lesson about one token changing meaning with the surface. The
+extension had no 429 branch, so the cap fell to `UNKNOWN` and rendered "Something
+went wrong. Please try again in a moment.", inviting exactly the retry it was
+refusing. `apps/bff` took this member at M19 PR4, `apps/operator-web` at M21 PR3a and
+`apps/vault-web` at M27 PR5 — one PR before this one. The extension was the
+fourth client on the same ceremony and the one nobody came back to: four PRs
+spread across nine milestones to apply one rule to one category. The bff's own
+comment dates the BOUND to M17, which is a different fact from when any client
+learned to word it, and conflating the two is how this delta first mis-stated
+its own census.
+
+**What is fenced now.** The refusal corpus is walked out of identity's own
+source — the guards decorating the `stepup` handler, plus the transitive closure
+of private methods `stepUp` calls — so a refusal added to either arrives red
+rather than unnoticed. Measured: inserting one throw into `stepUp` reddens the
+fence and names the token; disabling the closure walk reddens it too.
+
+THE WALK DECLARES ITS OWN BLIND SPOTS, because a corpus narrower than its
+guarantee goes green for the same reason it is wrong — and the first draft of
+this fence had two. A `this.X(` call that resolves to no method body is
+indistinguishable from a method containing no throws, so the walk would step
+over a whole subtree and report a shorter, entirely plausible answer; and the
+parser reads only `throw new X({ error: … })`, while the file it walks spells
+seven refusals as `throw invalidCredentials()`. None of those is reachable from
+`stepUp` today, but "not today" is precisely the claim that rots. Both now turn
+the fence RED and name the offending method rather than shrinking it in silence,
+and both were proved by mutation. An adversarial lens found this; the same lens
+found the fence's unclassified check inspecting only status 400 while its test
+claimed every refusal. The
+assertions are DISCRIMINATION rather than coverage, because "every refusal
+renders a sentence" is satisfied by a screen rendering one sentence for all of
+them, which is the defect. Measured limitation, recorded rather than implied:
+the pairwise check is blind to a SWAP, since a permutation preserves
+distinctness — reverting the discriminator leaves it green, and the two
+per-refusal tests are what catch that.
+
+**Residuals, stated rather than implied.**
+
+- **[OWNER: M44]** *The vault origin's own step-up prompt still shares one
+  sentence between a rejected code and a dead session.*
+  `apps/vault-web/src/client/stepup.ts` answers both with "That code was not
+  accepted. Codes last about 30 seconds — try the current one", because that
+  origin collapses every 401 into `UNAUTHENTICATED` and cannot tell them apart.
+  A user whose session has expired mid-ceremony is told to retype a code, which
+  will fail for as long as they keep doing it, and the remedy they actually need
+  — re-authenticate — is never named. Not fixed here because splitting 401 on
+  that origin changes a code that four other sites consume, one of which
+  (`app.ts`'s key-change path) synthesises `UNAUTHENTICATED` locally to mean
+  something else entirely; doing it blind would reproduce the very
+  inherited-discriminator defect this delta closes. It needs its own change and
+  its own drive against the running origin.
+- **[OWNER: M44]** *An expired ACCESS TOKEN reads as an un-paired device on
+  every screen in the extension's vault half.* `vault-screens.ts` takes a raw
+  `bearer` and calls the API with it directly at all eight of its call sites,
+  never through `withSession` — which is the thing that refreshes and which
+  `popup.ts` does use. The access token lives fifteen minutes and the session
+  thirty days, so a popup held open across that boundary answers every action
+  with `UNAUTHENTICATED`, and `messageFor` says "This device is no longer
+  connected to your account … Connect it again to continue" about a pairing that
+  is perfectly alive. Nothing is un-paired — `vault-screens` only renders,
+  unlike `popup.ts`'s `refreshStatus`, which forgets the credential on that code
+  — so this is misleading copy rather than lost state. It PREDATES this delta
+  and is not caused by it: the step-up screen previously answered the same case
+  with "that code was not accepted", which was wrong differently. Recorded here
+  because this delta is what made the eighth surface consistent with the other
+  seven, and consistency is what makes the shared gap visible. Found by an
+  adversarial lens asking whether the new fall-through's precondition holds.
+- **[OWNER: M44]** *The extension's revocation predicate carries an unreachable
+  disjunct.* `withSession` treats a refused refresh as a revoked pairing when
+  the code is `UNAUTHENTICATED` **or** `INVALID_CODE`, but `POST
+  /v1/auth/refresh` throws only `invalid_token`, so the second disjunct cannot
+  fire. Harmless today and left alone rather than tidied mid-change: it is a
+  false claim about reachability sitting inside the predicate that decides
+  whether a working credential gets forgotten, and the failure mode of a later
+  edit is somebody making it true.

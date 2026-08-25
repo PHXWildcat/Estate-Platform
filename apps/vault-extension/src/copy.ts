@@ -10,6 +10,15 @@ import type { ApiFailure } from './api.js';
  * the M14 rule: when the platform will not say which reason applied, the
  * sentence has to.
  *
+ * THE `INVALID_CODE` SENTENCE BELOW IS THE PAIRING ONE, AND THAT IS A CHOICE
+ * (M27 PR6). identity spells a rejected TOTP with the same `invalid_code` as a
+ * refused pairing code, and this map cannot serve both: every clause below is
+ * false of an authenticator digit, which lasts about thirty seconds, is read
+ * rather than created, and lives nowhere in Estate's Security screen. Pairing
+ * wins the default because it is the ceremony every OTHER caller reaches this
+ * map from; the step-up screen names its own refusal before getting here, and
+ * `vault-screens.ts` carries the reasoning.
+ *
  * `UNAUTHENTICATED` is kept apart from it. On this surface that means the
  * device's own session is gone — revoked from the owner's paired-devices list,
  * or expired — and the remedy is a fresh pairing code, not a retype. Telling
@@ -38,6 +47,13 @@ export const messages: Record<ApiFailure, string> = {
   // anywhere that does not.
   ITEM_EXISTS: 'That item was already saved.',
   NOT_FOUND: 'That isn’t available.',
+  // A GUESSING BOUND, NOT AN OUTAGE, and never an existence oracle: it says
+  // only that too many codes were refused, which whoever typed them already
+  // knows. The cooldown is ROLLING rather than sticky, so waiting really is the
+  // remedy and saying so is true. Word for word the sentence `apps/vault-web`
+  // gives the same control on the same route — one behaviour, one spelling.
+  TOO_MANY_ATTEMPTS:
+    'Too many codes have been refused. Wait a few minutes and try again — this is a limit, not a fault.',
   UNAVAILABLE: 'Estate isn’t reachable right now. Nothing has changed — try again in a moment.',
   NETWORK: 'We couldn’t reach Estate. Check your connection and try again.',
   UNKNOWN: 'Something went wrong. Please try again in a moment.',

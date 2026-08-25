@@ -85,6 +85,7 @@ const OWNERS: readonly string[] = [
   'M41', // Plaid item refusal + the read-before-authz sweep (added M27 PR1a)
   'M42', // cross-user free text, and everywhere else it crosses (added M27 PR5)
   'M43', // one derivation per closed vocabulary (added M27 PR5)
+  'M44', // the step-up refusal discriminator (added M27 PR6)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -174,6 +175,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6xx': 3,
   '6yy': 5,
   '6zz': 8,
+  '6aaa': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
