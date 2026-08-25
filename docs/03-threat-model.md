@@ -74,13 +74,18 @@ no milestone list and had therefore never been sized.
 
 **How many, and how to count them again.** M21's own residual sweep is the
 answer: every §6 bullet now carries a leading disposition tag, so the deferrals
-owned by this milestone are `grep -c '\[OWNER: M21\]' docs/03-threat-model.md`
-— **18** at the time of writing, spread across ten subsections, with a further
+owned by this milestone are
+`grep -c '^- \*\*\[OWNER: M21\]\*\*' docs/03-threat-model.md` — anchored on the
+BULLET, because the unanchored form counts prose mentions of the tag as well and
+M40 PR1 added one. **18** across ten subsections at the time of writing; **17**
+across nine since M40 PR1 re-tagged §6e's documents oracle to M41, with a further
 15 lines naming TB7 or "the operator platform" across eleven.
 
-The figure has moved four times and never downward — five, twelve, fourteen,
-eighteen — and each move was somebody actually measuring, which is the argument
-restated rather than an embarrassment. This paragraph first said "twelve
+The figure moved four times and never downward WHILE IT WAS BEING MEASURED —
+five, twelve, fourteen, eighteen — and each of those moves was somebody actually
+looking, which is the argument restated rather than an embarrassment. It has
+since moved DOWN once, to seventeen, and not by measuring: M40 PR1 re-tagged one
+bullet to M41, an item leaving the category rather than a recount of it. This paragraph first said "twelve
 separate deferrals across §§6a–6y" and both halves were wrong in the same
 direction as the defect the milestone exists to fix: twelve was a hand count
 taken before the sweep tagged anything, and §§6a–6y stops short of §6z and
@@ -828,11 +833,19 @@ read invisible. Proven live against the stack — two Read presses produced
 exactly two decrypt pairs, and loading the list and detail pages produced none.
 
 **Recorded, not fixed.**
-- **[OWNER: M21]** *The 404-vs-403 oracle is narrowed at the edge, not closed.* The BFF answers
+- **[OWNER: M41]** *The 404-vs-403 oracle is narrowed at the edge, not closed.* The BFF answers
   the uniform not-found for a plain downstream 403, so browser traffic cannot
   tell "no such document" from "someone else's". The service still
   distinguishes them for any other caller — the M4 review's open follow-up,
-  unchanged, and the real fix belongs there.
+  unchanged, and the real fix belongs there. **RE-OWNED FROM M21 BY M40 PR1**
+  (§6eee): this is one of SIX documents routes in the shape, and §6vv records
+  the same shape on `plaid`'s two under M41 — one category, recorded twice,
+  under two owners, with nothing connecting the records. The M21 tag was never
+  an argument for M21: that milestone's scope statement excludes other services'
+  guard surfaces, and this bullet's own last clause already said the fix belongs
+  in the service. It is the catch-all shape §6r names, an item assigned to
+  whichever milestone next touches the area, which is how an item goes
+  uncosted.
 - **[ACCEPTED]** *`documents.title` remains plaintext* (the M4 decision, on the
   `assets_view.title` precedent). The generate form now says so where the field
   is, rather than leaving users to infer that the title is protected like the
@@ -5762,9 +5775,11 @@ per-file, because a total passes happily while one lead-in goes blind.
   sharper half of the same defect "because that queue row says APPROVED and
   never gained a completion status". M21 has NOT shipped — docs/04 records its
   PR5, documents evidence content plus the legal-hold lift ceremony, as NOT YET
-  SHIPPED — so its row was honest and its eighteen were never in this category
-  at all. They are a different defect, since M21's one outstanding PR does none
-  of the eighteen, and the sweep this bullet owns is where they get adjudicated.
+  SHIPPED — so its row was honest and its residuals were never in this
+  category at all. They are a different defect, since M21's one outstanding PR
+  does none of them, and the sweep this bullet owns is where they get
+  adjudicated. (Eighteen when PR0 measured; seventeen once PR1 re-tagged one of
+  them to M41 — which is why these sentences now name the tag, not the number.)
   A bullet about ownership accuracy asserting a count nobody checked is the
   defect it describes; asserting the same thing twice about the same milestone
   is that defect with a pattern.
@@ -5908,7 +5923,9 @@ the precedent this follows.
   scope creep this repo asks authors to propose rather than perform. The reach
   is narrower than the vault's was — a Plaid item id is server-minted and
   never leaves the owner's own surfaces — but the discriminator is the same
-  one.
+  one. **THE OTHER HALF OF THIS CATEGORY IS §6e**, six routes on `documents`,
+  re-owned to this milestone by M40 PR1; §6eee enumerates all eight and records
+  that there are no others in the repo.
 - **[ACCEPTED]** *A `blob_version` that moves backwards is a signal nothing
   yet reads.* The split makes a downward version legible as a restore, and
   that is offered as the material M39's rollback detection can use; PR1a ships
@@ -7024,13 +7041,17 @@ row already records about itself." M21 has not shipped: its PR split records
 PR5, documents evidence content plus the legal-hold lift ceremony, as NOT YET
 SHIPPED, and no commit names it. M21's silence was therefore HONEST, and the
 defect is the OPPOSITE of M23's — M23's row described a finished milestone as in
-progress, and M21's described a live milestone by saying nothing. The eighteen
+progress, and M21's described a live milestone by saying nothing. They
 are live debt on a live owner and stay outside the stale count. M27 PR5 had
 already struck M24 from the same sentence for a different error; a row scoping a
 residual-ownership sweep has now mis-stated two of the milestones it names, which
-is the argument for the sweep rather than against it. The eighteen remain a
+is the argument for the sweep rather than against it. They remain a
 defect on their own terms — M21's one outstanding PR does none of them — and
-that is a later M40 PR, not this one.
+that is a later M40 PR, not this one. PR0 measured eighteen; PR1 re-tagged one
+of them to M41, so the bullet-anchored count is seventeen. The figure is still
+spelled out in several places across these documents, which is the defect this
+very bullet describes and does not yet close; what changed here is only that the
+grep beside it now derives the number the fence reads.
 
 ### Residuals
 
@@ -7062,3 +7083,144 @@ that is a later M40 PR, not this one.
   vocabularies in this repo are fenced unevenly, and what it costs to extend one
   depends on which one it is. Stated here rather than resolved, so the overlap
   between the two milestones is visible instead of silently absorbed.
+
+## 6eee. Threat-model delta — M40 PR1, one category, one owner (2026-08-25)
+
+**Not a control change; no runtime code moves.** M40 PR1 adjudicates the first
+item of the residual sweep: a single category of existence oracle that was
+recorded twice, under two owners, with nothing connecting the two records.
+
+**The category.** A route is in it when, for a caller-supplied row id, the
+handler reads the row and answers `404 not_found` when it is missing, then
+consults its authorization gate, which answers `403 forbidden` when the row
+exists but belongs to someone else. The two answers differ, so a stranger holding
+an id learns whether it names a real row — the categorical uniform-404 rule this
+document states, with a real exception under it.
+
+**Two records, two owners, and neither reached the other.** §6e recorded the
+documents half at M12 and tagged it `[OWNER: M21]`; §6vv recorded the plaid half
+at M27 PR1a and tagged it `[OWNER: M41]`, whose queue row is named for the sweep.
+Whoever opened either saw half the work. The M21 tag was never an argument: M21's
+own scope statement excludes other services' guard surfaces, and the §6e bullet's
+last clause already disagreed with its own tag by saying the real fix belongs in
+the service. It is the same catch-all shape §6r names — an item assigned to
+"whichever milestone next touches them", which is how an item goes uncosted.
+**Both halves are now `[OWNER: M41]`**, so one grep returns the whole category.
+
+**The category, enumerated.** Derived from the controllers and handlers rather
+than hand-listed, and every member independently confirmed by a refute-by-default
+pass. Eight routes, in two services, and nowhere else in the repo:
+
+- `GET /v1/documents/:documentId`, `GET …/versions`,
+  `GET …/versions/:version/content`, `POST …/versions`, `POST …/status` and
+  `DELETE /v1/documents/:documentId` — six, each one a `requireLive`/`lockLive`
+  that throws `NotFoundException` followed immediately by `authz.assertCan`
+  throwing `ForbiddenException`.
+- `POST /v1/plaid/items/:id/sync` and `DELETE /v1/plaid/items/:id` — two, the
+  same shape through `requireItem` and `assertCan`.
+
+**And nowhere else, which is the half that had never been asked.** All ten
+services under `apps/services/` were swept, plus the BFF, both proxy origins, the
+web app and `packages/`. `assets` carries TEN id-bearing routes among its
+thirteen, and `assertCanOrNotFound` is the mechanism on nine of them — three
+call it directly, and the six write routes reach it through the shared
+`runCommand`; the tenth, `GET /v1/estates/:ownerUserId/assets`, is held out by a
+DIFFERENT mechanism, gating on settlement stage approval before it reads and
+keying on a user rather than a guessed row id, so its 403 makes no claim about
+any row; `profile` gates before it reads, and where a by-id read is NOT
+owner-scoped in SQL — `contacts.repo.ts` and `roles.repo.ts` both expose a
+`findById(id)` that selects on the id alone — it compares ownership after the
+read and answers the same uniform 404, so the exclusion is held twice over; `vault` fuses the owner into the WHERE, so "not yours" returns zero rows
+and the same 404; `ai-assistant`'s authz throws `NotFoundException` outright;
+`audit` has no HTTP surface at all; `identity` puts the owner predicate in the
+UPDATE; `notifications` takes no per-row decision. Outside `apps/services/` there
+is nothing to find, and structurally so: every surface there forwards or
+collapses rather than deciding. The sweep is not a scan that cannot fail — the
+same detector was run against `plaid` as a control and fired on both of its
+members.
+
+(An earlier draft of that paragraph credited `assets` with `assertCanOrNotFound`
+on "all twelve of its id-bearing routes". Twelve was not its route count in
+either sense — thirteen routes, ten of them id-bearing — and one helper was not
+the whole answer. It is also the very error this section convicts the M41 row of
+below, committed in the act of writing the conviction: a summary that names one
+mechanism for everybody reads exactly like a derivation.
+Re-derived from the controllers and the service rather than repaired quietly.)
+
+**Two things the M41 queue row said that this sweep corrects.** Both were true of
+the conclusion and wrong about the reason, which is the kind of error that
+survives review because the answer checks out.
+
+The row credited `settlement` to `assertCanOrNotFound`. That helper is called at
+exactly **three** sites, in a service with thirty-one routes, nineteen of them
+carrying a path id. What keeps the REST out is different and worth knowing:
+`SettlementAdminService` takes no Cedar PEP at all — there is no
+`SettlementAuthz` in its constructor — and its routes reach a uniform 404 through
+`assertCaseVisible`, `administrableCaseFor` and `requireAdministeredDecedentFor`,
+while others are excluded by ORDER, because `OperatorGate.assertIn` throws before
+any lookup happens. A later audit that checked helper usage alone would have
+found most of the service "unprotected" and been wrong about all of it. (An
+earlier draft of this paragraph said "three of twenty-nine" and "the other
+twenty-six"; the twenty-nine was a count of BOTH services' path-id routes,
+reused as though it were settlement's own, and the twenty-six was arithmetic on
+top of it. Re-derived rather than repaired quietly.)
+
+The row also implied the edge narrows this category. It narrows it for the two
+members that exist and not as a property of the edge. `apps/bff` collapses a bare
+403 to `NOT_FOUND` on **two** of its six downstream clients — documents and
+profile (`documents-client.ts:492` and `profile-client.ts:546`). Of the
+other four, THREE — assets, identity and settlement — branch only on a 403
+carrying `stepup_required`, so an unexpected bare one falls through them
+unchanged. The fourth is not silent: `assistant-client.ts:211` reads a bare 403
+as `DISABLED`, the master consent switch being off, so a refusal arriving there
+would render as an OUTAGE rather than as a leak — a different wrong answer, not
+the absence of one. The two proxy origins collapse nothing:
+both return the upstream status verbatim, and the operator console maps 403 to
+`FORBIDDEN` and 404 to `NOT_FOUND` as two codes with two different sentences. So
+the protection is a property of two specific clients, not of the boundary, and a
+future member behind either origin is browser-observable the day it appears.
+
+### Residuals
+
+- **[OWNER: M41]** *The edge does not uniformly narrow this category, and the
+  reach recorded for it was the reach of two clients.* Neither member is
+  browser-reachable today — `documents-client.ts` collapses the pair and `plaid`
+  has no BFF client at all — which is why both halves are hardening rather than
+  live leaks. That fact is about those two clients and not about the edge: of the
+  BFF's other four clients, three branch only on a token-qualified 403 and let a
+  bare one through, while `assistant-client.ts` reads a bare 403 as the assistant
+  being switched OFF — so a refusal reaching it would be shown as an outage,
+  which is its own defect and not a narrowing. Both proxy
+  origins forward the upstream status untouched while the operator console
+  renders the two answers as different codes with different copy. The sweep this
+  row owns therefore has a second question inside it — not only which services
+  hold the shape, but which of them sit behind a surface that would show it.
+- **[OWNER: M41]** *Membership is held by a TAG, not derived from the source.*
+  The eight are recorded here and in §6e and §6vv, and nothing computes them. A
+  ninth route written in the same shape tomorrow joins the category and no fence
+  notices, which is precisely how this one came to be recorded twice under two
+  owners. Deriving it — a walk that finds a by-id read reaching an `assertCan`
+  before any uniform-404 helper — belongs to the milestone that also lands the
+  fix, because a derivation written here would have no failing case to prove
+  itself against.
+- **[OWNER: M41]** *Four assertions PIN the leaky answer, and no test asserts
+  the other half.* `plaid.int.spec.ts:214` and `:218` assert that a stranger
+  receives 403 on an owner's existing item id, on sync and on revoke;
+  `plaid.service.spec.ts:89-90` assert the same pair at the service. A change
+  collapsing them to the uniform 404 turns those four red, so they are part of
+  the fix rather than evidence against it. The two OWNER 403s on the same route —
+  `plaid.e2e.spec.ts:174`, which asserts the `stepup_required` body, and
+  `plaid.int.spec.ts:272`, which asserts only the status — must stay GREEN, and that pair is the discriminant the fix has to preserve:
+  `DELETE /v1/plaid/items/:id` answers 403 to the owner who has not stepped up,
+  and must answer 404 to a stranger who HAS. No test drives a plaid ROUTE with an item id
+  that never existed, and none asserts an HTTP 404 on any item route, so the
+  comparison the property is ABOUT — stranger-on-a-real-id against
+  anyone-on-an-unknown-id, at the wire — is never made. The miss branch itself is
+  not untested: `plaid.service.spec.ts:103` asserts `NotFoundException` when the
+  OWNER syncs an item they have just revoked, and a soft-deleted id reaches the
+  identical `requireItem` miss (`plaid.service.ts:272-276`) that an unknown id
+  would. So the BRANCH has a test and the PROPERTY does not, which is the
+  distinction this residual exists to hold. Recorded on the M27 PR5 precedent (§6xx; docs/06, 2026-08-24):
+  pinning today's answer is only half a specification, and the half that closes
+  it is the assertion that DISCRIMINATES — here, the unknown-id arm nothing
+  requests.
