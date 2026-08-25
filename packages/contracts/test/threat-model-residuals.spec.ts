@@ -179,6 +179,9 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6bbb': 2,
   // M44 PR2 closed the row; the one bullet is an ACCEPTED trade-off.
   '6ccc': 1,
+  // M40 PR0: one ACCEPTED bound and two owned items — the escalations half of
+  // the same question, and the hand-kept register this PR chose to keep.
+  '6ddd': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -193,8 +196,91 @@ const MIN_SECTION_SIX_BULLETS = 300;
 /** Bullets outside §6 (§§1-5 and §7), and completed milestones in docs/04. */
 const MIN_NON_SIX_BULLETS = 4;
 const MIN_QUEUE_ROWS = 15;
-const MIN_COMPLETED_MILESTONES = 3;
-/** Residuals owned by a milestone whose queue row is closed. Declared debt. */
+const MIN_COMPLETED_MILESTONES = 6;
+
+/**
+ * THE LIFECYCLE A QUEUE ROW DECLARES — a closed vocabulary, and TOTAL over the
+ * rows (M40 PR0).
+ *
+ * WHAT WENT WRONG. The assertion below derives "has this milestone shipped?"
+ * from docs/04's Status column, and until this milestone that column was free
+ * prose. A row could therefore decline to answer, and four of them did:
+ *
+ *   M21 said `**APPROVED**, section above` — no lifecycle word at all.
+ *   M24 said `**APPROVED 2026-08-21, section below.**` with PR0-PR4 all shipped.
+ *   M27 said `**SCOPED 2026-08-22, section below.**` with every PR shipped.
+ *   M44 said `... and the row is now complete.` — inside a bold run, in lower
+ *     case, which `/\bCOMPLETE\b/` does not match. A human reader saw the
+ *     sentence; the derivation could not.
+ *
+ * Three of those four were FINISHED. The derived completed set was {M22, M23,
+ * M25} against a true six, so the fence's own anti-vacuity floor
+ * (`MIN_COMPLETED_MILESTONES`, then 3) sat exactly on the wrong number and had
+ * no headroom to notice. A residual tagged to M24, M27 or M44 would have read
+ * as live debt forever.
+ *
+ * THE FIX IS TOTALITY, NOT A BIGGER REGEX. Every row opens its Status cell with
+ * exactly one of these tokens, as a bold run that is the token and nothing
+ * else. One behaviour, one spelling: no case to get wrong, no adjective to bury
+ * it under, no position to guess. Silence is now RED
+ * (`every queue row DECLARES a lifecycle status`), which is the property the
+ * old column could not have at any regex quality — the failure was that a row
+ * was allowed to say nothing, and a parser cannot fix that.
+ *
+ * WHAT THIS DOES NOT DO, stated because both alternatives were MEASURED rather
+ * than waved off. Nothing here checks a status is TRUE — the same bound the
+ * ACCEPTED tag carries at the top of this file. Two cross-checks were tried:
+ *
+ *   - "a COMPLETE row's PR-split bullets must all say SHIPPED": 17 of docs/04's
+ *     40 `- **PR…` bullets carry no shipped marker at all, M27's PR0, PR1a,
+ *     PR3b, PR5 and PR6 among them, and all five shipped.
+ *   - "a PLANNED row must have no per-PR record section": only M21, M24 and M25
+ *     use `#### M<nn> PR…` headings, 3 of the 7 milestones that have shipped a
+ *     PR. M22 and M23 carry no `####` heading whatsoever.
+ *
+ * Both would be a fence whose input is narrower than its claim, green for the
+ * reason it is wrong. Recorded here so the next author does not re-derive the
+ * rejection. docs/03 §6ddd.
+ */
+const ROW_STATUSES: readonly string[] = ['PLANNED', 'IN PROGRESS', 'COMPLETE'];
+
+/**
+ * The token as the document writes it, BUILT FROM the vocabulary above so the
+ * two cannot drift — the parser and the list are one spelling.
+ */
+const ROW_STATUS = new RegExp(`^\\s*\\*\\*(${ROW_STATUSES.join('|')})\\.\\*\\*`);
+
+/**
+ * The header that makes the third cell a STATUS, quoted from docs/04.
+ *
+ * Anchored on the document rather than on a column index somebody assumed. The
+ * escalations table above it is `| | Item | Blocker |` — a third cell that
+ * answers a DIFFERENT question — so reading "cell 3" without checking which
+ * table you are in is how this fence would come to assert a blocker is a
+ * lifecycle. Both headers are asserted, and the escalations one is asserted to
+ * be NOT a status column, which is this fence stating its own reach as a
+ * mechanism instead of a sentence.
+ */
+const QUEUE_HEADER = '| # | Milestone | Status |';
+const ESCALATION_HEADER = '| | Item | Blocker |';
+
+/**
+ * Residuals owned by a milestone whose queue row is COMPLETE. Declared debt.
+ *
+ * HAND-KEPT, AND SAYING SO IS THE POINT (M40 PR0). The blindness this list used
+ * to carry is gone — `completed` is now derived from a column that cannot stay
+ * silent — but the list itself is still written by hand, because its job is not
+ * to mirror the data. It is a REGISTER: these two milestones are known to have
+ * finished while still carrying residuals, and M40's later PRs adjudicate each
+ * one. Deriving it from the same data it is checking would assert nothing.
+ *
+ * Compared as a SET and not just a count, because mis-attribution between two
+ * closed milestones preserves the total and the owner is what says which
+ * programme owes the work.
+ *
+ * M43 owns the general form of "one derivation per closed vocabulary" and this
+ * is one of its cases; the overlap is stated rather than quietly resolved here.
+ */
 const STALE_OWNED = 13;
 const STALE_OWNERS = ['M22', 'M23'];
 
@@ -716,9 +802,62 @@ const OUT_OF_CORPUS: ReadonlyArray<{
   },
   { section: '6y', label: 'The other confirmed findings', bullets: 7, kind: 'shipped' },
   { section: '6z', label: 'What PR1 changes', bullets: 6, kind: 'shipped' },
+  {
+    section: '6ddd',
+    label: 'The mechanism being repaired.',
+    bullets: 4,
+    kind: 'evidence',
+    // The four docs/04 rows whose Status cell could not be read as a lifecycle.
+    // Evidence for the defect, not work owed: three of the four were finished
+    // and all four now declare a token.
+  },
+  {
+    section: '6ddd',
+    label: 'What this does NOT check, measured rather than assumed.',
+    bullets: 2,
+    kind: 'decision',
+    // The two cross-checks built against the tree and REJECTED on measurement.
+    // A decision with its numbers attached, so the next author does not rebuild
+    // them; the bound they leave behind is the ACCEPTED residual in §6ddd.
+  },
 ];
 
 const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,3})\]\*\*/;
+
+interface QueueRow {
+  readonly id: string;
+  readonly status: string;
+  readonly line: number;
+}
+
+/**
+ * docs/04's queue table, parsed ONCE and read by everything below it.
+ *
+ * One behaviour, one spelling (M40 PR0). The shipped-owner check below carried
+ * this parse inline, and the totality check added here is a second caller of it;
+ * N copies of a parse is N places for the column index to be wrong in. The owner-vocabulary check is
+ * deliberately NOT a caller: it reads the FIRST column of BOTH tables
+ * (`(M\d{2}|E\d)`), which is a different corpus answering a different question,
+ * and folding the two together is how this fence would come to assert that an
+ * escalation has a lifecycle.
+ *
+ * The Status cell is the THIRD; `| M40 | name | status |` splits to
+ * ['', ' M40 ', ' name ', ' status ', ''] and the tail is rejoined so a status
+ * containing a pipe cannot silently truncate what is scanned. Which table that
+ * index belongs to is asserted separately, against the document's own header.
+ */
+function queueRows(): QueueRow[] {
+  return readFileSync(PLAN, 'utf8')
+    .split('\n')
+    .map((line, index) => ({ line, index }))
+    .map(({ line, index }) => ({ m: /^\| (M\d{2}) \|/.exec(line), line, index }))
+    .filter((x): x is { m: RegExpExecArray; line: string; index: number } => x.m !== null)
+    .map(({ m, line, index }) => ({
+      id: m[1] as string,
+      status: line.split('|').slice(3).join('|'),
+      line: index + 1,
+    }));
+}
 
 describe('docs/03 §6 — every residual declares a disposition', () => {
   const { items, sections, declared, regions, interruptions, outside } = residuals();
@@ -1091,6 +1230,104 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     expect(untagged).toEqual([]);
   });
 
+  it('the queue table is the shape this fence reads — the corpus, asserted', () => {
+    /*
+     * STATE THE CORPUS AND ASSERT IT. Everything below reads docs/04's third
+     * cell as a lifecycle. That is only true of ONE of the two tables on that
+     * page, and the OTHER table on it — the escalations one, immediately above —
+     * has a third cell that answers "what is this blocked on". A fence that reads a column by index
+     * without checking which table it landed in is the narrower-input-than-claim
+     * shape §6y names, so the index is anchored on the headers themselves.
+     */
+    const plan = readFileSync(PLAN, 'utf8').split('\n');
+    const queueHeader = plan.indexOf(QUEUE_HEADER);
+    const escalationHeader = plan.indexOf(ESCALATION_HEADER);
+    expect(queueHeader).toBeGreaterThan(-1);
+    expect(escalationHeader).toBeGreaterThan(-1);
+    // Exactly one of each, or "the header" names two places and the anchor is
+    // no longer an anchor.
+    expect(plan.filter((l) => l === QUEUE_HEADER)).toHaveLength(1);
+    expect(plan.filter((l) => l === ESCALATION_HEADER)).toHaveLength(1);
+    /*
+     * THE THIRD COLUMN OF EACH, READ OUT OF THE DOCUMENT. An earlier draft
+     * asserted `ESCALATION_HEADER` did not contain 'Status' — a property of a
+     * string this file declares, which reads like a check and is one only by
+     * way of the `indexOf` above. Naming the cells makes the claim direct: the
+     * queue's third column IS the lifecycle this fence reads, and the
+     * escalations' third column is a BLOCKER and answers something else. Either
+     * table re-columned reddens here, which is the whole point of anchoring.
+     */
+    const thirdCell = (line: string): string => (line.split('|')[3] as string).trim();
+    expect(thirdCell(plan[queueHeader] as string)).toBe('Status');
+    expect(thirdCell(plan[escalationHeader] as string)).toBe('Blocker');
+    // And every milestone row lives under the queue header, not the other one.
+    const firstRow = plan.findIndex((l) => /^\| M\d{2} \|/.test(l));
+    expect(firstRow).toBeGreaterThan(queueHeader);
+    expect(queueHeader).toBeGreaterThan(escalationHeader);
+  });
+
+  it('every queue row DECLARES a lifecycle status — silence is no longer a status', () => {
+    /*
+     * THE M40 PR0 ASSERTION, and the one that could not be written as a better
+     * regex. Four rows used to answer the completion question with prose that
+     * meant something else (`APPROVED`, `SCOPED`) or with the right word in the
+     * wrong case (`the row is now complete`), and three of those four had in
+     * fact finished. Nothing looked, because nothing REQUIRED an answer.
+     *
+     * Totality is the fix: a row with no token in the closed vocabulary, at the
+     * head of its Status cell, in the one spelling, reddens here by name.
+     */
+    const rows = queueRows();
+    expect(rows.length).toBeGreaterThanOrEqual(MIN_QUEUE_ROWS);
+
+    const undeclared = rows
+      .filter((r) => ROW_STATUS.exec(r.status) === null)
+      .map(
+        (r) => `docs/04-monorepo-and-milestones.md:${r.line} ${r.id} declares no lifecycle status`,
+      );
+    expect(undeclared).toEqual([]);
+
+    /*
+     * ANTI-VACUITY ON THE PARSER, PROBED RATHER THAN INFERRED FROM THE TABLE.
+     *
+     * The first draft asserted that the tokens FOUND in the table were exactly
+     * the vocabulary — "a member nobody uses is a member nobody validates". It
+     * was wrong, and the way it was wrong is worth keeping: it goes RED on a
+     * legitimate state. The day M21 ships PR5 and this milestone closes, the
+     * table can honestly hold no `IN PROGRESS` row at all, and a fence that
+     * reddens because the programme is between milestones is a fence people
+     * learn to weaken. That is the failure mode, not a hypothetical.
+     *
+     * The concern underneath it is real, so it is asserted DIRECTLY instead:
+     * every declared member must be one the parser can actually SEE. Probing a
+     * synthetic cell per token settles that independently of what the table
+     * happens to contain today, and cannot false-red.
+     */
+    for (const token of ROW_STATUSES) {
+      const probe = ROW_STATUS.exec(` **${token}.** narrative follows |`);
+      expect(probe?.[1]).toBe(token);
+    }
+
+    /*
+     * AND THE PARSER MUST REFUSE, or "it matches every token" is satisfied by a
+     * regex that matches everything. The three near-misses are the ones this
+     * column actually produced: no token at all, the M22/M23 spelling with no
+     * period, and the M44 defect — the right word, in a bold run, in lower case.
+     */
+    for (const nearMiss of [
+      ' Approved 2026-08-21, section below |',
+      ' **COMPLETE** (PR1) |',
+      ' **complete.** the row is now done |',
+    ]) {
+      expect(ROW_STATUS.exec(nearMiss)).toBeNull();
+    }
+
+    // A light floor on the real table, which the probes above do not replace:
+    // it says the column is still being used to draw a distinction at all.
+    const found = new Set(rows.map((r) => (ROW_STATUS.exec(r.status) as RegExpExecArray)[1]));
+    expect(found.size).toBeGreaterThanOrEqual(2);
+  });
+
   it('no residual is owned by a milestone that has already SHIPPED', () => {
     /*
      * THE COMPLEMENTARY HOLE, and PR0 exists because of its twin. §6j:1623
@@ -1106,51 +1343,77 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
      * column, so a milestone marked COMPLETE tomorrow reddens this the moment
      * its row changes — which is the point. There is no list to maintain here.
      */
-    const queueRows = readFileSync(PLAN, 'utf8')
-      .split('\n')
-      .filter((line) => /^\| M\d{2} \|/.test(line));
+    const rows = queueRows();
     // ANTI-VACUITY on the ROWS, before any status is read from them: a table
     // that moved, or a row format that changed, would otherwise leave every
     // derivation below operating on an empty corpus and passing in silence.
-    expect(queueRows.length).toBeGreaterThanOrEqual(MIN_QUEUE_ROWS);
+    expect(rows.length).toBeGreaterThanOrEqual(MIN_QUEUE_ROWS);
 
     /*
-     * READ THE STATUS, NOT THE ROW — and the first draft of this assertion read
-     * the row. `/^\| (M\d{2}) \|.*COMPLETE/` matched the word ANYWHERE in a
-     * 400-character cell, so the M40 row went into the completed set the moment
-     * it explained that thirteen residuals name milestones "whose docs/04 rows
-     * read COMPLETE" — a row describing closed milestones was classified as one.
-     * A status is a BOLD RUN in the status cell (`**COMPLETE**`,
-     * `**SCOPED ... COMPLETE.**`); prose about other rows is not bold and is not
-     * a status. Caught by adding the M40 residual this same fence demanded.
+     * READ THE DECLARED TOKEN, NOT THE PROSE — and this assertion has now been
+     * wrong twice in the same direction, each time by asking a sentence a
+     * question only a mark can answer.
+     *
+     * The first draft read the whole row: `/^\| (M\d{2}) \|.*COMPLETE/` matched
+     * the word ANYWHERE in a 400-character cell, so the M40 row joined the
+     * completed set the moment it EXPLAINED that thirteen residuals name
+     * milestones "whose docs/04 rows read COMPLETE". The repair was to read
+     * bold runs only, on the theory that prose is not bold.
+     *
+     * It is. `**PR2 (2026-08-25) CLOSED THE REST — docs/03 §6ccc, and the row is
+     * now complete.**` is a bold run, and a sentence, and the case-sensitive
+     * `\bCOMPLETE\b` did not match it — so M44 announced its own completion in
+     * the Status column and the derivation read nothing. Meanwhile M24 and M27
+     * had finished under `**APPROVED …**` and `**SCOPED …**`, which no regex
+     * looking for a completion word could ever have caught, because the word
+     * was not there to catch.
+     *
+     * So the token is now DECLARED rather than detected: one member of
+     * `ROW_STATUSES`, at the head of the cell, as a bold run that is the token
+     * and nothing else. Narrative keeps the rest of the cell and can no longer
+     * be mistaken for a status. Totality is asserted separately, which is what
+     * stops a row from answering by saying nothing at all.
      */
-    // The status is the THIRD cell; `| M40 | name | status |` splits to
-    // ['', ' M40 ', ' name ', ' status ', ''] and the tail is rejoined so a
-    // status containing a pipe cannot silently truncate what is scanned.
-    const statusOf = (line: string): string => line.split('|').slice(3).join('|');
-    const isComplete = (status: string): boolean =>
-      [...status.matchAll(/\*\*([^*]+)\*\*/g)].some((m) => /\bCOMPLETE\b/.test(m[1] as string));
     const completed = new Set(
-      queueRows
-        .filter((line) => isComplete(statusOf(line)))
-        .map((line) => (/^\| (M\d{2}) \|/.exec(line) as RegExpExecArray)[1] as string),
+      rows.filter((r) => ROW_STATUS.exec(r.status)?.[1] === 'COMPLETE').map((r) => r.id),
     );
-    // ANTI-VACUITY on the STATUSES: a bold-run regex that stopped matching
-    // would find no completed milestones and pass just as quietly.
+    // ANTI-VACUITY on the STATUSES: a token regex that stopped matching would
+    // find no completed milestones and pass just as quietly.
+    //
+    // A RATCHET, NOT A SLACK FLOOR, and the distinction matters because the old
+    // one looked identical. It sat at 3 against a derived set of exactly 3 — a
+    // guard pinned to the output of the derivation it was guarding, which is no
+    // guard at all, and 3 was the WRONG number besides. It sits at 6 against a
+    // derived 6 for the opposite reason: six milestones are known finished, and
+    // a seventh is a `>=` that passes while un-marking one of the six reddens.
+    // Same shape as MIN_PER_SECTION, which every section already sits exactly
+    // on. Totality carries the broken-parser case now, so this no longer has to.
     expect(completed.size).toBeGreaterThanOrEqual(MIN_COMPLETED_MILESTONES);
 
     const stale = items
       .map((r) => ({ r, m: TAG.exec(r.text) }))
       .filter(({ m }) => m !== null && m[2] !== undefined && completed.has(m[2]));
 
-    // PINNED, NOT ZERO — and the difference is the honest part. Thirty-one
-    // residuals name a milestone whose queue row is closed (M21 eighteen, M23
-    // twelve, M22 one). Re-owning them means deciding, one at a time, whether a
-    // later slice of the same programme still owes the work or whether it
-    // closed with the milestone — a sweep, not a line in this PR, and M40 owns
-    // it. What ships here is that the number cannot GROW in silence: a residual
-    // newly tagged to a shipped milestone, or a milestone marked COMPLETE while
-    // residuals still name it, reddens this immediately.
+    // PINNED, NOT ZERO — and the difference is the honest part. Thirteen
+    // residuals name a milestone whose queue row is COMPLETE: M23 twelve, M22
+    // one. Re-owning them means deciding, one at a time, whether a later slice
+    // of the same programme still owes the work or whether it closed with the
+    // milestone — a sweep, and M40's later PRs own it. What ships here is that
+    // the number cannot GROW in silence: a residual newly tagged to a shipped
+    // milestone, or a milestone declaring COMPLETE while residuals still name
+    // it, reddens this immediately.
+    //
+    // THE OTHER EIGHTEEN ARE NOT HERE, and the correction is worth stating
+    // because this comment used to make it. It read "Thirty-one … (M21
+    // eighteen, M23 twelve, M22 one)", and M21 has NOT shipped: docs/04:5639
+    // records PR5 — documents evidence content plus the legal-hold lift
+    // ceremony — as NOT YET SHIPPED, and no commit names it. So M21's row
+    // saying nothing about completion was HONEST, not the stale prose the M40
+    // row called it, and its eighteen residuals are live debt on a live
+    // milestone rather than debt on a closed one. They are still a defect —
+    // M21's one remaining PR does none of the eighteen — but that is a
+    // different defect with a different remedy, and this assertion is not the
+    // one that finds it.
     //
     // SETS for the owners, count for the total — mis-attribution between two
     // closed milestones preserves the count, and the owner set is what says
