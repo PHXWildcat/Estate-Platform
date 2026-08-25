@@ -88,6 +88,9 @@ const read = (req) =>
     req.on('end', () => resolve(body));
   });
 
+/** Flipped by `/__expire`: `smoke-access` ages out, `smoke-access-2` replaces it. */
+let expired = false;
+
 const server = createServer(async (req, res) => {
   const body = await read(req);
   seen.push({ url: req.url, method: req.method, headers: req.headers, body });
@@ -106,6 +109,53 @@ const server = createServer(async (req, res) => {
   // The edge requires it on every `/api/` route; asserting it here means the
   // shipped client is shown to send it rather than assumed to.
   if (req.headers['x-estate-vault-csrf'] !== '1') return json(403, { error: 'forbidden' });
+
+  /*
+   * AN EXPIRED ACCESS TOKEN, ANSWERED THE WAY IDENTITY ANSWERS ONE (M44 PR2).
+   *
+   * `smoke-access-stale` stands for a token past its fifteen minutes: every
+   * vault route refuses it 401, and `/api/auth/refresh` trades the matching
+   * refresh token for a live pair. That is the whole shape of the defect PR2
+   * closed — a popup that could not refresh answered every action with "This
+   * device is no longer connected to your account" about a live pairing — and
+   * without these two arms it is not reachable in a browser at all.
+   *
+   * `smoke-access` stays valid so every step written before this one keeps
+   * asserting exactly what it did.
+   */
+  /*
+   * AN ACCESS TOKEN AGEING OUT MID-SESSION, WHICH IS THE ONLY WAY THE M44 PR2
+   * DEFECT IS REACHABLE.
+   *
+   * It is deliberately a TRANSITION, not a token that was stale to begin with.
+   * The first draft of this made `/__expire` unnecessary by seeding the popup
+   * with an already-dead bearer — and that check could not fail, because
+   * `refreshStatus` runs at mount, refreshes, stores, and only THEN is the
+   * vault half mounted, so the snapshot it took was fresh. The mutation
+   * survived in Chrome and said 13/13.
+   *
+   * The real defect needs a popup that mounted on a LIVE token which later
+   * expires: `vaultMounted` guards the remount, so the vault half goes on
+   * holding the value it captured while everything around it rotates.
+   */
+  if (req.url === '/__expire') {
+    expired = true;
+    return json(200, { expired });
+  }
+  if (req.url === '/api/auth/refresh') {
+    const parsed = JSON.parse(body || '{}');
+    if (parsed.refreshToken !== 'smoke-refresh') return json(401, { error: 'invalid_token' });
+    return json(200, {
+      accessToken: 'smoke-access-2',
+      refreshToken: 'smoke-refresh-2',
+      userId: USER_ID,
+      sessionId: 'smoke-session',
+    });
+  }
+  if (expired && req.headers['authorization'] === 'Bearer smoke-access') {
+    // The token identity's SessionGuard refuses an aged bearer with.
+    return json(401, { error: 'unauthorized' });
+  }
 
   if (req.url === '/api/vault/keyset') {
     return json(200, { enrolled: true });

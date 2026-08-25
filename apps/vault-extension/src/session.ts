@@ -162,7 +162,25 @@ export async function withSession<T>(
      * the M9 rule pointed the other way: an outage must not wear the face of a
      * control.
      */
-    const revoked = refreshed.code === 'UNAUTHENTICATED' || refreshed.code === 'INVALID_CODE';
+    /*
+     * ONE DISJUNCT, AND IT IS THE ONLY REACHABLE ONE (M44 PR2).
+     *
+     * This read `=== 'UNAUTHENTICATED' || === 'INVALID_CODE'` until now.
+     * `POST /v1/auth/refresh` throws exactly one token, `invalid_token`, which
+     * `failureFor` answers as `UNAUTHENTICATED`; nothing this call can produce
+     * has ever been `INVALID_CODE`. A false claim about reachability, sitting
+     * inside the predicate that decides whether a WORKING credential gets
+     * forgotten — harmless while it stayed false, and the failure mode was
+     * always somebody later making it true.
+     *
+     * Deleted rather than left as belt, because a disjunct that cannot fire is
+     * indistinguishable from one that fires for a reason nobody has thought
+     * about. `refresh-refusals.spec.ts` now derives what this route can answer
+     * and compares it with the tokens named here as a SET, so identity gaining
+     * a second refusal on this route reddens the fence instead of silently
+     * widening what counts as a revocation.
+     */
+    const revoked = refreshed.code === 'UNAUTHENTICATED';
     return { result: revoked ? first : { ok: false, code: refreshed.code }, session };
   }
   return { result: await call(refreshed.data.accessToken), session: refreshed.data };

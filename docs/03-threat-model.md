@@ -6664,7 +6664,7 @@ per-refusal tests are what catch that.
   something else entirely; doing it blind would reproduce the very
   inherited-discriminator defect this delta closes. It needs its own change and
   its own drive against the running origin.
-- **[OWNER: M44]** *An expired ACCESS TOKEN reads as an un-paired device on
+- **[CLOSED: §6ccc]** *An expired ACCESS TOKEN reads as an un-paired device on
   every screen in the extension's vault half.* `vault-screens.ts` takes a raw
   `bearer` and calls the API with it directly at all eight of its call sites,
   never through `withSession` — which is the thing that refreshes and which
@@ -6680,7 +6680,7 @@ per-refusal tests are what catch that.
   because this delta is what made the eighth surface consistent with the other
   seven, and consistency is what makes the shared gap visible. Found by an
   adversarial lens asking whether the new fall-through's precondition holds.
-- **[OWNER: M44]** *The extension's revocation predicate carries an unreachable
+- **[CLOSED: §6ccc]** *The extension's revocation predicate carries an unreachable
   disjunct.* `withSession` treats a refused refresh as a revoked pairing when
   the code is `UNAUTHENTICATED` **or** `INVALID_CODE`, but `POST
   /v1/auth/refresh` throws only `invalid_token`, so the second disjunct cannot
@@ -6809,11 +6809,126 @@ Neither is a behaviour change; both are the file failing the rule it enforces.
 
 **Residuals, stated rather than implied.**
 
-- **[OWNER: M44]** *An expired ACCESS TOKEN still reads as an un-paired device
+- **[CLOSED: §6ccc]** *An expired ACCESS TOKEN still reads as an un-paired device
   in the extension.* Unchanged by this delta and carried from §6aaa:
   `vault-screens.ts` takes a raw bearer at all eight of its call sites and never
   routes through `withSession`. Left with M44's remaining scope rather than
   moved, because it is a different package and a different mechanism.
-- **[OWNER: M44]** *The extension's revocation predicate carries an unreachable
+- **[CLOSED: §6ccc]** *The extension's revocation predicate carries an unreachable
   disjunct.* Also carried from §6aaa, for the same reason.
 
+## 6ccc. Threat-model delta — M44 PR2, the extension's stale credential (2026-08-25)
+
+**BOTH §6bbb `[OWNER: M44]` ITEMS ARE CLOSED BY THIS DELTA**, and with them the
+pair §6aaa opened. M44's recorded scope is now empty.
+
+**A CREDENTIAL THAT COULD NOT REFRESH ITSELF.** `popup.ts` mounted the vault half
+with `bearer: session.accessToken` — a value read once, at mount. The access
+token lives fifteen minutes and the session thirty days, so a popup left open
+across that boundary answered every action `UNAUTHENTICATED`, and `messageFor`
+said "This device is no longer connected to your account … Connect it again to
+continue" about a pairing that was perfectly alive. Nothing was un-paired: the
+copy was false, and the remedy it named — re-pairing, which costs a step-up on
+the app origin — was the most expensive one available. A control that fires
+without cause is still a control reading as an outage, pointed the other way.
+
+**THE DEFECT WAS THE TYPE, NOT THE EIGHT CALL SITES.** Every consumer of that
+`string` was correct and the result was still wrong, because a `string` cannot
+refresh itself. `VaultScreensDeps` now declares a CAPABILITY —
+`call: <T>(fn: (bearer) => Promise<ApiResult<T>>) => Promise<ApiResult<T>>` — and
+the module holds no credential at all. It cannot hold a stale one, and a ninth
+call site cannot reintroduce the defect because there is nothing left there to
+reintroduce it with. The ABSENCE rather than the filter, again.
+
+**REFRESHING LIVES WHERE THE SESSION DOES.** `withSession` needs the
+`PairedSession` and a refresh ROTATES it, so the capability is injected by
+`popup.ts` rather than imported by the screens: calling `withSession` inside
+`vault-screens` would refresh correctly and leave the popup holding the previous
+session — right in storage, wrong in the tab.
+
+**THE SAME SNAPSHOT WAS PRESENT A SECOND TIME, and a rule applied to one member
+of a category is a rule half-applied.** The disconnect button closed over the
+`PairedSession` its draw was given. A rotation between render and click would
+have had it present a spent refresh token; `disconnect` reads that refusal as
+"already gone" and forgets locally, leaving a browser that looks signed out over
+a session still live on the server — the outcome `disconnect`'s own comment calls
+the worst there is. Both sites now resolve the session at use.
+
+**THE UNREACHABLE DISJUNCT IS DELETED, AND THE CLAIM IS NOW DERIVED.**
+`withSession` treated a refused refresh as revocation on `UNAUTHENTICATED` **or**
+`INVALID_CODE`; `POST /v1/auth/refresh` throws exactly `invalid_token`, which
+this client answers as `UNAUTHENTICATED`. §6aaa named the risk exactly — "the
+failure mode of a later edit is somebody making it true" — so the replacement is
+not prose but a fence: `session.spec.ts` walks the refresh route out of
+identity's own controller and service, drives each refusal through the REAL
+`refresh()` over a transport double, and asserts every disjunct named in the
+predicate is a code that measurement actually produced. The mapping is exercised
+rather than mirrored, because `failureFor` is module-private and a second copy of
+it would drift.
+
+**Two fences, and they catch different things — stated because a guard at two
+layers needs each test to say which layer it proves.**
+
+- `vault-screens.spec.ts` derives from `vault-client.ts` which exports TAKE a
+  bearer (so `vaultState`, which takes none, is excluded by derivation rather
+  than by a hand-written exclusion that would rot), then asserts every such call
+  and every runtime mention of `bearer` sits inside a `call(...)` wrapper,
+  matched by parens rather than by line. The deps interface is cut out of that
+  corpus WITH its reason and its own separate assertion: it is a type, erased at
+  build, and the one `bearer` in it names a parameter of `call`'s signature.
+- The behavioural cases prove the user-visible half: an expiry renders the vault,
+  a revocation renders "no longer connected", and the two are distinguished.
+
+Measured: a mutation that captures a bearer inside one wrapper and then reuses it
+bare is caught by the FENCE and NOT by the behavioural cases, because the
+captured value happens to be fresh at that moment. That is the whole argument for
+having both, and it is why the fence anchors on the identifier the runtime reads.
+
+**A surviving mutation, reported rather than tidied away.** Deleting
+`rotateSession(current)` left all eleven popup cases green. That was a weak test,
+not a harmless line — the rotation is load-bearing for exactly the disconnect
+path above — so `popup.spec.ts` gained a case that drives a rotation through the
+vault half and asserts the logout afterwards carries the ROTATED bearer. Written
+against the vault half deliberately: `refreshStatus` re-renders through `show()`
+and would carry the new session anyway, so a test written around it would have
+passed with the line deleted, which is how this went unnoticed in the first place.
+
+**DRIVEN IN A REAL BROWSER, and the drive cost two checks that could not fail.**
+`browser-smoke.mjs` loads the PACKED extension into Chrome over CDP and now
+opens the popup, ages the access token out UNDERNEATH it, and takes a vault
+action. Both wrong versions are recorded because both are this milestone's own
+subject:
+
+- Seeding a bearer that was ALREADY dead proved nothing. `refreshStatus` runs at
+  mount, refreshes and stores, and only then is the vault half mounted — so the
+  snapshot it took was fresh. Measured: the defect, restored, still passed
+  13/13. The expiry has to be a TRANSITION under an open popup, because
+  `vaultMounted` guards the remount and that is precisely what stranded the
+  captured value.
+- Probing with the `Lock` button proved nothing either. `doLock()` renders
+  "Vault locked" without reading the call's outcome, so the screen says the same
+  thing whether the action succeeded or was refused. The probe is now the
+  UNLOCK, whose result is rendered.
+
+With the fix the run is 14/14 and storage afterwards holds the ROTATED token;
+with the mount-time snapshot restored, both new checks go red. An earlier
+mutation attempt also has to be discounted rather than counted: it failed to
+compile, so the harness ran the previous artifact and its "failure" was a stale
+package, not evidence.
+
+**Residuals: none, and the row is closed.** M44 opened with three items in
+§6aaa; PR1 closed one and PR2 closes the other two, so nothing is deferred out of
+this delta. One trade-off is accepted rather than left implied:
+
+- **[ACCEPTED]** *The no-snapshot fence's corpus is ONE FILE.* It reads
+  `vault-screens.ts`, because that is where the defect was and where the
+  capability lands. `popup.ts` now resolves the session at use in both of its own
+  sites, but nothing DERIVES that — the disconnect button was found by reading,
+  and is held by a behavioural case rather than by a scan. A third snapshot
+  introduced elsewhere in popup context would be outside this fence's reach.
+  Accepted rather than owned: widening the corpus to the whole popup context
+  would flag every legitimate `bearer` parameter in the message layer, which is
+  most of them, and a fence that must exempt its own corpus one entry at a time
+  is a hand-list wearing a derivation's clothes. Recorded because this milestone
+  has now shipped the "corpus narrower than the claim" defect twice, and the
+  honest response to a bound you choose to keep is to state it.

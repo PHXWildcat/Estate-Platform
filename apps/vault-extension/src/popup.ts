@@ -103,6 +103,56 @@ export async function mountPopup({ root }: PopupDeps): Promise<void> {
     });
   }
 
+  /**
+   * The session this popup currently holds, or null if it holds none.
+   *
+   * READ AT USE, NEVER CAPTURED (M44 PR2). A refresh ROTATES both tokens —
+   * `toSession` requires a `refreshToken` in the response — so a handler that
+   * closed over a `PairedSession` would present a spent refresh token on its
+   * second call. That is the same snapshot defect this PR removes from
+   * `vault-screens.ts`, and it would have been left standing here.
+   */
+  function heldSession(): PairedSession | null {
+    return view.kind === 'paired' || view.kind === 'working' ? view.session : null;
+  }
+
+  /**
+   * Take a rotation WITHOUT redrawing.
+   *
+   * `show()` would re-render the popup, and the vault half lives inside
+   * `vaultHost` where somebody may be part-way through typing a password or a
+   * six-digit code. A token rotation is invisible to the user and must stay
+   * that way; the only thing that has to change is which credential the next
+   * call presents.
+   */
+  function rotateSession(current: PairedSession): void {
+    if (view.kind === 'paired' || view.kind === 'working') {
+      view = { ...view, session: current };
+    }
+  }
+
+  /**
+   * The capability handed to the vault half, in place of a bearer.
+   *
+   * Everything about refreshing lives on THIS side of the boundary, because
+   * this is the side that owns the `PairedSession` and must see it rotate.
+   * `vault-screens` gets a function and no credential.
+   *
+   * A call with no session answers `UNAUTHENTICATED` rather than throwing: the
+   * vault half is only ever mounted inside a paired view, so this arm is
+   * unreachable today, and the honest answer if it ever becomes reachable is
+   * the same one a dead pairing gives.
+   */
+  async function callOnLiveSession<T>(
+    fn: (bearer: string) => Promise<ApiResult<T>>,
+  ): Promise<ApiResult<T>> {
+    const held = heldSession();
+    if (held === null) return { ok: false, code: 'UNAUTHENTICATED' };
+    const { result, session: current } = await withSession(held, fn);
+    rotateSession(current);
+    return result;
+  }
+
   async function onConnect(code: string): Promise<void> {
     show({ kind: 'pairing' });
     const result: ApiResult<PairedSession> = await pair(code);
@@ -167,7 +217,13 @@ export async function mountPopup({ root }: PopupDeps): Promise<void> {
   ): void {
     const disconnectButton = el('button', { class: 'secondary' }, 'Disconnect this browser');
     disconnectButton.addEventListener('click', () => {
-      void onDisconnect(session);
+      // THE LIVE SESSION, not the one this draw closed over. A rotation between
+      // render and click would otherwise spend a dead refresh token, and
+      // `disconnect` reads that refusal as "already gone" and forgets locally —
+      // leaving a browser that looks signed out over a session still live on
+      // the server, which is the one outcome its own comment calls the worst.
+      const live = heldSession() ?? session;
+      void onDisconnect(live);
     });
     const statusLine =
       status === 'enrolled'
@@ -193,7 +249,7 @@ export async function mountPopup({ root }: PopupDeps): Promise<void> {
       void mountVaultScreens({
         host: vaultHost,
         userId: session.userId,
-        bearer: session.accessToken,
+        call: callOnLiveSession,
       });
     }
   }

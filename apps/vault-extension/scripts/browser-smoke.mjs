@@ -318,6 +318,100 @@ try {
     String(wrong).slice(0, 120),
   );
 
+  /*
+   * 9b. A POPUP WHOSE ACCESS TOKEN AGES OUT WHILE IT IS OPEN (M44 PR2).
+   *
+   * THE DEFECT THIS RETIRES. `mountVaultScreens` took a `bearer: string` read
+   * once at mount. The access token lives fifteen minutes and the session
+   * thirty days, so a popup left open across that boundary answered every
+   * action `UNAUTHENTICATED` and rendered "This device is no longer connected
+   * to your account … Connect it again to continue" over a pairing that was
+   * perfectly alive — naming re-pairing, which costs a step-up on the app
+   * origin, as the remedy for a token that had merely aged.
+   *
+   * THE ORDER HERE IS THE WHOLE TEST, and the first version of it was a check
+   * that could not fail. Seeding an already-dead bearer proves nothing:
+   * `refreshStatus` runs at mount, refreshes, stores, and only then is the
+   * vault half mounted, so the snapshot it takes is fresh and the reverted
+   * defect still passes. Measured — the mutation survived in Chrome and the
+   * harness reported 13/13. So the popup is opened on a LIVE token, the token
+   * is aged out UNDER it, and only then is a vault action taken. `vaultMounted`
+   * guards the remount, which is what leaves the vault half holding the value
+   * it captured while everything around it rotates.
+   */
+  await ev(
+    `chrome.storage.local.set({'estate.session':{accessToken:'smoke-access',refreshToken:'smoke-refresh',userId:${JSON.stringify(state.userId)},sessionId:'smoke-session'}}).then(()=>'ok')`,
+  );
+  await ev(`chrome.action.openPopup()`);
+
+  /*
+   * THE PROBE IS THE UNLOCK, and choosing it took two wrong answers worth
+   * recording. `Lock` was the first: `doLock()` renders "Vault locked"
+   * unconditionally — it never reads the outcome of the call — so that check
+   * passed with the defect restored and only the storage assertion beside it
+   * noticed. A probe whose screen says the same thing either way is not a
+   * probe. The unlock's result IS rendered, so a refusal is visible.
+   */
+  const popup = await until(
+    async () => {
+      const { result } = await b.send('Target.getTargets');
+      const doc = result.targetInfos.find((t) => t.url.includes(`${extId}/popup.html`));
+      if (!doc) return null;
+      const at = await b.send('Target.attachToTarget', { targetId: doc.targetId, flatten: true });
+      const seenText = await ev(`document.body.textContent`, at.result.sessionId);
+      return typeof seenText === 'string' && seenText.includes('Vault locked')
+        ? at.result.sessionId
+        : null;
+    },
+    'the popup to mount its vault half on a LIVE credential',
+    15000,
+  );
+  check('the popup mounts its vault half while the token is live', Boolean(popup));
+
+  // The token ages out UNDERNEATH the open popup. Nothing re-mounts:
+  // `vaultMounted` guards it, which is exactly what left the vault half
+  // holding the value it captured.
+  await fetch(`http://127.0.0.1:${PORT}/__expire`, { headers: { 'x-estate-vault-csrf': '1' } });
+
+  await ev(
+    `(() => {
+       document.querySelector('#vault-password').value = ${JSON.stringify(state.password)};
+       document.querySelector('#secret-key').value = ${JSON.stringify(state.secretKey)};
+       [...document.querySelectorAll('button')].find(x => /Open vault/.test(x.textContent)).click();
+       return 'clicked';
+     })()`,
+    popup,
+  );
+  const after = await until(
+    async () => {
+      const seenText = await ev(`document.body.textContent`, popup);
+      return typeof seenText === 'string' &&
+        (seenText.includes(state.itemTitle) || seenText.includes('no longer connected'))
+        ? seenText
+        : null;
+    },
+    'the vault half to answer an action taken after the expiry',
+    20000,
+  );
+  check(
+    'an action after the token ages out REFRESHES, instead of claiming the device was disconnected',
+    typeof after === 'string' &&
+      after.includes(state.itemTitle) &&
+      !after.includes('no longer connected'),
+    String(after).slice(0, 200),
+  );
+
+  // And the rotation was PERSISTED, not merely used once: a popup that
+  // refreshed without storing would present the spent token again next time.
+  const stored = await ev(
+    `chrome.storage.local.get('estate.session').then(v => JSON.stringify(v['estate.session']))`,
+  );
+  check(
+    'the refreshed session is stored, not just spent',
+    String(stored).includes('smoke-access-2'),
+    String(stored).slice(0, 160),
+  );
+
   // 10. THE CENTRAL CLAIM, over bytes that crossed a real socket.
   const requests = await (await fetch(`http://127.0.0.1:${PORT}/__requests`)).json();
   const wire = JSON.stringify(requests);
