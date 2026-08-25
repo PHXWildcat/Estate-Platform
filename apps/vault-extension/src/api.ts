@@ -45,6 +45,29 @@ export type ApiFailure =
   | 'UNAVAILABLE'
   | 'VERSION_CONFLICT'
   | 'ITEM_EXISTS'
+  /*
+   * A GUESSING BOUND FIRING, NOT A FAULT (M27 PR6).
+   *
+   * identity refuses a denied step-up code past `STEPUP_MAX_DENIALS` with 429
+   * `too_many_attempts`, and gives the cap its own token deliberately: its
+   * comment says "never `invalid_code`, which already means 'that code was
+   * wrong'". Without a member here that distinction died at this boundary — 429
+   * fell off the end of `failureFor` to `UNKNOWN`, whose sentence is "Something
+   * went wrong. Please try again in a moment.", putting an outage's face on a
+   * control and inviting exactly the retry the cap is refusing.
+   *
+   * STATUS-KEYED, never token-keyed, on apps/bff's stated reason: 429 means one
+   * thing everywhere, and a token nobody enumerated must not get to decide
+   * whether a rate limit reads as an outage.
+   *
+   * THE FOURTH CLIENT TO TAKE IT, and the dates are worth stating because the
+   * gap is the point: `apps/bff` at M19 PR4, `apps/operator-web` at M21 PR3a,
+   * `apps/vault-web` at M27 PR5 — one PR before this one, in this same
+   * milestone. Four PRs spread across nine milestones to apply one rule to one
+   * category, which is what "a rule applied to one member of a category is a
+   * rule half-applied" costs when nobody asks who else is in it.
+   */
+  | 'TOO_MANY_ATTEMPTS'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -55,11 +78,15 @@ const CSRF_HEADER = 'x-estate-vault-csrf';
 /**
  * Server error TEXT is never surfaced; statuses narrow to the set above.
  *
- * `invalid_code` is identity's ONE answer for every way a pairing code can be
- * refused — unknown, expired, already spent, revoked, mis-shaped, raced. It is
- * carried through as one code here for the same reason it is one there: telling
- * them apart would tell whoever is holding a guess that it named something
- * real.
+ * `invalid_code` IS TWO CEREMONIES, AND THIS LAYER CANNOT TELL THEM APART.
+ * identity answers it for every way a PAIRING code can be refused — unknown,
+ * expired, already spent, revoked, mis-shaped, raced — and ALSO for a rejected
+ * TOTP at `POST /api/auth/stepup`. The pairing cases are carried through as one
+ * code here for the same reason they are one there: telling them apart would
+ * tell whoever is holding a guess that it named something real. The CEREMONY,
+ * though, is knowable only at the call site, so the sentence belongs there and
+ * not in `copy.ts` — reading this code as "pairing" everywhere is what put
+ * pairing copy in front of a mistyped authenticator digit until M27 PR6.
  */
 function failureFor(status: number, token: string | null): ApiFailure {
   if (status === 401) {
@@ -83,6 +110,7 @@ function failureFor(status: number, token: string | null): ApiFailure {
     return 'UNKNOWN';
   }
   if (status === 404) return 'NOT_FOUND';
+  if (status === 429) return 'TOO_MANY_ATTEMPTS';
   if (status === 502 || status === 503) return 'UNAVAILABLE';
   return 'UNKNOWN';
 }

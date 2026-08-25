@@ -156,11 +156,32 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
     show({
       kind: 'locked',
       stepUp: true,
-      // identity answers `invalid_credentials` for a rejected TOTP code exactly
-      // as for a rejected password, so the generic copy would name credentials
-      // this form does not have — the M12 defect.
+      /*
+       * KEYED ON `INVALID_CODE`, BECAUSE THAT IS WHAT A REJECTED TOTP IS HERE.
+       *
+       * This arm tested `UNAUTHENTICATED` until M27 PR6, lifted from
+       * `apps/vault-web/src/client/stepup.ts` where it IS the right code: that
+       * origin's `failureFor` maps EVERY 401 to `UNAUTHENTICATED`. This
+       * client's does not — it splits 401 into `invalid_code`, `srp_failed` and
+       * the rest — so the same expression names a different failure here. The
+       * discriminator was inherited without the mapping it depended on, and the
+       * two sentences came out swapped: a mistyped digit was answered with the
+       * PAIRING copy, telling someone to create a new code in Estate for a
+       * number that is read off an authenticator, while a device whose pairing
+       * had genuinely been revoked was told to try the current code, which can
+       * never work. Two refusals with different remedies, each wearing the
+       * other's face.
+       *
+       * `UNAUTHENTICATED` now falls through to `messageFor`, which already says
+       * the device is disconnected and to connect it again. That is the right
+       * remedy, and the reason this arm needs no second sentence of its own.
+       *
+       * The step-up cap reaches here as `TOO_MANY_ATTEMPTS` and likewise falls
+       * through, because a bound firing is not a wrong code and must not borrow
+       * a wrong code's advice.
+       */
       error:
-        done.code === 'UNAUTHENTICATED'
+        done.code === 'INVALID_CODE'
           ? 'That code was not accepted. Codes last about 30 seconds — try the current one.'
           : messageFor(done.code),
     });
