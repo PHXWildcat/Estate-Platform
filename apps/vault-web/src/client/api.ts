@@ -18,6 +18,51 @@
 /** Every way a call can fail, as the UI sees it. A closed set. */
 export type ApiFailure =
   | 'UNAUTHENTICATED'
+  /*
+   * A REJECTED AUTHENTICATOR CODE, KEPT APART FROM A DEAD SESSION (M44 PR1).
+   *
+   * `UNAUTHENTICATED` on this origin is doing FOUR jobs — a vault session that
+   * ended, the vault service's `srp_failed`, a LOCALLY synthesised
+   * key-derivation failure, and (until now) a refused step-up code. Each screen
+   * told them apart by knowing which ceremony it was running, and that worked
+   * everywhere except the step-up prompt, whose assumption was wrong for the
+   * one case it did not run: a session that had ENDED mid-ceremony was answered
+   * with "that code was not accepted, try the current one", advice that can
+   * never succeed and that names the wrong remedy. The session is gone; the fix
+   * is to open the vault again, not to retype.
+   *
+   * SPLITTING ONLY THIS TOKEN IS SAFE, which is why it is a token test inside
+   * the 401 rather than a general split. The vault service answers exactly two
+   * 401 tokens and neither is `invalid_code`: `srp_failed` from its own
+   * `vault.service.ts`, and `unauthorized` from the `CallerGuard` it mounts
+   * controller-wide on both controllers — a guard in `@estate/auth-guard`, so
+   * an earlier draft of this comment that read "the vault service's ONLY 401
+   * token is `srp_failed`" was counting only what the service's own `src`
+   * throws. False as written, and the same species of error as the comment
+   * this PR deleted. Both local syntheses keep their own spelling, and
+   * `invalid_code` is reachable on exactly ONE route this client calls —
+   * `POST /api/auth/stepup`.
+   *
+   * That last clause is a claim about a ROUTE SET, so it is argued from the
+   * route set rather than from a list of throw sites. identity spells
+   * `invalid_code` at EIGHT places: TOTP enrolment (`verifyTotp`), step-up,
+   * e-mail change, e-mail verification, extension pairing twice, the handoff,
+   * and password reset. An earlier draft of this comment named two of them and
+   * called that the argument — a hand-list beside a thing that grows, which is
+   * the defect this repo names most often. Only three identity routes are
+   * proxied here WITH THIS CLIENT'S CREDENTIAL (`PROXIED_IDENTITY_ROUTES` in
+   * `copy.spec.ts`, derived from `PROXY_ROUTES` and asserted), and of those
+   * only `stepup` throws it. Proxy a fourth and that fence reddens, which is
+   * the prompt to re-read this paragraph.
+   *
+   * The origin ALSO passes two identity paths through for the EXTENSION
+   * (`PASS_THROUGH_ROUTES` in `server.ts`), and one of them — pairing redeem —
+   * is another of the eight throw sites. It does not weaken the claim, because
+   * the claim is about what THIS module calls and this module calls neither;
+   * but "reachable through this origin" and "reachable from this client" are
+   * two different questions and only the second one is answered here.
+   */
+  | 'INVALID_CODE'
   | 'STEPUP_REQUIRED'
   | 'VAULT_LOCKED'
   | 'NOT_FOUND'
@@ -109,7 +154,12 @@ const CSRF_HEADER = 'x-estate-vault-csrf';
 
 /** Server error TEXT is never surfaced; statuses narrow to the set above. */
 function failureFor(status: number, token: string | null): ApiFailure {
-  if (status === 401) return 'UNAUTHENTICATED';
+  if (status === 401) {
+    // The ONE 401 token that means "that code was wrong" rather than "your
+    // authority is gone". See the union above for why nothing else moves.
+    if (token === 'invalid_code') return 'INVALID_CODE';
+    return 'UNAUTHENTICATED';
+  }
   // STATUS-INDEPENDENT, because the service spells ONE stop at TWO statuses.
   // `release` and `readAsGrantee` throw `denied_by_owner` as 403; `request`
   // reaches the same stop through `blockReason` and throws it as 409. Keyed

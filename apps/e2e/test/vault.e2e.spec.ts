@@ -39,6 +39,7 @@ import {
 } from '@estate/vault-crypto';
 import { AppModule as IdentityAppModule } from '@estate/service-identity/dist/app.module';
 import { currentTotpCode } from '@estate/service-identity/dist/totp';
+import { STEPUP_MAX_DENIALS } from '@estate/service-identity/dist/stepup';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import { AUDIT_PRODUCER as IDENTITY_AUDIT_PRODUCER } from '@estate/service-identity/dist/di-tokens';
 import { AppModule as VaultAppModule } from '@estate/service-vault/dist/app.module';
@@ -529,5 +530,107 @@ describeIfPg('vault (Zone A) end to end', () => {
     for (const row of stored.rows) {
       expect(row.blob_ct.toString('binary')).not.toContain(ITEM_SECRET);
     }
+  });
+
+  /*
+   * WHAT `POST /v1/auth/stepup` ACTUALLY ANSWERS, OBSERVED ON THE WIRE.
+   *
+   * BOTH vault clients word these three refusals, and until now both derived
+   * the vocabulary from identity's SOURCE without either ever seeing identity
+   * send one. That gap is not academic: the defect M27 PR6 and M44 PR1 fixed was
+   * two clients being confidently wrong about what this route says. The
+   * extension answered a mistyped authenticator digit with PAIRING copy; the
+   * vault origin answered an ENDED SESSION with "try the current one". Both
+   * carried a comment asserting identity replies `invalid_credentials` here —
+   * the LOGIN refusal, which this route never sends, and which this test would
+   * have contradicted the day it was written.
+   *
+   * A derivation and an observation are different evidence. This is the
+   * observation, and it is the only place in the repo that holds it.
+   */
+  it('answers a missing session, a wrong code and the cap with THREE distinct refusals', async () => {
+    const identity = supertest(identityApp.getHttpServer() as Parameters<typeof supertest>[0]);
+    const email = `stepup-${randomUUID()}@example.com`;
+    const password = `Pw-${randomBytes(18).toString('base64url')}`;
+    await identity.post('/v1/auth/register').send({ email, password }).expect(201);
+    const login = await identity.post('/v1/auth/login').send({ email, password }).expect(200);
+    const bearer = {
+      authorization: `Bearer ${(login.body as { accessToken: string }).accessToken}`,
+    };
+    const enroll = await identity.post('/v1/auth/totp/enroll').set(bearer).expect(201);
+    const secret = new URL((enroll.body as { otpauthUri: string }).otpauthUri).searchParams.get(
+      'secret',
+    )!;
+    await identity
+      .post('/v1/auth/totp/verify')
+      .set(bearer)
+      .send({ code: currentTotpCode(secret) })
+      .expect(200);
+
+    /** A code that is wrong at the moment it is computed. */
+    const wrongCode = (): string => (currentTotpCode(secret) === '000000' ? '111111' : '000000');
+
+    /*
+     * Post a wrong code, tolerating the ONE way this can legitimately succeed.
+     *
+     * The TOTP window can rotate between computing the guess and identity
+     * scoring it, so the guess is occasionally the real code — about one attempt
+     * in a million. That is not a failure of the thing under test, and a bare
+     * `.expect(401)` would make this suite flake on a coin nobody can see. It is
+     * retried rather than ignored, and the retries are COUNTED and asserted to
+     * stay negligible, so a mapping that started answering 200 for every wrong
+     * code could not hide inside the tolerance.
+     */
+    let rotations = 0;
+    const postWrongCode = async (): Promise<{ status: number; body: unknown }> => {
+      for (let tries = 0; tries < 4; tries += 1) {
+        const answer = await identity
+          .post('/v1/auth/stepup')
+          .set(bearer)
+          .send({ code: wrongCode() });
+        if (answer.status !== 200) return { status: answer.status, body: answer.body };
+        rotations += 1;
+      }
+      throw new Error('the wrong code was accepted four times running — that is not a rotation');
+    };
+
+    // NO SESSION — `SessionGuard`, not the code. The remedy is to authenticate
+    // again, and the vault origin used to answer this "try the current one".
+    await identity
+      .post('/v1/auth/stepup')
+      .send({ code: wrongCode() })
+      .expect(401, { error: 'unauthorized' });
+
+    // A WRONG CODE. `invalid_code`, never `invalid_credentials`.
+    const refused = await postWrongCode();
+    expect(refused.status).toBe(401);
+    expect(refused.body).toEqual({ error: 'invalid_code' });
+
+    /*
+     * THE CAP, with a token of its own so a bound firing cannot read as a wrong
+     * code. Driven to the refusal rather than to a hard-coded attempt index:
+     * every answer before it must still be `invalid_code`, and the refusal must
+     * arrive within the documented bound. Asserting the SEQUENCE is what makes
+     * this more than "a 429 happened eventually".
+     */
+    const before: number[] = [];
+    let capped = false;
+    for (let attempt = 0; attempt < STEPUP_MAX_DENIALS + 2 && !capped; attempt += 1) {
+      const answer = await postWrongCode();
+      if (answer.status === 429) {
+        expect(answer.body).toEqual({ error: 'too_many_attempts' });
+        capped = true;
+      } else {
+        expect(answer.body).toEqual({ error: 'invalid_code' });
+        before.push(answer.status);
+      }
+    }
+    expect(capped).toBe(true);
+    // ANTI-VACUITY: a cap that fired immediately would satisfy `capped` alone.
+    expect(before.length).toBeGreaterThan(0);
+    expect([...new Set(before)]).toEqual([401]);
+    // And the rotation tolerance must stay a tolerance. If this is not ~0 the
+    // route is accepting wrong codes and the retries are hiding it.
+    expect(rotations).toBeLessThanOrEqual(1);
   });
 });

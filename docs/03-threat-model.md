@@ -6651,7 +6651,7 @@ per-refusal tests are what catch that.
 
 **Residuals, stated rather than implied.**
 
-- **[OWNER: M44]** *The vault origin's own step-up prompt still shares one
+- **[CLOSED: §6bbb]** *The vault origin's own step-up prompt still shares one
   sentence between a rejected code and a dead session.*
   `apps/vault-web/src/client/stepup.ts` answers both with "That code was not
   accepted. Codes last about 30 seconds — try the current one", because that
@@ -6688,3 +6688,132 @@ per-refusal tests are what catch that.
   false claim about reachability sitting inside the predicate that decides
   whether a working credential gets forgotten, and the failure mode of a later
   edit is somebody making it true.
+
+## 6bbb. Threat-model delta — M44 PR1, the vault origin's step-up refusals (2026-08-25)
+
+**THE §6aaa `[OWNER: M44]` MIRROR ITEM IS CLOSED BY THIS DELTA**, and the risk
+recorded against it turned out to be overstated — corrected here rather than
+quietly dropped.
+
+§6aaa said splitting 401 on this origin "changes a code that four other sites
+consume, one of which (`app.ts`'s key-change path) synthesises `UNAUTHENTICATED`
+locally to mean something else entirely", so a careless split would reproduce
+the very inherited-discriminator defect M27 PR6 closed. (The phrase "not a
+one-line change" was docs/04's M44 queue row at `5301adf`, not §6aaa's — and
+this PR's own rewrite of that row is what removed it, so the misquote pointed
+at a sentence twice over. An earlier draft of this paragraph put it in
+quotation marks against the wrong record, and the
+local-synthesis count with it. There are in fact TWO local syntheses —
+`app.ts`'s `.catch` on the unlock path and `vault-session.ts`'s
+`changePassword` arm, where a failed local re-derivation is the key-change
+refusal §6aaa was pointing at —
+so §6aaa undercounted, and quoting it as saying "two" repaired its number while
+misreporting what it said. Both errors are the same one: writing down what a
+record ought to have said.) The premise is true and the conclusion was wrong.
+`UNAUTHENTICATED` here really is doing FOUR jobs — a vault session that ended,
+the vault service's `srp_failed`, a locally synthesised key-derivation failure,
+and a refused step-up code — but splitting out ONLY `invalid_code` touches none
+of the others: the vault service's sole 401 token is `srp_failed`, both local
+syntheses keep their own spelling, and `invalid_code` is reachable on exactly
+one route this client calls. The scout is what established that; the residual
+was written from the four-consumer count alone.
+
+**THE FIX IS A DELETION, and that is the interesting part.** M27 PR6 fixed the
+same defect in `apps/vault-extension` by re-keying the prompt's special case
+onto `INVALID_CODE`. Here the special case is REMOVED and `messageFor` owns the
+sentence. The two clients need opposite fixes for one defect because their
+`invalid_code` have different REACH: the extension's serves two ceremonies
+(pairing redemption and step-up) so the map cannot serve both and the call site
+must choose, while this origin's serves one, so a discriminator that could be
+inherited wrongly simply stops existing. Prefer the ABSENCE to the branch.
+
+**What the prompt said before.** `UNAUTHENTICATED` reached it as a refused code,
+so a vault session that had ENDED mid-ceremony was answered "That code was not
+accepted. Codes last about 30 seconds — try the current one." — a user with no
+authority left, told to retype indefinitely, while the remedy they needed
+(open the vault again from Estate) was never named. The arm also caught
+`INVALID_REQUEST`, which `CODE_PATTERN` makes unreachable, and it was justified
+by a comment asserting identity answers `invalid_credentials` for a rejected
+TOTP. It does not; that is the LOGIN refusal. The comment had been false since
+M15.
+
+**THE TEST THAT SHOULD HAVE CAUGHT IT WAS GREEN FOR TWO INDEPENDENT WRONG
+REASONS**, and this is the part worth carrying forward. `says what THIS form
+holds when a code is refused` drove the prompt with `401 invalid_credentials` —
+a token this route never sends — and asserted `/codes last about 30 seconds/i`
+against `document.body.textContent`. The form's own HINT reads "From your
+authenticator app. Codes last about 30 seconds.", present from the moment the
+prompt renders. So the assertion matched the hint rather than the refusal and
+could not fail: measured, it stays green when the fixture is pointed at a 503
+rendering a completely different sentence, and it stayed green when the branch
+it existed to protect was deleted outright. A fixture aimed at the wrong
+boundary AND an assertion whose corpus was wider than its claim, in one test.
+The refusal assertions now read `p.status-error`, and a named CONTROL asserts
+the hint is present before any refusal, so the reason for that scoping cannot
+rot.
+
+**Three layers, each saying which one it proves.** `stepup.spec.ts` proves the
+WIRING — which `ApiFailure` a wire answer resolves to, and that the prompt adds
+no special-casing — using a `generic:<CODE>` stub deliberately.
+`copy.spec.ts` proves the SENTENCES differ, against the real `messageFor`.
+`apps/e2e/test/vault.e2e.spec.ts` proves what identity actually SENDS.
+
+**The observation nobody had.** Both vault clients word these refusals from a
+mapping derived out of identity's source, and neither had ever seen identity
+answer one — M27 PR6 shipped saying so. The e2e case added here drives the real
+ceremony and records the wire: `401 unauthorized` with no session, `401
+invalid_code` for a wrong one, and `429 too_many_attempts` at the cap, with every
+answer before the cap asserted to still be `invalid_code`. A derivation and an
+observation are different evidence, and the defect in both clients was being
+confidently wrong about this route.
+
+**The copy fence's corpus was narrower than its claim.** `copy.spec.ts` asserted
+"every service refusal is classified" while reading `apps/services/vault/src`
+alone — but this origin PROXIES three identity routes, so `invalid_code`,
+`unauthorized` and `too_many_attempts` are refusals it can put in front of a
+user and none was in the corpus. The upstream set is now derived from the
+runtime's own `PROXY_ROUTES` table, a fourth upstream turns it red, and the
+premise under most exemptions ("that ceremony is not proxied here") is itself
+asserted against the route table. Tokens answered by STATUS rather than by name
+are a declared third category, because `mappedTokens()` reads `token === '…'`
+tests and a correctly status-handled refusal was otherwise indistinguishable
+from one nobody classified.
+
+**The same fence had the same defect TWICE MORE, and the review found both.**
+Neither is a behaviour change; both are the file failing the rule it enforces.
+
+- **It could not see two codes saying the same thing.** The function feeding
+  "every failure code has a sentence of its own" collected `case` LABELS and
+  discarded the sentences, so the assertion was set-membership over names.
+  Measured, not argued: restoring the exact defect this delta fixes — one
+  sentence for both a refused code and a dead session — left the whole package
+  GREEN, all 325 tests it held at that point in the branch. Two things in the file claimed otherwise: the suite is
+  named "every failure code has a sentence of its own", and a case named "the
+  two that share are the two that mean one thing" asserted in a COMMENT which
+  pair shares and why, a fact no assertion in the file could reach.
+  It now maps code to sentence, resolves fall-through groups so a deliberate
+  pair is visible rather than invisible, and requires any remaining sharing to
+  be declared with its reason in both directions.
+- **It could not see a refusal whose token is COMPUTED.** The scan reads
+  `error: '<literal>'`, so `throw new ConflictException({ error: outcome.blocked })`
+  was invisible, and with it `already_waiting`, which `blockReason` RETURNS but
+  which no `error:` literal anywhere spells — so it could never have appeared
+  unclassified, because it could never have appeared. The answer is not a wider regex (a regex
+  chasing values through variables is a parser, and the next indirection
+  defeats it silently) but a declared site table: the four computed throw sites
+  are DERIVED and asserted against their declared tokens both ways. What cannot
+  be read is at least counted. Classifying the newly visible tokens also
+  corrected a stale exemption — `already_released` was excused as unreachable
+  because `rearm` is an owner control, which stopped being the whole truth once
+  the grantee request path's second throw site became visible.
+
+**Residuals, stated rather than implied.**
+
+- **[OWNER: M44]** *An expired ACCESS TOKEN still reads as an un-paired device
+  in the extension.* Unchanged by this delta and carried from §6aaa:
+  `vault-screens.ts` takes a raw bearer at all eight of its call sites and never
+  routes through `withSession`. Left with M44's remaining scope rather than
+  moved, because it is a different package and a different mechanism.
+- **[OWNER: M44]** *The extension's revocation predicate carries an unreachable
+  disjunct.* Also carried from §6aaa, for the same reason.
+

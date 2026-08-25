@@ -62,6 +62,42 @@ const submit = (): void => {
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
 
+/*
+ * READ THE ERROR NODE, NEVER `document.body.textContent` (M44 PR1).
+ *
+ * The test this replaces asserted `/codes last about 30 seconds/i` against the
+ * whole body — and the FORM'S OWN HINT is "From your authenticator app. Codes
+ * last about 30 seconds.", present in the DOM from the moment the prompt
+ * renders. So the assertion matched the hint rather than the refusal and could
+ * not fail: measured, it stayed green when the fixture was pointed at a 503
+ * rendering an entirely different sentence, and it stayed green when the
+ * special-casing branch it was written to protect was DELETED outright.
+ *
+ * Scoping the read to `p.status-error` is what makes these assertions about the
+ * refusal at all. `theHintIsAlwaysPresent` below is the control that keeps this
+ * comment honest.
+ */
+const refusalText = (): string => document.querySelector('p.status-error')?.textContent ?? '';
+
+/**
+ * Drive the prompt to one refusal and return what it SAID about it.
+ *
+ * `messageFor` here is the stub `generic:<CODE>`, deliberately: THIS FILE PROVES
+ * THE WIRING — which `ApiFailure` the prompt resolves a given wire answer to,
+ * and that it adds no special-casing of its own. Whether those codes map to
+ * distinct English is a different layer, proved in `copy.spec.ts` against the
+ * real `messageFor`; and whether identity actually sends these tokens is a third,
+ * proved on the wire in `apps/e2e/test/vault.e2e.spec.ts`.
+ */
+async function refuse(status: number, token: string): Promise<string> {
+  serviceAnswering([{ status, body: { error: token } }]);
+  void promptForStepUp(host(), 'Resetting the vault', messageFor);
+  type('123456');
+  submit();
+  await settle();
+  return refusalText();
+}
+
 describe('the step-up prompt', () => {
   it('posts the code to identity through this origin', async () => {
     const service = serviceAnswering([{ status: 200, body: { mfaLevel: 'stepup' } }]);
@@ -98,18 +134,31 @@ describe('the step-up prompt', () => {
     expect(document.body.textContent).toMatch(/enter the six digits/i);
   });
 
-  it('says what THIS form holds when a code is refused, not "email and password"', async () => {
-    // identity answers `invalid_credentials` for a rejected TOTP code exactly as
-    // for a rejected password (the M12 defect), so the generic copy would send
-    // someone to check credentials this form does not have.
-    serviceAnswering([{ status: 401, body: { error: 'invalid_credentials' } }]);
+  it('CONTROL: the hint says "codes last about 30 seconds" before any refusal', () => {
+    // The reason every assertion below reads `p.status-error` rather than the
+    // body. If this ever stops being true the scoping is no longer load-bearing
+    // and these tests should be re-examined rather than quietly relaxed.
+    serviceAnswering([{ status: 200, body: {} }]);
+    void promptForStepUp(host(), 'Resetting the vault', messageFor);
+    expect(document.body.textContent).toMatch(/codes last about 30 seconds/i);
+    expect(refusalText()).toBe('');
+  });
+
+  it('says what THIS form holds when a CODE is refused, not "email and password"', async () => {
+    // `invalid_code` is what identity actually answers here (auth.service.ts).
+    // The replaced test used `invalid_credentials` — the LOGIN refusal, a token
+    // this route never sends.
+    const shown = await refuse(401, 'invalid_code');
+    expect(shown).toBe('generic:INVALID_CODE');
+    expect(shown).not.toMatch(/email/i);
+  });
+
+  it('a refusal is not a cancel — the prompt stays open', async () => {
+    serviceAnswering([{ status: 401, body: { error: 'invalid_code' } }]);
     const outcome = promptForStepUp(host(), 'Resetting the vault', messageFor);
     type('000000');
     submit();
     await settle();
-    expect(document.body.textContent).toMatch(/codes last about 30 seconds/i);
-    expect(document.body.textContent).not.toMatch(/email/i);
-    // And it is still open — a refusal is not a cancel.
     let settled = false;
     void outcome.then(() => {
       settled = true;
@@ -118,9 +167,32 @@ describe('the step-up prompt', () => {
     expect(settled).toBe(false);
   });
 
+  it('does NOT read a dead SESSION as a wrong code', async () => {
+    // THE DEFECT THIS PR CLOSES. `unauthorized` is `SessionGuard` saying the
+    // vault session has ended; answering it with "try the current one" told a
+    // user to retype a code for as long as they were willing to.
+    expect(await refuse(401, 'unauthorized')).toBe('generic:UNAUTHENTICATED');
+  });
+
+  it('does NOT read the guessing CAP as a wrong code', async () => {
+    expect(await refuse(429, 'too_many_attempts')).toBe('generic:TOO_MANY_ATTEMPTS');
+  });
+
+  it('resolves the three refusals to three DIFFERENT codes', async () => {
+    // DISCRIMINATION, not coverage: "each renders something" is satisfied by a
+    // prompt that renders one thing for all three, which is what it did.
+    const seen = [
+      await refuse(401, 'invalid_code'),
+      await refuse(401, 'unauthorized'),
+      await refuse(429, 'too_many_attempts'),
+    ];
+    expect(seen.every((text) => text.length > 0)).toBe(true);
+    expect(new Set(seen).size).toBe(3);
+  });
+
   it('lets a second attempt through after a refusal', async () => {
     serviceAnswering([
-      { status: 401, body: { error: 'invalid_credentials' } },
+      { status: 401, body: { error: 'invalid_code' } },
       { status: 200, body: { mfaLevel: 'stepup' } },
     ]);
     const outcome = promptForStepUp(host(), 'Resetting the vault', messageFor);
