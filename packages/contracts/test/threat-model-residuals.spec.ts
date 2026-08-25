@@ -176,6 +176,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6yy': 5,
   '6zz': 8,
   '6aaa': 3,
+  '6bbb': 2,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -624,6 +625,12 @@ const OUT_OF_CORPUS: ReadonlyArray<{
     kind: 'decision',
   },
   { section: '6bb', label: 'What PR3a changes', bullets: 5, kind: 'shipped' },
+  {
+    section: '6bbb',
+    label: 'The same fence had the same defect TWICE MORE, and the review found both.',
+    bullets: 2,
+    kind: 'evidence',
+  },
   { section: '6c', label: '(section preamble)', bullets: 4, kind: 'shipped' },
   { section: '6cc', label: 'What PR3b changes', bullets: 6, kind: 'shipped' },
   {

@@ -409,10 +409,12 @@ describe('the vault screens', () => {
    * Security", about a number that is read rather than created.
    *
    * The arm was keyed on `UNAUTHENTICATED`, lifted from
-   * `apps/vault-web/src/client/stepup.ts` where that is the right code because
-   * that origin maps every 401 to it. This client splits 401 three ways, so the
-   * same expression named a different failure and the two sentences came out
-   * swapped. identity had already anticipated exactly this: the 429 helper's
+   * `apps/vault-web/src/client/stepup.ts` where that WAS the right code because
+   * that origin then mapped every 401 to it. M44 PR1 split `invalid_code` out
+   * there as well — the same defect, mirrored — so the premise this sentence
+   * describes is now historical. What did not depend on it: this client splits
+   * 401 three ways, so the copied expression named a different failure here and
+   * the two sentences came out swapped. identity had already anticipated exactly this: the 429 helper's
    * comment says the cap gets its own token and never `invalid_code`, "the M12
    * lesson about one token changing meaning with the surface".
    */

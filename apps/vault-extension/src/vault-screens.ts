@@ -160,10 +160,14 @@ export async function mountVaultScreens(deps: VaultScreensDeps): Promise<void> {
        * KEYED ON `INVALID_CODE`, BECAUSE THAT IS WHAT A REJECTED TOTP IS HERE.
        *
        * This arm tested `UNAUTHENTICATED` until M27 PR6, lifted from
-       * `apps/vault-web/src/client/stepup.ts` where it IS the right code: that
-       * origin's `failureFor` maps EVERY 401 to `UNAUTHENTICATED`. This
-       * client's does not — it splits 401 into `invalid_code`, `srp_failed` and
-       * the rest — so the same expression names a different failure here. The
+       * `apps/vault-web/src/client/stepup.ts` where it was the right code AT
+       * THE TIME: that origin's `failureFor` then mapped EVERY 401 to
+       * `UNAUTHENTICATED`. It no longer does — M44 PR1 split `invalid_code` out
+       * there too, for the mirror image of this defect — so read that sentence
+       * as history, not as a fact about the current tree. What was never true
+       * either way is that the mapping TRANSFERS: this client splits 401 into
+       * `invalid_code`, `srp_failed` and the rest, so the same expression named
+       * a different failure here on the day it was copied. The
        * discriminator was inherited without the mapping it depended on, and the
        * two sentences came out swapped: a mistyped digit was answered with the
        * PAIRING copy, telling someone to create a new code in Estate for a

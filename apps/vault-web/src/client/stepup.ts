@@ -81,13 +81,30 @@ export function promptForStepUp(
           replaceChildren(
             note,
             el('p', { class: 'status status-error' }, [
-              // identity answers `invalid_credentials` for a rejected TOTP code
-              // exactly as for a rejected password, so the generic copy would
-              // tell someone to check an email and password on a form that has
-              // neither — the M12 defect. Say what this form actually holds.
-              done.code === 'UNAUTHENTICATED' || done.code === 'INVALID_REQUEST'
-                ? 'That code was not accepted. Codes last about 30 seconds — try the current one.'
-                : messageFor(done.code),
+              /*
+               * NO SPECIAL CASE, DELIBERATELY (M44 PR1).
+               *
+               * This arm used to read
+               * `done.code === 'UNAUTHENTICATED' || done.code === 'INVALID_REQUEST'`
+               * and answer with the authenticator sentence. Both halves were
+               * wrong. `UNAUTHENTICATED` here is a vault session that ENDED —
+               * `failureFor` now keys a refused code out as `INVALID_CODE` — so
+               * the branch told someone whose authority was gone to retype a
+               * code, forever. And `INVALID_REQUEST` is unreachable: CODE_PATTERN
+               * above refuses a mis-shaped code before the network, so identity's
+               * schema never sees one.
+               *
+               * The comment that justified it asserted that identity answers
+               * `invalid_credentials` for a rejected TOTP. It does not — that is
+               * the LOGIN refusal; this route answers `invalid_code`. A comment
+               * justifying a branch by asserting a fact about another service is
+               * a test nobody runs, and this one had been false since M15.
+               *
+               * `messageFor` now owns every sentence on this prompt, including
+               * the guessing cap's, so there is no discriminator here to get
+               * wrong.
+               */
+              messageFor(done.code),
             ]),
           );
           return;

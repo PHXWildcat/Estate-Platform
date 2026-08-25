@@ -104,6 +104,21 @@ function messageFor(code: ApiFailure): string {
   switch (code) {
     case 'UNAUTHENTICATED':
       return 'Your vault session has ended. Open the vault again from Estate.';
+    /*
+     * THE SENTENCE LIVES HERE, and the step-up prompt has no special case at
+     * all (M44 PR1) — which is the difference between this origin and
+     * `apps/vault-extension`, where the same defect needed the opposite fix.
+     *
+     * There, `INVALID_CODE` serves TWO ceremonies (a refused pairing code and a
+     * refused authenticator code) and the map cannot serve both, so the sentence
+     * has to be chosen at the call site that knows which ceremony it is running.
+     * Here it serves exactly ONE — `POST /api/auth/stepup` is the only route
+     * this client calls that identity answers `invalid_code` on — so the map
+     * owns it, and a discriminator that could be inherited wrongly stops
+     * existing. Prefer the ABSENCE to the branch.
+     */
+    case 'INVALID_CODE':
+      return 'That code was not accepted. Codes last about 30 seconds — try the current one.';
     case 'STEPUP_REQUIRED':
       // Reached only when the user CANCELLED the prompt, or the action is one
       // that does not offer one. Never "go back to Estate": re-opening mints a
