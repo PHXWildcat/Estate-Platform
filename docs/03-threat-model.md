@@ -200,7 +200,11 @@ on);
 operator-assisted account recovery, which §§6h/6m/6o each name as the remedy that
 does not exist (**M21 follow-on**); and the legal-hold lift ceremony, which M9 PR2
 shipped noting that a hold outlives case close with no way to release it
-(**M21 PR4**).
+(**M21 PR5**; this said **M21 PR4**, and docs/04 re-sequenced that slot to the
+security review on 2026-08-19 without updating this sentence — the SAME rot as
+the M21 PR3b correction one clause above, in the same paragraph, caught by M40
+PR0 while deciding whether M21 had finished. It has not: PR5 is its one
+outstanding PR).
 
 ## 5. Platform-specific attack scenarios (the ones generic checklists miss)
 
@@ -5739,19 +5743,31 @@ per-file, because a total passes happily while one lead-in goes blind.
   exactly why the restorable corpus excludes reset-retired rows rather than
   filtering them at read time.
 - **[OWNER: M40]** *Thirteen residuals in the corpus are owned by a milestone
-  that has already shipped, and the true number is larger than the fence can
-  see.* PR0 closed the case of an UNTAGGED residual outside the corpus; this
-  is its mirror — a TAGGED one whose owner finished. `OWNERS` is derived from
-  every row of docs/04's table, closed rows included, so naming a completed
-  milestone passes the vocabulary check exactly as naming a live one does. The
-  count is pinned rather than driven to zero: deciding whether a later slice
-  of the same programme still owes each item is a sweep, not a line in this
-  PR. What the derivation CANNOT see is the sharper half — M21's eighteen,
-  because that queue row says APPROVED and never gained a completion status,
-  so no scan of that column will ever find them. M27 PR5 corrected this
-  sentence: it said "M21's eighteen and M24's", and M24 owns NO residual at
-  all — zero `[OWNER: M24]` tags in this document. A bullet about ownership
-  accuracy asserting a count nobody checked is the defect it describes.
+  that has already shipped, and the derivation that finds them was blind.* PR0
+  closed the case of an UNTAGGED residual outside the corpus; this is its
+  mirror — a TAGGED one whose owner finished. `OWNERS` is derived from every
+  row of docs/04's table, closed rows included, so naming a completed milestone
+  passes the vocabulary check exactly as naming a live one does. The count is
+  pinned rather than driven to zero: deciding whether a later slice of the same
+  programme still owes each item is a sweep, not a line in this PR. **THE
+  BLINDNESS IS CLOSED BY M40 PR0 — §6ddd — AND THE SWEEP IS NOT.** Every queue
+  row now declares a lifecycle token, so a finished milestone can no longer
+  answer the completion question with a different word or with silence; applying
+  that rule found three finished milestones this derivation had never seen (M24,
+  M27, M44), none of which owns a residual, so the thirteen are unchanged.
+  **THIS BULLET HAS NOW BEEN WRONG TWICE, both times about a milestone it
+  names.** M27 PR5 corrected the first: it said "M21's eighteen and M24's", and
+  M24 owns NO residual at all — zero `[OWNER: M24]` tags in this document. The
+  second is the sentence that replaced it, which called M21's eighteen the
+  sharper half of the same defect "because that queue row says APPROVED and
+  never gained a completion status". M21 has NOT shipped — docs/04 records its
+  PR5, documents evidence content plus the legal-hold lift ceremony, as NOT YET
+  SHIPPED — so its row was honest and its eighteen were never in this category
+  at all. They are a different defect, since M21's one outstanding PR does none
+  of the eighteen, and the sweep this bullet owns is where they get adjudicated.
+  A bullet about ownership accuracy asserting a count nobody checked is the
+  defect it describes; asserting the same thing twice about the same milestone
+  is that defect with a pattern.
 - **[ACCEPTED]** *The reason fence binds a route's label to its keyset
   behaviour, not to which rows it retires.* A `deleteItem` that retired every
   item a user owns would label them `user_delete`, which is CORRECT for a
@@ -6932,3 +6948,117 @@ this delta. One trade-off is accepted rather than left implied:
   is a hand-list wearing a derivation's clothes. Recorded because this milestone
   has now shipped the "corpus narrower than the claim" defect twice, and the
   honest response to a bound you choose to keep is to state it.
+
+## 6ddd. Threat-model delta — M40 PR0, the column that was allowed to say nothing (2026-08-25)
+
+**Not a control change; no runtime code moves.** A docs-plus-one-fence PR on the
+M21 PR0 shape. What changes is the fence that decides whether a recorded
+security deferral still has an owner, and the docs/04 column it reads to decide.
+
+**The mechanism being repaired.** `threat-model-residuals.spec.ts` refuses a
+residual tagged `[OWNER: Mnn]` once M`nn` has shipped — debt parked on a
+milestone that can no longer pay it. It derived "has shipped" from the Status
+column of docs/04's queue table, and that column was free prose. A row could
+therefore answer the completion question with a word that means something else,
+or with the right word in a shape the scan could not read, or with nothing at
+all. Four of the twenty-four did:
+
+- M21 read `**APPROVED**, section above` and carried no lifecycle word at all.
+- M24 read `**APPROVED 2026-08-21, section below.**` with PR0–PR4 all shipped.
+- M27 read `**SCOPED 2026-08-22, section below.**` with every PR shipped.
+- M44 read `… and the row is now complete.` — a bold run, and a sentence, in
+  lower case, which the case-sensitive scan did not match. The row announced its
+  own completion in the very column built to be asked, and the scan saw nothing.
+
+**Three of those four had finished.** M24, M27 and M44 were done; only M21 was
+genuinely live. So the derived completed set was `{M22, M23, M25}` against a
+true six, and the anti-vacuity floor guarding that derivation
+(`MIN_COMPLETED_MILESTONES`) sat at exactly 3 — on the wrong number, with no
+headroom left to notice it was wrong. A residual tagged to M24, M27 or M44 would
+have read as live debt indefinitely.
+
+**The repair is TOTALITY, and it is not a better regex.** Two of the four rows
+could not have been rescued by any amount of pattern quality, because the word
+was not there to find: `APPROVED` and `SCOPED` are true sentences about a
+milestone that has since finished. The failure was that a row was permitted to
+say nothing, and no parser fixes a permission. Every row now opens its Status
+cell with exactly one token from a closed vocabulary — `**PLANNED.**`,
+`**IN PROGRESS.**`, `**COMPLETE.**` — as a bold run that is the token and
+nothing else, with the narrative following it in the same cell. One behaviour,
+one spelling: no case to get wrong, no adjective to bury it under, no position
+to guess. A row carrying no token reddens by name, and each declared token must
+be carried by at least one row, so a parser that quietly stopped seeing two of
+the three cannot pass on the strength of the third. Which table that column
+belongs to is itself asserted, against the document's own
+`| # | Milestone | Status |` header — the escalations table immediately above it
+has a third cell that answers "what is this blocked on", and reading a column by
+index without checking which table you landed in is the narrower-input-than-claim
+shape §6y names.
+
+**The measurement, which is the part worth keeping.** Applying the rule moved
+the derived completed set from three to six. None of the three newly visible
+milestones owns a residual, so the stale count is unchanged at thirteen — M23
+twelve, M22 one. That is the honest result: the hole was real and it was
+load-bearing for the NEXT tag rather than for any tag that exists today.
+
+**What this does NOT check, measured rather than assumed.** Nothing here can
+tell that a declared status is TRUE — the same bound the `[ACCEPTED]` tag has
+carried since M21 PR0. Two candidate cross-checks were built against the tree
+and both were rejected on measurement rather than on taste:
+
+- A COMPLETE row's PR-split bullets must all say SHIPPED. Seventeen of docs/04's
+  forty `- **PR…` bullets carry no shipped marker of any kind, and M27's PR0,
+  PR1a, PR3b, PR5 and PR6 are five of those seventeen — all five shipped.
+- A PLANNED row must have no per-PR record section. Only M21, M24 and M25 use
+  `#### M<nn> PR…` headings: three of the seven milestones that have shipped a
+  PR. M22 and M23 carry no `####` heading whatsoever.
+
+Either would have been a fence whose input is narrower than its claim, green for
+exactly the reason it is wrong. Both rejections are recorded in the fence itself
+so the next author does not pay to re-derive them.
+
+**AND THE ROW WAS WRONG ABOUT ITSELF, FOR THE SECOND TIME.** M40's docs/04 row
+said M21's eighteen residuals were invisible "because that row says APPROVED and
+never gained a completion status — which is the same stale-prose defect the M23
+row already records about itself." M21 has not shipped: its PR split records
+PR5, documents evidence content plus the legal-hold lift ceremony, as NOT YET
+SHIPPED, and no commit names it. M21's silence was therefore HONEST, and the
+defect is the OPPOSITE of M23's — M23's row described a finished milestone as in
+progress, and M21's described a live milestone by saying nothing. The eighteen
+are live debt on a live owner and stay outside the stale count. M27 PR5 had
+already struck M24 from the same sentence for a different error; a row scoping a
+residual-ownership sweep has now mis-stated two of the milestones it names, which
+is the argument for the sweep rather than against it. The eighteen remain a
+defect on their own terms — M21's one outstanding PR does none of them — and
+that is a later M40 PR, not this one.
+
+### Residuals
+
+- **[ACCEPTED]** *The token says which stage the work is at, not that the stage
+  is true.* A row can declare `**PLANNED.**` while its author quietly ships, and
+  nothing mechanical here objects — the same bound `[ACCEPTED]` has always
+  carried, and for the same reason: no scan distinguishes an honest label from a
+  convenient one. Accepted rather than owned because both mechanisms that would
+  narrow it were measured against this tree and both were narrower than the
+  claim they would make, which the paragraph above records with the numbers. What
+  the token does buy is that the answer is now visible in the diff and impossible
+  to omit, which is the half that was missing.
+- **[OWNER: M40]** *The escalations table has no resolution state, so the same
+  question cannot be asked of it.* `[OWNER: E1]` carries twenty residuals and
+  `[OWNER: E4]` one, and docs/04's escalation rows answer "what is this blocked
+  on" rather than "what stage is this at". An escalation that clears does not
+  make its residuals stale the way a shipped milestone does — the work becomes
+  re-ownable rather than closed — so the milestone vocabulary is the wrong shape
+  to copy across, and copying it would be the fix that looks total and is not.
+  Twenty-one tags nonetheless sit behind a column that cannot report a change,
+  which is a rule applied to one member of a category. This milestone's later
+  PRs own deciding what the escalation half should say.
+- **[OWNER: M43]** *`STALE_OWNERS` is hand-kept, and now says so.* The blindness
+  is gone — the set it checks is derived from a column that can no longer be
+  silent — but the list itself is written by hand, as a register of the two
+  milestones known to have finished while carrying debt. Deriving it from the
+  data it checks would assert nothing, so it stays, with its reason beside it.
+  That is one instance of the general shape M43 carries: several closed
+  vocabularies in this repo are fenced unevenly, and what it costs to extend one
+  depends on which one it is. Stated here rather than resolved, so the overlap
+  between the two milestones is visible instead of silently absorbed.
