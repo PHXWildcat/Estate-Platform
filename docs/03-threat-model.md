@@ -78,14 +78,26 @@ owned by this milestone are
 `grep -c '^- \*\*\[OWNER: M21\]\*\*' docs/03-threat-model.md` — anchored on the
 BULLET, because the unanchored form counts prose mentions of the tag as well and
 M40 PR1 added one. **18** across ten subsections at the time of writing; **17**
-across nine since M40 PR1 re-tagged §6e's documents oracle to M41, with a further
-15 lines naming TB7 or "the operator platform" across eleven.
+across nine after M40 PR1 re-tagged §6e's documents oracle to M41; and **ZERO**
+since M40 PR2 adjudicated all seventeen (§6fff) — the grep is the count, and it
+now answers nothing, which is the outcome the sweep was for. The wider naming is
+counted the same way — `grep -cE 'TB7|the operator platform' docs/03-threat-model.md`
+— which is **31** lines across seventeen subsections after M40 PR2, against 27
+before it. THREE OF THE THIRTY-ONE ARE §6fff'S OWN RECORD OF THIS SWEEP, and the
+figure moved from 30/sixteen to 31/seventeen DURING the writing of this paragraph,
+when a re-owning note added the phrase to §6y. That is the point rather than a
+caveat: this figure has the corpus-counts-its-own-commentary shape M40
+PR1 found three times, so it is quoted with the command that derives it instead of
+carried as a number. The hand-count it replaces said "a further 15 across eleven"
+and had not been re-measured since.
 
 The figure moved four times and never downward WHILE IT WAS BEING MEASURED —
 five, twelve, fourteen, eighteen — and each of those moves was somebody actually
 looking, which is the argument restated rather than an embarrassment. It has
-since moved DOWN once, to seventeen, and not by measuring: M40 PR1 re-tagged one
-bullet to M41, an item leaving the category rather than a recount of it. This paragraph first said "twelve
+since moved DOWN twice, and neither time by measuring: M40 PR1 re-tagged one
+bullet to M41, and M40 PR2 adjudicated the remaining seventeen to zero. Both are
+items LEAVING the category rather than a recount of it, which is why the upward
+argument above still holds for every measurement that produced it. This paragraph first said "twelve
 separate deferrals across §§6a–6y" and both halves were wrong in the same
 direction as the defect the milestone exists to fix: twelve was a hand count
 taken before the sweep tagged anything, and §§6a–6y stops short of §6z and
@@ -194,8 +206,11 @@ phrasing is kept as the goal and no longer stated as a fact.
 
 *Deferred, each with an owner, NOT shipping in M21's minimum slice:* JIT
 elevation (**E1** — it needs real IAM); peer approval of an operator action, as
-distinct from the reviewer ≠ reporter CHECK that already exists (**M21 follow-on,
-not the minimum slice**); session recording (**E1**); KMS grant suspension and
+distinct from the reviewer ≠ reporter CHECK that already exists (**M46**; this
+said **M21 follow-on, not the minimum slice**, which named an owner that was not
+a milestone — no queue row, no `OWNERS` entry, nothing to schedule — and it
+survived because this block is PROSE, outside the §6 bullet corpus the residuals
+fence reads, the blind spot §6uu records. M40 PR2 made that owner a row); session recording (**E1**); KMS grant suspension and
 paging on a decrypt-rate anomaly, which is the RESPONSE half of TB4's insider
 control whose DETECTION shipped in M18 (**E1**); a human-facing surface for that
 M18 alarm, whose reader is an operator who NOW exists (**M23**; this said **M21
@@ -203,7 +218,8 @@ PR3b**, which shipped the console without it — the same rot, one paragraph
 over, and the reason PR4 swept every TB7 owner rather than the one it tripped
 on);
 operator-assisted account recovery, which §§6h/6m/6o each name as the remedy that
-does not exist (**M21 follow-on**); and the legal-hold lift ceremony, which M9 PR2
+does not exist (**M46**; the second item this block owned to a non-milestone,
+re-owned by M40 PR2 in the same change); and the legal-hold lift ceremony, which M9 PR2
 shipped noting that a hold outlives case close with no way to release it
 (**M21 PR5**; this said **M21 PR4**, and docs/04 re-sequenced that slot to the
 security review on 2026-08-19 without updating this sentence — the SAME rot as
@@ -487,40 +503,81 @@ told about is not a control.
 
 **Residual added by PR2.**
 
-- **[OWNER: M21]** *An insider operator plus a colluding executor is a
+- **[OWNER: M46]** *An insider operator plus a colluding executor is a
   two-party path to an estate.* A settlement operator can approve every stage
   of a case they did not report. Bounded by: the executor designation must
   already exist in the decedent's own contact records (made before the death),
   the reporter≠reviewer and requester≠approver rules, the waiting period and
   owner-void that precede any of it, and a fully audited trail. Reducing it
   further needs M-of-N operator approval, which belongs to the TB7
-  operator-platform milestone alongside JIT elevation.
+  operator-platform milestone alongside JIT elevation. **RE-OWNED FROM M21 BY
+  M40 PR2** (§6fff): M-of-N operator approval IS peer approval, which M21's own
+  scope statement excludes by name — so the M21 tag asked the milestone for the
+  one thing it disclaims. §4 assigns peer approval to what it calls the "M21
+  follow-on", and M40 PR2 makes that owner a real queue row. NOT E1: a second
+  approver over the stage chain is a column and a CHECK in settlement's own
+  cluster, and needs no IAM.
 
 **Residuals accepted.**
 
-- **[OWNER: M21]** *The liveness interlock narrows the lockout race to a single
+- **[ACCEPTED]** *The liveness interlock narrows the lockout race to a single
   statement and cannot erase it.* A step-up committing inside that statement's
-  window is still missed. The blast radius is bounded — after the transition,
-  sessions are revoked and the status allowlist blocks every session lookup, so
-  the step-up buys nothing and the attempt is preserved in `auth_events` for
-  after-the-fact review — and closing it completely would require the step-up
-  path to take the users row lock, which is the right shape for the
-  operator-platform milestone rather than a settlement-side fix.
-- **[OWNER: M21]** *The interim allowlist has no JIT elevation and no peer
-  approval, and one operator both approves and confirms a case* — two actions,
-  one human, on the docs/03 §5.1 chain. A settlement operator is a high-value
-  target. Bounded by reviewer≠reporter, the liveness re-check, the owner's
-  void, and the append-only audit trail; PR2's stage approvals add multi-party
-  depth. M21 PR1 gave the allowlist an audited ceremony, which is attribution
-  rather than elevation — the two controls named here are still owed.
-- **[OWNER: M21]** *Rate limiting on settlement intake is still open, and M17
+  window is still missed. **THE HARM IS THE OWNER'S, NOT THE ATTACKER'S**, and an
+  earlier wording said the opposite: "the step-up buys nothing" prices the
+  adversary's payoff, while the consequence that matters is §5.1's — a missed
+  step-up entombs a LIVING owner in `settlement`, from which
+  `ALLOWED_TRANSITIONS` has no exit. Accepted on its bounds rather than on that
+  sentence: the window is one statement at the end of a days-long ceremony,
+  settlement re-reads liveness before it asks and identity restates the predicate
+  inside the write, so a step-up at any other instant voids the case; after the
+  transition sessions are revoked, the status allowlist blocks every session
+  lookup, and the attempt is preserved in `auth_events`. **ACCEPTED BY M40 PR2**
+  (§6fff): closing it needs a `users` row lock on every step-up grant
+  platform-wide, which no operator platform makes cheaper — it is an identity-side
+  concurrency change and none of M21's four deliverables. The M21 tag was the
+  catch-all §6r names, and re-owning it to E1 would be false: it needs no IAM.
+- **[OWNER: E1]** *The interim allowlist has no JIT elevation.* Membership is
+  standing rather than elevated-on-demand, so authority is held continuously by
+  whoever is in the table. **SPLIT FROM ONE BULLET BY M40 PR2** (§6fff): it named
+  TWO controls with two different owners and carried one tag, so whichever owner
+  moved would have taken the other's item with it. JIT elevation needs the IAM the
+  deployment does not have, which is E1's own definition, and both §4 and docs/04
+  agree on that half.
+- **[OWNER: M46]** *The interim allowlist has no peer approval, and one operator
+  both approves and confirms a case* — two actions, one human, on the docs/03
+  §5.1 chain. A settlement operator is a high-value target. Bounded by
+  reviewer≠reporter, the liveness re-check, the owner's void, and the append-only
+  audit trail; PR2's stage approvals add multi-party depth. M21 PR1 gave the
+  allowlist an audited ceremony, which is attribution rather than elevation.
+  **RE-OWNED FROM M21 BY M40 PR2** (§6fff): M21's scope excludes peer approval by
+  name, §4 assigned it to what it called the "M21 follow-on", and M46 is that
+  owner made real. NOT
+  E1 — a second approver over the stage chain is a column and a CHECK in
+  settlement's own cluster, the shape this service has already shipped FOUR
+  times: `human_review_by <> reported_by` (migration 001), `decided_by <>
+  requested_by` and `approved_by <> created_by` (002), and `claimed_by <>
+  reported_by` (003). An earlier draft of this bullet said "twice", which was a
+  hand count beside a thing that grows — the defect this whole milestone is
+  about, committed inside the argument for moving the item.
+- **[ACCEPTED]** *Rate limiting on settlement intake is still open, and M17
   PR1 did not close it.* That change bounds identity's own login and register
   routes (§6k); settlement's intake authenticates its callers and would need a
   per-reporter bound of its own. Noise remains bounded by the linked-contact
-  gate and the one-open-case index. Filed against the same owner as §6z's
-  unbounded operator actions because both are the same absent machinery in the
-  same service, and splitting them across milestones is how one of them gets
-  built and the other keeps its exemption.
+  gate and the one-open-case index. **ACCEPTED BY M40 PR2** (§6fff) on those
+  bounds. **ITS CROSS-REFERENCE WAS WRONG IN TWO WAYS AND IS REPAIRED HERE:** the
+  sibling residual is *Operator actions remain unbounded* at **§6bb**, not §6z —
+  §6z has no rate-limiting residual at all — and it is owned by **M23** today.
+  The "filed against the same owner" clause was NOT false when written, which is
+  worse than if it had been: at `009bad7` (M21 PR2.5, 2026-08-17) the sibling did
+  not exist anywhere in this document, so the sentence forward-referenced a
+  residual nobody had written; M21 PR3a created it a day later (`388d22b`)
+  carrying `[OWNER: M21]`, the same owner, which made the clause briefly TRUE;
+  and M21 PR3b re-owned it to M23 two days after that. The claim was never
+  re-checked at any of the three moments its truth changed. The
+  bullet asked that the pair not be split across milestones; they are split, and
+  deliberately, because they are not the same surface: this one bounds REPORTER
+  traffic at intake, §6bb bounds authenticated OPERATOR actions. Recorded rather
+  than reconciled, so the next reader sees the divergence instead of the claim.
 
 **Service-credential scoping (added by the M7 security review, 2026-07-28).**
 The internal service credentials introduced for the account lock and the §6a
@@ -2151,11 +2208,14 @@ wire carries one, a holder chooses part of what the user reads.
 
 ### Residuals, stated rather than implied
 
-- **[OWNER: M21]** *The notice is best-effort and its failure is recorded, not retried.* The
+- **[ACCEPTED]** *The notice is best-effort and its failure is recorded, not retried.* The
   change commits first; a notification that cannot be delivered leaves
   `notified: failed` on the audit event (the M13 `ownerNotified` shape) for an
   operator to re-drive. Sending first would risk telling someone their password
-  changed when it had not.
+  changed when it had not. **ACCEPTED BY M40 PR2** (§6fff): the ordering is the
+  decision, not a gap — commit-then-notify is the correct arm, the failure is
+  recorded on the audit event rather than dropped, and the only thing the M21 tag
+  ever added was an operator to re-drive it by hand.
 - **[ACCEPTED]** *An attacker who has BOTH the password and a fresh step-up can change it.* That
   is not a gap this route can close — it is the definition of holding the
   account — and what bounds it is the notice, the audit event, and the fact that
@@ -2428,11 +2488,16 @@ retired UNCONDITIONALLY before every mint (the M14-review wedge).
 - **[CLOSED: §6v]** ~~*The routes ship with no surface* — no BFF resolver, no screen.~~
   **CLOSED by M20 PR2 (§6v)**: all three legs now have a product consumer end
   to end, on the M14 PR3 settings page exactly as this line predicted.
-- **[OWNER: M21]** *`identity.email_changed`'s reader has no self-service response.* The notice
+- **[OWNER: M46]** *`identity.email_changed`'s reader has no self-service response.* The notice
   reaches the old mailbox, but a hijacked owner cannot sign in (the address
   changed) and cannot reset (the reset mails the NEW address). Their remedy is
   support, which until TB7 means the operator runbook. Recorded plainly: the
-  notice is a DETECTION control, not a response one.
+  notice is a DETECTION control, not a response one. **RE-OWNED FROM M21 BY M40
+  PR2** (§6fff): the remedy is operator-assisted account recovery, which M21's
+  scope statement excludes and which §4 assigned to what it called the "M21
+  follow-on" — now M46.
+  §6v records this same item a second time and is reduced to a cross-reference in
+  the same change.
 
 ## 6o. Threat-model delta — M17 PR5, the passkey surface (2026-08-13)
 
@@ -2484,12 +2549,25 @@ and counting it would let a flaky authenticator lock out its own owner.
   not a client patch. The web surface says this ON SCREEN ("keep an
   authenticator app enrolled — the vault currently accepts only authenticator
   codes"), the M16 honesty pattern rather than a docs-only footnote.
-- **[OWNER: M21]** **The reset path is re-declined, explicitly** (§6m question 8, owed by this
+- **[ACCEPTED]** *The reset path is re-declined, explicitly* (§6m question 8, owed by this
   PR): a reset still requires the mailed code and nothing else, even for an
   account holding a passkey. Requiring a passkey assertion at reset would turn
   lost-passkey-plus-forgotten-password into a permanent lockout with no
   recovery codes and no TB7 — the same nobody-locked-out-forever reasoning the
-  user chose at PR3, unchanged by the surface existing.
+  user chose at PR3, unchanged by the surface existing. **ACCEPTED BY M40 PR2**
+  (§6fff): a decision twice declined on the same reasoning is a position, not
+  debt, and no owner was ever going to discharge it. Its title was also **bold**
+  where the overwhelming majority use *italic*, and is italicised here — but an
+  earlier draft of this bullet claimed it was the ONLY one, which was false with
+  the counter-example in the very next bullet below it: `grep -cE '^- \*\*\[[A-Z][^]]*\]\*\* \*\*'`
+  finds **SEVEN** more. The fence does not read a title's emphasis, so nothing
+  caught either the divergence or the claim. Recorded rather than swept — the
+  remaining seven are not this PR's to normalise, and an earlier draft described
+  them wrongly as "other owners' bullets": FIVE carry another owner (M29 ×3, M34,
+  M26) and TWO carry no owner at all — one `[CLOSED: §6oo]` and one
+  `[ACCEPTED]`. The count was right and the SET was not, which is the failure
+  mode this document's own fence guards against by comparing sets. Normalising
+  them is M45's, a fence's reach.
 - **[OWNER: M29]** **No passwordless login.** The authenticate routes are session-scoped by
   design (M2's deferral, still deliberate): a passkey here is a step-up factor,
   never a login replacement, and discovery-credential login is its own
@@ -2945,13 +3023,15 @@ a figure people plan around must not be a second copy free to drift.
 
 ### Residuals
 
-- **[OWNER: M21]** *The route-gate fence covers the assets service only.* The
+- **[OWNER: M45]** *The route-gate fence covers the assets service only.* The
   other eight services have no equivalent, so their step-up coverage is still
   whatever their controllers happen to say. Generalising it is a change to
-  eight services; the operator platform is the next milestone that touches a
-  service's guard surface across the repo, and the fence's own §6r paragraph
-  says the assignment was left to "whichever milestone next touches them",
-  which is how an item goes uncosted.
+  eight services. **RE-OWNED FROM M21 BY M40 PR2** (§6fff): the bullet argued for
+  M21 on PROXIMITY — "the operator platform is the next milestone that touches a
+  service's guard surface across the repo" — and proximity is not subject. What is
+  wrong here is a FENCE whose corpus is narrower than its claim, which is M45. The
+  fence's own §6r paragraph left the assignment to "whichever milestone next
+  touches them", which is how an item goes uncosted.
 - **[OWNER: M28]** *docs/00 §5.5's "beneficiaries see only assets naming them"
   remains UNBUILT.* `namedBeneficiaries` is a default parameter every
   `assetResource` call site takes by omission, so `beneficiary.cedar` is loaded
@@ -3397,10 +3477,15 @@ SERVER rather than a boolean passed between siblings.
   conflated `invalid_request` itself is unchanged — the copy still names the
   possibility without asserting which applied — but the fact needed to resolve
   it is one click away, disclosed on the owner's own audit trail.
-- **[OWNER: M21]** *§6n's own remaining residuals are untouched:* an honest user typing a taken
-  address still waits for a mail that never comes, and
-  `identity.email_changed`'s reader still has no self-service response — the
-  notice is a detection control, and until TB7 the remedy is support.
+- **[ACCEPTED]** *§6n's own remaining residuals are untouched* — recorded there,
+  not here. An honest user typing a taken address still waits for a mail that
+  never comes; `identity.email_changed`'s reader still has no self-service
+  response. **REDUCED TO A CROSS-REFERENCE BY M40 PR2** (§6fff): the second half
+  RESTATED §6n's own bullet, so one item stood in two sections under one owner and
+  a reader finding either believed it complete — the shape M40 PR1 closed for the
+  404-vs-403 oracle, ONE PR later inside the same milestone, in the set that sweep
+  did not cover. §6n holds the item and its owner (M46); this bullet is
+  `[ACCEPTED]` because a pointer owes no work.
 
 ## 6w. Threat-model delta — M20 PR3, the password-reset surface (2026-08-15)
 
@@ -3753,11 +3838,13 @@ block comment as code.
   second route.* `ACCOUNT_PASSWORD_BOUND` now spans both routes that read the
   account password, and it is still account-keyed with a per-process address
   half. Per-caller limiting remains edge work.
-- **[OWNER: M21]** *The corpus lesson was applied to one fence and not swept
+- **[OWNER: M45]** *The corpus lesson was applied to one fence and not swept
   across the others.* The defect was that `rate-bounds.spec.ts` scanned a
   single file while claiming to cover a service; nothing has since asked the
   same question of the repo's other source-scanning fences, and a fence whose
   input is narrower than its claim goes green for the same reason it is wrong.
+  **RE-OWNED FROM M21 BY M40 PR2** (§6fff): no part of the operator platform makes
+  this sweep cheaper. It is M45's stated general form, and M45's second member.
 
 
 ## 6z. Threat-model delta — M21 PR1, the operator grant ceremony (2026-08-17)
@@ -3862,22 +3949,44 @@ the table said only that somebody holding the database made a grant.
   ordinary residual every emit-inside-a-transaction carries in this repository,
   and the ordering above chooses which way it falls: a phantom grant record is
   investigable, a silent real grant is not.
-- **[OWNER: M21]** *An operator is still an ordinary account session that
-  happens to appear in a table.* PR1 changes who can get into the table and not
-  what being in it authenticates as. The session audience is PR3 (moved there
-  from PR2 on measurement — §6aa), and the allowlist remains the control there
-  too — see §4 TB7.
-- **[OWNER: M21]** *Revocation takes effect on the next request and
+- **[OWNER: M46]** *An operator is still an ordinary account session that
+  happens to appear in a table.* PR1 changed who can get into the table and not
+  what being in it authenticates as; the session audience was PR3. **STILL TRUE,
+  AND M40 PR2 NEARLY CLOSED IT ON A NAME.** PR3a did ship the audience —
+  `SESSION_AUDIENCES` carries `'operator'` and settlement decorates routes
+  `@AllowSessionAudiences('operator')` — and an earlier draft of this PR read
+  that as the binding arriving. It is not. `AllowSessionAudiences` returns
+  `[DEFAULT_SESSION_AUDIENCE, ...audiences]`, its parameter type
+  `Exclude<SessionAudience, 'account'>` forbids naming `account` because it is
+  always there already, and `CallerGuard.audiencesFor` UNIONS the route list with
+  the service-wide grant — its own docstring says it "could never accidentally
+  narrow". Settlement binds no `ALLOWED_SESSION_AUDIENCES`, so its baseline is
+  `['account']` and a decorated route admits `account` OR `operator`. The
+  decorator WIDENS. Settlement reads `caller.audience` in no control anywhere,
+  and docs/04's own M21 PR3 bullet says this in the same words — "decorating a
+  settlement route ALSO admits every ordinary account session. `OperatorGate`
+  stays the control." **RE-OWNED FROM M21 BY M40 PR2** (§6fff): what would close
+  it is a session whose authority the audience DECIDES, which is the operator
+  authorization model, M46.
+- **[OWNER: M46]** *Revocation takes effect on the next request and
   notifies nobody.* The allowlist is read per action against the database, so a
   revoked operator loses authority at their next call rather than
   retroactively — which is the correct behaviour and is stated here because
   nothing announces it. No notification is sent to the revoked operator or to
   anyone else, because the audience for such a message is an operator surface
-  that does not exist.
-- **[OWNER: M21]** *Nothing surfaces the allowlist to a human but `list` on
+  that does not exist. **RE-OWNED FROM M21 BY M40 PR2** (§6fff): that surface now
+  EXISTS — M21 PR3b shipped it — and no notification was added with it, so the
+  premise changed while the gap did not.
+- **[OWNER: M46]** *Nothing surfaces the allowlist to a human but `list` on
   a terminal.* An operator cannot see who else is an operator, and no periodic
   review of the allowlist exists — which is the control the ceremony's record
-  is FOR. The record is now there to be read; the reader is PR3.
+  is FOR. The record is now there to be read, and **PR3 SHIPPED WITHOUT THE
+  READER**: `operator.controller.ts` exposes queue, administrable,
+  report-provider, review, verify and evidence-read, and no route lists allowlist
+  membership — the CLI is still the only reader. **RE-OWNED FROM M21 BY M40 PR2**
+  (§6fff), the THIRD instance of this rot in the TB7 records; §4 already logs two,
+  the M18 alarm surface that "said **M21 PR3b**, which shipped the console without
+  it" and the legal-hold ceremony that said M21 PR4.
 
 
 ## 6aa. Threat-model delta — M21 PR2, one operator gate (2026-08-17)
@@ -3996,15 +4105,18 @@ default.
   wrong, because a surface that answered "not found" to the people it is for
   would be unusable. The oracle it closes is the one available to everybody
   else.
-- **[OWNER: M21]** *`admin.service.ts` has no PEP at all — the gate is the whole
+- **[OWNER: M46]** *`admin.service.ts` has no PEP at all — the gate is the whole
   authorization on those routes.* `settlement.cedar`'s permits are scoped
   `resource is SettlementCase` and the admin routes act on tasks, stages and
   distributions, so there is no policy for them to consult and adding one means
   new resource types with their own attributes. Until then the allowlist
   membership IS the decision on that controller, which is exactly why PR2 made
   it one gate rather than three shapes. The operator surface (PR3) is what makes
-  those routes reachable from the product at all.
-- **[OWNER: M21]** *The BFF's SDL enums and its own hand-written payload unions
+  those routes reachable from the product at all. **RE-OWNED FROM M21 BY M40 PR2**
+  (§6fff): new Cedar resource types with their own attributes are the operator
+  authorization model, which is M46 — not an operator CEREMONY, which is what M21
+  scoped and shipped.
+- **[OWNER: M43]** *The BFF's SDL enums and its own hand-written payload unions
   are two copies in one file with nothing comparing them.* Found by PR2's review
   and recorded rather than fixed, because it lives outside this PR's subject —
   but MEASURED, not assumed: widening `enum SessionAudience` in
@@ -4017,23 +4129,56 @@ default.
   `@estate/contracts` rather than to the SDL beside it. The failure mode is a
   value the BFF's TypeScript admits and its own schema rejects at serialization
   — a runtime error rather than a build one. PR3 adds the `operator` audience and
-  is therefore the change that first exercises this, which is why it owns it.
-- **[OWNER: M21]** *An allowlist row has no expiry, no case scoping and no
-  session binding.* Any live row grants authority over EVERY case, forever, from
-  any session that user holds. None of the three is a defect in the gate — the
-  gate faithfully answers the question the table can answer — and all three are
-  properties of an interim allowlist that M7 shipped as the stand-in for the
-  operator platform. Case scoping is what separation of duties would need beyond
-  the row-local DDL CHECKs (reviewer ≠ reporter, requester ≠ approver); session
-  binding is PR3's audience; expiry and just-in-time elevation are **E1**, since
-  they need the IAM the deployment does not have.
-- **[OWNER: M21]** *The gate answers a question about a PERSON and every caller
+  is therefore the change that first exercises this, and PR3 HAS SHIPPED. **RE-OWNED FROM M21 BY M40 PR2** (§6fff): the change that
+  was going to exercise this already happened, the `operator` audience exists, and
+  the SDL→payload direction is still unfenced. This is not an operator-platform
+  item — two copies of one vocabulary with nothing comparing them is M43's stated
+  general form, and M43 is where the derivation belongs.
+- **[OWNER: M46]** *An allowlist row has no expiry.* A live row grants authority
+  forever. **SPLIT FROM ONE BULLET BY M40 PR2** (§6fff): the bullet named THREE
+  properties and, IN ITS OWN PROSE, handed two of them to owners its tag did not
+  name — "session binding is PR3's audience; expiry and just-in-time elevation
+  are **E1**" — while the third, case scoping, got no owner at all. One tag
+  cannot dispose of three items, and this one matched none of the arguments
+  underneath it. (An earlier draft of this note said "three different owners".
+  The prose names TWO; the unowned third is the worse half, because an item with
+  no owner inside a bullet whose tag is wrong is invisible from both ends.) **AND THE E1 HALF OF
+  THAT PROSE IS WRONG FOR EXPIRY**, by the same merits test this PR applies to peer
+  approval at §6b — 3,600 lines earlier in this document, not "one section over"
+  as an earlier draft had it, and applied there to docs/04's SCOPE statement
+  rather than to an E1 TAG, because peer approval's bullets were tagged
+  `[OWNER: M21]` and never E1: `settlement_operators` (settlement
+  migration 001) is `id, user_id, granted_by, created_at, revoked_at`, and
+  membership is the predicate `revoked_at IS NULL` in `operators.repo.ts`. Expiry
+  is one more column and one more conjunct in that predicate, inside settlement's
+  own cluster, needing no IAM at all. Just-in-time elevation — which the original
+  sentence bundled with it, and which is the reason the pair read as E1 — genuinely
+  does need the IAM, stays **E1**, and now has its own bullet at §6b.
+- **[OWNER: M46]** *An allowlist row has no case scoping.* Any live row grants
+  authority over EVERY case. This is not a defect in the gate — `OperatorGate`
+  faithfully answers the question the table can answer, and its own docstring says
+  it "deliberately does not" decide anything about a case — but a property of the
+  interim allowlist M7 shipped as the stand-in for the operator platform. Case
+  scoping is what separation of duties needs beyond the row-local DDL CHECKs
+  (reviewer ≠ reporter, requester ≠ approver). **RE-OWNED FROM M21 BY M40 PR2**
+  (§6fff): it is the operator authorization model, which is M46.
+- **[OWNER: M46]** *An allowlist row has no session binding.* Authority is still
+  exercisable from any session the holder has. The original bullet said "session
+  binding is PR3's audience" and PR3a shipped that audience, which an earlier
+  draft of this PR read as the binding — but `AllowSessionAudiences` prepends
+  `account` unconditionally and `CallerGuard` unions rather than replaces, so a
+  decorated route admits `account` OR `operator` and every ordinary session
+  still reaches it. **RE-OWNED FROM M21 BY M40 PR2** (§6fff), on the same
+  evidence as §6z's ordinary-session bullet; the two are one claim recorded in
+  two sections, and BOTH are still open.
+- **[OWNER: M46]** *The gate answers a question about a PERSON and every caller
   then asks it about an ACTION.* There is one operator role and it carries every
   operator verb: approve a death case, lock an account, decide a stage of access
   to a dead person's estate, approve a distribution. Nothing in the interim
   allowlist can express "may review, may not approve distributions". A real role
   vocabulary is the operator platform's, and the gate is the seam it would go
-  behind.
+  behind. **RE-OWNED FROM M21 BY M40 PR2** (§6fff): that platform is M46, and a
+  role vocabulary is the first thing it owes.
 
 
 ## 6bb. Threat-model delta — M21 PR3a, the operator boundary (2026-08-18)
@@ -5779,7 +5924,8 @@ per-file, because a total passes happily while one lead-in goes blind.
   category at all. They are a different defect, since M21's one outstanding PR
   does none of them, and the sweep this bullet owns is where they get
   adjudicated. (Eighteen when PR0 measured; seventeen once PR1 re-tagged one of
-  them to M41 — which is why these sentences now name the tag, not the number.)
+  them to M41; zero once PR2 adjudicated the rest — which is why these sentences
+  name the tag, not the number.)
   A bullet about ownership accuracy asserting a count nobody checked is the
   defect it describes; asserting the same thing twice about the same milestone
   is that defect with a pattern.
@@ -7048,7 +7194,8 @@ residual-ownership sweep has now mis-stated two of the milestones it names, whic
 is the argument for the sweep rather than against it. They remain a
 defect on their own terms — M21's one outstanding PR does none of them — and
 that is a later M40 PR, not this one. PR0 measured eighteen; PR1 re-tagged one
-of them to M41, so the bullet-anchored count is seventeen. The figure is still
+of them to M41, and M40 PR2 adjudicated the remaining seventeen, so the
+bullet-anchored count is now ZERO. The figure is still
 spelled out in several places across these documents, which is the defect this
 very bullet describes and does not yet close; what changed here is only that the
 grep beside it now derives the number the fence reads.
@@ -7224,3 +7371,162 @@ future member behind either origin is browser-observable the day it appears.
   pinning today's answer is only half a specification, and the half that closes
   it is the assertion that DISCRIMINATES — here, the unknown-id arm nothing
   requests.
+
+## 6fff. Threat-model delta — M40 PR2, an owner that was not a milestone (2026-08-26)
+
+**Not a control change; no runtime code moves.** M40 PR2 adjudicates M21's
+seventeen residuals, one at a time, and M21's tagged count goes to **zero**. Not
+because the work was done: THIRTEEN of the twenty items belong to owners this PR
+had to create, five are accepted on their own bounds, and two go to owners that
+already existed. Seventeen bullets become TWENTY items, because two of them carried
+more than one thing — ELEVEN to M46, five accepted, two to M45, ONE to E1, one to M43,
+and NOTHING closed. That is 11+5+2+1+1 = 20, stated as a sum because a partition
+whose parts are listed and never added is a partition nobody checked.
+
+**THE OWNER THAT WAS NOT A MILESTONE.** §4's deferred-TB7 list gives every item it
+defers an owner — JIT elevation (**E1**), session recording (**E1**), KMS grant
+suspension (**E1**), the M18 alarm surface (**M23**), the legal-hold ceremony
+(**M21 PR5**). Two of them named an owner called **"M21 follow-on"** — peer
+approval of an operator action, and operator-assisted account recovery — and only
+the first carried the full phrase **"M21 follow-on, not the minimum slice"**; the
+second said just "M21 follow-on". Neither is a milestone. There is no queue row, no `OWNERS` entry, and nothing to schedule —
+an item can be deferred *with an owner* and still be owed by nobody. It survived
+because §4 is PROSE, outside the §6 bullet corpus the residuals fence reads, which
+is exactly the blind spot §6uu records. **M46 is that owner, made real.**
+
+**And the two documents disagreed about ONE of them.** docs/04's M21 scope
+statement SWEPT four items into "(all E1 — they need real IAM)" — JIT elevation,
+peer approval, session recording, KMS grant suspension — and then, in its very
+next sentence, deferred: "Each of those is named with its owner in the rewritten
+`docs/03` §4 TB7 block". Past tense, and quoted in the form it carried at
+`71b8af7`, because M40 PR2 repairs that sentence in this same change — an earlier
+draft of this paragraph quoted it in the present and added bold to an `E1` the
+source never emphasised. Three of the four agree across both documents.
+The fourth does not: the block it defers to says peer approval is the "M21
+follow-on", not E1. One category member under two owners, with the authority
+pointer running from the document that is wrong to the one that is right — the
+§6eee shape, ONE PR later, between two SCOPE statements rather than two residuals. The E1 sweep is also wrong on the merits for
+this member: M-of-N over the stage chain is a second-approver column and a CHECK in
+settlement's own cluster, the shape that service has already shipped four times
+over — enumerated with its migrations at §6b rather than recounted here — and it
+needs no IAM at all.
+
+**What decided most of the seventeen was M21's own scope statement.** It names four
+deliverables and disclaims the rest by name. A residual asking M21 for something
+that statement disclaims is mis-owned by the milestone's own words — no judgement
+required, and the same instrument that settled §6e in PR1.
+
+| From | Became | Why |
+| --- | --- | --- |
+| §6b insider+executor collusion | `M46` | M-of-N *is* peer approval, which M21 disclaims |
+| §6b liveness interlock | `ACCEPTED` | identity-side concurrency; no operator platform makes it cheaper |
+| §6b interim allowlist | `E1` + `M46` | one bullet, two controls, two owners — split |
+| §6b intake rate limiting | `ACCEPTED` | bounded by the linked-contact gate and the one-open-case index |
+| §6l best-effort notice | `ACCEPTED` | commit-then-notify is the decision, not the gap |
+| §6n `email_changed` reader | `M46` | operator-assisted account recovery, which M21 disclaims |
+| §6o reset path re-declined | `ACCEPTED` | a position twice declined is not debt |
+| §6r route-gate fence | `M45` | a scan narrower than its claim |
+| §6v duplicate of §6n | `ACCEPTED` | reduced to a cross-reference |
+| §6y corpus lesson unswept | `M45` | the same scan question |
+| §6z ordinary session | `M46` | the audience shipped and does not BIND — see below |
+| §6z revocation notice | `M46` | the surface exists now; the notice never arrived |
+| §6z allowlist reader | `M46` | **PR3 shipped without it** |
+| §6aa `admin.service.ts` PEP | `M46` | needs Cedar resource types, not an operator ceremony |
+| §6aa SDL vs payload unions | `M43` | two copies of one vocabulary — M43's stated form |
+| §6aa allowlist row | `M46` ×3 | one bullet, THREE items; its prose owned two of them elsewhere and the third nowhere — all three are M46 |
+| §6aa PERSON vs ACTION | `M46` | a real role vocabulary is the follow-on's |
+
+**Two bullets carried more than one item, and one tag cannot dispose of three.**
+§6aa's allowlist-row bullet named THREE properties and, *in its own prose*, gave
+two of them owners its tag did not name — "session binding is PR3's audience;
+expiry and just-in-time elevation are **E1**" — while the third, case scoping,
+got none at all. It carried a single `[OWNER: M21]` tag matching none of them.
+Whichever owner moved would have taken the other two with it. Both are split here, and the
+split is the finding: a bullet that argues about owners inside itself is a bullet
+whose tag has already stopped being the record.
+
+**TWO CLOSURES THIS PR ALMOST SHIPPED, AND THE REVIEW KILLED.** An earlier draft
+marked §6z's ordinary-session bullet and §6aa's session-binding bullet
+`[CLOSED: §6bb]`, on the evidence that M21 PR3a shipped the `operator` audience
+and settlement decorates routes with `@AllowSessionAudiences('operator')`. Both
+closures were FALSE, and the reasoning is worth keeping because it is the cheapest
+mistake in this repo to make: **the decorator's presence was read as the
+decorator's behaviour.** `AllowSessionAudiences` returns
+`[DEFAULT_SESSION_AUDIENCE, ...audiences]` — its parameter type
+`Exclude<SessionAudience, 'account'>` forbids naming `account` precisely because
+it is always included — and `CallerGuard.audiencesFor` UNIONS the route list with
+the service-wide grant, with a docstring saying it "could never accidentally
+narrow". Settlement binds no `ALLOWED_SESSION_AUDIENCES` at all, so the baseline
+is `['account']` and a decorated route admits `account` OR `operator`. The
+decorator WIDENS; it does not bind. Settlement consults `caller.audience` in no
+control anywhere. Both bullets are `[OWNER: M46]` and both properties still hold.
+
+**The evidence was in the file this PR was already editing.** docs/04's M21 PR3
+bullet states the trap in its own words — "`AllowSessionAudiences` unconditionally
+prepends `account` and `CallerGuard.audiencesFor` returns a union that widens and
+can never narrow, so decorating a settlement route ALSO admits every ordinary
+account session. `OperatorGate` stays the control." A sweep that re-reads
+residuals is not the same act as re-reading the MECHANISM a residual names, and
+this PR did the first while believing it had done the second. **CLOSED is the one
+disposition that stops anyone looking again**, which is why it needs evidence of
+BEHAVIOUR and not of a mechanism's existence.
+
+**And a third instance of the TB7 rot, found by measurement.** §6z's allowlist
+reader says "the reader is PR3". PR3 shipped. `operator.controller.ts` exposes
+queue, administrable, report-provider, review, verify and evidence-read, and no
+route lists allowlist membership — the CLI is still the only reader. §4 already
+logs two instances of exactly this: the M18 alarm surface that "said **M21 PR3b**,
+which shipped the console without it", and the legal-hold ceremony that said M21
+PR4 before a re-sequence. Three records in one milestone's documentation naming a
+PR that shipped past them is not three mistakes; it is what happens when the
+remedy's name is a PR number rather than a condition.
+
+**AND THE ONE MECHANISM THIS PR ADDS CAME FROM ITS OWN MUTATION HARNESS.** While
+the draft still carried those two `[CLOSED: …]` tags, the harness mutated one to
+`[CLOSED: §6zzz]` — a section that does not exist — and the fence STAYED GREEN,
+with a test named *"a CLOSED residual cites the delta that closed it"* sitting
+right there. The tags did not survive review; the defect they exposed is real and
+the repair stays, exercised against the **28** `[CLOSED: …]` residuals in the
+document — thirty was the figure while this PR's own two false tags were still
+drafted, and it fell back to 28 when they were reverted, which is the number a
+reader gets from `grep -c '^- \*\*\[CLOSED' docs/03-threat-model.md` today. It checked the SHAPE `§6[a-z]{0,3}` and never that the
+section was real, and a citation pointing nowhere offers the next reader nowhere
+to look just as completely as no citation does. The cited id is now checked
+against the sections the parser actually found, which is the derive-don't-describe
+rule the owner vocabulary already follows one test above, plus a floor so the
+assertion cannot pass by there being nothing closed. **The mutation is the reason
+the gap was visible at all** — the test's NAME was right and its BODY was not, and
+nothing but trying to break it would have said so.
+
+### Residuals
+
+- **[OWNER: M45]** *Owner names are policed in §6 bullets and nowhere else.* The
+  residuals fence checks that every `[OWNER: X]` names someone in a vocabulary
+  derived from docs/04's tables, in both directions. §4's deferred list assigns
+  owners in bold prose, in the same document, and no fence reads it — which is how
+  "M21 follow-on" stood as an owner for two items from M21 PR0 (`9885362`, #109,
+  2026-08-17) until this PR — nine days, and SIX milestones shipped past it: M22,
+  M23, M24, M25, M27 and M44, the `**COMPLETE.**` rows in docs/04's queue table,
+  which is where this fence itself reads "has this milestone shipped?". The fence
+  is not wrong; its CORPUS is narrower than the claim a reader takes from it, which
+  is M45's general form, found in the fence M45's own members are about — three
+  of them the moment this bullet exists, which is the same corpus-counts-its-own-
+  commentary shape §6fff's TB7 figure records two sections down.
+- **[ACCEPTED]** *A queue row is ownership, not a schedule.* M45 and M46 open with
+  no PR split and no sequencing, so ten of these seventeen moved from an owner who
+  could not do them to an owner who has not planned them. That is a real
+  improvement — an item with a row is an item that can be costed, and `OWNERS`
+  now derives both from the table — but it is not the same as being scheduled, and
+  it is stated here so the next reader does not read "owned" as "planned".
+- **[ACCEPTED]** *Nothing distinguishes a mechanism that EXISTS from a mechanism
+  that BINDS, and CLOSED is the disposition that depends on the difference.* This
+  PR drafted two closures on the evidence that a decorator was present on the
+  right routes, and the decorator widens rather than binds; the review caught
+  both. Every other disposition leaves the item legible — an owner can be wrong
+  and the next sweep re-reads it — but CLOSED asserts the work is done and is the
+  one answer that stops anyone looking. No fence can check it: deciding whether
+  prose describes shipped behaviour is not a thing to automate. Accepted with the
+  rule stated instead, because the rule is what transfers: **close on the
+  BEHAVIOUR, demonstrated, never on the presence of the mechanism named in the
+  bullet** — and if the demonstration is a decorator, read what the decorator
+  returns.

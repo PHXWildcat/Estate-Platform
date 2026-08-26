@@ -86,6 +86,8 @@ const OWNERS: readonly string[] = [
   'M42', // cross-user free text, and everywhere else it crosses (added M27 PR5)
   'M43', // one derivation per closed vocabulary (added M27 PR5)
   'M44', // the step-up refusal discriminator (added M27 PR6)
+  'M45', // fence corpus breadth — a scan states its reach (added M40 PR2)
+  'M46', // TB7 follow-on — the operator authorization model (added M40 PR2)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -124,7 +126,7 @@ const MIN_RESIDUALS = 95;
  */
 const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6a': 4,
-  '6b': 4,
+  '6b': 5,
   '6c': 7,
   '6d': 3,
   '6e': 3,
@@ -149,7 +151,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6x': 6,
   '6y': 3,
   '6z': 6,
-  '6aa': 7,
+  '6aa': 9,
   '6bb': 6,
   '6cc': 6,
   '6dd': 6,
@@ -185,6 +187,9 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // M40 PR1: the category's reach, its underived membership, and the four
   // assertions that pin the behaviour a fix must change.
   '6eee': 3,
+  // M40 PR2: the fence corpus that never read §4, the difference between an
+  // owner and a schedule, and the closure nothing detects.
+  '6fff': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -977,14 +982,39 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('a CLOSED residual cites the delta that closed it', () => {
+  it('a CLOSED residual cites a delta that EXISTS', () => {
     // "closed" with no citation is the claim-without-a-mechanism shape: it
     // stops the next reader looking and offers them nowhere to look.
-    const bad = items
-      .filter((r) => /^- \*\*\[CLOSED/.test(r.text))
+    //
+    // THE SHAPE CHECK WAS NOT ENOUGH, and M40 PR2's mutation harness is what
+    // said so: `[CLOSED: §6zzz]` satisfied `§6[a-z]{0,3}` and the file stayed
+    // green. A citation to a section that does not exist offers the next reader
+    // nowhere to look just as completely as no citation does — it is the same
+    // defect wearing the format. So the cited id is now checked against the
+    // SECTIONS THE PARSER ACTUALLY FOUND rather than against a pattern, which
+    // is the same derive-don't-describe rule the owner vocabulary follows one
+    // test above. PR2 is what made this load-bearing — but by DRAFTING two
+    // CLOSED tags, not by shipping them. Its own review killed both (docs/03
+    // §6fff), so this PR adds ZERO CLOSED tags and the document's total is 28
+    // before and after it. The assertion is therefore exercised entirely by
+    // residuals OLDER than this change, which is exactly what the floor below
+    // is for. An earlier draft of this comment said "add", present tense, and
+    // survived the revert of the thing it described.
+    const closed = items.filter((r) => /^- \*\*\[CLOSED/.test(r.text));
+    const malformed = closed
       .filter((r) => !/^- \*\*\[CLOSED: §6[a-z]{0,3}\]\*\*/.test(r.text))
       .map((r) => `docs/03-threat-model.md:${r.line} is CLOSED without naming a §`);
-    expect(bad).toEqual([]);
+    const dangling = closed
+      .map((r) => ({ r, m: /^- \*\*\[CLOSED: §(6[a-z]{0,3})\]\*\*/.exec(r.text) }))
+      .filter(({ m }) => m !== null && !sections.has(m[1] as string))
+      .map(
+        ({ r, m }) =>
+          `docs/03-threat-model.md:${r.line} is CLOSED citing §${String(m?.[1])}, which is not a section in this document`,
+      );
+    expect(malformed).toEqual([]);
+    expect(dangling).toEqual([]);
+    // ANTI-VACUITY: this assertion is worth nothing if nothing is CLOSED.
+    expect(closed.length).toBeGreaterThanOrEqual(20);
   });
 
   it('every residual lead-in is classified — the marker list cannot narrow in silence', () => {
@@ -1415,20 +1445,24 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // milestone, or a milestone declaring COMPLETE while residuals still name
     // it, reddens this immediately.
     //
-    // M21'S ARE NOT HERE, and the correction is worth stating
-    // because this comment used to make it. It read "Thirty-one … (M21
-    // eighteen, M23 twelve, M22 one)", and M21 has NOT shipped: docs/04's
+    // M21 OWNS NONE AT ALL NOW, and the history is worth stating because this
+    // comment has carried two wrong versions of it. It once read "Thirty-one …
+    // (M21 eighteen, M23 twelve, M22 one)", counting M21 as stale. M21 has NOT
+    // shipped: docs/04's
     // `- **PR5 — documents evidence content + the legal-hold lift ceremony.**`
     // bullet ends `NOT YET SHIPPED.`, and no commit names it. (Cited by its TEXT
     // rather than by a line number: this comment said `docs/04:5639`, and M40
     // PR1 moved that line by eight while editing the same file. A line number
-    // into another file is a citation that rots on the next edit above it.) So M21's row
-    // saying nothing about completion was HONEST, not the stale prose the M40
-    // row called it, and its residuals are live debt on a live
-    // milestone rather than debt on a closed one. They are still a defect —
-    // M21's one remaining PR does none of them — but that is a
-    // different defect with a different remedy, and this assertion is not the
-    // one that finds it.
+    // into another file is a citation that rots on the next edit above it.) So
+    // M21's row saying nothing about completion was HONEST, not the stale prose
+    // the M40 row called it, and its residuals were live debt on a live
+    // milestone rather than debt on a closed one. M40 PR2 then adjudicated all
+    // seventeen (docs/03 §6fff) and the count is now ZERO. Seventeen bullets
+    // held TWENTY items: thirteen went to owners that PR had to create (M45,
+    // M46), five are accepted on their own bounds, two went to owners that
+    // already existed (E1, M43), and nothing closed. THE STALE COUNT
+    // BELOW IS UNCHANGED BY THAT: it was always M23's twelve plus M22's one, and
+    // M21 was never in it.
     //
     // SETS for the owners, count for the total — mis-attribution between two
     // closed milestones preserves the count, and the owner set is what says
