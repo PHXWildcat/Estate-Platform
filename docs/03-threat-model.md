@@ -814,11 +814,24 @@ harder than the permissive one.
   discuss anything a user uploaded. That is a capability gap, not a control —
   closing it means building a bulk-readable text path, which is what §5.3
   exists to prevent, and it needs its own PR, consent scope and delta.
-- **[OWNER: M23]** *Conversations are outside staged settlement access (§6a).* An executor gets
+- **[ACCEPTED]** *Conversations are outside staged settlement access (§6a).* An executor gets
   inventory, then documents, then vault; conversations are in none of those
-  rungs and `assistant.cedar` grants no role-holder verb. A transcript ranges
-  over the whole estate and may contain content the owner never intended anyone
-  to read, so admitting it would need its own milestone and its own decision.
+  rungs. A transcript ranges over the whole estate and may contain content the
+  owner never intended anyone to read, so admitting it would be a new
+  CAPABILITY with its own threat-model delta and its own product decision —
+  not a fix anybody owes. **ACCEPTED BY M40 PR3** (§6ggg), and the tag it
+  replaces was the stale-owner shape this milestone exists to clear: M23 is
+  `**COMPLETE.**` and deliberately did not do this. **THE DENIAL IS ENFORCED
+  AND TESTED, NOT MERELY UNBUILT**, which is the correction this bullet needed —
+  "a surface does not exist yet" is the justification shape M40 PR2 caught being
+  wrong twice. `assistant.cedar` holds exactly ONE permit, keyed on `subject`
+  rather than `owner`, so `owner.cedar`'s catch-all cannot match a conversation
+  and neither can the two unscoped policies in the bundle; the three access
+  rungs are `['inventory','documents','vault']` in five independent spellings
+  cross-checked by a derived fence; and `assistant-policies.spec.ts` pins the
+  deny with five assertions, so a later permit cannot be added silently. A
+  denial answers a uniform 404, so the surface is not an existence oracle
+  either.
 - **[ACCEPTED]** *The egress assertion is narrow on purpose.* It refuses separated SSNs and
   Luhn-valid card numbers and deliberately passes names, emails and phone
   numbers, which are the PR2 tokenizer's job. A gate that fires on ordinary
@@ -1143,10 +1156,21 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
   It is not stored recoverably server-side, but it is a secret in a browser for
   as long as that page is open, and in whatever channel the owner chooses. That
   is inherent to an out-of-band ceremony.
-- **[OWNER: M22]** *Unlinking does not revoke what the link already enabled.* A settlement case
+- **[ACCEPTED]** *Unlinking does not revoke what the link already enabled.* A settlement case
   the linked contact opened before being unlinked stays open — cases are evidence
-  and have no soft delete (§5.1 c6) — and is stopped by the owner's own
-  step-up-gated void route, not by unlinking.
+  and have no soft delete (§5.1 c6). **ACCEPTED BY M40 PR3** (§6ggg): three
+  decisions already argued out in source meet here, and none of them is owed
+  work. Cases are evidence by DDL; unlink stays ONE CLICK because the protective
+  action may never be harder than the permissive one; and the owner holds a kill
+  switch with a real consumer. M22 is `**COMPLETE.**` and will never revisit it,
+  so the tag was the stale-owner defect rather than a plan. **WHAT SURVIVES THE
+  UNLINK, NAMED**: the reporter's `read` on the already-open case and document
+  `evidence_add` against it, because `caseResource` snapshots `reported_by`
+  while the executor path re-derives linkage per query — two different lifetimes
+  for one relationship, which is the actual shape and was not in the old
+  sentence. **AND THE STOP IS NARROWER THAN THE OLD SENTENCE CLAIMED**: the
+  owner's step-up-gated void is PRE-VERIFICATION only. After verification there
+  is no self-serve rescue, and the remedy is the §5.1 human-review path.
 
 ## 6h. Threat-model delta — M14 address ownership (2026-08-07)
 
@@ -4294,18 +4318,57 @@ material stood behind it.
   earlier would have been a routeless event, which is the zero-callers shape this
   milestone exists to close. The TB7 paragraph claiming these events already
   existed was corrected in the same PR that found it false.
-- **[OWNER: M23]** *Operator actions remain unbounded.* There is no rate
-  limit on any operator verb, and neither PR3a nor PR3b adds one, because a bound whose
-  only caller is a surface that does not exist is a control nobody exercises
-  (`ACCOUNT_PASSWORD_BOUND`'s history in §6y is what the alternative looks like).
-  The mint route inherits the step-up path's existing cap transitively, which
-  bounds the CEREMONY and says nothing about the actions behind it.
-- **[OWNER: M23]** *The operator interstitial is reachable only by typing
+- **[OWNER: M46]** *Operator READS are bounded, counted and reviewed by nothing.*
+  **RE-OWNED FROM M23 AND REWRITTEN BY M40 PR3** (§6ggg), because two of this
+  bullet's four clauses died the day after it was written and its own
+  justification is dead with them. It read "there is no rate limit on any
+  operator verb… because a bound whose only caller is a surface that does not
+  exist is a control nobody exercises". **THE SURFACE EXISTS** — `operator-web`
+  proxies fourteen settlement routes — and **M22 PR1 SHIPPED A BOUND ANYWAY**
+  (`a7eb15b`, §6ii): an append-only operator action ledger with a derived
+  coverage fence, a twelve-distinct-case ceiling over a one-hour window, and
+  proof by execution that `settlement.operator.breadth_exceeded` fires. The
+  write half is therefore §6ii's, cross-cited rather than restated here, because
+  a second copy is a copy that drifts. **WHAT SURVIVES IS THE READ HALF, AND IT
+  IS UNTOUCHED**: the ledger records ACTIONS, its own `EXEMPT` map declares the
+  two worklist reads out ("READ. The worklist emits its own `worklist.viewed`;
+  breadth is about acting on estates, not about seeing which need acting on"),
+  and the case reads reach the gate but are never COUNTED by it —
+  `assertCaseVisible` consults `this.gate.is` unconditionally and up front, as
+  its own docstring says, and then records nothing; an earlier draft of this
+  bullet said they "never reach the gate at all", which is false. The reads
+  themselves ARE
+  recorded — `settlement.queue.viewed`, `settlement.case.viewed` and
+  `settlement.distribution.amount_viewed` are all in `AUDIT_ACTIONS`. TWO OF THE
+  THREE are the trail M21 PR3b shipped; `amount_viewed` was added by M23 PR4b
+  (`4e125e1`), the same PR that spent §6dd's deferral, so the money route gained a
+  READ event and no WRITE event in one change. So what is missing is not the
+  record but the BOUND and the REVIEW. An operator may read every estate on the platform, each
+  read landing in a trail nothing bounds and nobody reads back. That is M46's — its scope names allowlist case scoping, and
+  case scoping is the control that makes reading an unrelated estate an
+  exception instead of routine. Recorded once more from the audit side at §6cc,
+  which is the same gap and the same owner. **NOTE ALSO** that the bound WARNS
+  and never refuses, deliberately (§6ii); "unbounded" stays literally true of
+  refusal, and that question is §6ii's `[ACCEPTED]` ceiling bullet, not this
+  one's.
+- **[ACCEPTED]** *The operator interstitial is reachable only by typing
   its URL.* `/operator` is deliberately not in the app's navigation: minting is
   role-blind, so the page works for everybody, and a product for 10M users should
-  not put "open the operator console" in an estate's own navigation. How an
-  operator finds it is a question with a real answer only once there is something
-  behind it.
+  not put "open the operator console" in an estate's own navigation.
+  **ACCEPTED BY M40 PR3** (§6ggg). The old closing sentence — "how an operator
+  finds it is a question with a real answer only once there is something behind
+  it" — promised a re-decision that has since silently come and gone: the console
+  shipped in M21 PR3b and M23, the condition was met, and nobody re-decided
+  because nothing was watching for it. **A DEFERRAL WHOSE TRIGGER IS AN EVENT
+  NOBODY OBSERVES IS A DEFERRAL WITH NO OWNER**, which is this milestone's
+  subject in miniature. Re-decided here, and the answer is unchanged, because
+  minting is still role-blind: a nav entry would show an operator-console link
+  to every signed-in account — a discoverability cost paid by ten million people
+  to save a handful of operators one bookmark. The absence is held by a
+  mechanism rather than by this prose (`page.test.tsx` asserts `AppNav`'s seven
+  href-bearing items with an anti-vacuity floor). If M46's real operator role
+  vocabulary ever lands, a role-gated entry becomes POSSIBLE — a consequence of
+  M46, not an item M46 owes, said here so the next sweep does not re-open it.
 - **[OWNER: E1]** *An operator-audience session is still a 15-minute credential
   with no expiry policy of its own, and no way for an operator's employer to
   revoke it centrally.* Just-in-time elevation and session recording both need
@@ -4318,7 +4381,13 @@ material stood behind it.
 emitted.** PR3a shipped an audience, a role-blind mint and an isolated origin
 with deliberately nothing on it. PR3b puts the review queue, the post-verification
 worklist and the case surface there, wires thirteen settlement routes through the
-edge, and gives an operator's READS a trail of their own.
+edge, and gives an operator's READS a trail of their own. (Thirteen is correct
+FOR PR3B and stays: `PROXY_ROUTES` carried thirteen `settlement` rows at
+`9101c12`. It carries FOURTEEN today, because M23 PR4b added the
+distribution-amount route. M40 PR3 first "corrected" this sentence to fourteen,
+which made a true statement about PR3b false — a count in a delta section
+describes the PR that section records, and updating it to today's tree is the
+opposite of repair.)
 
 ### What PR3b changes
 
@@ -4369,10 +4438,18 @@ edge, and gives an operator's READS a trail of their own.
 ### Residuals
 
 - **[ACCEPTED]** *An operator console session can see a case its holder is party
-  to.* Four of the thirteen routes reach a case through `assertCaseVisible`, and
-  that predicate admits the DECEDENT, the REPORTER and the estate's EXECUTOR as
-  well as an operator — deliberately, because those are the people a case is
-  about and the alternative is four routes with two authorization models. So a
+  to.* THREE of the thirteen routes reach a case through `assertCaseVisible` —
+  `listStages`, `listDistributions` and `timeline` — and that predicate admits the
+  DECEDENT, the REPORTER and the estate's EXECUTOR as well as an operator —
+  deliberately, because those are the people a case is about and the alternative
+  is three routes with two authorization models. **CORRECTED FROM "FOUR" BY M40
+  PR3** (§6ggg): the service has a fourth caller, `listTasks`, and it is not one
+  of the thirteen — `cases/:caseId/tasks` carries no
+  `@AllowSessionAudiences('operator')` and has no `PROXY_ROUTES` entry, so no
+  console session reaches it. Unlike the "thirteen" beside it, this number was
+  never right: counting call sites in the SERVICE answered a question about the
+  EDGE. Today it is four of fourteen, both moved by the same M23 PR4b that spent
+  the §6dd deferral. So a
   console session really can read a case the holder reported, or is executor of.
   It is accepted rather than closed for three reasons: the credential reaches
   nothing the holder's ORDINARY account session could not already reach through
@@ -4407,19 +4484,37 @@ edge, and gives an operator's READS a trail of their own.
   would accumulate death-case references in an operator's browser history and put
   one in the address bar, which is the part a screen-share or a screenshot
   catches.
-- **[OWNER: M23]** *A stale console screen can offer a verb the case no longer
+- **[ACCEPTED]** *A stale console screen can offer a verb the case no longer
   admits.* The console reads a case, renders the verbs its status allows, and
   does not re-read until somebody acts — so a case another operator advanced in
   the meantime is refused by settlement's own transition table with
   `invalid_transition`, which the screen reports as "this case has moved on;
-  reload it". That is the correct failure and it is still a failure the operator
-  meets rather than avoids. Closing it wants a change feed, which is the operator
-  platform's problem rather than this surface's.
-- **[OWNER: M23]** *There is no second-person review of an operator's own reads.*
+  reload it". **ACCEPTED BY M40 PR3** (§6ggg): the safety property is enforced
+  where it belongs, against a LOCKED row, so a stale screen can never actually
+  advance a case it no longer admits. This is a UX cost, not a control gap, and
+  the console already makes the cost honest — it separates `STATE_CHANGED` from
+  `CONFLICT` and from `UNAVAILABLE`, so two failures with different remedies do
+  not share a token. **THE COST THE OLD SENTENCE OMITTED**: a step-up elevation
+  is SPENT before the refusal is met, so the operator pays a ceremony for an
+  action that was never going to land. Stated rather than fixed. The old closure
+  named a change feed, which is realtime TRANSPORT and not authorization — M46
+  covers none of it, and stretching an authorization row to hold a transport
+  item would dilute the row M40 PR2 created to make an owner real.
+- **[OWNER: M46]** *There is no second-person review of an operator's own reads.*
   Separation of duties exists at the ROW — reviewer ≠ reporter, approver ≠
-  requester, approver ≠ recorder, all DDL CHECKs — and nothing anywhere reviews
-  who READ what. That is the same deferral TB7 records for session recording, and
-  it needs the operator platform's own surfaces rather than this console's.
+  requester, approver ≠ recorder, three relations carried by four DDL CHECKs —
+  and nothing anywhere reviews who READ what. **RE-OWNED FROM M23 BY M40 PR3**
+  (§6ggg): M23 is `**COMPLETE.**` and this is the operator authorization model,
+  which is M46. Its scope already names the two things this needs and needs no
+  widening — a real operator role vocabulary (to say who may review whom) and
+  allowlist case scoping (to make a read of an unrelated estate an exception
+  rather than routine, which is what makes the read events settlement now emits
+  reviewable at all). **THE SAME GAP IS RECORDED AT §6bb FROM THE BOUND SIDE**,
+  and both are M46: one asks what counts an operator's reads, this one asks what
+  reviews them. **ONE CORRECTION**: the old sentence compared itself to TB7's
+  session-recording deferral, which is **E1** and stays E1 — a comparison, not
+  an owner, and reading it as one is how an item inherits a neighbour's
+  blockers.
 
 
 ## 6dd. Threat-model delta — M21 PR4, the security review (2026-08-19)
@@ -4472,37 +4567,173 @@ obligation stated next to it.
   a reported one and clears the code from the DOM, which is what the client can
   do about it. Making the two agree is a deployment-configuration property, not a
   browser one.
-- **[OWNER: M23]** *Two of three distribution status transitions emit no audit
+- **[OWNER: M26]** *Two of three distribution status transitions emit no audit
   event, and `disputed` is reachable from `completed`.* An unlogged undo of a
-  completed distribution, callable by an executor as well as an operator. Left as
-  found because the route has no consumer anywhere — no BFF client, and the
-  operator edge's exact-match allowlist does not carry it — so it is a latent
-  defect in a surface M23 will build, and fixing the emit without the surface is
-  the routeless-event shape this milestone exists to close.
-- **[OWNER: M23]** *The bearer-header fence matches one spelling.* It anchors on
-  `req.headers['authorization']`, so a destructured or aliased read evades it. No
-  bearer read path exists on the edge today — the credential comes from the
-  `__Host-` cookie and the only `authorization` in the source is the outbound set
-  — so evading it requires writing the bypass rather than sending a request.
-- **[OWNER: M23]** *The console's egress fence does not cover navigation sinks.*
-  It asserts one module may reach the network and lists `fetch`, `XMLHttpRequest`,
-  `sendBeacon`, WebSocket, EventSource, service worker and `new Image`; it does
-  not list `window.open`, `location.href =`, `location.assign` or
-  `form.submit`. The declarative half is covered separately by the
-  no-navigating-attribute assertion.
-- **[OWNER: M23]** *Three operator-edge items with no reach path.* The edge
-  answers 500 rather than 400 on a malformed `Host`; `config.secureCookies` is
-  asserted by a test and read by nothing, the cookie attributes being hardcoded;
-  and `APP_ORIGIN` is validated as a URL rather than as an origin, so a value
-  carrying a path is accepted and serialised to the client.
-- **[OWNER: M23]** *Only three of nine services have a service-local audience
-  spec.* Identity, settlement and vault have one; the rest rely on the shared
-  source fence alone, which cannot see that `CallerGuard`'s reflector is
-  `@Optional()` and falls back to the service-wide list when it does not resolve
-  — a perfectly decorated route on such a container is silently inert. Vault's own
-  sweeps additionally filter on `extension` only, leaving its `vault` admission
-  unmeasured, and profile has a per-route widening with no spec at all. The same
-  narrower-input-than-claim shape §6y names.
+  completed distribution, callable by an executor as well as an operator.
+  **RE-OWNED FROM M23 BY M40 PR3** (§6ggg), and this is the one residual of the
+  thirteen whose RISK CHANGED rather than its owner. It was deferred with an
+  explicit precondition — "left as found because the route has no consumer
+  anywhere, no BFF client, and the operator edge's exact-match allowlist does
+  not carry it" — and **M23 PR4b (`4e125e1`, #141) BUILT EXACTLY THAT CONSUMER
+  WITHOUT ADDING THE EMIT**: a BFF client method, the `setEstateDistributionStatus`
+  mutation, a three-member SDL enum, and an executor button reading "Raise a
+  dispute" on a paid-out row. **A DEFERRAL'S PRECONDITION CAN BE SPENT BY A
+  LATER PR, and nothing was watching** — the same unobserved-trigger shape as
+  §6bb's interstitial, in the same sweep, with a control consequence instead of a
+  UX one. FOR THIS INSTANCE the spender is a different milestone: §6dd is M21
+  PR4's delta, so M21 wrote the condition and M23 PR4b spent it. THAT IS NOT THE
+  GENERAL RULE, and an M40 PR3 draft briefly made it one by asserting every
+  instance crosses a milestone boundary. §6bb's interstitial does not — M21 PR3a
+  deferred it and M21 PR3b shipped the console that met it — while §6bb's bound
+  was spent by M22 PR1, which does. Two of three cross, so the milestone is not
+  what the shape is about; the trigger being an event nobody observes is. MEASURED at `01fdf90`:
+  `setDistributionStatus` accepts three targets and emits on exactly one
+  (`to === 'completed'`); `AUDIT_ACTIONS` carries four distribution actions and
+  none for `in_progress` or `disputed`; and the `from` list for `disputed` is
+  `['approved','in_progress','completed']`, so the completed→disputed edge is
+  real rather than theoretical. Counted as EDGES rather than targets it is four
+  of five unaudited, which the bullet's own phrasing hides. M26 owns forensic
+  audit completeness, and a shipped step-up-gated write verb that emits nothing
+  is that. **THE ROW HAS A NAME COLLISION AND THIS TAG PICKS A SIDE**, which
+  docs/04's M26 row already demands: of the thirteen `[OWNER: M26]` tags that
+  existed before this one was added — not the four that precede it in the file —
+  only four are audit-completeness items (§6j, §6k, §6p, §6q); NINE are M25's
+  erasure fan-out at §§6kk–6pp, which is a different body of work
+  wearing the same name. This tag belongs to the audit-completeness four. **NOT FIXED HERE, DELIBERATELY**: M40 is an adjudication milestone, the
+  fix touches the closed `AUDIT_ACTIONS` vocabulary, and a new action must reach
+  the audit consumer before its producer.
+- **[OWNER: M45]** *The bearer-header fence's corpus is narrower than its claim.*
+  **RE-OWNED FROM M23 AND RENAMED BY M40 PR3** (§6ggg): "matches one spelling"
+  undercounts its own subject. There are THREE assertions with three different
+  patterns — an identifier match on `bearerFrom`, and two regex matches on
+  `headers['authorization']` — and the defect is not their number but their
+  REACH: **two of the three read `server.ts` alone while the test's title claims
+  a property of the whole edge.** That is M45's stated scope exactly. The second
+  axis is the matcher itself: `bearerFrom` is an identifier a caller chose, so a
+  rename walks past it — the named-anchor defect this repo already names, "anchor
+  a fence on what the runtime reads, not on an identifier a caller chose". No
+  bearer read path exists on the edge today, so evading it still requires writing
+  the bypass rather than sending a request; that bound rests on a FACT ABOUT
+  TODAY'S TREE rather than on a mechanism, which is why this is deferred work and
+  not an `[ACCEPTED]` decision.
+- **[OWNER: M45]** *The egress fence's sink vocabulary is hand-listed, in three
+  copies.* It asserts one module may reach the network and lists seven strings —
+  `fetch`, `XMLHttpRequest`, `sendBeacon`, WebSocket, EventSource, service worker
+  and `new Image`; it does not list `window.open`, `location.href =`,
+  `location.assign` or `form.submit`. **RE-OWNED FROM M23 AND WIDENED BY M40 PR3**
+  (§6ggg): the old title said "the console's", and there are **THREE identical
+  copies** of that list — operator console, vault origin and the extension — so
+  the bullet described one member of its own category, which is the half-applied
+  rule this repo names. The claim is "%s makes no network call" and the input is
+  seven hand-written strings, so the fence goes green for the same reason it is
+  wrong. The declarative half is covered by a no-navigating-attribute assertion
+  IN ONE COPY OF THE THREE — only `apps/operator-web/test/fences.spec.ts` pins
+  `setAttribute('href')` to a single site and refuses `setAttribute('on…')`;
+  `vault-web` and the extension have a `fences.spec.ts` each and neither asserts
+  it. **CORRECTED BY THE SECOND REVIEW PASS**: a first draft said the vault origin
+  leaned on a `dom.ts` comment "and the extension on neither", and BOTH halves
+  were wrong. All three DECLARE the absence in a comment, but not the same
+  comment, and a second draft got that wrong too. The operator and vault origins
+  share one BYTE-IDENTICAL line — "Attributes that may be set through `el`.
+  Deliberately not `href`/`src`." at `operator-web/src/client/dom.ts:26` and
+  `vault-web/src/client/dom.ts:24`, each beside an `Attrs` interface. The
+  extension has no `Attrs` interface and no copy of that line; its comment is
+  FOUR lines in the module docblock at `vault-extension/src/dom.ts:11`,
+  differently worded — "Deliberately no `href` or `src` helper. Either is an
+  outbound GET, which would be a second egress path alongside `api.ts`" — and it
+  is the only one of the three that says WHY. So the drift the bullet is about
+  runs through the comments as well: two origins copied, one wrote its own.
+  Ranking the copies by which one I had read most recently is how a bullet about
+  a half-applied rule came to apply itself to two of three — and then, in the
+  correction, to quote a string from two files while attributing it to three. What is true is the asymmetry that
+  matters: the comment is everywhere and the ASSERTION is in one place, so the
+  sibling an earlier draft offered as cover is itself the half-applied rule. This sits on M45's seam with M43 — M45's row says "the two rows meet
+  where a fence scans a vocabulary" — and lands on M45 because the defect is the
+  SCAN's stated reach rather than a vocabulary lacking a mirror. **THE FIX IS NOT
+  A UNIFORM EDIT**, which is why it needs an owner rather than a sweep: extending
+  the list is free on the console and the extension, and needs an allowlist
+  decision on the vault origin, where two existing call sites would go red.
+- **[ACCEPTED]** *The isolated edges answer 500 rather than 400 on a malformed
+  `Host`.* **SPLIT FROM ONE BULLET BY M40 PR3** (§6ggg) and **RE-SCOPED**: the
+  bullet said "operator-edge", and this shape is on `vault-web` too — three
+  shapes across two origins is SIX instances, and the old bullet enumerated half
+  its own population, which is the half-applied rule this repo names. Accepted on
+  its bounds, and the bound is the RESPONSE rather than the reachability: the 500
+  carries no upstream body and no stack trace, so it discloses nothing a 400
+  would not. **AN EARLIER DRAFT SAID "no path reaches it from a request a client
+  can send", WHICH IS WRONG** — Node passes a malformed `Host` straight to the
+  handler and neither edge validates it before `new URL`, so anyone who can open
+  a socket reaches it with one request. The cost is a status code on a reachable
+  path, not a disclosure, which is still an acceptance and not a defence.
+- **[ACCEPTED]** *`config.secureCookies` is asserted by a test and read by
+  nothing.* **SPLIT FROM ONE BULLET BY M40 PR3** (§6ggg). The risk a reader
+  imagines here — that a cookie ships without `Secure` because a flag went
+  unread — DOES NOT EXIST: the attributes are hardcoded at the cookie writer, and
+  dropping `Secure` there turns three NAMED assertions red, while flipping the
+  unread flag turns exactly one red (its own literal check). Both edges are the
+  same: five `secureCookies` lines on the operator origin and four on the vault
+  origin, with ZERO `src` reads outside `config.ts` in either. **THE RULE IS
+  WORTH MORE THAN THE DEBT**, so it is recorded instead: a config value nothing
+  reads is a value whose test proves only that the value exists. Kept because
+  removing it is a change to two edges' schemas for no behaviour, and stated so
+  the next reader does not re-file it.
+- **[OWNER: M47]** *`APP_ORIGIN` is validated as a URL rather than as an origin,
+  on BOTH isolated edges.* `z.string().url().optional()` — `config.ts` on the
+  operator edge and on the vault edge carry the identical line — so a value with
+  a path, a query, credentials or a `javascript:` scheme is accepted and
+  serialised to the client — where the operator edge puts it in an `href` via
+  `setAttribute` and the vault edge passes it to `location.assign`. ONE SINK
+  EACH, and DIFFERENT ONES: the pair has drifted even in how it consumes the
+  same value, which is the argument for M47 rather than an aside.
+  **SPLIT FROM ONE BULLET AND RE-OWNED BY M40 PR3** (§6ggg) to M47, the row this
+  PR opens. The old sentence said "a value carrying a path is accepted", which
+  describes the LEAST of what `.url()` admits. The fix is one `.refine` per edge. **AND NO PART OF THIS REPO HAS MADE THAT
+  DECISION YET**, which an earlier draft of this bullet asserted of the BFF and
+  which is false: `apps/bff/src/config.ts` uses the same `z.string().url()` for
+  its browser-facing origins and contains not one `.refine`; its only extra step
+  is stripping a trailing slash. So this is not a second spelling of a settled
+  behaviour — it is a decision nobody has taken anywhere, which is a better
+  reason for the row than the one it replaces. Not M45 — a zod schema is not a
+  scan and has no corpus to declare.
+- **[OWNER: M45]** *Three services of ten have a service-local audience spec,
+  and the shared fence's anti-vacuity is a FLOOR where it should be a SET.*
+  Identity, settlement and vault have one; the other SEVEN rely on the shared
+  source fence alone. **RE-OWNED FROM M23, RENUMBERED AND SPLIT BY M40 PR3**
+  (§6ggg): the old sentence said "three of NINE", leaving six — but the shared
+  fence derives its own corpus from `apps/services/*/src/config.ts` and that is
+  TEN directories, `audit` included, so the remainder is seven. Its floor reads
+  `expect(services.length).toBeGreaterThan(5)` against a derived ten, which is
+  the defect this repo names twice over: an anti-vacuity floor belongs at every
+  LEVEL of a scan, and where a scan has a reach it must compare SETS, because
+  mis-attribution preserves counts. Squarely M45's — the bullet's own closing
+  sentence already pointed at §6y, one of the two items M45's row was created to
+  take.
+- **[OWNER: M45]** *The vault sweeps measure ONE audience on a surface that
+  admits two.* Vault's own sweeps filter on `extension`. Of its twenty-eight
+  routes, twelve are covered anyway by a named assertion that pins EVERY audience
+  on the emergency-access controller, so the genuinely unmeasured set is the NINE
+  non-extension routes of `VaultController` — not "the rest", which an earlier
+  draft of this bullet said and which would have been twenty-one. The gap is real
+  and a third the size claimed, on the very layer that exists to be un-evadable. Profile's per-route widening
+  is measured only by a test that hardcodes `audience: 'account'`.
+  **SPLIT FROM ONE BULLET BY M40 PR3** (§6ggg), **AND THE OLD SENTENCE WAS WRONG
+  IN TWO PLACES**: it said profile has "no spec at all", which is false — what
+  profile lacks is a service-LOCAL one; and it said vault's "`vault` admission"
+  is unmeasured, which names the wrong audience, since `vault` is service-wide
+  there and a route-level `vault` grant is refused by the shared fence outright.
+  A fence whose input is narrower than its claim, twice, which is M45.
+- **[ACCEPTED]** *`CallerGuard`'s reflector is `@Optional()` and falls back to
+  the service-wide list when it does not resolve.* **SPLIT FROM ONE BULLET BY
+  M40 PR3** (§6ggg), and accepted rather than carried as fence debt, because the
+  property the old bullet feared is not the property the code has. The fallback
+  DE-ESCALATES: it unions and never narrows, so an unresolved reflector cannot
+  widen admission — which is this repo's own "fail closed means de-escalate"
+  rule, honoured. It is reproduced with a positive control in two suites rather
+  than argued about, and profile's real container is proven to resolve it inside
+  a blocking gate by the stack e2e. What made this look like debt was reading a
+  DECORATOR's optionality as a behaviour, which is the error M40 PR2 recorded at
+  §6fff — the same mistake, one milestone later, found by re-reading rather than
+  by being caught.
 
 
 ## 6ee. Threat-model delta — M21 PR4b, review round 2 (2026-08-20)
@@ -4555,17 +4786,40 @@ than the error page it replaces, because it argues them out of revoking it.
   ahead of it. Two skew directions, two mechanisms, one sentence on screen. The
   user's action is the same in both (revoke it), so distinguishing them would
   cost a reader something and buy nothing.
-- **[OWNER: M23]** *No test anywhere exercises a real CSP refusal.* jsdom
+- **[ACCEPTED]** *No test anywhere exercises a real CSP refusal.* jsdom
   implements neither CSP enforcement nor `SecurityPolicyViolationEvent`, so the
   suite models the browser's half with a double, and the double's TIMING is the
-  thing that was wrong for a whole PR. The measurement that settles it is a real
-  browser, run by hand. Closing this properly wants the launchers exercised in
-  the existing headless-Chrome harness rather than in jsdom.
-- **[OWNER: M23]** *The `form-action` origin split is still unenforced outside
+  thing that was wrong for a whole PR. **ACCEPTED BY M40 PR3** (§6ggg): this is
+  a property of the RUNNER, not a decision anyone deferred, and the residual risk
+  is bounded one bullet away — the refusal is handled unconditionally by clearing
+  the code, the detector is best-effort by design (§6ee, `[ACCEPTED]`), and the
+  browser half HAS been measured in Chrome by hand, with the result recorded in
+  both launchers. **AND THE OLD REMEDY SENTENCE WAS WRONG, WHICH IS THE REPAIR
+  THIS BULLET NEEDED**: it said closing this "wants the launchers exercised in
+  the existing headless-Chrome harness", and that harness has no page target, no
+  app build and not one CDP page call — it cannot do this. Worse, it lives behind
+  a paths filter that excludes `apps/web/**`, so the remedy as written would have
+  produced a test that never runs on the code it guards. **A REMEDY NAMING A
+  MECHANISM NOBODY CHECKED IS A DEFERRAL THAT CANNOT BE DISCHARGED** — the same
+  shape as a remedy written as a PR number, which §6z already records.
+- **[OWNER: M47]** *The `form-action` origin split is still unenforced outside
   the compose stack.* The detector reports the mismatch; nothing prevents it. A
   deployment can still serve an operator origin the built CSP does not permit,
-  and the only reason this is not routine is that `images.yml` asserts the served
-  policy names the origins it was built with.
+  and a credential is left in the DOM on the failing path. **RE-OWNED FROM M23 BY
+  M40 PR3** (§6ggg) to M47, a row this PR opens, because no existing owner fits:
+  M45 is source-scanning fences (there is no scan here), M46 is the operator
+  authorization model (the VAULT launcher has the identical shape, so tagging
+  only the operator half would recreate the one-category-two-owners defect M40
+  PR1 closed), and **E1 would be wrong on the merits** — E1 is the AWS half,
+  blocked on money, and this needs no AWS anything. **TWO FACTS THE OLD SENTENCE
+  OMITTED**: `images.yml` checks build-arg PROPAGATION rather than PARITY between
+  the built CSP and the request-time value, so the reason this is not routine is
+  weaker than the bullet claimed; and the default origin literal exists in two
+  independent copies. Four mechanisms touch these origins and none enforces
+  parity. The preventive half is an `apps/web` slice available today — bake the
+  permitted origin into the client and refuse BEFORE the code reaches the DOM —
+  and the agreement half needs deployment manifests that `infra/` does not yet
+  hold.
 
 
 ## 6ff. Threat-model delta — M21 PR4c, the fences themselves (2026-08-20)
@@ -5912,7 +6166,10 @@ per-file, because a total passes happily while one lead-in goes blind.
   row now declares a lifecycle token, so a finished milestone can no longer
   answer the completion question with a different word or with silence; applying
   that rule found three finished milestones this derivation had never seen (M24,
-  M27, M44), none of which owns a residual, so the thirteen are unchanged.
+  M27, M44), none of which owns a residual, so the thirteen were unchanged AT M40
+  PR0. **M40 PR3 then adjudicated all thirteen and the stale count is ZERO**
+  (§6ggg); the figure here is left as it was measured, dated, because a delta
+  records what its own change found.
   **THIS BULLET HAS NOW BEEN WRONG TWICE, both times about a milestone it
   names.** M27 PR5 corrected the first: it said "M21's eighteen and M24's", and
   M24 owns NO residual at all — zero `[OWNER: M24]` tags in this document. The
@@ -7160,9 +7417,12 @@ shape §6y names.
 
 **The measurement, which is the part worth keeping.** Applying the rule moved
 the derived completed set from three to six. None of the three newly visible
-milestones owns a residual, so the stale count is unchanged at thirteen — M23
+milestones owns a residual, so the stale count was unchanged at thirteen — M23
 twelve, M22 one. That is the honest result: the hole was real and it was
-load-bearing for the NEXT tag rather than for any tag that exists today.
+load-bearing for the NEXT tag rather than for any tag that existed then. **M40
+PR3 has since adjudicated all thirteen to ZERO** (§6ggg), which is also what
+retired the pinned assertion this paragraph is about — see §6ggg on why a zero
+that cannot fail is not a measurement.
 
 **What this does NOT check, measured rather than assumed.** Nothing here can
 tell that a declared status is TRUE — the same bound the `[ACCEPTED]` tag has
@@ -7530,3 +7790,214 @@ nothing but trying to break it would have said so.
   BEHAVIOUR, demonstrated, never on the presence of the mechanism named in the
   bullet** — and if the demonstration is a decorator, read what the decorator
   returns.
+
+## 6ggg. Threat-model delta — M40 PR3, a deferral whose trigger nobody watched (2026-08-26)
+
+**Not a control change; no runtime code moves.** M40 PR3 adjudicates the thirteen
+residuals owned by a milestone that has already SHIPPED — M23 twelve, M22 one —
+one at a time, and both counts go to **zero**. Thirteen bullets become SEVENTEEN
+items, because two of them carried three things each: **eight accepted on their
+own bounds, four to M45, two to M46, two to M47, and one to M26.** That is
+8+4+2+2+1 = 17, stated as a sum because a partition whose parts are listed and
+never added is a partition nobody checked. Nothing closed.
+
+**Five of the thirteen were still TRUE. Eight carried at least one FALSE
+clause** — and that is the finding rather than the bookkeeping. THE CRITERION,
+stated because two independent readings of an earlier draft produced the same
+5/8 with DIFFERENT MEMBERS, which is the count-agrees-for-the-wrong-reason shape
+this fence exists to catch: a bullet HELD if every assertion in it still
+verified, and an OMISSION does not count as decay. THE TWO SPENT PRECONDITIONS
+LAND ON OPPOSITE SIDES OF IT, which looks inconsistent and is not: §6dd's
+distributions bullet asserted a FACT about the tree — "the route has no consumer
+anywhere" — and M23 PR4b made that sentence false, so the bullet carries a false
+clause. §6bb's interstitial asserted a CONDITION — that the question has a real
+answer "once there is something behind it" — and the console shipping SATISFIED
+it rather than falsifying it. Both deferrals were spent unwatched, which is why
+both are evidence for the shape below; only one of them now contains a sentence
+that is untrue. A spent precondition is not the same defect as a false claim, and
+collapsing them would have made the 5/8 split mean nothing. Every one of the thirteen was
+rewritten, so "held exactly as written" — the earlier phrasing — was false of all
+thirteen and measured the bookkeeping instead.
+
+STILL TRUE (5): §6d conversations; §6bb the interstitial; §6cc the stale screen;
+§6cc the review of reads; §6ee form-action. FALSE IN SOME CLAUSE (8): §6g unlink
+(the stop is narrower than it claimed); §6bb the bound (two of four clauses);
+§6dd distributions (its precondition spent); §6dd the bearer fence (undercounts
+its own subject); §6dd egress (named one of three copies); §6dd the edge items
+(half its population); §6dd audience specs (wrong in two places); §6ee the CSP
+remedy (names a harness that cannot do it). A residual owned by a COMPLETE
+milestone is not merely unowned; it is unread, and prose nobody re-reads decays
+in a particular direction.
+
+**A DEFERRAL'S PRECONDITION CAN BE SPENT BY A LATER PR, AND NOTHING
+WATCHES.** Two of the thirteen deferred on a stated condition rather than
+on a judgement, and both conditions were met without anyone re-deciding.
+
+- §6dd's distribution bullet said it was "left as found BECAUSE the route has no
+  consumer anywhere — no BFF client, and the operator edge's exact-match
+  allowlist does not carry it". **M23 PR4b (`4e125e1`, #141) then built exactly
+  that consumer and did not add the emit**: a BFF client method, the
+  `setEstateDistributionStatus` mutation, a three-member SDL enum, and an
+  executor button reading "Raise a dispute" on a paid-out row. A latent defect
+  became a LIVE one on a step-up-gated write verb. **AND NOT WITHIN THE MILESTONE
+  THAT WROTE IT**: §6dd is M21 PR4's delta section, so M21 wrote that sentence and
+  M23 PR4b spent it — a DIFFERENT milestone, and only TWO DAYS later (§6dd is
+  dated 2026-08-19, `4e125e1` landed 2026-08-21). The short gap makes the shape
+  WORSE rather than better. Nothing here decayed with age; the spender simply had
+  no reason to read the section, because it belonged to somebody else's
+  milestone. An earlier draft made the opposite claim — that the
+  precondition was spent by a PR of the very milestone that deferred it — NINE
+  times across these four files, and the first review pass caught three. THE
+  CORRECTION THEN OVERSHOT: a second draft generalised it to "every instance
+  crosses a milestone boundary", which the second review pass refuted from this
+  document's own text — §6bb's interstitial was deferred by M21 PR3a and met by
+  M21 PR3b. TWO OF THE THREE CROSS, so the honest headline names neither, and the
+  bold lead-in above says only "a later PR". A false general claim and its
+  equally false opposite came from the same habit: writing the rule from the
+  instance in front of me. Correcting it also tripped the language rule two
+  bullets down, because the phrasing being corrected IS the idiom that rule
+  scans for. A wrong sentence copied to where it is
+  load-bearing is this document's most reliable defect.
+- §6bb's interstitial bullet said "how an operator finds it is a question with a
+  real answer only once there is something behind it". The console shipped;
+  nobody re-decided. That one costs nothing — re-decided here, same answer — and
+  it is recorded beside the other because the SHAPE is identical and only the
+  consequence differs.
+
+**The general form: a deferral that names its own trigger is only as good as
+whatever watches the trigger, and here nothing did.** A residual is re-read when
+somebody sweeps residuals; the event that discharges it happens somewhere else
+entirely, in a PR that has no reason to look.
+
+**AND THE JUSTIFICATION UNDER §6bb'S BOUND DIED THE DAY AFTER IT WAS WRITTEN.**
+That bullet argued there was no rate limit on any operator verb "because a bound
+whose only caller is a surface that does not exist is a control nobody
+exercises". M22 PR1 (`a7eb15b`, §6ii) shipped one the next day — an append-only
+operator action ledger with a derived coverage fence and a twelve-case ceiling —
+which is the direct refutation of the reasoning, not merely a change of facts.
+What survives is the READ half, and it survives with one precision an earlier
+draft of this paragraph got wrong. Operator reads ARE on the trail — M21 PR3b
+gave them one — `settlement.queue.viewed` and `settlement.case.viewed` — and
+`AUDIT_ACTIONS` carries a third, `settlement.distribution.amount_viewed`, added
+later by M23 PR4b (`4e125e1`); an earlier draft of this paragraph credited all
+three to PR3b. So "nothing records them" would have been false, and this document says so two
+sections up. What is absent is a BOUND and a REVIEW: the breadth ledger records
+ACTIONS, its own `EXEMPT` map declares the two worklist reads out with the reason
+"READ. The worklist emits its own `worklist.viewed`; breadth is about acting on
+estates, not about seeing which need acting on", and the case reads reach the
+gate without being counted by it. So an operator may read every estate on the platform, each read
+landing in an append-only trail that nothing bounds and nobody reviews. That is M46's, recorded twice — once
+from the bound side at §6bb and once from the audit side at §6cc — as ONE claim
+under ONE owner, which is the shape M40 PR1 established.
+
+| From | Became | Why |
+| --- | --- | --- |
+| §6d conversations | `ACCEPTED` | a settled design, enforced and tested — not an unbuilt surface |
+| §6g unlink (the one M22) | `ACCEPTED` | three decisions already argued out in source |
+| §6bb operator bound | `M46` | write half shipped as §6ii; the READ half is untouched |
+| §6bb interstitial | `ACCEPTED` | trigger met, re-decided here, answer unchanged |
+| §6cc stale screen | `ACCEPTED` | a UX cost against a locked row, not a control gap |
+| §6cc review of reads | `M46` | the same gap as §6bb, from the audit side |
+| §6dd distributions | `M26` | **the deferral's precondition was spent** |
+| §6dd bearer fence | `M45` | two of three assertions read one file |
+| §6dd egress sinks | `M45` | a hand-listed vocabulary, in three copies |
+| §6dd edge items | `ACCEPTED` ×2 + `M47` | one bullet, THREE items, and "operator-edge" was half the population |
+| §6dd audience specs | `M45` ×2 + `ACCEPTED` | one bullet, THREE items; two of them wrong in a NEW way |
+| §6ee CSP refusal | `ACCEPTED` | a property of the runner, and the remedy named a harness that cannot do it |
+| §6ee form-action | `M47` | detected, never prevented |
+
+**M47 IS THE ROW THIS PR OPENS, and it exists because a rule was applied to one
+member of a category.** Three shapes on the operator edge — the malformed-`Host`
+500, the unread `secureCookies`, and `APP_ORIGIN` validated as a URL rather than
+an origin — are each duplicated on the vault edge: three shapes across two
+origins is SIX instances, and the bullet recording them named three. The two
+isolated origins were built from one template and have drifted apart with nothing
+comparing them. M47 owns that pair, and the form-action parity item joins it for
+the same reason: the vault launcher carries the identical split, so tagging only
+the operator half would have recreated the one-category-two-owners defect M40 PR1
+closed. **Explicitly not E1** — E1 is the AWS half, blocked on money, and none of
+this needs AWS anything; assigning it there would be an owner chosen for being
+nearby, which is the defect M40 PR2 named.
+
+**THE ASSERTION THAT GUARDED THE STALE SET CANNOT SURVIVE ITS OWN SUCCESS.** With
+M22 and M23 at zero, the pinned pair the fence carried —
+the owner-SET comparison against `STALE_OWNERS` and `expect(stale.length).toBe(STALE_OWNED)`
+— becomes `[] vs []` and `0 === 0`, which passes identically if the parser breaks,
+if the COMPLETE set comes back empty, or if the corpus is never read. A zero that
+cannot fail is not a measurement. It is answered here with a POSITIVE CONTROL: a
+synthetic bullet tagged with a milestone the queue table really marks
+`**COMPLETE.**` — taken from the derived set, never hard-coded — is run through
+the same predicate, and the fence asserts it FIRES, with a negative twin on a
+LIVE milestone so the control cannot pass by matching everything.
+
+**AND THE FIRST ACCOUNT OF WHAT THAT CONTROL COVERS WAS WRONG, WHICH THE
+MUTATION SAID AND THE PROSE DID NOT.** The draft claimed it caught a broken
+status column or an empty completed set. It does not: both are already caught
+one assertion earlier by `MIN_COMPLETED_MILESTONES`, and breaking the completed
+derivation reddens the file with or without the control. What the control
+uniquely catches is the PREDICATE going wrong while its inputs stay healthy —
+`staleAmong` returning `[]` leaves the two real-corpus expectations at `[] vs []`
+and `0 === 0`. Demonstrated as a PAIR rather than claimed: the same mutation with
+the control present fails one test, and with the control removed the whole file
+passes. A control whose coverage is described from intention rather than from a
+counterfactual is the same defect as a residual whose precondition nobody
+watched, one file over.
+
+### Residuals
+
+- **[OWNER: M40]** *A deferral's precondition is prose, and nothing re-checks it.*
+  Two of the thirteen deferred on a condition — "no consumer exists", "once there
+  is something behind it" — that a later PR met without noticing. The conditions
+  are English inside a bullet, so no mechanism can watch them, and the only reader
+  is a sweep that happens on its own schedule. Making them DATA is the fix, and it
+  belongs to this milestone's remaining PR rather than to a new row, because M40
+  is the milestone that keeps finding the shape.
+- **[ACCEPTED]** *A count in a delta section needs to say whether it describes
+  the PR or the tree, and §6cc held one of each.* Its two counts looked alike and
+  were not. "Thirteen routes" was TRUE OF PR3B and stale for today, so an earlier
+  M40 PR3 draft broke it by "correcting" it to fourteen; it is restored, because
+  a delta section's narrative records what its PR did. "Four of the thirteen
+  reach a case through `assertCaseVisible`" was NEVER true, of PR3b or of today:
+  four methods called the predicate at `9101c12`, but one of them, `listTasks`,
+  is not among the thirteen — `cases/:caseId/tasks` has no operator audience and
+  no `PROXY_ROUTES` entry. The sentence counted call sites in the SERVICE and
+  reported them as routes at the EDGE, which is the same category slip as
+  counting a mention as a citation. Corrected to three. THE TWO REPAIRS POINT IN
+  OPPOSITE DIRECTIONS — one number restored to the past, one corrected to the
+  present — and only reading each against what its own clause claims separates
+  them. Accepted rather than owned because the fix is a habit, not a mechanism:
+  no fence can read an English sentence and tell which tree it means. Both were
+  moved by M23 PR4b, which is also the PR that spent the §6dd deferral.
+- **[ACCEPTED]** *The corpus language rule cannot tell USE from MENTION.* Writing
+  this section tripped it: an evidence bullet that said a deferral was spent "and
+  not inside its own milestone" was pulled INTO the residual corpus, because
+  `residualLanguage` matches the literal phrase `its own milestone` and has no way
+  to know the bullet was quoting the idiom rather than using it. The fence was
+  RIGHT to fire — the bullet had no disposition tag — and the repair was to reword
+  the prose, not to weaken the pattern. IT THEN FIRED A SECOND TIME IN THIS SAME
+  SECTION, on the correction to a NEIGHBOURING bullet, for the same reason: the
+  phrasing being corrected is itself the idiom the rule scans for, so writing down
+  what was wrong reproduces the trigger. Counted as one incident class rather than
+  two, because it is the same rule on the same section — but a rule you cannot
+  quote without tripping is a cost worth stating. Accepted because the alternative is worse:
+  a rule that tries to distinguish use from mention in English is a parser nobody
+  can keep correct, and the failure is LOUD and immediate. Recorded because this is
+  the FIFTH time a corpus in this document has read the commentary about itself.
+  M40 PR1 found three — the unanchored residual-tag grep, the `assistant_disabled`
+  sweep, and the citation sweep, where a citation and a mention of a citation were
+  indistinguishable — §6fff's TB7 line count is the fourth, and this is the fifth.
+  An earlier draft of this bullet said "fourth" by naming only two of PR1's three,
+  which is the same undercount by hand that the shape itself keeps producing.
+- **[ACCEPTED]** *The positive control proves the DETECTOR, not the document.* A
+  synthetic bullet fed through the stale predicate shows the predicate fires; it
+  cannot show that the real corpus was parsed, and a fence green on a synthetic
+  input beside an empty real one is exactly the pair that looks like proof. What
+  carries the real half is the totality assertion and the per-section floors,
+  which are stated here so the next reader does not mistake the control for the
+  measurement.
+- **[OWNER: M47]** *Nothing derives what the two isolated origins should share.*
+  `operator-web` and `vault-web` were built from one template, and the shapes this
+  PR found on both were found by hand, one at a time. Six instances of three
+  shapes is the count today; nothing computes it, so a seventh written tomorrow
+  joins the category unnoticed — which is precisely how the bullet M47 inherits
+  came to describe half of its own population.

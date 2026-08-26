@@ -88,6 +88,7 @@ const OWNERS: readonly string[] = [
   'M44', // the step-up refusal discriminator (added M27 PR6)
   'M45', // fence corpus breadth — a scan states its reach (added M40 PR2)
   'M46', // TB7 follow-on — the operator authorization model (added M40 PR2)
+  'M47', // the isolated origins, hardened as a pair (added M40 PR3)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -154,7 +155,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6aa': 9,
   '6bb': 6,
   '6cc': 6,
-  '6dd': 6,
+  '6dd': 10,
   '6ee': 4,
   '6ff': 4,
   '6gg': 2,
@@ -190,6 +191,14 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // M40 PR2: the fence corpus that never read §4, the difference between an
   // owner and a schedule, and the closure nothing detects.
   '6fff': 3,
+  // M40 PR3, all FIVE named so the floor and its justification cannot drift
+  // apart — the round-1 bump from 3 to 4 moved the number and left this comment
+  // enumerating three, which is the second-copy-that-rots defect inside the
+  // fence built to catch it: the deferral whose trigger nobody watched, the
+  // delta-section count that never said which tree it meant, the corpus
+  // language rule that cannot tell use from mention, the control that proves
+  // the detector rather than the document, and the undrived pair of origins.
+  '6ggg': 5,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -289,8 +298,24 @@ const ESCALATION_HEADER = '| | Item | Blocker |';
  * M43 owns the general form of "one derivation per closed vocabulary" and this
  * is one of its cases; the overlap is stated rather than quietly resolved here.
  */
-const STALE_OWNED = 13;
-const STALE_OWNERS = ['M22', 'M23'];
+/*
+ * ZERO, since M40 PR3 — and a zero needs a different guard than a thirteen did.
+ *
+ * These two constants used to pin a real, non-empty set: thirteen residuals
+ * across M22 and M23. Pinned that way they were a genuine measurement, because
+ * a parser that broke, a status column that stopped being read, or a corpus
+ * that came back empty all produced a number that was not thirteen.
+ *
+ * At zero every one of those failures produces `[]` and `0`, which is exactly
+ * what a correct run produces. THE ASSERTION CANNOT SURVIVE ITS OWN SUCCESS:
+ * "no residual names a shipped milestone" and "this fence read nothing at all"
+ * became the same observation. So the real-corpus expectation stays — it is
+ * still the thing anyone cares about — and it is paired below with a POSITIVE
+ * CONTROL that feeds a synthetic bullet through the SAME predicate and asserts
+ * it fires. A floor cannot do this job: there is no number above zero to floor.
+ */
+const STALE_OWNED = 0;
+const STALE_OWNERS: readonly string[] = [];
 
 /**
  * The bolded lead-ins that OPEN a residual region, as exact strings.
@@ -325,6 +350,23 @@ const REGION_MARKERS: readonly string[] = [
  * exceptions as data rather than letting a regex quietly skip them.
  */
 const NON_REGION_LABELS: readonly { readonly label: string; readonly why: string }[] = [
+  {
+    label: "A DEFERRAL'S PRECONDITION CAN BE SPENT BY A LATER PR, AND NOTHING WATCHES.",
+    why:
+      '§6ggg — a FINDING lead-in. The two bullets under it are the EVIDENCE for one ' +
+      'shape (a stated precondition met by a later PR with nobody watching), not two ' +
+      'items of work. The work they produced is tagged where it lives: the ' +
+      'distribution emit at §6dd under M26, the interstitial at §6bb as ACCEPTED.',
+  },
+  {
+    label:
+      'The general form: a deferral that names its own trigger is only as good as whatever watches the trigger, and here nothing did.',
+    why:
+      '§6ggg — the RULE the finding above generalises to, stated as prose and carrying ' +
+      'no bullets. It is in this list rather than REGION_MARKERS because a rule is not ' +
+      "a region; the residual it implies is the [OWNER: M40] bullet in §6ggg's own " +
+      'declared region, which says the preconditions are English and nothing can watch them.',
+  },
   {
     label: 'Residual accepted here:',
     why: '§6a — an inline sentence continuing a paragraph, not a heading over bullets.',
@@ -827,6 +869,18 @@ const OUT_OF_CORPUS: ReadonlyArray<{
     // The eight members, grouped by service. Evidence for an ownership
     // decision, not work owed: both bullets are already tagged where they
     // live, in §6e and §6vv.
+  },
+  {
+    section: '6ggg',
+    label: "A DEFERRAL'S PRECONDITION CAN BE SPENT BY A LATER PR, AND NOTHING WATCHES.",
+    bullets: 2,
+    kind: 'evidence',
+    // The two deferrals whose stated condition a later PR met with nobody
+    // watching — §6dd's distribution emit ("the route has no consumer
+    // anywhere", and M23 PR4b built it) and §6bb's interstitial ("once there
+    // is something behind it", and the console shipped). EVIDENCE for one
+    // shape, not two items: each produced a disposition tagged where the item
+    // actually lives, so counting them here would count them twice.
   },
   {
     section: '6ddd',
@@ -1432,9 +1486,16 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // on. Totality carries the broken-parser case now, so this no longer has to.
     expect(completed.size).toBeGreaterThanOrEqual(MIN_COMPLETED_MILESTONES);
 
-    const stale = items
-      .map((r) => ({ r, m: TAG.exec(r.text) }))
-      .filter(({ m }) => m !== null && m[2] !== undefined && completed.has(m[2]));
+    // ONE SPELLING of the predicate, because the positive control below has to
+    // exercise the code the real corpus exercises. A control that re-implements
+    // the thing it is controlling proves only that two copies agree.
+    const staleAmong = (rows_: readonly { text: string }[]): { text: string }[] =>
+      rows_.filter((r) => {
+        const m = TAG.exec(r.text);
+        return m !== null && m[2] !== undefined && completed.has(m[2]);
+      });
+
+    const stale = staleAmong(items);
 
     // PINNED, NOT ZERO — and the difference is the honest part. Thirteen
     // residuals name a milestone whose queue row is COMPLETE: M23 twelve, M22
@@ -1460,17 +1521,50 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // seventeen (docs/03 §6fff) and the count is now ZERO. Seventeen bullets
     // held TWENTY items: thirteen went to owners that PR had to create (M45,
     // M46), five are accepted on their own bounds, two went to owners that
-    // already existed (E1, M43), and nothing closed. THE STALE COUNT
-    // BELOW IS UNCHANGED BY THAT: it was always M23's twelve plus M22's one, and
-    // M21 was never in it.
+    // already existed (E1, M43), and nothing closed.
+    //
+    // M40 PR3 THEN TOOK THE STALE THIRTEEN — M23's twelve and M22's one — TO
+    // ZERO AS WELL (docs/03 §6ggg). Thirteen bullets held SEVENTEEN items:
+    // eight accepted, four to M45, two to M46, two to M47, one to M26.
     //
     // SETS for the owners, count for the total — mis-attribution between two
     // closed milestones preserves the count, and the owner set is what says
-    // WHICH programme the debt belongs to.
-    expect([...new Set(stale.map((x) => String(x.m?.[2])))].sort()).toEqual(
+    // WHICH programme the debt belongs to. Both are now zero-valued, so
+    // NEITHER IS LEFT TO CARRY THIS ALONE; see the control below.
+    expect([...new Set(stale.map((r) => String(TAG.exec(r.text)?.[2])))].sort()).toEqual(
       [...STALE_OWNERS].sort(),
     );
     expect(stale.length).toBe(STALE_OWNED);
+
+    // POSITIVE CONTROL — the half that can still fail.
+    //
+    // A synthetic bullet tagged with a milestone docs/04 REALLY marks
+    // `**COMPLETE.**` — taken from the derived set above rather than hard-coded,
+    // so it cannot outlive the milestone it names — fed through the SAME
+    // predicate the real corpus just used.
+    //
+    // WHAT THIS ACTUALLY COVERS, measured rather than asserted. An earlier draft
+    // of this comment claimed it caught a broken status column or an empty
+    // completed set; it does not, and the mutation said so. Both of those are
+    // already caught one assertion above by `MIN_COMPLETED_MILESTONES`, which
+    // reddens before this line runs. What the control uniquely catches is the
+    // PREDICATE going wrong while its inputs stay healthy — `staleAmong`
+    // mutated to return `[]` leaves the two expectations above at `[] vs []`
+    // and `0 === 0`, and the whole file stays GREEN without this. Demonstrated
+    // by the pair: same mutation, control present = 1 failed; control removed =
+    // 18 passed.
+    const [aCompleted] = [...completed].sort();
+    expect(typeof aCompleted).toBe('string');
+    expect(
+      staleAmong([{ text: `- **[OWNER: ${String(aCompleted)}]** *synthetic.*` }]),
+    ).toHaveLength(1);
+
+    // ...and its NEGATIVE twin, because "the predicate fires" is also what a
+    // predicate that fires on EVERYTHING does. A live milestone in the same
+    // shape must not be flagged.
+    const live = OWNERS.find((o) => !completed.has(o));
+    expect(typeof live).toBe('string');
+    expect(staleAmong([{ text: `- **[OWNER: ${String(live)}]** *synthetic.*` }])).toEqual([]);
   });
 
   it('deferred work still exists — the doc has not quietly become all-ACCEPTED', () => {
