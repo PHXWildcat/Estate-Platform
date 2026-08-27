@@ -1168,7 +1168,44 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
   `evidence_add` against it, because `caseResource` snapshots `reported_by`
   while the executor path re-derives linkage per query — two different lifetimes
   for one relationship, which is the actual shape and was not in the old
-  sentence. **AND THE STOP IS NARROWER THAN THE OLD SENTENCE CLAIMED**: the
+  sentence. **THAT LIST WAS HALF OF IT, AND M40 PR4 FOUND THE REST — see §6hhh.**
+  There is a SECOND snapshot gate this bullet did not know about:
+  `assertCaseVisible` (`admin.service.ts`) takes no Cedar decision at all, admits
+  on the bare `kase.reported_by === actor`, and carries FIVE more reads —
+  `timeline`, `listStages`, `listTasks`, `listDistributions` and
+  `distributionAmount`, the last of which decrypts the estate's distribution
+  amount under the DECEDENT's DEK and returns it as plaintext. Seven survivors,
+  not two, behind two gates rather than one. Worse for the argument above: all
+  five sit POST-verification, which is precisely the window this bullet's own
+  last sentence says the owner's void does not reach, so the acceptance's third
+  leg never covered them. And the asymmetry is three lines wide — the executor
+  arm of that same `if` calls `isExecutorOf` LIVE while the reporter arm reads a
+  frozen column.
+  **SPLIT BY M40 PR4**: this bullet keeps the READS, which stay `[ACCEPTED]` —
+  a reporter who filed a case seeing that case is the evidence trail §5.1 c6
+  makes by DDL, and revoking it would mean a case with no visible author. The
+  MONEY and the missing trail are a different claim and are owned separately in
+  the bullet below.
+- **[OWNER: M48]** *An unlinked reporter can still decrypt the estate's
+  distribution amounts, and four of their reads leave no trail.* Split from the
+  bullet above by **M40 PR4** (§6hhh), which is where the evidence is. Two
+  claims, one owner. (1) `distributionAmount` funnels through
+  `assertCaseVisible`, so a removed contact who once filed a report reaches an
+  audited decrypt of the estate's distribution amounts under the DECEDENT's DEK
+  and receives the money as plaintext. Seeing that a case exists is the evidence
+  trail; reading what the estate pays out is not, and no leg of the acceptance
+  above reaches it — the owner's void is pre-verification only and a
+  distribution exists only after. (2) `recordOperatorRead` early-returns
+  `if (!isOperator)`, so this caller's `timeline`, `listStages`, `listTasks` and
+  `listDistributions` reads emit nothing at all; only the money route is
+  audited, which is the one place the trail exists and the four cheaper reads
+  are where a pattern would show. THE SHAPE IS THREE LINES WIDE: the same `if`
+  re-derives the executor's linkage live via `isExecutorOf` and reads the
+  reporter's off a frozen `reported_by` column, so the platform already knows
+  how to do this for one party. **NOT FIXED HERE, DELIBERATELY** — M40 is an
+  adjudication milestone and this changes who may read a settlement case, which
+  is a behavioural decision that belongs with its own tests rather than inside a
+  sweep. **AND THE STOP IS NARROWER THAN THE OLD SENTENCE CLAIMED**: the
   owner's step-up-gated void is PRE-VERIFICATION only. After verification there
   is no self-serve rescue, and the remedy is the §5.1 human-review path.
 
@@ -6154,7 +6191,7 @@ per-file, because a total passes happily while one lead-in goes blind.
   is gone would yield a policy pointing at a destroyed wrapping — which is
   exactly why the restorable corpus excludes reset-retired rows rather than
   filtering them at read time.
-- **[OWNER: M40]** *Thirteen residuals in the corpus are owned by a milestone
+- **[CLOSED: §6hhh]** *Thirteen residuals in the corpus are owned by a milestone
   that has already shipped, and the derivation that finds them was blind.* PR0
   closed the case of an UNTAGGED residual outside the corpus; this is its
   mirror — a TAGGED one whose owner finished. `OWNERS` is derived from every
@@ -6186,6 +6223,16 @@ per-file, because a total passes happily while one lead-in goes blind.
   A bullet about ownership accuracy asserting a count nobody checked is the
   defect it describes; asserting the same thing twice about the same milestone
   is that defect with a pattern.
+  **CLOSED BY M40 PR4** (§6hhh), on demonstrated behaviour rather than on the
+  presence of the mechanism — the rule this milestone learned the hard way at
+  §6fff. Three things were shown rather than asserted. The derivation is no
+  longer blind: it reads a lifecycle token off all 27 queue rows and returns SIX
+  completed milestones, where before M40 PR0 it saw three. The sweep is
+  finished: `[OWNER: M22]` and `[OWNER: M23]` both count zero. And a NEW stale
+  tag still reddens — re-owning a live residual to M22 fails `no residual is
+  owned by a milestone that has already SHIPPED` by name, so the assertion that
+  replaces this bullet is load-bearing rather than vacuous, which is the
+  property M40 PR3 had to build a positive control to keep.
 - **[ACCEPTED]** *The reason fence binds a route's label to its keyset
   behaviour, not to which rows it retires.* A `deleteItem` that retired every
   item a user owns would label them `user_delete`, which is CORRECT for a
@@ -7471,7 +7518,7 @@ grep beside it now derives the number the fence reads.
   claim they would make, which the paragraph above records with the numbers. What
   the token does buy is that the answer is now visible in the diff and impossible
   to omit, which is the half that was missing.
-- **[OWNER: M40]** *The escalations table has no resolution state, so the same
+- **[CLOSED: §6hhh]** *The escalations table has no resolution state, so the same
   question cannot be asked of it.* `[OWNER: E1]` carries twenty residuals and
   `[OWNER: E4]` one, and docs/04's escalation rows answer "what is this blocked
   on" rather than "what stage is this at". An escalation that clears does not
@@ -7481,6 +7528,29 @@ grep beside it now derives the number the fence reads.
   Twenty-one tags nonetheless sit behind a column that cannot report a change,
   which is a rule applied to one member of a category. This milestone's later
   PRs own deciding what the escalation half should say.
+  **DECIDED AND CLOSED BY M40 PR4** (§6hhh). The escalations table gains a
+  **State** cell over a closed two-word vocabulary — `**BLOCKED.**` /
+  `**CLEARED.**` — and all five rows read BLOCKED today, measured rather than
+  assumed. The vocabulary is deliberately NOT the milestone one, for the reason
+  this bullet gives: a milestone reading COMPLETE makes a residual naming it
+  STALE because the work is DONE, while an escalation reading CLEARED makes one
+  SCHEDULABLE because the work can finally START and nobody has started it. Same
+  mechanism, opposite meaning, so `COMPLETE` on an escalation row would claim
+  the work finished when it has not begun. Two assertions follow: every
+  escalation row declares a state, and no residual names an escalation whose
+  blocker has CLEARED. The second is VACUOUS TODAY AND SAYS SO — with nothing
+  cleared it compares `[]` against `[]`, the shape M40 PR3 had to repair one
+  test away — so it ships with the repair rather than waiting to acquire the
+  defect: the predicate is exercised by a synthetic bullet built from a DERIVED
+  escalation id, with a negative twin on a milestone tag, and a floor asserting
+  the escalation-owned residuals are really in the corpus being checked. Both
+  were proved by mutation: blanking E3's cell reddens the first by row name, and
+  marking E1 CLEARED reddens the second. **THE COUNTS IN THIS BULLET WERE
+  ALREADY STALE WHEN IT WAS RE-READ**, which is the defect it describes happening
+  to itself: E1 carries TWENTY-ONE and E4 one, so the total is TWENTY-TWO rather
+  than the twenty and twenty-one written above. The numbers are left as they
+  were measured, dated, and the current figure is derived by the fence instead
+  of restated here.
 - **[OWNER: M43]** *`STALE_OWNERS` is hand-kept, and now says so.* The blindness
   is gone — the set it checks is derived from a column that can no longer be
   silent — but the list itself is written by hand, as a register of the two
@@ -7945,13 +8015,21 @@ watched, one file over.
 
 ### Residuals
 
-- **[OWNER: M40]** *A deferral's precondition is prose, and nothing re-checks it.*
+- **[CLOSED: §6hhh]** *A deferral's precondition is prose, and nothing re-checks it.*
   Two of the thirteen deferred on a condition — "no consumer exists", "once there
   is something behind it" — that a later PR met without noticing. The conditions
   are English inside a bullet, so no mechanism can watch them, and the only reader
   is a sweep that happens on its own schedule. Making them DATA is the fix, and it
   belongs to this milestone's remaining PR rather than to a new row, because M40
-  is the milestone that keeps finding the shape.
+  is the milestone that keeps finding the shape. **CLOSED BY M40 PR4** (§6hhh),
+  which is that PR: `PRECONDITIONS` in `threat-model-residuals.spec.ts` holds each
+  absence as data with the state MEASURED against the tree, the assertion reddens
+  in both directions naming the RESIDUAL, and a derived companion requires every
+  absence-asserting deferral to be probed or exempted with a reason. Closed on
+  demonstrated behaviour rather than on the mechanism's presence — the M40 PR2
+  rule — by a counterfactual pair: blind the scanner AND bend the declaration to
+  match it, and the assertion fails with the controls present and passes with
+  them removed.
 - **[ACCEPTED]** *A count in a delta section needs to say whether it describes
   the PR or the tree, and §6cc held one of each.* Its two counts looked alike and
   were not. "Thirteen routes" was TRUE OF PR3B and stale for today, so an earlier
@@ -8001,3 +8079,232 @@ watched, one file over.
   shapes is the count today; nothing computes it, so a seventh written tomorrow
   joins the category unnoticed — which is precisely how the bullet M47 inherits
   came to describe half of its own population.
+
+## 6hhh. Threat-model delta — M40 PR4, the security review (2026-08-27)
+
+**A security review of a milestone that shipped no runtime code.** M40's four
+merged PRs touch four files and no service. Its security surface is therefore
+not new attack surface but the DECISIONS it made — thirteen residuals it marked
+`[ACCEPTED]`, which is a standing choice to leave a recorded weakness alone —
+and the SHAPE it found: a deferral justified by an absence that a later PR
+filled with nobody watching. M40 PR3 caught one of those by hand while
+adjudicating thirteen bullets. This PR asks whether there are others, and turns
+the question into a mechanism.
+
+### The spent-precondition sweep
+
+Some residuals justify leaving a defect alone by asserting an ABSENCE: "the
+route has no consumer anywhere", "read by nothing", "a surface that does not
+exist". Those justifications were TRUE when written. Nothing re-checks them, and
+the event that spends one happens somewhere else entirely, in a PR that has no
+reason to read the section stating it.
+
+**TWELVE absence-asserting residuals were checked against the CODE, not against
+other prose**, each by an independent reviewer, with two refute-by-default
+verifiers on every positive. The corpus was derived: every one of the 256 tagged
+bullets was parsed and matched against stated-absence language, and the parser's
+count was reconciled against the fence's own total before the sweep ran.
+
+**THE RESULT IS CLEAN, AND IT COULD HAVE FAILED.** No new spent precondition
+was found. That is only worth writing down because the sweep carried a POSITIVE
+CONTROL: §6dd's distribution emit — the one M40 PR3 already proved spent — was
+put through the identical process without being marked, and came back SPENT at
+high severity. A sweep that returns "nothing found" and a sweep that cannot find
+anything produce the same report; this one demonstrated it could still find the
+defect it was hunting.
+
+**EVERY FALSE POSITIVE WAS A `CLOSED` BULLET, THREE OF THREE.** Four candidates
+survived the first pass and all four were refuted 2-of-2. Three of them —
+§6j's extension overwrite, §6ff's `setDistributionStatus` refusal, §6mm's three
+consumerless routes — are tagged `CLOSED`, and they failed for one reason worth
+keeping: **in a CLOSED bullet the absence has the OPPOSITE POLARITY.** It
+explains why a FIX WAS CHEAP ("no consumer exists to break"), not why a fix was
+DEFERRED. Nothing was left undone on the strength of it, so it cannot be spent
+in the sense that matters. The fourth, §6z's revocation notice, is a bullet
+whose absence IS spent and which SAYS SO in its own text — M40 PR2 re-owned it
+to M46 noting "that surface now EXISTS". The reviewer read the first half and
+stopped before the retraction; both verifiers caught that.
+
+### The preconditions are DATA now
+
+§6ggg recorded that a deferral's precondition is English inside a bullet, that
+no mechanism can watch it, and that the only reader is a sweep on its own
+schedule. `threat-model-residuals.spec.ts` now carries `PRECONDITIONS`: each
+entry names the section, the residual's title, the absence quoted from it, the
+source corpus to scan, the pattern whose match means the absence is FILLED, and
+**the state MEASURED at this PR**.
+
+The assertion is that the state has not CHANGED, which reddens in BOTH
+directions. A consumer appearing under an `absent` entry is the M40 PR3 defect
+happening again, and one disappearing under a `filled` entry means an owner's
+fix is scoped against a surface that has since moved. The failure names the
+RESIDUAL rather than the file, so whoever adds the consumer is told which
+decision they just retired.
+
+**THE POSITIVE CONTROL IS DRAWN FROM THE REAL TREE, not synthesised.** §6dd's
+distribution entry is declared `filled`, because it is. A registry whose every
+probe answers "still absent" passes identically when the scanner is broken, the
+glob matches nothing, or the pattern cannot match — the same
+cannot-survive-its-own-success shape the stale-owner assertion had one test
+below, and the reason that one needed a control too. Here at least one entry
+MUST report FILLED against the live tree, with a negative twin requiring at
+least one to report ABSENT so that "filled" is a measurement rather than a
+matcher firing on everything.
+
+**Its coverage is stated from a COUNTERFACTUAL.** The mutation that isolates the
+control is not a broken scanner — the state comparison catches that on its own —
+but a broken scanner PLUS the tempting wrong fix of bending the declaration to
+match it. With both applied and the controls PRESENT, `no deferral has had its
+stated precondition SPENT` fails; with the same mutation and the controls
+REMOVED, it passes. Demonstrated as a pair, with each mutation verified on disk
+before the run.
+
+**THE COMPLETENESS HALF IS DERIVED, because a hand-kept registry beside a corpus
+that grows is this repo's most repeated defect.** A second assertion scans every
+non-CLOSED residual for stated-absence language and requires each match to be
+either probed or exempted with a reason; a new residual written with an absence
+justification reddens until somebody says which. Five are probed and four are
+exempt, each exemption carrying why a narrow probe is not available — a property
+of an account rather than of the tree, a finding already recorded, three
+absences in one bullet, or a reachability question a presence check cannot model.
+
+**A PROBE SHAPED LIKE THE ABSENCE'S WORDS FINDS THE WRONG THING.** A first draft
+of the `document_search_tokens` probe grepped for `DELETE FROM` and reported the
+absence SPENT. What it had found was `SearchTokensRepo.replaceForDocument`, a
+sanctioned replace-in-place on RE-INDEX that the file's own docstring and
+`002_document_vault.sql` both declare — not the erasure purge the residual is
+about. The hand sweep had it right and the mechanism had it wrong, which is the
+argument for building the mechanism only where the absence has a narrow shape.
+
+### The escalation half, decided
+
+§6vv recorded that twenty-two residual tags name an escalation while docs/04's
+escalation rows answered only "what is this blocked on", so nothing could report
+a change — a rule applied to one member of a category, the milestone half having
+gained a lifecycle token at M40 PR0. It also warned that copying `PLANNED /
+IN PROGRESS / COMPLETE` across would be **the fix that looks total and is not**.
+That warning is correct and the reason is worth stating as a rule:
+
+> A milestone reading COMPLETE makes a residual naming it **stale** — the work is
+> DONE and the tag points at nobody. An escalation reading CLEARED makes a
+> residual naming it **schedulable** — the blocker lifted, the work can finally
+> START, and until somebody re-owns it to a milestone it is owed by an entry that
+> is no longer blocking anything. Same mechanism, opposite meaning.
+
+So the escalations table gains a **State** cell over its own two-word closed
+vocabulary, `**BLOCKED.**` / `**CLEARED.**`, describing the BLOCKER rather than
+the work. All five rows read BLOCKED, which was measured rather than assumed: no
+escalation in this repo has ever cleared. Two assertions follow — every
+escalation row declares a state, and **no residual names an escalation whose
+blocker has CLEARED**.
+
+**THE SECOND IS VACUOUS TODAY AND SHIPS WITH THE REPAIR ANYWAY.** With nothing
+cleared it compares `[]` against `[]`, which is what a correct run produces AND
+what a broken parser, a renamed column or an empty corpus produce. That is the
+defect M40 PR3 spent a PR repairing one assertion away, and the lesson only
+counts if it is applied before the assertion acquires the fault rather than
+after: the predicate is exercised by a synthetic bullet built from a DERIVED
+escalation id, with a negative twin on a milestone tag so a predicate that fires
+on everything is not mistaken for one that fires correctly, and a floor
+asserting the escalation-owned residuals are genuinely in the corpus being
+checked. Both assertions were proved by mutation — blanking E3's State cell
+reddens the first by row name, marking E1 CLEARED reddens the second.
+
+**THE BULLET'S OWN COUNTS HAD ROTTED WHILE IT SAT THERE**, which is the defect it
+describes happening to itself. It said E1 carried twenty residuals and the total
+was twenty-one; both are E1 twenty-one and total twenty-two today. The figures
+are left as they were measured and dated, and the live number is derived by the
+fence rather than restated in prose — the rule this repo already has about a
+count beside a mechanism that computes one.
+
+### Re-adjudicating M40's own ACCEPTED decisions
+
+`[ACCEPTED]` is not "fixed" and not "deferred". It is a STANDING DECISION TO
+LEAVE A RECORDED WEAKNESS ALONE, resting on an argument written in the bullet.
+M40 wrote THIRTEEN of them across other milestones' sections — PR2's five and
+PR3's eight — and amended a FOURTEENTH whose tag predates it (§6cc's
+operator-console bullet, `[ACCEPTED]` since `9101c12`). Those fourteen are this
+milestone's actual security surface. Its own delta sections carry six more, which
+are not re-adjudicated here: a section does not review itself. Every one was re-adjudicated against the
+code, with two refute-by-default verifiers on any call to reopen.
+
+**NINE STAND. FOUR ARE IMPRECISE — right disposition, wrong clause. ONE REOPENS.**
+
+**THE ONE THAT REOPENS IS §6g, AND ITS ARGUMENT NEVER REACHED THE SURFACE IT WAS
+DEFENDING.** That bullet named two survivors of an unlink and one gate. There are
+seven, behind two gates. `assertCaseVisible` takes no Cedar decision at all —
+`caseResource`, the mechanism the bullet credits, appears zero times in
+`admin.service.ts` — and admits on the bare snapshot `kase.reported_by === actor`,
+carrying `timeline`, `listStages`, `listTasks`, `listDistributions` and
+`distributionAmount`. The last decrypts the estate's distribution amounts under
+the DECEDENT's DEK and returns plaintext money to a contact the owner has
+removed. All five sit POST-verification, which is precisely the window the
+bullet's own final sentence says the owner's void does not reach; the
+acceptance's third leg was never load-bearing for them. Four of the five emit
+nothing, because `recordOperatorRead` early-returns `if (!isOperator)`.
+
+**THE PROTECTIVE ACTION IS NOT HARDER THAN THE PERMISSIVE ONE — IT IS
+INEFFECTIVE, WHICH IS THE WORSE VARIANT.** Granting a contact link is
+`@UseGuards(StepUpGuard)`; unlinking is one click and deliberately ungated,
+exactly as this repo's design rules require. But the click removes a live link
+while the settlement gate reads a frozen column the unlink cannot reach, so the
+owner performs the protective action, is told nothing, and the removed contact
+keeps the money route. The asymmetry is three lines wide: the executor arm of
+that same `if` calls `isExecutorOf` LIVE. The platform already knows how to
+enforce a link's lifetime; it does it for one party and not the other, on the
+same estate, in the same conditional. **SPLIT AND OWNED**: the case-exists reads
+stay `[ACCEPTED]` because a reporter seeing the case they filed is the evidence
+trail §5.1 c6 makes by DDL; the money and the missing trail go to **M48**.
+
+**THE FOUR IMPRECISE ONES ARE RECORDED, NOT FIXED** — this is an adjudication
+milestone and a prose sweep of other sections is a different change:
+
+- **§6b intake rate limiting.** M40 PR2's repair names the sibling twice over —
+  as *Operator actions remain unbounded* at **§6bb**, "owned by **M23** today".
+  M40 PR3, the next PR of the same milestone and the same day, retitled that
+  bullet to *Operator READS are bounded, counted and reviewed by nothing* and
+  re-owned it to **M46**. Both halves of the repair were falsified within a day
+  of being written, and the sentence still stands — the shape §6fff records, with
+  this milestone as the invalidating author.
+- **§6dd `config.secureCookies`.** "Dropping `Secure` there turns three NAMED
+  assertions red … Both edges are the same" is the OPERATOR figure asserted of a
+  two-edge pair. Measured by mutation: three reds on `operator-web`, exactly ONE
+  on `vault-web`, which has no `cookies.spec.ts` at all. The half-applied rule
+  again, in a bullet M47 already exists because of.
+- **§6o reset path.** Its parenthetical cross-reference to "§6m question 8" is a
+  dead pointer: §6m has no numbered list, and the word "question" does not occur
+  anywhere in it. Introduced at M17 PR5 (`1ff424a`), it was carried through M40
+  PR2's rewrite of the very line it sits on.
+- **§6d conversations.** "The three access rungs … in five independent spellings"
+  is an undercount, and the interesting part is that two independent reviewers
+  derived SIX and EIGHT using different definitions of a spelling. A number whose
+  value depends on what you count is a number that does not belong in prose beside
+  a mechanism that could derive it — this document's own rule, illustrated by a
+  sentence that breaks it.
+
+### Residuals
+
+- **[ACCEPTED]** *A clean sweep is evidence about the corpus it ran on, not
+  about the corpus it did not.* Twelve residuals were checked because twelve
+  assert an absence in language the parser recognises. A deferral justified by
+  an absence phrased some other way — "there is nobody to tell", "that path is
+  theoretical" — is outside the pattern and was never in the sweep. The
+  derived completeness assertion narrows this over time rather than closing it,
+  because it reddens on the phrasings it knows and stays silent on the rest.
+  Accepted because the alternative is a rule that parses English intent, which
+  is the parser nobody can keep correct.
+- **[OWNER: M45]** *The probes read source, and source is not the deployment.*
+  Every entry scans tracked `.ts`/`.sql` files. An absence filled by
+  configuration, by a Terraform resource, or by a container image built from a
+  Dockerfile this scan does not read would go unnoticed, and the fence would go
+  on reporting the absence intact. M45 owns fence corpus breadth and this is
+  that shape again: the reach is narrower than the claim, so the claim is stated
+  here and the reach is declared in the spec.
+- **[ACCEPTED]** *The state is a measurement, so a wrong measurement ratchets
+  in.* Each entry records what was true when it was written, and the assertion
+  compares today against that. A state recorded wrongly is therefore asserted
+  forever, and the fence would defend the error. Accepted because the failure is
+  LOUD in the direction that matters — a `filled` entry that should read
+  `absent` reddens immediately and is fixed in the same sitting — and because
+  the alternative, deriving the state at runtime, is what the entry already does
+  and would compare only against itself.
