@@ -1175,7 +1175,14 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
   `timeline`, `listStages`, `listTasks`, `listDistributions` and
   `distributionAmount`, the last of which decrypts the estate's distribution
   amount under the DECEDENT's DEK and returns it as plaintext. Seven survivors,
-  not two, behind two gates rather than one. Worse for the argument above: all
+  not two, behind two gates rather than one. **AND THAT WAS STILL AN UNDERCOUNT —
+  M48 FOUND A THIRD GATE AND AN EIGHTH.** `CasesRepo.listForUser` is
+  `WHERE decedent_user_id = $1 OR reported_by = $1`, reached by `listMyCases`: a
+  third frozen-`reported_by` admission, in raw SQL rather than in Cedar or in a
+  bare `===`, on a route neither this bullet nor §6hhh mentioned. The review that
+  found the second gate stopped one short of the third, which is the shape §6ggg
+  records happening to a count rather than to an owner. It is also the gate M48
+  deliberately KEEPS: see the disposition below. Worse for the argument above: all
   five sit POST-verification, which is precisely the window this bullet's own
   last sentence says the owner's void does not reach, so the acceptance's third
   leg never covered them. And the asymmetry is three lines wide — the executor
@@ -8232,7 +8239,11 @@ code, with two refute-by-default verifiers on any call to reopen.
 
 **THE ONE THAT REOPENS IS §6g, AND ITS ARGUMENT NEVER REACHED THE SURFACE IT WAS
 DEFENDING.** That bullet named two survivors of an unlink and one gate. There are
-seven, behind two gates. `assertCaseVisible` takes no Cedar decision at all —
+seven, behind two gates. (**M48 CORRECTED THIS TO EIGHT BEHIND THREE**:
+`CasesRepo.listForUser`'s raw-SQL `OR reported_by = $1` is a third gate this
+review did not reach. The count was verified when written and was verified
+COMPLETE by nobody — the verifier was asked whether seven existed, not whether an
+eighth did.) `assertCaseVisible` takes no Cedar decision at all —
 `caseResource`, the mechanism the bullet credits, appears zero times in
 `admin.service.ts` — and admits on the bare snapshot `kase.reported_by === actor`,
 carrying `timeline`, `listStages`, `listTasks`, `listDistributions` and

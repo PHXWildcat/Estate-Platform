@@ -1060,11 +1060,14 @@ export class SettlementAdminService {
   /**
    * Record a case read that the OPERATOR ALLOWLIST is behind (M21 PR3b).
    *
-   * A no-op for everyone else by construction: the decedent, the reporter and
-   * the estate's executor are reading their own case, which the rest of the
-   * product does not audit as a disclosure either. What docs/03 §4 TB7 asks
-   * for is a record of platform staff looking at somebody's death case, and
-   * that is exactly the set this admits.
+   * A no-op for everyone else by construction: the decedent, a STILL-LINKED
+   * reporter and the estate's executor are reading their own case, which the
+   * rest of the product does not audit as a disclosure either. That sentence
+   * was an ASSUMPTION until M48 and is now enforced by `assertCaseVisible`: an
+   * unlinked reporter never reaches here, so "their own case" is a property of
+   * the gate rather than a hope about it. What docs/03 §4 TB7 asks for is a
+   * record of platform staff looking at somebody's death case, and that is the
+   * set this admits.
    *
    * EMITTED AFTER THE ROWS ARE GATHERED AND BEFORE THEY ARE RETURNED, at all
    * four call sites — `timeline` was the odd one out until the PR3b review and
@@ -1095,7 +1098,23 @@ export class SettlementAdminService {
   }
 
   /**
-   * Case reads: the subject, the reporter, its executor, or an operator.
+   * Case reads: the subject, a STILL-LINKED reporter, its executor, or an
+   * operator.
+   *
+   * BOTH RELATIONSHIP ARMS ARE RE-DERIVED AT READ TIME (M48). `reported_by` is
+   * a frozen column — it records who filed, and as evidence it must never
+   * change — so on its own it answered a question about the past when the
+   * question here is about now. The executor arm has always called
+   * `isExecutorOf` LIVE, so this estate enforced a link's lifetime for one
+   * party and not the other, two lines apart in the same `if`. Unlink is the
+   * owner's cheapest protective act, and it now reduces what the reporter can
+   * read — the direction the protective-action rule exists to guarantee.
+   *
+   * The frozen column still ADMITS nobody by itself and still records
+   * everything: `CasesRepo.listForUser` deliberately keeps matching
+   * `reported_by` unqualified, so a reporter never loses sight of the case they
+   * filed. Seeing that your own report exists is the evidence trail; reading
+   * the estate's administration is not.
    *
    * Returns the operator flag as well as the row, because M21 PR3b audits
    * OPERATOR reads and the answer must not depend on which clause admitted
@@ -1118,7 +1137,8 @@ export class SettlementAdminService {
     const isOperator = await this.gate.is(this.db, actor);
     if (
       kase.decedent_user_id === actor ||
-      kase.reported_by === actor ||
+      (kase.reported_by === actor &&
+        (await this.coreReads.isLinkedContact(kase.decedent_user_id, actor))) ||
       isOperator ||
       (await this.coreReads.isExecutorOf(kase.decedent_user_id, actor))
     ) {

@@ -444,6 +444,19 @@ export class FakeCoreReads {
     }
   }
 
+  /**
+   * Remove the link exactly as `contact-links.repo.ts` does — `UPDATE contacts
+   * SET linked_user_id = NULL`. The CONTACT ROW SURVIVES and keeps its id; only
+   * the account association goes. `contactIds` is therefore deliberately NOT
+   * cleared: clearing it would model deleting the contact, a different act with
+   * a different gate, and would let a test pass on a state unlink cannot reach.
+   * Verified against the running stack — after `unlinkContact` the row is still
+   * present with `deleted_at` NULL and `linked_user_id` NULL.
+   */
+  unlink(decedentUserId: string, userId: string): void {
+    this.links.get(decedentUserId)?.delete(userId);
+  }
+
   /** The contact id the real join would return, or null if no link exists. */
   contactIdFor(decedentUserId: string, userId: string): string | null {
     return this.contactIds.get(`${decedentUserId}:${userId}`) ?? null;
@@ -453,8 +466,17 @@ export class FakeCoreReads {
     return Promise.resolve(this.links.get(decedentUserId)?.has(userId) ?? false);
   }
 
-  isExecutorOf(decedentUserId: string, userId: string): Promise<boolean> {
-    return Promise.resolve(this.executors.has(`${decedentUserId}:${userId}`));
+  /**
+   * BOTH halves, because the real query is a JOIN. `core-reads.repo.ts`
+   * matches `c.linked_user_id` with `c.deleted_at IS NULL`, so a designation
+   * alone grants nothing once the contact is unlinked. This double consulted
+   * only `executors`, so an unlinked executor kept the estate here while
+   * production refused them — which made every "the executor arm is already
+   * live" control vacuous, including the one M48 exists to contrast against.
+   */
+  async isExecutorOf(decedentUserId: string, userId: string): Promise<boolean> {
+    if (!(await this.isLinkedContact(decedentUserId, userId))) return false;
+    return this.executors.has(`${decedentUserId}:${userId}`);
   }
 
   reportableEstates(userId: string): Promise<ReportableEstate[]> {
