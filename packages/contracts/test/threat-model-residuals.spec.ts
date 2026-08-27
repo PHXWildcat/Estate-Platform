@@ -46,7 +46,7 @@
  * owning it. What it buys is that the decision is visible and reviewable in the
  * diff, which is the half that was missing.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const DOC = join(__dirname, '..', '..', '..', 'docs', '03-threat-model.md');
@@ -89,6 +89,7 @@ const OWNERS: readonly string[] = [
   'M45', // fence corpus breadth — a scan states its reach (added M40 PR2)
   'M46', // TB7 follow-on — the operator authorization model (added M40 PR2)
   'M47', // the isolated origins, hardened as a pair (added M40 PR3)
+  'M48', // the link that outlives the unlink (added M40 PR4)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -199,6 +200,9 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // language rule that cannot tell use from mention, the control that proves
   // the detector rather than the document, and the undrived pair of origins.
   '6ggg': 5,
+  // M40 PR4: the sweep's own bound, the probes' source-only reach, and the
+  // measured state that ratchets in if it was measured wrong.
+  '6hhh': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -213,7 +217,11 @@ const MIN_SECTION_SIX_BULLETS = 300;
 /** Bullets outside §6 (§§1-5 and §7), and completed milestones in docs/04. */
 const MIN_NON_SIX_BULLETS = 4;
 const MIN_QUEUE_ROWS = 15;
-const MIN_COMPLETED_MILESTONES = 6;
+// Ratcheted 6 -> 7 by M40 PR4, which flips M40's own row to COMPLETE. A floor
+// equal to the true derived value is the sensitive setting: the story above is
+// a floor set from a BROKEN derivation (3, when six had shipped), not a floor
+// that sat too high. At 6 this assertion could not see M40's own flip.
+const MIN_COMPLETED_MILESTONES = 7;
 
 /**
  * THE LIFECYCLE A QUEUE ROW DECLARES — a closed vocabulary, and TOTAL over the
@@ -279,7 +287,59 @@ const ROW_STATUS = new RegExp(`^\\s*\\*\\*(${ROW_STATUSES.join('|')})\\.\\*\\*`)
  * mechanism instead of a sentence.
  */
 const QUEUE_HEADER = '| # | Milestone | Status |';
-const ESCALATION_HEADER = '| | Item | Blocker |';
+const ESCALATION_HEADER = '| | Item | Blocker | State |';
+
+/**
+ * THE ESCALATION HALF, AND WHY IT IS NOT THE MILESTONE VOCABULARY — M40 PR4.
+ *
+ * docs/03 §6vv recorded that twenty-two residual tags name an escalation while
+ * the escalations table answered only "what is this blocked on", so nothing
+ * could report a change. The obvious fix is to copy `ROW_STATUSES` across. That
+ * is the fix that looks total and is not, because the two tables mean opposite
+ * things by the same event:
+ *
+ *   - A milestone reading `COMPLETE` makes a residual naming it STALE. The work
+ *     is DONE, so the tag points at nobody, and `no residual is owned by a
+ *     milestone that has already SHIPPED` is the assertion that follows.
+ *   - An escalation reading `CLEARED` makes a residual naming it SCHEDULABLE.
+ *     The blocker lifted, so the work can finally START — and until somebody
+ *     re-owns it to a milestone, it is owed by an entry that is no longer
+ *     blocking anything. The work is not done; it is newly doable and unassigned.
+ *
+ * Same mechanism, opposite meaning. `COMPLETE` on an escalation row would say
+ * the work finished when it has not begun, which is why the vocabulary is two
+ * different words rather than three shared ones.
+ */
+const ESCALATION_STATES: readonly string[] = ['BLOCKED', 'CLEARED'];
+
+/** Built FROM the vocabulary, so the parser and the list are one spelling. */
+const ESCALATION_STATE = new RegExp(`^\\s*\\*\\*(${ESCALATION_STATES.join('|')})\\.\\*\\*`);
+
+interface EscalationRow {
+  readonly id: string;
+  readonly state: string;
+  readonly line: number;
+}
+
+/**
+ * docs/04's escalations table. Deliberately a SECOND parser rather than a
+ * parameter on `queueRows`: the two tables have different column counts and
+ * different vocabularies, and the one bug worth designing against here is a
+ * reader that treats a blocker as a lifecycle. The State cell is the FOURTH;
+ * the tail is rejoined so a cell containing a pipe cannot truncate the scan.
+ */
+function escalationRows(): EscalationRow[] {
+  return readFileSync(PLAN, 'utf8')
+    .split('\n')
+    .map((line, index) => ({ line, index }))
+    .map(({ line, index }) => ({ m: /^\| (E\d) \|/.exec(line), line, index }))
+    .filter((x): x is { m: RegExpExecArray; line: string; index: number } => x.m !== null)
+    .map(({ m, line, index }) => ({
+      id: m[1] as string,
+      state: line.split('|').slice(4).join('|'),
+      line: index + 1,
+    }));
+}
 
 /**
  * Residuals owned by a milestone whose queue row is COMPLETE. Declared debt.
@@ -350,6 +410,26 @@ const REGION_MARKERS: readonly string[] = [
  * exceptions as data rather than letting a regex quietly skip them.
  */
 const NON_REGION_LABELS: readonly { readonly label: string; readonly why: string }[] = [
+  {
+    label: 'THE FOUR IMPRECISE ONES ARE RECORDED, NOT FIXED',
+    why:
+      '§6hhh — a FINDING lead-in over EVIDENCE. The four bullets under it are ' +
+      'ACCEPTED dispositions elsewhere in this document whose prose the M40 PR4 ' +
+      're-adjudication found wrong in one clause each. They are not work owed ' +
+      'here: each is a note about a bullet that lives in §6b, §6dd, §6o and §6d ' +
+      'and keeps its own tag there. Recording them without fixing them is the ' +
+      'sweep-does-not-fix-what-it-trips-over rule this milestone has used since PR0.',
+  },
+  {
+    label:
+      'TWELVE absence-asserting residuals were checked against the CODE, not against other prose',
+    why:
+      '§6hhh — a RESULT statement, not a region. It reports what the M40 PR4 sweep ' +
+      'covered and carries no bullets; the residuals that sweep produced are under ' +
+      "§6hhh's own `### Residuals` heading. It is here rather than in REGION_MARKERS " +
+      'because a finding is not a region, and a fence that treated every bolded ' +
+      'sentence mentioning residuals as one would collect prose into the corpus.',
+  },
   {
     label: "A DEFERRAL'S PRECONDITION CAN BE SPENT BY A LATER PR, AND NOTHING WATCHES.",
     why:
@@ -731,6 +811,18 @@ const OUT_OF_CORPUS: ReadonlyArray<{
   readonly bullets: number;
   readonly kind: 'shipped' | 'decision' | 'evidence' | 'closure' | 'tracked-elsewhere';
 }> = [
+  {
+    section: '6hhh',
+    label: 'THE FOUR IMPRECISE ONES ARE RECORDED, NOT FIXED',
+    bullets: 4,
+    kind: 'evidence',
+    // Four notes about ACCEPTED bullets in OTHER sections — §6b's cross-reference
+    // that M40 PR3 invalidated a day after PR2 wrote it, §6dd's operator
+    // assertion count asserted of a two-edge pair, §6o's dead §6m pointer, and
+    // §6d's rung-spelling undercount. Each is evidence for "an ACCEPTED bullet's
+    // prose rots where nothing reads it", not an item of work: the work, where
+    // any is owed, sits under the tag in the section that owns the bullet.
+  },
   { section: '6a', label: 'Controls now shipped.', bullets: 6, kind: 'shipped' },
   {
     section: '6a',
@@ -892,6 +984,238 @@ const OUT_OF_CORPUS: ReadonlyArray<{
     // them; the bound they leave behind is the ACCEPTED residual in §6ddd.
   },
 ];
+
+/**
+ * DEFERRAL PRECONDITIONS, AS DATA — M40 PR4.
+ *
+ * Some residuals justify leaving a defect alone by asserting an ABSENCE: "the
+ * route has no consumer anywhere", "read by nothing", "a surface that does not
+ * exist". Those justifications were TRUE when written and nothing re-checks
+ * them. M40 PR3 found one that had been spent — a distribution audit emit
+ * deferred because the route had no consumer, and M23 PR4b then built exactly
+ * that consumer without the emit, turning a latent defect into a live one on a
+ * step-up-gated, money-moving verb. The only reader of such a condition was a
+ * sweep that happens on its own schedule; §6ggg records that as owed, and this
+ * is it.
+ *
+ * WHAT THE ENTRY DECLARES IS THE MEASURED STATE OF THE WORLD, not an intention.
+ * `state: 'absent'` says the absence still holds; `state: 'filled'` says it has
+ * been spent and the residual names an owner for the consequence. The assertion
+ * is that the state has not CHANGED, which reddens in BOTH directions: a
+ * consumer appearing under an 'absent' entry is the M40 PR3 defect happening
+ * again, and one disappearing under a 'filled' entry means the owner's fix was
+ * scoped against a surface that has since moved.
+ *
+ * THE 'filled' ENTRY IS THE POSITIVE CONTROL, and it is drawn from the real
+ * corpus rather than synthesised. A registry of absences whose every probe
+ * returns "still absent" passes identically when the scanner is broken, the
+ * glob matches nothing, or the pattern cannot match — the same
+ * cannot-survive-its-own-success shape the stale-owner assertion had one test
+ * below. Here one entry MUST report FILLED against the live tree, so a scanner
+ * that can only answer "absent" fails this file.
+ *
+ * WHY `CLOSED` BULLETS ARE OUT OF THE CORPUS, which was measured rather than
+ * assumed. The M40 PR4 sweep ran this question over twelve absence-asserting
+ * residuals with two refute-by-default verifiers each. Every false positive it
+ * produced was a CLOSED bullet, three of three, and always for the same reason:
+ * in a CLOSED bullet the absence has the OPPOSITE POLARITY. It explains why a
+ * FIX WAS CHEAP ("no consumer exists to break"), not why a fix was DEFERRED.
+ * Nothing was left undone on the strength of it, so it cannot be spent in the
+ * sense that matters. Scanning them anyway is how a fence earns a reputation
+ * for crying wolf.
+ *
+ * WHY THE PROBES ARE NARROW, also measured. A first draft of the
+ * `document_search_tokens` probe grepped for `DELETE FROM` and reported the
+ * absence SPENT. What it had found was `SearchTokensRepo.replaceForDocument` —
+ * a sanctioned replace-in-place on re-index, which that file's own docstring
+ * declares — and not the erasure purge the residual is about. A probe shaped
+ * like the absence's SUBJECT rather than its WORDS finds the wrong thing and
+ * reports it confidently.
+ */
+interface Precondition {
+  /** The §6 section the residual lives in. */
+  readonly section: string;
+  /** The residual's italic title, verbatim — the anchor a reader can grep. */
+  readonly title: string;
+  /** The absence the bullet asserts, quoted from it. */
+  readonly absence: string;
+  /** Repo-relative directories to scan. Non-empty is asserted, not assumed. */
+  readonly corpus: readonly string[];
+  /** A match means the absence has been FILLED. */
+  readonly filledWhen: RegExp;
+  /** Paths whose match does not count, each with the reason it does not. */
+  readonly notCountedIn: readonly { readonly path: string; readonly why: string }[];
+  /** The state MEASURED at M40 PR4. */
+  readonly state: 'absent' | 'filled';
+  readonly why: string;
+}
+
+const PRECONDITIONS: readonly Precondition[] = [
+  {
+    section: '6dd',
+    title: 'Two of three distribution status transitions emit no audit event',
+    absence:
+      'left as found because the route has no consumer anywhere — no BFF client, ' +
+      "and the operator edge's exact-match allowlist does not carry it",
+    corpus: ['apps/bff/src', 'apps/operator-web/src'],
+    filledWhen: /setEstateDistributionStatus|distributions\/:distributionId\/amount/,
+    notCountedIn: [],
+    state: 'filled',
+    why:
+      'THE POSITIVE CONTROL, and the defect this whole mechanism exists for. M23 ' +
+      'PR4b (4e125e1) built the consumer the deferral said did not exist and did ' +
+      'not add the emit. M26 owns the emit. This entry must keep reporting FILLED: ' +
+      'if it ever reads absent, the scanner is broken, not the tree.',
+  },
+  {
+    section: '6bb',
+    title: 'The operator interstitial is reachable only by typing its URL',
+    absence: "`/operator` is deliberately not in the app's navigation",
+    corpus: ['apps/web/src'],
+    filledWhen: /href[=:]\s*['"`]\/operator/,
+    notCountedIn: [],
+    state: 'absent',
+    why:
+      'ACCEPTED on the reasoning that minting is role-blind, so a navigation entry ' +
+      'would advertise a surface most holders cannot use. A link appearing here ' +
+      'does not create a vulnerability; it retires the reasoning, which is exactly ' +
+      'the event nobody was watching for.',
+  },
+  {
+    section: '6dd',
+    title: '`config.secureCookies` is asserted by a test and read by nothing',
+    absence: 'read by nothing',
+    corpus: ['apps/operator-web/src', 'apps/vault-web/src'],
+    filledWhen: /secureCookies/,
+    notCountedIn: [
+      {
+        path: 'config.ts',
+        why: 'the declaration itself, on both origins — the subject, not a reader',
+      },
+    ],
+    state: 'absent',
+    why:
+      'ACCEPTED because a value nothing reads cannot be misconfigured. The day ' +
+      'something reads it, that argument dies and the flag becomes a control with ' +
+      'a default nobody chose. Both isolated origins are scanned, because this ' +
+      'shape was recorded on one edge and lives on two (§6ggg, M47).',
+  },
+  {
+    section: '6ll',
+    title: '`document_search_tokens` is not purged by anything',
+    absence: 'not purged by anything',
+    corpus: ['apps/services/documents/src'],
+    filledWhen: /DELETE\s+FROM\s+document_search_tokens/,
+    notCountedIn: [
+      {
+        path: 'search-tokens.repo.ts',
+        why:
+          'replaceForDocument is a sanctioned replace-in-place on RE-INDEX, declared ' +
+          'as such in that file and in 002_document_vault.sql. It is not the erasure ' +
+          'purge this residual is about, and a probe that counts it reports the ' +
+          'absence spent on the strength of the wrong DELETE.',
+      },
+    ],
+    state: 'absent',
+    why:
+      'A blind index of a crypto-shredded document outliving the document is the ' +
+      'defect. The migration comment promises a privileged retention job; no such ' +
+      'job exists. M26 owns it. This probe watches for the purge ARRIVING, which ' +
+      'would mean the residual can close.',
+  },
+  {
+    section: '6d',
+    title: 'Conversations are outside staged settlement access',
+    absence: 'conversations are in none of those rungs',
+    corpus: ['apps/services/settlement/src'],
+    filledWhen: /conversation|transcript/i,
+    notCountedIn: [],
+    state: 'absent',
+    why:
+      'ACCEPTED because the three rungs are inventory, documents and vault, and ' +
+      'assistant.cedar keys its one permit on `subject` rather than `owner`. A ' +
+      'settlement source file learning the word "conversation" is the first sign ' +
+      'that a fourth rung is being built, which is when this decision needs remaking.',
+  },
+];
+
+/**
+ * Absence-asserting residuals that are NOT probed, each with the reason.
+ *
+ * Stated as data for the same reason the corpus is: a silent skip and a clean
+ * result are indistinguishable. Every one of these was checked by hand in the
+ * M40 PR4 sweep and found to HOLD; what they lack is a probe narrow enough to
+ * be worth arming, which is a different thing from being unchecked.
+ */
+const UNPROBED_ABSENCES: readonly { readonly section: string; readonly why: string }[] = [
+  {
+    section: '6j',
+    why:
+      "the stolen-session bootstrap: the absence is 'an account that never enrolled " +
+      "a factor has no proof to demand', which is a property of an account rather " +
+      'than of the tree. No file appearing or disappearing changes it.',
+  },
+  {
+    section: '6z',
+    why:
+      'the revocation notice: its absence was ALREADY spent and the bullet says so ' +
+      "in its own text — M40 PR2 re-owned it to M46 noting 'that surface now EXISTS'. " +
+      'Probing it would re-report a finding already recorded, which is how a fence ' +
+      'teaches its readers to ignore it.',
+  },
+  {
+    section: '6bb',
+    why:
+      'operator READS bounded/counted/reviewed by nothing: three absences in one ' +
+      'bullet, and the honest probe for each is a different shape (a ledger EXEMPT ' +
+      'map, a gate call site, a review surface). M46 owns the whole bullet; splitting ' +
+      'it into three probes before it is split into three bullets would put the ' +
+      'mechanism ahead of the record.',
+  },
+  {
+    section: '6ww',
+    why:
+      'the versions reader: the absence is that a reset leaves no reachable caller ' +
+      'for a killed row, which is bounded by the uniform 404 rather than by a filter. ' +
+      'The probe would have to model reachability, not presence.',
+  },
+];
+
+/**
+ * Read every file under a repo-relative directory, skipping build output and
+ * tests. The corpus is the SOURCE a deployment ships, not what asserts about it.
+ */
+function sourceFiles(dir: string): string[] {
+  const root = join(__dirname, '..', '..', '..', dir);
+  let names: string[];
+  try {
+    names = readdirSync(root, { recursive: true, encoding: 'utf8' });
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => /\.(ts|tsx|sql)$/.test(n))
+    .filter((n) => !/(^|[/\\])(node_modules|dist|dist-esm|coverage|\.next)[/\\]/.test(n))
+    .filter((n) => !/\.spec\.|\.test\.|(^|[/\\])test[/\\]/.test(n))
+    .map((n) => join(root, n))
+    .filter((f) => statSync(f).isFile());
+}
+
+/**
+ * The predicate, extracted so the controls exercise the REAL matcher rather
+ * than a paraphrase of it — the same lesson as `staleAmong` below.
+ */
+function fillMatches(p: Precondition, files: readonly string[]): { file: string; line: number }[] {
+  const out: { file: string; line: number }[] = [];
+  for (const file of files) {
+    if (p.notCountedIn.some((x) => file.endsWith(x.path))) continue;
+    const lines = readFileSync(file, 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (p.filledWhen.test(line)) out.push({ file, line: i + 1 });
+    });
+  }
+  return out;
+}
 
 const TAG = /^- \*\*\[(ACCEPTED|OWNER: ([A-Z]\d{1,2})|CLOSED: §6[a-z]{0,3})\]\*\*/;
 
@@ -1424,6 +1748,97 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     expect(found.size).toBeGreaterThanOrEqual(2);
   });
 
+  it('every ESCALATION row declares a state — the blocker half can report a change', () => {
+    // M40 PR4, answering docs/03 §6vv. The escalations table could not say
+    // whether anything had moved, so twenty-two residual tags sat behind a
+    // column with no state at all. See ESCALATION_STATES for why this is not
+    // the milestone vocabulary.
+    const rows = escalationRows();
+
+    // ANTI-VACUITY: a renamed first column would empty this and pass.
+    expect(rows.length).toBeGreaterThanOrEqual(5);
+
+    const silent = rows
+      .filter((r) => !ESCALATION_STATE.test(r.state))
+      .map((r) => `${r.id} (docs/04:${r.line}) declares no state: ${r.state.trim().slice(0, 60)}`);
+    expect(silent).toEqual([]);
+
+    // The header says the fourth cell is the State, read out of the document
+    // rather than assumed — the same anchoring the queue table gets, and the
+    // reason a re-columned table reddens here instead of silently mis-parsing.
+    const plan = readFileSync(PLAN, 'utf8').split('\n');
+    const header = plan.indexOf(ESCALATION_HEADER);
+    expect(header).toBeGreaterThan(-1);
+    expect((plan[header] as string).split('|')[4]?.trim()).toBe('State');
+  });
+
+  it('no residual names an escalation whose blocker has CLEARED', () => {
+    /*
+     * THE ASSERTION THE STATE COLUMN MAKES POSSIBLE, and the opposite in meaning
+     * to its neighbour below. A milestone going COMPLETE leaves a residual with
+     * nobody who owes it. An escalation going CLEARED leaves one that is newly
+     * DOABLE and still unassigned — the blocker that justified deferring it is
+     * gone, and nothing has re-owned it to a milestone.
+     *
+     * IT IS VACUOUS TODAY AND SAYS SO. All five escalations read BLOCKED, so
+     * `cleared` is empty and this compares [] against []. That is exactly the
+     * shape M40 PR3 had to repair one test below, so it gets the same repair
+     * rather than waiting to acquire the same defect: the predicate is extracted
+     * and exercised by a control.
+     */
+    const cleared = new Set(
+      escalationRows()
+        .filter((r) => /\*\*CLEARED\.\*\*/.test(r.state))
+        .map((r) => r.id),
+    );
+
+    const namingCleared = (rows_: readonly { text: string }[]): { text: string }[] =>
+      rows_.filter((r) => {
+        const m = TAG.exec(r.text);
+        return m !== null && m[2] !== undefined && cleared.has(m[2]);
+      });
+
+    expect(namingCleared(items)).toEqual([]);
+
+    /*
+     * THE POSITIVE CONTROL. `cleared` is empty, so the assertion above cannot
+     * fail for any reason — a broken parser, a renamed column and a healthy tree
+     * all produce []. The control feeds a synthetic bullet through the SAME
+     * predicate with a synthetically-cleared set, and requires it to FIRE.
+     *
+     * The escalation id is taken from the DERIVED rows rather than hard-coded,
+     * so deleting E1 from the plan cannot leave this control asserting about an
+     * escalation that no longer exists.
+     */
+    const [anEscalation] = escalationRows()
+      .map((r) => r.id)
+      .sort();
+    expect(typeof anEscalation).toBe('string');
+
+    const withCleared = new Set([String(anEscalation)]);
+    const namingClearedSynthetic = (rows_: readonly { text: string }[]): { text: string }[] =>
+      rows_.filter((r) => {
+        const m = TAG.exec(r.text);
+        return m !== null && m[2] !== undefined && withCleared.has(m[2]);
+      });
+    expect(
+      namingClearedSynthetic([{ text: `- **[OWNER: ${String(anEscalation)}]** *synthetic.*` }]),
+    ).toHaveLength(1);
+
+    // ...and the NEGATIVE twin, because a predicate that fires on everything
+    // also "fires". A milestone tag must not be caught by an escalation set.
+    expect(namingClearedSynthetic([{ text: '- **[OWNER: M46]** *synthetic.*' }])).toEqual([]);
+
+    // AND THE REAL CORPUS IS NON-EMPTY FOR THIS TAG SHAPE, so `namingCleared`
+    // returning [] above is a statement about states rather than about there
+    // being no escalation-owned residuals to check. Twenty-two of them exist.
+    const escalationOwned = items.filter((r) => {
+      const m = TAG.exec(r.text);
+      return m !== null && m[2] !== undefined && /^E\d$/.test(m[2]);
+    });
+    expect(escalationOwned.length).toBeGreaterThanOrEqual(20);
+  });
+
   it('no residual is owned by a milestone that has already SHIPPED', () => {
     /*
      * THE COMPLEMENTARY HOLE, and PR0 exists because of its twin. §6j:1623
@@ -1565,6 +1980,86 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     const live = OWNERS.find((o) => !completed.has(o));
     expect(typeof live).toBe('string');
     expect(staleAmong([{ text: `- **[OWNER: ${String(live)}]** *synthetic.*` }])).toEqual([]);
+  });
+
+  it('no deferral has had its stated precondition SPENT while nobody watched', () => {
+    // THE ASSERTION IS THAT THE WORLD HAS NOT MOVED UNDER A RECORDED DECISION.
+    // Each entry declares the state measured at M40 PR4 and the fence compares
+    // today against it, so the failure names the RESIDUAL rather than the file:
+    // whoever just added the consumer is told which decision they retired.
+    const observed = PRECONDITIONS.map((p) => {
+      const files = PRECONDITIONS.length ? p.corpus.flatMap((d) => sourceFiles(d)) : [];
+
+      // ANTI-VACUITY, PER ENTRY AND NOT JUST IN TOTAL. An empty corpus and an
+      // absence that still holds produce the same verdict, and a renamed
+      // directory would quietly turn every probe below it into a pass.
+      expect({ section: p.section, corpusEmpty: files.length === 0 }).toEqual({
+        section: p.section,
+        corpusEmpty: false,
+      });
+
+      const hits = fillMatches(p, files);
+      return { section: p.section, title: p.title, state: hits.length > 0 ? 'filled' : 'absent' };
+    });
+
+    expect(observed).toEqual(
+      PRECONDITIONS.map((p) => ({ section: p.section, title: p.title, state: p.state })),
+    );
+
+    // THE POSITIVE CONTROL, drawn from the real tree rather than synthesised:
+    // at least one entry must report FILLED. Without this, a scanner that can
+    // only ever answer "absent" — a broken glob, a pattern that cannot match,
+    // a `readdirSync` throwing into the empty-array fallback — passes this test
+    // exactly as a healthy one does. Same shape as the stale-owner assertion
+    // above, and the reason it needed a control too.
+    expect(observed.filter((o) => o.state === 'filled').length).toBeGreaterThanOrEqual(1);
+
+    // ...and its NEGATIVE twin: the matcher must be capable of saying "absent"
+    // on a corpus that genuinely lacks the pattern, so that "filled" above is a
+    // measurement rather than a matcher that fires on everything.
+    expect(observed.filter((o) => o.state === 'absent').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('every absence-justified residual is DECLARED — probed, or exempt with a reason', () => {
+    // THE COMPLETENESS HALF. A hand-kept registry beside a corpus that grows is
+    // this repo's most repeated defect, so the corpus decides membership and the
+    // registry only decides what to DO about each member. A new residual written
+    // with an absence justification lands here and reddens until someone says
+    // which it is.
+    const ABSENCE =
+      /\b(no consumer|nothing (?:reads|calls|uses|exercises)|does not exist|has no caller|no caller|no reader|read by nothing|not purged by anything|surface that does not exist)\b/i;
+
+    // CLOSED is out of the corpus, and the reason is measured — see the header
+    // on PRECONDITIONS. In a CLOSED bullet the absence explains why a FIX was
+    // cheap, not why one was DEFERRED, so it cannot be spent in the sense this
+    // fence hunts. Three of three false positives in the M40 PR4 sweep were this.
+    const deferrals = items.filter((r) => {
+      const m = TAG.exec(r.text);
+      return m !== null && m[1] !== undefined && !m[1].startsWith('CLOSED');
+    });
+    expect(deferrals.length).toBeGreaterThan(100);
+
+    const asserting = deferrals.filter((r) => ABSENCE.test(r.text));
+
+    // Anti-vacuity: the pattern must actually select a subset, in both
+    // directions. All-or-nothing is what a broken regex produces.
+    expect(asserting.length).toBeGreaterThan(0);
+    expect(asserting.length).toBeLessThan(deferrals.length);
+
+    const declared = new Set([
+      ...PRECONDITIONS.map((p) => p.section),
+      ...UNPROBED_ABSENCES.map((u) => u.section),
+    ]);
+    const undeclared = asserting
+      .filter((r) => !declared.has(r.section))
+      .map((r) => `docs/03-threat-model.md:${r.line} (§${r.section}) — ${r.text.slice(0, 90)}`);
+
+    expect(undeclared).toEqual([]);
+
+    // Every exemption carries a reason, because an exemption list without them
+    // is a skip list wearing a better name.
+    expect(UNPROBED_ABSENCES.filter((u) => u.why.trim().length < 40)).toEqual([]);
+    expect(PRECONDITIONS.filter((p) => p.why.trim().length < 40)).toEqual([]);
   });
 
   it('deferred work still exists — the doc has not quietly become all-ACCEPTED', () => {
