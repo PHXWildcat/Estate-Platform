@@ -1411,4 +1411,57 @@ describe("the reporter's link, re-derived at read time (M48, docs/03 §6g)", () 
     h.coreReads.unlink(DECEDENT, EXECUTOR);
     await expect(h.admin.timeline(EXECUTOR, SESSION, ids.caseId)).rejects.toThrow();
   });
+
+  /**
+   * M23 PR4b'S SET EQUALITY, RE-ARMED FOR THE LINK DIMENSION.
+   *
+   * `admits exactly the callers listDistributions admits` says this route's
+   * authority IS `listDistributions`'s, because it reveals a field of a row
+   * that route already returns. It cannot see the LINK dimension: its fixture
+   * reporter is linked by `verifiedCase`, so an alternative that refused the
+   * money route alone leaves both admitted sets unchanged and that comparison
+   * stays green.
+   *
+   * Before M48 PR1 the fixture reporter was UNLINKED — a state intake cannot
+   * produce — and the money-only alternative DID redden it. That is the
+   * measurement M48 PR1 cited to justify taking all five reads. Repairing the
+   * fixture in the same commit silently removed the arm the argument rested
+   * on, so the prose outlived its evidence.
+   *
+   * This is that arm, stated where an unlink can be expressed. The property is
+   * not "the reporter is refused" — the test above says that. It is that these
+   * two routes admit the SAME SET whatever the link state, so shrinking one
+   * without the other reddens HERE.
+   */
+  it('admit the same SET after an unlink — the arm the fixture repair removed', async () => {
+    const h = buildAdminHarness();
+    const ids = await estateWithMoney(h);
+    h.coreReads.unlink(DECEDENT, REPORTER);
+    const parties = { DECEDENT, REPORTER, EXECUTOR, OPERATOR, STRANGER };
+
+    const admits = async (call: (who: string) => Promise<unknown>): Promise<string[]> => {
+      const out: string[] = [];
+      for (const [name, who] of Object.entries(parties)) {
+        const ok = await call(who).then(
+          () => true,
+          () => false,
+        );
+        if (ok) out.push(name);
+      }
+      return out;
+    };
+
+    const onList = await admits((who) => h.admin.listDistributions(who, SESSION, ids.caseId));
+    const onAmount = await admits((who) =>
+      h.admin.distributionAmount(who, SESSION, ids.distributionId),
+    );
+    expect(onAmount).toEqual(onList);
+    // ANTI-VACUITY, on both halves. Two empty sets are equal, and so are two
+    // sets that lost the same party for an unrelated reason: the floor names
+    // the parties these routes exist for, and the REPORTER's absence is what
+    // distinguishes a working gate from no gate at all.
+    expect(onAmount).toEqual(expect.arrayContaining(['EXECUTOR', 'OPERATOR']));
+    expect(onAmount).not.toContain('STRANGER');
+    expect(onAmount).not.toContain('REPORTER');
+  });
 });
