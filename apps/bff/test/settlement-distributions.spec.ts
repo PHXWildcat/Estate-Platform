@@ -209,8 +209,8 @@ describe('distribution resolvers', () => {
     });
 
     it('does NOT resolve the case id first — settlement owns who may read them', async () => {
-      // `assertCaseVisible` admits the decedent's own reader, the reporter, the
-      // executor and an operator. A resolve-first check here would refuse three
+      // `assertCaseVisible` admits the decedent's own reader, a still-linked
+      // reporter (M48), the executor and an operator. A resolve-first check here would refuse three
       // of the four, the same argument the ladder and the checklist make.
       await gql(app, { query: LIST_QUERY, variables: { caseId: 'case-1' } }, { cookie: COOKIE });
       expect(settlement.executorCasesCalls).toEqual([]);

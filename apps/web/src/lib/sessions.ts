@@ -66,8 +66,9 @@ export const AUDIENCE_COPY: Record<SessionAudience, AudienceCopy> = {
    * PR3a said "it reaches none of your estate", which was true while an
    * operator credential reached three identity routes and nothing else. PR3b
    * admitted it to thirteen settlement routes, and four of those reach a case
-   * through `assertCaseVisible` — which admits the decedent, the reporter and
-   * the estate's executor as well as an operator. So a console session CAN see
+   * through `assertCaseVisible` — which admits the decedent, a STILL-LINKED
+   * reporter (M48 re-derives that link at read time) and the estate's executor
+   * as well as an operator. So a console session CAN see
    * a case the holder is party to, and the old sentence was an absolute the
    * platform no longer keeps.
    *

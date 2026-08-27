@@ -55,6 +55,12 @@ async function verifiedAdminCase(h: AdminHarness): Promise<string> {
     evidence: [],
   });
   markCaseVerified(h.cases, row.id, NOW);
+  // The reporter is LINKED, because intake cannot produce one who is not:
+  // `report` refuses with a uniform 404 unless `isLinkedContact` holds
+  // (settlement.service.ts). Leaving this out put every fixture reporter in a
+  // state the product cannot reach, which is why the tests named for the
+  // reporter's access were evidence about nothing.
+  h.coreReads.link(DECEDENT, REPORTER);
   h.coreReads.link(DECEDENT, EXECUTOR);
   h.coreReads.executors.add(`${DECEDENT}:${EXECUTOR}`);
   h.operators.active.add(OPERATOR);

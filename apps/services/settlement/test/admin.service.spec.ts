@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ForbiddenException, type HttpException, NotFoundException } from '@nestjs/common';
 import {
   auditActions,
@@ -34,6 +36,12 @@ async function verifiedCase(h: AdminHarness): Promise<string> {
     evidence: [],
   });
   markCaseVerified(h.cases, row.id, NOW);
+  // The reporter is LINKED, because intake cannot produce one who is not:
+  // `report` refuses with a uniform 404 unless `isLinkedContact` holds
+  // (settlement.service.ts). Leaving this out put every fixture reporter in a
+  // state the product cannot reach, which is why the tests named for the
+  // reporter's access were evidence about nothing.
+  h.coreReads.link(DECEDENT, REPORTER);
   h.coreReads.link(DECEDENT, EXECUTOR);
   h.coreReads.executors.add(`${DECEDENT}:${EXECUTOR}`);
   h.operators.active.add(OPERATOR);
@@ -373,6 +381,11 @@ describe('staged executor access (docs/03 §5.1 control 5)', () => {
       source: 'trusted_contact',
       evidence: [],
     });
+    // LINKED as well as designated. `isExecutorOf` is a JOIN: a designation
+    // with no live contact link is not an executor, so without this the caller
+    // is refused at the door with the uniform 404 and never reaches the
+    // verification check this test is named for.
+    h.coreReads.link(DECEDENT, EXECUTOR);
     h.coreReads.executors.add(`${DECEDENT}:${EXECUTOR}`);
     await expect(
       h.admin.requestStage(EXECUTOR, SESSION, row.id, 'inventory'),
@@ -1265,5 +1278,137 @@ describe('the operator breadth bound', () => {
     expect(warning).toBeDefined();
     expect(warning).not.toContain(caseId);
     expect(warning).not.toContain(DECEDENT);
+  });
+});
+
+describe("the reporter's link, re-derived at read time (M48, docs/03 §6g)", () => {
+  /**
+   * DERIVED FROM THE SERVICE SOURCE, never hand-listed. `assertCaseVisible` is
+   * the gate; the routes behind it are whatever calls it today. A sixth one
+   * added tomorrow joins this fence without anybody remembering it exists,
+   * which is the failure mode that let this defect reach five routes while the
+   * residual describing it named two.
+   */
+  function routesBehindTheGate(): string[] {
+    const src = readFileSync(join(__dirname, '..', 'src', 'admin.service.ts'), 'utf8');
+    const found = new Set<string>();
+    let current: string | null = null;
+    for (const line of src.split('\n')) {
+      const trimmed = line.trim();
+      // Comments name the helper constantly; only a real call counts.
+      if (trimmed.startsWith('*') || trimmed.startsWith('//')) continue;
+      const decl = /^ {2}(?:private )?async (\w+)\(/.exec(line);
+      if (decl) current = decl[1] as string;
+      if (line.includes('this.assertCaseVisible(') && current !== null) found.add(current);
+    }
+    return [...found].sort();
+  }
+
+  /** How to reach each gated route. Compared as a SET against the derivation. */
+  const EXERCISE: Record<
+    string,
+    (
+      h: AdminHarness,
+      who: string,
+      ids: { caseId: string; distributionId: string },
+    ) => Promise<unknown>
+  > = {
+    distributionAmount: (h, who, ids) =>
+      h.admin.distributionAmount(who, SESSION, ids.distributionId),
+    listDistributions: (h, who, ids) => h.admin.listDistributions(who, SESSION, ids.caseId),
+    listStages: (h, who, ids) => h.admin.listStages(who, SESSION, ids.caseId),
+    listTasks: (h, who, ids) => h.admin.listTasks(who, SESSION, ids.caseId),
+    timeline: (h, who, ids) => h.admin.timeline(who, SESSION, ids.caseId),
+  };
+
+  async function estateWithMoney(
+    h: AdminHarness,
+  ): Promise<{ caseId: string; distributionId: string }> {
+    const caseId = await readyCase(h);
+    h.coreReads.link(DECEDENT, REPORTER);
+    const dto = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: CONTACT,
+      amount: '4500.00',
+    });
+    return { caseId, distributionId: dto.distributionId };
+  }
+
+  it('the gated route set is DERIVED, and every member of it is exercised here', () => {
+    const derived = routesBehindTheGate();
+    // ANTI-VACUITY: a scan that returns nothing and a scan that found nothing
+    // look identical, and two empty sets compare equal.
+    expect(derived.length).toBeGreaterThanOrEqual(5);
+    expect(derived).toContain('distributionAmount');
+    expect(derived).toEqual(Object.keys(EXERCISE).sort());
+  });
+
+  it('an UNLINKED reporter is refused by every route behind the gate', async () => {
+    const h = buildAdminHarness();
+    const ids = await estateWithMoney(h);
+    h.coreReads.unlink(DECEDENT, REPORTER);
+    const refused: string[] = [];
+    for (const [name, call] of Object.entries(EXERCISE)) {
+      const ok = await call(h, REPORTER, ids).then(
+        () => true,
+        () => false,
+      );
+      if (!ok) refused.push(name);
+    }
+    expect(refused.sort()).toEqual(Object.keys(EXERCISE).sort());
+  });
+
+  it('a STILL-LINKED reporter is admitted by every one of them', async () => {
+    // THE POSITIVE CONTROL. Without it, "the reporter is refused everywhere" is
+    // equally consistent with a harness that refuses everyone.
+    const h = buildAdminHarness();
+    const ids = await estateWithMoney(h);
+    const admitted: string[] = [];
+    for (const [name, call] of Object.entries(EXERCISE)) {
+      const ok = await call(h, REPORTER, ids).then(
+        () => true,
+        () => false,
+      );
+      if (ok) admitted.push(name);
+    }
+    expect(admitted.sort()).toEqual(Object.keys(EXERCISE).sort());
+  });
+
+  it('the money route refuses an unlinked reporter with the UNIFORM refusal', async () => {
+    const h = buildAdminHarness();
+    const ids = await estateWithMoney(h);
+    h.coreReads.unlink(DECEDENT, REPORTER);
+    // Indistinguishable from a stranger's refusal and from an unknown id: an
+    // unlinked reporter must not learn that the distribution exists.
+    const onUnlinked = await refusalOf(() =>
+      h.admin.distributionAmount(REPORTER, SESSION, ids.distributionId),
+    );
+    const onStranger = await refusalOf(() =>
+      h.admin.distributionAmount(STRANGER, SESSION, ids.distributionId),
+    );
+    const onUnknown = await refusalOf(() =>
+      h.admin.distributionAmount(STRANGER, SESSION, randomUUID()),
+    );
+    expect(onUnlinked).toEqual(onStranger);
+    expect(onUnlinked).toEqual(onUnknown);
+  });
+
+  it('and still returns the exact decimal to a reporter who is still linked', async () => {
+    const h = buildAdminHarness();
+    const ids = await estateWithMoney(h);
+    await expect(
+      h.admin.distributionAmount(REPORTER, SESSION, ids.distributionId),
+    ).resolves.toEqual({ amount: '4500.00' });
+  });
+
+  it('the executor arm was ALREADY live — the double now says so too', async () => {
+    // The contrast M48 exists to remove. `isExecutorOf` is a JOIN on a live
+    // contact, so unlinking has always revoked the executor. Until the harness
+    // was repaired this passed on a fake that ignored links entirely, which
+    // made the contrast unmeasurable.
+    const h = buildAdminHarness();
+    const ids = await estateWithMoney(h);
+    await expect(h.admin.timeline(EXECUTOR, SESSION, ids.caseId)).resolves.toBeDefined();
+    h.coreReads.unlink(DECEDENT, EXECUTOR);
+    await expect(h.admin.timeline(EXECUTOR, SESSION, ids.caseId)).rejects.toThrow();
   });
 });

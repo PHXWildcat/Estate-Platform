@@ -267,7 +267,8 @@ export const AUDIENCE_ROUTE_ADMITTERS: Readonly<
    *   · TWO WORKLISTS and the reads that open a case. `getCase`, `timeline`,
    *     `listStages` and `listDistributions` authorize through the Cedar
    *     `read` permit and `assertCaseVisible`, which admit the decedent, the
-   *     reporter and the estate's executor as well as an operator — so an
+   *     reporter (still-linked, for `assertCaseVisible`, since M48) and the
+   *     estate's executor as well as an operator — so an
    *     operator credential reaches those people's own cases too. That is a
    *     real widening, it is the reason `AUDIENCE_COPY.OPERATOR` no longer
    *     claims the credential "reaches none of your estate", and it is

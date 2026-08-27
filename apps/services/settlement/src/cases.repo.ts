@@ -133,7 +133,22 @@ export class CasesRepo {
     return rows[0] ?? null;
   }
 
-  /** Cases where the caller is subject or reporter (their own view). */
+  /**
+   * Cases where the caller is subject or reporter (their own view).
+   *
+   * THE `reported_by` MATCH HERE STAYS UNQUALIFIED, AND THAT IS A DECISION
+   * (M48). `assertCaseVisible` now re-derives the reporter's link at read time,
+   * because the administration reads behind it answer questions about the
+   * estate. This route answers a different question — "which reports have I
+   * filed?" — and docs/03 §6g's acceptance rests on it: a case is evidence, and
+   * revoking the author's sight of their own report would leave a case with no
+   * visible author. So an unlinked reporter still sees THAT the case exists and
+   * that they filed it, and no longer sees how the estate is being settled.
+   *
+   * This is the THIRD gate admitting on the frozen column — Cedar's
+   * `caseResource` snapshot and `assertCaseVisible` are the other two — and it
+   * is deliberately the one that keeps it.
+   */
   async listForUser(q: Queryable | Db, userId: string): Promise<CaseRow[]> {
     return q.query<CaseRow>(
       `SELECT ${COLUMNS}

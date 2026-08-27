@@ -238,8 +238,8 @@ describe('executor resolvers', () => {
     });
 
     it('does NOT resolve the case id first — settlement owns who may read stages', async () => {
-      // `assertCaseVisible` admits the decedent, the reporter, the executor and
-      // an operator. A resolve-first check here would refuse three of the four
+      // `assertCaseVisible` admits the decedent, a still-linked reporter (M48),
+      // the executor and an operator. A resolve-first check here would refuse three of the four
       // on a route they are admitted to by design, and could only ever
       // DISAGREE with the authoritative answer.
       await gql(app, { query: STAGES_QUERY, variables: { caseId: 'case-1' } }, { cookie: COOKIE });

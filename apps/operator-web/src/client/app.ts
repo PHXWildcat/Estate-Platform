@@ -115,8 +115,9 @@ function sessionPanel(session: SessionView, onSignOut: () => void): HTMLElement 
      * sentence false. "It reaches none of your own estate" was true while this
      * credential reached three identity routes and nothing else; four of the
      * thirteen settlement routes it now reaches reach a case through
-     * `assertCaseVisible`, which admits the decedent, the reporter and the
-     * estate's executor as well as an operator — so a console session really can
+     * `assertCaseVisible`, which admits the decedent, a STILL-LINKED reporter
+     * (M48 re-derives that link at read time) and the estate's executor as well
+     * as an operator — so a console session really can
      * see the holder's own case when they are one of those people. The claim is
      * stated as a RESTRICTION rather than as an absolute, which is what an
      * audience is.
