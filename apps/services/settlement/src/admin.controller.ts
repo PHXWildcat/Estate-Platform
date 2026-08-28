@@ -65,7 +65,8 @@ export class SettlementAdminController {
   @Get('executor-cases')
   @HttpCode(200)
   executorCases(@Req() req: CallerRequest): Promise<ExecutorCaseDto[]> {
-    return this.admin.executorCases(requireCaller(req).userId);
+    const caller = requireCaller(req);
+    return this.admin.executorCases(caller.userId, caller.sessionId);
   }
 
   @Post('cases/:caseId/stages')

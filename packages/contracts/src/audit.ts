@@ -196,7 +196,7 @@ export const AUDIT_ACTIONS = [
   'settlement.case.closed',
   'settlement.contact.attempted',
   'settlement.settings.updated',
-  // OPERATOR READS (M21 PR3b), and until this milestone there were none.
+  // CASE READS (M21 PR3b), and until that milestone there were none.
   //
   // Every one of the settlement actions above is a WRITE. An operator working
   // the review queue, opening a death case, reading its timeline, its access
@@ -208,13 +208,26 @@ export const AUDIT_ACTIONS = [
   // shipped with the screens that make the reads rather than as a routeless
   // event nothing emits (the M4 legal-hold shape).
   //
-  // TWO actions, not six. Loading one case opens four reads (case, timeline,
-  // stages, distributions), so one action per route would be four events per
-  // screen — noisier without being more informative. The route is carried in
-  // `detail.surface`, which SAFE_TOKEN_PATTERN already admits, and the two are
-  // split because they answer different questions: a QUEUE read is
-  // cross-case reconnaissance with no resource id, while a CASE read names
-  // exactly one estate and belongs on that case's own trail.
+  // NOT OPERATORS ONLY, since M48 PR2, and reading these rows as staff activity
+  // is now a misreading. Both actions carry `actorType` DERIVED from the gate
+  // that authorized the read, so a row may be `operator` or `user`: the
+  // decedent, a still-linked reporter and the estate's executor all reach the
+  // case reads, and the executor reaches a worklist. `actorType` is the field
+  // that says which; the action does not.
+  //
+  // TWO actions, not six. Loading one case in the operator console opens four
+  // reads (case, timeline, stages, distributions), so one action per route
+  // would be four events per screen — noisier without being more informative.
+  // The route is carried in `detail.surface` and the worklist in
+  // `detail.worklist`, both of which SAFE_TOKEN_PATTERN already admits, and the
+  // two are split because they answer different questions: a WORKLIST read is
+  // cross-case with no resource id, while a CASE read names exactly one estate
+  // and belongs on that case's own trail.
+  //
+  // The full surface set is the `CaseReadSurface` union in the settlement
+  // service, which is wider than the console's four and is derived from source
+  // by a spec there. It is not restated here: a copy of a set that grows is
+  // this repo's most repeated defect.
   //
   // These feed nothing automatic. The M18 decrypt-rate detector counts
   // `crypto.field.decrypted` and only that, so a read action is bounded by no

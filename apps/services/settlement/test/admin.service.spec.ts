@@ -102,7 +102,7 @@ describe('the estates an executor is settling', () => {
     const h = buildAdminHarness();
     const caseId = await verifiedCase(h);
 
-    const mine = await h.admin.executorCases(EXECUTOR);
+    const mine = await h.admin.executorCases(EXECUTOR, SESSION);
     // EQUALITY on everything but the timestamp the fixture does not fix, so a
     // field added to the DTO — a `decedentUserId` sibling, say — fails here
     // rather than sliding through a `toMatchObject`.
@@ -137,13 +137,13 @@ describe('the estates an executor is settling', () => {
     // A designated executor of a LIVING person has nothing to administer, and
     // listing the case would tell them a death report exists about somebody
     // who may well be alive — the reporter's own disclosure to make, not ours.
-    expect(await h.admin.executorCases(EXECUTOR)).toEqual([]);
+    expect(await h.admin.executorCases(EXECUTOR, SESSION)).toEqual([]);
 
     // Positive control: the same case, once verified, DOES appear — so the
     // assertion above is about the status filter and not about the join
     // failing to match anything at all.
     markCaseVerified(h.cases, row.id, NOW);
-    expect((await h.admin.executorCases(EXECUTOR)).map((c) => c.caseId)).toEqual([row.id]);
+    expect((await h.admin.executorCases(EXECUTOR, SESSION)).map((c) => c.caseId)).toEqual([row.id]);
   });
 
   it('a LINKED contact who was never designated executor sees nothing', async () => {
@@ -153,10 +153,10 @@ describe('the estates an executor is settling', () => {
     // holds no executor designation. Being trusted enough to report a death is
     // not being trusted to settle the estate.
     h.coreReads.link(DECEDENT, REPORTER);
-    expect(await h.admin.executorCases(REPORTER)).toEqual([]);
-    expect(await h.admin.executorCases(STRANGER)).toEqual([]);
+    expect(await h.admin.executorCases(REPORTER, SESSION)).toEqual([]);
+    expect(await h.admin.executorCases(STRANGER, SESSION)).toEqual([]);
     // Positive control on the same fixture.
-    expect((await h.admin.executorCases(EXECUTOR)).map((c) => c.caseId)).toEqual([caseId]);
+    expect((await h.admin.executorCases(EXECUTOR, SESSION)).map((c) => c.caseId)).toEqual([caseId]);
   });
 
   it('does not leak one estate into another executor’s list', async () => {
@@ -176,21 +176,38 @@ describe('the estates an executor is settling', () => {
 
     // SETS, not counts: a join that matched the wrong contact row would
     // return one case to each caller and preserve every count in sight.
-    expect((await h.admin.executorCases(EXECUTOR)).map((c) => c.caseId)).toEqual([mine]);
-    expect((await h.admin.executorCases(otherExecutor)).map((c) => c.caseId)).toEqual([other.id]);
+    expect((await h.admin.executorCases(EXECUTOR, SESSION)).map((c) => c.caseId)).toEqual([mine]);
+    expect((await h.admin.executorCases(otherExecutor, SESSION)).map((c) => c.caseId)).toEqual([
+      other.id,
+    ]);
   });
 
-  it('emits NO audit event — the reads that disclose something audit themselves', async () => {
+  it('is audited as a WORKLIST — a count, never the case ids', async () => {
+    // M23 PR2 argued this route needed no event; M48 PR2 re-decided it, because
+    // the argument rested entirely on `worklistViewed` hardcoding
+    // `actorType: 'operator'` and that hardcode is gone. What the read
+    // discloses has not changed: these are OTHER PEOPLE's estates, held by a
+    // third party administering them.
     const h = buildAdminHarness();
-    await verifiedCase(h);
-    const before = auditActions(h.producer).length;
-    await h.admin.executorCases(EXECUTOR);
-    expect(auditActions(h.producer)).toHaveLength(before);
-    // Positive control: this harness DOES record settlement events, so the
-    // assertion above is about this route and not about a silent producer.
-    const caseId = (await h.admin.executorCases(EXECUTOR))[0]?.caseId as string;
-    await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
-    expect(auditActions(h.producer)).toContain('settlement.stage.requested');
+    const caseId = await verifiedCase(h);
+    h.producer.messages.length = 0;
+
+    await h.admin.executorCases(EXECUTOR, SESSION);
+
+    const [event] = auditEvents(h.producer);
+    expect(event).toMatchObject({
+      action: 'settlement.queue.viewed',
+      actorId: EXECUTOR,
+      actorType: 'user',
+      detail: { worklist: 'executor', count: '1' },
+    });
+    // NO case id reaches the trail, in the resource slot or the payload: naming
+    // one member of a list puts an arbitrary estate on a cross-case read.
+    expect(event?.resourceId).toBeNull();
+    expect(event?.onBehalfOf).toBeNull();
+    for (const message of h.producer.messages) {
+      expect(message.value).not.toContain(caseId);
+    }
   });
 });
 
@@ -818,13 +835,25 @@ describe('distributions under dual control (docs/02 §7)', () => {
     it('answers null for a row with no amount, spending nothing to do it', async () => {
       const h = buildAdminHarness();
       const { id } = await recorded(h, null);
-      const before = auditActions(h.producer).length;
+      h.producer.messages.length = 0;
       await expect(h.admin.distributionAmount(EXECUTOR, SESSION, id)).resolves.toEqual({
         amount: null,
       });
-      // No decrypt and no disclosure event: there was no disclosure.
+      // No decrypt and no DISCLOSURE event: there was no disclosure.
       expect(h.crypto.opened).toEqual([]);
-      expect(auditActions(h.producer)).toHaveLength(before);
+      expect(auditActions(h.producer)).not.toContain('settlement.distribution.amount_viewed');
+      // But the CASE-TRAIL row stands, and it is not conditional on the payload
+      // (M48 PR2 review). This is a successful read behind `assertCaseVisible`
+      // that confirms the row exists and that this estate is visible to the
+      // caller; "who has been reading this estate" does not depend on whether
+      // the row happened to carry a sum, and the four list surfaces record
+      // themselves even when they return `[]`.
+      expect(auditActions(h.producer)).toEqual(['settlement.case.viewed']);
+      expect(auditEvents(h.producer)[0]).toMatchObject({
+        actorId: EXECUTOR,
+        actorType: 'user',
+        detail: { surface: 'amount' },
+      });
     });
 
     it('answers a crypto-shredded estate `content_erased`, not null and not 500', async () => {
@@ -1289,19 +1318,81 @@ describe("the reporter's link, re-derived at read time (M48, docs/03 §6g)", () 
    * which is the failure mode that let this defect reach five routes while the
    * residual describing it named two.
    */
-  function routesBehindTheGate(): string[] {
-    const src = readFileSync(join(__dirname, '..', 'src', 'admin.service.ts'), 'utf8');
-    const found = new Set<string>();
+  /**
+   * ONE SCANNER, read by every fence below (M48 PR2 review). There were two
+   * near-identical copies of this loop, and the equality between their outputs
+   * read as a cross-check while comparing a parser to a verbatim copy of
+   * itself. A second copy is a copy that drifts.
+   *
+   * Comments are stripped as BLOCKS, not by leading `*`: a call commented out
+   * with `/* … *\/` does not start with `*` and used to count as a live one.
+   * Bodies are JOINED before matching, so a call whose arguments wrap over five
+   * lines is still a call — which every multi-argument call in these files is.
+   */
+  const MEMBER_DECL =
+    /^ {2}(?:(?:public|private|protected|static|readonly|abstract)\s+)+?(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(|^ {2}(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/;
+
+  function membersOf(file: string): Map<string, string> {
+    const src = readFileSync(join(__dirname, '..', 'src', file), 'utf8');
+    const bodies = new Map<string, string[]>();
     let current: string | null = null;
+    let inBlock = false;
     for (const line of src.split('\n')) {
       const trimmed = line.trim();
-      // Comments name the helper constantly; only a real call counts.
-      if (trimmed.startsWith('*') || trimmed.startsWith('//')) continue;
-      const decl = /^ {2}(?:private )?async (\w+)\(/.exec(line);
-      if (decl) current = decl[1] as string;
-      if (line.includes('this.assertCaseVisible(') && current !== null) found.add(current);
+      if (inBlock) {
+        if (trimmed.includes('*/')) inBlock = false;
+        continue;
+      }
+      if (trimmed.startsWith('/*')) {
+        if (!trimmed.includes('*/')) inBlock = true;
+        continue;
+      }
+      if (trimmed.startsWith('//')) continue;
+      const decl = MEMBER_DECL.exec(line);
+      if (decl) {
+        current = (decl[1] ?? decl[2]) as string;
+        if (!bodies.has(current)) bodies.set(current, []);
+      }
+      if (current !== null) (bodies.get(current) as string[]).push(line);
     }
-    return [...found].sort();
+    return new Map([...bodies].map(([name, lines]) => [name, lines.join('\n')]));
+  }
+
+  /** The last string literal in a call's argument list — the `surface` slot. */
+  function surfaceArg(body: string, callee: string): string | null {
+    const call = new RegExp(`${callee}\\(([\\s\\S]*?)\\)`).exec(body);
+    if (call === null) return null;
+    const literals = [...(call[1] as string).matchAll(/'([^']*)'/g)].map((m) => m[1] as string);
+    return literals.length === 0 ? null : (literals[literals.length - 1] as string);
+  }
+
+  /** `assertCaseVisible` callers in admin.service.ts -> the surface each records. */
+  function gatedSurfaces(): Map<string, string | null> {
+    const gated = new Map<string, string | null>();
+    for (const [name, body] of membersOf('admin.service.ts')) {
+      if (!body.includes('this.assertCaseVisible(')) continue;
+      gated.set(name, surfaceArg(body, 'this\\.recordCaseRead'));
+    }
+    return gated;
+  }
+
+  /** The OTHER gate: `getCase` takes a Cedar decision and emits directly. */
+  function cedarSurfaces(): Map<string, string | null> {
+    const found = new Map<string, string | null>();
+    for (const [name, body] of membersOf('settlement.service.ts')) {
+      if (!body.includes('this.events.caseViewed(')) continue;
+      found.set(name, surfaceArg(body, 'this\\.events\\.caseViewed'));
+    }
+    return found;
+  }
+
+  /** How many times each helper is actually called, across live code. */
+  function callSites(file: string, needle: string): number {
+    return [...membersOf(file).values()].join('\n').split(needle).length - 1;
+  }
+
+  function routesBehindTheGate(): string[] {
+    return [...gatedSurfaces().keys()].sort();
   }
 
   /** How to reach each gated route. Compared as a SET against the derivation. */
@@ -1410,6 +1501,70 @@ describe("the reporter's link, re-derived at read time (M48, docs/03 §6g)", () 
     await expect(h.admin.timeline(EXECUTOR, SESSION, ids.caseId)).resolves.toBeDefined();
     h.coreReads.unlink(DECEDENT, EXECUTOR);
     await expect(h.admin.timeline(EXECUTOR, SESSION, ids.caseId)).rejects.toThrow();
+  });
+
+  /**
+   * THE SURFACE UNION IS DERIVED FROM THE GATES, NOT MAINTAINED BESIDE THEM.
+   *
+   * `CaseReadSurface` used to exist twice — once in `events.service.ts` and
+   * again, narrower, as the wrapper's `surface` parameter — with nothing tying
+   * either to the set of reads that actually go through a gate. They agreed by
+   * hand until M23 PR4b added `distributionAmount` to `assertCaseVisible` and
+   * to neither union, so from 2026-08-21 to 2026-08-28 the fifth gated read
+   * produced no case-trail row and nothing went red.
+   *
+   * THE CORPUS IS TWO SOURCE FILES, one per gate: `admin.service.ts` for the
+   * five behind `assertCaseVisible`, and `settlement.service.ts` for `getCase`,
+   * which takes a Cedar decision and emits directly. A read that records no
+   * surface fails the first assertion by name; a surface declared in the union
+   * that no read produces fails the second. Neither can be satisfied by editing
+   * one file.
+   *
+   * A case read on NEITHER gate is outside this corpus and needs its own fence.
+   * `listMyCases` is exactly that read — raw SQL, no gate object — and it is
+   * deliberately unaudited; `settlement.service.ts`'s docstring carries the
+   * reason, and `every getCase read is recorded` is what pins the Cedar one.
+   */
+  function declaredSurfaces(): string[] {
+    const src = readFileSync(join(__dirname, '..', 'src', 'events.service.ts'), 'utf8');
+    const block = /export type CaseReadSurface =([\s\S]*?);/.exec(src);
+    if (block === null) throw new Error('CaseReadSurface union not found in events.service.ts');
+    // `[^']*`, not `[a-z]+`: a union member the character class cannot spell is
+    // a member this scan drops SILENTLY, and a declared-but-unproduced surface
+    // is precisely what the second assertion exists to catch.
+    return [...(block[1] as string).matchAll(/'([^']*)'/g)].map((m) => m[1] as string).sort();
+  }
+
+  it('every read behind the gate records a SURFACE — none is silent', () => {
+    const gated = gatedSurfaces();
+    // ANTI-VACUITY AT EVERY LEVEL. A scan that found nothing and a scan that
+    // found no silent route look identical, so: a floor on the routes, and —
+    // because a route whose DECLARATION the scanner misses is attributed to no
+    // one and vanishes without changing this map — the raw call-site counts
+    // must match the routes and the surfaces they produce.
+    expect(gated.size).toBeGreaterThanOrEqual(5);
+    expect(callSites('admin.service.ts', 'this.assertCaseVisible(')).toBe(gated.size);
+    const recorded = [...gated.values()].filter((s) => s !== null);
+    expect(callSites('admin.service.ts', 'this.recordCaseRead(')).toBe(recorded.length);
+    const silent = [...gated.entries()].filter(([, s]) => s === null).map(([n]) => n);
+    expect(silent).toEqual([]);
+  });
+
+  it('the declared surface union is exactly what the reads produce', () => {
+    const cedar = cedarSurfaces();
+    // The OTHER gate is scanned, not hand-injected: `'case'` used to be added
+    // here by name, so deleting `getCase`'s emit left both assertions green.
+    expect([...cedar.keys()]).toEqual(['getCase']);
+    const silent = [...cedar.entries()].filter(([, s]) => s === null).map(([n]) => n);
+    expect(silent).toEqual([]);
+    const produced = [...gatedSurfaces().values(), ...cedar.values()].filter(
+      (s): s is string => s !== null,
+    );
+    const expected = [...new Set(produced)].sort();
+    expect(declaredSurfaces()).toEqual(expected);
+    // FLOORS, so two empty sets cannot satisfy the equality above.
+    expect(expected).toEqual(expect.arrayContaining(['amount', 'case', 'timeline']));
+    expect(expected.length).toBeGreaterThanOrEqual(6);
   });
 
   /**

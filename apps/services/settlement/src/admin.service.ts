@@ -18,7 +18,7 @@ import {
   type DistributionRow,
   type DistributionStatus,
 } from './distributions.repo';
-import { EventsService } from './events.service';
+import { EventsService, type CaseReadSurface } from './events.service';
 import { OperatorGate } from './operator-gate';
 import { ACCESS_STAGES, StagesRepo, type AccessStage, type StageRow } from './stages.repo';
 import { TasksRepo, type TaskRow } from './tasks.repo';
@@ -224,18 +224,29 @@ export class SettlementAdminService {
    * is "cases about me, and cases I filed", and the web renders it as two
    * panels off one boolean.
    *
-   * NO AUDIT EVENT, and the omission is argued rather than overlooked. It
-   * would have to be a new `AUDIT_ACTIONS` member — `settlement.queue.viewed`
-   * hardcodes `actorType: 'operator'` and an executor is not one, so reusing it
-   * would put a false actor type on the trail, which is worse than no event.
-   * A new member costs a consumer deployment ahead of this producer, and buys
-   * a record that somebody read their OWN worklist. The reads that disclose
-   * anything are audited where they happen: `asset.estate.viewed` names the
-   * case that authorised an inventory read, and `settlement.case.viewed`
-   * covers operator reads of a single case.
+   * AUDITED AS A WORKLIST (M48 PR2), and the event is the one M23 PR2 argued
+   * itself out of. That argument was: it would need a new `AUDIT_ACTIONS`
+   * member, because `settlement.queue.viewed` hardcoded `actorType: 'operator'`
+   * and an executor is not one, so reusing it would put a false actor type on
+   * the trail. This change derives `actorType` from the caller instead of
+   * asserting it, which SPENDS that reason — the reuse now costs no consumer
+   * deployment and states nothing false — so the omission had to be re-decided
+   * rather than inherited.
+   *
+   * Re-decided the other way, because the read this lists is not the "somebody
+   * read their OWN worklist" the old paragraph described. These are the estates
+   * of OTHER PEOPLE, held by a third party administering them, which is exactly
+   * the disclosure the assets service has recorded as `asset.estate.viewed`
+   * since M7 PR2 — the sibling M23 PR2 cited as covering this and which in fact
+   * covers only the inventory read that follows.
+   *
+   * A COUNT, NOT ROWS, and no `resourceId`: naming one case would put an
+   * arbitrary member of the list on that estate's trail. `queue`'s argument
+   * verbatim, which is why they share an action.
    */
-  async executorCases(actor: string): Promise<ExecutorCaseDto[]> {
+  async executorCases(actor: string, sessionId: string): Promise<ExecutorCaseDto[]> {
     const rows = await this.cases.listAdministeredBy(this.db, actor);
+    await this.events.worklistViewed(actor, sessionId, 'executor', rows.length, false);
     return rows.map((row) => ({
       caseId: row.id,
       contactId: row.contact_id,
@@ -424,7 +435,7 @@ export class SettlementAdminService {
   async listStages(actor: string, sessionId: string, caseId: string): Promise<StageDto[]> {
     const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
     const rows = await this.stages.listByCase(this.db, caseId);
-    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'stages');
+    await this.recordCaseRead(actor, sessionId, kase, isOperator, 'stages');
     return rows.map(stageDto);
   }
 
@@ -433,7 +444,7 @@ export class SettlementAdminService {
   async listTasks(actor: string, sessionId: string, caseId: string): Promise<TaskDto[]> {
     const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
     const rows = await this.tasks.listByCase(this.db, caseId);
-    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'tasks');
+    await this.recordCaseRead(actor, sessionId, kase, isOperator, 'tasks');
     return rows.map(taskDto);
   }
 
@@ -649,10 +660,23 @@ export class SettlementAdminService {
     // distribution and one on a case this caller cannot see leave through the
     // same line, so holding an id proves nothing about whether it names
     // anything.
-    const { kase } = await this.assertCaseVisible(actor, row?.case_id ?? MISSING_CASE);
+    const { kase, isOperator } = await this.assertCaseVisible(actor, row?.case_id ?? MISSING_CASE);
     if (row === null) {
       throw new NotFoundException({ error: 'not_found' });
     }
+    // THE FIFTH GATED READ IS ON THE CASE TRAIL TOO (M48 PR2). This route
+    // joined `assertCaseVisible` in M23 PR4b and joined neither surface union,
+    // so an operator opening an amount behind a dual-control approval left no
+    // row on that case's own trail — only a distribution-scoped one. The two
+    // events answer different questions and both are wanted: what happened to
+    // this distribution, and who has been reading this estate.
+    //
+    // ABOVE THE NULL-AMOUNT RETURN, because the second question does not depend
+    // on whether the row carried a sum. Below it, a caller holding a
+    // distribution id could confirm the row exists and that this case is
+    // visible to them, and produce no case-trail row at all — the four list
+    // surfaces emit even when they return `[]`, and this is the same read.
+    await this.recordCaseRead(actor, sessionId, kase, isOperator, 'amount');
     if (row.amount_ct === null || row.dek_id === null) {
       return { amount: null };
     }
@@ -662,6 +686,7 @@ export class SettlementAdminService {
       kase.decedent_user_id,
       kase.id,
       distributionId,
+      isOperator,
     );
     let plaintext: Buffer;
     try {
@@ -671,7 +696,10 @@ export class SettlementAdminService {
         field: DISTRIBUTION_AMOUNT_FIELD,
         ciphertext: row.amount_ct,
         actorId: actor,
-        actorType: 'user',
+        // Derived, not asserted (M48 PR2): this route carries
+        // `@AllowSessionAudiences('operator')`, so a console session reaches it
+        // and every operator decrypt was recorded as the estate's own reader.
+        actorType: isOperator ? 'operator' : 'user',
         purpose: 'distribution_amount',
       });
     } catch (err) {
@@ -774,7 +802,7 @@ export class SettlementAdminService {
   ): Promise<DistributionDto[]> {
     const { kase, isOperator } = await this.assertCaseVisible(actor, caseId);
     const rows = await this.distributions.listByCase(this.db, caseId);
-    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'distributions');
+    await this.recordCaseRead(actor, sessionId, kase, isOperator, 'distributions');
     return rows.map(distributionDto);
   }
 
@@ -922,9 +950,9 @@ export class SettlementAdminService {
     }
     const sorted = entries.sort((a, b) => a.at.localeCompare(b.at));
     // After the rows are gathered, before they are returned — see
-    // `recordOperatorRead`. This site emitted BEFORE reading the stage rows
+    // `recordCaseRead`. This site emitted BEFORE reading the stage rows
     // until the PR3b review; it was the only one of the four that did.
-    await this.recordOperatorRead(actor, sessionId, kase, isOperator, 'timeline');
+    await this.recordCaseRead(actor, sessionId, kase, isOperator, 'timeline');
     return sorted;
   }
 
@@ -1058,23 +1086,29 @@ export class SettlementAdminService {
   }
 
   /**
-   * Record a case read that the OPERATOR ALLOWLIST is behind (M21 PR3b).
+   * Record a case read (M21 PR3b), for EVERY caller `assertCaseVisible` admits.
    *
-   * A no-op for everyone else by construction: the decedent, a STILL-LINKED
-   * reporter and the estate's executor are reading their own case, which the
-   * rest of the product does not audit as a disclosure either. That sentence
-   * was an ASSUMPTION until M48 and is now enforced by `assertCaseVisible`: an
-   * unlinked reporter never reaches here, so "their own case" is a property of
-   * the gate rather than a hope about it. What docs/03 §4 TB7 asks for is a
-   * record of platform staff looking at somebody's death case, and that is the
-   * set this admits.
+   * It recorded only the operator until M48 PR2, on the premise that the other
+   * three — the decedent, a STILL-LINKED reporter and the estate's executor —
+   * are "reading their own case, which the rest of the product does not audit
+   * as a disclosure either". That premise does not survive its third member:
+   * the EXECUTOR is administering somebody else's estate, and the assets
+   * service has audited exactly that read since M7 PR2. The flag now chooses
+   * the actor CLASS; it no longer chooses whether a row exists.
    *
-   * EMITTED AFTER THE ROWS ARE GATHERED AND BEFORE THEY ARE RETURNED, at all
-   * four call sites — `timeline` was the odd one out until the PR3b review and
+   * EMITTED AFTER THE ROWS ARE GATHERED AND BEFORE THEY ARE RETURNED, at the
+   * four LIST sites — `timeline` was the odd one out until the PR3b review and
    * has been moved. The emit is awaited, and the audit path is fail-closed, so
    * on this ordering nothing is disclosed without a record either way; what it
    * additionally buys is that a read which THREW leaves no record claiming it
    * completed.
+   *
+   * THE FIFTH SITE, `distributionAmount`, sits before a DECRYPT rather than
+   * before a return, and that is the same rule and not an exception to it — see
+   * the paragraph below. The set of sites is not stated as a number here: the
+   * `every read behind the gate records a SURFACE` fence in
+   * `admin.service.spec.ts` derives it from this file, so a count in this
+   * comment would be a second copy that rots.
    *
    * THIS IS THE OPPOSITE OF M19's `estate.viewed` ORDERING AND DELIBERATELY SO,
    * because the two situations differ in the one way that decides it. There the
@@ -1086,15 +1120,27 @@ export class SettlementAdminService {
    * must exist before anything leaves, and where release is incremental that
    * means before the work.
    */
-  private async recordOperatorRead(
+  private async recordCaseRead(
     actor: string,
     sessionId: string,
     kase: CaseRow,
     isOperator: boolean,
-    surface: 'timeline' | 'stages' | 'tasks' | 'distributions',
+    surface: CaseReadSurface,
   ): Promise<void> {
-    if (!isOperator) return;
-    await this.events.caseViewed(actor, sessionId, kase.id, kase.decedent_user_id, surface);
+    // NO EARLY RETURN (M48 PR2). This opened `if (!isOperator) return;`, so
+    // four of the five reads behind the gate left no trace for the decedent, a
+    // linked reporter or the executor — and the executor is a third party
+    // administering somebody else's estate, whose equivalent read the assets
+    // service has always audited. The flag now chooses the actor CLASS instead
+    // of choosing whether a row exists at all.
+    await this.events.caseViewed(
+      actor,
+      sessionId,
+      kase.id,
+      kase.decedent_user_id,
+      surface,
+      isOperator,
+    );
   }
 
   /**

@@ -756,17 +756,48 @@ export class SettlementService {
       'read',
       caseResource(row.id, row.decedent_user_id, row.reported_by),
     );
-    // Operator reads only — the decedent and the reporter are reading their
-    // own case. See SettlementAdminService.recordOperatorRead for why the
-    // distinction is drawn on the ALLOWLIST rather than on the Cedar clause
-    // that admitted them.
-    if (isOperator) {
-      await this.events.caseViewed(actor, sessionId, row.id, row.decedent_user_id, 'case');
-    }
+    // EVERY read, with the class DERIVED (M48 PR2). This was the SECOND copy
+    // of `recordCaseRead`'s condition, written inline on the other gate, and it
+    // is now the same behaviour spelled once: the allowlist answer chooses the
+    // actor class, not whether a row exists. `isOperator` is the flag the
+    // authorization above already had to compute.
+    await this.events.caseViewed(
+      actor,
+      sessionId,
+      row.id,
+      row.decedent_user_id,
+      'case',
+      isOperator,
+    );
     return toDto(row, this.clock());
   }
 
-  /** The caller's own cases (as subject or reporter); SQL-scoped. */
+  /**
+   * The caller's own cases (as subject or reporter); SQL-scoped.
+   *
+   * DELIBERATELY NOT AUDITED, and the reason is VOLUME (M48 PR2 considered it
+   * and decided against). This is the THIRD gate — raw SQL on the frozen
+   * `reported_by` column, which M48 PR1 kept because "which reports have I
+   * filed?" is the evidence question — and it is the one case-reading route in
+   * the service that emits nothing at all.
+   *
+   * It is also not a screen. `OpenSettlementCaseBanner` is mounted in
+   * `AppShell`, which wraps every page, and its effect is keyed on `pathname`;
+   * this route answers that query. An event here would therefore write ONE
+   * PERMANENT ROW PER PAGE NAVIGATION for every authenticated user, on an
+   * append-only trail with UPDATE and DELETE revoked. That is the
+   * audited-volume-is-a-UI-constraint rule (docs/03 §6cc) — the rule that stops
+   * the operator console polling, applied to a far larger population.
+   *
+   * The purchase is weak on its own terms besides: this is somebody reading
+   * their OWN cases, where `executorCases` — which IS audited, one row per
+   * dashboard mount — is somebody reading other people's estates.
+   *
+   * IF A RECORD IS EVER WANTED HERE, the volume has to be dealt with first: a
+   * route the banner does not share, or a shape that is not one row per read.
+   * Reusing `settlement.queue.viewed` as it stands would also drown the
+   * operator-reconnaissance signal that action exists to carry.
+   */
   async listMyCases(actor: string): Promise<CaseDto[]> {
     const now = this.clock();
     const rows = await this.cases.listForUser(this.db, actor);
@@ -778,7 +809,7 @@ export class SettlementService {
     await this.gate.assertIn(this.db, operator);
     const now = this.clock();
     const rows = await this.cases.listOpenForReview(this.db);
-    await this.events.worklistViewed(operator, sessionId, 'queue', rows.length);
+    await this.events.worklistViewed(operator, sessionId, 'queue', rows.length, true);
     return rows.map((r) => toDto(r, now));
   }
 
@@ -798,7 +829,7 @@ export class SettlementService {
     await this.gate.assertIn(this.db, operator);
     const now = this.clock();
     const rows = await this.cases.listAdministrable(this.db);
-    await this.events.worklistViewed(operator, sessionId, 'administrable', rows.length);
+    await this.events.worklistViewed(operator, sessionId, 'administrable', rows.length, true);
     return rows.map((r) => toDto(r, now));
   }
 

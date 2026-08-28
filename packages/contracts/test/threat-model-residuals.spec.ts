@@ -203,6 +203,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // M40 PR4: the sweep's own bound, the probes' source-only reach, and the
   // measured state that ratchets in if it was measured wrong.
   '6hhh': 3,
+  '6iii': 4,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
