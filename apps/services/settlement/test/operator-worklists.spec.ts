@@ -200,33 +200,67 @@ describe('operator reads leave a trace (docs/03 §4 TB7)', () => {
     await h.service.administrable(OPERATOR, SESSION);
     expect(auditEvents(h.producer)[0]).toMatchObject({
       action: 'settlement.queue.viewed',
+      // The CLASS as well as the name (M48 PR2 review): `worklistViewed` stopped
+      // asserting `'operator'` and derives it now, so the two operator worklists
+      // need saying too — otherwise the only fenced arm is the `false` one and a
+      // flag that was ignored entirely would look identical.
+      actorType: 'operator',
       detail: { worklist: 'administrable', count: '0' },
     });
   });
 
-  it('an OPERATOR reading one case is recorded on that case; the SUBJECT and the REPORTER are not', async () => {
-    // One test, because the property is the DIFFERENCE. Recording every read
-    // would drown the signal TB7 asks for — platform staff looking at somebody
-    // else's death case — in people reading their own.
+  it('every getCase read is recorded, and the DIFFERENCE is the actor class', async () => {
+    /*
+     * THE PROPERTY MOVED, AND THE OLD PREMISE IS SPENT (M48 PR2).
+     *
+     * This test used to assert that the subject and the reporter produce NO
+     * row, on the argument that "recording every read would drown the signal
+     * TB7 asks for — platform staff looking at somebody else's death case — in
+     * people reading their own". That argument holds for the DECEDENT. It does
+     * not hold for a third party administering somebody else's estate, and the
+     * assets service has always audited exactly that read as
+     * `asset.estate.viewed` with `actorType: 'user'`.
+     *
+     * The other half of the old argument — that a false actor class on an
+     * append-only trail is worse than no row — is spent the moment the class is
+     * DERIVED from the gate rather than asserted by the emitter.
+     *
+     * So the discriminator is no longer presence-vs-absence, which a reader
+     * cannot tell apart from an emitter that stopped firing. It is the
+     * actorType, asserted for all three readers in one place.
+     */
     const h = linkedHarness();
     const caseId = await reportCase(h);
     h.producer.messages.length = 0;
 
     await h.service.getCase(DECEDENT, SESSION, caseId);
     await h.service.getCase(REPORTER, SESSION, caseId);
-    expect(auditActions(h.producer)).toEqual([]);
-
     await h.service.getCase(OPERATOR, SESSION, caseId);
-    expect(auditEvents(h.producer)).toEqual([
-      expect.objectContaining({
-        action: 'settlement.case.viewed',
-        actorType: 'operator',
-        actorId: OPERATOR,
+
+    // ANTI-VACUITY: three reads, three rows. An emitter that stopped firing
+    // would leave this empty, and an empty list trivially satisfies a
+    // per-element claim.
+    expect(auditActions(h.producer)).toEqual([
+      'settlement.case.viewed',
+      'settlement.case.viewed',
+      'settlement.case.viewed',
+    ]);
+    expect(
+      auditEvents(h.producer).map((e) => ({ actorId: e.actorId, actorType: e.actorType })),
+    ).toEqual([
+      { actorId: DECEDENT, actorType: 'user' },
+      { actorId: REPORTER, actorType: 'user' },
+      { actorId: OPERATOR, actorType: 'operator' },
+    ]);
+    // The case-scoped fields are the same whoever read it: this is one case's
+    // trail, and `onBehalfOf` names the estate, never the reader.
+    for (const e of auditEvents(h.producer)) {
+      expect(e).toMatchObject({
         resourceId: caseId,
         onBehalfOf: DECEDENT,
         detail: { surface: 'case' },
-      }),
-    ]);
+      });
+    }
   });
 
   it('each administration read names WHICH surface it was', async () => {
@@ -246,9 +280,24 @@ describe('operator reads leave a trace (docs/03 §4 TB7)', () => {
       'distributions',
     ]);
     expect(auditActions(h.producer).every((a) => a === 'settlement.case.viewed')).toBe(true);
+    // THE CLASS, PER ROW, mirroring the executor test below (M48 PR2 review).
+    // Until this line the derivation was fenced on `amount` alone: passing
+    // `false` instead of `isOperator` in `recordCaseRead` recorded all four of
+    // these as the estate's own reader and only the money-route test noticed.
+    expect(
+      auditEvents(h.producer).map((e) => ({ actorId: e.actorId, actorType: e.actorType })),
+    ).toEqual(Array(4).fill({ actorId: OPERATOR, actorType: 'operator' }));
   });
 
-  it('the EXECUTOR reading the same four surfaces is recorded nowhere', async () => {
+  it('the EXECUTOR reading the same four surfaces is recorded AS A USER', async () => {
+    /*
+     * THE READ THIS MILESTONE EXISTS FOR (M48 PR2). An executor is not reading
+     * their own case — they are administering a dead person's estate, and until
+     * now settlement was the only service that let that happen silently.
+     * `admin.service.ts`'s `executorCases` cites `asset.estate.viewed` as the
+     * reason it needs no event of its own; this is settlement agreeing with the
+     * sibling it already cites.
+     */
     const h = buildAdminHarness();
     const caseId = await verifiedAdminCase(h);
     h.producer.messages.length = 0;
@@ -258,13 +307,35 @@ describe('operator reads leave a trace (docs/03 §4 TB7)', () => {
     await h.admin.listTasks(EXECUTOR, SESSION, caseId);
     await h.admin.listDistributions(EXECUTOR, SESSION, caseId);
 
-    expect(auditActions(h.producer)).toEqual([]);
+    expect(auditEvents(h.producer).map((e) => (e.detail as { surface: string }).surface)).toEqual([
+      'timeline',
+      'stages',
+      'tasks',
+      'distributions',
+    ]);
+    // EVERY one a user read, by the same actor. Asserting the class per ROW
+    // rather than once means a single mis-derived surface cannot hide behind
+    // three right ones.
+    expect(
+      auditEvents(h.producer).map((e) => ({ actorId: e.actorId, actorType: e.actorType })),
+    ).toEqual([
+      { actorId: EXECUTOR, actorType: 'user' },
+      { actorId: EXECUTOR, actorType: 'user' },
+      { actorId: EXECUTOR, actorType: 'user' },
+      { actorId: EXECUTOR, actorType: 'user' },
+    ]);
   });
 
   it('an operator who is ALSO the reporter is still recorded as an operator read', async () => {
     // The gate is consulted unconditionally rather than as the second arm of
     // the visibility chain, so this cannot depend on which clause admitted the
     // caller — an audit claim whose truth turned on the order of an `if`.
+    //
+    // ASSERTS THE CLASS, NOT THE PRESENCE (M48 PR2 review). While
+    // `recordCaseRead` opened `if (!isOperator) return;` the presence of a row
+    // WAS the classification, so counting rows tested this property. Removing
+    // that early return made every reader emit exactly one row and silently
+    // disarmed the count — the test kept passing and stopped testing its name.
     const h = buildAdminHarness();
     const caseId = await verifiedAdminCase(h);
     h.operators.active.add(REPORTER);
@@ -273,5 +344,110 @@ describe('operator reads leave a trace (docs/03 §4 TB7)', () => {
     await h.admin.timeline(REPORTER, SESSION, caseId);
 
     expect(auditActions(h.producer)).toEqual(['settlement.case.viewed']);
+    expect(
+      auditEvents(h.producer).map((e) => ({ actorId: e.actorId, actorType: e.actorType })),
+    ).toEqual([{ actorId: REPORTER, actorType: 'operator' }]);
+  });
+
+  it("the EXECUTOR's worklist lands on the trail, as a USER read", async () => {
+    /*
+     * THE OMISSION M23 PR2 ARGUED AND M48 PR2 RE-DECIDED. That argument turned
+     * entirely on `worklistViewed` hardcoding `actorType: 'operator'`: reusing
+     * `settlement.queue.viewed` for an executor would have put a false actor
+     * type on the trail, and a new vocabulary member costs a consumer
+     * deployment ahead of its producer. Deriving the class spends the first
+     * half and removes the need for the second, so the reason no longer holds
+     * and the read — one person listing the estates they administer for OTHER
+     * people — is the same disclosure `asset.estate.viewed` has recorded on the
+     * assets side since M7 PR2.
+     *
+     * A COUNT, NOT ROWS, and no `resourceId`: `queue`'s argument verbatim.
+     */
+    const h = buildAdminHarness();
+    const caseId = await verifiedAdminCase(h);
+    h.producer.messages.length = 0;
+
+    const administered = await h.admin.executorCases(EXECUTOR, SESSION);
+
+    expect(auditEvents(h.producer)).toEqual([
+      expect.objectContaining({
+        action: 'settlement.queue.viewed',
+        actorId: EXECUTOR,
+        actorType: 'user',
+        sessionId: SESSION,
+        resourceId: null,
+        onBehalfOf: null,
+        detail: { worklist: 'executor', count: String(administered.length) },
+      }),
+    ]);
+    // ANTI-VACUITY: a count of '0' would satisfy the shape above while proving
+    // the executor saw nothing. They administer this case; it must be listed.
+    expect(administered.map((c) => c.caseId)).toEqual([caseId]);
+  });
+
+  it('the money route lands on BOTH trails, with one derived class', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedAdminCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    const dto = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: randomUUID(),
+      amount: '4500.00',
+    });
+    h.producer.messages.length = 0;
+
+    await h.admin.distributionAmount(EXECUTOR, SESSION, dto.distributionId);
+    await h.admin.distributionAmount(OPERATOR, SESSION, dto.distributionId);
+
+    // TWO events per read, answering different questions: what happened to this
+    // distribution, and who has been reading this estate. Until M48 PR2 the
+    // second did not exist for this route — it joined the gate in M23 PR4b and
+    // joined no surface union.
+    expect(auditActions(h.producer)).toEqual([
+      'settlement.case.viewed',
+      'settlement.distribution.amount_viewed',
+      'settlement.case.viewed',
+      'settlement.distribution.amount_viewed',
+    ]);
+    expect(
+      auditEvents(h.producer).map((e) => ({ actorId: e.actorId, actorType: e.actorType })),
+    ).toEqual([
+      { actorId: EXECUTOR, actorType: 'user' },
+      { actorId: EXECUTOR, actorType: 'user' },
+      { actorId: OPERATOR, actorType: 'operator' },
+      { actorId: OPERATOR, actorType: 'operator' },
+    ]);
+    expect(
+      auditEvents(h.producer)
+        .filter((e) => e.action === 'settlement.case.viewed')
+        .map((e) => (e.detail as { surface: string }).surface),
+    ).toEqual(['amount', 'amount']);
+  });
+
+  it('the DECRYPT itself names the right actor class', async () => {
+    /*
+     * The half of the fix no assertion could see. `decryptField` has always
+     * ACCEPTED an `actorType` and `FakeFieldCrypto` threw it away, so
+     * `crypto.field.decrypted` naming every operator read as the estate's own
+     * reader was unprovable: revert the fix and nothing went red. The double
+     * records it now, which is why this test can exist at all.
+     */
+    const h = buildAdminHarness();
+    const caseId = await verifiedAdminCase(h);
+    const stage = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, stage.stageId, 'approve');
+    const dto = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: randomUUID(),
+      amount: '4500.00',
+    });
+    h.crypto.opened.length = 0;
+
+    await h.admin.distributionAmount(EXECUTOR, SESSION, dto.distributionId);
+    await h.admin.distributionAmount(OPERATOR, SESSION, dto.distributionId);
+
+    expect(h.crypto.opened.map((o) => ({ actorId: o.actorId, actorType: o.actorType }))).toEqual([
+      { actorId: EXECUTOR, actorType: 'user' },
+      { actorId: OPERATOR, actorType: 'operator' },
+    ]);
   });
 });

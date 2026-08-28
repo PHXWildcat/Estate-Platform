@@ -841,7 +841,22 @@ export class InMemoryDistributions {
  */
 export class FakeFieldCrypto {
   readonly sealed: Array<{ userId: string; field: string; plaintext: string }> = [];
-  readonly opened: Array<{ userId: string; field: string; actorId: string; purpose: string }> = [];
+  /**
+   * `actorType` IS RECORDED, and that is the point (M48 PR2).
+   *
+   * `decryptField` has always ACCEPTED an `actorType` and this double always
+   * threw it away, so `crypto.field.decrypted` naming the wrong actor class
+   * was unprovable: revert the fix and no assertion could go red. A double
+   * must be faithful about the fields a caller is judged on, not only the
+   * ones it needs to answer.
+   */
+  readonly opened: Array<{
+    userId: string;
+    field: string;
+    actorId: string;
+    actorType: string;
+    purpose: string;
+  }> = [];
   /** DEKs this instance minted, and what each one sealed. */
   private readonly deks = new Map<string, { userId: string; field: string; plaintext: string }>();
   /** Ids treated as crypto-shredded — `decryptField` refuses them. */
@@ -888,6 +903,7 @@ export class FakeFieldCrypto {
       userId: input.userId,
       field: input.field,
       actorId: input.actorId,
+      actorType: input.actorType,
       purpose: input.purpose,
     });
     return Promise.resolve(Buffer.from(record.plaintext, 'utf8'));

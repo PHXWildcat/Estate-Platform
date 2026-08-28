@@ -1193,26 +1193,35 @@ back — the CAS shape §6b's owner-liveness interlock uses, for the same reason
   makes by DDL, and revoking it would mean a case with no visible author. The
   MONEY and the missing trail are a different claim and are owned separately in
   the bullet below.
-- **[OWNER: M48]** *An unlinked reporter can still decrypt the estate's
-  distribution amounts, and four of their reads leave no trail.* Split from the
+- **[CLOSED: §6iii]** *An unlinked reporter could decrypt the estate's
+  distribution amounts, and four case reads left no trail.* Split from the
   bullet above by **M40 PR4** (§6hhh), which is where the evidence is. Two
-  claims, one owner. (1) `distributionAmount` funnels through
-  `assertCaseVisible`, so a removed contact who once filed a report reaches an
+  claims, one owner, closed by two PRs. (1) `distributionAmount` funnels through
+  `assertCaseVisible`, so a removed contact who once filed a report reached an
   audited decrypt of the estate's distribution amounts under the DECEDENT's DEK
-  and receives the money as plaintext. Seeing that a case exists is the evidence
+  and received the money as plaintext. Seeing that a case exists is the evidence
   trail; reading what the estate pays out is not, and no leg of the acceptance
-  above reaches it — the owner's void is pre-verification only and a
-  distribution exists only after. (2) `recordOperatorRead` early-returns
-  `if (!isOperator)`, so this caller's `timeline`, `listStages`, `listTasks` and
-  `listDistributions` reads emit nothing at all; only the money route is
-  audited, which is the one place the trail exists and the four cheaper reads
-  are where a pattern would show. THE SHAPE IS THREE LINES WIDE: the same `if`
-  re-derives the executor's linkage live via `isExecutorOf` and reads the
-  reporter's off a frozen `reported_by` column, so the platform already knows
-  how to do this for one party. **NOT FIXED HERE, DELIBERATELY** — M40 is an
-  adjudication milestone and this changes who may read a settlement case, which
-  is a behavioural decision that belongs with its own tests rather than inside a
-  sweep. **AND THE STOP IS NARROWER THAN THE OLD SENTENCE CLAIMED**: the
+  above reached it — the owner's void is pre-verification only and a
+  distribution exists only after. **M48 PR1 (`de91ae3`) closed this** by
+  conjoining a live `isLinkedContact` onto the reporter arm of the gate, which
+  takes all five reads from an unlinked reporter rather than only the money one.
+  (2) `recordOperatorRead` early-returned `if (!isOperator)`, so four reads
+  behind the gate emitted nothing at all; only the money route was audited,
+  which is the one place the trail existed and the four cheaper reads are where
+  a pattern would show. **THE SUBJECT OF (2) IS NOT THE SUBJECT OF (1), AND THIS
+  SENTENCE SAID OTHERWISE UNTIL M48 PR2.** It read "so THIS CALLER's ... reads
+  emit nothing", inheriting clause (1)'s removed contact — who, after PR1,
+  reaches none of these routes. The parties the silence actually covered are the
+  DECEDENT, a STILL-LINKED REPORTER and the EXECUTOR, and the executor is the
+  one that mattered: they administer somebody else's estate, and the assets
+  service has always audited that same read as `asset.estate.viewed`.
+  **M48 PR2 closed this** — the early return is gone, `actorType` is derived
+  from the gate at every emitter, the fifth gated read joined the case trail,
+  and `listMyCases` (the third gate, kept frozen by PR1) is audited as a
+  worklist. THE SHAPE WAS THREE LINES WIDE: the same `if` re-derived the
+  executor's linkage live via `isExecutorOf` and read the reporter's off a
+  frozen `reported_by` column, so the platform already knew how to do this for
+  one party. **AND THE STOP IS NARROWER THAN THE OLD SENTENCE CLAIMED**: the
   owner's step-up-gated void is PRE-VERIFICATION only. After verification there
   is no self-serve rescue, and the remedy is the §5.1 human-review path.
 
@@ -4457,6 +4466,10 @@ opposite of repair.)
   `settlement.queue.viewed` is cross-case reconnaissance with no resource id;
   `settlement.case.viewed` names exactly one estate and belongs on that case's
   own trail. They answer different questions, which is why they are two.
+  *(SUPERSEDED IN PART BY M48 PR2, §6iii: both actions now carry every reader,
+  not operators alone, with `actorType` derived from the gate. "Operator read"
+  above should be read as "console read" — what changed is who else appears on
+  these actions, not what the console's own rows mean.)*
 - **The console does NOT poll**, and the reason is that trail rather than the
   network. Each case read is an audit event on a dead person's estate, so a
   console that refreshed itself would turn one screen, abandoned over lunch, into
@@ -8319,3 +8332,132 @@ milestone and a prose sweep of other sections is a different change:
   `absent` reddens immediately and is fixed in the same sitting — and because
   the alternative, deriving the state at runtime, is what the entry already does
   and would compare only against itself.
+
+## 6iii. Threat-model delta — M48 PR2, the trail (2026-08-28)
+
+**M48 PR1 made the gate correct and left nothing watching it work.** Six case
+reads sit behind two gates — five behind `assertCaseVisible`, and `getCase`
+behind a Cedar decision. Five of the six recorded ONLY platform staff, because
+`recordOperatorRead` opened `if (!isOperator) return;` and `getCase` spelled the
+same condition inline; the sixth, `distributionAmount`, produced no case-trail
+row for anybody at all. This PR gives every one of them a trail and derives the
+actor class from the gate that already had to compute it.
+
+### The premise that was spent
+
+`caseViewed`'s own docstring argued the narrowness was the decision, not an
+omission: the non-operator readers are "people reading their own case, which the
+rest of the product does not audit as a disclosure either". That holds for the
+DECEDENT. It does not hold for the EXECUTOR, who administers somebody else's
+estate — and the assets service has audited exactly that read as
+`asset.estate.viewed` with `actorType: 'user'` since M7 PR2 (`031972c`).
+Settlement's own `executorCases` cites that event by name as the reason it needs
+none of its own. Settlement was the outlier, and its argument named a sibling
+that disagreed with it.
+
+The argument's other half — that a false actor class on an append-only trail is
+worse than no row — is spent the moment the class is DERIVED. `assertCaseVisible`
+returns the operator flag it had to compute to authorize the read; `getCase`
+binds the same `OperatorGate.is` answer for its Cedar decision. The three
+emitters this change touches — `caseViewed`, `worklistViewed` and
+`distributionAmountViewed` — take `asOperator` REQUIRED rather than defaulted,
+joining `evidenceAdded` and `distributionCompleted`, which already did; a new
+caller that omits it fails to compile rather than silently recording an operator
+as a user. `caseReported` keeps its `asOperator = false` default and is now the
+file's only one. That is the defect this fixes, in the shape that cannot recur
+by omission.
+
+### One spelling, and a fence that derives it
+
+The surface vocabulary existed TWICE — `CaseReadSurface` in `events.service.ts`
+and a narrower copy as the wrapper's `surface` parameter — with nothing tying
+either to the set of reads that actually go through a gate. They agreed by hand
+until M23 PR4b added `distributionAmount` to `assertCaseVisible` and to neither
+union, so from 2026-08-21 to this change the fifth gated read produced no
+case-trail row and nothing went red.
+
+The union is now declared once and FENCED against the source. **The corpus is
+two files, one per gate**: the spec scans `admin.service.ts` for
+`assertCaseVisible` callers and `settlement.service.ts` for `getCase`'s direct
+emit, and compares the surfaces they record against the union in
+`events.service.ts`. A read that records no surface fails one assertion by name;
+a declared surface no read produces fails the other. Neither can be satisfied by
+editing one file.
+
+A read on NEITHER gate is outside that corpus and needs its own fence, which is
+stated because the fence's first draft was narrower than its claim: `'case'` was
+injected into the expected set BY HAND, so deleting `getCase`'s emit left both
+assertions green. Scanning the second file is what makes that mutation red. The
+scanner strips block comments and joins each method body before matching, for
+the same reason — a call commented out with `/* … */`, or one whose arguments
+wrapped over five lines, was read as a live call by the line-at-a-time version.
+Its anti-vacuity floors run at every level: routes found, `assertCaseVisible`
+call sites, and `recordCaseRead` call sites must agree, so a gated read whose
+DECLARATION the scanner fails to recognize cannot vanish into the method above
+it.
+
+`listMyCases` is the read on neither gate. It is deliberately unaudited (below),
+and `settlement.service.ts` carries the reason where someone would add the emit.
+
+### What the harness could not say
+
+`FakeFieldCrypto.decryptField` has always ACCEPTED an `actorType` and recorded
+only `{ userId, field, actorId, purpose }`, dropping it. So
+`crypto.field.decrypted` naming every operator's amount read as the estate's own
+reader was not merely untested but UNPROVABLE: revert the fix and no assertion
+could go red. The double records it now, and reverting the fix reddens exactly
+one named test. Reverting the harness repair instead stops the proof compiling,
+which is the sharpest statement of why it had to come first.
+
+### Two worklists, and only one of them is audited
+
+Deriving `actorType` spends a second argument as a side effect, and the spending
+had to be spent deliberately. M23 PR2 gave `executorCases` no audit event on the
+reasoning that it would need a NEW `AUDIT_ACTIONS` member, because
+`settlement.queue.viewed` hardcoded `actorType: 'operator'` and an executor is
+not one — and a new member costs a consumer deployment ahead of its producer.
+Both halves die here: the hardcode is gone, so the reuse states nothing false
+and costs no deployment. An omission whose only stated reason has been removed
+is not still argued, so `executorCases` is audited now. It lists the estates one
+person administers for OTHER people, which is the disclosure the sibling it
+cited has recorded since M7 PR2.
+
+**`listMyCases` is NOT, and the reason is volume.** It is the obvious companion
+change and it was written, measured and taken back out. That route answers
+`OpenSettlementCaseBanner`, mounted in `AppShell` — which wraps every page —
+with its effect keyed on `pathname`. An event there writes ONE PERMANENT ROW PER
+PAGE NAVIGATION for every authenticated user, on a trail with UPDATE and DELETE
+revoked. §6cc already refuses to let the operator CONSOLE poll for exactly this
+reason — "one screen, abandoned over lunch, into hundreds of recorded reads" —
+and the console is staff, where this is every account. The same rows would also
+drown the cross-case reconnaissance signal `settlement.queue.viewed` exists to
+carry, leaving a `detail.worklist` token as its only discriminant. The purchase is weak besides:
+`listMyCases` is somebody reading their OWN cases, where `executorCases` is
+somebody reading other people's estates. The reason lives in
+`settlement.service.ts`, at the line where the next person would add the emit.
+
+### Residuals
+
+- **[ACCEPTED]** *`actorType` cannot tell the decedent, a linked reporter and an
+  executor apart.* All three are `user`. The distinction lives in `onBehalfOf`
+  (which names the decedent) and in the case row, not in this vocabulary, and
+  widening the enum would change a closed cross-service vocabulary for one
+  service's convenience. A consumer that needs the finer answer joins the event
+  to the case it names.
+- **[ACCEPTED]** *`listMyCases` remains the one case-reading route that emits
+  nothing.* Argued above: the volume is a property of the app-shell banner it
+  answers, not of the read. Recording it needs a route the banner does not
+  share, or a shape that is not one row per read — neither of which this PR
+  needs. The audited reads it might otherwise have covered are audited where
+  they happen, one case at a time, behind both gates.
+- **[OWNER: M48]** *The `distributions` encrypt-only bound still fires on every
+  legitimate amount read.* `ENCRYPT_ONLY_PREFIXES` asserts that no read route
+  exists for that prefix and M23 PR4b shipped one, and `boundFor` returns
+  `maxPerWindow: 0` before it looks at the principal — so deriving `actorType`
+  here does not clear it. Recorded rather than fixed in this PR because it is an
+  audit-service control, not a settlement emitter.
+- **[OWNER: M48]** *An unlinked reporter can still WRITE to a dead person's
+  evidence trail.* `attachCaseEvidence` authorizes on the Cedar half, which
+  snapshots `reported_by`, so M48 PR1's live link check does not reach it — PR1
+  demonstrated it in a browser and left it as a question. It is a write, and
+  this PR's subject is the read trail.
