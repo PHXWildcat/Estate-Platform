@@ -2800,10 +2800,12 @@ the M18 PR1 registry (the field name's first dotted token); the principal
 grain separates the nil-UUID sentinel from every real actor class. Bounds are
 fixed reviewed constants set from measured ceilings with a generous
 multiplier, and everything OUTSIDE the reviewed table is bound 0 — an
-unregistered prefix (`unknown_prefix`), an unmodelled (prefix × principal)
-combination (`unmodeled_principal`), and settlement's encrypt-only
-`distributions` (`encrypt_only`) each breach at the first decrypt, because a
-read path nobody reviewed is itself the anomaly.
+unregistered prefix (`unknown_prefix`) and an unmodelled (prefix × principal)
+combination (`unmodeled_principal`) each breach at the first decrypt, because a
+read path nobody reviewed is itself the anomaly. *(This sentence named a THIRD
+zero until M48 PR3 — settlement's encrypt-only `distributions` (`encrypt_only`).
+That class is deleted: `distributions` acquired a read route in M23 PR4b and had
+been breaching on every legitimate reveal since. See §6jjj.)*
 
 **The alert sink is the chain plus a structured log line, and deliberately
 nothing else.** No owner notification: the reader of this signal is a
@@ -8450,14 +8452,131 @@ somebody reading other people's estates. The reason lives in
   share, or a shape that is not one row per read — neither of which this PR
   needs. The audited reads it might otherwise have covered are audited where
   they happen, one case at a time, behind both gates.
-- **[OWNER: M48]** *The `distributions` encrypt-only bound still fires on every
-  legitimate amount read.* `ENCRYPT_ONLY_PREFIXES` asserts that no read route
-  exists for that prefix and M23 PR4b shipped one, and `boundFor` returns
+- **[CLOSED: §6jjj]** *The `distributions` encrypt-only bound still fires on
+  every legitimate amount read.* `ENCRYPT_ONLY_PREFIXES` asserts that no read
+  route exists for that prefix and M23 PR4b shipped one, and `boundFor` returns
   `maxPerWindow: 0` before it looks at the principal — so deriving `actorType`
   here does not clear it. Recorded rather than fixed in this PR because it is an
-  audit-service control, not a settlement emitter.
-- **[OWNER: M48]** *An unlinked reporter can still WRITE to a dead person's
+  audit-service control, not a settlement emitter. **CLOSED by M48 PR3**, which
+  deleted the encrypt-only class rather than exempting the route.
+- **[CLOSED: §6jjj]** *An unlinked reporter can still WRITE to a dead person's
   evidence trail.* `attachCaseEvidence` authorizes on the Cedar half, which
   snapshots `reported_by`, so M48 PR1's live link check does not reach it — PR1
   demonstrated it in a browser and left it as a question. It is a write, and
-  this PR's subject is the read trail.
+  this PR's subject is the read trail. **CLOSED by M48 PR3**, which applied
+  `report`'s own intake rule to the follow-up write.
+
+## 6jjj. Threat-model delta — M48 PR3, the loose ends (2026-09-02)
+
+**M48's last PR, and its two loose ends were the same shape: a control that was
+right when written and falsified by a later milestone, with nothing watching for
+the falsification.** One was a detection bound, one an authorization check.
+Neither was found by a test going red, because in both cases the mechanism that
+would have noticed is the one that had been made wrong.
+
+### The alarm that fired on the reviewed path
+
+`ENCRYPT_ONLY_PREFIXES` held exactly one member for its whole life —
+`distributions`, on the ground that settlement amounts are write-only and no
+read route exists. It was introduced by M18 PR2 (`eef5606`, 2026-08-13) and
+never edited again, and the claim was TRUE when written: its own note credits
+M18 PR1 with having corrected an earlier comment that asserted a read route
+which did not then exist. Then M23 PR4b (`4e125e1`, 2026-08-21) shipped
+`distributionAmount`, and from that day every dual-control amount check an
+operator performed breached the loudest class in the table at count 1.
+
+That is the `asset`/`sentinel` defect wearing a different token — that row went
+loud as `unmodeled_principal` for want of a row, this one as `encrypt_only` for
+an absolute claim that had gone stale — and the table already carries its
+lesson: a reviewed path raising the alarm reserved for unreviewed ones is how an
+alarm stops being read. The bound sat above the principal test — `boundFor`
+returned the encrypt-only zero before it ever looked at who was reading — so
+M48 PR2's work deriving `actorType` could not clear it either.
+
+**The class is DELETED, not emptied.** An empty map leaves a branch `boundFor`
+cannot take, a `BoundName` member nothing can produce, and a fence that loops
+zero times: all green, all meaningless, and the shape this repo names most
+often. Deleting it also strengthens `undecidedPrefixes`, which now demands a
+BOUND ROW for every registered prefix rather than accepting a prose sentence as
+a decision. The cost is stated in the source: a genuinely unreadable prefix no
+longer gets a distinct alarm name and would resolve to `unmodeled_principal`.
+That is the right trade while the class has zero correct instances.
+
+**Two rows replace it, one per principal class, because both reach the site.**
+Modelling one and not the other would leave the unmodelled half breaching at
+count 1 on a reviewed path — the defect again, one layer down. The operator's
+ceiling is the TIGHTER of the two, and the asymmetry is about reach rather than
+the act: an executor is confined to estates they administer, while an operator
+can open any verified case, so the same count means something different. The
+spec asserts that inequality rather than the two numbers, which would only
+restate the table.
+
+**The membership is DERIVED, across a package boundary.** The audit spec reads
+`admin.service.ts` for the literal `actorType: isOperator ? 'operator' : 'user'`
+and requires a named bound for both arms, so reverting M48 PR2's derivation
+reddens a bound test in another service. That read is declared in
+`apps/services/audit/turbo.json` — without it the gate would replay a cached
+pass while its only real input changed, and the repo's own fence for that named
+the omission before this paragraph was written.
+
+### The write the link check had not reached
+
+M48 PR1 made the five reads behind `assertCaseVisible` re-derive the reporter's
+contact link at read time, and demonstrated in a browser that the same unlinked
+session could still append to a dead person's evidence trail. PR1 recorded that
+rather than folding it in.
+
+**The category is now derived rather than asserted.** Six routes authorize
+through `caseResource`'s frozen `reported_by`; the Cedar policy grants a reporter
+exactly `read` and `evidence_add`; so a reporter reaches two of the six, and only
+one of those writes. `attachCaseEvidence` was the last member of the category the
+intake rule had not been applied to — `report` itself refuses unless
+`isLinkedContact` holds now, and the reads were fixed in PR1.
+
+**`getCase` stays open, deliberately.** It is §6g's evidence argument: the
+reporter must not lose sight of the report they filed. Closing it would remove no
+information — `listForUser` matches the same frozen column and returns the same
+row — while pushing the read onto a route that deliberately emits nothing.
+
+**The refusal is NOT the uniform 404.** The uniform answer exists so that an id
+cannot confirm a row exists, and nothing is hidden here: the reporter still sees
+this case in their own list. A 404 on the attach would be a control firing while
+wearing the face of an outage, which is the one substitution this repo forbids
+outright. A stranger never reaches the check; Cedar denies above it.
+
+### Residuals
+
+- **[ACCEPTED]** *Both `distributions` bounds are reviewed guesses rather than
+  measured ceilings.* Most measured rows carry a peak from M18 PR1's journey,
+  though not all — `asset_event`/`user` was zero at M18 PR2 (`eef5606`) and
+  moved to 3 in M19 PR2 (`9e6ab24`), so a later milestone measuring a row it
+  reached first is precedent rather than novelty. This prefix had no read route
+  when either journey ran. PR3 adds the drive, so `measuredPerMinute` is now 1
+  on both rows rather than 0 —
+  and 1 is a FLOOR, not a ceiling: the drive reveals one amount once to prove the
+  path is reached and recorded under the right `actor_type`, which is a different
+  claim from sampling what an executor settling an estate actually costs. Both
+  notes say which of the two the number is, because a small measured figure read
+  as a workload is how a bound gets set an order of magnitude too tight. The
+  numbers move when there is real traffic to size them against.
+- **[ACCEPTED]** *A genuinely write-only prefix now has no distinct alarm name.*
+  Deleting the encrypt-only class means the next such column resolves to
+  `unmodeled_principal` rather than to a token naming its own reason. This is the
+  stated cost of preferring an absence to a filter, and the mitigation is that
+  `undecidedPrefixes` is now stricter than the thing it replaced: the claim
+  belongs in a row's note, beside a number, where a reviewer meets it.
+- **[OWNER: E1]** *§6q's provisional list of zero-measured bounds is a
+  hand-maintained list beside a table that grows.* It names six prefixes —
+  `family`, `asset_event`, `plaid_item`, `account`, `assistant_tool_call`,
+  `users`. Deriving the same set from the table at `360e95e` gives EIGHT rows
+  across eight distinct prefixes: the two it omits are `asset` (sentinel) and
+  `doc` (operator). Both omissions predate this branch, and PR3 adds nothing to
+  that set — its two new rows carry `measuredPerMinute: 1`, so the table grows
+  from sixteen rows to eighteen while the zero-measured set stays at eight. The
+  bullet's other half is half-true rather than false: it says those bounds are
+  "marked as such in the table", and three of the eight notes do say
+  *provisional* — `family`, `account`, `assistant_tool_call`. Recorded rather
+  than folded in — it is E1-owned, and a
+  milestone that fixes another's residual in passing is how ownership stops
+  meaning anything. The durable fix is to derive the list rather than restate
+  it, which is M43's subject.

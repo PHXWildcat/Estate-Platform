@@ -1,0 +1,47 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    /*
+     * THIS PACKAGE'S TESTS READ FILES OUTSIDE THIS PACKAGE.
+     *
+     * Turbo's default input set for a task is the package's own tracked files,
+     * so editing what one of those tests actually reads does NOT move the task
+     * hash: `pnpm test` replays a cached green log for a gate whose only input
+     * just changed. Measured, not theorised — see the decision log for the
+     * docs edit that passed locally as `cache hit, replaying logs` and failed
+     * in cold CI.
+     *
+     * THIS LIST IS CANONICAL AND BYTE-IDENTICAL IN EVERY PACKAGE THAT CARRIES
+     * IT. Do not edit one copy: `packages/config/test/turbo-test-inputs.spec.ts`
+     * derives which packages need it from the AST of every test file in the
+     * repo, holds the list as data, and names any file that disagrees. It also
+     * derives the exclusions below from git's own answer for what is ignored —
+     * an explicit `$TURBO_ROOT$` glob is NOT gitignore-aware, so build output
+     * swept in by it makes the hash change on every build and the cache never
+     * hit. That failure is loud and slow; the one it replaces is silent and
+     * wrong.
+     */
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/dist-esm/**",
+        "!$TURBO_ROOT$/**/.next/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo",
+        "!$TURBO_ROOT$/**/next-env.d.ts",
+        "!$TURBO_ROOT$/**/vault-extension.zip",
+        "!$TURBO_ROOT$/.claude/**",
+        "!$TURBO_ROOT$/.stack-certs/**",
+        "!$TURBO_ROOT$/apps/operator-web/public/app/**",
+        "!$TURBO_ROOT$/apps/vault-web/public/app/**",
+        "!$TURBO_ROOT$/apps/vault-web/public/lib/**"
+      ]
+    }
+  }
+}

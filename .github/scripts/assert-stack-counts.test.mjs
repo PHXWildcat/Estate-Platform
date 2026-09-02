@@ -53,6 +53,24 @@ function run({ results, passed, pending, file }) {
   }
 }
 
+/**
+ * The pair stack.yml passes for one profile, read from the workflow itself.
+ *
+ * Its shell picks production in the `then` arm and development in the `else`,
+ * so the two pairs appear in that order and this returns the Nth. Arbitrary
+ * fixtures below (GOOD and friends) are just inputs for the gate's own logic
+ * and deliberately do NOT come from here — only the cases that make a claim
+ * ABOUT a profile do, so that a legitimate count change moves one place.
+ */
+function expectedPair(profile) {
+  const stack = readFileSync(join(WORKFLOWS, 'stack.yml'), 'utf8');
+  const pairs = [...stack.matchAll(/passed=(\d+); pending=(\d+)/g)];
+  assert.equal(pairs.length, 2, 'stack.yml must carry exactly two profile pairs');
+  const [prod, dev] = pairs;
+  const hit = profile === 'production' ? prod : dev;
+  return [profile, Number(hit[1]), Number(hit[2])];
+}
+
 const GOOD = { numPassedTests: 33, numFailedTests: 0, numPendingTests: 4 };
 
 test('THE GATE RUNS AT ALL — matching counts exit 0 and report what they saw', () => {
@@ -119,13 +137,29 @@ test('EQUALITY, not a floor: fewer passes than expected is a failure too', () =>
 });
 
 test('the production profile passes its own numbers', () => {
-  const production = { numPassedTests: 23, numFailedTests: 0, numPendingTests: 14 };
-  assert.equal(decide({ result: production, expectedPassed: 23, expectedPending: 14 }), null);
+  // READ from the workflows rather than restated here. These literals used to
+  // be a THIRD copy of a pair maintained in two places, and M48 PR3 found them
+  // the way such a copy is always found: the suite gained a test, both
+  // workflows moved, and this file stayed on the old numbers — still green,
+  // still describing a profile that no longer counted that way. images.yml's
+  // own comment prescribes the remedy ("if a third consumer of this count ever
+  // appears, derive it"), so both pairs come from the call sites.
+  const [, prodPassed, prodPending] = expectedPair('production');
+  const [, devPassed, devPending] = expectedPair('development');
+  const production = {
+    numPassedTests: prodPassed,
+    numFailedTests: 0,
+    numPendingTests: prodPending,
+  };
+  assert.equal(
+    decide({ result: production, expectedPassed: prodPassed, expectedPending: prodPending }),
+    null,
+  );
   // ...and the development expectation must NOT accept them, or the two call
   // sites' deliberately un-derived numbers would be interchangeable.
   assert.match(
-    decide({ result: production, expectedPassed: 33, expectedPending: 4 }),
-    /got 23\/14/,
+    decide({ result: production, expectedPassed: devPassed, expectedPending: devPending }),
+    new RegExp(`got ${prodPassed}/${prodPending}`),
   );
 });
 
@@ -145,17 +179,31 @@ test('THE WORKFLOWS INVOKE IT THROUGH A SHELL, and that line still works', () =>
   const dir = mkdtempSync(join(tmpdir(), 'stackgate-'));
   mkdirSync(join(dir, '.github', 'scripts'), { recursive: true });
   copyFileSync(SCRIPT, join(dir, '.github', 'scripts', 'assert-stack-counts.mjs'));
-  writeFileSync(
-    join(dir, 'stack-results.json'),
-    JSON.stringify({ numPassedTests: 33, numFailedTests: 0, numPendingTests: 4 }),
-  );
-
+  // The fabricated result is DERIVED from the numbers images.yml itself
+  // passes, because this case is about the SHELL and not about the counts: a
+  // hand-pinned pair here goes red every time the suite legitimately gains a
+  // test, which reads as "the invocation broke" and is answered by editing the
+  // fixture — the repair that quietly retires the case. What the counts are is
+  // the sibling case below; that they still reach node through bash is this
+  // one, and it must survive the numbers moving.
   const images = readFileSync(join(WORKFLOWS, 'images.yml'), 'utf8');
   const line = /^\s*run: (node \.github\/scripts\/assert-stack-counts\.mjs [^\n]*)$/m.exec(images);
   assert.ok(line, 'images.yml no longer invokes the gate on one line — update this test');
+  const pair = /assert-stack-counts\.mjs stack-results\.json (\d+) (\d+)/.exec(line[1]);
+  assert.ok(pair, 'images.yml must pass two literal counts on that line');
+  const [passed, pending] = [Number(pair[1]), Number(pair[2])];
+
+  writeFileSync(
+    join(dir, 'stack-results.json'),
+    JSON.stringify({ numPassedTests: passed, numFailedTests: 0, numPendingTests: pending }),
+  );
 
   const out = execFileSync('bash', ['-c', line[1]], { cwd: dir, encoding: 'utf8' });
-  assert.match(out, /passed=33 failed=0 pending=4/, 'the gate must PRINT, not merely exit 0');
+  assert.match(
+    out,
+    new RegExp(`passed=${passed} failed=0 pending=${pending}`),
+    'the gate must PRINT, not merely exit 0',
+  );
 });
 
 test('EACH WORKFLOW PASSES ITS OWN LITERAL NUMBERS — they are not derived', () => {
@@ -179,6 +227,23 @@ test('EACH WORKFLOW PASSES ITS OWN LITERAL NUMBERS — they are not derived', ()
     [devPair[1], devPair[2]],
     [prodPair[1], prodPair[2]],
     'the two profiles must not share one pair of numbers',
+  );
+
+  // ...and the two DEVELOPMENT pairs must AGREE. Un-derived is not the same as
+  // unrelated: images.yml runs the suite from built images and stack.yml's dev
+  // leg runs it from `dist`, so each number stays an independent measurement —
+  // but they measure the same suite in the same profile, and a disagreement
+  // means one of them was not updated. That is the exact failure the comment
+  // beside each number describes ("forgetting the second is how that gate went
+  // red once"), and until M48 PR3 nothing asserted it: the shell case above
+  // caught it only by accident, through a hand-pinned fixture, and deriving
+  // that fixture would have retired the accident silently.
+  const stackDev = /passed=(\d+); pending=(\d+)\s*\n\s*fi/.exec(stack);
+  assert.ok(stackDev, "stack.yml's development pair must be the last one before `fi`");
+  assert.deepEqual(
+    [devPair[1], devPair[2]],
+    [stackDev[1], stackDev[2]],
+    'images.yml and stack.yml disagree about the development counts — one was not updated',
   );
 });
 

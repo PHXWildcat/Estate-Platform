@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import {
@@ -10,7 +12,6 @@ import {
   boundFor,
   DECRYPT_RATE_BOUNDS,
   DECRYPT_WINDOW_SECONDS,
-  ENCRYPT_ONLY_PREFIXES,
   principalClassOf,
   SENTINEL_ACTOR_ID,
   undecidedPrefixes,
@@ -47,7 +48,7 @@ function obs(over: Partial<DecryptRateObservation>): DecryptRateObservation {
 }
 
 describe('the bounds table (reviewed data)', () => {
-  it('every registered prefix carries a VISIBLE decision (bound row or encrypt-only reason)', () => {
+  it('every registered prefix carries a VISIBLE decision — a reviewed bound row', () => {
     expect(undecidedPrefixes()).toEqual([]);
   });
 
@@ -73,8 +74,11 @@ describe('the bounds table (reviewed data)', () => {
   });
 
   it('no bound sits at or under the measured sustained rate', () => {
-    // The gate must never fire on the legitimate peak PR1 measured: every
-    // bound strictly exceeds measured-per-minute sustained across the window.
+    // The gate must never fire on the legitimate peak a journey measured:
+    // every bound strictly exceeds measured-per-minute sustained across the
+    // window. Most peaks come from M18 PR1's journey; the two `distributions`
+    // rows from M48 PR3's, which is why this reads the field rather than
+    // naming the milestone that filled it.
     for (const row of DECRYPT_RATE_BOUNDS) {
       expect(row.maxPerWindow).toBeGreaterThan(
         row.measuredPerMinute * (DECRYPT_WINDOW_SECONDS / 60),
@@ -82,10 +86,36 @@ describe('the bounds table (reviewed data)', () => {
     }
   });
 
-  it('encrypt-only prefixes have no bound row (one decision per prefix, never two)', () => {
-    for (const prefix of Object.keys(ENCRYPT_ONLY_PREFIXES)) {
-      expect(DECRYPT_RATE_BOUNDS.some((b) => b.prefix === prefix)).toBe(false);
+  it('models BOTH principal classes that reach the distribution-amount decrypt', () => {
+    // The encrypt-only class is GONE (M48 PR3): it held one member for its
+    // whole life, and that member acquired a read route in M23 PR4b, so every
+    // legitimate reveal breached at count 1. This is the replacement claim, in
+    // the shape the asset/sentinel row above already needed — model every class
+    // that reaches the site, or the unmodelled half is loud on a reviewed path.
+    //
+    // Derived from the SOURCE rather than restated: admin.service.ts passes
+    // `isOperator ? 'operator' : 'user'`, so both arms must resolve to a
+    // named bound. A test that listed them by hand would agree with itself.
+    const src = readFileSync(
+      join(__dirname, '..', '..', 'settlement', 'src', 'admin.service.ts'),
+      'utf8',
+    );
+    const call = /decryptField\(\{[\s\S]*?DISTRIBUTION_AMOUNT_FIELD[\s\S]*?\}\)/.exec(src);
+    expect(call).not.toBeNull();
+    const arms = [...(call?.[0] as string).matchAll(/actorType: \w+ \? '(\w+)' : '(\w+)'/g)];
+    expect(arms).toHaveLength(1);
+    const classes = [arms[0]?.[1] as string, arms[0]?.[2] as string].sort();
+    expect(classes).toEqual(['operator', 'user']);
+    for (const cls of classes) {
+      const bound = boundFor('distributions', cls as 'operator' | 'user');
+      expect(bound.name).toBe(`distributions_${cls}`);
+      expect(bound.maxPerWindow).toBeGreaterThan(0);
     }
+    // The operator's reach is wider, so its ceiling is lower. Asserted as an
+    // INEQUALITY rather than two numbers, which would just restate the table.
+    expect(boundFor('distributions', 'operator').maxPerWindow).toBeLessThan(
+      boundFor('distributions', 'user').maxPerWindow,
+    );
   });
 
   it('boundFor is total, and everything outside the table resolves to 0', () => {
@@ -93,8 +123,14 @@ describe('the bounds table (reviewed data)', () => {
     expect(boundFor('doc', 'user').maxPerWindow).toBeGreaterThan(0);
     // Registered prefix, principal the table never modelled: loud zero.
     expect(boundFor('doc', 'sentinel')).toEqual({ name: 'unmodeled_principal', maxPerWindow: 0 });
-    // Encrypt-only: the first decrypt ever is the anomaly.
-    expect(boundFor('distributions', 'user')).toEqual({ name: 'encrypt_only', maxPerWindow: 0 });
+    // Was 'encrypt_only' until M48 PR3; now a reviewed row like any other.
+    expect(boundFor('distributions', 'user').name).toBe('distributions_user');
+    // Still loud for a class the table does not model: deleting the encrypt-only
+    // branch must not have widened anything.
+    expect(boundFor('distributions', 'sentinel')).toEqual({
+      name: 'unmodeled_principal',
+      maxPerWindow: 0,
+    });
     // Unregistered prefix: the detector is where a new prefix becomes loud.
     expect(boundFor('trust', 'user')).toEqual({ name: 'unknown_prefix', maxPerWindow: 0 });
     // Prototype keys must classify as unknown, never resolve through Object.
@@ -207,9 +243,19 @@ describe('the distinct-subject condition', () => {
   });
 
   it('the ZERO defaults never carry the condition (a loud bound must stay loud)', () => {
-    for (const name of ['trust', 'distributions']) {
-      expect(boundFor(name, 'user').maxDistinctSubjectsPerWindow).toBeUndefined();
-    }
+    // The corpus is the two zero-default classes that still EXIST, derived
+    // rather than listed: an unregistered prefix and an unmodelled principal.
+    // `distributions` stood here as the third until M48 PR3 gave it two
+    // reviewed rows, at which point half this loop was asserting about a
+    // 300-per-window bound under a test named for zero defaults — green, and
+    // evidence of nothing. `unknownPrefix` is derived so a prefix added to the
+    // registry cannot silently become this test's subject.
+    const unknownPrefix = 'trust';
+    expect(Object.keys(DECRYPT_FIELD_PREFIXES)).not.toContain(unknownPrefix);
+    expect(boundFor(unknownPrefix, 'user').name).toBe('unknown_prefix');
+    expect(boundFor(unknownPrefix, 'user').maxDistinctSubjectsPerWindow).toBeUndefined();
+
+    expect(boundFor('doc', 'sentinel').name).toBe('unmodeled_principal');
     expect(boundFor('doc', 'sentinel').maxDistinctSubjectsPerWindow).toBeUndefined();
   });
 

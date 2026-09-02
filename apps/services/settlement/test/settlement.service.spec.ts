@@ -584,6 +584,72 @@ describe('provider matches are operator-filed, through either door', () => {
   });
 });
 
+/**
+ * THE WRITE THE LINK CHECK HAD NOT REACHED (M48 PR3).
+ *
+ * M48 PR1 made the five reads behind `assertCaseVisible` re-derive the
+ * reporter's contact link at read time, and demonstrated in a browser that the
+ * same unlinked session could still drive `evidenceCount` to 1 — recorded as a
+ * question rather than folded in. This is the answer: `report` refuses at
+ * intake unless `isLinkedContact` holds now, so the follow-up write on the same
+ * trail is the member of that category the rule had not been applied to.
+ *
+ * It is the LAST such member. Deriving the routes that authorize through
+ * `caseResource`'s frozen `reported_by` gives six, and the Cedar policy grants a
+ * reporter exactly `read` and `evidence_add` — so a reporter reaches two of the
+ * six, `getCase` and this, and only this one writes. `getCase` stays open
+ * deliberately: it is §6g's evidence argument, and closing it would remove no
+ * information while pushing the read onto `listMyCases`, which emits nothing.
+ */
+describe('an unlinked reporter cannot write to the evidence trail', () => {
+  const DOCUMENT = { type: 'document', documentId: randomUUID(), version: 1 } as const;
+
+  it('refuses the attach, and says the link was revoked rather than 404', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    h.coreReads.unlink(DECEDENT, REPORTER);
+
+    const refusal = await refusalOf(() =>
+      h.service.addEvidence(REPORTER, SESSION, caseId, DOCUMENT),
+    );
+    // NOT the uniform 404. The reporter still sees this case in their own list,
+    // so answering "no such case" on the attach would be a control firing while
+    // wearing the face of an outage. A stranger never reaches this line.
+    expect(refusal).toEqual({ status: 403, body: { error: 'reporter_link_revoked' } });
+  });
+
+  it('leaves the trail untouched — no entry, and no event claiming one', async () => {
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+    h.coreReads.unlink(DECEDENT, REPORTER);
+    h.producer.messages.length = 0;
+
+    await refusalOf(() => h.service.addEvidence(REPORTER, SESSION, caseId, DOCUMENT));
+
+    expect(auditActions(h.producer)).toEqual([]);
+    const after = await h.service.getCase(OPERATOR, SESSION, caseId);
+    expect(after.evidence).toEqual([]);
+  });
+
+  it('a STILL-LINKED reporter is unaffected, and an OPERATOR never consults the link', async () => {
+    // The two mirrors. Without the first, a check that refused every reporter
+    // would pass the test above; without the second, one that refused every
+    // non-operator caller would too — and the operator fixture is NOT a linked
+    // contact of the decedent, so this arm genuinely exercises the `!isOperator`
+    // short-circuit rather than riding on a link that happens to exist.
+    const h = linkedHarness();
+    const caseId = await reportCase(h);
+
+    await expect(h.service.addEvidence(REPORTER, SESSION, caseId, DOCUMENT)).resolves.toMatchObject(
+      { evidence: [expect.objectContaining({ addedBy: REPORTER })] },
+    );
+
+    h.coreReads.unlink(DECEDENT, REPORTER);
+    const afterOperator = await h.service.addEvidence(OPERATOR, SESSION, caseId, DOCUMENT);
+    expect(afterOperator.evidence.map((e) => e.addedBy)).toEqual([REPORTER, OPERATOR]);
+  });
+});
+
 describe('verification (timer expiry is necessary, never sufficient)', () => {
   it('refuses before the waiting period lapses', async () => {
     const h = linkedHarness();

@@ -136,12 +136,49 @@ describeIfPg('decrypt-rate detector (integration)', () => {
     });
   });
 
-  it('one decrypt under an encrypt-only prefix breaches immediately', async () => {
-    await ingestDecrypts(1, { field: 'distributions.amount', actorId: randomUUID() });
+  it('a legitimate amount reveal is SILENT, and the operator bound still breaches above it', async () => {
+    // THE DEFECT THIS CASE USED TO ASSERT (M48 PR3). It read "one decrypt under
+    // an encrypt-only prefix breaches immediately", and that was true and wrong
+    // together: M23 PR4b shipped `distributionAmount` on 2026-08-21, so from
+    // that day every dual-control amount check an operator performed fired the
+    // loudest class in the table at count 1 — a reviewed path raising the alarm
+    // reserved for unreviewed ones, which is how an alarm stops being read.
+    //
+    // BOTH HALVES, because either alone is satisfiable by a mistake — and the
+    // mutations are NOT symmetric, which an earlier draft of this comment got
+    // backwards by naming deletion for the first half. Deleting the row does
+    // not give silence: `boundFor` falls through to `unmodeled_principal`/0 and
+    // ONE decrypt breaches, which reddens the first half and passes the second.
+    // Silence at one reveal alone is what a ceiling set absurdly high would
+    // give, or a detector that never ticks; a breach above the ceiling alone is
+    // what the old encrypt-only zero gave, since it fired at 1 as well as at 61.
+    // So the two halves fail to different mutations, which is the point of
+    // asserting both.
+    const operator = randomUUID();
+    const opMax = boundFor('distributions', 'operator').maxPerWindow;
+    await ingestDecrypts(1, {
+      field: 'distributions.amount',
+      actorId: operator,
+      actorType: 'operator',
+    });
+    await detector.tick();
+    // Still two: the reveal an operator actually performs says nothing.
+    expect(producer.messages).toHaveLength(2);
+
+    await ingestDecrypts(opMax, {
+      field: 'distributions.amount',
+      actorId: operator,
+      actorType: 'operator',
+    });
     await detector.tick();
     expect(producer.messages).toHaveLength(3);
     const event = AuditEventSchema.parse(JSON.parse(producer.messages[2]?.value ?? ''));
-    expect(event.detail).toMatchObject({ boundName: 'encrypt_only', prefixClass: 'distributions' });
+    expect(event.detail).toMatchObject({
+      boundName: 'distributions_operator',
+      prefixClass: 'distributions',
+      count: opMax + 1,
+    });
+    expect(event.resourceId).toBe(operator);
   });
 
   it('the sentinel rides its own bound; a REAL service principal under the same prefix is unmodeled', async () => {

@@ -690,9 +690,12 @@ export class DocumentsService {
         actorId: actor,
         // By construction the caller is a settlement operator — checkEvidenceRead
         // only answers for allowlisted operators — so the decrypt audits as one.
-        // Without this the wrapper's 'user' default misclassifies the one
-        // operator-driven decrypt in the product (docs/03 §4 TB4 keys its
-        // per-principal baseline on actor class).
+        // Without this the wrapper's 'user' default misclassifies it, and
+        // docs/03 §4 TB4 keys its per-principal baseline on actor class.
+        // This said "the one operator-driven decrypt in the product" until M48
+        // PR3: M23 PR4b added a second (settlement's `distributionAmount`), and
+        // M48 PR2 made it SAY operator rather than hardcoding user — so the
+        // count was wrong from 2026-08-21 and unfalsifiable until 2026-08-28.
         actorType: 'operator',
         purpose: 'evidence_content_read',
       });

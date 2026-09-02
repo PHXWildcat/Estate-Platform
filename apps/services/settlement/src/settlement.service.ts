@@ -318,6 +318,41 @@ export class SettlementService {
       if (!isOperator && input.type !== 'document') {
         throw new ForbiddenException({ error: 'document_evidence_only' });
       }
+      // THE INTAKE RULE, APPLIED TO THE FOLLOW-UP WRITE (M48 PR3).
+      //
+      // `report` above refuses unless `isLinkedContact` holds RIGHT NOW, and
+      // M48 PR1 made the five gated READS re-derive the same fact. This write
+      // was the member of that category nobody had applied it to: it authorizes
+      // through Cedar on `caseResource`'s FROZEN `reported_by`, so a contact the
+      // owner had removed could still append to a dead person's evidence trail —
+      // demonstrated live in PR1's browser drive, which drove `evidenceCount`
+      // to 1 from an unlinked session and left it as a question.
+      //
+      // NOT `assertCaseVisible`: that helper admits the executor and an operator
+      // too, and this arm is reached only by a non-operator on their own report.
+      // The narrow check is the one the intake rule actually makes.
+      //
+      // ONE ARM WHERE THE TOKEN IS BLUNTER THAN THE CAUSE, stated rather than
+      // hidden: `reportProviderSignal` opens a case with `reportedBy` set to an
+      // OPERATOR and needs no contact link by design, so an operator whose
+      // allowlist grant is later revoked keeps Cedar's reporter permit, reaches
+      // this line as a non-operator, and is refused `reporter_link_revoked` —
+      // naming a link that never existed. The REFUSAL is right (a revoked
+      // operator must not append), and the alternative is a second token whose
+      // remedy differs only in which standing was lost. Kept as one token
+      // deliberately; if provider-reported cases ever gain a non-operator
+      // reporter, this arm needs revisiting rather than the token renaming.
+      //
+      // A DISTINCT TOKEN, not the uniform 404. The uniform answer exists to stop
+      // an id confirming a row exists, and nothing here is hidden: the reporter
+      // still SEES this case in their own list (`listForUser` matches the frozen
+      // column deliberately, §6g's evidence argument), so a 404 on the attach
+      // would be a control firing while wearing the face of an outage — the one
+      // substitution this repo forbids outright. A stranger never reaches this
+      // line; Cedar denies above it.
+      if (!isOperator && !(await this.coreReads.isLinkedContact(locked.decedent_user_id, actor))) {
+        throw new ForbiddenException({ error: 'reporter_link_revoked' });
+      }
       if (locked.status !== 'reported' && locked.status !== 'verifying') {
         throw new ConflictException({ error: 'invalid_transition' });
       }

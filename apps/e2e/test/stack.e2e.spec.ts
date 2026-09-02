@@ -2052,12 +2052,199 @@ describeIfStack('the running stack', () => {
   });
 
   describeDev('the decrypt-rate baseline (M18)', () => {
+    /**
+     * THE JOURNEY THIS GATE COULD NOT SEE (M48 PR3).
+     *
+     * The bounds table credits the zero-anomaly assertion below with keeping
+     * loud defaults out of legitimate journeys. For `distributions` that credit
+     * was unearned: no e2e journey had ever reached the amount route, so
+     * nothing here could notice that `ENCRYPT_ONLY_PREFIXES` had been asserting
+     * "this prefix has no read route" since M18 PR2 while M23 PR4b shipped one
+     * on 2026-08-21. Every dual-control amount check an operator made ran with
+     * no bound at all, and this suite said nothing — because the journey never
+     * went there.
+     *
+     * This test is what makes the credit real. It runs BEFORE the burst below
+     * so its decrypts land inside the window that assertion sweeps: were either
+     * new bound sized under what one honest reveal costs, it would find a
+     * `distributions_*` anomaly it does not expect and go red naming it. That
+     * is the probe being able to FAIL, which is the only thing that makes a
+     * green run evidence.
+     *
+     * It also pins the fact PR2's derivation turned into data: `actor_type` on
+     * the trail, read straight off the decrypt event, is what decides WHICH of
+     * the two rows applies. Both classes reach this one route, so both are
+     * driven here and the recorded class of each is asserted.
+     */
+    it('reveals one amount to BOTH principal classes, and raises no anomaly', async () => {
+      const decedent = await registerAndLogin();
+      const reporter = await registerAndLogin();
+      const executor = await registerAndLogin();
+      const operator = await registerAndLogin();
+
+      // Fixtures for the realities this flow requires, not the flow under test:
+      // a reporter must be a live linked contact (M7 anti-enumeration), an
+      // executor additionally needs the dormant `on_death_verified` role
+      // assignment, and operators live on the CLI-managed allowlist. Settlement
+      // shares the CORE cluster (`SETTLEMENT_DATABASE_URL` and the profile
+      // service's both name `pg-core/core`), so one connection reaches the
+      // contact tables and the case table alike.
+      const executorContactId = randomUUID();
+      const core = new Client({ connectionString: CORE_DB });
+      await core.connect();
+      try {
+        await core.query(
+          `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [randomUUID(), decedent.userId, Buffer.from('ct'), reporter.userId, randomUUID()],
+        );
+        await core.query(
+          `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [executorContactId, decedent.userId, Buffer.from('ct'), executor.userId, randomUUID()],
+        );
+        await core.query(
+          `INSERT INTO role_assignments
+             (id, owner_user_id, contact_id, role, scope_type, effective_condition)
+           VALUES ($1, $2, $3, 'executor', 'estate', 'on_death_verified')`,
+          [randomUUID(), decedent.userId, executorContactId],
+        );
+        await core.query(`INSERT INTO settlement_operators (user_id) VALUES ($1)`, [
+          operator.userId,
+        ]);
+      } finally {
+        await core.end();
+      }
+
+      // One step-up each, spent across every gated call below: freshness is a
+      // 5-minute window, not a single use, and `stepUp` enrolls a NEW factor
+      // every time it is called.
+      await stepUp(operator);
+      await stepUp(executor);
+
+      const opened = expectStatus(
+        await api(SETTLEMENT, 'POST', '/v1/settlement/cases', {
+          token: reporter.token,
+          body: { decedentUserId: decedent.userId, source: 'trusted_contact' },
+        }),
+        201,
+        'intake for the amount journey',
+      ) as { caseId: string };
+
+      expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review/start`, {
+          token: operator.token,
+        }),
+        200,
+        'review start',
+      );
+      expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review`, {
+          token: operator.token,
+          body: { decision: 'approve' },
+        }),
+        200,
+        'review approve — the case enters its waiting period',
+      );
+
+      // The waiting period is measured in DAYS (minimum 5, by DDL CHECK) and
+      // this suite runs in seconds, so the deadline is moved rather than waited
+      // out. It is the one reality an e2e cannot honour; every other step on
+      // this path is the real service answering over HTTP.
+      const clock = new Client({ connectionString: CORE_DB });
+      await clock.connect();
+      try {
+        await clock.query(
+          `UPDATE settlement_cases SET waiting_period_ends = now() - interval '1 hour'
+            WHERE id = $1`,
+          [opened.caseId],
+        );
+      } finally {
+        await clock.end();
+      }
+
+      const verified = expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/verify`, {
+          token: operator.token,
+        }),
+        200,
+        'verification once the waiting period has lapsed',
+      ) as { status: string };
+      expect(verified.status).toBe('verified');
+
+      const dist = expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/distributions`, {
+          token: executor.token,
+          body: { beneficiaryContactId: executorContactId, amount: '4500.00' },
+        }),
+        201,
+        'the executor records a distribution with a sealed amount',
+      ) as { distributionId: string };
+
+      // BOTH classes read it back. Each reveal is one audited decrypt under the
+      // DECEDENT's DEK, and neither may breach its bound.
+      for (const [who, label] of [
+        [executor, 'executor'],
+        [operator, 'operator'],
+      ] as const) {
+        expect(
+          expectStatus(
+            await api(
+              SETTLEMENT,
+              'GET',
+              `/v1/settlement/distributions/${dist.distributionId}/amount`,
+              { token: who.token },
+            ),
+            200,
+            `the ${label} reveals the recorded amount`,
+          ),
+        ).toEqual({ amount: '4500.00' });
+      }
+
+      // The decrypts REACHED the store, under the prefix whose bounds this PR
+      // wrote and carrying the class each bound is keyed by. Without this the
+      // zero-anomaly gate below would be silent for the boring reason that
+      // nothing was ever counted — which is exactly how a probe stops being
+      // able to fail. `resource_id` is the DECEDENT (whose key was opened) and
+      // `actor_id` the reader, per the sink in settlement's app.module.
+      const audit = new Client({ connectionString: AUDIT_DB });
+      await audit.connect();
+      try {
+        const seen = await pollUntil(
+          'both distribution-amount decrypts on the trail',
+          async () => {
+            const { rows } = await audit.query<{ actor_id: string; actor_type: string }>(
+              `SELECT actor_id, actor_type FROM audit_events
+                WHERE action = 'crypto.field.decrypted'
+                  AND resource_id = $1
+                  AND detail->>'field' = 'distributions.amount'
+                  AND occurred_at >= $2`,
+              [decedent.userId, SUITE_START],
+            );
+            return rows.length >= 2 ? rows : null;
+          },
+          60_000,
+          2_000,
+        );
+        // A SET, not a count: two rows both attributed to the executor would
+        // satisfy any length check while meaning the operator's decrypt was
+        // recorded under the wrong class — the mis-attribution that leaves the
+        // tighter of the two bounds unreachable and the trail wrong about who
+        // read an estate.
+        expect(new Set(seen.map((r) => `${r.actor_id}:${r.actor_type}`))).toEqual(
+          new Set([`${executor.userId}:user`, `${operator.userId}:operator`]),
+        );
+      } finally {
+        await audit.end();
+      }
+    });
+
     it('fires on a deliberate burst and NEVER on the journey', async () => {
       // TWO claims in one test, and the pairing is the design. A bare
       // "zero anomaly events after the journey" assertion is vacuously green
       // over a DEAD detector (the M8 dead-consumer shape — the gate this
       // repo's own doctrine forbids), so the test first proves the deployed
-      // detector fires: a deliberate burst one past the smallest bound, then
+      // detector fires: a deliberate burst one past its own bound, then
       // a poll for the anomaly it must emit. That poll also gives the
       // false-positive half its ordering: a tick has demonstrably run against
       // a window that includes this burst, and the journey's traffic sits in
@@ -2069,15 +2256,24 @@ describeIfStack('the running stack', () => {
       // suite started is this burst's own, by bound AND by principal.
       //
       // The burst rides mfa_methods_user because it is the cheapest bound to
-      // reach honestly, NOT because it is the smallest (users_user and
-      // doc_operator are 60 against its 100 — the M18 review corrected an
-      // earlier comment claiming otherwise): identity's TOTP validation has
-      // no replay ledger, so repeated step-ups with the current code are
-      // cheap, fast, and side-effect-free beyond the ledger rows they
-      // legitimately write (step-up SUCCESSES are uncounted by the M16 cap,
-      // and no settlement case exists for a fresh probe user). The two
-      // smaller bounds are unreachable without either an email-change
-      // ceremony per decrypt or a settlement operator.
+      // reach honestly, NOT because it is the smallest (users_user,
+      // doc_operator and — since M48 PR3 — distributions_operator are all 60
+      // against its 100; the M18 review corrected an earlier comment claiming
+      // otherwise): identity's TOTP validation has no replay ledger, so
+      // repeated step-ups with the current code are cheap, fast, and
+      // side-effect-free beyond the ledger rows they legitimately write
+      // (step-up SUCCESSES are uncounted by the M16 cap, and no settlement
+      // case exists for a fresh probe user). The other three each need a
+      // ceremony this suite would rather not run 61 times: an email change or
+      // an on-demand address reveal for users_user, an evidence read for
+      // doc_operator, and for distributions_operator a settled estate — though
+      // only the FIRST decrypt is expensive there, since the amount route
+      // carries no idempotency and re-reading one distribution is one more
+      // decrypt. The test above settles one estate and reads its amount as
+      // both classes; those two decrypts do NOT sum against one ceiling,
+      // because the detector groups by (prefix, principal, actor) — the
+      // executor's counts against distributions_user (300) and the operator's
+      // against distributions_operator (60), one apiece.
       const bound = boundFor('mfa_methods', 'user').maxPerWindow;
       const probe = await registerAndLogin();
       const enroll = expectStatus(
