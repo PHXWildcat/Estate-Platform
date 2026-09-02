@@ -262,6 +262,16 @@ jobs:
       # third-party credential — so it is +1 passed in each rather than +1
       # passed / +1 pending.
       #
+      # M48 PR3: +1 dev pass / +1 production pending (the distribution-amount
+      # journey — the first journey to reach that route, which is why the M18
+      # zero-anomaly gate below it could not see that the prefix had been
+      # breaching on every legitimate reveal since M23 PR4b). It is describeDev,
+      # so production gains it as pending: 23/14 -> 23/15, 33/4 -> 34/4. BOTH
+      # MEASURED on a stack brought up in each mode, per the paragraph above —
+      # the production leg's stack was regenerated with `--mode production` and
+      # the suite run against it, not inferred from the dev leg and the
+      # describeDev wrapper.
+      #
       # NOTE: images.yml carries a TWIN of the development number, for the
       # stack-from-images job. Separate on purpose (that job runs built images,
       # this one runs `dist`), so a new stack test has to be recorded in both —
@@ -279,9 +289,9 @@ jobs:
         if: always()
         run: |
           if [ "$MATRIX_PROFILE" = production ]; then
-            passed=23; pending=14
+            passed=23; pending=15
           else
-            passed=33; pending=4
+            passed=34; pending=4
           fi
           node .github/scripts/assert-stack-counts.mjs stack-results.json "$passed" "$pending"
         env:

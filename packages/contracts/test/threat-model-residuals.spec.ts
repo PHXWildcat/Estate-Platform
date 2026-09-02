@@ -204,6 +204,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // measured state that ratchets in if it was measured wrong.
   '6hhh': 3,
   '6iii': 4,
+  '6jjj': 3,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -218,11 +219,18 @@ const MIN_SECTION_SIX_BULLETS = 300;
 /** Bullets outside §6 (§§1-5 and §7), and completed milestones in docs/04. */
 const MIN_NON_SIX_BULLETS = 4;
 const MIN_QUEUE_ROWS = 15;
-// Ratcheted 6 -> 7 by M40 PR4, which flips M40's own row to COMPLETE. A floor
-// equal to the true derived value is the sensitive setting: the story above is
-// a floor set from a BROKEN derivation (3, when six had shipped), not a floor
-// that sat too high. At 6 this assertion could not see M40's own flip.
-const MIN_COMPLETED_MILESTONES = 7;
+// Ratcheted 6 -> 7 by M40 PR4, which flips M40's own row to COMPLETE, then
+// 7 -> 8 by M48 PR3, which flips M48's. A floor equal to the true derived value
+// is the sensitive setting: the story above is a floor set from a BROKEN
+// derivation (3, when six had shipped), not a floor that sat too high. At 6
+// this assertion could not see M40's own flip.
+//
+// THIS RATCHET IS DISCIPLINE, NOT MECHANISM, and saying so is the point. The
+// assertion below is `>=`, so leaving it at 7 while eight rows say COMPLETE
+// passes green — measured on this very change. Nothing catches a forgotten
+// ratchet; what the number buys is that a LATER regression which un-completes a
+// row is caught, and that only holds while it tracks the true value.
+const MIN_COMPLETED_MILESTONES = 8;
 
 /**
  * THE LIFECYCLE A QUEUE ROW DECLARES — a closed vocabulary, and TOTAL over the
@@ -1895,9 +1903,12 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // A RATCHET, NOT A SLACK FLOOR, and the distinction matters because the old
     // one looked identical. It sat at 3 against a derived set of exactly 3 — a
     // guard pinned to the output of the derivation it was guarding, which is no
-    // guard at all, and 3 was the WRONG number besides. It sits at 6 against a
-    // derived 6 for the opposite reason: six milestones are known finished, and
-    // a seventh is a `>=` that passes while un-marking one of the six reddens.
+    // guard at all, and 3 was the WRONG number besides. It sits at the derived
+    // value for the opposite reason: that many milestones are known finished,
+    // and one more is a `>=` that passes while un-marking any of them reddens.
+    // (This comment said "6 against a derived 6" through two ratchets — M40 PR4
+    // to 7 and M48 PR3 to 8 — because nothing reads a number written in prose.
+    // It now names the constant instead of restating its value.)
     // Same shape as MIN_PER_SECTION, which every section already sits exactly
     // on. Totality carries the broken-parser case now, so this no longer has to.
     expect(completed.size).toBeGreaterThanOrEqual(MIN_COMPLETED_MILESTONES);

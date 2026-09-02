@@ -10,8 +10,12 @@ import {
  *
  * DELIBERATELY NOT A LEARNED BASELINE: an attacker can train a learned one
  * and cannot train a reviewed commit (the M16/M17 rate-bounds rule). Every
- * number here is a constant set from the ceilings MEASURED in M18 PR1
- * (docs/04 M18 — a full stack-e2e journey plus a deliberate burst driver).
+ * number here is a constant set from a ceiling MEASURED by a stack-e2e journey
+ * plus a deliberate burst driver. Most were measured by M18 PR1's (docs/04
+ * M18); a row a LATER journey first reached carries that milestone's number and
+ * names it in its note — `asset_event`/`user` from M19 PR2, the two
+ * `distributions` rows from M48 PR3. This paragraph said "MEASURED in M18 PR1"
+ * of every row until M48 PR3, which was already false when M19 PR2 shipped.
  * The docs/03 "normal × 50" framing is revised by this file: FIXED REVIEWED
  * CONSTANTS, NOT A FORMULA. Most rows sit at roughly ten windows' worth of
  * their measured peak, but that is a starting point rather than a rule — the
@@ -74,10 +78,18 @@ export interface DecryptRateBound {
   prefix: DecryptFieldPrefix;
   principal: PrincipalClass;
   /**
-   * Peak observed per principal per MINUTE in the M18 PR1 measurement
-   * (docs/04 M18). 0 = the class was not exercised by the journey; its bound
-   * is provisional, sized from the neighbouring measured economics, and says
-   * so in its note.
+   * Peak observed per principal per MINUTE when the stack e2e journey drives
+   * this class. Most rows were measured by the M18 PR1 journey (docs/04 M18);
+   * a row a LATER journey first reached names that milestone in its note,
+   * because the number and the drive that produced it are one fact.
+   *
+   * 0 = no journey exercises the class at all; its bound is provisional,
+   * sized from the neighbouring measured economics, and says so in its note.
+   *
+   * A SMALL non-zero number is not automatically a peak. Where a drive exists
+   * to prove the path is reachable rather than to sample a workload, the row
+   * says so and its bound is still sized from economics — reading such a 1 as
+   * a workload and dividing into it is how a bound gets set 50x too tight.
    */
   measuredPerMinute: number;
   /** Breach when the windowed count strictly EXCEEDS this. */
@@ -208,7 +220,7 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     principal: 'operator',
     measuredPerMinute: 0,
     maxPerWindow: 60,
-    note: 'M7 evidence reads — the one operator decrypt in the product (attribution fixed in M18 PR1); rare by construction',
+    note: 'M7 evidence reads (attribution fixed in M18 PR1); rare by construction. This note said "the one operator decrypt in the product" until M48 PR3: M23 PR4b added a second, and M48 PR2 made it SAY operator instead of hardcoding user — so the sentence was false from 2026-08-21 and unfalsifiable until 2026-08-28. The set of operator decrypts is these rows, not a count in a note',
   },
   // plaid (financial cluster)
   {
@@ -240,6 +252,27 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
     maxPerWindow: 1000,
     note: 'tool-result re-derivation rides the same per-turn history pass; provisional, sized on assistant_message',
   },
+  // settlement (core cluster) — BOTH principal classes, because both reach the
+  // one decrypt site. `distributionAmount` passes
+  // `actorType: isOperator ? 'operator' : 'user'` (admin.service.ts), and until
+  // M48 PR2 derived that flag it hardcoded 'user', so an operator's reveal was
+  // recorded as the estate's own reader. Modelling one class and not the other
+  // would leave the unmodelled half at `unmodeled_principal`/0 — breaching at
+  // count 1 on a reviewed path, which is the `asset`/`sentinel` defect above.
+  {
+    prefix: 'distributions',
+    principal: 'user',
+    measuredPerMinute: 1,
+    maxPerWindow: 300,
+    note: "the EXECUTOR reconciling one estate. One reveal per deliberate click — the list type carries no amount field and nothing prefetches (docs/03 §6f) — and an executor cannot reach a second estate's distributions without being named executor of that estate on a case an operator has separately verified (`assertCaseVisible` asks `isExecutorOf`; MEASURED — no distribution surface consults the staged-access ladder, which answers for vault and assets rather than for settlement's own routes), so the legitimate ceiling is one estate's distribution set re-read a few times. MEASURED AT 1 BY THE M48 PR3 DRIVE, which is a proof of reach and not a workload sample: it reveals one amount once, so 1 is the floor this path costs and says nothing about the ceiling an executor reconciling an estate would need. Sized from doc_user's per-deliberate-act economics rather than by arithmetic on that 1 — which would put the bound at 50 and red the first afternoon anyone settles an estate",
+  },
+  {
+    prefix: 'distributions',
+    principal: 'operator',
+    measuredPerMinute: 1,
+    maxPerWindow: 60,
+    note: "TIGHTER THAN THE EXECUTOR'S, and deliberately, because the reach differs rather than the act: an operator can open any verified case, so the same count means something else. Sized with doc_operator, its twin — the other operator decrypt in the product, also one-per-deliberate-act and also rare by construction. An operator crossing 60 amount reveals inside five minutes is enumerating estates, not checking the figure they are approving. Also measured at 1 by the M48 PR3 drive, with the same caveat as the row above: the drive proves both classes reach this route and are recorded under the right `actor_type`, which is what decides WHICH of these two rows applies",
+  },
   // notifications (core cluster)
   {
     prefix: 'notification_recipient',
@@ -251,29 +284,45 @@ export const DECRYPT_RATE_BOUNDS: readonly DecryptRateBound[] = [
 ];
 
 /**
- * Prefixes with NO legitimate decrypt reader at all, listed with reasons so
- * the zero is a visible decision rather than an inference from absence. Any
- * decrypt under one of these breaches immediately (`encrypt_only`).
+ * THERE IS NO ENCRYPT-ONLY CLASS ANY MORE (M48 PR3).
+ *
+ * `ENCRYPT_ONLY_PREFIXES` held exactly one member for its whole life —
+ * `distributions`, on the ground that "settlement amounts are write-only, no
+ * read route exists". The claim was TRUE when written (M18 PR2, `eef5606`,
+ * crediting M18 PR1 with correcting an earlier comment that asserted a route
+ * which did not then exist); M23 PR4b then shipped
+ * `distributionAmount`, and from 2026-08-21 every dual-control amount check an
+ * operator made breached the loudest class in the table at count 1. That is the
+ * `asset`/`sentinel` defect in a different token — a reviewed path firing the
+ * alarm meant
+ * for unreviewed ones, which is how an alarm stops being read.
+ *
+ * The construct is DELETED rather than emptied. An empty map leaves a branch
+ * `boundFor` can never take, a `BoundName` member nothing can produce, and a
+ * fence that loops zero times — all green, all meaningless. Deleting it also
+ * strengthens `undecidedPrefixes`: every registered prefix must now carry a
+ * BOUND ROW, not merely "a visible decision", so the next write-only column
+ * cannot be waved through with a sentence.
+ *
+ * The cost, stated: a genuinely unreadable prefix no longer gets a distinct
+ * alarm name and would resolve to `unmodeled_principal`. That is the right
+ * trade while the class has zero correct instances, and the note on such a row
+ * is where the "should never be read" claim belongs — beside a number, where a
+ * reviewer meets it.
  */
-export const ENCRYPT_ONLY_PREFIXES: Partial<Record<DecryptFieldPrefix, string>> = {
-  distributions:
-    'settlement amounts are write-only — no read route exists (M18 PR1 corrected the comment that claimed otherwise); the first decrypt ever observed under this prefix is the anomaly',
-};
-
 export type BoundName =
-  | `${DecryptFieldPrefix}_${PrincipalClass}`
-  | 'encrypt_only'
-  | 'unmodeled_principal'
-  | 'unknown_prefix';
+  `${DecryptFieldPrefix}_${PrincipalClass}` | 'unmodeled_principal' | 'unknown_prefix';
 
 export interface ResolvedBound {
   name: BoundName;
   maxPerWindow: number;
   /**
    * Undefined ⇒ the count alone decides, which is every bound but one. The
-   * ZERO-defaults above never carry it: an unknown prefix, an encrypt-only
-   * one and an unmodeled principal must breach at the first decrypt, and a
-   * second condition could only ever hold that back.
+   * ZERO-defaults above never carry it: an unknown prefix and an unmodeled
+   * principal must breach at the first decrypt, and a second condition could
+   * only ever hold that back. (There was a THIRD until M48 PR3 — an
+   * encrypt-only prefix — and this sentence still named it after the class was
+   * deleted, which is the same stale-absolute shape that PR deleted it for.)
    */
   maxDistinctSubjectsPerWindow?: number;
 }
@@ -288,9 +337,6 @@ export function boundFor(prefix: string, principal: PrincipalClass): ResolvedBou
     return { name: 'unknown_prefix', maxPerWindow: 0 };
   }
   const registered = prefix as DecryptFieldPrefix;
-  if (Object.prototype.hasOwnProperty.call(ENCRYPT_ONLY_PREFIXES, registered)) {
-    return { name: 'encrypt_only', maxPerWindow: 0 };
-  }
   const row = DECRYPT_RATE_BOUNDS.find((b) => b.prefix === registered && b.principal === principal);
   if (!row) {
     return { name: 'unmodeled_principal', maxPerWindow: 0 };
@@ -304,13 +350,15 @@ export function boundFor(prefix: string, principal: PrincipalClass): ResolvedBou
   };
 }
 
-/** Registered prefixes with neither a bound row nor an encrypt-only reason
- * would silently inherit the 0 default; the spec derives this set and
- * asserts it is empty, so every registered prefix carries a VISIBLE decision. */
+/**
+ * Registered prefixes with no bound row would silently inherit the 0 default;
+ * the spec derives this set and asserts it is empty, so every registered prefix
+ * carries a REVIEWED NUMBER. Stronger than it was: until M48 PR3 a prefix could
+ * also discharge this by naming itself encrypt-only in a prose map, and the one
+ * prefix that did so was wrong for two milestones without anything noticing.
+ */
 export function undecidedPrefixes(): string[] {
   return Object.keys(DECRYPT_FIELD_PREFIXES).filter(
-    (prefix) =>
-      !DECRYPT_RATE_BOUNDS.some((b) => b.prefix === prefix) &&
-      !Object.prototype.hasOwnProperty.call(ENCRYPT_ONLY_PREFIXES, prefix),
+    (prefix) => !DECRYPT_RATE_BOUNDS.some((b) => b.prefix === prefix),
   );
 }

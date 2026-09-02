@@ -51,10 +51,14 @@ export const DECRYPT_FIELD_PREFIXES = {
   assistant_tool_call: 'ai-assistant',
   // notifications (core cluster)
   notification_recipient: 'notifications',
-  // settlement (core cluster). Encrypt-only today: no amount read route
-  // exists, so ZERO decrypt events under this prefix is the legitimate
-  // state. Registered anyway, so that if one ever appears it attributes to
-  // settlement rather than to the unknown class.
+  // settlement (core cluster). Registered before a read route existed, so that
+  // when one appeared it would attribute to settlement rather than to the
+  // unknown class — which is exactly what happened: M23 PR4b shipped
+  // `distributionAmount` on 2026-08-21 and the attribution was already right.
+  // This comment said "encrypt-only today: no amount read route exists, so ZERO
+  // decrypt events under this prefix is the legitimate state" until M48 PR3.
+  // The registration reasoning was sound; the absolute beside it was the part
+  // that could go stale, and did — from 2026-08-21 until this PR, twelve days.
   distributions: 'settlement',
 } as const;
 
