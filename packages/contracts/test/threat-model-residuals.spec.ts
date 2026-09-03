@@ -90,6 +90,7 @@ const OWNERS: readonly string[] = [
   'M46', // TB7 follow-on — the operator authorization model (added M40 PR2)
   'M47', // the isolated origins, hardened as a pair (added M40 PR3)
   'M48', // the link that outlives the unlink (added M40 PR4)
+  'M49', // the transitions a status machine makes without saying so (added M49 PR1)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -205,6 +206,17 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   '6hhh': 3,
   '6iii': 4,
   '6jjj': 3,
+  // M49 PR1: TEN, and the number grew during the PR's own review rather than
+  // being planned — the adversarial sweep asked what else was in each of the
+  // three categories the milestone touches and found six more. Two are about
+  // fences (the breadth fence's blind spot for `gate.is` callers and this PR's
+  // own fence being keyed on a column NAME, both M45); one is the undecided
+  // ceiling question (M46); the rest are machines and envelopes this PR did
+  // not reach — the stage revoke that does not name its arm, plaid's 'error'
+  // and its inference-only recovery, the erasure release AND its terminal
+  // rung, the case machine's two terminal edges, the operator console timeline
+  // that cannot show the rungs, and profile's `contact.link.claimed`.
+  '6kkk': 10,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -1073,8 +1085,34 @@ const PRECONDITIONS: readonly Precondition[] = [
     why:
       'THE POSITIVE CONTROL, and the defect this whole mechanism exists for. M23 ' +
       'PR4b (4e125e1) built the consumer the deferral said did not exist and did ' +
-      'not add the emit. M26 owns the emit. This entry must keep reporting FILLED: ' +
-      'if it ever reads absent, the scanner is broken, not the tree.',
+      'not add the emit. This entry must keep reporting FILLED: if it ever reads ' +
+      'absent, the scanner is broken, not the tree. ' +
+      'RETAINED DELIBERATELY AFTER M49 PR1 SHIPPED THE EMIT and retagged the ' +
+      'bullet [CLOSED: 6kkk] — it is the only entry reporting FILLED, so it is ' +
+      'the whole of this test positive control, and the header above (which ' +
+      'argues CLOSED bullets are out of scope) must not be read as licence to ' +
+      'delete it. A spent precondition stays spent; that is exactly what makes ' +
+      'it a stable control rather than one more thing that can change.',
+  },
+  {
+    section: '6kkk',
+    title:
+      'Whether an operator moving a distribution should count toward the breadth ceiling is undecided',
+    absence: 'the console cannot reach this verb',
+    corpus: ['apps/operator-web/src'],
+    filledWhen: /distributions\/[^'"`\n]*\/status/,
+    notCountedIn: [],
+    state: 'absent',
+    why:
+      'THE SAME SHAPE AS THE ENTRY ABOVE, ARMED THIS TIME. M49 PR1 left the ' +
+      'breadth question open on the argument that no operator console route ' +
+      'reaches the verb — the operator edge allowlists /distributions, /approval ' +
+      'and /amount and no /status — which is exactly the kind of sentence §6dd ' +
+      'shows a later PR can spend without reading. The day the route is ' +
+      'allowlisted, an operator can move money across estates through a verb ' +
+      'that counts toward no ceiling, and M46 has to decide rather than inherit. ' +
+      'It bounds the AUDIENCE and not the operator ARM: gate.is asks about the ' +
+      'actor, so an operator on an ordinary session already takes it.',
   },
   {
     section: '6bb',

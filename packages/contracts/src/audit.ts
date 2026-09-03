@@ -265,10 +265,68 @@ export const AUDIT_ACTIONS = [
   'settlement.task.completed',
   // Distribution tracking under dual control (docs/02 §7). Amounts are
   // ciphertext and never appear in a payload; these record WHO moved a
-  // distribution and to which state.
+  // distribution, FROM which state and TO which.
   'settlement.distribution.recorded',
   'settlement.distribution.approved',
   'settlement.distribution.completed',
+  /*
+   * THE TWO STATUS MOVES NOBODY RECORDED (M49 PR1; docs/03 §6dd, opened by
+   * M40 PR3 and measured at `01fdf90`).
+   *
+   * `setDistributionStatus` accepts three targets and emitted on exactly one
+   * — `if (to === 'completed')` — so an executor moving a distribution into
+   * work, or DISPUTING one that had already been paid out, left nothing on the
+   * trail. The reversal of a completed payout is the row somebody would later
+   * be asked about, which is `settlement.task.reopened`'s argument one entity
+   * over, and it waited for the same reason: a new member costs an
+   * audit-consumer deployment ahead of its producer.
+   *
+   * PER-TARGET TOKENS RATHER THAN ONE `status_changed`, because this service
+   * already chose that spelling twice — the stage ladder mirrors its DDL
+   * status tokens exactly, and `task.completed`/`task.reopened` are two
+   * tokens of one shape. A generic action here would be a second spelling for
+   * "a settlement state machine moved" while both siblings kept the first.
+   *
+   * THE EDGE IS IN `detail.from`, ON ALL THREE. Targets alone cannot tell
+   * completed→disputed (undoing a payout) from approved→disputed (a dispute
+   * before money moved), and §6dd says so against its own phrasing: counted as
+   * EDGES it was four of five unaudited, not two of three. `.completed` gains
+   * the field with them, because one behaviour gets one spelling.
+   */
+  'settlement.distribution.in_progress',
+  'settlement.distribution.disputed',
+  /*
+   * THE CASE LADDER'S TWO SILENT RUNGS (M49 PR1).
+   *
+   * `settlement_cases.status` permits eight values and audited six. The two it
+   * did not are the post-verification rungs, and both move as a SIDE EFFECT
+   * inside another transaction: `verified → active` in `decideStage`, and
+   * `verified|active → distributing` in `recordDistribution`. Each already
+   * emitted an event about the STAGE or the DISTRIBUTION, so the case's own
+   * movement was recoverable only by inferring it from a neighbour — the
+   * "one event plus an inference" that `task.reopened` rejects, and here the
+   * inference is worse, because `advanceStatus` returns a boolean both call
+   * sites discarded: a compare-and-set that lost a race changed nothing and
+   * said nothing.
+   *
+   * NAMING IS MIXED IN THIS FAMILY, and an earlier draft of this comment
+   * claimed a rule the family does not keep — that naming follows the ladder
+   * "because these six already do". Measured against the DDL: four of the
+   * eight case actions rename the status token (`review_started` for
+   * `verifying`, `approved` for `waiting_period`, `rejected` for
+   * `rejected_fraud`, and now `activated` for `active`) and four use it
+   * verbatim (`reported`, `verified`, `closed`, and now `distributing`).
+   *
+   * The rule that actually holds is per member: a VERB where the rung has a
+   * natural one, the token where it does not. `active` has one. `distributing`
+   * does not — `distributed` would say the estate had FINISHED distributing,
+   * which is the opposite of what the rung means, and inventing a verb to
+   * satisfy a pattern is how an action ends up lying about its own subject.
+   * The mapping is DATA in settlement's events service, and a fence derives
+   * the rungs from the DDL CHECK.
+   */
+  'settlement.case.activated',
+  'settlement.case.distributing',
   /*
    * READING A RECORDED AMOUNT (M23 PR4b) — the only event in this group that
    * records a DISCLOSURE rather than a movement.

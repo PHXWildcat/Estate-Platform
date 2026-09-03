@@ -272,21 +272,35 @@ export class SettlementAdminService {
       // Authority and location in one step, answering a uniform 404 to anyone
       // without it — see `administrableCaseFor`. The 403 that used to live here
       // was the last of three distinguishable answers this route gave.
-      await this.administrableCaseFor(tx, caseId, actor);
+      const kase = await this.administrableCaseFor(tx, caseId, actor);
       const existing = await this.stages.findLive(tx, caseId, stage);
       if (existing) {
         throw new ConflictException({ error: 'stage_exists' });
       }
       await this.assertPredecessorApproved(tx, caseId, stage);
-      return this.stages.insertRequest(tx, {
-        caseId,
-        stage,
-        requestedBy: actor,
-        requestedAt: now,
-      });
+      return {
+        // RETURNED, not read off an outer binding — the same reason
+        // `recordDistribution` returns its flag: a value the emit depends on
+        // has to be type-checked at the call, and TypeScript does not track
+        // assignments made inside this closure.
+        stage: await this.stages.insertRequest(tx, {
+          caseId,
+          stage,
+          requestedBy: actor,
+          requestedAt: now,
+        }),
+        decedentUserId: kase.decedent_user_id,
+      };
     });
-    await this.events.stageRequested(actor, sessionId, caseId, row.id, stage);
-    return stageDto(row);
+    await this.events.stageRequested(
+      actor,
+      sessionId,
+      caseId,
+      row.decedentUserId,
+      row.stage.id,
+      stage,
+    );
+    return stageDto(row.stage);
   }
 
   /**
@@ -306,6 +320,7 @@ export class SettlementAdminService {
       // non-operator learns nothing about the id) and on the same handle as
       // the write it authorizes — see OperatorGate.is.
       await this.gate.assertIn(tx, operator);
+      let caseAdvancedFrom: CaseStatus | null = null;
       const locked = await this.stages.lockById(tx, stageId);
       if (!locked) {
         throw new NotFoundException({ error: 'not_found' });
@@ -333,8 +348,22 @@ export class SettlementAdminService {
       }
       // First approved stage moves the case from verified into active
       // administration (docs/02 §7's status ladder).
+      //
+      // THE BOOLEAN IS READ NOW (M49 PR1). It was discarded, so a
+      // compare-and-set that lost a race changed nothing and reported nothing,
+      // and the rung was one of the two `settlement_cases.status` transitions
+      // that emitted no event of its own. `caseAdvancedFrom` gates the emit, so
+      // the trail says a case entered administration only when this statement
+      // is the one that moved it.
       if (decision === 'approve' && kase.status === 'verified') {
-        await this.cases.advanceStatus(tx, locked.case_id, ['verified'], 'active');
+        caseAdvancedFrom = (await this.cases.advanceStatus(
+          tx,
+          locked.case_id,
+          ['verified'],
+          'active',
+        ))
+          ? 'verified'
+          : null;
       }
       // Recorded inside the transaction so the ledger row commits with the
       // approval it describes. ONLY the approve arm: a denial is the
@@ -348,9 +377,25 @@ export class SettlementAdminService {
         stage: (await this.stages.lockById(tx, stageId)) as StageRow,
         decedentUserId: kase.decedent_user_id,
         breadth,
+        caseAdvancedFrom,
       };
     });
     const { stage: outcomeStage, decedentUserId } = outcome;
+    // The case's OWN movement, before the stage event that caused it. A stage
+    // approval and a case entering administration answer different questions —
+    // the same reason `queue.viewed` and `case.viewed` are two actions — and
+    // until M49 PR1 only the first was on the trail.
+    if (outcome.caseAdvancedFrom !== null) {
+      await this.events.caseStatusAdvanced(
+        operator,
+        sessionId,
+        outcomeStage.case_id,
+        decedentUserId,
+        outcome.caseAdvancedFrom,
+        'active',
+        true,
+      );
+    }
     if (decision === 'approve') {
       await this.events.stageApproved(
         operator,
@@ -541,6 +586,7 @@ export class SettlementAdminService {
     }
 
     const row = await this.db.withTransaction(actor, async (tx) => {
+      let caseAdvancedFrom: CaseStatus | null = null;
       const kase = await this.administrableCaseFor(tx, caseId, actor);
       const created = await this.distributions.insert(tx, {
         caseId,
@@ -550,13 +596,66 @@ export class SettlementAdminService {
         dekId,
         createdBy: actor,
       });
+      // Same rung, same reading of the boolean as `decideStage` (M49 PR1):
+      // the emit's precondition is the WRITE, not the read above it.
+      //
+      // THE LOSING ARM IS UNREACHABLE TODAY, and saying so is the honest
+      // version of this comment — an earlier draft claimed two concurrent
+      // first distributions could race here, and they cannot.
+      // `administrableCaseFor` reads the case through `CasesRepo.lockById`,
+      // which is `SELECT … FOR UPDATE` on the very row `advanceStatus`
+      // updates, so a second transaction blocks on that lock and re-reads
+      // `distributing` after the first commits — it never enters this branch.
+      // Independently, `administrableCaseFor` has already narrowed the status
+      // to `ADMINISTRABLE_STATUSES` and the `if` excludes `distributing`, so
+      // the compare-and-set matches by construction.
+      //
+      // IT IS KEPT ANYWAY, and the reason is a rule this file already applies
+      // to authority: a check that must hold AT THE WRITE belongs in the
+      // statement's own `WHERE`. Gating the emit on the read would make the
+      // trail's truth depend on the lock still being taken where it is today;
+      // gating it on the boolean makes the trail say what the DATABASE did.
+      // `a rung whose compare-and-set LOST is silent` pins that, and it has to
+      // manufacture the interleaving the lock forbids to do so.
       if (kase.status !== 'distributing') {
-        await this.cases.advanceStatus(tx, caseId, ['verified', 'active'], 'distributing');
+        // CAPTURED BEFORE THE WRITE. Reading it afterwards is correct against a
+        // real row snapshot and wrong against any store that hands back a live
+        // reference — the fence caught exactly that, reporting a case that
+        // moved from `distributing` to `distributing`. A value the emit depends
+        // on is read before the statement that can change it.
+        const movedFrom = kase.status;
+        caseAdvancedFrom = (await this.cases.advanceStatus(
+          tx,
+          caseId,
+          ['verified', 'active'],
+          'distributing',
+        ))
+          ? movedFrom
+          : null;
       }
-      return created;
+      return { created, caseAdvancedFrom };
     });
-    await this.events.distributionRecorded(actor, sessionId, caseId, row.id);
-    return distributionDto(row);
+    // RETURNED OUT OF THE CLOSURE, not assigned to an outer `let`, and that is
+    // a correctness property rather than a style: TypeScript does not track
+    // assignments made inside a nested function, so an outer `let` reads as
+    // `null` here and as `never` inside the guard — which is assignable to
+    // ANY parameter. The emit below would have been the one call site of this
+    // PR's new emitter whose arguments were not type-checked at all. Measured:
+    // in the outer-`let` shape `tsc --strict` accepts passing this value to a
+    // `number` parameter; in this shape it raises TS2345.
+    if (row.caseAdvancedFrom !== null) {
+      await this.events.caseStatusAdvanced(
+        actor,
+        sessionId,
+        caseId,
+        decedent,
+        row.caseAdvancedFrom,
+        'distributing',
+        false,
+      );
+    }
+    await this.events.distributionRecorded(actor, sessionId, caseId, decedent, row.created.id);
+    return distributionDto(row.created);
   }
 
   /**
@@ -766,6 +865,11 @@ export class SettlementAdminService {
         // safe to be specific — and useful, because their remedy differs.
         throw new ConflictException({ error: 'case_not_verified' });
       }
+      // CAPTURED BEFORE THE WRITE, for the reason the sibling rung in
+      // `recordDistribution` states: the emit below depends on the PRIOR
+      // status, and reading it after `setStatus` is correct only for as long
+      // as the row handed back is a snapshot rather than a live reference.
+      const movedFrom = locked.status;
       // Nothing moves until dual control has been satisfied.
       const from: DistributionStatus[] =
         to === 'disputed'
@@ -780,18 +884,28 @@ export class SettlementAdminService {
         distribution: (await this.distributions.lockById(tx, distributionId)) as DistributionRow,
         decedentUserId: kase.decedent_user_id,
         asOperator: isOperator,
+        // THE PRIOR STATUS (M49 PR1). Two ways to get this wrong and the
+        // fence caught both: the row re-read on the line above is the
+        // POST-update one, whose status is already `to`, and `locked` itself
+        // is only a snapshot for as long as the store says it is.
+        from: movedFrom,
       };
     });
-    if (to === 'completed') {
-      await this.events.distributionCompleted(
-        actor,
-        sessionId,
-        row.distribution.case_id,
-        row.decedentUserId,
-        distributionId,
-        row.asOperator,
-      );
-    }
+    // UNCONDITIONAL, because the conditional WAS the defect (docs/03 §6dd).
+    // `if (to === 'completed')` audited one of three targets, so moving a
+    // distribution into work — or disputing one already paid out — left
+    // nothing behind. A successful `setStatus` is the movement; there is no
+    // arm of this method that moves a row and should stay silent.
+    await this.events.distributionStatusChanged(
+      actor,
+      sessionId,
+      row.distribution.case_id,
+      row.decedentUserId,
+      distributionId,
+      row.from,
+      to,
+      row.asOperator,
+    );
     return distributionDto(row.distribution);
   }
 

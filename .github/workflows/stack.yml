@@ -272,6 +272,24 @@ jobs:
       # the suite run against it, not inferred from the dev leg and the
       # describeDev wrapper.
       #
+      # M49 PR1: +1 dev pass / +1 production pending — 34/4 -> 35/4 and
+      # 23/15 -> 23/16. It is the journey that drives every distribution status
+      # movement and reads the rows back out of the AUDIT cluster, which is the
+      # only place the closed-vocabulary risk is visible: a consumer that
+      # predates a member drops it as `schema_violation` and advances the
+      # offset, so the producer, the emit and this suite all look healthy while
+      # the row never lands. Also describeDev, for the same reason as M48 PR3's.
+      #
+      # WHAT WAS MEASURED, AND WHAT WAS NOT — stated because the paragraph
+      # above claims BOTH profiles for M48 PR3 and this PR cannot claim the
+      # same. The DEVELOPMENT pair is measured: `passed=35 failed=0 pending=4`
+      # on a container stack with the settlement and audit images rebuilt (both
+      # proven current by reading the shipped `dist` out of the running
+      # containers, not by a build timestamp). The PRODUCTION pair is DERIVED —
+      # a describeDev test is `describe.skip` there, so it can only be +1
+      # pending — and it is CI's production leg that measures it. If that leg
+      # reddens on this number, the derivation is what was wrong.
+      #
       # NOTE: images.yml carries a TWIN of the development number, for the
       # stack-from-images job. Separate on purpose (that job runs built images,
       # this one runs `dist`), so a new stack test has to be recorded in both —
@@ -289,9 +307,9 @@ jobs:
         if: always()
         run: |
           if [ "$MATRIX_PROFILE" = production ]; then
-            passed=23; pending=15
+            passed=23; pending=16
           else
-            passed=34; pending=4
+            passed=35; pending=4
           fi
           node .github/scripts/assert-stack-counts.mjs stack-results.json "$passed" "$pending"
         env:
