@@ -205,12 +205,37 @@ jobs:
             exit 1
           fi
 
+          # A PROBE FAILURE IS NOT A VERDICT ABOUT THE IMAGE, and until this PR's
+          # own review it was not even reported. `code=$(curl …)` under the
+          # default `bash -e` shell takes the SUBSTITUTION's exit status, so a
+          # transient failure killed the step at curl's exit 7 with no
+          # annotation of any kind — measured, "REACHED" never printed. The
+          # first draft of this fix added a 000 retry ABOVE that same
+          # unprotected assignment and was therefore dead code: the shell was
+          # already gone. `|| true` inside the substitution is what lets curl's
+          # own 000 reach the variable and the retry run at all.
+          #
+          # 000 is curl saying it got no HTTP response. That is a probe failure
+          # and must not share a bucket with a 404, which is the finding this
+          # loop exists to report when a .dockerignore rule starts excluding
+          # something under public/.
           missing=
+          unreachable=
           for f in $(find apps/web/public -type f | sort); do
             asset="${f#apps/web/public}"
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000${asset}")
+            code=
+            for attempt in 1 2 3; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000${asset}" || true)
+              if [ -n "$code" ] && [ "$code" != 000 ]; then break; fi
+              sleep 1
+            done
+            code="${code:-000}"
             echo "public${asset} -> ${code}"
-            [ "$code" = 200 ] || missing="${missing} ${asset}(${code})"
+            if [ "$code" = 000 ]; then
+              unreachable="${unreachable} ${asset}"
+            elif [ "$code" != 200 ]; then
+              missing="${missing} ${asset}(${code})"
+            fi
           done
 
           # THE BUILD ARGS REACHED THE ARTIFACT, asserted in the shipped image
@@ -229,8 +254,17 @@ jobs:
           # The probe values differ from the defaults precisely so a value that
           # fell through is distinguishable from a value that arrived; asserting
           # the DEFAULTS are absent is the half that catches a silent fallback.
-          csp=$(curl -sI http://localhost:3000 | tr -d '\r' \
-                | grep -i '^content-security-policy:' || true)
+          # SAME SHAPE, SAME FIX. `|| true` on a pipeline with no pipefail made a
+          # failing curl and a genuinely absent header produce one empty string,
+          # so an outage printed "the image served no Content-Security-Policy
+          # header at all" — a control finding, from a probe that never asked.
+          # The fetch is now its own command with its own status.
+          if ! headers=$(curl -sS -I --retry 3 --retry-connrefused http://localhost:3000 2>&1); then
+            docker rm -f web >/dev/null
+            echo "::error::could not read headers from the image — the probe failed, which says nothing about the header: ${headers}"
+            exit 1
+          fi
+          csp=$(printf '%s\n' "$headers" | tr -d '\r' | grep -i '^content-security-policy:' || true)
           docker rm -f web >/dev/null
           if [ -z "$csp" ]; then
             echo "::error::the image served no Content-Security-Policy header at all"
@@ -251,6 +285,10 @@ jobs:
             esac
           done
 
+          if [ -n "$unreachable" ]; then
+            echo "::error::the probe could not reach the image for:${unreachable} — this is a probe failure, not a missing asset"
+            exit 1
+          fi
           if [ -n "$missing" ]; then
             echo "::error::the image does not serve public/ assets:${missing}"
             exit 1
@@ -318,13 +356,41 @@ jobs:
       # distroless image has no package manager — so they are reported instead
       # of blocking every PR on the base vendor's rebuild cadence. See
       # .github/scripts/gate-image-scan.mjs for the full rationale.
+      #
+      # RETRIED LIKE ITS SIBLING, and the gate decides what may be retried. The
+      # SBOM step above has had three attempts and a count check since the syft
+      # download endpoint 503'd; this one — the step that decides whether a
+      # vulnerability blocks a merge — had neither, and on #177 grype died,
+      # wrote a 0-byte report and reddened the build with a bare parse error.
+      # The worse half was silent: the gate read an absent `matches` key as zero
+      # findings, so `{}` passed.
+      #
+      # Only EXIT_REFUSED (2) is repeated. A blocking finding (1) is an answer,
+      # and rescanning for it twice more would delay a real result by 30s and
+      # print it three times.
       - name: Scan image for vulnerabilities
         run: |
-          docker run --rm -v /tmp:/w anchore/grype:v0.97.1 \
-            "docker-archive:/w/${{ matrix.app }}.tar" -o json --quiet \
-            > /tmp/grype-${{ matrix.app }}.json
-          node .github/scripts/gate-image-scan.mjs \
-            /tmp/grype-${{ matrix.app }}.json ${{ matrix.app }}
+          set -uo pipefail
+          out="/tmp/grype-${{ matrix.app }}.json"
+          for attempt in 1 2 3; do
+            : > "$out"
+            if ! docker run --rm -v /tmp:/w anchore/grype:v0.97.1 \
+                 "docker-archive:/w/${{ matrix.app }}.tar" -o json --quiet > "$out"; then
+              echo "::warning::grype attempt ${attempt} exited non-zero"
+            fi
+            if node .github/scripts/gate-image-scan.mjs "$out" ${{ matrix.app }}; then
+              rc=0
+            else
+              rc=$?
+            fi
+            if [ "$rc" -ne 2 ]; then
+              exit "$rc"
+            fi
+            echo "::warning::attempt ${attempt} produced no usable scan report"
+            sleep $((attempt * 10))
+          done
+          echo "::error::grype produced no usable report after 3 attempts"
+          exit 1
 
       - name: Upload vulnerability report
         if: always()
