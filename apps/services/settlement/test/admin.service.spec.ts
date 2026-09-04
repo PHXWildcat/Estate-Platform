@@ -16,6 +16,7 @@ import {
   PERMISSIVE_OPERATOR_ACTIONS,
   PROTECTIVE_OPERATOR_ACTIONS,
 } from '../src/operator-breadth';
+import { CASE_ADVANCE_ACTIONS, DISTRIBUTION_STATUS_ACTIONS } from '../src/events.service';
 import type { OperatorBreadthMonitor } from '../src/operator-breadth.monitor';
 
 const DECEDENT = randomUUID();
@@ -1096,16 +1097,160 @@ describe('operator actions name the estate they act on', () => {
    * cluster alone you could not answer "who was granted access to THIS
    * person's estate" without leaving it and joining `settlement_cases` in core.
    *
-   * Asserted as a PROPERTY over every event the run emits rather than as four
-   * assertions, so an emitter added later is covered without anyone
-   * remembering. Executor-actor events on the same resources stay null
-   * deliberately: an executor administering an estate is not operator support,
-   * which is why this is four of the eight sub-resource emitters and not all
-   * eight.
+   * Asserted as a PROPERTY over every event the run emits rather than as one
+   * assertion each, so an emitter added later is covered without anyone
+   * remembering. The filter keeps fewer rows than the run emits, because an
+   * executor administering an estate is not operator support.
    *
-   * No test asserted an audit ENVELOPE at all before this one — the suite
-   * checked action NAMES, which is why it was green either way.
+   * AN EARLIER VERSION OF THIS PARAGRAPH SAID MORE THAN THAT, and M49 PR1
+   * falsified it: "executor-actor events on the same resources stay null
+   * deliberately". They do not, and the test in the sibling block above is
+   * where that was decided — every event on a stage or a distribution now
+   * names the estate whoever acted, because which estate a row belongs to is a
+   * fact about the ROW. What is still true, and is all this paragraph ever
+   * needed, is that `onBehalfOf` on an OPERATOR row additionally means
+   * operator support.
+   *
+   * A PROPERTY IS ONLY AS BROAD AS THE RUN THAT FEEDS IT (M49 PR1). The claim
+   * above — that a later emitter is covered for free — holds only where this
+   * flow REACHES the emitter, and M49 PR1 put three actions behind
+   * `setDistributionStatus`, which nothing here called. Two of them are driven
+   * below for that reason. The floor moved with them: an anti-vacuity floor
+   * left where it was while the run grows around it stops being a floor and
+   * becomes slack, wide enough to absorb the loss of an emitter this test
+   * exists to keep honest.
+   *
+   * No test in this suite asserted an audit ENVELOPE before this one and its
+   * sibling above — everything else checked action NAMES, which is why the
+   * suite was green either way.
    */
+  /**
+   * The action maps an emitter may INDEX instead of naming a literal, so the
+   * scan below can resolve both forms. Held as data, and total: an emitter
+   * indexing a map that is not here reddens by name rather than vanishing.
+   */
+  const ACTION_MAPS: Readonly<Record<string, readonly string[]>> = {
+    DISTRIBUTION_STATUS_ACTIONS: Object.values(DISTRIBUTION_STATUS_ACTIONS),
+    CASE_ADVANCE_ACTIONS: Object.values(CASE_ADVANCE_ACTIONS),
+  };
+
+  /**
+   * Every `action` an emitter writes, and the `resourceType` it writes it on,
+   * read out of `events.service.ts`.
+   *
+   * DERIVED, BECAUSE THE FIRST VERSION OF THE TEST BELOW WAS A COUNT. It drove
+   * a hand-written flow and asserted `>= 6` rows carried the estate, which is
+   * satisfied by whichever six rows the run happens to reach — an emitter added
+   * later, or an existing one regressed on a path this flow does not walk,
+   * changes nothing. That is the drift the sibling docstring in this same file
+   * warns about, repeated instead of fixed. The corpus is the EMITTER SET now,
+   * and the run has to produce all of it.
+   */
+  function emittersByResource(): Map<string, Set<string>> {
+    const source = readFileSync(join(__dirname, '..', 'src', 'events.service.ts'), 'utf8');
+    const chunks = source.split('this.audit.emit({').slice(1);
+    // Anti-vacuity: a split that stopped matching yields nothing and every set
+    // comparison below would compare two empty sets.
+    expect(chunks.length).toBeGreaterThan(15);
+    const byResource = new Map<string, Set<string>>();
+    for (const chunk of chunks) {
+      const resource = /resourceType: '([^']+)'/.exec(chunk)?.[1];
+      const literal = /action: '([^']+)'/.exec(chunk)?.[1];
+      // AN ACTION IS NOT ALWAYS A LITERAL, and this scan learned that the hard
+      // way: M49 PR1's own emitters index a map (`ACTION_MAPS` below), so the
+      // first version of this parser silently produced a corpus missing the
+      // three actions the milestone added — a derivation that omits from BOTH
+      // sides of a set comparison and passes.
+      const indexed = /action: ([A-Z_]+)\[/.exec(chunk)?.[1];
+      if (resource === undefined) continue;
+      const actions =
+        literal !== undefined
+          ? [literal]
+          : indexed !== undefined
+            ? ACTION_MAPS[indexed]
+            : undefined;
+      // A THIRD FORM FAILS LOUDLY rather than being skipped. `continue` here
+      // is how the first version lost three actions, so an emitter whose
+      // action this scan cannot resolve names itself instead.
+      expect({ resolved: actions !== undefined, chunk: chunk.slice(0, 60) }).toEqual({
+        resolved: true,
+        chunk: chunk.slice(0, 60),
+      });
+      const set = byResource.get(resource) ?? new Set<string>();
+      for (const action of actions ?? []) set.add(action);
+      byResource.set(resource, set);
+    }
+    return byResource;
+  }
+
+  /*
+   * THE OTHER AXIS, AND IT IS THE ONE A DRIVE FOUND (M49 PR1). The property
+   * below quantifies over the ACTOR — every operator-actor event names the
+   * estate. This one quantifies over the RESOURCE: every event whose subject
+   * belongs to one estate names that estate, whoever acted and in whatever
+   * capacity, because "whose settlement is this" is a fact about the row.
+   *
+   * Neither property implies the other, which is how the gap survived. Both
+   * offenders were written by an EXECUTOR — `settlement.distribution.recorded`
+   * and `settlement.stage.requested` — so the actor-side property never looked
+   * at either, and each sat beside siblings on the same resource that named the
+   * decedent. Nothing in this suite read an envelope by RESOURCE until this
+   * test, and nothing had ever gone red: the nulls were the shape the emitters
+   * shipped with. What found the first was DRIVING THE BROWSER and reading a
+   * real estate's trail out of the audit cluster — five distribution rows, four
+   * naming it and the one that CREATED the distribution naming nobody — and
+   * asking what else was in the category found the second.
+   *
+   * `settlement_case` is deliberately not in the corpus: its trail carries
+   * events with a stated reason for naming no subject (`queue.viewed` is an
+   * operator worklist across estates, `notifications_refused` has none in
+   * scope), and both live in `settlement.service.ts` rather than here. The two
+   * SUB-resources have no such member, which is what makes "all of them" the
+   * right assertion for these two and the wrong one for the case itself.
+   */
+  it('EVERY event about a stage or a distribution names the estate, whoever acted', async () => {
+    const h = buildAdminHarness();
+    const caseId = await verifiedCase(h);
+
+    const approved = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'inventory');
+    await h.admin.decideStage(OPERATOR, SESSION, approved.stageId, 'approve');
+    const denied = await h.admin.requestStage(EXECUTOR, SESSION, caseId, 'documents');
+    await h.admin.decideStage(OPERATOR, SESSION, denied.stageId, 'deny');
+    await h.admin.revokeStage(OPERATOR, SESSION, approved.stageId);
+
+    const dist = await h.admin.recordDistribution(EXECUTOR, SESSION, caseId, {
+      beneficiaryContactId: randomUUID(),
+      amount: '100.00',
+    });
+    await h.admin.approveDistribution(OPERATOR, SESSION, dist.distributionId);
+    await h.admin.distributionAmount(EXECUTOR, SESSION, dist.distributionId);
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dist.distributionId, 'in_progress');
+    await h.admin.setDistributionStatus(OPERATOR, SESSION, dist.distributionId, 'completed');
+    await h.admin.setDistributionStatus(EXECUTOR, SESSION, dist.distributionId, 'disputed');
+
+    const emitted = auditEvents(h.producer);
+    const declared = emittersByResource();
+    for (const resource of ['distribution', 'settlement_access_stage'] as const) {
+      const rows = emitted.filter((e) => e['resourceType'] === resource);
+      // THE RUN COVERS THE EMITTER SET, compared as SETS. A count would let an
+      // emitter this flow never reaches sit unexercised behind a floor that
+      // some other row satisfies.
+      expect({
+        resource,
+        actions: [...new Set(rows.map((e) => String(e['action'])))].sort(),
+      }).toEqual({ resource, actions: [...(declared.get(resource) ?? new Set())].sort() });
+      // Both actor classes really occur, so "whoever acted" is measured rather
+      // than asserted over a single-armed run.
+      expect(new Set(rows.map((e) => e['actorType']))).toEqual(new Set(['user', 'operator']));
+      // Reported as ACTION -> value, so a failure names the emitter.
+      expect(
+        rows
+          .filter((e) => e['onBehalfOf'] !== DECEDENT)
+          .map((e) => `${String(e['action'])} -> ${String(e['onBehalfOf'])}`),
+      ).toEqual([]);
+    }
+  });
+
   it('EVERY operator-actor event carries the decedent, across the whole administration flow', async () => {
     const h = buildAdminHarness();
     const caseId = await verifiedCase(h);
@@ -1121,10 +1266,16 @@ describe('operator actions name the estate they act on', () => {
       amount: '100.00',
     });
     await h.admin.approveDistribution(OPERATOR, SESSION, dist.distributionId);
+    // The two M49 PR1 actions with no other operator-actor coverage. The third,
+    // `completed`, is pinned by name in its own test in the block below.
+    await h.admin.setDistributionStatus(OPERATOR, SESSION, dist.distributionId, 'in_progress');
+    await h.admin.setDistributionStatus(OPERATOR, SESSION, dist.distributionId, 'disputed');
 
     const operatorEvents = auditEvents(h.producer).filter((e) => e['actorType'] === 'operator');
     // Anti-vacuity: a filter that stops matching agrees with any expectation.
-    expect(operatorEvents.length).toBeGreaterThanOrEqual(4);
+    // MEASURED on this run — seven: the case activation, the three stage
+    // decisions, the distribution approval and the two status moves.
+    expect(operatorEvents.length).toBeGreaterThanOrEqual(7);
     for (const event of operatorEvents) {
       expect({ action: event['action'], onBehalfOf: event['onBehalfOf'] }).toEqual({
         action: event['action'],
@@ -1162,10 +1313,32 @@ describe('operator actions name the estate they act on', () => {
     expect(completed[0]?.['onBehalfOf']).toBe(DECEDENT);
   });
 
-  it('AN EXECUTOR completing one is still a user, and still names no estate', async () => {
+  it('AN EXECUTOR completing one is still a user, and NOW names the estate', async () => {
     /*
      * The other arm, pinned so the fix above cannot be "simplified" into
      * marking every completion as operator support.
+     *
+     * THE ESTATE CLAUSE FLIPPED IN M49 PR1, and this test is where the old
+     * decision was written down. `distributionCompleted` set
+     * `onBehalfOf: asOperator ? decedentUserId : null` — one of TWO emitters on
+     * this resource that failed to name the estate, not the odd one out of
+     * three: `distributionApproved` and `distributionAmountViewed` always named
+     * the decedent, and `distributionRecorded` named nobody at all until the
+     * same PR fixed it. The estate is a fact about the ROW: which dead
+     * person's money moved does not depend on which capacity the caller held,
+     * and `actorType` already discriminates the capacity.
+     *
+     * WHY THE OLD ARM WAS THE COMMON ONE, stated carefully because the obvious
+     * version of this sentence is wrong. The console cannot reach this verb —
+     * `session-audience.spec.ts` names `setDistributionStatus` among the routes
+     * that must never admit an operator session, and the operator edge
+     * allowlists `/distributions`, `/approval` and `/amount` and no `/status`.
+     * That bounds the AUDIENCE and not the arm: `asOperator` comes from
+     * `gate.is`, which asks whether the ACTOR is an active operator, so an
+     * operator calling from their ordinary account session takes the operator
+     * arm on a route their console cannot reach. So the executor arm is the
+     * common one rather than the only one, and the case where the estate was
+     * dropped is the ordinary one — the executor moving the money.
      */
     const h = buildAdminHarness();
     const caseId = await verifiedCase(h);
@@ -1182,7 +1355,7 @@ describe('operator actions name the estate they act on', () => {
     );
     expect(completed).toHaveLength(1);
     expect(completed[0]?.['actorType']).toBe('user');
-    expect(completed[0]?.['onBehalfOf']).toBeNull();
+    expect(completed[0]?.['onBehalfOf']).toBe(DECEDENT);
   });
 });
 

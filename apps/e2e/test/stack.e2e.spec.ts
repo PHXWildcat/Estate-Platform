@@ -267,6 +267,125 @@ async function stepUp(session: Session): Promise<void> {
   );
 }
 
+/**
+ * A settlement case driven to `verified` through the real services, with a
+ * linked reporter, a designated executor and an operator on the allowlist.
+ *
+ * EXTRACTED IN M49 PR1 rather than copied. Two journeys now need it — the
+ * amount reveal (M48 PR3) and the status movements — and the setup is ninety
+ * lines of fixtures for realities the flow under test does not exercise. A
+ * second copy is a copy that drifts, and this one encodes facts that took two
+ * PRs to get right: a reporter must be a LIVE LINKED CONTACT (M7
+ * anti-enumeration), an executor additionally needs the dormant
+ * `on_death_verified` role assignment WITH its `scope_type`, and operators live
+ * on the CLI-managed allowlist. Settlement shares the CORE cluster
+ * (`SETTLEMENT_DATABASE_URL` and the profile service's both name
+ * `pg-core/core`), so one connection reaches the contact tables and the case
+ * table alike.
+ */
+async function verifiedSettlementCase(): Promise<{
+  caseId: string;
+  decedent: Session;
+  reporter: Session;
+  executor: Session;
+  operator: Session;
+  executorContactId: string;
+}> {
+  const decedent = await registerAndLogin();
+  const reporter = await registerAndLogin();
+  const executor = await registerAndLogin();
+  const operator = await registerAndLogin();
+
+  // Fixtures for the realities this flow requires, not the flow under test:
+  // a reporter must be a live linked contact (M7 anti-enumeration), an
+  // executor additionally needs the dormant `on_death_verified` role
+  // assignment, and operators live on the CLI-managed allowlist. Settlement
+  // shares the CORE cluster (`SETTLEMENT_DATABASE_URL` and the profile
+  // service's both name `pg-core/core`), so one connection reaches the
+  // contact tables and the case table alike.
+  const executorContactId = randomUUID();
+  const core = new Client({ connectionString: CORE_DB });
+  await core.connect();
+  try {
+    await core.query(
+      `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+      [randomUUID(), decedent.userId, Buffer.from('ct'), reporter.userId, randomUUID()],
+    );
+    await core.query(
+      `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+      [executorContactId, decedent.userId, Buffer.from('ct'), executor.userId, randomUUID()],
+    );
+    await core.query(
+      `INSERT INTO role_assignments
+           (id, owner_user_id, contact_id, role, scope_type, effective_condition)
+         VALUES ($1, $2, $3, 'executor', 'estate', 'on_death_verified')`,
+      [randomUUID(), decedent.userId, executorContactId],
+    );
+    await core.query(`INSERT INTO settlement_operators (user_id) VALUES ($1)`, [operator.userId]);
+  } finally {
+    await core.end();
+  }
+
+  // One step-up each, spent across every gated call below: freshness is a
+  // 5-minute window, not a single use, and `stepUp` enrolls a NEW factor
+  // every time it is called.
+  await stepUp(operator);
+  await stepUp(executor);
+
+  const opened = expectStatus(
+    await api(SETTLEMENT, 'POST', '/v1/settlement/cases', {
+      token: reporter.token,
+      body: { decedentUserId: decedent.userId, source: 'trusted_contact' },
+    }),
+    201,
+    'intake',
+  ) as { caseId: string };
+
+  expectStatus(
+    await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review/start`, {
+      token: operator.token,
+    }),
+    200,
+    'review start',
+  );
+  expectStatus(
+    await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review`, {
+      token: operator.token,
+      body: { decision: 'approve' },
+    }),
+    200,
+    'review approve — the case enters its waiting period',
+  );
+
+  // The waiting period is measured in DAYS (minimum 5, by DDL CHECK) and
+  // this suite runs in seconds, so the deadline is moved rather than waited
+  // out. It is the one reality an e2e cannot honour; every other step on
+  // this path is the real service answering over HTTP.
+  const clock = new Client({ connectionString: CORE_DB });
+  await clock.connect();
+  try {
+    await clock.query(
+      `UPDATE settlement_cases SET waiting_period_ends = now() - interval '1 hour'
+          WHERE id = $1`,
+      [opened.caseId],
+    );
+  } finally {
+    await clock.end();
+  }
+
+  const verified = expectStatus(
+    await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/verify`, {
+      token: operator.token,
+    }),
+    200,
+    'verification once the waiting period has lapsed',
+  ) as { status: string };
+  expect(verified.status).toBe('verified');
+  return { caseId: opened.caseId, decedent, reporter, executor, operator, executorContactId };
+}
+
 describeIfStack('the running stack', () => {
   describeDev('owner journey across every real dependency', () => {
     let owner: Session;
@@ -2077,103 +2196,11 @@ describeIfStack('the running stack', () => {
      * driven here and the recorded class of each is asserted.
      */
     it('reveals one amount to BOTH principal classes, and raises no anomaly', async () => {
-      const decedent = await registerAndLogin();
-      const reporter = await registerAndLogin();
-      const executor = await registerAndLogin();
-      const operator = await registerAndLogin();
-
-      // Fixtures for the realities this flow requires, not the flow under test:
-      // a reporter must be a live linked contact (M7 anti-enumeration), an
-      // executor additionally needs the dormant `on_death_verified` role
-      // assignment, and operators live on the CLI-managed allowlist. Settlement
-      // shares the CORE cluster (`SETTLEMENT_DATABASE_URL` and the profile
-      // service's both name `pg-core/core`), so one connection reaches the
-      // contact tables and the case table alike.
-      const executorContactId = randomUUID();
-      const core = new Client({ connectionString: CORE_DB });
-      await core.connect();
-      try {
-        await core.query(
-          `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [randomUUID(), decedent.userId, Buffer.from('ct'), reporter.userId, randomUUID()],
-        );
-        await core.query(
-          `INSERT INTO contacts (id, owner_user_id, name_ct, linked_user_id, dek_id)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [executorContactId, decedent.userId, Buffer.from('ct'), executor.userId, randomUUID()],
-        );
-        await core.query(
-          `INSERT INTO role_assignments
-             (id, owner_user_id, contact_id, role, scope_type, effective_condition)
-           VALUES ($1, $2, $3, 'executor', 'estate', 'on_death_verified')`,
-          [randomUUID(), decedent.userId, executorContactId],
-        );
-        await core.query(`INSERT INTO settlement_operators (user_id) VALUES ($1)`, [
-          operator.userId,
-        ]);
-      } finally {
-        await core.end();
-      }
-
-      // One step-up each, spent across every gated call below: freshness is a
-      // 5-minute window, not a single use, and `stepUp` enrolls a NEW factor
-      // every time it is called.
-      await stepUp(operator);
-      await stepUp(executor);
-
-      const opened = expectStatus(
-        await api(SETTLEMENT, 'POST', '/v1/settlement/cases', {
-          token: reporter.token,
-          body: { decedentUserId: decedent.userId, source: 'trusted_contact' },
-        }),
-        201,
-        'intake for the amount journey',
-      ) as { caseId: string };
-
-      expectStatus(
-        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review/start`, {
-          token: operator.token,
-        }),
-        200,
-        'review start',
-      );
-      expectStatus(
-        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/review`, {
-          token: operator.token,
-          body: { decision: 'approve' },
-        }),
-        200,
-        'review approve — the case enters its waiting period',
-      );
-
-      // The waiting period is measured in DAYS (minimum 5, by DDL CHECK) and
-      // this suite runs in seconds, so the deadline is moved rather than waited
-      // out. It is the one reality an e2e cannot honour; every other step on
-      // this path is the real service answering over HTTP.
-      const clock = new Client({ connectionString: CORE_DB });
-      await clock.connect();
-      try {
-        await clock.query(
-          `UPDATE settlement_cases SET waiting_period_ends = now() - interval '1 hour'
-            WHERE id = $1`,
-          [opened.caseId],
-        );
-      } finally {
-        await clock.end();
-      }
-
-      const verified = expectStatus(
-        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/verify`, {
-          token: operator.token,
-        }),
-        200,
-        'verification once the waiting period has lapsed',
-      ) as { status: string };
-      expect(verified.status).toBe('verified');
+      const { caseId, decedent, executor, operator, executorContactId } =
+        await verifiedSettlementCase();
 
       const dist = expectStatus(
-        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${opened.caseId}/distributions`, {
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${caseId}/distributions`, {
           token: executor.token,
           body: { beneficiaryContactId: executorContactId, amount: '4500.00' },
         }),
@@ -2233,6 +2260,145 @@ describeIfStack('the running stack', () => {
         // read an estate.
         expect(new Set(seen.map((r) => `${r.actor_id}:${r.actor_type}`))).toEqual(
           new Set([`${executor.userId}:user`, `${operator.userId}:operator`]),
+        );
+      } finally {
+        await audit.end();
+      }
+    });
+
+    /**
+     * THE CLOSED VOCABULARY, END TO END (M49 PR1).
+     *
+     * The unit fence proves the service EMITS an action per transition. It
+     * cannot see the half this PR actually risks: `AUDIT_ACTIONS` is closed,
+     * and an ingestor that predates a member rejects every instance as a
+     * `schema_violation` BEFORE `BEGIN`, counts it, warns, advances the offset
+     * and writes no DLQ. The producer looks healthy, the emit looks healthy,
+     * and the row is simply never on the trail — which is indistinguishable
+     * from the defect this PR exists to fix. Only a run against the deployed
+     * consumer can tell those apart, so the journey is driven here and the
+     * rows are read out of the AUDIT cluster rather than out of a spy.
+     *
+     * ANTI-VACUITY IS THE POLL ITSELF: it fails after 60s if the rows never
+     * arrive, so a dropped action cannot pass as an assertion nobody reached.
+     * And the SET is compared rather than counted, because three rows all
+     * landing under `disputed` would satisfy any count while meaning the map
+     * chose one action for every move.
+     */
+    it('lands every status movement on the real trail, under its own action', async () => {
+      const { caseId, decedent, executor, operator, executorContactId } =
+        await verifiedSettlementCase();
+
+      // THE FOURTH NEW MEMBER NEEDS A JOURNEY TOO. Without this stage approval
+      // the case never climbs `verified → active`, so
+      // `settlement.case.activated` would be the one action of the four that
+      // never reached the deployed ingestor — the exact blind spot this test
+      // exists to close, since a member the consumer does not know is dropped
+      // as `schema_violation` with the offset advanced and nothing red.
+      const stage = expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${caseId}/stages`, {
+          token: executor.token,
+          body: { stage: 'inventory' },
+        }),
+        201,
+        'the executor requests the inventory stage',
+      ) as { stageId: string };
+      expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/stages/${stage.stageId}/decision`, {
+          token: operator.token,
+          body: { decision: 'approve' },
+        }),
+        200,
+        'the operator approves it — the case enters administration',
+      );
+
+      const dist = expectStatus(
+        await api(SETTLEMENT, 'POST', `/v1/settlement/cases/${caseId}/distributions`, {
+          token: executor.token,
+          body: { beneficiaryContactId: executorContactId, amount: '250.00' },
+        }),
+        201,
+        'the executor records a distribution to move',
+      ) as { distributionId: string };
+
+      expectStatus(
+        await api(
+          SETTLEMENT,
+          'POST',
+          `/v1/settlement/distributions/${dist.distributionId}/approval`,
+          {
+            token: operator.token,
+          },
+        ),
+        200,
+        'dual control: the operator approves before anything may move',
+      );
+
+      // EVERY TARGET THE VERB ACCEPTS, in the order the DDL permits, ending on
+      // the edge the residual was about: `completed -> disputed`, an undo of a
+      // paid-out distribution, which wrote nothing at all before this PR.
+      for (const status of ['in_progress', 'completed', 'disputed'] as const) {
+        expectStatus(
+          await api(
+            SETTLEMENT,
+            'POST',
+            `/v1/settlement/distributions/${dist.distributionId}/status`,
+            {
+              token: executor.token,
+              body: { status },
+            },
+          ),
+          200,
+          `the executor moves the distribution to ${status}`,
+        );
+      }
+
+      const audit = new Client({ connectionString: AUDIT_DB });
+      await audit.connect();
+      try {
+        const rows = await pollUntil(
+          'every distribution movement, and the case rung, on the audit trail',
+          async () => {
+            const { rows: found } = await audit.query<{ action: string; detail: unknown }>(
+              `SELECT action, detail FROM audit_events
+                WHERE action IN ('settlement.distribution.in_progress',
+                                 'settlement.distribution.completed',
+                                 'settlement.distribution.disputed',
+                                 'settlement.case.activated',
+                                 'settlement.case.distributing')
+                  AND on_behalf_of = $1
+                  AND occurred_at >= $2`,
+              [decedent.userId, SUITE_START],
+            );
+            return found.length >= 5 ? found : null;
+          },
+          60_000,
+          2_000,
+        );
+
+        // The EDGE, not just the action — the whole point of the record. A row
+        // whose `from` equals its `to` is the aliasing defect the unit fence
+        // caught twice, and it would survive an action-only assertion here.
+        expect(
+          new Set(
+            rows.map((r) => {
+              const d = r.detail as { from?: string; to?: string };
+              return `${r.action}:${String(d.from)}->${String(d.to)}`;
+            }),
+          ),
+        ).toEqual(
+          new Set([
+            // ALL FOUR MEMBERS THIS PR ADDS, each through the real ingestor.
+            // The case rung reads `active->distributing` rather than
+            // `verified->distributing` precisely because the stage approval
+            // above moved it first — which is the edge being recorded doing
+            // its job.
+            'settlement.case.activated:verified->active',
+            'settlement.case.distributing:active->distributing',
+            'settlement.distribution.in_progress:approved->in_progress',
+            'settlement.distribution.completed:in_progress->completed',
+            'settlement.distribution.disputed:completed->disputed',
+          ]),
         );
       } finally {
         await audit.end();

@@ -187,8 +187,9 @@ an item stops being counted, which is the failure M21 exists to answer.
 for the ones an operator console would make; and none of them is "surfaced to the
 user".* CORRECTED IN M21 PR3a, because the earlier version of this sentence was
 wrong in both halves and it was wrong in the direction that stops somebody
-looking. Measured: `AUDIT_ACTIONS` carries 23 `settlement.*` actions and EVERY
-ONE OF THEM IS A WRITE — settlement emits no read event of any kind, so the queue
+looking. Measured AT M21 PR3a, and the date is the load-bearing part of the
+sentence: `AUDIT_ACTIONS` carried 23 `settlement.*` actions then and EVERY
+ONE OF THEM WAS A WRITE — settlement emits no read event of any kind, so the queue
 an operator works from, the case they open and the timeline they read leave no
 trace that they were read. Documents emits exactly one operator read,
 `document.evidence.accessed` (whose actor class disagreed with its own paired
@@ -4626,7 +4627,7 @@ obligation stated next to it.
   a reported one and clears the code from the DOM, which is what the client can
   do about it. Making the two agree is a deployment-configuration property, not a
   browser one.
-- **[OWNER: M26]** *Two of three distribution status transitions emit no audit
+- **[CLOSED: §6kkk]** *Two of three distribution status transitions emit no audit
   event, and `disputed` is reachable from `completed`.* An unlogged undo of a
   completed distribution, callable by an executor as well as an operator.
   **RE-OWNED FROM M23 BY M40 PR3** (§6ggg), and this is the one residual of the
@@ -4661,6 +4662,19 @@ obligation stated next to it.
   wearing the same name. This tag belongs to the audit-completeness four. **NOT FIXED HERE, DELIBERATELY**: M40 is an adjudication milestone, the
   fix touches the closed `AUDIT_ACTIONS` vocabulary, and a new action must reach
   the audit consumer before its producer.
+  **CLOSED BY M49 PR1 (§6kkk), and the tag above is kept rather than replaced.**
+  All three targets now emit, chosen by a map the emitter indexes rather than by
+  a conditional, and the row carries the EDGE — `from` and `to` — so
+  `completed → disputed` and `approved → disputed` are distinguishable on the
+  trail, which is the distinction this bullet says a target-only count hides.
+  The deferral's stated reason held for M40 and no longer applies: the consumer
+  ships before the producers, in that order, and the ordering is a docs/06 entry
+  rather than a sentence here. **THE M26 SIDE-PICKING SENTENCE ABOVE IS STILL
+  LIVE** — and its arithmetic is worth restating rather than repeating: the
+  sentence counts the four audit-completeness tags that existed BEFORE this one
+  was added, so with it the half held FIVE and closing it leaves the original
+  four. It settles nothing about the name collision, which docs/04's M26 row
+  still owns.
 - **[OWNER: M45]** *The bearer-header fence's corpus is narrower than its claim.*
   **RE-OWNED FROM M23 AND RENAMED BY M40 PR3** (§6ggg): "matches one spelling"
   undercounts its own subject. There are THREE assertions with three different
@@ -8580,3 +8594,251 @@ outright. A stranger never reaches the check; Cedar denies above it.
   milestone that fixes another's residual in passing is how ownership stops
   meaning anything. The durable fix is to derive the list rather than restate
   it, which is M43's subject.
+
+## 6kkk. Threat-model delta — M49 PR1, the status moves nobody recorded (2026-09-02)
+
+**A settlement state machine may not audit fewer transitions than it permits.**
+Two of them did. `setDistributionStatus` accepted three targets and emitted
+under `if (to === 'completed')`; `settlement_cases` has eight statuses and two
+of them — `active` and `distributing` — were reached only as a side effect of
+another act and wrote nothing of their own. Neither gap was found by a test
+going red, because nothing in the repo related a machine's TARGET SET to its
+EMITTED ACTION SET. Two fences come close and neither joins the halves:
+`apps/bff/test/settlement-distributions.spec.ts` reads the same DDL and asserts
+the SDL enum accounts for its whole vocabulary — the STATUS side alone — and the
+`CaseReadSurface` fence derives gated readers from source — the ACTION side, for
+reads rather than transitions. This closes §6dd's distribution item, opened by M21 PR4, re-owned by
+M40 PR3, and left deferred on a precondition M23 PR4b had already spent.
+
+### Counted as edges, not targets
+
+§6dd says against its own phrasing that counting TARGETS hides the shape of
+this defect, and it is right. `setDistributionStatus` permits five edges —
+`approved → in_progress`, `in_progress → completed`, and `disputed` from each of
+`approved`, `in_progress` and `completed` — and audited one of them. The edge
+that matters is `completed → disputed`: an undo of a paid-out distribution, and
+the only thing separating it from `approved → disputed` (a dispute over money
+that never moved) is the PRIOR status. So the row carries `from` and `to`, and
+the fence compares SETS OF EDGES rather than counting targets — three rows all
+attributed to `disputed` would satisfy any target-level count while leaving the
+edge this residual is about unproven.
+
+The prior status is read BEFORE the write at both call sites, and that is not
+style. It is correct against a row snapshot and wrong against any store that
+hands back a live reference, and the fence caught exactly that during
+development: a case reported as moving from `distributing` to `distributing`,
+and a distribution from each of its own destinations. The re-read row is worse
+still — it is the post-update one, whose status is already `to` — so both
+obvious spellings produce a valid, hashable, permanent row that says every move
+went from where it ended up.
+
+### The rung a case climbed while something else was recorded
+
+`verified → active` inside `decideStage` and `verified|active → distributing`
+inside `recordDistribution` were the two case transitions with no verb of their
+own, which is why they had no event. Both sites also DISCARDED the boolean
+`advanceStatus` returns, so a compare-and-set that lost a race changed nothing
+and reported nothing. The boolean now gates the emit: a case entering
+administration is on the trail exactly when this statement is the one that moved
+it, and a second distribution on an already-`distributing` case is silent.
+
+`closed` is deliberately not in that map. `closeCase` advances through the same
+repo method but is a verb in its own right with its own event and its own
+operator gate, and routing it through here would put one movement on the trail
+twice.
+
+### Four new actions, and why none of the old ones was retired
+
+`AUDIT_ACTIONS` gains `settlement.distribution.in_progress`,
+`settlement.distribution.disputed`, `settlement.case.activated` and
+`settlement.case.distributing`. It is a CLOSED vocabulary, so the consumer
+deploys before the producers or every instance is dropped as a
+`schema_violation` with the offset advanced and no DLQ.
+
+A tidier design — one `settlement.distribution.status_changed` action with the
+target in `detail` — was rejected, and the reason is worth recording because it
+is not a taste argument. `ChainVerifier` re-parses every stored row against the
+LIVE `AuditEventSchema` and returns `event_hash_mismatch` when a row no longer
+parses. Retiring `settlement.distribution.completed` would therefore turn every
+historical row carrying it into the same failure token real tampering produces,
+on a table under `REVOKE UPDATE, DELETE` where nothing can repair them. **A
+closed vocabulary that a verifier re-parses is append-only in the same sense the
+table is.**
+
+### The fence, and the corpus it states
+
+`apps/services/settlement/test/status-audit-fence.spec.ts` anchors on what the
+runtime reads: the DDL `CHECK` rather than the TypeScript union, and the maps
+the emitter indexes rather than an action-name prefix — `/^settlement\.distribution\./`
+would sweep in three actions written by other verbs and is a rename away from
+matching nothing. It DRIVES every edge rather than only comparing tables,
+because a table can be total while the emit never fires.
+
+Its corpus is derived and stated: every table in settlement's own migrations
+whose `status` carries a `CHECK … IN`, which is three — `distributions`,
+`settlement_cases` and `settlement_access_stages`. The third was already total
+and is kept as the POSITIVE CONTROL, because a fence where every machine needed
+fixing cannot distinguish coverage from a matcher that fires on everything. A
+fourth such table reddens the corpus assertion by name instead of joining the
+two that happen to be covered.
+
+### The drive, and the sibling it found
+
+The journey was driven in a browser as an executor — record, approve,
+`Mark as started`, `Mark as paid out`, `Raise a dispute` — against a stack whose
+settlement and audit images were rebuilt and proven current by reading the
+shipped `dist` out of the running containers rather than by trusting a build
+timestamp. The four new rows landed with their edges intact, ending on
+`completed → disputed`.
+
+READING that trail, rather than polling it for the row expected, is what found
+the last defect in this PR. `settlement.distribution.recorded` emitted
+`onBehalfOf: null` while `distributionApproved`, `distributionAmountViewed` and
+the new emitter all named the decedent — FIVE distribution rows about one
+estate, four naming it and the one that CREATED the distribution naming nobody. There was no argument for the
+difference; the method simply never took the decedent, though every caller has
+it in scope. **THE SUITE COULD NOT HAVE SEEN IT.** The one property asserting
+this rule quantifies over the ACTOR, and `recordDistribution` is executor-only,
+so that property never looked at the row. The two axes are independent, and a
+second property now quantifies over the RESOURCE: every event whose subject is a
+distribution names the estate that owns it, whoever acted.
+
+It is fixed here rather than recorded, against this milestone's own
+record-do-not-fold-in rule, because it is the same clause in the same emitter
+family in the same file, and leaving it would make this section's central claim
+— that the estate is a fact about the row — half-applied in the one place it is
+argued.
+
+### Residuals
+
+- **[OWNER: M45]** *Every operator-gated method that asks `this.gate.is` is
+  outside the operator-breadth fence, in both directions.* That fence derives
+  its corpus from the AST as "every method whose body calls
+  `this.gate.assertIn`" — nine methods — and a verb open to an executor AND an
+  operator cannot use `assertIn`, because it needs the ANSWER rather than a
+  refusal. MEASURED by the same AST criterion over the fence's own two-file
+  corpus: FIVE methods ask `this.gate.is` and none is in the corpus —
+  `setDistributionStatus` and `addEvidence` (both WRITES, so both are candidates
+  for the ledger), `getCase` (a read), and the two private helpers
+  `assertCaseVisible` and `evidenceReadAuthority`. A first draft of this bullet
+  named `distributionAmount` as the second one; it asks nothing — it receives
+  `isOperator` from `assertCaseVisible` — so the bullet understated its own
+  subject by more than half. None of the five is counted toward the ledger or
+  declared exempt with a reason, and the fence is silent rather than red: it
+  cannot see a method it has no rule for. This is M45's stated scope — a
+  source-scanning fence whose reach is narrower than its claim — and it is
+  recorded rather than fixed here because widening the corpus to `.is` callers
+  forces the question in the next bullet, which is a different milestone's.
+- **[OWNER: M46]** *Whether an operator moving a distribution should count
+  toward the breadth ceiling is undecided, and today it does not.*
+  `distribution.approved` is in `PERMISSIVE_OPERATOR_ACTIONS`; the movement that
+  follows it is in neither list. **THE ARGUMENT FOR LEAVING IT, STATED SO IT CAN
+  BE SPENT RATHER THAN FORGOTTEN** — which is §6dd's own lesson, applied in the
+  section that closes it: the console cannot reach this verb.
+  `session-audience.spec.ts` names `setDistributionStatus` among the routes that
+  must never admit an operator session, and the operator edge allowlists
+  `/distributions`, `/approval` and `/amount` and carries no `/status` path.
+  That bound is now a `PRECONDITIONS` entry rather than a sentence, so the PR
+  that adds the route is told which decision it retired. It bounds the AUDIENCE
+  and not the arm: `asOperator` comes from `gate.is`, a question about the
+  ACTOR, so an operator on an ordinary account session takes the operator arm on
+  a route their console cannot reach — which is why the emit names the estate on
+  both arms rather than only the operator's.
+- **[OWNER: M49]** *`settlement.stage.revoked` does not say which status it
+  revoked.* `StagesRepo.revoke` moves a stage to `revoked` from `requested` OR
+  `approved`, and the event records neither. Withdrawing access an executor
+  actually held and cancelling a request that was never granted are the same row
+  on the trail. This is the same shape this PR just closed one table over — an
+  event that cannot say what moved — with the event PRESENT rather than missing,
+  which is why the fence above passes on this machine: it asks whether every
+  status is audited, and every stage status is. Recorded rather than folded in
+  because the fix is a second property (every transition records its edge) and
+  a milestone that quietly grows its own scope is how a PR stops being
+  reviewable.
+- **[OWNER: M49]** *Two of `plaid_items`' four statuses are not on the trail as
+  transitions.* `revoked` and `login_required` have actions of their own. The
+  `invalid_access_token` arm sets `error` inside a `catch` that rethrows, and
+  `AUDIT_ACTIONS` has no member for it at all — an item going dead because the
+  stored token stopped working is exactly the event an owner asks about later.
+  **AND THE RECOVERY IS WORSE THAN A FIRST DRAFT OF THIS BULLET SAID**, which
+  claimed `healthy` was "audited by the `plaid.item.synced` it ships inside".
+  That emit fires on EVERY successful sync, already-healthy items included, so
+  `error → healthy` is recoverable only as "the first `synced` after a
+  `login_required`" — one event plus an inference, which is the construction
+  this very section rejects two headings up. `ItemsRepo.setStatus` returns
+  `void` and carries no `from` predicate, so there is not even a boolean to
+  distinguish a recovery from a no-op. Same category, different service, and a
+  rule applied to one member of a category is a rule half-applied.
+- **[OWNER: M49]** *`settlement.case.rejected` and `settlement.case.voided`
+  record no prior status, and the edge decides whether a live person's account
+  was unlocked.* This PR's own rule — the row carries the EDGE — is applied to
+  the two rungs it added and not to the two terminal ones next door.
+  `markResolved` reaches `rejected_fraud` from `verifying` OR `waiting_period`
+  and `markVoided` reaches it from `reported`, `verifying` OR
+  `waiting_period`; the details are `{reason, reporter}` and
+  `{via, reporter, reporterFlagged}`. Rejecting a case in `waiting_period`
+  unlocks the decedent's identity account and lifts the documents legal hold;
+  rejecting one still in `verifying` does neither. On the trail those are one
+  row shape, so "did this refusal release a locked living person?" is
+  unanswerable — the same question a target-only record hid for
+  `completed → disputed`. The new fence passes on this machine because it asks
+  whether every STATUS is audited, and every case status is.
+- **[OWNER: M49]** *The operator console's case timeline cannot show the two
+  rungs this PR put on the trail.* It is built from columns —
+  `human_review_at`, `waiting_period_ends`, `verified_at`, `resolved_at` — plus
+  stage rows, and `settlement_cases` has no `activated_at` or
+  `distributing_at`. So the surface an operator actually reads during a §5.1
+  investigation still recovers "when did this estate enter administration?"
+  only by inferring it from a neighbouring stage approval, which is the defect
+  this section opens by describing. The audit trail is now right and the human
+  surface over it is not.
+- **[OWNER: M49]** *`contact.link.claimed` names no owner while its sibling two
+  lines away does.* Both carry `resourceType: 'contact'`, both are emitted from
+  `contact-links.service.ts` in the same ceremony with the same actor (the
+  redeemer), and `contact.link.unverified_recipient` passes `ownerUserId` from
+  a local the first call already has in scope. The comment above them asserts
+  the owner's trail records that their contact was claimed and that it is
+  "answerable from either end" — with actor = redeemer and `onBehalfOf` = null
+  it is answerable from neither, only by joining on the contact id across a
+  cluster boundary. Exactly the shape this PR fixed for
+  `settlement.distribution.recorded` and `settlement.stage.requested`, in a
+  service this PR does not touch.
+- **[OWNER: M49]** *The vault's emergency-access ladder records six statuses and
+  no edges.* `emergency_access_policies.status` admits `configured`,
+  `requested`, `waiting`, `denied_by_owner`, `released` and `revoked`, and all
+  five emitters record the target only. Two pairs fuse as a result: `rearm`
+  guards `released` alone, so it also reaches `waiting` (cancelling a live
+  grantee request mid-wait) and `denied_by_owner` (clearing a standing
+  refusal) — opposite-signed acts under one token, and it zeroes
+  `request_count`, erasing the grinding-grantee signal the DDL comment says
+  exists to be visible. And `revoke` has no status guard at all, so revoking
+  after the grantee collected their key share and revoking before they did are
+  one row. That is `completed → disputed` versus `approved → disputed`, one
+  service over.
+- **[OWNER: M45]** *This PR's own fence is keyed on the literal column name
+  `status`, and states no bound about it.* It derives its corpus honestly
+  within that key — every settlement table whose `status` carries a CHECK — but
+  a lifecycle column spelled anything else is invisible to it, including
+  `death_signals.resolution` inside settlement itself, and
+  `documents.execution_status`, `assets.funding_status`,
+  `erasure_domain_progress.state` and `notification_sends.outcome` elsewhere.
+  The fence is not wrong — it says which tables it read — but "every settlement
+  state machine" in its title is broader than "every table with a column called
+  `status`", and there is no repo-wide equivalent, which is why the three
+  cross-service residuals above had to be found by hand. M45's stated scope.
+- **[OWNER: M49]** *An erasure request that is claimed and handed back leaves
+  nothing behind.* `erasure_requests.status` runs
+  `pending → executing → completed`, with `executing → pending` on release.
+  The destructive steps inside are audited by consequence — the account close,
+  the session revocation and the DEK destruction each emit — but the RELEASE
+  path emits nothing at all, and it is the forensically interesting one: the
+  driver hands the claim back precisely when a death report or a settlement lock
+  landed between the claim and the write, so the trail is silent about an
+  erasure that started against an estate someone had just opened a case on.
+  **AND THE TERMINAL RUNG IS THE SAME SHAPE**: `completeIfAllDone` is a
+  compare-and-set returning a boolean its caller discards, and no member of
+  `AUDIT_ACTIONS` corresponds to it — so the completion of a legal erasure, the
+  record a regulator asks for, has no event. It is unreachable today (it
+  returns false until every domain gains transport), which is the argument FOR
+  doing it now rather than later: the vocabulary is closed and the consumer
+  must ship before the producer.

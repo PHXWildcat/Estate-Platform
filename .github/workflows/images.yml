@@ -403,7 +403,9 @@ jobs:
       # 25/4 -> 26/4. M21 PR3a added six for the isolated operator origin:
       # 26/4 -> 32/4. M21 PR3b added the console's settlement round trip:
       # 32/4 -> 33/4. M48 PR3 added the distribution-amount journey, the first
-      # to reach that route: 33/4 -> 34/4. Measured on a development-profile
+      # to reach that route: 33/4 -> 34/4. M49 PR1 added the status-movement
+      # journey, the first to read the new audit vocabulary back out of the
+      # audit cluster: 34/4 -> 35/4. Measured on a development-profile
       # stack, which is what this job runs.
       #
       # THIS NUMBER HAS A TWIN in stack.yml, which gates both profiles. They are
@@ -425,7 +427,7 @@ jobs:
       # is the fence that now sees this defect class across every workflow.
       - name: Assert the suite actually ran
         if: always()
-        run: node .github/scripts/assert-stack-counts.mjs stack-results.json 34 4
+        run: node .github/scripts/assert-stack-counts.mjs stack-results.json 35 4
 
       # WHAT THIS STEP IS FOR: naming the container that failed. `up --wait`
       # reports only `service "migrate-documents" didn't complete successfully:

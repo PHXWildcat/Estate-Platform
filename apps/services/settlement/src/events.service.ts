@@ -1,6 +1,62 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
+import type { AuditAction } from '@estate/contracts';
+import type { CaseStatus } from './cases.repo';
+import type { DistributionStatus } from './distributions.repo';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
+
+/**
+ * The distribution targets `setDistributionStatus` accepts, and the action each
+ * one writes (M49 PR1).
+ *
+ * DATA, NOT A CONDITIONAL. The emitter reads this map, so the three targets
+ * cannot drift into three differently-shaped envelopes, and a target added to
+ * `DistributionStatusTarget` is a compile error here rather than a silent
+ * fall-through into an `else`.
+ *
+ * THAT IS A TYPE-LEVEL GUARANTEE AND NOT A DDL ONE, which an earlier draft of
+ * this sentence claimed. `Extract` narrows a hand-written union, so a sixth
+ * status added to the migration and to `DistributionStatus` leaves this map
+ * total over the same three members and compiles clean. What catches THAT is
+ * the fence, which derives the key set from the migration — including from an
+ * `ALTER TABLE`, the only way this repo can add one — and compares it against
+ * `DistributionStatusTarget`.
+ *
+ * `planned` and `approved` are absent deliberately: they are not targets of
+ * this verb. `planned` is the DDL default written by `recordDistribution`
+ * (`settlement.distribution.recorded`) and `approved` is written by
+ * `approveDistribution` (`settlement.distribution.approved`) — both already
+ * audited, both reached by a different method.
+ */
+export type DistributionStatusTarget = Extract<
+  DistributionStatus,
+  'in_progress' | 'completed' | 'disputed'
+>;
+
+export const DISTRIBUTION_STATUS_ACTIONS: Readonly<Record<DistributionStatusTarget, AuditAction>> =
+  {
+    in_progress: 'settlement.distribution.in_progress',
+    completed: 'settlement.distribution.completed',
+    disputed: 'settlement.distribution.disputed',
+  };
+
+/**
+ * The case rungs `advanceStatus` climbs as a SIDE EFFECT of another act, and
+ * the action each one writes (M49 PR1).
+ *
+ * `closed` is absent deliberately, and its absence is the interesting one:
+ * `closeCase` also advances through this repo method, but it is a verb in its
+ * own right with its own event (`settlement.case.closed`) and its own operator
+ * gate, so routing it through here would give one movement two rows. The two
+ * members are exactly the rungs that had no verb of their own — which is why
+ * they had no event either.
+ */
+export type CaseStatusAdvanceTarget = Extract<CaseStatus, 'active' | 'distributing'>;
+
+export const CASE_ADVANCE_ACTIONS: Readonly<Record<CaseStatusAdvanceTarget, AuditAction>> = {
+  active: 'settlement.case.activated',
+  distributing: 'settlement.case.distributing',
+};
 
 /**
  * Which case read produced a `settlement.case.viewed` row.
@@ -329,6 +385,7 @@ export class EventsService {
     executorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     stageId: string,
     stage: string,
   ): Promise<void> {
@@ -336,7 +393,15 @@ export class EventsService {
       action: 'settlement.stage.requested',
       actorId: executorId,
       actorType: 'user',
-      onBehalfOf: null,
+      // NAMED HERE TOO (M49 PR1), and this one is the reason the property
+      // below it is asserted over the RESOURCE rather than over one action.
+      // The three DECISIONS on this resource — approved, denied, revoked —
+      // all named the decedent and the REQUEST did not, so "who asked for
+      // access to this estate" was the one question on the stage ladder that
+      // could not be answered from the dead person's side. Found by the same
+      // sweep that found `distributionRecorded`, and fixed for the same
+      // reason: a rule applied to one member of a category is half-applied.
+      onBehalfOf: decedentUserId,
       resourceType: 'settlement_access_stage',
       resourceId: stageId,
       sessionId,
@@ -542,18 +607,38 @@ export class EventsService {
     });
   }
 
-  /** Amounts are ciphertext and NEVER appear here — only who and which. */
+  /**
+   * Amounts are ciphertext and NEVER appear here — only who and which.
+   *
+   * THE FOURTH SIBLING, BROUGHT INTO LINE (M49 PR1). This emitted
+   * `onBehalfOf: null` while `distributionApproved` and
+   * `distributionAmountViewed` on the same resource named the decedent, and it
+   * was found by DRIVING the browser rather than by reading: the trail for one
+   * estate showed FIVE distribution rows, four naming it and the row that
+   * CREATED the distribution naming nobody. There was no argument for the difference — the
+   * method simply never took the decedent, though every caller has it in
+   * scope. A rule applied to one member of a category is a rule half-applied,
+   * and this file was the category.
+   *
+   * `actorType` stays a literal `'user'` — as `distributionApproved`'s stays a
+   * literal `'operator'`; only the two emitters with both arms derive it — and
+   * that is measured rather than left alone: `recordDistribution` authorises through
+   * `requireAdministeredDecedentFor` and `administrableCaseFor`, both of which
+   * admit on `isExecutorOf` alone with no operator disjunct. There is no
+   * operator arm to discriminate.
+   */
   async distributionRecorded(
     executorId: string,
     sessionId: string,
     caseId: string,
+    decedentUserId: string,
     distributionId: string,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.distribution.recorded',
       actorId: executorId,
       actorType: 'user',
-      onBehalfOf: null,
+      onBehalfOf: decedentUserId,
       resourceType: 'distribution',
       resourceId: distributionId,
       sessionId,
@@ -586,24 +671,96 @@ export class EventsService {
    * and no `completed_by`. The caller already computes the flag to authorize
    * the call and used to discard it; `evidenceAdded` in this same file has
    * taken an explicit `asOperator` since M7 for exactly this reason.
+   *
+   * ONE EMITTER, THREE TOKENS, CHOSEN BY A MAP (M49 PR1). This was
+   * `distributionCompleted`, called under `if (to === 'completed')`, and the
+   * other two targets emitted nothing. Three hand-written call sites would
+   * have been three chances to spell the envelope differently and one place
+   * for a fourth target to land in an unguarded arm and emit the WRONG
+   * action — a mislabelled row on an append-only store being worse than the
+   * missing one. `DISTRIBUTION_STATUS_ACTIONS` is total over the targets this
+   * verb accepts, so a new target is a COMPILE ERROR here rather than a
+   * silent fall-through, and it is DATA a fence imports rather than prose a
+   * fence parses.
+   *
+   * `onBehalfOf` NAMES THE ESTATE ON BOTH ARMS, and that is a change rather
+   * than a copy. The old ternary nulled it for a user actor, so the ordinary
+   * case — an executor moving their own estate's money — wrote the one row
+   * that could not be found from the dead person's side, which is the query an
+   * investigator actually runs. Two siblings on this trail —
+   * `distributionApproved` and `distributionAmountViewed` — already named the
+   * decedent unconditionally, and `distributionRecorded` did not until this
+   * same PR brought it into line; all four agree now. The estate is a fact
+   * about the ROW, and `actorType` still says in what capacity.
+   *
+   * NOT because the operator arm is unreachable — the tempting version of this
+   * argument, and it does not hold. The console genuinely cannot reach the
+   * verb (`session-audience.spec.ts` lists `setDistributionStatus` among the
+   * routes that must never admit an operator session, and the operator edge
+   * carries no `/status` path), but `asOperator` is `gate.is`, a question
+   * about the ACTOR rather than the audience, so an operator on an ordinary
+   * account session still takes that arm.
    */
-  async distributionCompleted(
+  async distributionStatusChanged(
     actorId: string,
     sessionId: string,
     caseId: string,
     decedentUserId: string,
     distributionId: string,
+    from: DistributionStatus,
+    to: DistributionStatusTarget,
     asOperator: boolean,
   ): Promise<void> {
     await this.audit.emit({
-      action: 'settlement.distribution.completed',
+      action: DISTRIBUTION_STATUS_ACTIONS[to],
       actorId,
       actorType: asOperator ? 'operator' : 'user',
-      onBehalfOf: asOperator ? decedentUserId : null,
+      onBehalfOf: decedentUserId,
       resourceType: 'distribution',
       resourceId: distributionId,
       sessionId,
-      detail: { caseId },
+      // THE EDGE, not just the target. `completed → disputed` undoes a payout;
+      // `approved → disputed` disputes one that never happened. Only the prior
+      // status tells them apart, and §6dd's own measurement says a target-only
+      // record hides that.
+      detail: { caseId, from, to },
+    });
+  }
+
+  /**
+   * A CASE MOVED ITSELF WHILE SOMETHING ELSE WAS BEING RECORDED (M49 PR1).
+   *
+   * The two post-verification rungs — `verified → active` inside `decideStage`
+   * and `verified|active → distributing` inside `recordDistribution` — are the
+   * only `settlement_cases.status` transitions that emitted nothing. Both are
+   * side effects of a DIFFERENT audited act, so "the case entered
+   * administration" was answerable only by inferring it from a stage approval
+   * standing nearby. They answer different questions, which is the same reason
+   * `queue.viewed` and `case.viewed` are two actions rather than one.
+   *
+   * The caller emits only when the compare-and-set actually MOVED the row.
+   * Both sites used to discard that boolean, so a lost race changed nothing
+   * and said nothing; now a race that loses stays silent because there was no
+   * movement, and one that wins is on the record.
+   */
+  async caseStatusAdvanced(
+    actorId: string,
+    sessionId: string,
+    caseId: string,
+    decedentUserId: string,
+    from: CaseStatus,
+    to: CaseStatusAdvanceTarget,
+    asOperator: boolean,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: CASE_ADVANCE_ACTIONS[to],
+      actorId,
+      actorType: asOperator ? 'operator' : 'user',
+      onBehalfOf: decedentUserId,
+      resourceType: 'settlement_case',
+      resourceId: caseId,
+      sessionId,
+      detail: { from, to },
     });
   }
 
