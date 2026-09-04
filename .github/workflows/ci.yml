@@ -86,8 +86,14 @@ jobs:
       # The CI helper scripts under .github/scripts are plain node, outside every
       # workspace jest project, so `pnpm test` cannot see them — which is how
       # `gate-image-scan.mjs`, the script that decides whether a vulnerability
-      # blocks a merge, has never had a test. `node --test` needs no dependency
-      # and no project wiring, so there is no excuse for the next one either.
+      # blocks a merge, went its whole life without a test. M49 PR2 wrote it,
+      # and the first thing it found was four report shapes the gate passed
+      # without a scan having happened. `node --test` needs no dependency and no
+      # project wiring, so there was never an excuse, and there is none for the
+      # next one either — every script here has a companion now, and the
+      # PAIRING CHECK below is what keeps that true. The file-count floor is not
+      # that check and never was: it counts test files, so two companions for
+      # one script would satisfy it while a script went bare.
       # The glob is named explicitly because `node --test` does not walk a
       # DOT-directory: given `.github/scripts/` it hands the path to the module
       # loader and dies with MODULE_NOT_FOUND, which would have looked like a
@@ -123,9 +129,33 @@ jobs:
         run: |
           set -uo pipefail
           shopt -s nullglob
+
+          # PAIRING, derived in both directions rather than asserted in a
+          # comment: every helper script must have a test beside it. Counting
+          # test files cannot answer this — it is satisfied by two companions
+          # for one script — and the claim above this step is only true because
+          # something checks it.
+          scripts=()
+          for m in .github/scripts/*.mjs; do
+            case "$m" in *.test.mjs) continue ;; esac
+            scripts+=("$m")
+          done
+          if [ "${#scripts[@]}" -lt 4 ]; then
+            echo "::error::found ${#scripts[@]} helper scripts, expected at least 4 — the glob has stopped matching and this check is vacuous"
+            exit 1
+          fi
+          bare=
+          for m in "${scripts[@]}"; do
+            [ -f "${m%.mjs}.test.mjs" ] || bare="${bare} $(basename "$m")"
+          done
+          if [ -n "$bare" ]; then
+            echo "::error::helper scripts with no test companion:${bare}"
+            exit 1
+          fi
+
           files=(.github/scripts/*.test.mjs)
-          if [ "${#files[@]}" -lt 3 ]; then
-            echo "::error::found ${#files[@]} helper test files, expected at least 3 — a rename, a move or a pattern edit has disarmed this gate"
+          if [ "${#files[@]}" -lt 5 ]; then
+            echo "::error::found ${#files[@]} helper test files, expected at least 5 — a rename, a move or a pattern edit has disarmed this gate"
             exit 1
           fi
           total=0
@@ -145,8 +175,8 @@ jobs:
             fi
             total=$((total + passed))
           done
-          if [ "$total" -lt 30 ]; then
-            echo "::error::helper tests reported $total passing tests overall, expected at least 30"
+          if [ "$total" -lt 70 ]; then
+            echo "::error::helper tests reported $total passing tests overall, expected at least 70"
             exit 1
           fi
           echo "helper tests: $total passing across ${#files[@]} files"

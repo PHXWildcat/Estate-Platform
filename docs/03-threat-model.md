@@ -8842,3 +8842,189 @@ argued.
   returns false until every domain gains transport), which is the argument FOR
   doing it now rather than later: the vocabulary is closed and the consumer
   must ship before the producer.
+
+## 6lll. Threat-model delta — M49 PR2, the check that cannot say whether it ran (2026-09-04)
+
+M49 PR1 was about transitions a state machine made without recording them. This
+section is the same question asked of a control rather than a machine: not "did
+it record what happened" but "can it tell you whether it ran at all". The answer
+for the step deciding whether a vulnerable image ships was no, and it answered in
+the reassuring direction.
+
+### The gate that answered for a scan that never happened
+
+`gate-image-scan.mjs` read its report as `(report.matches ?? []).filter(…)`. `??`
+coalesces an ABSENT key to zero findings, so a report that never listed matches
+was arithmetically identical to an image with none. Measured, each of these
+printing `application (blocking): 0` and exiting 0:
+
+`{}` · `{"error":"database is invalid"}` · `[]` · `{"Matches":[]}`
+
+The last is a grype minor version away — the schema field renames and the gate
+starts passing everything, silently, with no error anywhere. The failure that
+prompted the work was the SURVIVABLE half: on M49 PR1's own CI run grype died
+and wrote a 0-byte report, and the gate crashed with
+`SyntaxError: Unexpected end of JSON input` naming neither the image nor the
+scanner. That cost a diagnostic cycle. It did not cost a shipped vulnerability,
+because a crash is loud.
+
+The argument for checking was already written down in the SBOM step of the same
+workflow: "syft can exit 0 having catalogued nothing, and an empty document is a
+useless artifact that looks like a good one." That step counts
+packages and retries three times, and has since a download endpoint 503'd. The
+step below it — the one that decides whether a merge is blocked — did neither.
+`.claude/rules/ci-workflows.md` states the rule in general form ("count what a
+step produced — a tool can exit 0 having catalogued nothing"); it was applied to
+one member of the pair.
+
+The gate now REFUSES anything that does not prove a scan happened, anchored on
+what grype's own report carries rather than on a hoped-for shape: `matches` must
+be an array, `descriptor.db.status.valid` must be true, and `built` must be
+inside a bounded window — a database `valid` but a fortnight old cannot see a
+fortnight of CVEs and would report a confident zero. Note the nesting:
+`descriptor.db.built` does not exist, and a staleness check reading that path
+gets `undefined`, whose comparison against any cutoff is false. That is the same
+silent pass wearing a different hat, and there is a test for it.
+
+### Two outcomes, two tokens, two exit codes
+
+A refusal and a finding need different remedies — re-run the scanner versus bump
+the dependency — so they must not share an answer. The gate now exits 1 for a
+blocking finding, 2 for a refusal and 3 for misuse, and the caller retries 2 and
+only 2. One code for both would make the retry loop either repeat real findings
+three times or never retry at all, which is this section's own defect moved one
+layer out. The codes are not pinned by a comment: one test asserts they are
+pairwise distinct, and another READS `images.yml` and asserts the literal the
+retry loop compares against is this file's `EXIT_REFUSED` — two halves of one
+contract in two files, with something joining them.
+
+### The fourth outcome, which was wearing the first one's code
+
+The PR's own adversarial review found the defect still standing one path over.
+`main` ran unguarded, so any throw inside it reached node's default handler and
+exited 1 — BLOCKING — the one code the caller deliberately does not retry. Three
+inputs reached it, each measured: a `descriptor.db.status` of `null`, which is
+what a nil status serialises to and therefore exactly the no-database case the
+refusal exists for, sailing past an `=== undefined` guard into a TypeError; a
+`matches` array containing `null`; and an unwritable `GITHUB_STEP_SUMMARY`,
+which printed `application (blocking): 0` and then exited under the code that
+means the opposite. None carried an `::error::` annotation — only a raw stack
+naming a line in the gate, which is the diagnostic failure the read path's
+try/catch was added to remove, left in place on the adjacent path.
+
+The gate falling over says nothing about the image, so it is a refusal, and it
+is caught and reported as one now. The same review found the neighbouring
+half: `classify` counted only what it could read, so an entry with an
+unrecognised severity or no `artifact.type` was silently non-blocking —
+`BLOCKING_SEVERITIES.has(undefined)` is false — which is the absent-`matches`
+defect one level in. A finding this gate cannot read is now a refusal too.
+
+### The siblings that printed an outage as a finding
+
+Asking what else was in the category found the same shape twice more, in one
+step, against the same container. The web smoke test's liveness probe retries
+thirty times; the two probes after it had one shot each and no way to say the
+probe failed.
+
+The per-asset loop was worse than misattributing: it said nothing at all.
+`code=$(curl …)` under the default `bash -e` shell takes the substitution's exit
+status, so a transient failure killed the step at curl's exit 7 with no
+annotation — and the first draft of this section claimed the loop printed "the
+image does not serve public/ assets" for a blip, which it never did, because the
+shell was already gone. Worse still, that draft's FIX — a 000 retry above the
+same unprotected assignment — was dead code for the same reason, and the review
+of this PR is what measured it. `|| true` inside the substitution is what lets
+curl's own 000 reach the variable at all, and only then can 000 be separated
+from a 404. The header read had the defect the loop was accused of: `|| true` on a pipeline with no
+pipefail collapsed a failed curl, a failed grep and a genuinely absent header
+into one empty string, and printed "the image served no Content-Security-Policy
+header at all" — the exact finding that catches a dropped build arg. Both now
+separate the probe from the verdict, and both report the probe failure under its
+own token. An outage must not wear the face of the control.
+
+### The test that did not exist, and what it found
+
+`gate-image-scan.mjs` was the only script under `.github/scripts` without a
+companion, and `ci.yml` said so in prose, ending "there is no excuse for the next
+one either". Writing it is what surfaced the four passing shapes above; none was
+visible from reading the file, because the defect is what the code does NOT
+distinguish. The suite pairs every refusal with a positive control asserted in
+the same run — a gate that refuses everything and a gate that discriminates look
+identical if only the refusals are tested — and pins the entry-point guard
+through a symlink, the distortion that made an earlier copy of that idiom exit 0
+having never run. The pairing is real for the four shapes that used to pass and
+for the staleness and legibility cases, not for every refusal in the file — an
+earlier draft of this paragraph claimed "in every case", which was true of three
+of them.
+
+### Residuals
+
+- **[OWNER: M50]** *Not one action reference in CI is pinned to a digest.* Twelve
+  distinct third-party actions are referenced, all by mutable tag (`@v4`, `@v6`,
+  `@v3`, `@v2`); zero carry a `@sha256`. `postgres:16@sha256:9520674…` in ci.yml
+  is digest-pinned — on a throwaway test database — so the repo knows the idiom
+  and applies it to the one place it buys least. The workflows declare
+  `permissions: contents: read`, so a retagged action does not inherit write
+  scope — an earlier draft of this bullet said it did — but it still executes
+  arbitrary code with the job's token and full access to the build context and
+  the artifacts, on every push.
+- **[OWNER: M50]** *The two scanners are pinned to tags, not digests.*
+  `anchore/syft:v1.42.3` and `anchore/grype:v0.97.1` are exact versions, which
+  is stronger than floating, but a tag is still mutable at the registry. The new
+  refusal path narrows the blast radius — a substituted scanner that stops
+  producing a valid report is now refused rather than read as clean — it does not
+  close it, because a substituted scanner that produces a well-formed EMPTY
+  report still passes.
+- **[OWNER: M50]** *`node:22` floats, inside the job whose subject is that the
+  artifact must not depend on its build environment.* extension.yml:216 runs the
+  foreign-identity pack under a moving tag. The reproducibility axis is argued in
+  that file (the packer stores rather than deflates, so Node no longer moves the
+  digest); the AVAILABILITY axis is not, and it remains an unretried registry
+  pull three files from the retry loop written because a download endpoint 503'd.
+- **[OWNER: M50]** *Eight of thirteen jobs can hang until the runner's own
+  ceiling.* Five carry `timeout-minutes`; the eight without include
+  `ci.yml :: build-and-test`, the longest job in the repo that has no ceiling,
+  and every job in security.yml. The two genuinely longest jobs are the stack
+  legs, and they DO carry one — which is the point: the ceiling was applied
+  where someone was already thinking about duration, not where it is missed. A
+  hung job is not a failure anyone is notified about.
+- **[OWNER: M50]** *A registry fetch at five call sites, none retried.*
+  `pnpm install --frozen-lockfile` appears in ci.yml, extension.yml twice,
+  images.yml and stack.yml. It is the most-repeated network fetch written as a
+  `run:` step. It is NOT the only unretried one — no `uses:` action retries
+  either, and the bullets above say so — but it is the one whose failure is
+  purely transient and whose remedy is purely a retry.
+- **[OWNER: M50]** *An analysis artifact that is USELESS uploads green, and
+  `if-no-files-found` cannot see it.* Both image analysis steps redirect into
+  their output file, and a redirect CREATES the file whether or not the command
+  succeeds — so after either retry loop exhausts, a 0-byte artifact exists and
+  uploads cleanly. `if-no-files-found: warn` (images.yml:342, :392) against
+  `error` on the extension release archive (extension.yml:289) is therefore not
+  the distinction it looks like: neither setting fires, because the file is
+  always there. An earlier draft of this bullet asserted the `warn` case fires
+  and the artifact goes missing; it cannot. What is actually missing is any
+  floor on the artifact's CONTENT at the upload, and any reader downstream —
+  nothing in the repo downloads `sbom-*` or `grype-*` back.
+- **[OWNER: M49]** *The scan cannot be cross-checked against the corpus the SBOM
+  proved.* The SBOM step counts packages and refuses a zero; the scan step has no
+  comparable floor, because a grype report lists only MATCHES and never the
+  packages it catalogued — so "grype scanned the same N packages syft found" is
+  not expressible from the report. Scanning the validated SBOM
+  (`sbom:/w/…spdx.json`) instead of the image archive would make it expressible
+  and make the two steps share one corpus, at the cost of changing what is
+  scanned. That is a security-posture change and does not belong in the same PR
+  as the refusal path.
+- **[OWNER: M45]** *Nothing in this repo parses `uses:`, so no fence can reach
+  half the category.* `workflow-shell.mjs` gives every `run:` block with line
+  numbers and refusal accounting, and a fence over shell steps could be built on
+  it today. Every property in this section that concerns an ACTION — digest
+  pinning above all — is invisible to it, and the census that found these
+  residuals was a person with grep, which is the thing this repo replaces with
+  data wherever it can.
+- **[ACCEPTED]** *The staleness window is chosen, not derived.* Seven days is a
+  judgement: the runner fetches a fresh database every job, so in the normal case
+  `built` is hours old and the check never fires, and the remedy for a genuinely
+  unreachable database is the retry loop rather than a red pipeline. A derived
+  bound would need a stated expectation about grype's publishing cadence, which
+  is a third party's decision and not observable from this tree. Retained as a
+  number with its reasoning beside it rather than a number nobody can defend.

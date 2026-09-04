@@ -91,6 +91,7 @@ const OWNERS: readonly string[] = [
   'M47', // the isolated origins, hardened as a pair (added M40 PR3)
   'M48', // the link that outlives the unlink (added M40 PR4)
   'M49', // the transitions a status machine makes without saying so (added M49 PR1)
+  'M50', // the supply chain the pipeline does not pin (added M49 PR2)
   // Escalations — blocked on a decision outside engineering.
   'E1', // AWS cloud half (money)
   'E2', // legal / tax reference review (procurement)
@@ -217,6 +218,14 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // rung, the case machine's two terminal edges, the operator console timeline
   // that cannot show the rungs, and profile's `contact.link.claimed`.
   '6kkk': 10,
+  // M49 PR2: NINE. Six belong to the new M50 row — the pinning and availability
+  // properties of CI's own supply chain, which is a different subject from this
+  // milestone's and was recorded rather than folded in. The rest: the scan/SBOM
+  // corpus cross-check that a grype report cannot express (M49), the absence of
+  // any `uses:` parser, which puts half the category out of every fence's reach
+  // (M45), and the staleness window, ACCEPTED as a judgement with its reasoning
+  // beside it.
+  '6lll': 9,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
