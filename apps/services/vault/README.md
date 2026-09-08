@@ -255,7 +255,12 @@ alone is not enough, and a rogue contact alone is not enough either.
 
 ## Audit
 
-Eleven actions, IDs and enums only. The PII firewall is trivially satisfied:
+Every `vault.*` member of the closed `AUDIT_ACTIONS` vocabulary, IDs and enums
+only. The count is deliberately not restated here — it said "Eleven" from M6
+until M49 PR4, by which point there were more than twice that. `VaultAuditAction`
+in `events.service.ts` derives the set with `Extract`, so a member added to
+`@estate/contracts` is emittable the moment it exists and no list has to be
+re-typed. The PII firewall is trivially satisfied:
 the server could not log a vault secret if it tried. `vault.open.failed` in
 particular is safe to emit on every failure, which is what makes docs/01 §6's
 vault-access-burst detection possible.

@@ -8822,18 +8822,32 @@ argued.
   cluster boundary. Exactly the shape this PR fixed for
   `settlement.distribution.recorded` and `settlement.stage.requested`, in a
   service this PR does not touch.
-- **[OWNER: M49]** *The vault's emergency-access ladder records six statuses and
-  no edges.* `emergency_access_policies.status` admits `configured`,
-  `requested`, `waiting`, `denied_by_owner`, `released` and `revoked`, and all
-  five emitters record the target only. Two pairs fuse as a result: `rearm`
-  guards `released` alone, so it also reaches `waiting` (cancelling a live
-  grantee request mid-wait) and `denied_by_owner` (clearing a standing
-  refusal) — opposite-signed acts under one token, and it zeroes
-  `request_count`, erasing the grinding-grantee signal the DDL comment says
-  exists to be visible. And `revoke` has no status guard at all, so revoking
-  after the grantee collected their key share and revoking before they did are
-  one row. That is `completed → disputed` versus `approved → disputed`, one
-  service over.
+- **[CLOSED: §6nnn]** *The vault's emergency-access ladder records six statuses
+  and no edges.* This sentence was wrong in two ways and M49 PR4 corrected
+  each at the source rather than beside it. The CHECK on
+  `emergency_access_policies.status` ADMITS six literals; the ladder PRODUCES
+  five — nothing in the tree ever writes `requested`, which is dead vocabulary
+  and now a residual of its own. On the emitters the sentence was RIGHT and an
+  earlier draft of this correction was wrong to call it false: the action id
+  does record the target, and what the emitters lacked was the source. Four of
+  the five carried no `detail` at all, so there was no payload to hang a prior
+  status on. And it is not "two
+  pairs" but FOUR statements, whose from-sets the fence derives rather than
+  lists: `markDenied` and `markRevoked` admit all four live statuses,
+  `markRearmed` three, `markReleased` two. `markRequested` admits one and is
+  the derived positive control.
+
+  What the sentence got right is the shape and why it matters: `rearm` from
+  `waiting` cancels a live grantee request mid-wait while from
+  `denied_by_owner` it clears a standing refusal — opposite-signed acts under
+  one token; `revoke` after the grantee collected their key share takes nothing
+  back, while before they did it is the removal working. That is
+  `completed → disputed` versus `approved → disputed`, one service over.
+
+  **CLOSED BY M49 PR4 (§6nnn).** All four carry `from`, captured at the write
+  under the row lock the ladder already held, on optional keys of existing
+  envelopes — no member joins `AUDIT_ACTIONS`. `rearm` zeroing `request_count`
+  is NOT closed by this and moves to §6nnn as a surface residual.
 - **[OWNER: M45]** *This PR's own fence is keyed on the literal column name
   `status`, and states no bound about it.* It derives its corpus honestly
   within that key — every settlement table whose `status` carries a CHECK — but
@@ -9231,11 +9245,16 @@ not in this category at all and missed four that are:
 
   - **Vault's emergency-access ladder**, which M49 PR4 takes. §6kkk names
     `rearm` (three fused arms) and `revoke` (no status guard). `markDenied` and
-    `markReleased` are in the same state and are named in neither section:
-    denying a live `waiting` request stops a grab in flight while denying a
-    `released` policy stops nothing, and `markReleased` fuses the first
-    collection with a re-collection — the one event where the escrow actually
-    leaves the platform.
+    `markReleased` are in the same state and are named in neither section.
+    **ONE CLAUSE OF THIS BULLET WAS FALSE AND PR4'S OWN SURVEY CAUGHT IT:**
+    denying a `released` policy does not "stop nothing". Since M27 PR3a release
+    is RE-COLLECTABLE — `collectable` admits `waiting` OR `released` — so a
+    denial there ends the arrangement's ability to hand over more, and the
+    grantee item read answers 403 `denied_by_owner`. It was the single most
+    consequential edge in the ladder and this section described it as inert.
+    The rest holds: denying a live `waiting` request stops a grab in flight,
+    and `markReleased` fuses the first collection with a re-collection — the
+    one event where the escrow actually leaves the platform.
   - **`plaid_items`**' `error` and its recovery, and **the erasure driver's**
     `executing → pending` release and its terminal rung. Both are §6kkk
     residuals and both are genuinely in the category.
@@ -9343,3 +9362,138 @@ below, not an omission.
   shape one file over: the in-memory `markResolved` does not restate
   `settlement_cases_reviewer_not_reporter` where three sibling doubles restate
   theirs.
+
+## 6nnn. Threat-model delta — M49 PR4, the arm a stop does not name (2026-09-08)
+
+M49 PR3 gave settlement's terminal statements the status they moved FROM and
+derived the obligation from the SQL: a statement whose `WHERE` pins one literal
+prior owes nothing, one that admits more owes a `from`, and a predicate the scan
+cannot read owes one too. PR4 takes the vault's emergency-access ladder, where
+**that derivation does not transfer, and the reason is the finding**: every
+status write in the service is `WHERE id = $1`. There is no predicate to read.
+Applied unchanged, PR3's scan would demand a `from` on all five statements —
+fail-closed and wrong, because `markRequested` genuinely admits one prior.
+
+**THE VAULT NARROWS ITS PRIORS IN TYPESCRIPT**, above the write, in three shapes
+the fence reads: an allow-list guarding a throw (`release`), a refusal list in
+the method or in a helper it calls (`rearm`, and `request` via `blockReason`),
+and no comparison at all (`deny`, `revoke`). A fourth shape is unreadable and
+owes a `from` — the same fail-closed direction, from a different source.
+
+The vocabulary is derived as a difference rather than listed: the DDL CHECK
+minus the statuses nothing writes, minus the status no lock can observe.
+`requested` is in the CHECK and in `PolicyStatus` and no statement assigns it.
+`revoked` is written, but `markRevoked` also sets `deleted_at` and both locking
+reads filter `deleted_at IS NULL`, so no ladder method can observe it — a
+policy cannot be moved FROM a status it is invisible in. The live prior
+vocabulary is therefore `configured`, `waiting`, `denied_by_owner`, `released`,
+and thirteen edges are driven against Postgres and compared as SETS.
+
+**NO COMPARE-AND-SET ACCOMPANIES THE CAPTURE, DELIBERATELY.** `deny` and
+`revoke` admit all four live priors on purpose: M27 PR3a records that admitting
+deny on a released policy is what keeps re-collectable release legal under the
+rule that the protective action must never be harder than the permissive one.
+A predicate admitting all four would be a no-op; one that narrowed would invert
+that rule in the change citing it. The prior is captured; the guard stays where
+its reasons are written.
+
+**THERE IS NO `to` KEY.** Settlement needed one because a single parameterised
+statement served many targets. The vault is the inverse — five statements, five
+literal targets, one emitter each — so a `to` would be a second copy of what the
+action id already determines. The verb-to-target map is asserted instead, which
+is how the two action ids whose verb disagrees with the status their write
+produces (`requested` writes `waiting`, `rearmed` writes `configured`) stay
+visible rather than being frozen into the data.
+
+### Residuals
+
+- **[OWNER: M49]** *`softDeleteAllForOwner` retires every live policy an owner
+  has, from any status, and writes no status at all.* One statement sets
+  `deleted_at` across N rows with no `status` write and no per-policy event, so
+  the ladder's own fence cannot see it and no `from` can be attached to it. Its
+  two callers disagree about whether it is audited: the vault reset path
+  records a count, and the escrow-replacement path records nothing. This is in
+  the category §6mmm's census defines and is named in neither §6kkk nor §6mmm —
+  found by PR4's survey, not planned.
+- **[OWNER: M49]** *`vault.emergency.configured` is vault-scoped, so N
+  creations and N retirements fuse.* Its `resourceType` is `vault` and its
+  `resourceId` the owner, not the policy — the only ladder event not addressed
+  to the row it describes. A `from` cannot fix an identity: replacing an escrow
+  emits one event for an act that created several policies and retired several
+  others, and nothing says which.
+- **[OWNER: M49]** *`requested` is dead vocabulary, mirrored in four
+  hand-written places.* The DDL CHECK admits it; `PolicyStatus`, the vault-web
+  word table and its request-button arm mirror it in code; and
+  docs/02-database-schema.md §5 restates the CHECK verbatim — while no statement
+  in the tree assigns it. The fence DERIVES that it is dead and
+  asserts it, so it cannot quietly come back; narrowing the CHECK is an
+  append-only migration plus three cross-package edits and is independent of
+  the edge defect.
+- **[OWNER: M49]** *`markRearmed` zeroes `request_count`, erasing the
+  grinding-grantee signal the DDL comment says exists to be visible.* Carried
+  over from §6kkk, which PR4 closes only for the edge. It is reconstructible
+  from the trail — every increment pairs with a `requested` or
+  `request_blocked` row — so it is a SURFACE residual rather than a trail one,
+  and it belongs with the owner-facing gap below.
+- **[OWNER: M49]** *The owner-facing half of the fusion is column-shaped, and
+  `detail.from` reaches the owner never.* M27 PR3a hit this exact problem and
+  fixed it with `releasedAt` on the DTO, which vault-web reads to separate "was
+  opened" from "was not". `toPolicyDto` still exposes no `deniedAt`, so the
+  surface cannot make the distinction the trail now can. `revokedAt` is NOT the
+  same gap and an earlier draft of this bullet asked for it wrongly: the
+  statement that writes `revoked_at` also writes `deleted_at`, and every read
+  filters tombstones, so a revoked policy leaves the owner's escrow view
+  entirely rather than appearing in it undistinguished. Deliberately out of
+  PR4's scope, which is the trail.
+- **[OWNER: M49]** *`vault.emergency.request_blocked` carries the prior status
+  under a different name.* Its `detail.reason` is one of `already_released`,
+  `already_waiting` or `denied_by_owner`, derived 1:1 from `policy.status` and
+  typed as a bare string on both producer and emitter. It is the same fact its
+  four siblings now spell `from`, on an adjacent action in the same family —
+  two spellings of one thing. It is out of the fence's corpus because
+  `countBlockedRequest` writes no status.
+- **[OWNER: M49]** *`rearm`-from-`waiting` has no consumer.* vault-web renders
+  the rearm control only on `denied_by_owner`, so the arm §6kkk cites as the
+  reason the fusion matters cannot be reached from a browser at all. It is
+  driven here through the API, which is where it is reachable; the shipped
+  surface offers it nowhere.
+- **[OWNER: M49]** *Three comments in `002_emergency_access.sql` are false
+  and CANNOT be corrected.* At line 128 the `releases_at` index claims to drive
+  a sweep that moves matured requests, and no such sweep exists — `releases_at`
+  is never a query predicate and there is no scheduler in the service;
+  maturation is checked inline on an already-fetched row. At lines 21 and 113
+  two comments promise a request COOLDOWN driven by `denied_at`; `blockReason`
+  applies no cooldown at all and says so, deliberately, because a cooldown is
+  the grinding attack. An earlier draft of this bullet said two and evidenced
+  one. Migrations are append-only and the
+  checksum covers comments, so editing the file raises `MigrationDriftError`.
+  Recorded here because the tree cannot hold the correction.
+- **[OWNER: M49]** *`vault.recovery_key.published` fuses a first publication
+  with a key SUBSTITUTION, and it is in the same category one file over.*
+  `publishRecoveryKey` locks the keyset and calls `setRecoveryKeyPair`
+  unconditionally, so republishing overwrites whatever was there; the event
+  carries no `detail` at all, and one row means both "this user now has a
+  recovery key" and "this user's recovery key was REPLACED". The discriminator
+  is already in hand at the lock — whether the locked keyset had a public key —
+  which is exactly the shape the ladder just fixed, and the migration comment
+  at `002_emergency_access.sql:19` asserts that a later key change is
+  "detectable rather than silent". Found by this PR's own review sweeping the
+  service for other members of the category; NOT folded in, because it is a
+  different table and a different ceremony from the ladder.
+- **[OWNER: M45]** *This fence inlines ONE level of helper calls and knows
+  three guard shapes.* `blockReason` is reached because `request` calls it
+  directly AND passes `policy` by that name. A guard written in a fourth shape
+  classifies as `unreadable`; one factored two levels deep is not seen at all
+  and the method reads as `none` — which also over-demands, but for a different
+  reason, and the distinction matters to whoever debugs it. That fails CLOSED — it over-demands a `from` rather
+  than missing one — but a fence that over-demands is a fence someone will
+  eventually edit rather than satisfy. Same family as §6mmm's bound on the
+  settlement scan: one service, one column name.
+- **[OWNER: M45]** *`events.service.spec.ts` asserts a hand-written list of
+  eleven actions under the name "emits every vault action", against a
+  vocabulary of twenty-four.* The `Extract` type in `events.service.ts` derives
+  the emittable set correctly; the spec that claims to cover it does not, and
+  the e2e list covers five of the eleven emergency actions. The omitted set is
+  the difference rather than a list worth re-typing, and it includes
+  `vault.emergency.items_read` — the cross-user disclosure event — alongside
+  `released` and `revoked`. A hand-maintained list beside a thing that grows.
