@@ -3,6 +3,7 @@ import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
 import type { AuditAction } from '@estate/contracts';
 import type { CaseStatus } from './cases.repo';
 import type { DistributionStatus } from './distributions.repo';
+import type { LiveStageStatus } from './stages.repo';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
 
 /**
@@ -296,6 +297,22 @@ export class EventsService {
     });
   }
 
+  /**
+   * THE PRIOR STATUS IS PART OF THE ACT (M49 PR3, and the same sentence stands
+   * over `caseVoided`, `caseClosed` and `stageRevoked`). Rejecting a case
+   * under review and rejecting one already through review and sitting out its
+   * waiting period are different decisions with different costs — the second
+   * has held an account in `deceased_pending` and frozen its documents for as
+   * long as the wait has run — and this event recorded neither, because
+   * `rejected_fraud` is where both land and the row keeps no memory of where
+   * they came from. (Not "for days": nothing gates the reject on a clock, and
+   * this PR's own fence drives the `waiting_period` arm with the clock
+   * unmoved. What separates the two acts is that the lock happened at all.)
+   *
+   * `from` MUST BE THE VALUE `CasesRepo.markResolved` RETURNED, never the
+   * status the caller read beforehand. See that method for the call site where
+   * the two disagree.
+   */
   async caseRejected(
     operatorId: string,
     sessionId: string,
@@ -303,6 +320,7 @@ export class EventsService {
     decedentUserId: string,
     reason: 'insufficient_evidence' | 'fraud_suspected' | 'duplicate_report' | 'other',
     reporterId: string,
+    from: CaseStatus,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.case.rejected',
@@ -313,7 +331,7 @@ export class EventsService {
       resourceId: caseId,
       sessionId,
       // The reporter id is preserved in the trail (docs/03 §5.1 control 6).
-      detail: { reason, reporter: reporterId },
+      detail: { reason, reporter: reporterId, from },
     });
   }
 
@@ -329,6 +347,7 @@ export class EventsService {
     decedentUserId: string,
     via: 'owner_route' | 'liveness_check',
     reporterId: string,
+    from: CaseStatus,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.case.voided',
@@ -338,7 +357,11 @@ export class EventsService {
       resourceType: 'settlement_case',
       resourceId: caseId,
       sessionId,
-      detail: { via, reporter: reporterId, reporterFlagged: true },
+      // `via` IS NOT `from`, and the two call sites are why: the owner route
+      // voids from three statuses and the liveness re-check from two, and they
+      // overlap on `waiting_period`. One says which door, the other says what
+      // was standing behind it.
+      detail: { via, reporter: reporterId, reporterFlagged: true, from },
     });
   }
 
@@ -488,6 +511,7 @@ export class EventsService {
     decedentUserId: string,
     stageId: string,
     stage: string,
+    from: LiveStageStatus,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.stage.revoked',
@@ -497,7 +521,12 @@ export class EventsService {
       resourceType: 'settlement_access_stage',
       resourceId: stageId,
       sessionId,
-      detail: { stage, caseId },
+      // WITHDRAWING A GRANT vs. WITHDRAWING A REQUEST. `from: 'approved'` is
+      // access being taken away; `from: 'requested'` is an ask being refused
+      // before it was ever answered, and it costs an executor nothing. One
+      // action, two acts — and `decided_by`/`decided_at` are written
+      // identically by both, so nothing else on the row separates them.
+      detail: { stage, caseId, from },
     });
   }
 
@@ -764,11 +793,18 @@ export class EventsService {
     });
   }
 
+  /**
+   * `from` here is `ADMINISTRABLE_STATUSES`, three-valued, and closing from
+   * `verified` means an estate was closed with no stage ever approved and no
+   * distribution ever recorded — a different event from closing a case that
+   * reached `distributing` and paid out. The detail was `{}`.
+   */
   async caseClosed(
     operatorId: string,
     sessionId: string,
     caseId: string,
     decedentUserId: string,
+    from: CaseStatus,
   ): Promise<void> {
     await this.audit.emit({
       action: 'settlement.case.closed',
@@ -778,7 +814,7 @@ export class EventsService {
       resourceType: 'settlement_case',
       resourceId: caseId,
       sessionId,
-      detail: {},
+      detail: { from },
     });
   }
 

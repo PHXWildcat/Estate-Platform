@@ -8744,7 +8744,7 @@ argued.
   ACTOR, so an operator on an ordinary account session takes the operator arm on
   a route their console cannot reach — which is why the emit names the estate on
   both arms rather than only the operator's.
-- **[OWNER: M49]** *`settlement.stage.revoked` does not say which status it
+- **[CLOSED: §6mmm]** *`settlement.stage.revoked` does not say which status it
   revoked.* `StagesRepo.revoke` moves a stage to `revoked` from `requested` OR
   `approved`, and the event records neither. Withdrawing access an executor
   actually held and cancelling a request that was never granted are the same row
@@ -8755,6 +8755,12 @@ argued.
   because the fix is a second property (every transition records its edge) and
   a milestone that quietly grows its own scope is how a PR stops being
   reviewable.
+  **CLOSED BY M49 PR3 (§6mmm).** `StagesRepo.revoke` answers with the status it
+  moved, read inside the statement, and the event carries it. The second
+  property this bullet asked for is not asserted about these four events; it is
+  DERIVED — from the from-predicate of every statement in this service that
+  writes a `status` column, so `StagesRepo.decide` is exempt because the scan
+  reads it as single-valued rather than because this file says so.
 - **[OWNER: M49]** *Two of `plaid_items`' four statuses are not on the trail as
   transitions.* `revoked` and `login_required` have actions of their own. The
   `invalid_access_token` arm sets `error` inside a `catch` that rethrows, and
@@ -8769,7 +8775,7 @@ argued.
   `void` and carries no `from` predicate, so there is not even a boolean to
   distinguish a recovery from a no-op. Same category, different service, and a
   rule applied to one member of a category is a rule half-applied.
-- **[OWNER: M49]** *`settlement.case.rejected` and `settlement.case.voided`
+- **[CLOSED: §6mmm]** *`settlement.case.rejected` and `settlement.case.voided`
   record no prior status, and the edge decides whether a live person's account
   was unlocked.* This PR's own rule — the row carries the EDGE — is applied to
   the two rungs it added and not to the two terminal ones next door.
@@ -8783,6 +8789,19 @@ argued.
   unanswerable — the same question a target-only record hid for
   `completed → disputed`. The new fence passes on this machine because it asks
   whether every STATUS is audited, and every case status is.
+  **TWO SENTENCES ABOVE ARE WRONG, AND M49 PR3 CORRECTED THEM AT THE SOURCE
+  RATHER THAN AROUND THEM.** There is no `markVoided`: both voids go through
+  the SAME `markResolved`, which takes its from-set as a PARAMETER, so the sets
+  live at the CALL SITES and not in the SQL. And there are THREE call sites, not
+  two — the third is the liveness unwind inside `confirmVerification`, whose
+  from-set is `['waiting_period', 'verified']`. This bullet therefore omitted
+  `verified`, which is the single most interesting value of the four: it is the
+  one no caller could have reported, because `markVerified` moves the row into
+  it inside the same open transaction (§6mmm). A residual that enumerates a
+  from-set is making a claim about a from-set, and this one was measured against
+  two of the three places that decide it.
+  **CLOSED BY M49 PR3 (§6mmm).** Both events carry `from`, taken from the
+  statement rather than from the caller's earlier read.
 - **[OWNER: M49]** *The operator console's case timeline cannot show the two
   rungs this PR put on the trail.* It is built from columns —
   `human_review_at`, `waiting_period_ends`, `verified_at`, `resolved_at` — plus
@@ -9028,3 +9047,299 @@ of them.
   bound would need a stated expectation about grype's publishing cadence, which
   is a third party's decision and not observable from this tree. Retained as a
   number with its reasoning beside it rather than a number nobody can defend.
+
+## 6mmm. Threat-model delta — M49 PR3, the edge a terminal state cannot keep (2026-09-08)
+
+**A row that ended a case cannot be asked where the case was.** §6kkk made three
+settlement machines audit every TARGET they permit and made two of them record
+the EDGE. Four statements in the same service can move a row from more than one
+prior status; three of those four produced events that recorded the destination
+only. `settlement_cases` reaches `rejected_fraud` from four different statuses
+across three call sites and `closed` from three, and
+`settlement_access_stages` reaches `revoked` from two.
+`settlement.case.closed` carried `detail: {}`. (The fourth multi-valued
+statement is `DistributionsRepo.setStatus`; M49 PR1 already gave its three
+actions a `from`, which is why it needed nothing here.)
+
+No member joins `AUDIT_ACTIONS`. The whole change is four optional keys on four
+existing envelopes — an edit `ChainVerifier` tolerates, because `detail` is an
+open record with no required keys, so a stored row without `from` parses exactly
+as before. Making a key REQUIRED is the edit it does not tolerate: the verifier
+re-parses stored rows against the LIVE schema and reports a parse failure as
+`event_hash_mismatch`, the token real tampering produces, on a table under
+`REVOKE UPDATE, DELETE`. Adding an `AUDIT_ACTIONS` member is tolerated too and
+M49 PR1 did four; it simply costs a consumer deployment, which this change does
+not.
+
+### What each fused pair actually cost
+
+- REJECTING from `waiting_period` unlocks a living person's identity account
+  and lifts the documents legal hold, because the approval that put them there
+  has already run; rejecting from `verifying` does neither. One row shape. What
+  separates the two is that the lock happened at all, not how long it stood —
+  nothing gates a reject on a clock.
+- VOIDING covers four statuses over two routes that overlap on
+  `waiting_period`. `via` says which door — owner kill switch or liveness
+  re-check — and said nothing about what was standing behind it.
+- REVOKING a stage from `approved` takes away access an executor holds; from
+  `requested` it refuses an ask that was never answered and costs them nothing.
+  Both write `decided_by` and `decided_at`, so no other column on the row
+  separates them either.
+- CLOSING from `verified` means an estate was closed with no stage ever
+  approved and no distribution ever recorded. From `distributing` it means a
+  distribution was recorded — not necessarily that money moved, since
+  `closeCase` refuses only while a distribution is neither `completed` nor
+  `disputed`, and `disputed` is reachable from `approved`.
+
+### The read that has to happen at the write
+
+`confirmVerification` calls `markVerified` — `waiting_period → verified` — and
+then, when identity's watermarked interlock refuses the account lock, unwinds it
+through `markResolved` INSIDE THE SAME OPEN TRANSACTION. The status the service
+read at the top is `waiting_period` in both arms of that method, because its own
+guard admits nothing else. So a caller reporting what it read writes
+`waiting_period` for a case the database moved out of `verified`, in the arm
+where a living owner came one commit from being locked into the settlement of
+their own estate. Measured, by making exactly that substitution and watching the
+fence's void drive go red.
+
+**IT IS NOT UNDETECTABLE AFTERWARDS, AND AN EARLIER DRAFT OF THIS SECTION SAID
+IT WAS.** The version trigger is `FOR EACH ROW` — there is no `FOR EACH
+STATEMENT` trigger in any migration in the repo — and each of these statements
+matches one case by primary key, so the interlock arm leaves two
+`settlement_cases_versions` rows — `waiting_period`, then `verified` — where
+the owner-was-alive arm leaves one. The false edge is recoverable by
+joining an unchained side table and inferring which arm ran, which is the "one
+event plus an inference" construction §6kkk rejects two sections up, standing in
+for a fact the event can simply carry. The claim was wrong; the fix is not.
+
+**WHAT IS LOAD-BEARING IS THE DISTANCE, NOT THE CTE**, and that boundary was
+measured rather than assumed. `markResolved` and `StagesRepo.revoke` wrap their
+UPDATE in `WITH prior AS (SELECT id, status …)` and return `prior.status`. A
+`SELECT` on the line ABOVE the UPDATE would be equally correct: this PR's own
+review reimplemented the method that way and every test stayed green — a
+survivor meaning the edit is not load-bearing, not that the tests are weak.
+Under READ COMMITTED the CTE is exactly as stale as a pre-read; its correctness
+rests on the caller's row lock either way. Demonstrated on 16.15 with two
+connections: a statement issued WITHOUT the lock, blocking on a concurrent
+writer, proceeds under EvalPlanQual against the new row version and still
+returns the old snapshot's status. Every call site holds `lockById`'s
+`SELECT … FOR UPDATE` first, which closes the window; a caller that does not
+must not use the answer, and both repository comments now say so.
+
+The CTE is preferred for a different reason: it cannot DRIFT. A separate read is
+one refactor away from migrating back up the method, which is the exact journey
+this defect took.
+
+`markResolved` is generic over its from-set, so a call site passing
+`['verifying', 'waiting_period']` gets that union back rather than `CaseStatus`.
+That narrows the ANSWER, not the emit — the callers widen it straight back
+through their outer annotations and the emitters take `CaseStatus`, so passing a
+literal `'closed'` to `caseVoided` type-checks. Measured. The fence is the guard
+there; narrowing the emitters instead would put a fourth copy of each from-set
+in a signature.
+
+`closeCase` keeps M49 PR1's spelling — a pre-image captured before the write —
+because nothing mutates its row between the lock and the statement. Two
+spellings in one service is recorded below, not resolved by rewriting shipped
+code.
+
+### The rule is derived, and so is its positive control
+
+`statusWritingStatements()` reads EVERY source file in the service, finds every
+statement that writes a `status` column — NINE — and classifies each by the
+from-predicate the runtime compares against. FIVE name exactly one literal prior
+status and owe nothing, because the action already names the whole edge. FOUR
+admit more than one and owe a `from`. The declared key sets are compared against
+the scan, so widening a predicate or adding a statement reddens by name.
+
+  - The key is `<table>:<what is assigned to status>`, the pair the runtime
+    writes, not a method name a rename could hide.
+  - `StagesRepo.decide` is the POSITIVE CONTROL and it is DERIVED: it writes
+    from `requested` alone, so the scan exempts it because it READ the
+    predicate, not because the fence says so.
+  - An UNREADABLE predicate classifies as owing a `from`, which fails closed.
+  - Twelve edges are DRIVEN and compared as SETS. `requested → revoked` had no
+    coverage anywhere in the package: all eight existing `revokeStage` call
+    sites revoke an approved stage.
+  - Every recorded `from` must be a member of the table's own DDL vocabulary —
+    which catches an unfaithful DOUBLE, since these two methods used to answer a
+    boolean and `AuditEventSchema.detail` stores `true` as a scalar. Its reach
+    is membership only: a POST-update status passes it, and the drives are what
+    catch that.
+
+**THE SCAN'S FIRST THREE SHAPES WERE ALL WRONG, AND ITS OWN REVIEW BROKE THEM
+LIVE.** Each is recorded because each is the same failure — a fence that goes
+green for the reason it is wrong.
+
+  - It matched only `*.repo.ts`. This directory ALREADY holds
+    `dek.repository.ts`, which issues an UPDATE of its own; a status writer put
+    there was invisible with every assertion green. The corpus is now every
+    source file, and the file-set assertion keeps the widening honest.
+  - It required `RETURNING`, `status` first in the SET clause, uppercase
+    keywords, and a newline in one place. A plausible `revokeAllForCase`
+    cascade with two prior statuses and no `RETURNING` left the count at nine
+    and the package green. Two of the missed shapes already exist in this
+    service on non-status columns.
+  - It classified by probing for the first `status = '<literal>'` it could
+    find, which is not a proof that a predicate admits one value.
+    `(status = 'requested' OR status = 'approved')` passed as single-valued,
+    and so did an `= ANY($n)` predicate under a `--` comment mentioning one
+    status. Both are idiomatic here. It now counts `status` comparisons before
+    reading one, and strips SQL comments first.
+
+The same review found the DDL scan blind to a `CHECK` body wrapped over three
+lines — the file's dominant style — so a fourth status table added that way left
+the corpus assertion green.
+
+### Thirteen mutations, one survivor, one positive control
+
+Every fix was reverted and watched go red against a NAMED assertion: eight in
+the change's own battery and five more raised by its review, each of which had
+been GREEN before the fence was repaired. The positive control — renaming the
+local binding the fence could have been keyed on — stayed green on an edit
+proven to have reached disk.
+
+The survivor is reported rather than argued away: reimplementing `markResolved`
+as a `SELECT` immediately before a plain UPDATE leaves everything green, and the
+honest reading is the third of the three — the change is genuinely not
+load-bearing, for the reason given above.
+
+**ONE MUTATION SAYS WHICH LAYER.** Defeating the CTE (`RETURNING prior.status`
+→ `RETURNING settlement_cases.status`) reddens the integration spec and NOTHING
+else, because the unit fence drives in-memory doubles that never execute SQL.
+Its mirror image — reporting `locked.status` at the liveness site — reddens the
+unit fence and nothing else. The unit fence proves the wiring; only Postgres
+proves the statement.
+
+### One sentence in §6kkk, wrong twice, corrected at the source
+
+The residual that asked for this work named a method that does not exist
+(`markVoided`) and enumerated two `markResolved` call sites where there are
+three, omitting the one whose from-set contains `verified` — the value this
+section is mostly about. Both errors live in a single sentence, and both are
+corrected in §6kkk itself rather than only here, because a residual that
+enumerates a from-set is making a claim about a from-set.
+
+### The category, and what is left of it
+
+The rule now holds for every multi-valued status statement in settlement,
+verified by an independent hand census rather than by the fence that enforces
+it. It does not hold outside it, and the list below is that census's answer
+rather than an inheritance of §6kkk's phrasing — which named one member that is
+not in this category at all and missed four that are:
+
+  - **Vault's emergency-access ladder**, which M49 PR4 takes. §6kkk names
+    `rearm` (three fused arms) and `revoke` (no status guard). `markDenied` and
+    `markReleased` are in the same state and are named in neither section:
+    denying a live `waiting` request stops a grab in flight while denying a
+    `released` policy stops nothing, and `markReleased` fuses the first
+    collection with a re-collection — the one event where the escrow actually
+    leaves the platform.
+  - **`plaid_items`**' `error` and its recovery, and **the erasure driver's**
+    `executing → pending` release and its terminal rung. Both are §6kkk
+    residuals and both are genuinely in the category.
+  - **`sessions.mfa_level`** and **`documents.execution_status`**, recorded
+    below because they are in the category and are written down nowhere.
+  - **NOT profile's `contact.link.claimed`**, which an earlier draft of this
+    paragraph listed. That is an attribution defect — the event names no owner
+    — and both statements in its ceremony pin a single prior state. A member of
+    §6kkk's residual list is not automatically a member of this category.
+
+**NO SURFACE CHANGED, AND THAT IS CHECKED RATHER THAN ASSUMED.**
+`AdminService.timeline` — the operator console's case history — is built from
+COLUMNS, not from audit events, so nothing a browser renders reads `detail.from`
+and there was no journey to drive for this PR. The consequence is a residual
+below, not an omission.
+
+### Residuals
+
+- **[OWNER: M49]** *`CasesRepo.advanceStatus` still reconstructs its prior
+  status in the caller, and one of its three call sites is one in-transaction
+  mutation away from the defect this section is about.* `recordDistribution`
+  and `closeCase` capture `movedFrom` before the write and rely on nothing
+  changing the row in between — true today only because no `advanceStatus` path
+  mutates the status it is about to report, which is the property
+  `markResolved`'s liveness call site does not have. The third site,
+  `decideStage`, is structurally immune and is NOT part of this: its from-set is
+  the single literal `['verified']`, so a successful compare-and-set proves the
+  prior status, and it is exactly the single-valued case the scan exempts. (An
+  earlier draft of this bullet said all three were exposed and that both PR1
+  sites would lose a pre-image capture; `decideStage` has a ternary and no
+  capture.) Two spellings of one fact in one service, and the reason this PR did
+  not unify them is scope: rewriting shipped code to make a third call site
+  uniform is how a PR stops being reviewable.
+- **[OWNER: M49]** *Two compare-and-set booleans in `settlement.service.ts` are
+  discarded, and BOTH are followed by an `identity.setState`.* `markApproved`
+  (line 480) and `markVerified` (line 699) return `Promise<boolean>` and nobody
+  reads it. If `markApproved` lost, the case stays in `verifying` and the next
+  two statements still put the decedent's account into `deceased_pending` and
+  freeze their documents, and `caseApproved` is emitted with a
+  `waitingPeriodEnds` no row carries. **AND `markVerified`'S IS THE WORSE ONE**,
+  which an earlier draft of this bullet called benign on the ground that the
+  liveness unwind "answers for both". It does not: the unwind is reached only
+  through the `OwnerAliveError` catch, so on the SUCCESS path a lost
+  `markVerified` inserts a checklist for an unverified case, freezes documents,
+  and drives the account into `settlement` — the one irreversible transition in
+  the machine, which revokes every session and has no route back to `active` —
+  then emits `settlement.case.verified` for a row still in `waiting_period`.
+  Both are unreachable today by the same `FOR UPDATE`-plus-single-valued-
+  predicate argument §6kkk records for the rungs, so both are specifications
+  rather than reproductions — which is exactly what this PR wrote for the three
+  terminal sites.
+- **[OWNER: M49]** *The operator console can produce only ONE of the two arms
+  `StagesRepo.revoke` accepts.* "Revoke stage" renders on `approved` rows only;
+  a `requested` row gets Approve and Deny. So `requested → revoked` is reachable
+  through the API and through no shipped client — a zero-consumer ARM of a
+  shipped verb, this repo's largest recurring gap in its less usual direction.
+  Two answers are defensible: ship the button (withdrawing a pending ask is the
+  protective action, and the protective action must never be harder than the
+  permissive one), or narrow the predicate to `approved` and let the request be
+  denied instead. Recorded rather than chosen, because either is a behaviour
+  change and this PR is about what the trail says.
+- **[OWNER: M49]** *The human surface has the same fusion the trail just lost.*
+  `AdminService.timeline` renders a revoked stage as `stage.revoked` with
+  `{stage}` and a terminal case as `case.resolved` with `{resolution}`, both
+  built from columns — and neither table keeps a prior-status column, so the
+  surface CANNOT say what moved even in principle. §6kkk records this for the
+  two rungs it added; it is now true of four more events, and the fix shape is
+  different: the rungs need a column, these need the timeline to read the audit
+  trail it currently duplicates.
+- **[OWNER: M49]** *Two category members outside settlement are recorded
+  nowhere.* `SessionsRepo.grantStepUp` writes `mfa_level = 'stepup'` with
+  `WHERE id = $1` and no level predicate, so `auth.stepup.granted` cannot
+  distinguish a first escalation from a renewal inside an existing window.
+  `DocumentsRepo.bumpVersion` resets `execution_status` to `'generated'` from
+  `{draft, generated}` with no predicate and records `{version}` — the one
+  writer of that column that does not carry `from`, where its sibling
+  `updateStatus` does. Both were found by the hand census above and appear in no
+  §6 bullet.
+- **[OWNER: M49]** *Identity's `SettlementLockService.setState` reports a read
+  where the statement knows the answer — the same shape, one service over, with
+  no lock at all.* It emits `userStatusChanged(userId, user.status, state, …)`
+  where `user.status` comes from a `findById` issued OUTSIDE any transaction,
+  while `UsersRepo.updateStatusFrom` pins `status = ANY($2)` from
+  `ALLOWED_TRANSITIONS[state]` — a ONE-ELEMENT array in all three cases. So the
+  true prior status is a compile-time constant and the recorded one is a
+  possibly-stale read, on the transition that locks a living person's account.
+  Neither a row lock nor a transaction bounds the window, which is what makes it
+  a wider instance than any of settlement's.
+- **[OWNER: M45]** *The scan states its corpus, and that corpus is one service
+  and one column NAME.* It now reads every source file in
+  `apps/services/settlement/src`, which closes the filename hole its review
+  opened — but a lifecycle column spelled otherwise is still invisible to it,
+  and so is every other service. That is why the four category members above had
+  to be found by a person with grep. §6kkk's last residual states the
+  column-name half; this states the service half, and neither has a repo-wide
+  equivalent.
+- **[OWNER: M45]** *`revokeStage`'s dual-control guard exists at two layers and
+  no test says which one it proves.* The service pre-checks
+  `locked.requested_by === operator` and answers 403; the DDL `CHECK` is the
+  backstop, restated by the in-memory double and caught by
+  `.catch(isCheckViolation)`. Measured: deleting the double's restatement alone
+  leaves the package green, deleting the service pre-check alone leaves it
+  green, and only deleting BOTH reddens one test — whose own comment describes
+  the DDL layer it does not isolate. The backstop has no drive at all. Same
+  shape one file over: the in-memory `markResolved` does not restate
+  `settlement_cases_reviewer_not_reporter` where three sibling doubles restate
+  theirs.

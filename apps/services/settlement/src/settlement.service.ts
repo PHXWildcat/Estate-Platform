@@ -10,7 +10,7 @@ import {
 import { SettlementAuthz, caseResource, settingsResource } from './authz.service';
 import { OperatorBreadthMonitor } from './operator-breadth.monitor';
 import { OPERATOR_BREADTH_MAX_CASES, OPERATOR_BREADTH_WINDOW_MS } from './operator-breadth';
-import { CasesRepo, type CaseRow, type EvidenceEntry } from './cases.repo';
+import { CasesRepo, type CaseRow, type CaseStatus, type EvidenceEntry } from './cases.repo';
 import type { SettlementConfig } from './config';
 import { ContactAttemptsRepo, type ContactChannel } from './contact-attempts.repo';
 import { CoreReadsRepo, type ReportableEstate } from './core-reads.repo';
@@ -441,6 +441,12 @@ export class SettlementService {
       waitingPeriodEnds: Date | null;
       restored: boolean;
       breadth: number;
+      // The status the REJECT arm moved the case out of, and `null` on the
+      // approve arm — which makes it the discriminant the emit below uses,
+      // replacing `input.decision`. That is the point rather than a
+      // convenience: what belongs on the trail is what the DATABASE did, and
+      // the request's own word for it is one statement removed from that.
+      rejectedFrom: CaseStatus | null;
     };
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
@@ -484,6 +490,7 @@ export class SettlementService {
             waitingPeriodEnds: ends,
             restored: false,
             breadth: await this.breadth.record(tx, operator, caseId, 'review.approved', now),
+            rejectedFrom: null,
           };
         }
 
@@ -491,7 +498,13 @@ export class SettlementService {
           throw new ConflictException({ error: 'invalid_transition' });
         }
         const wasLocked = locked.status === 'waiting_period';
-        await this.cases.markResolved(
+        // REJECTING FROM `verifying` AND REJECTING FROM `waiting_period` ARE
+        // NOT THE SAME ACT — the second has already locked the owner's account
+        // into `deceased_pending` and frozen their documents, for as long as
+        // the wait has run. Both land on `rejected_fraud` with resolution
+        // `operator_rejected`, so the resolved row cannot be asked which; the
+        // statement is what knows, and it now says so (M49 PR3).
+        const rejectedFrom = await this.cases.markResolved(
           tx,
           caseId,
           ['verifying', 'waiting_period'],
@@ -499,6 +512,19 @@ export class SettlementService {
           now,
           locked.status === 'verifying' ? { id: operator, at: now } : null,
         );
+        if (rejectedFrom === null) {
+          // Unreachable behind the guard above and the row lock, and asserted
+          // rather than assumed: the alternative is emitting a rejection for a
+          // case this statement did not reject.
+          //
+          // NOT "like every other compare-and-set here", which an earlier
+          // draft of this comment claimed and this file disproves twice over:
+          // `markApproved` and `markVerified` below DISCARD their booleans,
+          // and the admin sibling's `advanceStatus` sites read theirs to gate
+          // an emit rather than to refuse. Three shapes for one question, and
+          // §6mmm records the two that are not this one.
+          throw new ConflictException({ error: 'invalid_transition' });
+        }
         if (wasLocked) {
           await this.identity.setState(locked.decedent_user_id, 'active', caseId);
           // The claim fell apart, so the hold set at approval lifts with the
@@ -509,14 +535,14 @@ export class SettlementService {
         // The REJECT arm records nothing. Rejecting terminates the case and
         // restores the account: it is the protective decision, and an operator
         // must never approach a ceiling by refusing things.
-        return { row, waitingPeriodEnds: null, restored: wasLocked, breadth: 0 };
+        return { row, waitingPeriodEnds: null, restored: wasLocked, breadth: 0, rejectedFrom };
       });
     } catch (err) {
       throw this.mapIdentityFailure(err);
     }
 
     const { row, waitingPeriodEnds } = outcome;
-    if (input.decision === 'approve') {
+    if (outcome.rejectedFrom === null) {
       await this.events.caseApproved(
         operator,
         sessionId,
@@ -532,6 +558,7 @@ export class SettlementService {
         row.decedent_user_id,
         input.reason ?? 'other',
         row.reported_by,
+        outcome.rejectedFrom,
       );
     }
     if (this.breadth.exceeded(outcome.breadth)) {
@@ -556,9 +583,9 @@ export class SettlementService {
    */
   async void(owner: string, sessionId: string, caseId: string): Promise<CaseDto> {
     const now = this.clock();
-    let row: CaseRow;
+    let outcome: { row: CaseRow; from: CaseStatus };
     try {
-      row = await this.db.withTransaction(owner, async (tx) => {
+      outcome = await this.db.withTransaction(owner, async (tx) => {
         const locked = await this.cases.lockById(tx, caseId);
         if (!locked) {
           throw new NotFoundException({ error: 'not_found' });
@@ -589,7 +616,11 @@ export class SettlementService {
         ) {
           throw new ConflictException({ error: 'invalid_transition' });
         }
-        await this.cases.markResolved(
+        // THREE STATUSES IN, ONE OUT. A kill switch pulled before anyone
+        // looked at the report and one pulled on day four of a waiting period
+        // — with the account already locked — are the same row afterwards. The
+        // statement answers with which (M49 PR3).
+        const from = await this.cases.markResolved(
           tx,
           caseId,
           ['reported', 'verifying', 'waiting_period'],
@@ -597,16 +628,20 @@ export class SettlementService {
           now,
           null,
         );
+        if (from === null) {
+          throw new ConflictException({ error: 'invalid_transition' });
+        }
         // Always restore: a no-op when the case never reached the lock stage
         // (identity's transition table treats same-state as idempotent), and
         // the hold-clear below is idempotent the same way.
         await this.identity.setState(locked.decedent_user_id, 'active', caseId);
         await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
-        return (await this.cases.findById(tx, caseId)) as CaseRow;
+        return { row: (await this.cases.findById(tx, caseId)) as CaseRow, from };
       });
     } catch (err) {
       throw this.mapIdentityFailure(err);
     }
+    const { row } = outcome;
     await this.events.caseVoided(
       owner,
       sessionId,
@@ -614,6 +649,7 @@ export class SettlementService {
       row.decedent_user_id,
       'owner_route',
       row.reported_by,
+      outcome.from,
     );
     return toDto(row, now);
   }
@@ -630,7 +666,10 @@ export class SettlementService {
    */
   async confirmVerification(operator: string, sessionId: string, caseId: string): Promise<CaseDto> {
     const now = this.clock();
-    let outcome: { row: CaseRow; voided: boolean; breadth: number };
+    // `voidedFrom` REPLACED a `voided: boolean`, and the pair would have been
+    // two spellings of one fact. It is also the field that could not have been
+    // computed out here: see the void arm below.
+    let outcome: { row: CaseRow; voidedFrom: CaseStatus | null; breadth: number };
     let taskCount = 0;
     try {
       outcome = await this.db.withTransaction(operator, async (tx) => {
@@ -709,7 +748,7 @@ export class SettlementService {
             const row = (await this.cases.findById(tx, caseId)) as CaseRow;
             return {
               row,
-              voided: false,
+              voidedFrom: null,
               breadth: await this.breadth.record(
                 tx,
                 operator,
@@ -727,7 +766,29 @@ export class SettlementService {
           }
         }
 
-        await this.cases.markResolved(
+        // THE ONE FROM-VALUE A CALLER CANNOT KNOW, and the reason
+        // `markResolved` answers instead of being asked. This arm is reached
+        // two ways: liveness read a step-up newer than the case, in which case
+        // nothing above ran and the row is still `waiting_period`; or liveness
+        // read none, `markVerified` moved the row to `verified` earlier in
+        // this same method, and identity's watermarked interlock then refused
+        // the lock. The status `locked` holds is `waiting_period` in BOTH —
+        // the guard at the top of this method admits nothing else — so a
+        // caller reporting what it read would put `waiting_period` on the
+        // trail for a case the database moved out of `verified`, in the arm
+        // where a living owner was one commit from being entombed.
+        //
+        // THE FALSE EDGE IS NOT UNDETECTABLE, which an earlier draft of this
+        // comment asserted and the schema disproves: the version trigger is
+        // `FOR EACH ROW` and each of these statements matches one case by
+        // primary key, so the interlock arm leaves TWO
+        // `settlement_cases_versions` rows (`waiting_period`, then `verified`)
+        // where the owner-was-alive arm leaves one. It is detectable by
+        // JOINING two rows in another table and inferring which arm ran —
+        // which is the "one event plus an inference" construction §6kkk
+        // rejects, on an unchained table, for a fact the event could simply
+        // state.
+        const voidedFrom = await this.cases.markResolved(
           tx,
           caseId,
           ['waiting_period', 'verified'],
@@ -735,19 +796,22 @@ export class SettlementService {
           now,
           null,
         );
+        if (voidedFrom === null) {
+          throw new ConflictException({ error: 'invalid_transition' });
+        }
         await this.identity.setState(locked.decedent_user_id, 'active', caseId);
         await this.documentsHold.setHold(locked.decedent_user_id, false, caseId);
         const row = (await this.cases.findById(tx, caseId)) as CaseRow;
         // The VOID arm records nothing: the owner is alive, and the operator's
         // attempt became a restoration. Counting it would charge them for the
         // outcome that protects the subject.
-        return { row, voided: true, breadth: 0 };
+        return { row, voidedFrom, breadth: 0 };
       });
     } catch (err) {
       throw this.mapIdentityFailure(err);
     }
 
-    if (outcome.voided) {
+    if (outcome.voidedFrom !== null) {
       await this.events.caseVoided(
         operator,
         sessionId,
@@ -755,6 +819,7 @@ export class SettlementService {
         outcome.row.decedent_user_id,
         'liveness_check',
         outcome.row.reported_by,
+        outcome.voidedFrom,
       );
       throw new ConflictException({ error: 'owner_alive' });
     }
