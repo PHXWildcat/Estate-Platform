@@ -430,7 +430,13 @@ export class SettlementAdminService {
   }
 
   /**
-   * Revoke an approved stage (operator). Access is a grant, not a fact.
+   * Revoke a LIVE stage (operator). Access is a grant, not a fact.
+   *
+   * "An approved stage" is what this sentence used to say, and the statement
+   * underneath it has always accepted `requested` as well — an operator can
+   * withdraw an executor's pending ask without answering it. M49 PR3 made the
+   * event say which, because the row cannot: both arms land on `revoked` and
+   * both write `decided_by`/`decided_at`.
    *
    * Revocation records the revoker in `decided_by`, so it lands under the same
    * `decided_by <> requested_by` CHECK as approval: an operator who is ALSO the
@@ -443,7 +449,7 @@ export class SettlementAdminService {
    */
   async revokeStage(operator: string, sessionId: string, stageId: string): Promise<StageDto> {
     const now = this.clock();
-    const row = await this.db
+    const outcome = await this.db
       .withTransaction(operator, async (tx) => {
         await this.gate.assertIn(tx, operator);
         const locked = await this.stages.lockById(tx, stageId);
@@ -453,10 +459,18 @@ export class SettlementAdminService {
         if (locked.requested_by === operator) {
           throw new ForbiddenException({ error: 'approver_is_requester' });
         }
-        if (!(await this.stages.revoke(tx, stageId, operator, now))) {
+        // THE STATEMENT'S ANSWER, not `locked.status` and not the re-read on
+        // the line below — that one is the POST-update row and its status is
+        // `revoked` for both arms, which is precisely the fact this event was
+        // missing. Returned out of the closure rather than assigned to an
+        // outer `let`, for the reason `recordDistribution` measured: TypeScript
+        // does not track assignments made inside a nested function, so the
+        // outer-`let` shape types as `never` at the emit and checks nothing.
+        const from = await this.stages.revoke(tx, stageId, operator, now);
+        if (from === null) {
           throw new ConflictException({ error: 'invalid_transition' });
         }
-        return (await this.stages.lockById(tx, stageId)) as StageRow;
+        return { row: (await this.stages.lockById(tx, stageId)) as StageRow, from };
       })
       .catch((err: unknown) => {
         // Backstop for any dual-control CHECK the pre-check above missed: a
@@ -469,12 +483,13 @@ export class SettlementAdminService {
     await this.events.stageRevoked(
       operator,
       sessionId,
-      row.case_id,
-      await this.requireDecedentFor(row.case_id),
+      outcome.row.case_id,
+      await this.requireDecedentFor(outcome.row.case_id),
       stageId,
-      row.stage,
+      outcome.row.stage,
+      outcome.from,
     );
-    return stageDto(row);
+    return stageDto(outcome.row);
   }
 
   async listStages(actor: string, sessionId: string, caseId: string): Promise<StageDto[]> {
@@ -940,15 +955,23 @@ export class SettlementAdminService {
       if ((await this.distributions.countOpen(tx, caseId)) > 0) {
         throw new ConflictException({ error: 'distributions_open' });
       }
+      // CAPTURED BEFORE THE WRITE, the same shape `recordDistribution` uses:
+      // `ADMINISTRABLE` is three-valued, so `closed` alone does not say
+      // whether an estate was closed after paying out or closed having never
+      // approved a single stage. Reading it afterwards is correct against a row
+      // snapshot and wrong against any store handing back a live reference —
+      // the M49 PR1 fence caught exactly that, on this method's sibling.
+      const movedFrom = locked.status;
       if (!(await this.cases.advanceStatus(tx, caseId, ADMINISTRABLE, 'closed'))) {
         throw new ConflictException({ error: 'invalid_transition' });
       }
       return {
         decedentUserId: locked.decedent_user_id,
+        from: movedFrom,
         breadth: await this.breadth.record(tx, operator, caseId, 'case.closed', this.clock()),
       };
     });
-    await this.events.caseClosed(operator, sessionId, caseId, closed.decedentUserId);
+    await this.events.caseClosed(operator, sessionId, caseId, closed.decedentUserId, closed.from);
     if (this.breadth.exceeded(closed.breadth)) {
       await this.events.operatorBreadthExceeded(
         operator,

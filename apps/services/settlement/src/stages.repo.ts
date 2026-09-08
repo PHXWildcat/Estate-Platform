@@ -7,6 +7,26 @@ export type AccessStage = (typeof ACCESS_STAGES)[number];
 
 export type StageStatus = 'requested' | 'approved' | 'denied' | 'revoked';
 
+/**
+ * The statuses a stage grant is LIVE in — and therefore exactly the statuses it
+ * can be revoked FROM. One set, one spelling: it was two identical literal
+ * lists in two statements, and `revoke`'s own doc comment described half of one
+ * of them ("an already-approved stage"), which is the sentence that sent M49
+ * PR3 looking (docs/03 §6mmm).
+ */
+export const LIVE_STAGE_STATUSES = [
+  'requested',
+  'approved',
+] as const satisfies readonly StageStatus[];
+export type LiveStageStatus = (typeof LIVE_STAGE_STATUSES)[number];
+
+/**
+ * Rendered as a SQL literal list, interpolated rather than parameterised for
+ * the same reason `CasesRepo`'s `statusList` is: a module constant of a closed
+ * union whose members the table's own CHECK enforces, never near a request.
+ */
+const LIVE_LIST = LIVE_STAGE_STATUSES.map((s) => `'${s}'`).join(',');
+
 export interface StageRow {
   id: string;
   case_id: string;
@@ -65,7 +85,7 @@ export class StagesRepo {
   async findLive(q: Queryable | Db, caseId: string, stage: AccessStage): Promise<StageRow | null> {
     const rows = await q.query<StageRow>(
       `SELECT ${COLUMNS} FROM settlement_access_stages
-        WHERE case_id = $1 AND stage = $2 AND status IN ('requested','approved')`,
+        WHERE case_id = $1 AND stage = $2 AND status IN (${LIVE_LIST})`,
       [caseId, stage],
     );
     return rows[0] ?? null;
@@ -99,15 +119,48 @@ export class StagesRepo {
     return rows.length > 0;
   }
 
-  /** Owner/operator revocation of an already-approved stage. */
-  async revoke(tx: Queryable, stageId: string, revokedBy: string, at: Date): Promise<boolean> {
-    const rows = await tx.query<{ id: string }>(
-      `UPDATE settlement_access_stages
+  /**
+   * Owner/operator revocation of a LIVE stage — `requested` OR `approved`.
+   *
+   * WITHDRAWING A PENDING REQUEST IS NOT THE SAME ACT as withdrawing a granted
+   * one, and until M49 PR3 the trail could not tell them apart: this statement
+   * has always accepted both, and the event it produces recorded only the stage
+   * name. So it answers with THE STATUS IT MOVED, which the caller puts on the
+   * audit event.
+   *
+   * READ AT THE WRITE, not at the top of the caller. AFTER is wrong on its
+   * face — the row is already `revoked`. A `SELECT` on the line above this
+   * UPDATE would be as right as the CTE, under the row lock both rely on; what
+   * is wrong is the caller's EARLIER read, because its sibling
+   * `CasesRepo.markResolved` has a call site that mutates the very status such
+   * a read would be reporting, inside the same transaction. The CTE is the
+   * spelling that cannot drift back up the method. One spelling for both.
+   *
+   * The CTE is evaluated against the statement's snapshot, so `prior.status` is
+   * the value from before this UPDATE — that is what makes it the answer rather
+   * than a second copy of it. The row lock above is the precondition for that,
+   * and `CasesRepo.markResolved` states why in full: without it, a statement
+   * that waits on a concurrent writer proceeds against the NEW row version and
+   * still returns the OLD snapshot's status.
+   */
+  async revoke(
+    tx: Queryable,
+    stageId: string,
+    revokedBy: string,
+    at: Date,
+  ): Promise<LiveStageStatus | null> {
+    const rows = await tx.query<{ from_status: LiveStageStatus }>(
+      `WITH prior AS (
+         SELECT id, status FROM settlement_access_stages WHERE id = $1
+       )
+       UPDATE settlement_access_stages
           SET status = 'revoked', decided_by = $2, decided_at = $3
-        WHERE id = $1 AND status IN ('requested','approved')
-        RETURNING id`,
+         FROM prior
+        WHERE settlement_access_stages.id = prior.id
+          AND settlement_access_stages.status IN (${LIVE_LIST})
+        RETURNING prior.status AS from_status`,
       [stageId, revokedBy, at],
     );
-    return rows.length > 0;
+    return rows[0]?.from_status ?? null;
   }
 }

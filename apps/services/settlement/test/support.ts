@@ -4,7 +4,12 @@ import { DekDestroyedError, type FieldCrypto } from '@estate/crypto';
 import { SettlementAdminService } from '../src/admin.service';
 import { InMemoryAuditProducer } from '@estate/kafka';
 import type { DistributionRow } from '../src/distributions.repo';
-import type { AccessStage, StageRow } from '../src/stages.repo';
+import {
+  LIVE_STAGE_STATUSES,
+  type AccessStage,
+  type LiveStageStatus,
+  type StageRow,
+} from '../src/stages.repo';
 import { SettlementAuthz } from '../src/authz.service';
 import {
   ADMINISTRABLE_STATUSES,
@@ -234,18 +239,34 @@ export class InMemoryCases {
     return Promise.resolve(true);
   }
 
-  markResolved(
+  /**
+   * FAITHFUL ABOUT THE ANSWER, not only about the write (M49 PR3). The real
+   * method reports the status it moved, read inside the statement; this one
+   * reads it off the row immediately before overwriting it, which is the same
+   * value — but NOT "because the service holds the row", which an earlier
+   * draft of this comment said and this PR's whole subject disproves. The lock
+   * excludes other transactions; the disagreement `markResolved` exists for
+   * comes from the SAME one. What makes the double agree is SEQUENCING: it
+   * reads at the statement's own point in the sequence, after any earlier
+   * same-transaction write has already mutated this row object. A double that returned a
+   * boolean here would still satisfy every `if (x === null)` in the service
+   * and would put `true` on the audit event, which `AuditEventSchema` accepts
+   * as a scalar. The fence asserts the recorded `from` is a member of the
+   * DDL's own vocabulary, which is what makes that unfaithfulness visible.
+   */
+  markResolved<S extends CaseStatus>(
     _tx: unknown,
     caseId: string,
-    fromStatuses: readonly CaseStatus[],
+    fromStatuses: readonly S[],
     resolution: 'operator_rejected' | 'owner_voided',
     resolvedAt: Date,
     reviewer: { id: string; at: Date } | null,
-  ): Promise<boolean> {
+  ): Promise<S | null> {
     const row = this.rows.get(caseId);
-    if (!row || !fromStatuses.includes(row.status)) {
-      return Promise.resolve(false);
+    if (!row || !fromStatuses.includes(row.status as S)) {
+      return Promise.resolve(null);
     }
+    const from = row.status as S;
     row.status = 'rejected_fraud';
     row.resolution = resolution;
     row.resolved_at = resolvedAt;
@@ -256,7 +277,7 @@ export class InMemoryCases {
     row.waiting_period_ends = null;
     row.verified_at = null;
     row.updated_at = this.clock();
-    return Promise.resolve(true);
+    return Promise.resolve(from);
   }
 
   advanceStatus(
@@ -692,7 +713,10 @@ export class InMemoryStages {
         (r) =>
           r.case_id === caseId &&
           r.stage === stage &&
-          (r.status === 'requested' || r.status === 'approved'),
+          // The SERVICE's constant, like `revoke` below. This retyped the pair
+          // until M49 PR3's own review found the rule half-applied two methods
+          // apart, inside one class, in the commit that made the point.
+          (LIVE_STAGE_STATUSES as readonly string[]).includes(r.status),
       ) ?? null,
     );
   }
@@ -724,11 +748,21 @@ export class InMemoryStages {
     return Promise.resolve(true);
   }
 
-  revoke(_tx: unknown, stageId: string, revokedBy: string, at: Date): Promise<boolean> {
+  revoke(
+    _tx: unknown,
+    stageId: string,
+    revokedBy: string,
+    at: Date,
+  ): Promise<LiveStageStatus | null> {
     const row = this.rows.find((r) => r.id === stageId);
-    if (!row || !['requested', 'approved'].includes(row.status)) {
-      return Promise.resolve(false);
+    // The SERVICE's constant, not a third literal copy of it: the fake used to
+    // retype `['requested','approved']` here, so widening the SQL predicate
+    // would have left this double refusing what Postgres accepts and every
+    // unit test agreeing with it (M49 PR3).
+    if (!row || !(LIVE_STAGE_STATUSES as readonly string[]).includes(row.status)) {
+      return Promise.resolve(null);
     }
+    const from = row.status as LiveStageStatus;
     // Revocation writes decided_by, so it lands under the SAME CHECK as
     // approval. The fake used to omit this and permit what Postgres forbids,
     // which is how the unhandled 23514 in revokeStage stayed invisible.
@@ -738,7 +772,7 @@ export class InMemoryStages {
     row.status = 'revoked';
     row.decided_by = revokedBy;
     row.decided_at = at;
-    return Promise.resolve(true);
+    return Promise.resolve(from);
   }
 }
 

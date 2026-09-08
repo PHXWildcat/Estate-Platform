@@ -226,6 +226,21 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // (M45), and the staleness window, ACCEPTED as a judgement with its reasoning
   // beside it.
   '6lll': 9,
+  // M49 PR3: EIGHT. THREE were raised by the PR's own adversarial review and
+  // did not exist before it (one bullet covering two out-of-service category members, identity's
+  // non-transactional read, and `revokeStage`'s two-layer guard); three more
+  // were drafted beforehand and materially CORRECTED by it. Six are M49: `advanceStatus`'s second spelling of "report the
+  // prior status"; two discarded compare-and-set booleans, the worse of which
+  // is followed by the machine's one irreversible transition; the `requested`
+  // revoke arm no shipped client can produce; the operator timeline, which
+  // keeps the fusion the trail just lost and cannot lose it without a column;
+  // two category members outside settlement written down nowhere
+  // (`sessions.mfa_level`, `documents.execution_status`); and identity's
+  // `SettlementLockService.setState`, which reports a NON-transactional read
+  // where the statement knows the answer. Two are M45: the scan's remaining
+  // bounds — one service, one column NAME — and `revokeStage`'s dual control,
+  // where deleting either layer alone leaves the package green.
+  '6mmm': 8,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -1012,6 +1027,19 @@ const OUT_OF_CORPUS: ReadonlyArray<{
     // The two cross-checks built against the tree and REJECTED on measurement.
     // A decision with its numbers attached, so the next author does not rebuild
     // them; the bound they leave behind is the ACCEPTED residual in §6ddd.
+  },
+  {
+    section: '6mmm',
+    label: 'What each fused pair actually cost',
+    bullets: 4,
+    kind: 'evidence',
+    // One line per audit event M49 PR3 gave a `from`, saying what the two (or
+    // three) acts it used to fuse actually differ by — a rejection that
+    // unlocked a living person's account versus one that did not, a stage
+    // grant withdrawn versus a request refused, an estate closed after paying
+    // out versus one closed having approved nothing. EVIDENCE for the
+    // section's claim that the target alone is not the act; the work is the
+    // fix itself, which shipped.
   },
 ];
 

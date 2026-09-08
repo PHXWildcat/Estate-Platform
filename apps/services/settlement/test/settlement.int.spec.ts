@@ -9,6 +9,7 @@ import { SettlementAuthz } from '../src/authz.service';
 import { CasesRepo } from '../src/cases.repo';
 import { ContactAttemptsRepo } from '../src/contact-attempts.repo';
 import { CoreReadsRepo } from '../src/core-reads.repo';
+import { StagesRepo } from '../src/stages.repo';
 import { Db } from '../src/db';
 import { EventsService } from '../src/events.service';
 import { OperatorActionsRepo } from '../src/operator-actions.repo';
@@ -360,6 +361,128 @@ describeIfPg('settlement service against Postgres (core-cluster co-tenant)', () 
       [decedent2],
     );
     expect(versions.rows).toEqual([{ actor_id: decedent2 }]);
+  }, 60_000);
+
+  it('the terminal statements answer with the status they MOVED, from Postgres itself', async () => {
+    /*
+     * M49 PR3, and the only place the SQL of these two statements is the thing
+     * under test. `markResolved` and `StagesRepo.revoke` report the status they
+     * moved a row out of, and the in-memory doubles agree with any
+     * implementation by construction.
+     *
+     * WHAT IT DISCRIMINATES, stated precisely because its own review measured
+     * the boundary. Three answers exist at the moment of the write:
+     *
+     *   'reported'       — what the row held before `markReviewStarted`, and
+     *                      what a caller holding a status it read at the TOP of
+     *                      its method would report. (Not "when the transaction
+     *                      opened": `withTransaction` issues BEGIN before the
+     *                      callback runs, so at transaction open this row does
+     *                      not exist. That earlier phrasing was wrong.)
+     *   'verifying'      — the truth: set by `markReviewStarted` earlier in
+     *                      this same open transaction.
+     *   'rejected_fraud' — what a re-read after the UPDATE returns.
+     *
+     * This test separates the first and third from the second. It does NOT
+     * separate reading inside the statement from a `SELECT` on the line above
+     * it — measured, by reimplementing the method that way and watching all
+     * 331 tests stay green. That is a survivor meaning the edit is not
+     * load-bearing: under the caller's row lock the two spellings agree. The
+     * distance is what matters, and the CTE is the spelling that cannot drift
+     * back up the method.
+     *
+     * The shape is the liveness unwind's, reproduced with the cheapest pair of
+     * statements that has it: `confirmVerification` calls `markVerified` and
+     * then unwinds it through `markResolved` in one transaction.
+     */
+    const decedent = randomUUID();
+    const cases = new CasesRepo();
+    const moved = await db.withTransaction(OPERATOR, async (tx) => {
+      const opened = await cases.insert(tx, {
+        decedentUserId: decedent,
+        reportedBy: REPORTER,
+        source: 'trusted_contact',
+        evidence: [],
+      });
+      expect(opened.status).toBe('reported');
+      expect(await cases.markReviewStarted(tx, opened.id, OPERATOR, clock.value)).toBe(true);
+      const from = await cases.markResolved(
+        tx,
+        opened.id,
+        ['reported', 'verifying'],
+        'operator_rejected',
+        clock.value,
+        { id: OPERATOR, at: clock.value },
+      );
+      // The post-update status, read back so the assertion below is comparing
+      // against a value this test has SEEN rather than one it assumes.
+      expect((await cases.findById(tx, opened.id))?.status).toBe('rejected_fraud');
+      return from;
+    });
+    // Neither the status before `markReviewStarted` nor the one after the
+    // UPDATE: the in-transaction value, which is the only one that is right.
+    expect(moved).toBe('verifying');
+
+    // A from-set the row is NOT in answers null and writes nothing — the
+    // compare-and-set every caller now refuses on.
+    const other = randomUUID();
+    const missed = await db.withTransaction(OPERATOR, async (tx) => {
+      const opened = await cases.insert(tx, {
+        decedentUserId: other,
+        reportedBy: REPORTER,
+        source: 'trusted_contact',
+        evidence: [],
+      });
+      const from = await cases.markResolved(
+        tx,
+        opened.id,
+        ['verifying'],
+        'operator_rejected',
+        clock.value,
+        null,
+      );
+      expect((await cases.findById(tx, opened.id))?.status).toBe('reported');
+      return from;
+    });
+    expect(missed).toBeNull();
+
+    // The stage statement, same shape: revoked from `requested`, which is the
+    // arm the doc comment above it denied existed until M49 PR3.
+    //
+    // The case is driven to `verified` first. `StagesRepo.revoke` keys on the
+    // stage row alone and never reads the case, so it would pass either way —
+    // but a `requested` stage on a `reported` case is a state the product
+    // cannot reach (`requestStage` refuses outside ADMINISTRABLE_STATUSES) and
+    // only the absence of an FK lets a fixture arrange it. This file argues
+    // against exactly that a hundred lines down.
+    const stages = new StagesRepo();
+    const revokedFrom = await db.withTransaction(OPERATOR, async (tx) => {
+      const kase = await cases.insert(tx, {
+        decedentUserId: randomUUID(),
+        reportedBy: REPORTER,
+        source: 'trusted_contact',
+        evidence: [],
+      });
+      // reported -> verifying -> waiting_period -> verified, through the real
+      // statements rather than by writing the column.
+      await cases.markReviewStarted(tx, kase.id, OPERATOR, clock.value);
+      await cases.markApproved(
+        tx,
+        kase.id,
+        OPERATOR,
+        clock.value,
+        new Date(clock.value.getTime() + 5 * DAY),
+      );
+      expect(await cases.markVerified(tx, kase.id, clock.value)).toBe(true);
+      const stage = await stages.insertRequest(tx, {
+        caseId: kase.id,
+        stage: 'inventory',
+        requestedBy: REPORTER,
+        requestedAt: clock.value,
+      });
+      return stages.revoke(tx, stage.id, OPERATOR, clock.value);
+    });
+    expect(revokedFrom).toBe('requested');
   }, 60_000);
 
   it('reportable estates resolves from the real contacts/role_assignments rows', async () => {

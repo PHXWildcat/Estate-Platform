@@ -353,21 +353,80 @@ export class CasesRepo {
    * recorded reviewer; from 'waiting_period' the approving reviewer stands and
    * the rejecter lives in the version trigger's actor + the audit event. From
    * 'reported' (owner void before any review) no reviewer is recorded.
+   *
+   * ANSWERS WITH THE STATUS IT MOVED (M49 PR3). Every case this method ends is
+   * terminal — three call sites, from-sets of two, three and two statuses, and
+   * one destination — so the row it leaves behind cannot say which of them the
+   * case was in, and the two events it produces recorded a reason and a route
+   * but never a prior state.
+   *
+   * THE VALUE IS READ AT THE WRITE, not at the top of the caller — and that,
+   * rather than "inside the statement", is the load-bearing part. An earlier
+   * draft of this comment claimed the CTE itself was the thing; its own review
+   * disproved that by reimplementing this method as a `SELECT status`
+   * immediately before a plain UPDATE, which left all 331 tests green. That is
+   * a survivor meaning the edit is not load-bearing, not that the tests are
+   * weak: under the caller's row lock the two spellings return the same value.
+   * The CTE is preferred because it cannot DRIFT — a separate read is one
+   * refactor away from migrating back up the method, which is the exact
+   * journey the defect below took.
+   *
+   * WHAT IS LOAD-BEARING is the distance. `SettlementService.confirmVerification` calls
+   * `markVerified` — `waiting_period` → `verified` — and then, if identity's
+   * liveness interlock refuses the lock, unwinds it through THIS method inside
+   * the same open transaction. A caller reporting the status it read before
+   * that would put `waiting_period` on the trail for a case the database
+   * moved out of `verified`: a false edge — measured, by making that exact
+   * substitution and watching the fence's void drive go red. Recoverable afterwards only by
+   * joining `settlement_cases_versions` — the trigger is `FOR EACH ROW` and
+   * each of these statements matches one case by primary key, so the interlock
+   * arm leaves two prior images and the other leaves one — which
+   * is an inference over an unchained table standing in for a fact the event
+   * can simply carry.
+   *
+   * THE CTE RUNS AGAINST THE STATEMENT'S OWN SNAPSHOT, AND THE ROW LOCK IS
+   * WHAT MAKES THAT THE PRE-UPDATE VALUE — a precondition, not a property of
+   * Postgres. Under READ COMMITTED, a statement that blocks on a row another
+   * transaction is updating re-checks the NEW version under EvalPlanQual and
+   * proceeds, while `RETURNING prior.status` still yields the value from the
+   * snapshot taken before the wait: stale. Measured on 16.15 by issuing this
+   * statement without a prior lock while a concurrent `markApproved` was open
+   * — it answered `verifying` for a row whose true pre-image was
+   * `waiting_period`, which is exactly the pair that decides whether a living
+   * person's account was unlocked. Every one of the three call sites takes
+   * `lockById`'s `SELECT … FOR UPDATE` in an earlier statement of the same
+   * transaction, which closes the window; a caller that does not must not use
+   * the answer. Its sibling `StagesRepo.revoke` says the same thing.
+   *
+   * (`decideReview` derives the SIDE EFFECT from `locked.status` and the AUDIT
+   * RECORD from this answer — two derivations of one fact, identical only
+   * because of that lock.)
+   *
+   * The generic makes the ANSWER as narrow as the QUESTION: a caller passing
+   * `['verifying', 'waiting_period']` gets back that union and not
+   * `CaseStatus`. What it does not do is check the emit — the callers widen it
+   * straight back through their outer `let` annotations and the emitters take
+   * `CaseStatus`, so passing a literal `'closed'` to `caseVoided` type-checks.
+   * Measured. The fence is the guard there, not the compiler; narrowing the
+   * emitters instead would put a fourth copy of each from-set in a signature.
    */
-  async markResolved(
+  async markResolved<S extends CaseStatus>(
     tx: Queryable,
     caseId: string,
-    fromStatuses: readonly CaseStatus[],
+    fromStatuses: readonly S[],
     resolution: 'operator_rejected' | 'owner_voided',
     resolvedAt: Date,
     reviewer: { id: string; at: Date } | null,
-  ): Promise<boolean> {
-    const rows = await tx.query<{ id: string }>(
+  ): Promise<S | null> {
+    const rows = await tx.query<{ from_status: S }>(
       // verified_at is cleared too: a resolved case was never verified, and the
       // settlement_cases_verified_at_matches CHECK forbids the combination.
       // (Reachable when a liveness-interlock refusal unwinds an in-transaction
       // markVerified — see SettlementService.confirmVerification.)
-      `UPDATE settlement_cases
+      `WITH prior AS (
+         SELECT id, status FROM settlement_cases WHERE id = $1
+       )
+       UPDATE settlement_cases
           SET status = 'rejected_fraud',
               resolution = $2,
               resolved_at = $3,
@@ -375,8 +434,9 @@ export class CasesRepo {
               human_review_at = COALESCE($5, human_review_at),
               waiting_period_ends = NULL,
               verified_at = NULL
-        WHERE id = $1 AND status = ANY($6)
-        RETURNING id`,
+         FROM prior
+        WHERE settlement_cases.id = prior.id AND settlement_cases.status = ANY($6)
+        RETURNING prior.status AS from_status`,
       [
         caseId,
         resolution,
@@ -386,7 +446,7 @@ export class CasesRepo {
         [...fromStatuses],
       ],
     );
-    return rows.length > 0;
+    return rows[0]?.from_status ?? null;
   }
 
   /**
