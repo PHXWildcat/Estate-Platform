@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AuditEmitter, type AuditProducer } from '@estate/audit-emitter';
 import type { AuditAction } from '@estate/contracts';
 import { AUDIT_PRODUCER, CLOCK, type Clock } from './di-tokens';
+import type { PolicyStatus } from './emergency.repo';
 
 /**
  * THIS SERVICE'S SLICE OF THE CLOSED VOCABULARY, DERIVED (M27 PR1b).
@@ -326,30 +327,78 @@ export class EventsService {
     });
   }
 
-  async emergencyDenied(ownerUserId: string, sessionId: string, policyId: string): Promise<void> {
+  /**
+   * THE PRIOR STATUS, ON THE FOUR LADDER EVENTS THAT FUSE WITHOUT IT (M49 PR4).
+   *
+   * `detail.from` is an OPTIONAL key on an envelope that already exists, which
+   * is the edit `ChainVerifier` tolerates: `detail` is an open record, so a
+   * stored row written before this change parses exactly as it did. Making the
+   * key REQUIRED is the edit it does not — the verifier re-parses stored rows
+   * against the LIVE schema and a parse failure surfaces as
+   * `event_hash_mismatch`, the token real tampering produces, on a table under
+   * REVOKE UPDATE, DELETE. No member joins `AUDIT_ACTIONS`, so no consumer
+   * deployment is owed.
+   *
+   * THERE IS DELIBERATELY NO `to`. Settlement needed one because a single
+   * parameterised statement served many targets. The vault is the inverse:
+   * five statements, five LITERAL targets, one emitter each. A `to` key would
+   * be a second copy of what the action id already determines. The
+   * verb-to-target map is asserted by the fence instead — which is how the two
+   * action ids whose verb disagrees with the status their write produces
+   * (`requested` writes `waiting`, `rearmed` writes `configured`) stay visible
+   * rather than being frozen into the data.
+   *
+   * The parameter is `PolicyStatus` and not a narrower union on purpose: the
+   * narrower set is real (`requested` is never written, `revoked` is never
+   * observable) but narrowing here would need a cast at every call site, and a
+   * cast is an assertion no test reads. What checks the recorded VALUES is the
+   * drive in `emergency.int.spec.ts` — "records each action against exactly the
+   * set of arms it admits" — not the fence, which derives the vocabulary and
+   * which sites owe a `from` but never reads an emitted event. An earlier draft
+   * of this sentence credited the fence with both.
+   */
+  async emergencyDenied(
+    ownerUserId: string,
+    sessionId: string,
+    policyId: string,
+    from: PolicyStatus,
+  ): Promise<void> {
     await this.emit('vault.emergency.denied', {
       actorId: ownerUserId,
       resourceType: 'emergency_access_policy',
       resourceId: policyId,
       sessionId,
+      detail: { from },
     });
   }
 
-  async emergencyRearmed(ownerUserId: string, sessionId: string, policyId: string): Promise<void> {
+  async emergencyRearmed(
+    ownerUserId: string,
+    sessionId: string,
+    policyId: string,
+    from: PolicyStatus,
+  ): Promise<void> {
     await this.emit('vault.emergency.rearmed', {
       actorId: ownerUserId,
       resourceType: 'emergency_access_policy',
       resourceId: policyId,
       sessionId,
+      detail: { from },
     });
   }
 
-  async emergencyRevoked(ownerUserId: string, sessionId: string, policyId: string): Promise<void> {
+  async emergencyRevoked(
+    ownerUserId: string,
+    sessionId: string,
+    policyId: string,
+    from: PolicyStatus,
+  ): Promise<void> {
     await this.emit('vault.emergency.revoked', {
       actorId: ownerUserId,
       resourceType: 'emergency_access_policy',
       resourceId: policyId,
       sessionId,
+      detail: { from },
     });
   }
 
@@ -437,6 +486,7 @@ export class EventsService {
     sessionId: string,
     policyId: string,
     ownerUserId: string,
+    from: PolicyStatus,
   ): Promise<void> {
     await this.emit('vault.emergency.released', {
       actorId: granteeUserId,
@@ -446,6 +496,10 @@ export class EventsService {
       // onBehalfOf is what makes this event legible: a grantee acted, and the
       // vault it reached belongs to someone else.
       onBehalfOf: ownerUserId,
+      // `waiting` is a first collection; `released` is a RE-collection, legal
+      // since M27 PR3a. One is the escrow leaving the platform, the other is it
+      // leaving again — and before this key they were one row.
+      detail: { from },
     });
   }
 }

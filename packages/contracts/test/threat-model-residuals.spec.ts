@@ -241,6 +241,14 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // bounds — one service, one column NAME — and `revokeStage`'s dual control,
   // where deleting either layer alone leaves the package green.
   '6mmm': 8,
+  // M49 PR4. ELEVEN: nine M49 and two M45. FOUR did not exist before the PR's
+  // own survey and its review — `softDeleteAllForOwner`'s unaudited retirement,
+  // the vault-scoped `configured` event, `request_blocked` spelling the prior
+  // status as `reason`, and `vault.recovery_key.published` fusing a first
+  // publication with a key substitution. Two are carried over from §6kkk, which
+  // PR4 closes only for the edge, and one records a correction the tree CANNOT
+  // hold because migrations are checksummed.
+  '6nnn': 11,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -1103,12 +1111,60 @@ interface Precondition {
   readonly filledWhen: RegExp;
   /** Paths whose match does not count, each with the reason it does not. */
   readonly notCountedIn: readonly { readonly path: string; readonly why: string }[];
+  /**
+   * Match against the WHOLE file rather than line by line.
+   *
+   * The default matcher tests each line separately, which is right for the
+   * one-line signatures these probes usually watch — and silently wrong for a
+   * pattern containing `[\s\S]`, because a span that must cross a newline can
+   * never match a single line. M49 PR4 shipped a probe with two such
+   * alternatives and its own review caught that they could not fire: the entry
+   * claimed to watch three shapes and watched one. Opt in here rather than
+   * changing the default, so no existing entry's measurement moves.
+   */
+  readonly wholeFile?: true;
   /** The state MEASURED at M40 PR4. */
   readonly state: 'absent' | 'filled';
   readonly why: string;
 }
 
 const PRECONDITIONS: readonly Precondition[] = [
+  {
+    section: '6nnn',
+    title: 'The rearm-from-waiting arm has no consumer',
+    absence:
+      'vault-web pushes the rearm control only inside `policy.status === ' +
+      "'denied_by_owner'`, so the arm §6kkk cites as the reason the fusion " +
+      'matters cannot be reached from a browser at all',
+    corpus: ['apps/vault-web/src'],
+    // Three shapes, because a later PR can spend this absence in more than one
+    // way and a probe that watches only the obvious one is a probe that reports
+    // clean while the thing it guards is gone: a SECOND rearm control anywhere
+    // in the render path, the existing guard WIDENED with an `||`, or a rearm
+    // reached from a `waiting` policy. All three read zero today, measured
+    // rather than assumed.
+    filledWhen:
+      /rearmPolicy\(policy\.id\)[\s\S]{0,400}rearmPolicy\(policy\.id\)|policy\.status === 'denied_by_owner' \|\||'waiting'[\s\S]{0,200}rearmPolicy/,
+    // Two of the three alternatives span newlines, so they need the whole-file
+    // matcher. Without it this entry watched ONE shape while its comment
+    // claimed three — measured by its own review, not assumed.
+    wholeFile: true,
+    notCountedIn: [],
+    state: 'absent',
+    why:
+      'M49 PR4 DRIVES this arm through the API, where it IS reachable, and the ' +
+      'surface offers it nowhere — so the trail can now separate two acts a ' +
+      'browser cannot perform separately. That is the §6dd shape exactly: a ' +
+      'residual justified by "no consumer" on a capability someone later ' +
+      'builds a consumer for without reading the sentence that assumed they ' +
+      'would not. The day vault-web lets an owner allow a live request again, ' +
+      'the fusion this PR closed on the trail reappears on the screen, and ' +
+      'whoever ships that control has to decide whether the owner is told ' +
+      'WHICH arm they took — which is the §6nnn residual on `toPolicyDto` ' +
+      'having no `deniedAt`. It bounds the SURFACE and not the API: `rearm` ' +
+      'admits three priors either way, and the fence derives that from the ' +
+      'guard chain rather than from this entry.',
+  },
   {
     section: '6dd',
     title: 'Two of three distribution status transitions emit no audit event',
@@ -1289,11 +1345,89 @@ function sourceFiles(dir: string): string[] {
  * The predicate, extracted so the controls exercise the REAL matcher rather
  * than a paraphrase of it — the same lesson as `staleAmong` below.
  */
+/**
+ * The top-level `|` alternatives of a regex source, with escapes, character
+ * classes and groups respected — so the `\|\|` inside a probe that watches for
+ * a widened `||` guard is not mistaken for a split point.
+ *
+ * A probe's own source is the only thing that says how many shapes it claims to
+ * watch. Counting them by hand beside a table that grows is the defect this
+ * file exists to prevent, so the control below derives them.
+ */
+function topLevelAlternatives(source: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inClass = false;
+  let start = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    const c = source[i];
+    if (c === '\\') {
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    else if (c === '(') depth += 1;
+    else if (c === ')') depth -= 1;
+    else if (c === '|' && depth === 0) {
+      out.push(source.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(source.slice(start));
+  return out;
+}
+
+/**
+ * Whether one alternative can match text containing a NEWLINE — measured, not
+ * argued from the source text. Each character class is COMPILED and tested
+ * against "\n": `[\s\S]` admits one, and `[^'"`\n]` mentions `\n` precisely in
+ * order to exclude it. The two read almost identically and only running them
+ * tells them apart — this control's first draft reasoned textually and flagged
+ * §6kkk's healthy probe. `.` cannot match a newline unless the `s` flag is set.
+ */
+function spansNewline(alt: string, dotAll: boolean): boolean {
+  for (let i = 0; i < alt.length; i += 1) {
+    const c = alt[i];
+    if (c === '\\') {
+      if (alt[i + 1] === 'n') return true;
+      i += 1;
+      continue;
+    }
+    if (c === '.') {
+      if (dotAll) return true;
+      continue;
+    }
+    if (c !== '[') continue;
+    // Walk to this class's closing bracket, honouring an escaped `]` and the
+    // leading-`]`-is-literal rule, then let the engine answer for its body.
+    let j = i + 1;
+    if (alt[j] === '^') j += 1;
+    if (alt[j] === ']') j += 1;
+    for (; j < alt.length; j += 1) {
+      if (alt[j] === '\\') j += 1;
+      else if (alt[j] === ']') break;
+    }
+    if (new RegExp(alt.slice(i, j + 1)).test('\n')) return true;
+    i = j;
+  }
+  return false;
+}
+
 function fillMatches(p: Precondition, files: readonly string[]): { file: string; line: number }[] {
   const out: { file: string; line: number }[] = [];
   for (const file of files) {
     if (p.notCountedIn.some((x) => file.endsWith(x.path))) continue;
-    const lines = readFileSync(file, 'utf8').split('\n');
+    const text = readFileSync(file, 'utf8');
+    if (p.wholeFile) {
+      const m = p.filledWhen.exec(text);
+      if (m) out.push({ file, line: text.slice(0, m.index).split('\n').length });
+      continue;
+    }
+    const lines = text.split('\n');
     lines.forEach((line, i) => {
       if (p.filledWhen.test(line)) out.push({ file, line: i + 1 });
     });
@@ -2105,6 +2239,67 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // on a corpus that genuinely lacks the pattern, so that "filled" above is a
     // measurement rather than a matcher that fires on everything.
     expect(observed.filter((o) => o.state === 'absent').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('every ALTERNATIVE a probe watches can reach across the newlines it spans', () => {
+    // THE PER-ALTERNATIVE CONTROL. The aggregate control above — one entry
+    // FILLED, one ABSENT — is satisfied by a table in which SOME entries are
+    // healthy. It says nothing about the alternatives inside any ONE probe.
+    //
+    // M49 PR4 found §6nnn's entry watching three shapes of which TWO, both
+    // spanning newlines, could never have fired against the line-scoped
+    // matcher. The probe answered `absent` because it could not look, and the
+    // aggregate control stayed green because other entries were fine — the
+    // vacuity this file hunts, one level below where it was reading.
+    //
+    // The property is decidable WITHOUT executing the regex against a
+    // synthesised positive, which for an arbitrary pattern is not constructible:
+    // an alternative that must cross a newline is unreachable in line mode, and
+    // one that need not is served by either. So each probe is judged against its
+    // own source rather than against a list someone remembered to keep.
+    const spansOf = (p: Precondition) => (alt: string) =>
+      spansNewline(alt, p.filledWhen.flags.includes('s'));
+    const unreachableIn = (p: Precondition) =>
+      p.wholeFile ? [] : topLevelAlternatives(p.filledWhen.source).filter(spansOf(p));
+
+    expect(
+      PRECONDITIONS.filter((p) => unreachableIn(p).length > 0).map((p) => ({
+        section: p.section,
+        dead: unreachableIn(p),
+      })),
+    ).toEqual([]);
+
+    // ANTI-VACUITY: the splitter must actually SPLIT, or every probe looks like
+    // one alternative and nothing above can fail. The case known to match is
+    // §6nnn's own three shapes — two spanning, one not — which is also the
+    // entry that motivated this control.
+    const nnn = PRECONDITIONS.find((p) => p.section === '6nnn');
+    expect(nnn).toBeDefined();
+    const alts = topLevelAlternatives((nnn as Precondition).filledWhen.source);
+    expect({
+      total: alts.length,
+      spanning: alts.filter(spansOf(nnn as Precondition)).length,
+    }).toEqual({ total: 3, spanning: 2 });
+
+    // The class check is MEASURED, and this is the pair that forced it: a
+    // negated class naming `\n` to EXCLUDE it (§6kkk's probe) reads almost
+    // exactly like one admitting every character (§6nnn's). Textual reasoning
+    // calls both spanning; compiling them does not.
+    expect([
+      spansNewline(String.raw`a[\s\S]{0,9}b`, false),
+      spansNewline(String.raw`a[^'"\n]*b`, false),
+    ]).toEqual([true, false]);
+
+    // ...and the splitter must not OVER-split, which would report phantom
+    // alternatives and turn the assertion above into noise. An escaped `||`
+    // is one alternative, not three — the shape §6nnn's middle branch is.
+    expect(topLevelAlternatives(String.raw`a \|\| b`)).toHaveLength(1);
+
+    // THE NEGATIVE TWIN: the predicate must be able to say UNREACHABLE, or the
+    // empty list above is what a check that fires on nothing also reports.
+    // Same entry, same source, with only the mode taken away.
+    const { wholeFile: _dropped, ...lineMode } = nnn as Precondition;
+    expect(unreachableIn(lineMode)).toEqual(alts.filter(spansOf(nnn as Precondition)));
   });
 
   it('every absence-justified residual is DECLARED — probed, or exempt with a reason', () => {

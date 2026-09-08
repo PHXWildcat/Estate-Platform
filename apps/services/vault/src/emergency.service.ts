@@ -140,8 +140,13 @@ function toPolicyDto(row: PolicyRow): PolicyDto {
  *  - Denial is STICKY. A denied policy refuses further requests until the owner
  *    re-arms it. Without that, a patient grantee just re-requests every week
  *    until the owner is hospitalised or offline - which is the attack.
- *  - Release is ONE-SHOT. Once the platform half is handed over, that escrow is
- *    spent; the owner has to build a new one. `revoked` cannot un-ring a bell.
+ *  - Release is RE-COLLECTABLE since M27 PR3a, and this line said the opposite
+ *    until M49 PR4. The README, the guard below and docs/03 §6yy were corrected
+ *    at PR3a; `emergency.repo.ts` states it as of PR3b; this copy was never
+ *    touched at all. `collectable` admits
+ *    `waiting` OR `released`, which is why `markReleased` has a two-valued
+ *    from-set and why its event now says which. What no stop can do is
+ *    un-ring the bell: the platform half already left the server.
  *  - Every attempt is audited AND notified, including the ones that were
  *    refused, because the owner's after-the-fact review is a control.
  */
@@ -616,13 +621,48 @@ export class EmergencyAccessService {
    */
   async deny(ownerUserId: string, accountSessionId: string, policyId: string): Promise<PolicyDto> {
     const now = this.clock();
-    const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
+    const denied = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
-      return this.emergency.markDenied(tx, policy.id, now);
+      /*
+       * THE PRIOR STATUS, CAPTURED AT THE WRITE — the rationale for all four
+       * ladder sites, written once.
+       *
+       * `deny` admits every live status, so this event fused four different
+       * acts into one row: stopping a countdown that was running, stopping
+       * re-collection of escrow the grantee already holds, re-denying an
+       * already-denied policy, and denying one nobody had asked about.
+       *
+       * WHAT MAKES THIS A PRE-IMAGE, stated precisely because an earlier draft
+       * of this comment claimed something the code cannot do. `policy` is the
+       * row read under `FOR UPDATE` by `requireOwnerPolicy`, and it is the last
+       * read of that row before the write. THE LINE POSITION BUYS NOTHING: it
+       * is an in-memory snapshot, so a statement inserted above would leave
+       * `policy.status` equally stale wherever the capture sits. Its own review
+       * caught that claim, and settlement's CTE — which re-reads inside the
+       * statement — is the construction that would have earned it.
+       *
+       * The protection here is the lock, plus a fence that asserts no ladder
+       * statement HAS a from-predicate: if one ever gains one, the derivation
+       * moves back to the SQL where M49 PR3 put it.
+       *
+       * There is deliberately NO compare-and-set to go with it. `deny` and
+       * `revoke` admit all four live priors ON PURPOSE — see the arming note
+       * above on why denying a released policy has to stay legal — so a
+       * predicate that admitted all four would be a no-op, and one that
+       * narrowed would re-invert the M27 PR3a rule. Capture the prior, leave
+       * the guard where the reasons for it are written.
+       */
+      const from = policy.status;
+      return { updated: await this.emergency.markDenied(tx, policy.id, now), from };
     });
 
-    await this.events.emergencyDenied(ownerUserId, accountSessionId, updated.id);
-    return toPolicyDto(updated);
+    await this.events.emergencyDenied(
+      ownerUserId,
+      accountSessionId,
+      denied.updated.id,
+      denied.from,
+    );
+    return toPolicyDto(denied.updated);
   }
 
   /** Clear a denial so the contact can request again. Step-up gated. */
@@ -634,28 +674,48 @@ export class EmergencyAccessService {
     // IS the recipient, so refusing costs the owner an action they can unblock
     // themselves rather than denying a third party.
     await this.assertOwnerReachable(ownerUserId);
-    const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
+    const rearmed = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
       if (policy.status === 'released') throw new ConflictException({ error: 'already_released' });
-      return this.emergency.markRearmed(tx, policy.id);
+      // Captured at the write; `deny` above says why the placement is the
+      // point. Re-arming from `denied_by_owner` clears a standing refusal;
+      // from `waiting` it cancels a countdown the grantee had already started.
+      // Opposite-signed acts, one action id, and until now one row.
+      const from = policy.status;
+      return { updated: await this.emergency.markRearmed(tx, policy.id), from };
     });
 
-    await this.events.emergencyRearmed(ownerUserId, accountSessionId, updated.id);
-    return toPolicyDto(updated);
+    await this.events.emergencyRearmed(
+      ownerUserId,
+      accountSessionId,
+      rearmed.updated.id,
+      rearmed.from,
+    );
+    return toPolicyDto(rearmed.updated);
   }
 
   /** Remove a grantee entirely. Step-up gated (docs/01 §5). */
   async revoke(ownerUserId: string, accountSessionId: string, policyId: string): Promise<void> {
     const now = this.clock();
-    const updated = await this.db.withTransaction(ownerUserId, async (tx) => {
+    const revoked = await this.db.withTransaction(ownerUserId, async (tx) => {
       const policy = await this.requireOwnerPolicy(tx, policyId, ownerUserId);
-      return this.emergency.markRevoked(tx, policy.id, now);
+      // Captured at the write; see `deny`. Revoking a policy whose grantee has
+      // ALREADY collected takes nothing back — the platform half is gone — and
+      // revoking before they did is the removal actually working. The row
+      // shapes are identical, so nothing but this key separates them.
+      const from = policy.status;
+      return { updated: await this.emergency.markRevoked(tx, policy.id, now), from };
     });
 
-    await this.events.emergencyRevoked(ownerUserId, accountSessionId, updated.id);
+    await this.events.emergencyRevoked(
+      ownerUserId,
+      accountSessionId,
+      revoked.updated.id,
+      revoked.from,
+    );
     await this.notify(
-      { kind: 'revoked', ownerUserId, policyId: updated.id },
-      updated.id,
+      { kind: 'revoked', ownerUserId, policyId: revoked.updated.id },
+      revoked.updated.id,
       ownerUserId,
     );
   }
@@ -773,8 +833,15 @@ export class EmergencyAccessService {
           const config = await this.emergency.lockConfig(tx, policy.user_id);
           if (!config) throw new NotFoundException({ error: 'escrow_not_found' });
 
+          // `policy` is the `FOR UPDATE` snapshot taken at the top of this
+          // callback and never re-read, so — as `deny` says at length — where
+          // the capture sits does not change its value. It sits here because
+          // this is the line a reader checks when asking what `from` was, and
+          // the distance from the lock is real: an outbound settlement RPC and
+          // a second table's lock stand between them.
+          const from = policy.status;
           const updated = await this.emergency.markReleased(tx, policy.id, now);
-          return { policy: updated, config };
+          return { policy: updated, from, config };
         }),
     );
 
@@ -783,6 +850,7 @@ export class EmergencyAccessService {
       accountSessionId,
       released.policy.id,
       released.policy.user_id,
+      released.from,
     );
     await this.notify(
       { kind: 'released', ownerUserId: released.policy.user_id, policyId: released.policy.id },

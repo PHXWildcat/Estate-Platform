@@ -2225,4 +2225,202 @@ describeIfPg('emergency access end to end', () => {
       expect(row.rows[0]!.releases_at!.getTime()).toBeLessThan(now.getTime());
     });
   });
+
+  /**
+   * M49 PR4 — THE ARM A STOP DOES NOT NAME.
+   *
+   * Four ladder statements move a policy from more than one prior status, and
+   * until this change every one of them emitted a row that could not say which:
+   * `markDenied` and `markRevoked` admit all four live statuses, `markRearmed`
+   * three, `markReleased` two. `markRequested` admits ONE (`blockReason`
+   * refuses every other live status), which is why the `requested` action owes
+   * no `from` and serves below as this block's POSITIVE CONTROL: if the drives
+   * were passing because every event now carries a `from`, that test would fail.
+   *
+   * Driven against Postgres because the prior status is a fact about the ROW.
+   * The in-memory doubles agree with whatever the service tells them, so they
+   * can prove the wiring and cannot prove the edge.
+   */
+  describe('the arm a stop does not name (M49 PR4)', () => {
+    type Live = 'configured' | 'waiting' | 'denied_by_owner' | 'released';
+
+    async function freshPolicy(): Promise<string> {
+      const escrow = await configureEscrow([
+        { userId: GRANTEE, contactId: CONTACT_ID, keys: granteeKeys },
+      ]);
+      return escrow.policies[0]!.id;
+    }
+
+    /** Walk a brand-new policy up the ladder to `target`, the way a user would. */
+    async function policyAt(target: Live): Promise<string> {
+      const id = await freshPolicy();
+      if (target === 'configured') return id;
+
+      await request(server)
+        .post(`/v1/vault/emergency-access/${id}/request`)
+        .set(asGrantee())
+        .expect(200);
+      if (target === 'waiting') return id;
+
+      if (target === 'denied_by_owner') {
+        await request(server)
+          .post(`/v1/vault/emergency-access/${id}/deny`)
+          .set(asOwner())
+          .expect(200);
+        return id;
+      }
+
+      now = new Date(now.getTime() + (WAITING_HOURS + 1) * 60 * 60 * 1000);
+      await request(server)
+        .post(`/v1/vault/emergency-access/${id}/release`)
+        .set(asGrantee())
+        .expect(200);
+      return id;
+    }
+
+    /**
+     * The `from` on the event `action` emitted since `mark`. Asserts EXACTLY
+     * ONE such event: a drive that emitted none and a drive that emitted two
+     * would otherwise both read as a pass through `.at(-1)`.
+     */
+    function fromSince(mark: number, action: string): unknown {
+      const events = producer.messages
+        .slice(mark)
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === action);
+      expect(events).toHaveLength(1);
+      return (events[0]!.detail as Record<string, unknown> | undefined)?.['from'];
+    }
+
+    /**
+     * Every `from` recorded for an action SINCE THIS BLOCK STARTED.
+     *
+     * The first spelling read `producer.messages` from index zero — the whole
+     * two-thousand-line suite — while its comment said "this block". Seven of
+     * the thirteen expected set members were already satisfied by earlier
+     * describes before a single drive here ran, so the set assertion below was
+     * true of a corpus its own sentence did not name. That is this repo's most
+     * repeated prose defect and its review found it here.
+     */
+    let blockStart = 0;
+    beforeAll(() => {
+      blockStart = producer.messages.length;
+    });
+
+    function allFroms(action: string): string[] {
+      return producer.messages
+        .slice(blockStart)
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === action)
+        .map((e) => (e.detail as Record<string, unknown> | undefined)?.['from'])
+        .filter((v): v is string => typeof v === 'string');
+    }
+
+    it.each<Live>(['configured', 'waiting', 'denied_by_owner', 'released'])(
+      'DENY names the arm it stopped, from %s',
+      async (target) => {
+        const id = await policyAt(target);
+        const mark = producer.messages.length;
+        await request(server)
+          .post(`/v1/vault/emergency-access/${id}/deny`)
+          .set(asOwner())
+          .expect(200);
+        expect(fromSince(mark, 'vault.emergency.denied')).toBe(target);
+      },
+    );
+
+    // No `released` arm: `rearm` refuses it with `already_released`, which is
+    // the one guard this statement has and the reason its set is three.
+    it.each<Live>(['configured', 'waiting', 'denied_by_owner'])(
+      'REARM names what it cleared, from %s',
+      async (target) => {
+        const id = await policyAt(target);
+        const mark = producer.messages.length;
+        await request(server)
+          .post(`/v1/vault/emergency-access/${id}/rearm`)
+          .set(ownerStepUp())
+          .expect(200);
+        expect(fromSince(mark, 'vault.emergency.rearmed')).toBe(target);
+      },
+    );
+
+    it.each<Live>(['configured', 'waiting', 'denied_by_owner', 'released'])(
+      'REVOKE says whether it took anything back, from %s',
+      async (target) => {
+        const id = await policyAt(target);
+        const mark = producer.messages.length;
+        await request(server)
+          .delete(`/v1/vault/emergency-access/${id}`)
+          .set(ownerStepUp())
+          .expect(204);
+        expect(fromSince(mark, 'vault.emergency.revoked')).toBe(target);
+      },
+    );
+
+    it('RELEASE separates the first collection from a re-collection', async () => {
+      // `waiting` — the escrow leaving the platform for the first time.
+      const first = await policyAt('waiting');
+      now = new Date(now.getTime() + (WAITING_HOURS + 1) * 60 * 60 * 1000);
+      let mark = producer.messages.length;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${first}/release`)
+        .set(asGrantee())
+        .expect(200);
+      expect(fromSince(mark, 'vault.emergency.released')).toBe('waiting');
+
+      // `released` — legal since M27 PR3a, and the SAME action id.
+      mark = producer.messages.length;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${first}/release`)
+        .set(asGrantee())
+        .expect(200);
+      expect(fromSince(mark, 'vault.emergency.released')).toBe('released');
+    });
+
+    /**
+     * POSITIVE CONTROL. `markRequested`'s from-set is a single status, so its
+     * event owes nothing — and the fence DERIVES that exemption rather than
+     * being told it. If a change made every emitter carry a `from`
+     * indiscriminately, the drives above would still pass and this would fail.
+     */
+    it('REQUEST carries no `from`, because it can only come from one place', async () => {
+      const id = await policyAt('configured');
+      const mark = producer.messages.length;
+      await request(server)
+        .post(`/v1/vault/emergency-access/${id}/request`)
+        .set(asGrantee())
+        .expect(200);
+      const events = producer.messages
+        .slice(mark)
+        .map((m) => AuditEventSchema.parse(JSON.parse(m.value)))
+        .filter((e) => e.action === 'vault.emergency.requested');
+      expect(events).toHaveLength(1);
+      expect(events[0]!.detail).toEqual({ waitingPeriodHours: WAITING_HOURS });
+    });
+
+    /**
+     * THE SETS, NOT THE COUNTS, over this block's own events.
+     *
+     * What this delivers that the per-edge drives above do not: no action ever
+     * recorded a `from` OUTSIDE the set its guard chain admits. The drives
+     * prove each expected member is reachable; this proves nothing else is —
+     * the containment direction, which a per-drive assertion cannot give
+     * because each only ever looks at its own event. An earlier version of this
+     * comment claimed it caught a mis-attribution the drives above miss, which
+     * was not true: each drive asserts its own arm by name.
+     */
+    it('records each action against exactly the set of arms it admits', () => {
+      expect({
+        denied: new Set(allFroms('vault.emergency.denied')),
+        rearmed: new Set(allFroms('vault.emergency.rearmed')),
+        revoked: new Set(allFroms('vault.emergency.revoked')),
+        released: new Set(allFroms('vault.emergency.released')),
+      }).toEqual({
+        denied: new Set(['configured', 'waiting', 'denied_by_owner', 'released']),
+        rearmed: new Set(['configured', 'waiting', 'denied_by_owner']),
+        revoked: new Set(['configured', 'waiting', 'denied_by_owner', 'released']),
+        released: new Set(['waiting', 'released']),
+      });
+    });
+  });
 });
