@@ -11,18 +11,35 @@ export interface ErasureRequestRow {
   cancelled_at: Date | null;
 }
 
+/**
+ * A claimed request, carrying the status it held BEFORE the claim.
+ *
+ * A separate type rather than an optional key on `ErasureRequestRow`: only the
+ * claim can answer this, and an optional key would let every other reader ask
+ * a question that has no answer there and read `undefined` as a status.
+ */
+export interface ClaimedErasureRequestRow extends ErasureRequestRow {
+  prior_status: ErasureRequestStatus;
+}
+
 /** The columns every statement here returns, so the shape cannot drift. */
 const REQUEST_COLUMNS = 'id, user_id, status, requested_at, cancelled_at';
 
 /**
  * The erasure request record (M25 PR2).
  *
- * Every statement here carries its own precondition. The rule is the one
- * `.claude/rules/db-migrations.md` states for the settlement lock: a check that
- * must hold AT THE WRITE is restated inside the statement's own `WHERE`, never
- * read above it — a pre-transaction read and the write it guards are separated
- * by every commit that lands in between, and the whole point of this record is
- * that something irreversible reads it later.
+ * Every statement here carries its own precondition. The rule is
+ * `.claude/rules/services-backend.md`, under `## Transactions`: a check that
+ * must hold AT THE WRITE is restated inside the statement's own `WHERE`, OR
+ * under the row lock — a pre-transaction read and the write it guards are
+ * separated by every commit that lands in between, and the whole point of this
+ * record is that something irreversible reads it later. Both halves of that
+ * citation were wrong here until M49 PR5: it named `db-migrations.md`, which
+ * states no such rule (its own path globs do cover `packages/db` and every
+ * `migrations` directory, so it reaches this service's migrations — just not
+ * this file, and not with this rule), and it dropped the
+ * "or under the row lock" alternative — the very alternative `claimDue`'s CTE
+ * relies on, and the one docs/06 re-adjudicated for M49 PR3.
  */
 @Injectable()
 export class ErasureRepo {
@@ -113,8 +130,17 @@ export class ErasureRepo {
 
   /**
    * Claim ONE request the driver should work: a due 'pending' request, or an
-   * 'executing' one a previous driver never finished. Returns null when there
-   * is nothing to do.
+   * 'executing' one whose ledger row for this domain is not yet 'done'.
+   * Returns null when there is nothing to do.
+   *
+   * SAY THE PREDICATE, NOT THE STORY. An earlier wording called the second arm
+   * "one a previous driver never finished", which is more than the SQL decides:
+   * "not done" is equally true of a request another sweep claimed moments ago
+   * and is actively destroying. `started_at` records "executing since when"
+   * and NO statement compares it to a staleness threshold, so nothing here
+   * distinguishes stalled from in-flight. That gap is docs/03 §6ooo's, and it
+   * is why `detail.from = 'executing'` means "resumed a row already executing"
+   * rather than "resumed an abandoned one".
    *
    * THE SECOND ARM IS NOT AN OPTIMISATION. Every step of the destroy leg is
    * individually idempotent, and that is worth nothing if nothing ever
@@ -146,8 +172,11 @@ export class ErasureRepo {
    * asked must not be erased on the strength of a check made before that
    * happened — the pre-transaction-read rule, with an unusually long gap.
    *
-   * `FOR UPDATE SKIP LOCKED` so two drivers cannot claim the same request and
-   * neither blocks on the other. `ORDER BY requested_at` so the oldest request
+   * `FOR UPDATE SKIP LOCKED` so two drivers do not BLOCK on each other. It
+   * does NOT mean two drivers cannot hold the same request: the lock lives
+   * only for the claim transaction, which commits before the work leg, and
+   * the resume arm then admits the row again while its ledger entry is not
+   * done. docs/03 §6ooo owns what that costs. `ORDER BY requested_at` so the oldest request
    * is not starved by a steady arrival of newer ones.
    */
   async claimDue(
@@ -156,12 +185,24 @@ export class ErasureRepo {
     at: Date,
     permittedStatuses: readonly string[],
     domain: ErasureDomain,
-  ): Promise<ErasureRequestRow | null> {
-    const rows = await tx.query<ErasureRequestRow>(
-      `UPDATE erasure_requests
-          SET status = 'executing', started_at = COALESCE(started_at, $2)
-        WHERE id = (
-                SELECT r.id
+  ): Promise<ClaimedErasureRequestRow | null> {
+    const rows = await tx.query<ClaimedErasureRequestRow>(
+      // THE PRE-IMAGE IS THE POINT (M49 PR5, reusing M49 PR3's mechanism).
+      // This statement admits TWO priors that mean opposite things — 'pending'
+      // BEGINS a destruction, 'executing' RESUMES one somebody else abandoned
+      // half-done — and plain `RETURNING` cannot tell them apart, because
+      // Postgres returns POST-update values and both arms land on 'executing'.
+      // The prior is captured in a CTE that takes the row lock ITSELF
+      // (`FOR UPDATE OF r`), so what comes back is the status under the same
+      // lock the update runs beneath, not a read racing it.
+      //
+      // The CTE's columns are aliased AWAY from the target's (`claim_id`, not
+      // `id`) so `RETURNING ${REQUEST_COLUMNS}` stays unqualified and
+      // unambiguous. Aliasing them back would make this statement fail to
+      // parse rather than quietly return the wrong column — the failure
+      // direction worth having.
+      `WITH claimed AS (
+                SELECT r.id AS claim_id, r.status AS prior_status
                   FROM erasure_requests r
                   JOIN users u ON u.id = r.user_id
                  WHERE r.deleted_at IS NULL
@@ -171,13 +212,24 @@ export class ErasureRepo {
                          (r.status = 'pending'
                             AND r.requested_at <= $1
                             AND u.status = ANY($3))
-                         -- OR STALLED: claimed by a driver that never finished.
-                         -- No grace period and no status allowlist on this arm:
-                         -- the account is already 'closed' by the leg that ran,
-                         -- so the allowlist would refuse every resume, and the
-                         -- waiting period was already served before the first
-                         -- claim. Re-imposing either would strand exactly the
-                         -- request this arm exists to rescue.
+                         -- OR ALREADY EXECUTING, with this domain not yet done.
+                         -- No grace period and no status allowlist on this arm.
+                         -- The waiting period was served before the first claim,
+                         -- so re-imposing it would strand exactly the request
+                         -- this arm exists to rescue. The allowlist is dropped
+                         -- for the SAME outcome by a NARROWER argument than an
+                         -- earlier draft gave: that draft said "the account is
+                         -- already 'closed' by the leg that ran", which is false
+                         -- for a driver killed between the claim commit and
+                         -- closeAndUnlinkEmail: there the account is still
+                         -- 'active' and the allowlist would have ADMITTED it.
+                         -- The service's "if (user.status !== 'closed')" guard
+                         -- exists for that case and a drive proves it. What the
+                         -- allowlist would refuse is the POST-close resume, and
+                         -- that alone is reason enough to drop it.
+                         -- (No backticks in here: this comment lives inside a
+                         -- template literal, and one would END it. TypeScript
+                         -- caught that loudly when this text was first written.)
                          OR (r.status = 'executing'
                                AND EXISTS (SELECT 1 FROM erasure_domain_progress
                                             WHERE request_id = r.id
@@ -186,16 +238,22 @@ export class ErasureRepo {
                        )
                  ORDER BY r.requested_at
                    FOR UPDATE OF r SKIP LOCKED
-                 LIMIT 1)
-       RETURNING ${REQUEST_COLUMNS}`,
+                 LIMIT 1
+              )
+       UPDATE erasure_requests
+          SET status = 'executing', started_at = COALESCE(started_at, $2)
+         FROM claimed
+        WHERE erasure_requests.id = claimed.claim_id
+       RETURNING ${REQUEST_COLUMNS}, claimed.prior_status`,
       [cutoff, at, [...permittedStatuses], domain],
     );
     return rows[0] ?? null;
   }
 
   /**
-   * Hand a claim back. The account became ineligible between the claim and the
-   * work, so nothing was destroyed and the request returns to 'pending'.
+   * Hand a claim back: `executing -> pending`. The account became ineligible
+   * between the claim and the work, so nothing was destroyed and the request
+   * returns to 'pending'.
    *
    * RELEASING RATHER THAN FAILING is the choice that keeps the owner in
    * control. A request wedged in 'executing' would be uncancellable (see
@@ -203,14 +261,22 @@ export class ErasureRepo {
    * feature locked shut for that account, by a race. Back on 'pending' it is
    * cancellable, retried on the next tick, and self-heals if the account
    * returns to an eligible status.
+   *
+   * REPORTS WHETHER IT MOVED A ROW (M49 PR5). It was `void`, so no caller
+   * could tell a real release from a no-op, and the audit event it now carries
+   * must not fire for a release that did not happen. That is M49 PR1's rule
+   * about `advanceStatus`, whose discarded boolean let a compare-and-set that
+   * lost its race change nothing and say nothing.
    */
-  async releaseClaim(tx: Queryable, requestId: string): Promise<void> {
-    await tx.query(
+  async releaseClaim(tx: Queryable, requestId: string): Promise<boolean> {
+    const rows = await tx.query<{ id: string }>(
       `UPDATE erasure_requests
           SET status = 'pending', started_at = NULL
-        WHERE id = $1 AND status = 'executing'`,
+        WHERE id = $1 AND status = 'executing'
+       RETURNING id`,
       [requestId],
     );
+    return rows.length > 0;
   }
 
   /**

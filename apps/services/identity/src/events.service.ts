@@ -8,6 +8,7 @@ import {
   StepUpGrantedEvent,
   TOPICS,
   UserRegisteredEvent,
+  type ErasureRequestStatus,
   type LoginFailureReason,
   type MfaLevel,
 } from '@estate/contracts';
@@ -895,6 +896,102 @@ export class EventsService {
       resourceType: 'user',
       resourceId: userId,
       sessionId,
+      detail: { requestId },
+    });
+  }
+
+  /*
+   * THE DRIVER'S HALF OF THE LADDER (M49 PR5; docs/03 §6kkk -> §6ooo).
+   *
+   * The two above are the OWNER's half. Everything the driver did to the
+   * request's own status was silent: the claim that begins a destruction, the
+   * release that hands one back, and the completion of a legal erasure.
+   *
+   * `actorId: null` / `actorType: 'service'` matches the three consequence
+   * events this driver already emits — it runs under `DRIVER_ACTOR`, which is
+   * the empty string precisely so no user id is implied.
+   *
+   * ONLY THE CLAIM CARRIES `from`, and that is DERIVED, not chosen: M49 PR3's
+   * rule is that a statement whose `WHERE` pins ONE prior owes no `from`.
+   * `releaseClaim` and `completeIfAllDone` each pin `'executing'` and owe
+   * nothing; the claim admits `pending` OR `executing`. The fence reads those
+   * two from the SQL genuinely. IT DOES NOT READ THE CLAIM'S: this PR moved
+   * that from-set into a CTE, so the UPDATE's own `WHERE` is
+   * `erasure_requests.id = claimed.claim_id` and mentions no status at all —
+   * the claim classifies UNREADABLE and owes a `from` for THAT reason, which
+   * is the same verdict by a weaker route. Widening or narrowing the CTE's
+   * arms does not move the fence, measured by doing it. docs/03 §6ooo owns it.
+   */
+
+  /**
+   * The driver took a request: `pending | executing -> executing`.
+   *
+   * `from` SEPARATES TWO OPPOSITE ACTS. From 'pending' this begins destroying
+   * an account. From 'executing' it RESUMES one a previous driver abandoned
+   * part-way — though "abandoned" is the story, not the predicate: see
+   * `claimDue`. The consequence events cannot stand in for it: a resume of a
+   * leg that got as far as the close and the shred emits NOTHING but this
+   * event, because all three sit behind guards that are already satisfied. That is the case worth the key; the resume that re-runs
+   * everything is covered either way.
+   */
+  async erasureClaimed(
+    userId: string,
+    requestId: string,
+    from: ErasureRequestStatus,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.account.erasure_claimed',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { requestId, from },
+    });
+  }
+
+  /**
+   * The driver handed a claim back: `executing -> pending`.
+   *
+   * THE FORENSICALLY INTERESTING ONE. The release fires exactly when the
+   * account stopped being erasable between the claim and the write — a death
+   * report or a settlement lock landed in the gap — so this is the record that
+   * an erasure was started against an estate somebody had just opened a case
+   * on. Nothing was destroyed on this path, which is why no consequence event
+   * covers it.
+   */
+  async erasureReleased(userId: string, requestId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.account.erasure_released',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
+      detail: { requestId },
+    });
+  }
+
+  /**
+   * Every domain reported done: `executing -> completed`.
+   *
+   * THE RECORD A REGULATOR ASKS FOR, and the one member of this trio that
+   * cannot fire yet — completion waits on all eight domains gaining transport.
+   * It ships now because `AUDIT_ACTIONS` is closed: a consumer that predates a
+   * member drops every instance as `schema_violation`, so the vocabulary has
+   * to exist before the producer ever can.
+   */
+  async erasureCompleted(userId: string, requestId: string): Promise<void> {
+    await this.audit.emit({
+      action: 'auth.account.erasure_completed',
+      actorId: null,
+      actorType: 'service',
+      onBehalfOf: null,
+      resourceType: 'user',
+      resourceId: userId,
+      sessionId: null,
       detail: { requestId },
     });
   }

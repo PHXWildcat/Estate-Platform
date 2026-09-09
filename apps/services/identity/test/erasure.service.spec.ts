@@ -31,7 +31,7 @@ import type { Db, Queryable } from '../src/db';
 import type { PgDekRepository } from '../src/dek.repository';
 import type { EmailChangeRepo } from '../src/email-change.repo';
 import { ErasureService } from '../src/erasure.service';
-import type { ErasureRepo, ErasureRequestRow } from '../src/erasure.repo';
+import type { ClaimedErasureRequestRow, ErasureRepo, ErasureRequestRow } from '../src/erasure.repo';
 import type { EventsService } from '../src/events.service';
 import type { SessionsRepo } from '../src/sessions.repo';
 import type { UsersRepo, UserRow } from '../src/users.repo';
@@ -53,6 +53,20 @@ function row(over: Partial<ErasureRequestRow> = {}): ErasureRequestRow {
     cancelled_at: null,
     ...over,
   };
+}
+
+/**
+ * A row as the CLAIM hands it back — status already moved, `prior_status`
+ * saying which arm was taken (M49 PR5).
+ *
+ * Separate from `row()` on purpose. Only `claimDue` can answer `prior_status`,
+ * and putting it on every row would let a double assert a fact its statement
+ * cannot produce — the infidelity this repo's double rule is about. The
+ * default prior is 'pending', the FIRST-claim arm; the resume arm passes
+ * 'executing' explicitly, because those two mean opposite things.
+ */
+function claimed(over: Partial<ClaimedErasureRequestRow> = {}): ClaimedErasureRequestRow {
+  return { ...row(), status: 'executing', prior_status: 'pending', ...over };
 }
 
 function user(over: Partial<UserRow> = {}): UserRow {
@@ -130,7 +144,7 @@ function harness(parts: Parts = {}): Harness {
       seeded.push([...domains]);
       return Promise.resolve();
     },
-    releaseClaim: () => Promise.resolve(),
+    releaseClaim: () => Promise.resolve(true),
     markDomainDone: () => Promise.resolve(),
     completeIfAllDone: () => Promise.resolve(false),
     findLive: () => Promise.resolve(null),
@@ -178,6 +192,14 @@ function harness(parts: Parts = {}): Harness {
     userClosedForErasure: (): Promise<void> => push('status_changed'),
     sessionsRevokedForErasure: (): Promise<void> => push('sessions_revoked'),
     dekDestroyed: (): Promise<void> => push('dek_destroyed'),
+    // M49 PR5. `claimed` RECORDS ITS ARM in the pushed name rather than
+    // dropping it: a double that collapsed both priors to one token would make
+    // the two arms indistinguishable here, which is the defect the key exists
+    // to fix — the double would then agree with the bug.
+    erasureClaimed: (_u: string, _r: string, from: string): Promise<void> =>
+      push(`claimed:${from}`),
+    erasureReleased: (): Promise<void> => push('released'),
+    erasureCompleted: (): Promise<void> => push('completed'),
   } as unknown as EventsService;
 
   function push(name: string): Promise<void> {
@@ -351,7 +373,7 @@ describe('erasure decisions (no database)', () => {
 
 describe('the destroy leg (no database)', () => {
   /** Claims exactly one request, then reports the queue empty. */
-  function oneDue(over: Partial<ErasureRequestRow> = {}): Partial<ErasureRepo> {
+  function oneDue(over: Partial<ClaimedErasureRequestRow> = {}): Partial<ErasureRepo> {
     let served = false;
     return {
       claimDue: (_tx, cutoff) => {
@@ -360,7 +382,7 @@ describe('the destroy leg (no database)', () => {
           return Promise.resolve(null);
         }
         served = true;
-        return Promise.resolve(row({ status: 'executing', ...over }));
+        return Promise.resolve(claimed({ ...over }));
       },
     };
   }
@@ -407,10 +429,19 @@ describe('the destroy leg (no database)', () => {
     expect(destroyed).toBeGreaterThan(revoked);
   });
 
-  it('files the three events of the leg, and the shred is the last of them', async () => {
+  it('files the four events of the leg, and the shred is the last of them', async () => {
+    // FOUR since M49 PR5: the claim that BEGINS the leg is now recorded too,
+    // and it comes first. The three below are consequences — they say what was
+    // destroyed, not that a destruction was started, and on a resumed leg all
+    // three can be skipped while the leg still runs.
     const h = harness({ repo: oneDue() });
     await h.service.runDueErasures(NOW);
-    expect(h.audited).toEqual(['status_changed', 'sessions_revoked', 'dek_destroyed']);
+    expect(h.audited).toEqual([
+      'claimed:pending',
+      'status_changed',
+      'sessions_revoked',
+      'dek_destroyed',
+    ]);
   });
 
   it('marks its own domain done and asks whether the request is finished', async () => {
@@ -420,6 +451,28 @@ describe('the destroy leg (no database)', () => {
       h.log.indexOf('crypto.destroyDek'),
     );
     expect(h.log).toContain('repo.completeIfAllDone');
+  });
+
+  it('AUDITS THE COMPLETION when the last domain reports (M49 PR5)', async () => {
+    // THE SIBLING GUARD, at the layer that counts. This PR added `if (released)`
+    // and `if (completed)` together and unit-proved only the first on both arms.
+    // The default double answers false, so every other case here covers the arm
+    // that emits NOTHING; this is the arm that emits. It matters at THIS layer
+    // rather than only in the int suite because CI measures identity's coverage
+    // on a run with no database, where a `describeIfPg` drive is invisible —
+    // this file's own header records PR2 shipping exactly that gap.
+    const h = harness({
+      repo: { ...oneDue(), completeIfAllDone: () => Promise.resolve(true) },
+    });
+    await h.service.runDueErasures(NOW);
+    expect(h.log).toContain('repo.completeIfAllDone');
+    expect(h.audited).toEqual([
+      'claimed:pending',
+      'status_changed',
+      'sessions_revoked',
+      'dek_destroyed',
+      'completed',
+    ]);
   });
 
   it('replaces the blind index with a real one of the same shape, fresh each time', async () => {
@@ -434,8 +487,7 @@ describe('the destroy leg (no database)', () => {
           // DISTINCT IDS, because the driver refuses to work one request twice
           // in a sweep. A fake handing back the same row is not modelling a
           // queue, it is modelling the bug the backstop exists to stop.
-          return () =>
-            Promise.resolve(n < 2 ? row({ id: `req-${n++}`, status: 'executing' }) : null);
+          return () => Promise.resolve(n < 2 ? claimed({ id: `req-${n++}` }) : null);
         })(),
       },
     });
@@ -454,7 +506,12 @@ describe('the destroy leg (no database)', () => {
     // run finds `destroyedAt` set, emits nothing, and leaves the original
     // timestamp — which is the one an investigator will rely on.
     const h = harness({
-      repo: oneDue(),
+      // A RESUME, so the prior is 'executing' — the double says which arm it is
+      // modelling rather than leaving the default. This is the leg that was
+      // ENTIRELY silent before M49 PR5: the account is already closed and the
+      // DEK already destroyed, so all three consequence events are skipped and
+      // `claimed` is the only thing the whole leg leaves behind.
+      repo: oneDue({ prior_status: 'executing' }),
       users: { findById: () => Promise.resolve(user({ status: 'closed' })) },
       deks: {
         findById: () => Promise.resolve({ dekId: DEK, destroyedAt: NOW } as never),
@@ -462,7 +519,7 @@ describe('the destroy leg (no database)', () => {
     });
     await h.service.runDueErasures(NOW);
     expect(h.log).not.toContain('crypto.destroyDek');
-    expect(h.audited).toEqual([]);
+    expect(h.audited).toEqual(['claimed:executing']);
     // It still finishes the ledger — that is what makes the retry useful.
     expect(h.log).toContain('repo.markDomainDone');
   });
@@ -511,7 +568,34 @@ describe('the destroy leg (no database)', () => {
     expect(h.log).toContain('repo.releaseClaim');
     expect(h.log).not.toContain('crypto.destroyDek');
     expect(h.log).not.toContain('repo.markDomainDone');
-    expect(h.audited).toEqual([]);
+    // WAS `[]`, and that empty array WAS the residual (docs/03 §6kkk): the
+    // forensically interesting path — an erasure started against an estate
+    // somebody had just opened a case on — left nothing at all.
+    expect(h.audited).toEqual(['claimed:pending', 'released']);
+  });
+
+  it('EMITS NOTHING when the release LOSES its compare-and-set (M49 PR5)', async () => {
+    // THE OTHER ARM OF THE BOOLEAN ABOVE. `releaseClaim` pins
+    // `status = 'executing'`, so a rival driver that released or completed this
+    // request first leaves the statement matching nothing. The row is on
+    // 'pending' either way, so an emit keyed on the OUTCOME rather than on the
+    // statement would be indistinguishable here and would file a release that
+    // never happened.
+    //
+    // THIS PROVES THE GUARD, NOT THE STATEMENT — the `if (released)` in the
+    // service is what this reddens. That the statement really answers false on
+    // a row that moved is proved against Postgres in `erasure.int.spec.ts`,
+    // because a double returning a boolean only restates the belief under test.
+    const h = harness({
+      repo: { ...oneDue(), releaseClaim: () => Promise.resolve(false) },
+      users: { closeAndUnlinkEmail: () => Promise.resolve(null) },
+    });
+    await h.service.runDueErasures(NOW);
+    // IT WAS ATTEMPTED — without this the assertion below passes for a leg that
+    // never reached the release at all.
+    expect(h.log).toContain('repo.releaseClaim');
+    expect(h.audited).toEqual(['claimed:pending']);
+    expect(h.log).not.toContain('crypto.destroyDek');
   });
 
   it('destroys nothing when the user row is gone, and does not report success', async () => {
@@ -530,8 +614,7 @@ describe('the destroy leg (no database)', () => {
     let n = 0;
     const h = harness({
       repo: {
-        claimDue: () =>
-          Promise.resolve(n < 3 ? row({ id: `req-${n++}`, status: 'executing' }) : null),
+        claimDue: () => Promise.resolve(n < 3 ? claimed({ id: `req-${n++}` }) : null),
       },
     });
     await expect(h.service.runDueErasures(NOW)).resolves.toBe(3);
@@ -550,7 +633,7 @@ describe('the destroy leg (no database)', () => {
     // exactly. One pass, then stop — and the request it did carry is finished
     // and durable, so stopping costs nothing.
     const h = harness({
-      repo: { claimDue: () => Promise.resolve(row({ status: 'executing' })) },
+      repo: { claimDue: () => Promise.resolve(claimed()) },
     });
     await expect(h.service.runDueErasures(NOW)).resolves.toBe(1);
     expect(h.audited.filter((a) => a === 'dek_destroyed')).toHaveLength(1);

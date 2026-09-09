@@ -61,7 +61,7 @@ describeIfPg('account erasure requests (auth cluster)', () => {
   let users: UsersRepo;
   let deks: PgDekRepository;
   let crypto: FieldCrypto;
-  let audited: Array<{ kind: string; userId: string; requestId: string }>;
+  let audited: Array<{ kind: string; userId: string; requestId: string; from?: string }>;
 
   const user = randomUUID();
   const session = randomUUID();
@@ -136,6 +136,21 @@ describeIfPg('account erasure requests (auth cluster)', () => {
         },
         dekDestroyed: (userId: string, _dekId: string, requestId: string) => {
           audited.push({ kind: 'dek_destroyed', userId, requestId });
+          return Promise.resolve();
+        },
+        // M49 PR5. `from` is CAPTURED, not asserted here — the drives below
+        // read it back, and a double that dropped it would make the resume arm
+        // and the first-claim arm indistinguishable, which is the defect.
+        erasureClaimed: (userId: string, requestId: string, from: string) => {
+          audited.push({ kind: 'claimed', userId, requestId, from });
+          return Promise.resolve();
+        },
+        erasureReleased: (userId: string, requestId: string) => {
+          audited.push({ kind: 'released', userId, requestId });
+          return Promise.resolve();
+        },
+        erasureCompleted: (userId: string, requestId: string) => {
+          audited.push({ kind: 'completed', userId, requestId });
           return Promise.resolve();
         },
       } as unknown as EventsService,
@@ -342,12 +357,22 @@ describeIfPg('account erasure requests (auth cluster)', () => {
         }),
       ).rejects.toThrow();
 
+      // `claimed` FIRST, and before the consequences (M49 PR5). The claim is
+      // what begins the destruction, so a trail that records the consequences
+      // without it cannot say who started this or from which arm. It is not
+      // last: the step that cannot be undone runs last, and recording that a
+      // destruction STARTED must survive the destruction failing part-way.
       expect(audited.map((a) => a.kind)).toEqual([
         'requested',
+        'claimed',
         'closed',
         'sessions_revoked',
         'dek_destroyed',
       ]);
+      // THE ARM, not just the event: this is a FIRST claim, so the prior is
+      // 'pending'. The resume drive below is the same assertion with the other
+      // value, and the two together are what `from` buys.
+      expect(audited.find((a) => a.kind === 'claimed')?.from).toBe('pending');
     });
 
     it('THE ADDRESS STOPS RESOLVING, and the shadow keeps no copy of the index', async () => {
@@ -551,6 +576,57 @@ describeIfPg('account erasure requests (auth cluster)', () => {
       ).resolves.toBe(true);
     });
 
+    it('THE SILENT RESUME, and the completion nothing else can reach (M49 PR5)', async () => {
+      // TWO CLAIMS IN ONE FIXTURE, because they prove each other.
+      //
+      // Sweep 1 runs the whole leg: close, revoke, shred, mark identity done.
+      // Then the ledger is rewound — identity back to 'pending', the other
+      // seven marked done — which is the state a driver that died between its
+      // last domain and the completion leaves behind, with the rest of the
+      // fan-out having since finished.
+      //
+      // Sweep 2 is the leg that was INVISIBLE before this PR. Every consequence
+      // event is skipped: the account is already 'closed', so the close and the
+      // session revocation do not re-run, and the DEK is already destroyed, so
+      // the shred does not re-fire. Without `erasure_claimed` the resumed leg
+      // writes nothing to the trail at all — which is the sentence in
+      // `packages/contracts/src/audit.ts` this drive exists to hold to account.
+      await seedErasable('silent-resume@example.test');
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+      expect(await service.runDueErasures(NOW)).toBe(1);
+      expect(await statusOf()).toBe('closed');
+
+      await admin.query(
+        `UPDATE ${schema}.erasure_domain_progress SET state = 'done' WHERE domain <> 'identity'`,
+      );
+      await admin.query(
+        `UPDATE ${schema}.erasure_domain_progress SET state = 'pending' WHERE domain = 'identity'`,
+      );
+      audited.length = 0;
+
+      expect(await service.runDueErasures(NOW)).toBe(1);
+
+      // THE WHOLE LEG, and it is exactly two events. `claimed` is the only
+      // record that the resume happened, and `completed` is the terminal rung.
+      // Reaching that rung is not unique to this drive — `completes only once
+      // every domain reports` above finishes the other seven domains by hand
+      // and gets there too. What is unique here is reaching it on a leg that
+      // emits NOTHING ELSE: every consequence is already satisfied, so the
+      // trail is these two records or none.
+      expect(audited.map((a) => a.kind)).toEqual(['claimed', 'completed']);
+      // The identifiers, for the same reason as the release drive below.
+      const done = audited.find((a) => a.kind === 'completed');
+      expect(done?.userId).toBe(user);
+      expect(audited.find((a) => a.kind === 'claimed')?.from).toBe('executing');
+
+      const { rows } = await admin.query<{ status: string }>(
+        `SELECT status FROM ${schema}.erasure_requests WHERE user_id = $1`,
+        [user],
+      );
+      expect(rows[0]?.status).toBe('completed');
+    });
+
     it('an EXECUTING request cannot be cancelled, and says so instead of lying', async () => {
       await seedErasable('toolate@example.test');
       await service.request(user, session);
@@ -619,19 +695,131 @@ describeIfPg('account erasure requests (auth cluster)', () => {
       ).resolves.toBeDefined();
     });
 
-    it('RELEASES the claim, destroying nothing, when the account moved in the window', async () => {
+    it('REFUSES THE CLAIM ENTIRELY when the account moved BEFORE the sweep', async () => {
       // Eligibility is restated inside the claim because the request may be
       // days old. A death report landing in the grace period must stop the
       // erasure, and must leave it CANCELLABLE rather than wedged.
+      //
+      // RENAMED IN M49 PR5, because the old name promised a release this drive
+      // does not reach. Moving the account BEFORE the sweep means the claim's
+      // own `u.status = ANY($3)` refuses the row and the leg never starts —
+      // `runDueErasures` answering 0 is that refusal, not a claim handed back,
+      // and `releaseClaim` is never called here. Reaching a release needs the
+      // account to move AFTER a claim, which only the resume arm can set up.
+      // The two drives below do that.
       await seedErasable('moved@example.test');
       await service.request(user, session);
       await backdate(GRACE_MS + 1000);
       await setStatus('deceased_pending');
 
       expect(await service.runDueErasures(NOW)).toBe(0);
+      // NO CLAIM HAPPENED, said by the trail rather than inferred from the 0:
+      // a claim files `claimed` before anything downstream can refuse, so the
+      // sweep leaving only the request behind is what rules the release out.
+      expect(audited.map((a) => a.kind)).toEqual(['requested']);
       expect(await statusOf()).toBe('deceased_pending');
       expect((await service.get(user))?.status).toBe('pending');
+      // Still cancellable — and the cancel is a real one, which is why this
+      // assertion sits ABOVE it rather than at the end of the drive.
       expect(await service.cancel(user, session)).toBeNull();
+    });
+
+    it('THE RELEASE ACTUALLY RUNS, and is audited, when a RESUMED owner is ineligible (M49 PR5)', async () => {
+      // NOTHING IN THIS PACKAGE REACHED `releaseClaim` BEFORE THIS DRIVE.
+      // Measured by making it throw unconditionally: every test in the package
+      // stayed green — 561 of them, this PR as it stood before these three
+      // drives existed. Re-run it on THIS tree and the two drives below are
+      // exactly what reddens, which is the point; the count is named with its
+      // corpus because it is not reproducible without one. The drive above is why that was easy to miss — it was named for
+      // the release and stops at the claim.
+      //
+      // THE RESUME ARM IS WHAT REACHES IT, and it is a production path rather
+      // than a contrivance. That arm deliberately carries NO status allowlist,
+      // because an account mid-erasure is already 'closed' and an allowlist
+      // would strand exactly the request the arm exists to rescue. So a request
+      // claimed while its owner was still eligible, whose owner then becomes
+      // ineligible, is RE-claimed by the resume arm and then stopped by
+      // `closeAndUnlinkEmail` restating that allowlist inside its own WHERE.
+      // The pre-read and the write DISAGREE, which is the boundary the release
+      // exists to decide.
+      await seedErasable('released@example.test');
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+
+      const claimedRow = await db.withTransaction('', async (tx) => {
+        const row = await repo.claimDue(tx, new Date(NOW.getTime()), NOW, ['active'], 'identity');
+        await repo.seedDomains(tx, row?.id as string, ERASURE_DOMAINS);
+        return row;
+      });
+      expect(claimedRow?.status).toBe('executing');
+
+      // The death report lands AFTER the claim — the window the release owns.
+      await setStatus('deceased_pending');
+      audited.length = 0;
+
+      expect(await service.runDueErasures(NOW)).toBe(1);
+
+      // IT MOVED THE ROW, AND IT SAID SO.
+      expect(audited.map((a) => a.kind)).toEqual(['claimed', 'released']);
+      expect(audited.find((a) => a.kind === 'claimed')?.from).toBe('executing');
+      // AND IT NAMED THE RIGHT SUBJECT. Both arguments are UUID strings, so
+      // `erasureReleased(request.user_id, request.id)` transposed type-checks in
+      // silence and writes the request id into `resourceId` on a table under
+      // `REVOKE UPDATE, DELETE`. Asserting the kind alone cannot see that.
+      const released = audited.find((a) => a.kind === 'released');
+      expect(released?.userId).toBe(user);
+      expect(released?.requestId).toBe(claimedRow?.id);
+      // Back on 'pending': cancellable by the owner, retried on the next tick.
+      expect((await service.get(user))?.status).toBe('pending');
+      // AND NOTHING WAS DESTROYED. The release runs before step 1 of the leg,
+      // so the account is untouched and its ledger row never advanced.
+      expect(await statusOf()).toBe('deceased_pending');
+      const { rows } = await admin.query<{ state: string }>(
+        `SELECT p.state FROM ${schema}.erasure_domain_progress p
+           JOIN ${schema}.erasure_requests r ON r.id = p.request_id
+          WHERE r.user_id = $1 AND p.domain = 'identity'`,
+        [user],
+      );
+      expect(rows[0]?.state).toBe('pending');
+    });
+
+    it('THE RELEASE STATEMENT ANSWERS FALSE on a row that already moved (M49 PR5)', async () => {
+      // THE STATEMENT ITSELF, against Postgres — the layer a double cannot
+      // reach, because a double returning a boolean is only a restatement of
+      // the belief under test. `erasure.service.spec.ts` proves the `if`
+      // that READS this boolean; this proves the boolean is worth reading.
+      //
+      // THE SECOND CALL IS THE RIVAL DRIVER'S LEG, not a contrivance: two
+      // drivers can both hold this row, because the resume arm admits
+      // 'executing' and the claim transaction COMMITS, so no row lock is held
+      // across the work leg. Whichever releases first moves the row; the
+      // loser's statement pins `status = 'executing'` and matches nothing.
+      await seedErasable('cas@example.test');
+      await service.request(user, session);
+      await backdate(GRACE_MS + 1000);
+
+      const claimedRow = await db.withTransaction('', async (tx) => {
+        const row = await repo.claimDue(tx, new Date(NOW.getTime()), NOW, ['active'], 'identity');
+        await repo.seedDomains(tx, row?.id as string, ERASURE_DOMAINS);
+        return row;
+      });
+      const requestId = claimedRow?.id as string;
+
+      // ON 'executing' IT MOVES THE ROW — the positive control that keeps the
+      // negative below from passing for the wrong reason.
+      await expect(db.withTransaction('', (tx) => repo.releaseClaim(tx, requestId))).resolves.toBe(
+        true,
+      );
+      expect((await service.get(user))?.status).toBe('pending');
+
+      // AND THE LOSER MATCHES NOTHING. The row is on 'pending' either way, so
+      // an emit keyed on the OUTCOME rather than on this statement would be
+      // indistinguishable here — and would put a release on the trail that
+      // never happened.
+      await expect(db.withTransaction('', (tx) => repo.releaseClaim(tx, requestId))).resolves.toBe(
+        false,
+      );
+      expect((await service.get(user))?.status).toBe('pending');
     });
 
     it('RESUMES a request the driver claimed and never finished', async () => {
@@ -654,10 +842,31 @@ describeIfPg('account erasure requests (auth cluster)', () => {
         return row;
       });
       expect(claimed?.status).toBe('executing');
+      // THE FIRST CLAIM'S OWN PRIOR, read off the real statement rather than
+      // assumed: this manual claim came from 'pending'.
+      expect(claimed?.prior_status).toBe('pending');
       audited.length = 0;
 
       expect(await service.runDueErasures(NOW)).toBe(1);
       expect(await statusOf()).toBe('closed');
+
+      // THE ARM THIS PR EXISTS FOR (M49 PR5). The sweep above re-claimed a row
+      // already in 'executing', and BOTH arms write 'executing', so the target
+      // alone cannot tell a resume from a first claim. `from` can.
+      //
+      // The consequences DO still fire here, and saying so is the point: this
+      // fixture crashed after the CLAIM and before the destroy, so the account
+      // is still open and the whole leg re-runs. That is the benign resume.
+      // 'THE SILENT RESUME' ABOVE produces the other one, where every
+      // consequence is skipped and the leg's whole trail is `claimed` plus the
+      // `completed` that ends it — two records, not none.
+      expect(audited.find((a) => a.kind === 'claimed')?.from).toBe('executing');
+      expect(audited.map((a) => a.kind)).toEqual([
+        'claimed',
+        'closed',
+        'sessions_revoked',
+        'dek_destroyed',
+      ]);
 
       const { rows } = await admin.query<{ state: string }>(
         `SELECT p.state FROM ${schema}.erasure_domain_progress p

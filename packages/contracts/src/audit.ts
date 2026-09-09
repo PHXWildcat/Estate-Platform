@@ -32,6 +32,56 @@ export const AUDIT_ACTIONS = [
   // for destruction is the least survivable silent drop in the catalog.
   'auth.account.erasure_requested',
   'auth.account.erasure_cancelled',
+  /*
+   * THE ERASURE LADDER'S THREE SILENT RUNGS (M49 PR5; docs/03 §6kkk, opened by
+   * M49 PR1 and measured at `0912525`).
+   *
+   * `erasure_requests.status` has FIVE writing statements and FOUR transitions.
+   * The two above cover the owner's half — the ask and its withdrawal. The
+   * DRIVER's half recorded nothing: the claim that begins destruction, the
+   * release that hands a claim back, and the completion of a legal erasure.
+   *
+   * The destructive steps between them are audited by CONSEQUENCE
+   * (`auth.user.status_changed`, `auth.sessions.revoked_all`,
+   * `crypto.dek.destroyed`), which is why this looked covered. It is not, and
+   * the reason is narrower than two earlier drafts of this comment claimed.
+   * TWO of the three are guarded by the fact each records —
+   * `status_changed` by `user.status !== 'closed'`, `dek.destroyed` by the
+   * DEK's own `destroyed_at`. The THIRD is not: `revokeAllForUser` and its
+   * emit sit INSIDE the `if (user.status !== 'closed')` block, so they are
+   * guarded by the CLOSE rather than by whether any session survived. A driver
+   * killed between the close commit and the revoke therefore resumes and skips
+   * a step that had NOT already happened (docs/03 §6ooo owns that gap). What
+   * governs how much a resume emits is where the previous driver died. A
+   * resume after the close and the shred skips all three CONSEQUENCE events; a
+   * resume after the claim but before the close re-runs the leg and emits all
+   * three. Before this change the first left no trace at all, which is the case
+   * a forensic reader most needs on the trail; with the members below it now
+   * files `erasure_claimed`, and `erasure_completed` if it finishes.
+   *
+   * THE EDGE IS IN `detail.from`, ON THE CLAIM ONLY, and that is DERIVED
+   * rather than chosen: M49 PR3's rule is that a statement whose `WHERE` pins
+   * ONE prior owes no `from`. Release (`WHERE ... status = 'executing'`) and
+   * completion (same) each pin one and owe nothing. With `cancel`, which
+   * pins `'pending'`, they are the fence's THREE derived positive controls —
+   * an earlier draft said "two", counting only the driver's own, and the
+   * fence's assertion names all three. The claim admits `pending` OR `executing`, and the two
+   * mean opposite things: `pending` starts destruction, `executing` RESUMES an
+   * account somebody already half-destroyed. One token, opposite acts.
+   *
+   * PER-RUNG TOKENS RATHER THAN ONE `erasure_status_changed`, because this
+   * family already chose that spelling twice, two lines up.
+   *
+   * DEPLOY THE CONSUMER BEFORE THE PRODUCER — see the block above, which is
+   * about this same table. `erasure_completed` is the record a regulator asks
+   * for, and it is the one member here that CANNOT yet fire: completion waits
+   * on every domain gaining transport. That is the argument for adding it now
+   * rather than later, not against — the vocabulary is closed, so the consumer
+   * has to exist before the producer ever can.
+   */
+  'auth.account.erasure_claimed',
+  'auth.account.erasure_released',
+  'auth.account.erasure_completed',
   'crypto.field.decrypted',
   'crypto.dek.destroyed',
   // M18: the decrypt-rate baseline (docs/03 §4 TB4). Emitted by the audit
