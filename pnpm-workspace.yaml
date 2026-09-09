@@ -56,7 +56,15 @@ catalog:
   # 15.5.21 is the security floor: earlier 15.x carries high-severity SSRF in
   # rewrites (which this app uses for /graphql), SSRF in Server Actions on
   # custom servers, and an App Router DoS.
-  next: ^15.5.21
+  # FLOOR RAISED TO 15.5.24 (2026-09-09): next 15.5.23 and below carry two
+  # CRITICAL unauthenticated RCE advisories published 2026-09-08 —
+  # GHSA-p293-qw3h-jr36 (windows-hosted servers, >= 13.4.0) and
+  # GHSA-2xp9-vwfh-vxw4 (Image Optimization API on AVIF files, >= 10.0.0).
+  # Both are patched in exactly 15.5.24. The floor moves rather than the lock
+  # alone, for the reason the postcss override below states: ^15.5.21 already
+  # PERMITTED the fix and simply had not resolved to it, so the lockfile was
+  # safe only by accident and a re-resolution could have walked back into range.
+  next: ^15.5.24
   react: ^19.1.0
   react-dom: ^19.1.0
   '@types/react': ^19.1.5
@@ -95,3 +103,12 @@ onlyBuiltDependencies: []
 overrides:
   next>postcss: '>=8.5.23'
   next>sharp: '>=0.35.0'
+  # multer 2.2.0 took three HIGH denial-of-service advisories on 2026-09-09 —
+  # GHSA-qfvm-cv95-jqjf (fd leak on aborted uploads), GHSA-wc9g-mqfw-jrwm
+  # (crafted multipart field names) and GHSA-535w-7cp7-47q4 (oversized array
+  # index in field names) — all patched in exactly 2.3.0. Nothing here depends
+  # on multer directly; it arrives through `@nestjs/platform-express`, whose own
+  # latest (12.0.1) STILL declares 2.2.0, so bumping the parent does not fix it.
+  # An exact pin rather than a floor: 2.3.0 is the newest published 2.x, so a
+  # floor would express a range with one member and read as forward-looking.
+  multer: '2.3.0'
