@@ -249,6 +249,7 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // PR4 closes only for the edge, and one records a correction the tree CANNOT
   // hold because migrations are checksummed.
   '6nnn': 11,
+  '6ooo': 15,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -2049,7 +2050,7 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
 
     // AND THE REAL CORPUS IS NON-EMPTY FOR THIS TAG SHAPE, so `namingCleared`
     // returning [] above is a statement about states rather than about there
-    // being no escalation-owned residuals to check. Twenty-two of them exist.
+    // being no escalation-owned residuals to check. Twenty-three exist today.
     const escalationOwned = items.filter((r) => {
       const m = TAG.exec(r.text);
       return m !== null && m[2] !== undefined && /^E\d$/.test(m[2]);

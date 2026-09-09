@@ -8859,7 +8859,7 @@ argued.
   state machine" in its title is broader than "every table with a column called
   `status`", and there is no repo-wide equivalent, which is why the three
   cross-service residuals above had to be found by hand. M45's stated scope.
-- **[OWNER: M49]** *An erasure request that is claimed and handed back leaves
+- **[CLOSED: §6ooo]** *An erasure request that is claimed and handed back leaves
   nothing behind.* `erasure_requests.status` runs
   `pending → executing → completed`, with `executing → pending` on release.
   The destructive steps inside are audited by consequence — the account close,
@@ -8875,6 +8875,19 @@ argued.
   returns false until every domain gains transport), which is the argument FOR
   doing it now rather than later: the vocabulary is closed and the consumer
   must ship before the producer.
+
+  **CLOSED BY M49 PR5 (§6ooo).** Three members join `AUDIT_ACTIONS` and both
+  compare-and-sets are now READ, so a release that did not happen files nothing.
+  The sentence was right on both counts, and the thing it did not say turned out
+  to matter more: the CLAIM was silent too, and on a resume AFTER THE CLOSE it
+  is the only event the whole leg produces. Only that resume — one taken before
+  the close re-runs the whole leg and files all three consequence events, which
+  the drive in `erasure.int.spec.ts` asserts. That third rung is also the only
+  one carrying a `from`, because it admits two priors meaning opposite things
+  and no other statement in this ladder does. The fence agrees, but by a weaker
+  route than an earlier draft of this paragraph claimed: it reads the other
+  three from-sets out of the SQL and classifies the claim's as UNREADABLE, since
+  this PR moved that predicate into a CTE.
 
 ## 6lll. Threat-model delta — M49 PR2, the check that cannot say whether it ran (2026-09-04)
 
@@ -9497,3 +9510,247 @@ visible rather than being frozen into the data.
   the difference rather than a list worth re-typing, and it includes
   `vault.emergency.items_read` — the cross-user disclosure event — alongside
   `released` and `revoked`. A hand-maintained list beside a thing that grows.
+
+## 6ooo. Threat-model delta — M49 PR5, the erasure ladder's silent rungs (2026-09-08)
+
+M49 PR3 and PR4 both fixed events that could not say WHICH transition they
+recorded. This one is the other half of §6kkk's subject: transitions with no
+event at all. `erasure_requests.status` has FIVE writing statements and FOUR
+transitions, and of the four transitions exactly ONE was audited — the owner's
+withdrawal. The other pre-existing member records the INSERT that CREATES the
+row, where `status` arrives by column default; that is a statement and not a
+transition, and an earlier draft of this section counted it as one and said
+"audited two". Everything the DRIVER did to the request's own status was
+silent: the claim that begins a destruction, the release that
+hands one back, and the completion of a legal erasure.
+
+**IT LOOKED COVERED, AND THE REASON IS WORTH KEEPING.** The destructive steps
+between those rungs are audited by CONSEQUENCE — `auth.user.status_changed`,
+`auth.sessions.revoked_all`, `crypto.dek.destroyed` — so the trail carries what
+was destroyed. But on a RESUME TAKEN AFTER THE CLOSE, every one of those is
+skipped: the account is already `closed`, so the close and the session
+revocation do not re-run, and a destroyed DEK is not re-shredded. A driver
+picking up such a half-finished erasure could therefore run its whole leg and
+leave nothing behind at all. HOW MANY ARE SKIPPED DEPENDS ON WHERE THE PREVIOUS
+DRIVER DIED, and the two guards are not the same shape: `status_changed` and
+`dek.destroyed` are each guarded by the fact they record, while the session
+revocation sits INSIDE the close's `if`, so it is skipped whenever the close
+is — including the one case where it had not yet happened. That leg is
+now driven, in `erasure.int.spec.ts`, and it emits exactly two events.
+
+**PR3'S DERIVATION TRANSFERS HERE INTACT, AND THE ANSWER IS NOT TRIVIAL.**
+Unlike the vault, every statement in this ladder carries a from-predicate in
+SQL, so the fence reads the `WHERE` exactly as settlement's does. Three of the
+four pin ONE prior and owe nothing — `cancel` from `pending`, `release` and
+`completion` from `executing`. The claim admits `pending` OR `executing`, and
+those two mean opposite things: `pending` begins destroying an account,
+`executing` resumes one somebody already half-destroyed. One statement of four
+owes a `from`, and the THREE single-prior statements — cancel, release and
+completion — are the fence's derived positive controls rather than a claim this
+document makes. (An earlier draft said "the two", counting only the driver's
+own; the fence's positive-control assertion names all three.)
+
+**PLAIN `RETURNING` CANNOT ANSWER IT**, because Postgres returns post-update
+values and both arms land on `executing`. The prior is captured by the CTE
+pre-image M49 PR3 built, with the lock taken inside the CTE (`FOR UPDATE OF r`)
+so the value read is the one under the lock the update runs beneath.
+
+**THREE MEMBERS JOIN `AUDIT_ACTIONS`** — the first vocabulary growth since M49
+PR1, and the constraint comes back with it: a consumer that predates a member
+drops every instance as `schema_violation`, advances the offset and writes no
+dead-letter. `auth.account.erasure_completed` is the sharpest case, because it
+CANNOT yet fire — completion waits on all eight domains gaining transport. That
+is the argument for adding it now rather than later: the vocabulary is closed,
+so the consumer must exist before the producer ever can.
+
+**BOTH COMPARE-AND-SETS ARE NOW READ.** `releaseClaim` returned `void` and
+`completeIfAllDone` returned a boolean its caller discarded, so neither caller
+could tell a real move from a no-op. Both emits are conditional on the answer —
+M49 PR1's rule, one service over, where a lost race changed nothing and said
+nothing.
+
+**THE FENCE FOUND A DEFECT IN ITSELF BEFORE IT FOUND ANY IN THE LADDER.** It
+read the claim's table name as `OF` — the CTE's `FOR UPDATE OF r` precedes the
+statement's real `UPDATE`, and matching the first `UPDATE` in the block dropped
+the one statement this whole delta is about while reporting three
+healthy-looking ones. Settlement's fence was checked for the same defect and
+does not have it: both scans return the same fourteen heads there.
+
+**AND ONE DEFECT IT ONLY APPEARED TO HAVE.** While diagnosing that, the backtick
+pairing was blamed first — prose about SQL is written in backticks — and a
+comment stripper was added for it. That diagnosis was WRONG: removing the
+stripper leaves all seven assertions green, because this service's code-spans
+are balanced. The stripper stays as defence in depth, and this section says so
+rather than crediting it with a fix it did not make.
+
+### Residuals
+
+- **[OWNER: M49]** *Two statements in this ladder omit `deleted_at IS NULL`, and
+  the column they omit is written by nothing.* `releaseClaim` and
+  `completeIfAllDone` both qualify on `id` and `status` alone, where `cancel`
+  and the claim both filter tombstones. Nothing in the tree ever sets
+  `erasure_requests.deleted_at`, so the omission is unreachable today rather
+  than a live hole — which is exactly why it is recorded instead of fixed here:
+  adding the filter changes no behaviour that exists, and the more interesting
+  half is that the whole tombstone column on this table is currently decorative.
+  A `deleted_at` nothing writes and two statements do not read is a soft-delete
+  convention half-applied.
+- **[OWNER: M49]** *The audit emit and the status write are not one fact.* Every
+  emit here publishes to Kafka OUTSIDE the transaction that moved the row, so a
+  crash between commit and publish loses the event while the move stands. The
+  only DB-durable record of the same transition is the version row the trigger
+  writes, which carries no actor on driver writes (`DRIVER_ACTOR` is the empty
+  string). This is the existing shape for every emit in the service and is not
+  made worse here, but the three new members are the first ones whose ABSENCE
+  would be read as "the driver never ran".
+- **[OWNER: M49]** *A crash between the account close and the session revocation
+  leaves sessions unrevoked forever, with no event.* `unlinkAllForErasure` was
+  deliberately hoisted out of the close block so a resume re-runs it;
+  `revokeAllForUser` was not, and it sits inside `if (user.status !== 'closed')`
+  — so a resumed leg skips it. Not an authz hole: `sessions.repo.ts` refuses to
+  resolve any session for a non-active account. But the rows keep `revoked_at`
+  NULL indefinitely and no `auth.sessions.revoked_all` is ever filed, which is
+  the same "audited by consequence" gap this delta closes one rung up, still
+  open one rung down. NOT AN AUTHZ HOLE, but not for the reason a first draft of
+  this bullet gave: `sessions.repo.ts` does not refuse every non-active account,
+  it resolves against a two-value ALLOWLIST — `active` and `deceased_pending`.
+  An erased account is `closed`, so it sits outside that allowlist and the
+  conclusion holds; the mechanism cited for it did not.
+- **[OWNER: M49]** *`auth.account.erasure_completed` has no end-to-end proof.*
+  M49 PR1's stack e2e drives settlement's four members against the DEPLOYED
+  consumer, which is the only thing that can tell an accepted member from a
+  silently dropped one. Erasure's three have unit and integration coverage and
+  no such journey — and completion is the member least able to gain one, since
+  it needs all eight domains done. The gate exists; this producer is outside it.
+- **[OWNER: M45]** *This PR's fence is the SECOND copy of one classifier, and
+  the third per-service status fence.* Those are different counts and an earlier
+  draft of this bullet ran them together: there are three per-service status
+  fences now (settlement's, the vault's, this one), but the vault's reads GUARD
+  CHAINS rather than SQL predicates, so it is not a copy of this classifier at
+  all. The from-predicate reader and the statement scanner are a second
+  spelling of settlement's `status-audit-fence.spec.ts`, written that way
+  because the workspace has no shared home for a test helper and no precedent
+  for a spec importing another service's source. The judgement is cited rather
+  than re-argued, but the CODE is duplicated, so the next fix to the classifier
+  lands in one of two places. M45's stated scope.
+- **[OWNER: M45]** *The fence is keyed on the literal column `status`, and
+  identity's other lifecycle column is spelled `state`.*
+  `erasure_domain_progress.state` is declared in `015_erasure_execution.sql`,
+  one file on from the `014_erasure_requests.sql` that creates the table this
+  fence reads, runs `pending -> done`, and is invisible to it. The
+  fence asserts its own blindness rather than describing it, which is the most
+  this per-service shape can do.
+- **[OWNER: M49]** *The claim's from-set is not actually READ, and the fence's
+  headline is stronger than its mechanism.* Since this PR restructured that
+  statement, its own `WHERE` is `erasure_requests.id = claimed.claim_id` and
+  mentions no status at all — the two-arm eligibility test lives in the CTE. So
+  the claim classifies as UNREADABLE and owes a `from` for that reason, not
+  because the scan saw two priors. The verdict is right and fails closed, but
+  narrowing the CTE to one arm would NOT redden the fence, measured by doing it.
+  Reading the CTE was implemented and reverted: the classifier is also
+  TABLE-BLIND — it counts the joined `users.status` comparison — so the claim
+  answers `null` as an artifact whatever its own arms say, and fixing that needs
+  a table-aware classifier, which is a parser, which is what a fence should not
+  grow. The other three statements ARE read genuinely, and a mutation widening
+  the release reddens.
+- **[ACCEPTED]** *The fence's comment stripper is not a tokenizer.* It removes
+  `/* */` and `//` before pairing backticks, and it is NOT LOAD-BEARING —
+  deleting the call leaves every assertion green, because this service's comment
+  code-spans are balanced. It was written while the backtick theory was believed
+  and kept as defence in depth once that theory was disproved. A `//` inside a
+  string literal or a backtick inside a regex literal would still desynchronise
+  it. No such case exists in this service's
+  sources, and the set comparison is the tripwire if one arrives. Accepted for
+  the same reason settlement's equivalent residual is: a real tokenizer in a
+  fence is a second parser to maintain, which is the thing the fence exists to
+  avoid.
+- **[ACCEPTED]** *The claim locks the request row and not the joined user row.*
+  `FOR UPDATE OF r` names `r` alone, so the `users` row read in the same
+  subquery can change between the claim and the destroy leg. That is not a
+  defect to fix but the reason the release path exists: it is precisely the
+  window where a death report or a settlement lock lands, and the release —
+  now audited — is what absorbs it.
+- **[OWNER: M49]** *The residuals fence carries a HAND-WRITTEN count beside the
+  mechanism that derives one.* `threat-model-residuals.spec.ts` narrates a
+  number next to its own assertion that floors escalation-owned residuals at
+  twenty. M49 PR5 found that number stale — it said "Twenty-two of them exist"
+  when twenty-three did (twenty-two `[OWNER: E1]` and one `[OWNER: E4]`) — and
+  refreshed it, which fixes the instance and not the class: the next residual to
+  land makes it stale again. The assertion passed throughout, which is the
+  point — it is a hand-written number beside the mechanism
+  that derives one, the defect §6vv and §6hhh were written about, sitting inside
+  the file that enforces the rule.
+- **[OWNER: M49]** *A CLAIM HAS NO OWNER, so a rival sweep can release a claim
+  it does not hold — and this delta's new event says the wrong thing when it
+  does.* `db.withTransaction` COMMITs, so `FOR UPDATE OF r SKIP LOCKED` holds
+  the row for the claim transaction only, not across the work leg; and the
+  resume arm's `EXISTS (… state <> 'done')` stays satisfied for the whole leg,
+  because `markDomainDone` runs last. `ErasureDriver`'s own JSDoc says the
+  driver may "tick twice, or run in two processes at once". So two sweeps A and
+  B can both hold one request. Interleave them: both read the user as `active`;
+  A's `closeAndUnlinkEmail` commits; B's then matches nothing, because its
+  allowlist is `['active']`, so B takes the release path, finds the row still
+  `executing`, MOVES it to `pending` and files
+  `auth.account.erasure_released` — an event whose own docstring says nothing
+  was destroyed — while A goes on to revoke sessions and shred the DEK. A's
+  `completeIfAllDone` then pins `executing`, sees `pending`, and returns false,
+  so `erasure_completed` can never fire. No later tick recovers it: the pending
+  arm needs `u.status = ANY(['active'])` and the user is `closed`; the resume
+  arm needs `executing` and the row is `pending`. The account is half-erased,
+  its request parked on the status meaning "not started", with a false "nothing
+  was destroyed" beside the destruction on an append-only table. THE STRANDING
+  PREDATES THIS DELTA — `releaseClaim` always wrote `pending` and
+  `completeIfAllDone` always pinned `executing` — but the FALSE RECORD is new,
+  and this delta is the one that made the trail load-bearing. The `if (released)`
+  comment used to enumerate only "a concurrent release or completion"; it now
+  names this third case too, where the rival is still mid-leg and the statement
+  therefore SUCCEEDS. Naming it is all the comment can do — the guard cannot
+  detect it.
+  The remedy is a claim token or a lease on the row, which is a schema change
+  and docs/02's to approve, so it is recorded rather than folded in.
+- **[OWNER: M49]** *`detail.from = 'executing'` cannot distinguish an abandoned
+  claim from a live one.* The key exists because the two priors "mean opposite
+  things", but what the resume arm decides is only "this domain's ledger row is
+  not done", which is equally true of a request another sweep claimed moments
+  ago. `started_at` records "executing since when" and NO statement compares it
+  to a staleness threshold, so the evidence is preserved and never read. Under
+  the interleaving above the trail records a resume of a request nobody
+  abandoned — the mis-attribution the key was added to remove. The three new
+  drives all reach `executing` through a fixture that genuinely stalled, never
+  through a concurrent live claim, so the boundary is undriven. Same remedy as
+  the bullet above; the source comments now say the predicate rather than the
+  story.
+- **[OWNER: M49]** *The `dek === null` arm is executed by no test, and it still
+  marks the domain done.* Every unit fixture stubs `deks.findById` to a real
+  record and every integration fixture mints a real DEK through `seedErasable`,
+  so that arm runs nowhere. It matters beyond coverage: on it the driver skips
+  the shred and falls through UNCONDITIONALLY to `markDomainDone` and
+  `completeIfAllDone`, so identity reports its domain finished and — now that
+  identity reports its domain finished for a leg that destroyed no key and
+  filed no `crypto.dek.destroyed`. That cannot reach `completed` TODAY, and
+  saying otherwise would overstate it: the terminal rung needs all eight domains
+  done and seven have no transport, which is this section's own separate
+  residual. But this delta added the member, so on the day those domains arrive,
+  a completion becomes reachable from a leg that shredded nothing. The sibling arm two branches up refuses exactly that
+  record, on the stated grounds that "a request that quietly completed against a
+  missing user is exactly the record that would be believed later". The same
+  reasoning is not applied to a missing DEK.
+- **[OWNER: M45]** *The statement scan reads `UPDATE` only, so the row-creating
+  INSERT is outside it.* `insertIfPermitted` creates the request at the DDL
+  default, which is why it is not a transition and why the fence's four is the
+  whole ladder — but that is an argument rather than a mechanism, and it is the
+  difference between the vocabulary comment's FIVE writing statements and the
+  fence's FOUR. An `INSERT INTO erasure_requests (user_id, status) VALUES
+  ($1, 'executing')` would move the ladder with no `TRANSITION_ACTIONS` entry,
+  no audit action, and a green fence. The fence now discloses the bound; closing
+  it is the same per-service-copy problem as the two M45 bullets above.
+- **[ACCEPTED]** *The seed's atomicity is asserted by a test name and proved by
+  nothing.* `seeds EVERY participant domain, inside the claim transaction` runs
+  against a `Db` double whose `withTransaction` is `(_actor, fn) => fn({})` — it
+  opens no transaction, so no fixture in that file can tell "inside the claim
+  transaction" from "in a second transaction immediately afterwards", and both
+  its assertions are call-order facts. No integration drive crashes between the
+  claim and the seed either. Accepted rather than owned: proving it needs a
+  fixture that aborts mid-transaction against Postgres, the ordering IS asserted,
+  and the failure it guards against (an empty ledger read as "every domain
+  done") is now also guarded by the resume arm keying on a ledger row.

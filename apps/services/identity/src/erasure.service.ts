@@ -77,8 +77,14 @@ function toState(row: ErasureRequestRow): ErasureState {
 /**
  * The DECISION half of account erasure (M25 PR2, docs/04). Owner-initiated and
  * step-up gated at the route; this class decides whether a request may exist
- * and lets the owner withdraw it. It destroys nothing — `destroyDek` still has
- * no production caller, and the fan-out is PR3.
+ * and lets the owner withdraw it.
+ *
+ * IT ALSO DESTROYS, and this sentence used to deny it: through M25 PR2 the
+ * class decided only, and the docstring said "it destroys nothing —
+ * `destroyDek` still has no production caller". PR3 shipped the driver into
+ * this same class, so `executeIdentityDomain` below closes the account,
+ * revokes every session and calls `destroyDek`. The old sentence survived
+ * because nothing can go red for a comment.
  *
  * THE PROTECTIVE VERB IS THE UNGATED ONE, which is the repo's rule wearing an
  * unfamiliar shape. Usually the permissive action is gated and the protective
@@ -222,6 +228,15 @@ export class ErasureService {
       if (claimed === null) {
         return carried;
       }
+      // AFTER the claim transaction commits, like every other emit in this
+      // driver: the audit producer is Kafka, outside the transaction, so an
+      // emit inside it would be published for a claim that then rolled back.
+      // The DB-durable record of the same move is the version row the trigger
+      // writes, and the two are deliberately not one atomic fact. NOTHING
+      // ASSERTS THAT ORDERING — no fence in this repo relates an emit to its
+      // transaction's commit — so it is a convention held by reading, and it is
+      // recorded as a residual (docs/03 §6ooo) rather than claimed as a control.
+      await this.events.erasureClaimed(claimed.user_id, claimed.id, claimed.prior_status);
       if (worked.has(claimed.id)) {
         // Re-claimed inside one sweep: the predicate has stopped narrowing.
         // Stop rather than spin — the requests already carried are done and
@@ -287,7 +302,23 @@ export class ErasureService {
         // death report or a settlement lock landed in the gap. Nothing has been
         // destroyed, so hand the claim back rather than wedging the request:
         // on 'pending' the owner can still cancel it and the next tick retries.
-        await this.db.withTransaction(DRIVER_ACTOR, (tx) => this.repo.releaseClaim(tx, request.id));
+        const released = await this.db.withTransaction(DRIVER_ACTOR, (tx) =>
+          this.repo.releaseClaim(tx, request.id),
+        );
+        // ONLY IF IT MOVED. The statement pins `status = 'executing'`, so a
+        // concurrent release or completion makes this a no-op — and a no-op
+        // that emitted would put a release on the trail that never happened.
+        //
+        // THERE IS A THIRD CONCURRENCY, and this guard does NOT cover it:
+        // `released === true` does not mean nothing was destroyed. Nothing in
+        // the row says who holds the claim, so a rival sweep still mid-leg
+        // leaves the row on 'executing' and this statement SUCCEEDS — filing a
+        // release while the rival shreds the DEK, and stranding the request on
+        // 'pending' where no arm can re-claim it. docs/03 §6ooo owns it; the
+        // remedy is a claim lease, which is a schema change.
+        if (released) {
+          await this.events.erasureReleased(request.user_id, request.id);
+        }
         return;
       }
       await this.events.userClosedForErasure(request.user_id, user.status, request.id);
@@ -316,10 +347,18 @@ export class ErasureService {
       await this.events.dekDestroyed(request.user_id, user.dek_id, request.id);
     }
 
-    await this.db.withTransaction(DRIVER_ACTOR, async (tx) => {
+    const completed = await this.db.withTransaction(DRIVER_ACTOR, async (tx) => {
       await this.repo.markDomainDone(tx, request.id, THIS_DOMAIN);
-      await this.repo.completeIfAllDone(tx, request.id, now);
+      // THE BOOLEAN WAS DISCARDED HERE (M49 PR5). `completeIfAllDone` is a
+      // compare-and-set: it returns false when another domain is still
+      // outstanding, which today is always, and false when a concurrent
+      // completion won the race. Either way the request did not complete and
+      // nothing may be recorded as if it had.
+      return this.repo.completeIfAllDone(tx, request.id, now);
     });
+    if (completed) {
+      await this.events.erasureCompleted(request.user_id, request.id);
+    }
   }
 
   /**
