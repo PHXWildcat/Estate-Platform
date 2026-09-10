@@ -43,7 +43,8 @@ export interface AccountView {
 
 /**
  * The isolating service's core flows (docs/03 TB5). The access token is
- * decrypted in exactly two methods — sync() and revoke() — as actorType
+ * decrypted at exactly one chokepoint, `decryptAccessToken`, reached from
+ * `syncItem` (behind both `sync()` and the webhook) and `revoke()` — as actorType
  * 'service' with an explicit purpose, each an audited `crypto.field.decrypted`
  * event. It never leaves this class: not in responses, events, errors, or
  * logs.
@@ -113,7 +114,7 @@ export class PlaidService {
     return rows.map(toItemView);
   }
 
-  /** Owner-initiated sync. The webhook path funnels here too. */
+  /** Owner-initiated sync; the webhook path shares `syncItem` below, not this method. */
   async sync(callerUserId: string, itemId: string): Promise<{ accountsUpserted: number }> {
     const item = await this.requireItem(itemId);
     this.authz.assertCan(callerUserId, 'sync', plaidItemResource(item.id, item.user_id));
@@ -135,11 +136,18 @@ export class PlaidService {
       // downtime. The token ciphertext remains crypto-erasable via the DEK.
     });
     const now = this.clock();
-    await this.db.withTransaction(callerUserId, async (tx) => {
-      await this.items.markRevoked(tx, item.id, now);
+    const prior = await this.db.withTransaction(callerUserId, async (tx) => {
+      const was = await this.items.markRevoked(tx, item.id, now);
       await this.accounts.softDeleteByItem(tx, item.id, now);
+      return was;
     });
-    await this.events.itemRevoked(callerUserId, item.id);
+    // Null: a rival revoke landed in the window that opens at `requireItem`
+    // above and spans the decrypt and the Plaid round trip, so this statement
+    // touched nothing and there is no second revocation to record. The answer
+    // is READ, not discarded (M49 PR5).
+    if (prior !== null) {
+      await this.events.itemRevoked(callerUserId, item.id, prior);
+    }
   }
 
   async listAccounts(userId: string): Promise<AccountView[]> {
@@ -182,10 +190,16 @@ export class PlaidService {
       return;
     }
     if (input.webhookCode === 'ITEM_LOGIN_REQUIRED' || input.webhookCode === 'ERROR') {
-      await this.db.withTransaction(item.user_id, async (tx) => {
-        await this.items.setStatus(tx, item.id, 'login_required');
-      });
-      await this.events.itemLoginRequired(item.id);
+      const prior = await this.db.withTransaction(item.user_id, (tx) =>
+        this.items.setStatus(tx, item.id, 'login_required'),
+      );
+      // Null means no live row matched: the item was revoked between the
+      // blind-index lookup above and this write. A status flip filed for a row
+      // the statement did not touch is a false record, so the answer is READ
+      // (M49 PR5). The prior itself is the edge (M49 PR6).
+      if (prior !== null) {
+        await this.events.itemLoginRequired(item.user_id, item.id, prior);
+      }
     }
     // Unknown webhook codes are ignored by design (forward compatibility).
   }
@@ -195,15 +209,21 @@ export class PlaidService {
     item: PlaidItemRow,
     actorUserId: string | null,
   ): Promise<{ accountsUpserted: number }> {
-    await this.monitor.recordSync(item.id);
+    await this.monitor.recordSync(item.id, item.user_id);
     const accessToken = await this.decryptAccessToken(item, 'plaid_sync');
     const result = await this.gateway
       .syncAccounts(accessToken, item.sync_cursor)
       .catch(async (err: unknown) => {
         if (err instanceof PlaidGatewayError && err.reason === 'invalid_access_token') {
-          await this.db.withTransaction(item.user_id, async (tx) => {
-            await this.items.setStatus(tx, item.id, 'error');
-          });
+          const prior = await this.db.withTransaction(item.user_id, (tx) =>
+            this.items.setStatus(tx, item.id, 'error'),
+          );
+          // The one rung that had no event (M49 PR6). Filed BEFORE the rethrow
+          // because nothing runs after it; an emitter failure here would
+          // replace the gateway error with its own, which §6ppp records.
+          if (prior !== null) {
+            await this.events.itemErrored(actorUserId, item.user_id, item.id, prior);
+          }
         }
         throw err;
       });
@@ -229,7 +249,20 @@ export class PlaidService {
       encrypted.push({ id: entry.id, balanceCt: ciphertext, account: entry.account });
     }
 
-    await this.db.withTransaction(actorUserId ?? item.user_id, async (tx) => {
+    const prior = await this.db.withTransaction(actorUserId ?? item.user_id, async (tx) => {
+      // THE ITEM ROW LOCK FIRST, for two reasons that are one fact. `revoke()`
+      // locks the item and then its accounts; a sync that locked accounts and
+      // then the item was the other half of a lock cycle, and M49 PR6's review
+      // DROVE it to 40P01 with the revoke as the victim — a step-up-gated
+      // protective action answering 500 after Plaid had already removed the
+      // token. Same order on both sides, no cycle. And a revoke that committed
+      // since `requireItem` read this row answers NULL here, before any
+      // account row is touched: without this, the upsert loop below set
+      // `deleted_at = NULL` on accounts the revoke had just retired.
+      const was = await this.items.setStatus(tx, item.id, 'healthy');
+      if (was === null) {
+        return null;
+      }
       for (const entry of encrypted) {
         await this.accounts.upsert(tx, {
           id: entry.id,
@@ -245,9 +278,22 @@ export class PlaidService {
         });
       }
       await this.items.setCursor(tx, item.id, result.nextCursor);
-      await this.items.setStatus(tx, item.id, 'healthy');
+      return was;
     });
-    await this.events.itemSynced(actorUserId ?? item.user_id, item.id, result.accounts.length);
+    if (prior === null) {
+      // The item was revoked while this sync was in flight. Nothing was
+      // written, so nothing is recorded — the answer the other three sites
+      // give a lost compare-and-set (M49 PR5), with no exception for `synced`.
+      // The owner sees 0 upserted; a webhook sees 204, as it does for an item
+      // it cannot find at all.
+      return { accountsUpserted: 0 };
+    }
+    await this.events.itemSynced(
+      actorUserId ?? item.user_id,
+      item.id,
+      result.accounts.length,
+      prior,
+    );
     return { accountsUpserted: result.accounts.length };
   }
 

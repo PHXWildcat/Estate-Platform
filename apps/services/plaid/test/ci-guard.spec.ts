@@ -9,4 +9,10 @@
  */
 import { ciGuard } from '@estate/config/ci-guard';
 
-ciGuard();
+// M49 PR6 calibrated this package's coverage floor on the run WITHOUT a
+// database — identity's convention, and the reason identity's own guard takes
+// this flag. CI runs that configuration in a step of its own, which needs an
+// exemption from the rule above and, in the other direction, proof that a run
+// declaring itself database-free really is one. Naming the flag here is what
+// makes the floor a gate rather than a number nothing evaluates.
+ciGuard({ databaseFreeRunFlag: 'PLAID_NO_DB_RUN' });

@@ -153,6 +153,41 @@ export const AUDIT_ACTIONS = [
   'plaid.item.synced',
   'plaid.item.revoked',
   'plaid.item.login_required',
+  /*
+   * THE FOURTH RUNG OF THE ITEM LADDER (M49 PR6, docs/03 §6ppp). `plaid_items`
+   * has four statuses and, before this member, events for three of its
+   * writes: `revoked` and `login_required` under their own names, and
+   * `healthy` only as the `synced` that ships every successful sync. The
+   * `invalid_access_token` arm sets `error` inside a `catch` that rethrows,
+   * and nothing recorded it — an item going dead because the stored token
+   * stopped working, which is the event an owner asks about later.
+   *
+   * THE EDGE IS IN `detail.from`, ON ALL FOUR, and here it is derived by BOTH
+   * of the milestone's rules at once: no status write in this service pins a
+   * prior in SQL (PR3's test — every one is `WHERE id = $1 AND deleted_at IS
+   * NULL`) and none narrows in TypeScript (PR4's test — the service reads
+   * `.status` once, to render it). Three live priors, four targets, twelve
+   * edges, and every write admits all three priors. So `login_required`,
+   * `revoked` and `synced` gain the key alongside this member, and `synced` is
+   * where the RECOVERY lives: `from: 'error'` on a `synced` row is an item
+   * coming back, `from: 'healthy'` is the no-op §6kkk could not tell apart.
+   * That is the edge recorded on the write, not the "first `synced` after a
+   * `login_required`" inference §6kkk rejects — a temporal join across two
+   * events is an inference; a field on the event that recorded the write is
+   * not. A `recovered` member would put the recovery behind a
+   * `prior !== 'healthy'` guard and give ONE WRITE TWO SPELLINGS — a reader
+   * counting status changes would need both members and the knowledge that
+   * they are exclusive. It is NOT the shape PR5 found wrong: PR5's wrong shape
+   * was an emit guarded by something other than the fact it records, and a
+   * guard on the prior is a guard on exactly what it records.
+   *
+   * PER-RUNG TOKEN, because this family already spells two rungs that way.
+   *
+   * DEPLOY THE CONSUMER BEFORE THE PRODUCER: this vocabulary is closed, and a
+   * consumer older than this member drops every `errored` it receives as a
+   * `schema_violation`, silently.
+   */
+  'plaid.item.errored',
   'plaid.webhook.rejected',
   'plaid.sync.anomalous',
   // Document service (documents cluster).

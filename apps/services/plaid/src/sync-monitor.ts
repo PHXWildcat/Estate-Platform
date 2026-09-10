@@ -23,15 +23,19 @@ export class SyncActivityMonitor {
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
-  /** Record one sync for the item; fires the alert when the window overflows. */
-  async recordSync(itemId: string): Promise<void> {
+  /**
+   * Record one sync for the item; fires the alert when the window overflows.
+   * The owner travels with the item id because the alert is a platform act on
+   * that person's resource and the audit row names them (M49 PR6).
+   */
+  async recordSync(itemId: string, ownerUserId: string): Promise<void> {
     const now = this.clock().getTime();
     const cutoff = now - WINDOW_MS;
     const window = (this.windows.get(itemId) ?? []).filter((t) => t > cutoff);
     window.push(now);
     this.windows.set(itemId, window);
     if (window.length > THRESHOLD) {
-      await this.events.syncAnomalous(itemId, { syncsInWindow: window.length });
+      await this.events.syncAnomalous(itemId, ownerUserId, { syncsInWindow: window.length });
     }
   }
 }

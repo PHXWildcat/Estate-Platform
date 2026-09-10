@@ -47,7 +47,7 @@
  * diff, which is the half that was missing.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 const DOC = join(__dirname, '..', '..', '..', 'docs', '03-threat-model.md');
 const PLAN = join(__dirname, '..', '..', '..', 'docs', '04-monorepo-and-milestones.md');
@@ -250,6 +250,19 @@ const MIN_PER_SECTION: Readonly<Record<string, number>> = {
   // hold because migrations are checksummed.
   '6nnn': 11,
   '6ooo': 15,
+  // M49 PR6. TEN: seven M49, one M45, two ACCEPTED, where a first draft carried
+  // nine — and not the same nine. Gone: the sync/revoke resurrection and the
+  // missing two-connection drive (the review drove that race to a deadlock and
+  // one reorder closed both), and the fence's two hand-named files, which are
+  // still literals but are BACKED now — the reach test DERIVES from every
+  // `.ts` under `src` that no other file calls a writer or emits a ladder
+  // action. Added: two interleaving findings, a latent DEK mismatch, probed,
+  // and — from the PROSE pass after the code review — the deployed-consumer
+  // half of the e2e gap §6ooo records, which this PR's isolate journey does
+  // not close. A fifth review finding, the attribution the VERSION ROWS make,
+  // was folded into the attribution bullet that already existed rather than
+  // added beside it, which is why nine became ten and not eleven.
+  '6ppp': 10,
 };
 /**
  * Floors for the out-of-corpus census (M27 PR0). Measured at 132 bullets under
@@ -1167,6 +1180,76 @@ const PRECONDITIONS: readonly Precondition[] = [
       'guard chain rather than from this entry.',
   },
   {
+    section: '6ppp',
+    title: 'The domain topic has the same gap',
+    absence: 'No consumer exists today, checked',
+    // The whole tree a deployment ships, because the absence is "no consumer
+    // ANYWHERE" — a service, an edge, a web app, or a package could subscribe.
+    // The producer and the schema are the SUBJECT of the absence, not readers.
+    corpus: ['apps', 'packages'],
+    // THE WHOLE TOPIC, not half of it. The residual is about `TOPICS.plaidEvents`
+    // — `status_changed` for three statuses AND `synced` for `healthy`, which is
+    // where the recovery edge lives — so a consumer that reads only `synced`
+    // has spent this absence just as surely. A first draft watched the
+    // status-changed names alone, and the PR's review wrote a synced-only
+    // consumer that left it green. NOT the bare string `plaid.item.synced`: it
+    // is also an AUDIT_ACTIONS member and would fire on any trail renderer.
+    filledWhen:
+      /plaid\.item\.status_changed|PlaidItemStatusChanged|PlaidItemSynced|TOPICS\.plaidEvents/,
+    notCountedIn: [
+      {
+        path: 'apps/services/plaid/src/events.service.ts',
+        why: 'the PRODUCER — the subject of the absence, not a reader of the topic',
+      },
+      {
+        path: 'packages/contracts/src/plaid-events.ts',
+        why: 'the schema that DEFINES the event; declaring a shape is not consuming it',
+      },
+      {
+        path: 'packages/contracts/src/index.ts',
+        why: 'the barrel re-exporting that schema, for the same reason',
+      },
+    ],
+    state: 'absent',
+    why:
+      'M49 PR6 put the edge on every AUDIT event of the plaid item ladder and ' +
+      'deferred the DOMAIN copy — `plaid.item.status_changed` on TOPICS.plaidEvents, ' +
+      'a target and no `from` — on the strength of nobody reading it. That is the ' +
+      '§6dd shape exactly: a consumer built later, without reading the sentence ' +
+      'that assumed it would not be, inherits an event that cannot say which ' +
+      'transition it announces. A match outside the producer and the schema means ' +
+      'something now NAMES the event or the topic — a comment counts, and that is ' +
+      'the conservative direction — so read it before deciding whether it is a ' +
+      'consumer; if it is, the residual is theirs to close before they depend on ' +
+      'the target alone.',
+  },
+  {
+    section: '6ppp',
+    title:
+      "The accounts row records the item's dek_id while the balance was sealed under the user's ACTIVE DEK",
+    absence: '`@estate/crypto` has no rotation API',
+    corpus: ['packages/crypto/src'],
+    // A rotation lands as CODE — a function or method named for it — which is
+    // what this pattern matches: the word followed by an identifier tail and an
+    // opening paren, or a declaration of one. The two files that already say
+    // the word say it in prose ("no rotation", "rotate algorithms"), and since
+    // the probe reads comment-stripped source they do not reach this matcher at
+    // all. An earlier draft excluded those two files WHOLE, which bought
+    // nothing and blinded the probe to a real rotation API landing in either of
+    // them — the file most likely to grow one being `kms.ts`.
+    filledWhen: /\brotat(?:e|ion)[A-Za-z]*\s*[(<]|(?:function|const|async)\s+\w*[Rr]otat/,
+    notCountedIn: [],
+    state: 'absent',
+    why:
+      'ACCEPTED in M49 PR6 on the reasoning that the latent dek_id mismatch on ' +
+      '`accounts` is unreachable while the only way an active DEK changes is ' +
+      'destruction, which throws before any encrypt. The day `@estate/crypto` ' +
+      'learns to rotate, that reasoning dies and every re-synced balance is sealed ' +
+      'under a key the row does not name — a decrypt failure on listAccounts that ' +
+      'no test would predict. This probe is the event nobody would otherwise ' +
+      'watch for; the fix is to carry the dekId encrypt answers into the upsert.',
+  },
+  {
     section: '6dd',
     title: 'Two of three distribution status transitions emit no audit event',
     absence:
@@ -1320,6 +1403,16 @@ const UNPROBED_ABSENCES: readonly { readonly section: string; readonly why: stri
       'for a killed row, which is bounded by the uniform 404 rather than by a filter. ' +
       'The probe would have to model reachability, not presence.',
   },
+  {
+    section: '6ppp',
+    why:
+      "the `errored` emit's ACCEPTED bound, whose sentence is 'the alternative — " +
+      "emit after the rethrow — does not exist': a property of control flow rather " +
+      'than of the tree, so no file appearing or disappearing changes it. A REGISTER ' +
+      'entry rather than a narrowing: the completeness test is keyed by SECTION and ' +
+      '§6ppp is already declared by its PRECONDITIONS probes, so this records WHY the ' +
+      'control-flow absence has no probe and decides nothing the test decides.',
+  },
 ];
 
 /**
@@ -1328,18 +1421,39 @@ const UNPROBED_ABSENCES: readonly { readonly section: string; readonly why: stri
  */
 function sourceFiles(dir: string): string[] {
   const root = join(__dirname, '..', '..', '..', dir);
-  let names: string[];
-  try {
-    names = readdirSync(root, { recursive: true, encoding: 'utf8' });
-  } catch {
-    return [];
-  }
-  return names
-    .filter((n) => /\.(ts|tsx|sql)$/.test(n))
-    .filter((n) => !/(^|[/\\])(node_modules|dist|dist-esm|coverage|\.next)[/\\]/.test(n))
-    .filter((n) => !/\.spec\.|\.test\.|(^|[/\\])test[/\\]/.test(n))
-    .map((n) => join(root, n))
-    .filter((f) => statSync(f).isFile());
+  const skipDir = /^(node_modules|dist|dist-esm|coverage|\.next|test)$/;
+  const out: string[] = [];
+  // PRUNED DURING THE WALK, NOT AFTER IT (M49 PR6). `readdirSync(root,
+  // { recursive: true })` without `withFileTypes` stats every entry and
+  // FOLLOWS symlinks, so from `apps/` it descended through every workspace
+  // package's pnpm links into the store — over half a million directory entries
+  // visited to find under six hundred source files, and SECONDS of a 5 s test
+  // budget — and only then threw the node_modules paths away. Pruned, the same
+  // corpus takes single-digit milliseconds. The figures are deliberately
+  // approximate: both are measurements of a WORKING TREE, and both move with
+  // what has been installed and built in it (`next build` alone adds a source
+  // file to the corpus, and a fresh install rewrites the store the old walk
+  // descended into).  What does not move is the ratio, which is the finding. A Dirent for a symlink answers `isDirectory()`
+  // false, so a walk that recurses on that answer never enters a link, and a
+  // link cycle cannot loop it.
+  const walk = (current: string): void => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!skipDir.test(entry.name)) walk(join(current, entry.name));
+      } else if (entry.isFile() && /\.(ts|tsx|sql)$/.test(entry.name)) {
+        if (!/\.spec\.|\.test\./.test(entry.name)) out.push(join(current, entry.name));
+      }
+    }
+  };
+  if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) return [];
+  walk(root);
+  return out;
 }
 
 /**
@@ -1418,11 +1532,35 @@ function spansNewline(alt: string, dotAll: boolean): boolean {
   return false;
 }
 
+/**
+ * A probe asks whether the TREE has grown a thing, and a comment is not that
+ * thing. M49 PR6's review made the point with a file whose only content was
+ * `export const UNRELATED = 1;` and a comment naming the event: the plaid probe
+ * counted it as a consumer appearing. Block comments go, and line comments that
+ * OWN their line — the same conservative rule the ladder fence uses, so a `//`
+ * inside a string literal or a URL is left alone.
+ */
+function withoutComments(text: string): string {
+  return (
+    text
+      // Blanked, not deleted: a probe reports the LINE it matched, and a line
+      // number counted in text whose comments have been removed names a
+      // different line of the real file. Block comments keep their newlines;
+      // line comments already keep theirs.
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, '')
+  );
+}
+
 function fillMatches(p: Precondition, files: readonly string[]): { file: string; line: number }[] {
   const out: { file: string; line: number }[] = [];
   for (const file of files) {
-    if (p.notCountedIn.some((x) => file.endsWith(x.path))) continue;
-    const text = readFileSync(file, 'utf8');
+    // Compared on '/' both sides: `path.join` builds '\\' separators on Windows,
+    // where every exclusion would silently stop matching and the excluded
+    // producer would count as its own consumer.
+    const normalised = file.split(sep).join('/');
+    if (p.notCountedIn.some((x) => normalised.endsWith(x.path))) continue;
+    const text = withoutComments(readFileSync(file, 'utf8'));
     if (p.wholeFile) {
       const m = p.filledWhen.exec(text);
       if (m) out.push({ file, line: text.slice(0, m.index).split('\n').length });
@@ -2309,8 +2447,22 @@ describe('docs/03 §6 — every residual declares a disposition', () => {
     // registry only decides what to DO about each member. A new residual written
     // with an absence justification lands here and reddens until someone says
     // which it is.
+    // The vocabulary GROWS with the corpus, and the PR that writes a new
+    // phrasing widens it: M49 PR6 justified an ACCEPTED residual with
+    // "`@estate/crypto` HAS NO ROTATION API" — an absence in every sense this
+    // fence hunts, in a phrasing none of the alternatives matched. That one is
+    // declared (it has a probe), so nothing was silently missed, but it would
+    // not have been CAUGHT undeclared, which is what this list is for.
+    // `has no <noun> API` and not the general `has no <noun>`: measured, the
+    // general form sweeps THIRTY-ONE further deferral bullets into this fence,
+    // every one of them using the words as ordinary prose ("has no scheduler",
+    // "has no client IP", "has no expiry"), and adopting it would be a bulk
+    // retag of residuals nobody adjudicated. The narrow form matches exactly
+    // the one bullet that was written in it. The count is stated because it is
+    // the argument: a vocabulary widened past what the PR actually needs stops
+    // being a fence and becomes a migration.
     const ABSENCE =
-      /\b(no consumer|nothing (?:reads|calls|uses|exercises)|does not exist|has no caller|no caller|no reader|read by nothing|not purged by anything|surface that does not exist)\b/i;
+      /\b(no consumer|nothing (?:reads|calls|uses|exercises)|does not exist|has no [a-z]+ API|has no caller|no caller|no reader|read by nothing|not purged by anything|surface that does not exist)\b/i;
 
     // CLOSED is out of the corpus, and the reason is measured — see the header
     // on PRECONDITIONS. In a CLOSED bullet the absence explains why a FIX was
