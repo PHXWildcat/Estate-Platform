@@ -38,38 +38,117 @@ export class EventsService {
     await this.domain(actorId, PlaidItemLinkedEvent, 'plaid.item.linked', itemId, { itemId });
   }
 
-  async itemSynced(actorId: string, itemId: string, accountsUpserted: number): Promise<void> {
-    await this.item('plaid.item.synced', actorId, itemId, { accounts: accountsUpserted });
+  /**
+   * A successful sync, AND the write of `healthy` it ships (M49 PR6).
+   *
+   * `from` is the status the `healthy` write found under its lock. It is the
+   * only place the recovery of a dead item is recorded: `from: 'error'` or
+   * `from: 'login_required'` is an item coming back, `from: 'healthy'` is the
+   * no-op every routine sync performs — the two docs/03 §6kkk could not tell
+   * apart, because this event fires on every sync. Not filed at all when the
+   * write matched no live row: `syncItem` takes that write FIRST and stops
+   * there, so nothing moved and there is nothing to record. An earlier draft
+   * let this event fire with `from` omitted for that case, and the PR's review
+   * found the arm executed by no test — it is gone rather than tested.
+   */
+  async itemSynced(
+    actorId: string,
+    itemId: string,
+    accountsUpserted: number,
+    from: PlaidItemStatus,
+  ): Promise<void> {
+    await this.item('plaid.item.synced', actorId, itemId, { accounts: accountsUpserted, from });
     await this.domain(actorId, PlaidItemSyncedEvent, 'plaid.item.synced', itemId, {
       itemId,
       accountsUpserted,
     });
   }
 
-  async itemRevoked(actorId: string, itemId: string): Promise<void> {
-    await this.item('plaid.item.revoked', actorId, itemId);
+  async itemRevoked(actorId: string, itemId: string, from: PlaidItemStatus): Promise<void> {
+    // THE EDGE: revoking a `healthy` item ends a working link; revoking one in
+    // `error` or `login_required` retires a link that had already stopped
+    // working, and only the prior status tells those apart.
+    await this.item('plaid.item.revoked', actorId, itemId, { from });
     await this.domain(actorId, PlaidItemStatusChangedEvent, 'plaid.item.status_changed', itemId, {
       itemId,
       status: 'revoked' satisfies PlaidItemStatus,
     });
   }
 
-  /** Webhook-driven status flip; actor is the platform, not a user. */
-  async itemLoginRequired(itemId: string): Promise<void> {
+  /**
+   * Webhook-driven status flip; the actor is the platform, not a user, and
+   * the OWNER is named in `onBehalfOf` — the repo's spelling for a platform
+   * act on one person's resource (identity's `emailVerificationSent`,
+   * notifications' emitters). Before M49 PR6 this row named no user in any
+   * field, so it could reach the owner's trail only by a join on the item.
+   */
+  async itemLoginRequired(
+    ownerUserId: string,
+    itemId: string,
+    from: PlaidItemStatus,
+  ): Promise<void> {
     await this.audit.emit({
       action: 'plaid.item.login_required',
       actorId: null,
       actorType: 'system',
-      onBehalfOf: null,
+      onBehalfOf: ownerUserId,
       resourceType: 'plaid_item',
       resourceId: itemId,
       sessionId: null,
-      detail: {},
+      // `from: 'login_required'` is a repeated webhook for an item already
+      // waiting on its owner; `from: 'error'` is Plaid asking for a re-login on
+      // an item the platform had written off. Both were `detail: {}` before.
+      detail: { from },
     });
     await this.domain(null, PlaidItemStatusChangedEvent, 'plaid.item.status_changed', itemId, {
       itemId,
       status: 'login_required' satisfies PlaidItemStatus,
     });
+  }
+
+  /**
+   * Plaid refused the sync with a client error (M49 PR6, docs/03 §6ppp): the
+   * `invalid_access_token` arm writes `error`, and before this method nothing
+   * recorded it — the one rung of the ladder with no event at all. The token
+   * having died is the CAUSE this arm was built for, not the only one it
+   * reports: `live-plaid-gateway.ts` maps HTTP 400 on the sync path to that one
+   * token — and Plaid answers 400 for its whole error family — so a malformed
+   * request files the same row as a dead token. The gap runs the other way too:
+   * 401, 403 and 429 become `provider_error`, which this arm never sees, so an
+   * item whose ACCESS was withdrawn at the client level writes no `error` and
+   * files nothing. Two failures needing different remedies sharing one token,
+   * and a third needing one and getting none: §6ppp's residual, one layer down.
+   *
+   * The actor is whoever asked for the sync: the owner on the route, or the
+   * platform (`null`, `system`) when a webhook drove it — in which case the
+   * owner is named in `onBehalfOf`, as `itemLoginRequired` does. That is the
+   * honest attribution, and it is NOT the one `itemSynced` makes for the same
+   * webhook-driven sync when it succeeds — §6ppp records that asymmetry rather
+   * than copying the defect into a new member.
+   */
+  async itemErrored(
+    actorUserId: string | null,
+    ownerUserId: string,
+    itemId: string,
+    from: PlaidItemStatus,
+  ): Promise<void> {
+    await this.audit.emit({
+      action: 'plaid.item.errored',
+      actorId: actorUserId,
+      actorType: actorUserId === null ? 'system' : 'user',
+      onBehalfOf: actorUserId === null ? ownerUserId : null,
+      resourceType: 'plaid_item',
+      resourceId: itemId,
+      sessionId: null,
+      detail: { from },
+    });
+    await this.domain(
+      actorUserId,
+      PlaidItemStatusChangedEvent,
+      'plaid.item.status_changed',
+      itemId,
+      { itemId, status: 'error' satisfies PlaidItemStatus },
+    );
   }
 
   /** A webhook that failed signature verification. Reason token only. */
@@ -86,13 +165,24 @@ export class EventsService {
     });
   }
 
-  /** TB5 anomalous-sync alert (counts only). */
-  async syncAnomalous(itemId: string, detail: { syncsInWindow: number }): Promise<void> {
+  /**
+   * TB5 anomalous-sync alert (counts only). The platform acting on one
+   * person's item, so the owner is named in `onBehalfOf` — the same spelling
+   * `itemErrored` and `itemLoginRequired` gained in M49 PR6, applied here
+   * because a rule applied to one member of a category is half-applied.
+   * `webhookRejected` is NOT in this category: it records a webhook the
+   * service refused to attribute to any item, so there is no owner to name.
+   */
+  async syncAnomalous(
+    itemId: string,
+    ownerUserId: string,
+    detail: { syncsInWindow: number },
+  ): Promise<void> {
     await this.audit.emit({
       action: 'plaid.sync.anomalous',
       actorId: null,
       actorType: 'system',
-      onBehalfOf: null,
+      onBehalfOf: ownerUserId,
       resourceType: 'plaid_item',
       resourceId: itemId,
       sessionId: null,

@@ -8761,7 +8761,7 @@ argued.
   DERIVED — from the from-predicate of every statement in this service that
   writes a `status` column, so `StagesRepo.decide` is exempt because the scan
   reads it as single-valued rather than because this file says so.
-- **[OWNER: M49]** *Two of `plaid_items`' four statuses are not on the trail as
+- **[CLOSED: §6ppp]** *Two of `plaid_items`' four statuses are not on the trail as
   transitions.* `revoked` and `login_required` have actions of their own. The
   `invalid_access_token` arm sets `error` inside a `catch` that rethrows, and
   `AUDIT_ACTIONS` has no member for it at all — an item going dead because the
@@ -8775,6 +8775,15 @@ argued.
   `void` and carries no `from` predicate, so there is not even a boolean to
   distinguish a recovery from a no-op. Same category, different service, and a
   rule applied to one member of a category is a rule half-applied.
+  **CLOSED BY M49 PR6 (§6ppp)**, which found the two this bullet counted as
+  covered were not: `revoked` and `login_required` had actions of their own,
+  and an action of one's own names the TARGET — neither said where the item
+  came from, and every write of the column admits every live prior. All four
+  now answer the prior they found and every event carries it; `error` has
+  `plaid.item.errored`; the recovery is `from: 'error'` on the `synced` that
+  performed it — the edge recorded on the write, not the inference this bullet
+  objected to; and `ItemsRepo.setStatus` no longer returns `void`, it answers
+  the prior or `null`, and `null` is READ.
 - **[CLOSED: §6mmm]** *`settlement.case.rejected` and `settlement.case.voided`
   record no prior status, and the edge decides whether a live person's account
   was unlocked.* This PR's own rule — the row carries the EDGE — is applied to
@@ -9754,3 +9763,389 @@ rather than crediting it with a fix it did not make.
   fixture that aborts mid-transaction against Postgres, the ordering IS asserted,
   and the failure it guards against (an empty ledger read as "every domain
   done") is now also guarded by the resume arm keying on a ledger row.
+
+## 6ppp. Threat-model delta — M49 PR6, the plaid item ladder (2026-09-09)
+
+M49 PR3 read the from-set from SQL; PR4 read it from the guard chain above a
+write that has none; PR5 read it from SQL again, on a service whose claim had
+moved into a CTE its own fence never looked inside. This is the fourth service,
+and the first where the two derivations AGREE: no write of `plaid_items.status`
+pins a prior anywhere. Every one of the four is `WHERE id = $1 AND deleted_at IS
+NULL` in SQL, and `plaid.service.ts` compares `.status` in no method that writes
+it — the one read of that column is `toItemView`, which renders it. Three live
+priors, four targets, twelve edges, and every write admits every prior, so by
+PR3's rule and PR4's rule at once all four owe a `from`.
+
+**WHAT THE TRAIL SAID BEFORE, PER TARGET.** `login_required` was audited with
+`detail: {}`. `revoked` was audited with `detail: {}` too — through a helper
+whose `detail` parameter defaults to it, so the trail could not tell the two
+apart on that axis, and an earlier draft of this sentence said "no detail" as if
+it could. `error` — the `invalid_access_token` arm, an item going dead because
+the stored token stopped working — had NO EVENT AT ALL. And `healthy` was
+recorded only as the `plaid.item.synced` that ships every successful sync, so an
+item coming back from `error` and the hundredth routine sync of a healthy one
+were the same row. §6kkk's bullet called the last of these "one event plus an
+inference" and counted the first two as covered; they were not, because an
+action of one's own names the TARGET, and neither said where the item came from.
+
+**THE SECOND DEFECT, WHICH §6kkk HALF-NAMED.** `ItemsRepo.setStatus` returned
+`void`, and all three emits fired unconditionally. Every caller's `PlaidItemRow`
+was read OUTSIDE the transaction — `requireItem` and `findLiveByItemBidx` run
+before `withTransaction` opens, and `revoke()` makes a network round trip to
+Plaid in between — so a rival revoke in that window made the status write match
+nothing while the service still filed `login_required`, or a second `revoked`,
+for a row the statement never touched. PR5 found both halves of this in
+identity: one compare-and-set whose answer was discarded at the call site, and
+one — `releaseClaim` — that returned `void` and had no answer to discard. Plaid
+is the second shape, at every site.
+
+**WHAT CHANGED.** `setStatus` and `markRevoked` are PR3's CTE pre-image with the row lock taken inside the CTE,
+as PR5 spelled it for identity, and answer the prior status, or `null` when no
+live row matched.
+All four sites read that answer before emitting — a status flip filed for a row
+the statement did not touch is a false record — and for the `healthy` write that
+meant moving it: `syncItem` now takes the item's status write as its
+transaction's FIRST statement and stops on `null`, upserting nothing, so a sync
+that meets a revoke under the lock writes nothing and files nothing. An earlier
+draft let `synced` fire either way with `from` absent, on the argument that the
+accounts had moved anyway; the PR's review found that arm executed by no test,
+and found the accounts moving to be the defect — see the review paragraph below.
+ONE member joins `AUDIT_ACTIONS`, `plaid.item.errored`, carrying the actor who
+asked for the sync — the owner on the route, the platform when a webhook drove
+it, with the owner then named in `onBehalfOf`, which `login_required` gains at
+the same time (the repo's spelling for a platform act on one person's resource;
+before this every platform-actor row in this service named no user in any field, `errored` being new and `login_required` and `sync.anomalous` both silent; `webhook.rejected` still names none, because it refused to attribute the webhook to an item at all). `login_required`,
+`revoked` and `synced` gain `from`, and `synced` is where the recovery lives,
+which is a decision worth its own paragraph.
+
+**THE RECOVERY IS `from` ON `synced`, NOT A `recovered` MEMBER.** §6kkk's
+objection was to "the first `synced` after a `login_required`" — a temporal join
+across two events. A field on the event that recorded the write is not that:
+`from: 'error'` on a `synced` row is an item coming back, `from: 'healthy'` is
+the no-op, and the row says which. A `recovered` member would sit behind `if
+(prior !== 'healthy')` and would give ONE WRITE TWO SPELLINGS: a reader counting
+status changes would need to know both members and know they are exclusive. An
+earlier draft of this paragraph reached for PR5's guarded-by-consequence finding
+as a second argument, and it does not apply — PR5's wrong shape was an emit
+guarded by something OTHER than the fact it records, while a `recovered` member
+guarded by its own prior is guarded by exactly what it records. The verb still
+disagrees with the status it writes — `synced` writes `healthy` — and the fence
+pins that as data, as PR4's does for `requested` → `waiting`.
+
+**THE FENCE'S EXEMPTION SET IS EMPTY, AND IT SAYS SO.** PR3's fence had five
+single-prior statements and PR4's had one — controls the scan itself produced,
+proving the classifier can answer "owes nothing". This corpus has none, so a
+fence that only ever answers "owes" is indistinguishable from one that has
+stopped reading. Its controls are therefore SYNTHETIC, labelled as such, and one
+of them found a defect in the fence on its first run: the clause cutter stopped
+at the first `)` it met and truncated an `IN ('healthy', 'error')` list,
+classifying it unreadable. That control exists because the corpus could not
+supply one, which is the argument for synthetic controls in general. The fence
+also closes PR5's own recorded bound for this service — it reads every `WHERE` a
+statement contains, the CTE's included, where `erasure-ladder-fence` does not
+read the claim's, which moved into its CTE (§6ooo records that). And a first
+draft of its pairing test pinned the binding's NAME, `prior`, where the property
+is that a binding exists and is passed; a rename would have reddened it loudly
+rather than invisibly, but a name-keyed expectation is still the anchoring
+CLAUDE.md warns against, and it was changed before the battery ran.
+
+**TWELVE EDGES DRIVEN AGAINST POSTGRES, COMPARED AS SETS**, on three items — a
+revoked item is terminal, so `revoked` from each dead prior needs an item of its
+own. Every recorded `from` is checked against the DDL vocabulary, and `revoked`
+is checked never to be one. The compare-and-set is proven at three layers, each
+named: the statement answering `null` on a revoked row and the prior on a live
+one, against Postgres; the null guards, against a double forced to `null` that
+COUNTS, so the drive can prove it was reached; and the ladder end to end. AND
+THE RACE IS DRIVEN, on two connections: a second client runs `revoke()`'s
+transaction statement for statement and holds it uncommitted, the owner's sync
+is fired through the real route and waits on the item lock, the rival commits,
+and the sync's first statement finds no live row — `200 { accountsUpserted: 0
+}`, both accounts still retired, nothing on the trail. Under the statement order
+this PR replaced, the same drive ends with both accounts live again under a
+revoked item. The emitters are proven at a fourth layer of their own: the real
+`EventsService` over an in-memory producer, one emitter at a time, parsing what
+it files — because the service spec's recording double never runs an emitter and
+the integration journey reaches only the arms it reaches.
+
+**EIGHT MUTATIONS, ONE POSITIVE CONTROL, ZERO SURVIVORS** — each reddened the
+layer predicted for it, and the layers that stayed green are as informative as
+the ones that did not. Named rather than counted, because a count of tests in
+prose beside a suite that grows is a second copy of what jest already derives.
+Dropping `from` from an emitter reddened the fence's obligation test, the emitter
+spec that reads what the emitter files, and the integration drives for that rung.
+Removing a guard reddened the fence's compare-and-set test and the unit drive,
+and left the integration spec GREEN, because no drive races a revoke against a
+webhook: the guard layer's whole reason to exist. Making the statement answer
+`'healthy'` instead of `null` left every unit test green and reddened the
+Postgres drives alone. Removing the member reddened the vocabulary test and the
+drives that name it, the token firewall's required list among them. Dropping the
+tombstone filter from the CTE reddened the fence's prior-vocabulary derivation
+and the statement drive. Copying `synced`'s attribution onto `errored` reddened
+one unit drive and one integration drive and nothing in the fence, which reads no
+actor. Restoring the old statement order — accounts first, item last — reddened
+the two-connection drive (both accounts resurrected), the unit drive that watches
+the accounts double, the fence's lock-order test, and one assertion it reaches
+sideways: the revoke test that follows the race in the same file, which counts
+the schema's live accounts and finds the two the mutation brought back. THE
+SURVIVOR PREDICTED AT THE POSTGRES LAYER SURVIVED: passing the caller's stale
+`item.status` in place of the write's answer stays green across every integration
+drive, as PR3's own caller's-earlier-read mutation did, and for the same reason.
+(Not PR3's battery SURVIVOR, which was a different edit — a `SELECT` above the
+`UPDATE` — and was judged not load-bearing rather than uncovered.) It is caught at the other layer
+three times — the fence's pairing test, the fence's pin that the service reads
+`.status` exactly once, and a unit drive written for it, which flips the row from
+inside the gateway stub so the caller holds `healthy` while the write finds
+`login_required`. That drive is new in the PR's review: the item double used to
+hand out the LIVE row, so a caller's stale read tracked every write and no unit
+fixture could make the two answers differ. The positive control renamed the
+binding, proved its edit applied by count, and left every test green.
+
+**WHAT THE REVIEW CHANGED**, folded in rather than recorded because each was
+this PR's own test, this PR's own member, or the sibling of something it had
+already fixed. (1) The `synced` arm that fired with `from` absent was executed
+by no test — two lenses found it independently, one by reading the arm against
+the specs, one by a faithful mutation of it that passed all 39 tests of the
+suite that lens ran — and a third lens DROVE the interleaving behind it to a
+deadlock: `revoke()` locks the item then its accounts, `syncItem` locked the
+accounts then the item, and Postgres killed the revoke with 40P01 after the
+token was already gone at Plaid. A FOURTH consequence of the same order was
+found by driving the new statement itself: the CTE's `FOR UPDATE` conflicts with
+the KEY SHARE that a child INSERT takes on its parent, so two syncs inserting
+accounts for one item before writing its status deadlock each other — a cycle
+the plain `UPDATE` this PR replaced did not have, and one the PR would have
+introduced. Driven both ways on two connections: accounts first, `40P01` and
+neither row committed; item first, no deadlock and both committed. One reorder
+closes all four: the item lock first, on both sides. (2) Platform-actor rows
+named no user in any field; `onBehalfOf` now carries the owner on `errored` and
+`login_required`. (3) The emitters gained a spec of their own, and
+`plaid.item.errored` is pushed through the REAL ingestor and chain verifier by
+one added step in the plaid e2e journey — the review noted §6ooo recorded
+this gap for PR5's members — a new member with no end-to-end proof — and this
+closes the IN-PROCESS half of it for `plaid.item.errored`; the deployed-consumer
+half §6ooo names as the discriminator is inherited, and is a residual below. (4) The
+domain-topic probe watched half the topic (a `synced`-only consumer left it
+green) and its corpus walk followed pnpm's symlinks into the store, visiting
+over half a million directory entries to find fewer than six hundred source
+files, and seconds of a 5-second budget to do it; both figures are measurements
+of a working TREE rather than constants, and move with what has been installed
+and built in it; the probe's alternation was widened, and the walker
+now prunes as it descends, which is the same corpus in 5 milliseconds. (5) The
+coverage floor had been ratcheted against the with-Postgres run while the file's
+own header names the LOCAL run as its corpus, which left the package red on
+every developer's machine; recalibrated below. (6) THE FENCE'S OWN REACH was
+narrower than its claim in SEVEN places, each proved by a mutation that left
+every one of its tests green: a writer in a method whose first template literal
+was not SQL (and in a method without `async`) was invisible to the literal
+reader; a fifth status added by a later migration was invisible to a vocabulary
+reader that only read `CREATE TABLE`, in an append-only migration set where that
+is how a vocabulary grows; a guard written on a destructured `status` was
+invisible to both halves of PR4's reading; a detail key renamed from `from` to
+anything else passed, because the check read the identifier and not the key that
+reaches the wire; a negated predicate was read as a PIN, the fail-open
+direction; and a stale pre-read laundered through the transaction's own return
+(`return was ?? stale`) satisfied the pairing test exactly; and — found by the
+round that followed those six — a rung spelled `INSERT … ON CONFLICT … DO UPDATE
+SET status`, which writes the ladder without ever emitting the token sequence
+`UPDATE plaid_items` and so was invisible to every reader in the file INCLUDING
+the raw floor advertised as their backstop. That idiom is already in this
+service, on the accounts table. All seven now redden a named test, each is a
+control, the raw floor counts both spellings, and the reach test derives from
+`src` that no other file calls a ladder writer. ONE MORE escaped even that,
+found re-running the battery against the final tree: the reach reader
+resolved the repository's property name ONCE, out of `plaid.service.ts`, and
+then looked for `this.<that name>.<writer>(` in every other file — so a second
+`@Injectable` in `src` constructor-injecting the same `ItemsRepo` as
+`this.repo`, the most ordinary shape a second writer could take in this
+codebase, left all twenty tests green. The property name is the author's
+choice; the name is now resolved PER FILE from the constructor parameter whose
+TYPE is `ItemsRepo`, and a raw floor sits beside it — the writer's name called
+on any receiver at all, which needs no injection to be true — so the two escape
+shapes, an injected second writer and a writer reached through a plain
+parameter, each redden that one named test. This is the rule docs/06 already
+records for the statement readers, owed here for the same reason: a reader that
+ATTRIBUTES can be escaped by changing what it attributes to. THE LOCK ORDER IS
+READ THERE TOO: the two-connection drive hand-rolls revoke's half of the pair,
+so reversing revoke's two statements reintroduced the deadlock with the whole
+suite green; the fence now reads the order out of every transaction that
+touches both tables, and that mutation reddens exactly one named test. THREE OF ITS OWN
+READERS WERE SUPERLINEAR on pathological input — a fresh suffix string sliced
+per character, and two unbounded patterns that backtrack — and are linear now; a
+fence's own execution is a defect surface, not only its conclusions. (7) The residuals probe
+counted a COMMENT naming the event as a consumer appearing, and compared paths
+with `/` where Windows builds `\`; it reads code with comments stripped now, and
+normalises the separator. (8) An armed one-shot gateway rejection that a drive
+never spent survived `clearMocks` into the next drive, turning one red into five
+with misleading names; the spec now reddens the drive that armed it. The
+two-connection drive never OBSERVED the lock wait its name asserts — it passed
+identically with zero contention, so a slow machine would have quietly
+downgraded it to the weaker already-tombstoned case — and its rival connection
+had no `finally`, so one failed assertion between BEGIN and COMMIT would have
+hung the suite behind a held lock. Both are closed, the first by asking
+`pg_stat_activity` until the sync's backend is actually blocked. And the floor
+this PR moved onto the database-free run was itself evaluated by NOTHING:
+`ci.yml` runs that configuration in a step of its own for identity, and says in
+as many words that a package adopting the convention adds its own filter there.
+Plaid's is added, with the same guard flag checked in both directions. (9) Four
+sentences were wrong: `revoked` carried `detail: {}` like its sibling,
+`sync()`'s comment said the webhook path funnels through it, the class comment
+counted decrypt sites by method rather than by chokepoint, and `errored`'s own
+comment named a dead token as its cause where the gateway maps HTTP 400 on the
+sync path to that one token — Plaid's whole error family — so a malformed
+request files the same row, while 401, 403 and 429 become `provider_error` and
+file NOTHING.
+
+**NO SURFACE EXISTS.** Neither `apps/web` nor `apps/bff` mentions plaid, so
+there is no journey to drive; the browser-drive rule does not apply, and that is
+said rather than skipped. The coverage floor was ratcheted, from 60/55/40/60 to
+70/62/50/69, and the corpus is the one the file's header has always named: the
+run WITHOUT a database, where the integration suite skips — 74.27/66.66/54.47/
+73.02 measured on this commit, the floor four-plus points under each figure.
+With Postgres the same commit measures 89.26/76.7/91.86/88.84, so the floor is a
+lower bound in both configurations, which is identity's convention; a first
+draft calibrated on the with-Postgres figure and was red on every machine
+without one. Against that corpus the old floor had sat between eleven and
+fifteen points under the measurement since the service was written; against the
+with-Postgres run the gap was twenty-one to fifty-two. An earlier draft of this
+sentence said the old floor "had sat between fourteen and twenty-nine points
+under the no-database measurement" — a range belonging to NEITHER corpus, the
+top of one quoted beside a figure from the other.
+
+### Residuals
+
+Recorded, not folded in. SEVEN M49, one M45, two ACCEPTED — ten, where the
+first draft had nine, and not the same nine. Three of that draft's are gone:
+the sync racing a revoke that RESURRECTED the soft-deleted accounts and the
+absence of a two-connection drive, which the review's deadlock finding turned
+out to share a fix with, and the fence's two hand-named files, which are still
+literals but are BACKED by a derivation now: the reach test reads every `.ts`
+under `src` and proves no other file calls a ladder writer or emits a ladder
+action. FOUR are new — two from the review's interleaving lens, one latent
+mismatch its census found, probed, and one from the PROSE pass that followed
+the code review, which found this section claiming to close a gap §6ooo had
+recorded when it closes half of one. A fifth review finding was folded into the
+attribution bullet that already existed rather than added beside it, which is
+why nine became ten rather than eleven.
+
+- **[OWNER: M49]** *A webhook-driven sync is attributed to the OWNER, four
+  ways.* `syncItem` emits `synced` as `actorUserId ?? item.user_id` with
+  `actorType: 'user'`, so a sync the platform ran on Plaid's say-so is recorded
+  as an act of the owner — while the decrypt inside the same sync files as
+  `actorType: 'service'` and, since this PR, its failure files as `system` on
+  behalf of the owner. And the fourth attribution contradicts the third
+  directly: the catch arm and the webhook's `login_required` write both open
+  their transaction as `withTransaction(item.user_id, ...)`, which sets the
+  `app.actor_id` GUC that `plaid_items_capture_version` records as `actor_id`,
+  so the VERSION ROW of the very UPDATE whose audit row now says the platform
+  acted says the owner did. One sync, four attributions, and the version rows
+  are unanimous: across the whole integration suite EVERY version row the
+  service writes names the owner, the platform-driven writes' among them, and
+  the only row naming nobody is written by the two-connection drive's
+  hand-rolled rival connection, which is not the service. `errored` was given the honest audit attribution rather than copying the
+  defect into a new member; the version rows are left as found because fixing
+  two of the three transaction actors while `synced`'s stays the owner would be
+  half a fix (the trigger already turns `''` into a NULL actor, so the remedy is
+  `withTransaction(actorUserId ?? '', ...)` at all three, or a nullable actor).
+  Attribution, not edge — the class §6mmm's census (M49 PR3's) excluded from the ladder
+  category — and the same class as `contact.link.claimed`.
+- **[OWNER: M49]** *Two webhook codes, one status, one event that cannot tell
+  them apart.* `ITEM_LOGIN_REQUIRED` and `ERROR` both write `login_required`
+  and both file `plaid.item.login_required`; `detail` now carries `from` and
+  still not the code, and Plaid's `ERROR` is not a request for the owner to log
+  in again. An optional `code` key is a producer-only change.
+- **[OWNER: M49]** *A dead token wears the face of an outage.* The rethrown
+  `PlaidGatewayError` is not an `HttpException`, so the owner's sync route
+  answers `500 internal_error` for a link that needs re-authorising, and the
+  webhook route answers Plaid `500` for the same — which Plaid RETRIES, each
+  retry re-running the failing sync and filing another `error → error`. A
+  control firing must not read as an outage; the remedy is a 4xx token on the
+  owner route and a `204` on the webhook route once the item is marked.
+- **[OWNER: M49]** *The domain topic has the same gap.* `TOPICS.plaidEvents`
+  carries `plaid.item.status_changed` for `login_required`, `revoked` and now
+  `error`, and `plaid.item.synced` for `healthy`, none with an edge; the event
+  schemas have no `from` field. No consumer exists today, checked. Adding one
+  is a `@estate/contracts` change.
+- **[OWNER: M49]** *`plaid.item.errored` has no DEPLOYED-consumer journey.* The
+  plaid e2e drives the new member through the real ingestor and the real chain
+  verifier, but that journey bridges producer to ingestor IN-PROCESS — its own
+  header says so, the M1 bridge with the Kafka hop tracked in docs/04 — so what
+  it proves is that the member parses, chains and carries no token, not that
+  the deployed consumer ACCEPTS it. §6ooo records the same gap for PR5's three
+  members and names the discriminator: only the stack e2e, against the deployed
+  consumer, can tell an accepted member from a silently dropped one, because
+  `AUDIT_ACTIONS` is closed and an older consumer drops what it does not know
+  without saying so. `stack.e2e.spec.ts` does not drive plaid at all — it names
+  the service once, in a comment about the profile split — so this producer is
+  outside that gate exactly as erasure's is. An earlier draft of this section
+  said the added e2e step closed the gap §6ooo had recorded; it closes the
+  in-process half, and this is the half PR6 inherits.
+- **[OWNER: M45]** *"Owes nothing" is proven only synthetically.* With an empty
+  exemption set, the discriminating answer of every classifier in the file — the
+  SQL predicate reader, the guard reader, the detail-key reader and the
+  answer-flow reader — is exercised by fixtures written for the purpose and
+  never by this service's own spelling. The review's six mutations widened what
+  those fixtures cover; they did not change what they are. A classifier that
+  stopped discriminating in a shape no fixture takes would still stay green,
+  and only a corpus with a real exemption in it would close that.
+- **[OWNER: M49]** *Overlapping syncs rewind the cursor.* `syncItem` hands
+  Plaid the `sync_cursor` from the row it read BEFORE its transaction and
+  writes the cursor Plaid answers unconditionally — `setCursor` compares
+  nothing — so of two overlapping syncs the slower one commits a cursor
+  derived from an older read and moves the column backwards. The review drove
+  it: three syncs, the first held at the gateway, the row finishing on the
+  first one's answer. No trail row is false (each `synced` says `from:
+  'healthy'`, and each write did find healthy) and the accounts upsert by
+  deterministic id. A first draft of this bullet said the cost was a redundant
+  re-fetch; the review measured the SECOND half and it is worse than that. The
+  balance columns are last-writer-wins too, and `balance_as_of` is stamped from
+  a clock read AFTER the gateway answers — so the sync that started first,
+  holding the older balance, commits last and stamps the FRESHER timestamp on
+  it. The row then presents a stale balance as the most recent one, which
+  `/v1/accounts` shows the owner with no way to tell. The remedy for the cursor
+  is a compare-and-set on the value the call was made with (`AND sync_cursor IS
+  NOT DISTINCT FROM $3`), reading the count; for the balance it is to carry the
+  gateway-answer time rather than the commit time, or to refuse a write whose
+  `balance_as_of` is older than the row's. The item lock serialises the two
+  TRANSACTIONS but not the two gateway calls, which is where the staleness is.
+- **[OWNER: M49]** *A sync can commit `healthy` over a newer
+  `login_required`, and the owner never sees the login-required.* The
+  `healthy` write is last-writer-wins with no notion of when the observation
+  behind it was made: a gateway answer produced before Plaid flipped the item,
+  with the webhook landing during the encrypt loop, commits `healthy` over the
+  webhook's `login_required`. The trail is honest — `login_required { from:
+  'healthy' }` then `synced { from: 'login_required' }`, and the write did find
+  `login_required` — but Plaid does not resend that webhook, the item reads
+  `healthy` while Plaid holds it in login-required, and the next sync lands it
+  in `error` through the 400 mapping. The same family as the two-codes bullet
+  above: what the owner can learn about a login-required item. Driven by the
+  review with the sync held inside the gateway call.
+- **[ACCEPTED]** *The `errored` emit can replace the error it records.* It runs
+  inside the `catch` before the rethrow because nothing runs after one; an
+  emitter failure there surfaces as the emitter's error rather than the
+  gateway's. The transaction that arm already ran had the same property, and
+  the alternative — emit after the rethrow — does not exist. Accepted with the
+  bound stated.
+- **[ACCEPTED]** *The accounts row records the item's `dek_id` while the
+  balance was sealed under the user's ACTIVE DEK.* `cipher.encrypt` seals under
+  `getOrCreateDek(userId)` and answers the id it used; `syncItem` discards that
+  id and stamps `item.dek_id` from the pre-transaction row, and the upsert's
+  `ON CONFLICT` list never touches `dek_id`. The two coincide today only because
+  `@estate/crypto` has no rotation API — the one way an active DEK changes is
+  destruction. An earlier draft argued unreachability from the ORDER of the two
+  calls (`decryptAccessToken` runs before any encrypt, so a destroyed DEK throws
+  first), and the review broke that argument: the shred is another transaction
+  and can land in the window between them, in which case `getOrCreateDek` mints
+  a NEW dek for a user whose data was just crypto-shredded and the upsert writes
+  a live account row under the erased item — a partial UN-ERASURE, which is a
+  worse consequence than the decrypt failure this bullet first named. What makes
+  it unreachable TODAY is narrower, and is a fact about another service rather
+  than about this one: `ERASURE_DOMAINS` lists `plaid`, but nothing in
+  `apps/services/plaid` implements that domain and identity's driver destroys
+  identity's DEK, not this service's — so there is no shred of a plaid DEK for a
+  sync to race. It becomes reachable the day plaid grows an erasure leg, and
+  identity's own leg already documents the order that makes it safe (destroy
+  LAST, because `getOrCreateDek` mints on demand and a surviving caller
+  un-erases the account). Accepted with a PROBE in the
+  residuals spec that reddens when `packages/crypto/src` learns to rotate; the
+  fix then is to carry the `dekId` encrypt answers into the upsert, add
+  `dek_id = EXCLUDED.dek_id` to the conflict list, and make the sync refuse a
+  DEK it did not expect rather than mint one.

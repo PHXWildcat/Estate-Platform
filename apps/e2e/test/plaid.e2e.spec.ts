@@ -152,6 +152,24 @@ describeIfPg('plaid isolate: link/sync/webhook/revoke → audit chain + domain t
     const accounts = await http.get('/v1/accounts').set(owner).expect(200);
     expect((accounts.body as unknown[]).length).toBe(2);
 
+    // A SECOND ITEM, whose token dies at Plaid: the sync fails and that item is
+    // `error` — the rung that had no event before M49 PR6, pushed through the
+    // REAL ingestor below, which the service's own integration spec cannot do.
+    // On a second item and not this one, because killing this one's token would
+    // put the TB5 revocation below onto the provider-failure branch (revoke
+    // calls `removeItem` and swallows its failure), quietly changing what the
+    // journey's own step proves.
+    const doomed = await http
+      .post('/v1/plaid/items')
+      .set(owner)
+      .send({ publicToken: 'public-stub-e2e-doomed' })
+      .expect(201);
+    const doomedId = (doomed.body as { id: string }).id;
+    const doomedToken = ((await exchangeSpy.mock.results[1]!.value) as { accessToken: string })
+      .accessToken;
+    await gateway.removeItem(doomedToken);
+    await http.post(`/v1/plaid/items/${doomedId}/sync`).set(owner).expect(500);
+
     // signed webhook flips the item to login_required; unsigned is rejected
     const webhookBody = JSON.stringify({
       webhook_type: 'ITEM',
@@ -195,6 +213,7 @@ describeIfPg('plaid isolate: link/sync/webhook/revoke → audit chain + domain t
     for (const required of [
       'plaid.item.linked',
       'plaid.item.synced',
+      'plaid.item.errored',
       'plaid.item.login_required',
       'plaid.item.revoked',
       'plaid.webhook.rejected',
@@ -215,9 +234,14 @@ describeIfPg('plaid isolate: link/sync/webhook/revoke → audit chain + domain t
             ? PlaidItemSyncedEvent
             : PlaidItemStatusChangedEvent;
       const envelope = schema.parse(JSON.parse(message.value));
-      expect(envelope.payload.itemId).toBe(itemId);
-      expect(message.key).toBe(itemId);
+      // Keyed by the item it is ABOUT, and about one of this journey's two
+      // items — the second exists only to carry the `errored` rung through the
+      // real ingestor. Asserted as membership rather than equality, and the
+      // SET is asserted below so a third item appearing is not absorbed.
+      expect([itemId, doomedId]).toContain(envelope.payload.itemId);
+      expect(message.key).toBe(envelope.payload.itemId);
     }
+    expect(new Set(domainMessages.map((m) => m.key))).toEqual(new Set([itemId, doomedId]));
 
     // --- TB5 token firewall: nothing secret ever crosses the bus ---
     const allPayloads = producer.messages.map((m) => m.value).join('\n');

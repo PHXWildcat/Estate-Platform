@@ -42,6 +42,31 @@ export const noopEvents = new Proxy(
   { get: () => (): Promise<void> => Promise.resolve() },
 ) as never;
 
+/**
+ * An events double that RECORDS each call — method name and the arguments the
+ * service actually passed — for the drives that assert what the trail would
+ * carry. Faithful about absences: a method never called is simply not in
+ * `calls`, so "emits nothing" is an assertion over the whole list.
+ */
+export function recordingEvents(): {
+  calls: Array<{ method: string; args: unknown[] }>;
+  events: never;
+} {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const events = new Proxy(
+    {},
+    {
+      get:
+        (_target, method) =>
+        (...args: unknown[]): Promise<void> => {
+          calls.push({ method: String(method), args });
+          return Promise.resolve();
+        },
+    },
+  ) as never;
+  return { calls, events };
+}
+
 const rejectRawSql = (): Promise<never> =>
   Promise.reject(new Error('unit tests must not issue raw SQL'));
 
@@ -91,24 +116,48 @@ export class FakeItems {
     return Promise.resolve();
   }
 
+  /**
+   * A SNAPSHOT, not the row. Postgres hands a caller the values as they were
+   * when the SELECT ran; this double handed out the live object, so a later
+   * `setStatus` mutated the caller's `item.status` too and the caller's STALE
+   * PRE-READ was magically fresh. Three drives named for carrying "the prior
+   * the WRITE found" could not tell the two apart, and M49 PR6's review proved
+   * it: the mutation that passes `item.status` where the write's answer belongs
+   * left them green. A double must be faithful about the SHAPE of what it
+   * hands back, not only about values and refusals.
+   */
+  private static snapshot(row: PlaidItemRow): PlaidItemRow {
+    return { ...row };
+  }
+
   findLiveById(id: string): Promise<PlaidItemRow | null> {
-    return Promise.resolve(this.rows.find((r) => r.id === id && r.deleted_at === null) ?? null);
+    const row = this.rows.find((r) => r.id === id && r.deleted_at === null);
+    return Promise.resolve(row ? FakeItems.snapshot(row) : null);
   }
 
   findLiveByItemBidx(itemBidx: Buffer): Promise<PlaidItemRow | null> {
-    return Promise.resolve(
-      this.rows.find((r) => r.deleted_at === null && r.item_bidx.equals(itemBidx)) ?? null,
-    );
+    const row = this.rows.find((r) => r.deleted_at === null && r.item_bidx.equals(itemBidx));
+    return Promise.resolve(row ? FakeItems.snapshot(row) : null);
   }
 
   listLiveByUser(userId: string): Promise<PlaidItemRow[]> {
-    return Promise.resolve(this.rows.filter((r) => r.user_id === userId && r.deleted_at === null));
+    return Promise.resolve(
+      this.rows
+        .filter((r) => r.user_id === userId && r.deleted_at === null)
+        .map((r) => FakeItems.snapshot(r)),
+    );
   }
 
-  setStatus(_q: Queryable, id: string, status: PlaidItemStatus): Promise<void> {
+  /**
+   * Faithful about the ABSENCE as well as the value: null when no live row
+   * matched, which is what the real statement answers for a revoked item.
+   */
+  setStatus(_q: Queryable, id: string, status: PlaidItemStatus): Promise<PlaidItemStatus | null> {
     const row = this.rows.find((r) => r.id === id && r.deleted_at === null);
-    if (row) row.status = status;
-    return Promise.resolve();
+    if (!row) return Promise.resolve(null);
+    const prior = row.status;
+    row.status = status;
+    return Promise.resolve(prior);
   }
 
   setCursor(_q: Queryable, id: string, cursor: string | null): Promise<void> {
@@ -117,13 +166,13 @@ export class FakeItems {
     return Promise.resolve();
   }
 
-  markRevoked(_q: Queryable, id: string, at: Date): Promise<void> {
+  markRevoked(_q: Queryable, id: string, at: Date): Promise<PlaidItemStatus | null> {
     const row = this.rows.find((r) => r.id === id && r.deleted_at === null);
-    if (row) {
-      row.status = 'revoked';
-      row.deleted_at = at;
-    }
-    return Promise.resolve();
+    if (!row) return Promise.resolve(null);
+    const prior = row.status;
+    row.status = 'revoked';
+    row.deleted_at = at;
+    return Promise.resolve(prior);
   }
 }
 

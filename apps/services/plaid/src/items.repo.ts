@@ -76,11 +76,47 @@ export class ItemsRepo {
     );
   }
 
-  async setStatus(tx: Queryable, id: string, status: PlaidItemStatus): Promise<void> {
-    await tx.query(`UPDATE plaid_items SET status = $2 WHERE id = $1 AND deleted_at IS NULL`, [
-      id,
-      status,
-    ]);
+  /**
+   * Move a live item's status and answer where it WAS (M49 PR6).
+   *
+   * The prior comes from a CTE pre-image under the row lock — M49 PR3's
+   * mechanism, re-adjudicated in docs/06 — rather than from the `PlaidItemRow`
+   * every caller holds, because that row was read OUTSIDE the transaction:
+   * `requireItem` and `findLiveByItemBidx` run before `withTransaction` opens,
+   * and a webhook or a rival sync can move the status in between. The caller's
+   * `item.status` is exactly the stale pre-read that `## Transactions` in
+   * `.claude/rules/services-backend.md` warns about.
+   *
+   * ANSWERS NULL WHEN NO LIVE ROW MATCHED — the item was revoked between the
+   * caller's read and this write — and the caller must READ that, because a
+   * status event filed for a row this statement did not touch is a false
+   * record (M49 PR5's lesson, on identity's release). The previous return type
+   * was `void`; it could not say.
+   *
+   * No status predicate, deliberately: every caller admits every live prior —
+   * a webhook can arrive for an item already in `login_required`, a sync can
+   * heal from either dead state — which is WHY every event carries `from`.
+   */
+  async setStatus(
+    tx: Queryable,
+    id: string,
+    status: PlaidItemStatus,
+  ): Promise<PlaidItemStatus | null> {
+    const rows = await tx.query<{ prior_status: PlaidItemStatus }>(
+      `WITH prior AS (
+                SELECT id, status AS prior_status
+                  FROM plaid_items
+                 WHERE id = $1 AND deleted_at IS NULL
+                   FOR UPDATE
+              )
+       UPDATE plaid_items
+          SET status = $2
+         FROM prior
+        WHERE plaid_items.id = prior.id
+       RETURNING prior.prior_status`,
+      [id, status],
+    );
+    return rows[0]?.prior_status ?? null;
   }
 
   async setCursor(tx: Queryable, id: string, cursor: string | null): Promise<void> {
@@ -90,12 +126,28 @@ export class ItemsRepo {
     ]);
   }
 
-  /** Revocation: status flip + soft delete in one statement (never row deletion). */
-  async markRevoked(tx: Queryable, id: string, at: Date): Promise<void> {
-    await tx.query(
-      `UPDATE plaid_items SET status = 'revoked', deleted_at = $2
-        WHERE id = $1 AND deleted_at IS NULL`,
+  /**
+   * Revocation: status flip + soft delete in one statement (never row
+   * deletion), answering the prior status the same way `setStatus` does and
+   * for the same reason — `revoke()` calls Plaid between its read and this
+   * write, so the window for a rival revoke is a network round trip wide.
+   * Null means the row was already gone, and the caller files nothing.
+   */
+  async markRevoked(tx: Queryable, id: string, at: Date): Promise<PlaidItemStatus | null> {
+    const rows = await tx.query<{ prior_status: PlaidItemStatus }>(
+      `WITH prior AS (
+                SELECT id, status AS prior_status
+                  FROM plaid_items
+                 WHERE id = $1 AND deleted_at IS NULL
+                   FOR UPDATE
+              )
+       UPDATE plaid_items
+          SET status = 'revoked', deleted_at = $2
+         FROM prior
+        WHERE plaid_items.id = prior.id
+       RETURNING prior.prior_status`,
       [id, at],
     );
+    return rows[0]?.prior_status ?? null;
   }
 }
